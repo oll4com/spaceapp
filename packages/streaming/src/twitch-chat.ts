@@ -1,6 +1,6 @@
 import { StreamingProviderError } from "./errors.js";
 import type { StreamingTokenSet } from "./token-manager.js";
-import type { StreamingChatMessage, StreamingChatPage } from "./youtube-chat.js";
+import type { StreamingChatPage } from "./youtube-chat.js";
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {

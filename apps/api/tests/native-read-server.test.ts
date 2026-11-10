@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { createNativeReadServer } from "../src/native-read-server.js";
 import { serveClaudeNativeTurns, type ClaudeNativeTurns } from "../src/claude-native-turns.js";
+import { serveGeminiNativeTurns } from "../src/gemini-native-turns.js";
 
 // A stand-in for `claude-vscode-parity native-turns --serve`: answers each line, "hang" never, "die" exits.
 const fakeServer = `
@@ -88,5 +89,22 @@ describe("serveClaudeNativeTurns", () => {
       { id: 1, result: { nativeSessionId: "session" } },
       { id: 2, result: null }
     ]);
+  });
+});
+
+describe("serveGeminiNativeTurns", () => {
+  it("answers Gemini's reads by id with the one-shot read's validation (API audit 4/11: no sudo launcher per read)", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const lines: string[] = [];
+    output.on("data", (chunk: Buffer) => lines.push(...chunk.toString().split("\n").filter(Boolean)));
+    const served = serveGeminiNativeTurns(input, output, async () => ({ conversationId: "c", turns: [] }));
+    input.write(`${JSON.stringify({ id: 7, paneId: "pane:abcdef", sessionId: "cli_session:abcdef", rootPid: 4242 })}\n`);
+    input.write(`${JSON.stringify({ id: 8, paneId: "pane:abcdef", sessionId: "cli_session:abcdef", rootPid: 1 })}\n`);
+    input.write("null\n");
+    input.end();
+    await served;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(lines.map((line) => JSON.parse(line)).sort((a, b) => a.id - b.id)).toEqual([{ id: 7, result: { conversationId: "c", turns: [] } }, { id: 8, result: null }]);
   });
 });

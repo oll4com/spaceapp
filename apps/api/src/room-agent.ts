@@ -38,12 +38,14 @@ import {
 } from "./room-agent-snapshot.js";
 import { roomMissionSnapshot } from "./room-mission-snapshot.js";
 import { resolveMissionControlTarget, assertMissionControlOwner, activeMissionStatuses, type RoomMissionControlTarget } from "./room-mission-control.js";
-import { codexServiceRoot, createCachedModelSelection, resolveAdvancedMissionModel, runOpenCodeText, type AdvancedMissionModelSelection } from "./room-agent-model-resolver.js";
+import { gatewayRequestIdHeader } from "./gateway-request-id.js";
+import { codexServiceRoot, createCachedModelSelection, GATEWAY_CLAUDE_MODEL, resolveAdvancedMissionModel, runOpenCodeText, type AdvancedMissionModelSelection } from "./room-agent-model-resolver.js";
 import { roomAgentTimeline, withRoomAgentEvents, type RoomAgentChat } from "./room-agent-chat.js";
 import { parseRoomAgentMention, parseSpaceControlQuick } from "./space-control-quick.js";
 import { recordWorkflowStart } from "./api-metrics.js";
 import { connectTemporalClient, type TemporalClientFactory } from "./temporal-client.js";
 import { traceparentForTraceId, withTurnTraceparent, workflowCorrelationMemo } from "./trace-context.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export const roomAgentToolIds = [
   "room:inspect",
@@ -79,7 +81,8 @@ export const roomAgentReadonlyMcpToolIds = [
 ] as const;
 
 const roomAgentSelectedToolIds = [...roomAgentToolIds, ...roomAgentControlToolIds, ...roomAgentBrowserToolIds, ...roomAgentReadonlyMcpToolIds];
-const roomAgentTurnPromptMaxChars = 14_000;
+/** Technical: the room context a turn's prompt carries stays a share of the model's context (until 31/10 14,000); what does not fit is named. */
+const roomAgentTurnPromptMaxChars = 100_000;
 const roomAgentOperatorRequestHeader = "\n\nOperator request:\n";
 const roomAgentContextTruncatedMarker = "\n- Initial room context truncated; run room:inspect before targeting omitted panes.";
 
@@ -115,7 +118,7 @@ export function roomAgentControlGuide(): string {
   return [
     `Full Space Control (the same backend as the Live pane, as the operator) through room:control {type:"control",tool,arguments:{roomId,...}}. ${tools}`,
     `space_inspect sections: ${controlInspectSections.join(", ")}. Read space_capabilities once for exact schemas.`,
-    'space_execute applies one atomic batch (up to 32 actions) and returns per-target results; PENDING or RUNNING is not completion, check space_operations. Pane targets select by paneIds, paneNames (Andy, Bob, ...), runtimeId or state, so one pane.prompt action can message several panes at once. Each pane.prompt registers a completion watch; use space_watches to list or check them.'
+    'space_execute applies one atomic batch and returns per-target results; PENDING or RUNNING is not completion, check space_operations. Pane targets select by paneIds, paneNames (Andy, Bob, ...), runtimeId or state, so one pane.prompt action can message several panes at once. Each pane.prompt registers a completion watch; use space_watches to list or check them.'
   ].join(" ");
 }
 
@@ -264,8 +267,8 @@ export function createRoomAgentWorkflowCoordinator(options: {
 }
 
 /**
- * One answer from the Room Agent's model tier: the injected command, the Space Gateway's chat completions, then
- * OpenCode run. Null when no model answered in time. Used by the autopilot; the conversation streams through
+ * One answer from the Room Agent's model tier: the injected command, the Space Gateway's chat completions, Claude through
+ * the Gateway, then OpenCode run. Null when no model answered in time. Used by the autopilot; the conversation streams through
  * room-agent-chat.ts.
  */
 export async function completeRoomAgentPrompt(input: {
@@ -278,6 +281,8 @@ export async function completeRoomAgentPrompt(input: {
   runCommand?: (modelId: string, prompt: string, timeoutMs: number) => Promise<string | null>;
   /** Public installs: the CLI container's OpenCode (the core image has none). */
   runOpenCode?: typeof runOpenCodeText;
+  /** Sent to Space Gateway as x-request-id, so its request log row carries it (OBS-006). */
+  traceId?: string;
 }): Promise<string | null> {
   const { systemPrompt, content, modelSelection, codexLbBaseUrl, timeoutMs = 20_000, runCommand, runOpenCode = runOpenCodeText } = input;
   const prompt = `${systemPrompt}\n\nUser request: ${content}`;
@@ -287,14 +292,17 @@ export async function completeRoomAgentPrompt(input: {
     if (output && output.trim()) return output.trim();
   }
 
-  if (modelSelection.tier === "CODEX" && codexLbBaseUrl) {
+  const root = codexLbBaseUrl ? codexServiceRoot(codexLbBaseUrl) : null;
+  const keyFile = input.codexLbKeyFile || process.env.SPACE_GATEWAY_KEY_FILE || process.env.SPACE_CODEX_LB_KEY_FILE || `${SPACE_INSTALL_ROOT}/secrets/space-gateway-internal.key`;
+  const apiKey = root ? await import("node:fs/promises").then((fs) => fs.readFile(keyFile, "utf8")).then((text) => text.trim() || null, () => null) : null;
+  const headers = { "Content-Type": "application/json", ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}), ...gatewayRequestIdHeader(input.traceId) };
+
+  if (modelSelection.tier === "CODEX" && root) {
     try {
       const bareModel = modelSelection.modelId.replace(/^codex\//, "");
-      const keyFile = input.codexLbKeyFile || process.env.SPACE_GATEWAY_KEY_FILE || process.env.SPACE_CODEX_LB_KEY_FILE || "/opt/spaceapp/secrets/space-gateway-internal.key";
-      const apiKey = await import("node:fs/promises").then((fs) => fs.readFile(keyFile, "utf8")).then((text) => text.trim() || null, () => null);
-      const res = await fetch(`${codexServiceRoot(codexLbBaseUrl)}/v1/chat/completions`, {
+      const res = await fetch(`${root}/v1/chat/completions`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
+        headers,
         // The whole budget: the model often needs 11-39 s, and a 10 s cap ended as "no model could decide this prompt".
         signal: AbortSignal.timeout(timeoutMs),
         body: JSON.stringify({ model: bareModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content }] })
@@ -305,6 +313,25 @@ export async function completeRoomAgentPrompt(input: {
         if (reply) return reply;
       }
     } catch {}
+  }
+
+  // Claude's subscription route next (never the API-key route): with every Codex week spent (5/11) each autopilot decision
+  // ended "no model could decide this prompt" while Claude served, and OpenCode's run outlasted the pane's 2-minute prompt.
+  if (root) {
+    try {
+      const res = await fetch(`${root}/v1/messages`, {
+        method: "POST",
+        headers: { ...headers, "anthropic-version": "2023-06-01" },
+        signal: AbortSignal.timeout(timeoutMs),
+        // max_tokens is required by the Messages API; the answer is one short JSON decision.
+        body: JSON.stringify({ model: GATEWAY_CLAUDE_MODEL, max_tokens: 4096, system: systemPrompt, messages: [{ role: "user", content }] })
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> };
+        const reply = data.content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("").trim();
+        if (reply) return reply;
+      }
+    } catch { /* unreachable or timed out: OpenCode next */ }
   }
 
   const output = await runOpenCode(modelSelection.modelId, prompt, timeoutMs).catch(() => null);
@@ -385,14 +412,15 @@ export function createRoomAgentService(options: {
     const { pane, session } = await ensureSession(roomId);
     await options.refreshControlReceipts?.(roomId);
     const [messages, missions, transcriptClearedAt, roomInventory, snapshot, monitorEnabled, autopilotEnabled, events] = await Promise.all([
-      store.listSpaceAgentMessages(session.sessionId, 500),
-      store.listRoomAgentMissions(roomId, 500),
+      // The whole conversation since its last clear and every mission and event not acknowledged (until 31/10 500, 500 and 50).
+      store.listSpaceAgentMessages(session.sessionId),
+      store.listRoomAgentMissions(roomId),
       store.getRoomAgentTranscriptClearedAt(roomId),
       roomPlanInventoryProvider.inspect(roomId),
       roomSnapshot(roomId),
       options.monitorRepository?.monitorEnabled(roomId) ?? Promise.resolve(null),
       options.monitorRepository?.autopilotEnabled(roomId) ?? Promise.resolve(null),
-      options.monitorRepository?.listEvents(roomId, { limit: 50 }) ?? Promise.resolve(null)
+      options.monitorRepository?.listEvents(roomId) ?? Promise.resolve(null)
     ]);
     const activeMission =
       missions.find((mission) => mission.status === "RUNNING") ??
@@ -557,12 +585,24 @@ export function createRoomAgentService(options: {
     });
   }
 
+  /** Every event still waiting (OPEN, ESCALATED; a FINISHED notice stays OPEN and waits for nothing, stable 1/11 held 873 in one room),
+   *  whatever its age, then the 15 newest others for orientation: a window, because the turn's room context is a 100,000-character share
+   *  of the model's context (the operator's dock reads every event). */
+  async function roomPromptEvents(roomId: string): Promise<RoomAgentEvent[]> {
+    const repository = options.monitorRepository;
+    if (!repository) return [];
+    const [waiting, recent] = await Promise.all([repository.listEvents(roomId, { statuses: ["OPEN", "ESCALATED"] }), repository.listEvents(roomId, { limit: 15 })])
+      .catch(() => [[], []] as RoomAgentEvent[][]);
+    return [...new Map([...waiting.filter((event) => event.kind !== "FINISHED"), ...recent].map((event) => [event.eventId, event])).values()]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
   async function roomState(roomId: string, hiddenPaneId: string) {
     const [allPanes, roomInventory, snapshot, events] = await Promise.all([
       store.listPanes(roomId, true),
       roomPlanInventoryProvider.inspect(roomId),
       roomSnapshot(roomId),
-      options.monitorRepository?.listEvents(roomId, { limit: 15 }).catch(() => []) ?? Promise.resolve([])
+      roomPromptEvents(roomId)
     ]);
     const panes = allPanes.filter((pane) => pane.id !== hiddenPaneId);
     const openPanes = panes.filter((pane) => !pane.isClosed);
@@ -633,7 +673,7 @@ export function createRoomAgentService(options: {
 
   async function sendAdvanced(roomId: string, content: string, clientRequestId: string, traceId: string, requestFingerprint?: string, newMission?: { ownerId: string }): Promise<RoomAgentSession> {
     const { pane, session } = await ensureSession(roomId);
-    const missions = await store.listRoomAgentMissions(roomId, 500);
+    const missions = await store.listRoomAgentMissions(roomId);
     const activeMission = missions.find((mission) =>
       mission.status === "RUNNING" || mission.status === "PAUSED" || mission.status === "QUEUED"
     ) ?? null;
@@ -689,7 +729,7 @@ export function createRoomAgentService(options: {
   const directRequests = new Map<string, { fingerprint: string; pending: Promise<RoomAgentSession> }>();
   async function inspectMission(roomId: string) {
     await store.getRoom(roomId);
-    const missions = await store.listRoomAgentMissions(roomId, 500);
+    const missions = await store.listRoomAgentMissions(roomId);
     const mission = missions.find(value => value.status === "RUNNING") ?? missions.find(value => value.status === "PAUSED") ??
       missions.find(value => value.status === "QUEUED") ?? missions.at(-1) ?? null;
     const [actions, tasks] = mission ? await Promise.all([store.listRoomAgentActions(mission.id), store.listRoomAgentTaskRuns(mission.id)]) : [[], []];

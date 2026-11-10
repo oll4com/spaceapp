@@ -7,7 +7,10 @@ import type { NousMessage, Pane, Room } from "@space/contracts";
 import { InMemorySpaceStore, SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
 import { ZodError } from "zod";
 import { createApp } from "../src/app.js";
-import { createCsrfToken, signSession, signSessionWithTtl } from "../src/auth.js";
+import { randomBytes } from "node:crypto";
+import { createCsrfToken, signMobileSession, signSession, signSessionWithTtl } from "../src/auth.js";
+import { MOBILE_INVOKE_HEADER, mobileInvokeSecret } from "../src/mobile/gate.js";
+import { renderOperatorMessages } from "../src/nous/service.js";
 import { registerNousPaneBoardRoutes, type PaneBoardRouteDeps } from "../src/nous/pane-board-routes.js";
 import { parseBody, parseQuery } from "../src/route-parsing.js";
 import { configureQueueOperatorGrants, takePaneQueueGrant } from "../src/queue-operator-grants.js";
@@ -23,7 +26,7 @@ describe("Nous pane board routes", () => {
   const apps: FastifyInstance[] = [];
   afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 
-  it("holds the pane's promote grant for the operator's own reply asking to promote, never a proof session's (2026-10-21)", async () => {
+  it("holds the pane's promote grant for the operator's own reply asking to promote, never a proof session's or a mobile app's (2026-10-21, 2026-10-31)", async () => {
     const store = new InMemorySpaceStore();
     const app = await createApp({ store, auth: { sessionSecret, devLogin: false, secureCookies: false }, nousRunner: async () => ({ text: "ok", isError: false }), paneBoardRunner: vi.fn(async () => "[]") });
     apps.push(app);
@@ -35,8 +38,36 @@ describe("Nous pane board routes", () => {
     const reply = (who: Record<string, string>, text: string) => app.inject({ method: "POST", url: `/api/nous/pane-board/${pane.id}/answer`, headers: who, payload: { text } });
     expect((await reply(headers("user:operator-proof"), "κάνε promote")).statusCode).toBe(200);
     expect(takePaneQueueGrant(pane.id, "promote")).toBeNull();
+    // A mobile app's device session is the operator, but a phone's "promote it" grants nothing (Nous Pro review P0-1, 2026-10-31).
+    const appToken = signSession({ id: "user:operator", email: "useroperator@space.local", role: "ADMIN" }, sessionSecret, Date.now(), { app: "nous" });
+    const phone = { cookie: `space_session=${appToken}`, "x-space-csrf-token": createCsrfToken(appToken, sessionSecret)! };
+    expect((await reply(phone, "promote it")).json()).toMatchObject({ routed: "NOUS" });
+    expect(takePaneQueueGrant(pane.id, "promote")).toBeNull();
     expect((await reply(operator, "κάνε promote")).json()).toMatchObject({ routed: "NOUS" });
     expect(takePaneQueueGrant(pane.id, "promote")).toEqual(expect.any(String));
+  });
+
+  it("a paired phone's answer to a prompt or copilot question goes to Nous, marked from the phone, and types nothing (Nous Pro 1b-4b, review P1-1/P1-3)", async () => {
+    const store = new InMemorySpaceStore();
+    const app = await createApp({ store, auth: { sessionSecret, devLogin: false, secureCookies: false }, nousRunner: async () => ({ text: "ok", isError: false }), paneBoardRunner: vi.fn(async () => "[]") });
+    apps.push(app);
+    const operator = headers("user:operator");
+    await app.inject({ method: "GET", url: "/api/nous", headers: operator });
+    const room = await store.createRoom({ name: "Clara", initialPaneCount: 0 }, undefined, "user:operator");
+    const pane = await store.createPane({ roomId: room.id, title: "Cody", paneName: "Cody", mode: "TERMINAL" });
+    const token = signMobileSession({ id: "user:operator", email: "useroperator@space.local", role: "ADMIN" }, sessionSecret,
+      { sid: randomBytes(32).toString("hex"), app: "nous", device: "appdev:phone0001", scopes: ["read", "act"] });
+    const phone = { cookie: `space_session=${token}`, "x-space-csrf-token": createCsrfToken(token, sessionSecret)!, [MOBILE_INVOKE_HEADER]: mobileInvokeSecret(app)! };
+    const answer = await app.inject({ method: "POST", url: `/api/nous/pane-board/${pane.id}/answer`, headers: phone, payload: { text: "yes", target: { kind: "PROMPT" } } });
+    expect(answer.json()).toMatchObject({ routed: "NOUS", display: expect.stringContaining("types nothing") });
+    const messages = (await app.inject({ method: "GET", url: "/api/nous/messages", headers: operator })).json().messages as Array<{ content: string; meta: Record<string, unknown> }>;
+    const fromPhone = messages.find((message) => message.content.includes("My answer from my phone"));
+    expect(fromPhone?.meta).toMatchObject({ person: true, mobile: { device: "appdev:phone0001", scopes: ["read", "act"] } });
+    expect(renderOperatorMessages([fromPhone as unknown as NousMessage], "UTC")).toContain("(from a paired phone: the phone rule applies)");
+    // A copilot question from the phone goes to Nous too.
+    const copilot = await app.inject({ method: "POST", url: `/api/nous/pane-board/${pane.id}/answer`, headers: phone,
+      payload: { text: "go ahead", target: { kind: "COPILOT_QUESTION", copilot: "MAIL", questionId: "mailq:1" } } });
+    expect(copilot.json()).toMatchObject({ routed: "NOUS" });
   });
 
   it("serves the operator's board by room and keeps USERs out", async () => {
@@ -96,7 +127,7 @@ describe("Nous pane board routes", () => {
     const critical = await app.inject({ method: "POST", url: `/api/nous/pane-board/${pane.id}/answer`, payload: { text: "1", target: { kind: "PROMPT" } } });
     expect(critical.json()).toEqual({ routed: "NOUS", display: "Sent to Nous: Andy's prompt needs its check first." });
     expect(deps.send).toHaveBeenCalledWith("user:operator", expect.stringMatching(/^\[Alpha · Andy\] My answer to this pane's prompt: 1\n\(Space did not type it: Andy's prompt touches a promote\.\)$/),
-      { person: true, refs: { roomId: room.id, paneId: pane.id } });
+      { person: true, refs: { roomId: room.id, paneId: pane.id }, client: { app: "UNKNOWN" } });
 
     deps.answerPrompt.mockResolvedValueOnce({ ok: true, display: "Answered Andy", result: "ok" });
     expect((await app.inject({ method: "POST", url: `/api/nous/pane-board/${pane.id}/answer`, payload: { text: "2", target: { kind: "PROMPT" } } })).json())

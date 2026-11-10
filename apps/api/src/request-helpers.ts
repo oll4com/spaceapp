@@ -1,6 +1,8 @@
 /** Request address and header helpers shared by the API composition root and route domains (moved verbatim from it). */
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { FastifyRequest } from "fastify";
+import { NOUS_CLIENT_HEADER, nousClientContext, type AuthUser, type NousClientContext } from "@space/contracts";
+import { cookieName, signedSessionPayload, verifySession } from "./auth.js";
 
 export function requestIpForLog(request: FastifyRequest): string | undefined {
   try {
@@ -8,6 +10,20 @@ export function requestIpForLog(request: FastifyRequest): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** The request's signed session user; records the mobile app whose device session it is (its `app` claim, app-signin.ts) as `request.appSession`. */
+export function requestSessionUser(request: FastifyRequest, secret: string): AuthUser | null {
+  const token = request.cookies[cookieName];
+  const user = verifySession(token, secret);
+  const app = user ? signedSessionPayload(token, secret)?.app : undefined;
+  if (app) request.appSession = app;
+  return user;
+}
+
+/** Where an operator message comes from (plan clipboard:4TXfIZzj8ITW): the device session's app claim and the UA first, the X-Space-Client header only describes. */
+export function requestNousClient(request: FastifyRequest): NousClientContext {
+  return nousClientContext({ appClaim: request.appSession, userAgent: headerString(request.headers["user-agent"]), header: headerString(request.headers[NOUS_CLIENT_HEADER]) });
 }
 
 export function headerString(value: string | string[] | undefined): string | null {
@@ -25,6 +41,8 @@ export function secureTokenMatches(expected: string | null, submitted: string | 
 }
 
 export function isLoopbackRequest(request: FastifyRequest): boolean {
+  // A phone's request is injected in-process; it is never the worker or gateway on this host (Nous Pro security review P2-1).
+  if (request.mobileDevice) return false;
   const ip = requestIpForLog(request);
   return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
 }

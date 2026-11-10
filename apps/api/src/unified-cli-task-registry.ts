@@ -7,6 +7,9 @@ import {
 } from "@space/runtime";
 import { CLI_PANE_TYPES, type PaneCliSession, type PaneCliTranscriptChunk } from "@space/contracts";
 
+/** A pane's CLI task with nothing to resume (it never ran a command): Space Control's restart and reopen start a fresh session instead. */
+export class CliTaskNotResumableError extends SpaceNotFoundError {}
+
 export interface UnifiedCliTask {
   id: string;
   taskId: string;
@@ -121,7 +124,7 @@ export class UnifiedCliTaskRegistry {
   ) {}
 
   async findLatestTaskForPane(paneId: string, runtimeIds?: string[]): Promise<UnifiedCliTask | null> {
-    const sessions = await this.store.listPaneCliSessions(paneId, 100);
+    const sessions = await this.store.listPaneCliSessions(paneId);
     for (const session of sessions) {
       if (session.purpose !== "NORMAL") continue;
       try {
@@ -203,15 +206,12 @@ export class UnifiedCliTaskRegistry {
       this.store.getPane(session.paneId),
       this.store.listPaneCliTranscriptChunks(session.sessionId)
     ]);
-    const transcriptFirstUserMessage = transcript.find(
-      (chunk) => chunk.stream === "stdin" && chunk.content.trim()
-    )?.content;
-    const firstUserMessage = cleanTaskText(
-      transcriptFirstUserMessage ?? revision?.firstUserMessage ?? "",
-      2_000
-    );
+    // The revision keeps the task's first input for good; the transcript keeps a session's newest 200 chunks only, whose
+    // first input after a long turn is the stop's Escape or /quit (ADAPTER-013, OMP's retry spinner on dev 4/11).
+    const firstUserMessage = [revision?.firstUserMessage, ...transcript.filter((chunk) => chunk.stream === "stdin").map((chunk) => chunk.content)]
+      .map((text) => cleanTaskText(text ?? "", 2_000)).find(Boolean) ?? "";
     if (!firstUserMessage && !nativeTaskRef) {
-      throw new SpaceNotFoundError(`Space CLI task ${taskIdOrLegacyThreadId} has no resumable transcript.`);
+      throw new CliTaskNotResumableError(`Space CLI task ${taskIdOrLegacyThreadId} has no resumable transcript.`);
     }
     const preview = [...transcript]
       .reverse()

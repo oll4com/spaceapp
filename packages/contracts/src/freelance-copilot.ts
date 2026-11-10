@@ -1,11 +1,13 @@
 import { z } from "zod";
 import { marketingWordingIssues } from "./marketing-copilot.js";
+import { webUrlWithoutCredentials } from "./link-rules.js";
+import { revisionHasNote } from "./copilot-rules.js";
 
 // Freelance Copilot pane: finds clients for oll4.com on freelance platforms (Upwork, Contra, Fiverr, Toptal, Arc,
 // Braintrust) through the pane's managed browser, with a CLI agent session that qualifies leads, writes and sends
 // proposals and answers clients; the operator takes over when a client wants to go ahead (CLIENT_READY).
 // Operator decisions 2026-10-14 (clipboard PLAN clipboard:EFWug5E7pVln): fully autonomous by default, one Plesk
-// mailbox work@example.invalid with one alias per platform. Pane metadata holds pane-level settings and the operator's
+// work mailbox with one alias per platform. Pane metadata holds pane-level settings and the operator's
 // view (the CLI account lives in the pane's CLI session, like the other copilots); the rest is per-owner records.
 export const FREELANCE_COPILOT_PANE_MODE = "FREELANCE_COPILOT" as const;
 
@@ -14,31 +16,36 @@ export const FREELANCE_COPILOT_AUTONOMY_LEVELS = ["ASSIST", "RULES", "FULL"] as 
 export const freelanceCopilotAutonomySchema = z.enum(FREELANCE_COPILOT_AUTONOMY_LEVELS);
 export type FreelanceCopilotAutonomy = z.infer<typeof freelanceCopilotAutonomySchema>;
 
-export const FREELANCE_CHANNELS = ["UPWORK", "CONTRA", "FIVERR", "TOPTAL", "ARC", "BRAINTRUST"] as const;
+export const FREELANCE_CHANNELS = ["UPWORK", "CONTRA", "FIVERR", "TOPTAL", "ARC", "BRAINTRUST", "GURU", "PEOPLEPERHOUR"] as const;
 export const freelanceChannelSchema = z.enum(FREELANCE_CHANNELS);
 export type FreelanceChannel = z.infer<typeof freelanceChannelSchema>;
 
 export const FREELANCE_CHANNEL_LABELS: Record<FreelanceChannel, string> = {
-  UPWORK: "Upwork", CONTRA: "Contra", FIVERR: "Fiverr", TOPTAL: "Toptal", ARC: "Arc", BRAINTRUST: "Braintrust"
+  UPWORK: "Upwork", CONTRA: "Contra", FIVERR: "Fiverr", TOPTAL: "Toptal", ARC: "Arc", BRAINTRUST: "Braintrust", GURU: "Guru", PEOPLEPERHOUR: "PeoplePerHour"
 };
 /** Where the operator (or the copilot, through the pane browser) signs in on each platform. */
 export const FREELANCE_CHANNEL_LOGIN_URLS: Record<FreelanceChannel, string> = {
   UPWORK: "https://www.upwork.com/ab/account-security/login", CONTRA: "https://contra.com/log-in", FIVERR: "https://www.fiverr.com/login",
-  TOPTAL: "https://www.toptal.com/users/login", ARC: "https://arc.dev/login", BRAINTRUST: "https://app.usebraintrust.com/login/"
+  TOPTAL: "https://www.toptal.com/users/login", ARC: "https://arc.dev/login", BRAINTRUST: "https://app.usebraintrust.com/auth/login/",
+  GURU: "https://www.guru.com/login.aspx", PEOPLEPERHOUR: "https://www.peopleperhour.com/site/login"
 };
 /** Hosts a sent proposal's or message's URL may be on, per channel (subdomains included). */
 export const FREELANCE_CHANNEL_HOSTS: Record<FreelanceChannel, readonly string[]> = {
-  UPWORK: ["upwork.com"], CONTRA: ["contra.com"], FIVERR: ["fiverr.com"], TOPTAL: ["toptal.com"], ARC: ["arc.dev"], BRAINTRUST: ["usebraintrust.com", "braintrust.com"]
+  UPWORK: ["upwork.com"], CONTRA: ["contra.com"], FIVERR: ["fiverr.com"], TOPTAL: ["toptal.com"], ARC: ["arc.dev"], BRAINTRUST: ["usebraintrust.com", "braintrust.com"],
+  GURU: ["guru.com"], PEOPLEPERHOUR: ["peopleperhour.com"]
 };
 /**
  * Platforms whose account signs in only with "Continue with Google" on the pane's Google account (operator rule 2026-10-17):
  * never the email/password form or the alias.
  */
 export const FREELANCE_GOOGLE_SIGN_IN_CHANNELS: readonly FreelanceChannel[] = ["UPWORK"];
-/** The Plesk alias each platform account signs up with; all of them deliver into work@example.invalid. */
-export const FREELANCE_CHANNEL_ALIASES: Record<FreelanceChannel, string> = {
-  UPWORK: "upwork@example.invalid", CONTRA: "contra@example.invalid", FIVERR: "fiverr@example.invalid", TOPTAL: "toptal@example.invalid", ARC: "arc@example.invalid", BRAINTRUST: "braintrust@example.invalid"
-};
+/**
+ * The alias each platform account signs up with, `<platform>@<domain>`, all delivering into the work mailbox. The domain is the
+ * owner's (SPACE_FREELANCE_ALIAS_DOMAIN, review EXT-C-F18 R2); without one there is no alias.
+ */
+export function freelanceChannelAlias(channel: FreelanceChannel, domain: string | null | undefined): string | null {
+  return domain ? `${channel.toLowerCase()}@${domain}` : null;
+}
 
 /**
  * Where the pane browser's traffic leaves from: the CLI VPN routes (Settings → CLI VPN route) through a SOCKS5 proxy
@@ -78,16 +85,26 @@ export const FREELANCE_CHANNEL_DEFAULTS: Record<FreelanceChannel, FreelanceChann
   FIVERR: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 20 },
   TOPTAL: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 },
   ARC: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 },
-  BRAINTRUST: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 }
+  BRAINTRUST: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 },
+  GURU: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 },
+  PEOPLEPERHOUR: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 }
 };
 
+// shortcut: GURU and PEOPLEPERHOUR are not keys of the pane settings yet: the running Browser Host parses pane rows strictly with the
+// contracts it started with, so a new key there would stop the pane's browser. They use FREELANCE_CHANNEL_DEFAULTS (freelanceChannelSettings);
+// add them here with the next guarded Browser Host restart.
+export const FREELANCE_SETTINGS_CHANNELS = ["UPWORK", "CONTRA", "FIVERR", "TOPTAL", "ARC", "BRAINTRUST"] as const satisfies readonly FreelanceChannel[];
 const channel = (id: FreelanceChannel) => freelanceChannelSettingsSchema.default(() => ({ ...FREELANCE_CHANNEL_DEFAULTS[id] }));
 export const freelanceChannelsSettingsSchema = z.object({
   UPWORK: channel("UPWORK"), CONTRA: channel("CONTRA"), FIVERR: channel("FIVERR"), TOPTAL: channel("TOPTAL"), ARC: channel("ARC"), BRAINTRUST: channel("BRAINTRUST")
 }).strict();
 export type FreelanceChannelsSettings = z.infer<typeof freelanceChannelsSettingsSchema>;
 function defaultChannels(): FreelanceChannelsSettings {
-  return Object.fromEntries(FREELANCE_CHANNELS.map((id) => [id, { ...FREELANCE_CHANNEL_DEFAULTS[id] }])) as FreelanceChannelsSettings;
+  return Object.fromEntries(FREELANCE_SETTINGS_CHANNELS.map((id) => [id, { ...FREELANCE_CHANNEL_DEFAULTS[id] }])) as FreelanceChannelsSettings;
+}
+/** A channel's settings: the pane's own, or the defaults for a channel the pane settings do not hold yet. */
+export function freelanceChannelSettings(settings: { channels: FreelanceChannelsSettings }, id: FreelanceChannel): FreelanceChannelSettings {
+  return (settings.channels as Partial<Record<FreelanceChannel, FreelanceChannelSettings>>)[id] ?? FREELANCE_CHANNEL_DEFAULTS[id];
 }
 
 // Every setting later phases use is declared here: the Browser Host parses pane rows with the contracts it loaded
@@ -144,7 +161,7 @@ export function resolveFreelanceCopilotPaneMetadata(metadata: FreelanceCopilotPa
 }
 /** The autonomy that applies on a channel: the lower of the pane's level and the channel's cap. */
 export function effectiveFreelanceAutonomy(settings: FreelanceCopilotPaneSettings, channelId: FreelanceChannel): FreelanceCopilotAutonomy {
-  const cap = settings.channels[channelId].autonomyCap;
+  const cap = freelanceChannelSettings(settings, channelId).autonomyCap;
   return FREELANCE_COPILOT_AUTONOMY_LEVELS[Math.min(FREELANCE_COPILOT_AUTONOMY_LEVELS.indexOf(settings.autonomy), FREELANCE_COPILOT_AUTONOMY_LEVELS.indexOf(cap))]!;
 }
 
@@ -238,7 +255,8 @@ export type FreelanceMessageKind = z.infer<typeof freelanceMessageKindSchema>;
  * Outgoing: DRAFT → IN_REVIEW (the agent asks) → APPROVED (only the operator approves) → SENDING → SENT | FAILED;
  * REJECTED is final. Incoming client messages are RECEIVED.
  */
-export const FREELANCE_MESSAGE_STATUSES = ["DRAFT", "IN_REVIEW", "APPROVED", "SENDING", "SENT", "FAILED", "REJECTED", "RECEIVED"] as const;
+// SUPERSEDED (R24-3): the copilot closed its own message in review that went stale or a newer message replaced, with evidence.
+export const FREELANCE_MESSAGE_STATUSES = ["DRAFT", "IN_REVIEW", "APPROVED", "SENDING", "SENT", "FAILED", "REJECTED", "RECEIVED", "SUPERSEDED"] as const;
 export const freelanceMessageStatusSchema = z.enum(FREELANCE_MESSAGE_STATUSES);
 export type FreelanceMessageStatus = z.infer<typeof freelanceMessageStatusSchema>;
 export const freelanceBidSchema = z.object({
@@ -290,7 +308,7 @@ export const freelanceMessageReviewDecisionSchema = z.object({
   decision: z.enum(["approve", "edit", "revise", "reject"]),
   body: z.string().trim().min(1).max(20_000).optional(),
   note: z.string().trim().max(2000).optional()
-}).strict().refine((input) => input.decision !== "revise" || Boolean(input.note), "Tell the copilot what to change.");
+}).strict().refine(...revisionHasNote());
 export type FreelanceMessageReviewDecision = z.infer<typeof freelanceMessageReviewDecisionSchema>;
 export const freelanceSendBeginSchema = z.object({ messageId: freelanceMessageIdSchema }).strict();
 export const freelanceSendDoneSchema = z.object({
@@ -362,11 +380,12 @@ export const freelanceMemoryQuerySchema = z.object({
   query: z.string().trim().max(500).optional(),
   kinds: z.array(freelanceMemoryKindSchema).max(FREELANCE_MEMORY_KINDS.length).optional(),
   channel: freelanceChannelSchema.optional(),
-  limit: z.coerce.number().int().min(1).max(200).default(50)
+  // Every match when omitted (until 31/10 the newest 50, at most 200).
+  limit: z.coerce.number().int().min(1).optional()
 }).strict();
 export type FreelanceMemoryQuery = z.infer<typeof freelanceMemoryQuerySchema>;
 
-// Activity. BRIEF (the operator's request) and MAIL (a new mail in work@example.invalid) are the agent's work items.
+// Activity. BRIEF (the operator's request) and MAIL (a new mail in the work mailbox) are the agent's work items.
 export const FREELANCE_EVENT_TYPES = [
   "BRIEF", "MAIL", "LEAD_ADDED", "LEAD_UPDATED", "MESSAGE_DRAFTED", "MESSAGE_RECEIVED", "REVIEW_REQUESTED", "REVIEW_DECIDED", "SENDING", "SENT", "SEND_FAILED",
   "CLIENT_READY", "LEAD_DECIDED", "ACCOUNT_UPDATED", "QUESTION", "ANSWERED", "NEEDS_USER", "RULE_PROPOSED", "RULE_DECIDED", "RULE_APPLIED",
@@ -384,7 +403,7 @@ export const freelanceEventSchema = z.object({
   type: freelanceEventTypeSchema,
   /** Work-item state of a BRIEF or MAIL the agent still has to handle; null for plain activity. */
   status: z.enum(["PENDING", "TAKEN", "DONE"]).nullable(),
-  message: z.string().min(1).max(1000),
+  message: z.string().min(1),
   payload: z.record(z.string(), z.unknown()),
   createdAt: isoDateTime
 }).strict();
@@ -425,7 +444,7 @@ export type FreelanceRun = z.infer<typeof freelanceRunSchema>;
 export const freelancePendingItemSchema = z.object({
   kind: z.enum(["CLIENT_READY", "REVIEW", "QUESTION", "RULE", "ACCOUNT"]),
   id: z.string().min(1).max(200),
-  message: z.string().max(1000),
+  message: z.string(),
   payload: z.record(z.string(), z.unknown()),
   createdAt: isoDateTime
 }).strict();
@@ -433,7 +452,7 @@ export type FreelancePendingItem = z.infer<typeof freelancePendingItemSchema>;
 export const freelanceRunViewSchema = z.object({
   run: freelanceRunSchema.nullable(),
   status: z.enum(["IDLE", "RUNNING", "PAUSED", "STOPPED"]),
-  pending: z.array(freelancePendingItemSchema).max(200),
+  pending: z.array(freelancePendingItemSchema),
   /** Briefs and mails not yet taken plus follow-ups and approved messages that are due. */
   backlog: z.number().int().min(0)
 }).strict();
@@ -442,7 +461,9 @@ export type FreelanceRunView = z.infer<typeof freelanceRunViewSchema>;
 export const freelanceQuestionAskSchema = z.object({
   question: z.string().trim().min(1).max(1000),
   options: z.array(z.string().trim().min(1).max(200)).max(12).optional(),
-  leadId: freelanceLeadIdSchema.optional()
+  leadId: freelanceLeadIdSchema.optional(),
+  /** R13-5: ask even though the copilot's memory showed hits (memoryHits came back first). */
+  afterMemory: z.boolean().optional()
 }).strict();
 export const freelanceQuestionAnswerSchema = z.object({ questionId: freelanceQuestionIdSchema, answer: z.string().trim().min(1).max(4000) }).strict();
 
@@ -481,15 +502,16 @@ export function freelanceRuleMatches(rule: Pick<FreelanceRule, "channel" | "kind
 export function freelanceUrlMatchesChannel(raw: string, channelId: FreelanceChannel): boolean {
   let url: URL;
   try { url = new URL(raw); } catch { return false; }
-  if (url.protocol !== "https:" || url.username || url.password) return false;
+  if (!webUrlWithoutCredentials(url)) return false;
   const host = url.hostname.toLowerCase();
   return FREELANCE_CHANNEL_HOSTS[channelId].some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
 }
 
 // ---- wording and scam checks ------------------------------------------------------------------------
 /** Links a message may carry before a contract: the platform itself, the operator's own sites and code. */
-// The operator's sites match exactly: other oll4.com hosts (the private Space, webmail) never go to a client.
-const FREELANCE_ALLOWED_LINK_HOSTS = ["oll4.com", "example.invalid", "spaceapp.dev", "www.spaceapp.dev"];
+// The owner's own sites (`ownHosts`, SPACE_FREELANCE_LINK_HOSTS) match exactly: other hosts of their domain (a private Space,
+// webmail) never go to a client.
+const FREELANCE_ALLOWED_LINK_HOSTS = ["spaceapp.dev", "www.spaceapp.dev"];
 const FREELANCE_ALLOWED_LINK_DOMAINS = ["github.com", "loom.com", "npmjs.com"];
 const OFF_PLATFORM_RULES: ReadonlyArray<{ id: string; pattern: RegExp }> = [
   { id: "email-address", pattern: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/ },
@@ -505,7 +527,7 @@ const OFF_PLATFORM_RULES: ReadonlyArray<{ id: string; pattern: RegExp }> = [
  * before a contract (lead not WON) contact or payment outside the platform and links off the allowed hosts.
  * A proposal's hourly bid under the floor is flagged too.
  */
-export function freelanceWordingIssues(text: string, input: { channel: FreelanceChannel; contracted: boolean; bid?: FreelanceBid | null; rateFloorHourly?: number }): string[] {
+export function freelanceWordingIssues(text: string, input: { channel: FreelanceChannel; contracted: boolean; bid?: FreelanceBid | null; rateFloorHourly?: number; ownHosts?: readonly string[] }): string[] {
   const issues = new Set(marketingWordingIssues(text));
   if (!input.contracted) {
     for (const rule of OFF_PLATFORM_RULES) if (rule.pattern.test(text)) issues.add(rule.id);
@@ -513,7 +535,7 @@ export function freelanceWordingIssues(text: string, input: { channel: Freelance
     for (const match of text.matchAll(/https?:\/\/[^\s)<>"']+/gi)) {
       let host = "";
       try { host = new URL(match[0]).hostname.toLowerCase(); } catch { issues.add("outside-link"); continue; }
-      if (!FREELANCE_ALLOWED_LINK_HOSTS.includes(host) && !domains.some((entry) => host === entry || host.endsWith(`.${entry}`))) issues.add("outside-link");
+      if (!FREELANCE_ALLOWED_LINK_HOSTS.includes(host) && !input.ownHosts?.includes(host) && !domains.some((entry) => host === entry || host.endsWith(`.${entry}`))) issues.add("outside-link");
     }
   }
   if (input.bid?.type === "HOURLY" && input.bid.amount < (input.rateFloorHourly ?? 35)) issues.add("below-rate-floor");
@@ -533,7 +555,7 @@ export function freelanceScamSignals(text: string): string[] {
 }
 
 // ---- mailbox --------------------------------------------------------------------------------------
-/** The IMAP mailbox (work@example.invalid) the copilot reads codes, job alerts and client notifications from. */
+/** The IMAP work mailbox the copilot reads codes, job alerts and client notifications from. */
 export const freelanceMailboxConfigSchema = z.object({
   host: z.string().trim().min(1).max(253).regex(/^[A-Za-z0-9.-]+$/),
   port: z.number().int().min(1).max(65535).default(993),
@@ -553,7 +575,7 @@ export function freelanceChannelOfSender(from: string): FreelanceChannel | null 
 const pacTarget = (route: FreelanceEgressRoute) => route === "direct" ? "DIRECT" : `SOCKS5 ${FREELANCE_EGRESS_PROXIES[route]}`;
 /** The route a platform leaves from, its own or the pane's. */
 export function freelanceChannelEgress(settings: Pick<FreelanceCopilotPaneSettings, "browserEgress" | "channels">, channelId: FreelanceChannel): FreelanceEgressRoute {
-  const own = settings.channels[channelId].egress;
+  const own = freelanceChannelSettings(settings, channelId).egress;
   return own === "pane" ? settings.browserEgress : own;
 }
 /**
@@ -565,6 +587,16 @@ export function freelanceEgressPac(settings: Pick<FreelanceCopilotPaneSettings, 
   const rules = FREELANCE_CHANNELS.flatMap((id) => [...FREELANCE_CHANNEL_HOSTS[id], ...(FREELANCE_CHANNEL_EXTRA_HOSTS[id] ?? [])].map((host) => [host, pacTarget(freelanceChannelEgress(settings, id))] as const));
   const fallback = pacTarget(settings.browserEgress);
   if (fallback === "DIRECT" && rules.every(([, target]) => target === "DIRECT")) return null;
+  return pacScript(rules, fallback);
+}
+/**
+ * Every other pane browser's route (plan clipboard:iLvBs5eOMZjF, operator 31/10): all sites to one route, localhost direct, never a
+ * DIRECT fallback (a route that is down fails closed). Null for the server's own address.
+ */
+export function browserRoutePac(route: FreelanceEgressRoute): string | null {
+  return route === "direct" ? null : pacScript([], pacTarget(route));
+}
+function pacScript(rules: ReadonlyArray<readonly [string, string]>, fallback: string): string {
   return [
     "function FindProxyForURL(url, host) {",
     "  host = host.toLowerCase();",

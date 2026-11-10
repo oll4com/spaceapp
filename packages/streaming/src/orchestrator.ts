@@ -255,7 +255,7 @@ export async function runBotTurn(
     ? [{ role: "user", content: userText }]
     : [{ role: "system", content: systemPrompt }, { role: "user", content: userText }];
 
-  let replies: BotTurnResult["replies"] = [];
+  const replies: BotTurnResult["replies"] = [];
   const memorySaves: BotTurnResult["memorySaves"] = [];
   let rounds = 0;
   let errorCode: string | null = null;

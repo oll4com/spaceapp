@@ -202,6 +202,10 @@ export const toneLabels: Record<HealthTone, string> = {
 
 export type HealthSection =
   "overview" | "performance" | "processes" | "services" | "topology" | "ai" | "alerts" | "usage" | "sessions" | "connection" | "analytics" | "provider" | "models";
+// Views merged by the 5/11 redesign (plan clipboard:sJpyQIBFGszW): an old id still opens its new home.
+export function resourceView(section: HealthSection): HealthSection {
+  return section === "usage" || section === "models" ? "analytics" : section === "provider" ? "ai" : section === "connection" ? "performance" : section;
+}
 export function openSystemHealth(
   section: HealthSection = "overview",
   metric?: string,

@@ -1,6 +1,8 @@
 export const BROWSER_PANE_ACTION_EVENT = "space:browser-pane-action";
 
-export type BrowserPaneAction = "bookmarks" | "import" | "handoff" | "release" | "reload" | "account" | "restart" | "tabs";
+export type BrowserPaneAction = "bookmarks" | "import" | "handoff" | "release" | "reload" | "account" | "restart" | "tabs" | "keyboard_input" | "show_page";
+
+export type BrowserPaneKeyboardInput = { key: string; code: string; text: string | null; shiftKey: boolean; ctrlKey?: boolean };
 
 export interface BrowserPaneActionDetail {
   paneId: string;
@@ -10,6 +12,11 @@ export interface BrowserPaneActionDetail {
   profileId?: string;
   /** "account": open Google sign-in for that account. */
   signIn?: boolean;
+  keyboardInput?: BrowserPaneKeyboardInput;
+  /** "show_page": Go to pane shows the page a needs-you request is about: an open tab with this address, else a new tab. */
+  url?: string;
+  /** "show_page": that tab; when it is gone, `url` opens instead (never just the active tab). */
+  pageId?: string;
 }
 
 /** A Marketing Copilot bookmark was saved outside the Bookmarks tab (a browser tab's context menu). */
@@ -42,6 +49,11 @@ const activeBrowserPaneTargets = new Map<string, number>();
 const pendingBrowserPaneActions = new Map<string, BrowserPaneActionDetail[]>();
 
 export function dispatchBrowserPaneActionEvent(detail: BrowserPaneActionDetail) {
+  // Keystrokes are transient: never replay typing into a browser that mounts later.
+  if (detail.action === "keyboard_input") {
+    window.dispatchEvent(new CustomEvent(BROWSER_PANE_ACTION_EVENT, { detail }));
+    return;
+  }
   if ((activeBrowserPaneTargets.get(detail.paneId) ?? 0) === 0) {
     const queued = pendingBrowserPaneActions.get(detail.paneId) ?? [];
     queued.push(detail);
@@ -68,18 +80,28 @@ export function registerBrowserPaneEventTarget(paneId: string): () => void {
 
 export function parseBrowserPaneActionDetail(detail: unknown): BrowserPaneActionDetail | null {
   if (typeof detail !== "object" || detail === null) return null;
-  const maybeDetail = detail as { paneId?: unknown; action?: unknown; roomId?: unknown; profileId?: unknown; signIn?: unknown };
+  const maybeDetail = detail as { paneId?: unknown; action?: unknown; roomId?: unknown; profileId?: unknown; signIn?: unknown; keyboardInput?: BrowserPaneKeyboardInput; url?: unknown; pageId?: unknown };
   if (
     typeof maybeDetail.paneId !== "string" ||
     (maybeDetail.action !== "bookmarks" && maybeDetail.action !== "import" && maybeDetail.action !== "handoff" && maybeDetail.action !== "release" && maybeDetail.action !== "reload"
-      && maybeDetail.action !== "account" && maybeDetail.action !== "restart" && maybeDetail.action !== "tabs")
+      && maybeDetail.action !== "account" && maybeDetail.action !== "restart" && maybeDetail.action !== "tabs" && maybeDetail.action !== "keyboard_input" && maybeDetail.action !== "show_page")
   ) return null;
   if (maybeDetail.roomId !== undefined && typeof maybeDetail.roomId !== "string") return null;
   if (maybeDetail.action === "account" && typeof maybeDetail.profileId !== "string") return null;
+  if (maybeDetail.action === "show_page" && !(typeof maybeDetail.url === "string" && /^https?:\/\//.test(maybeDetail.url)) && typeof maybeDetail.pageId !== "string") return null;
+  if (maybeDetail.action === "keyboard_input") {
+    const input = maybeDetail.keyboardInput;
+    if (!input || typeof input.key !== "string" || typeof input.code !== "string" ||
+      (input.text !== null && typeof input.text !== "string") || typeof input.shiftKey !== "boolean" ||
+      (input.ctrlKey !== undefined && typeof input.ctrlKey !== "boolean")) return null;
+  }
   return {
     paneId: maybeDetail.paneId,
     action: maybeDetail.action,
     ...(maybeDetail.roomId ? { roomId: maybeDetail.roomId } : {}),
-    ...(maybeDetail.action === "account" ? { profileId: maybeDetail.profileId as string, signIn: maybeDetail.signIn === true } : {})
+    ...(maybeDetail.action === "account" ? { profileId: maybeDetail.profileId as string, signIn: maybeDetail.signIn === true } : {}),
+    ...(maybeDetail.action === "keyboard_input" ? { keyboardInput: maybeDetail.keyboardInput } : {}),
+    ...(maybeDetail.action === "show_page" ? { ...(typeof maybeDetail.url === "string" && /^https?:\/\//.test(maybeDetail.url) ? { url: maybeDetail.url } : {}),
+      ...(typeof maybeDetail.pageId === "string" ? { pageId: maybeDetail.pageId } : {}) } : {})
   };
 }

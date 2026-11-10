@@ -25,6 +25,85 @@
           "report": "/var/lib/spaceapp-user/agent-workspace/reviews/final-1.1.5-8a3e1f0/claude.md",
           "note": "Confirmed defect: WebSocket handshakes (VNC stream, shared chat) skipped the same-site Origin check; fixed on dev dbb253756e for 1.1.6. Also reported: child-process env scrubbing incomplete, SEC-009 mkdir from request path, CORE-011 rollback pattern at other sites, a 0057 migration collision in the public tree, provenance check skips files outside the manifest, factory-reset ignores backup failure, stale install locks, no isolation between agents in the CLI container. These still need verification and go to the 1.1.6 plan."
         }
+      ],
+      "snapshotReviews": [
+        {
+          "snapshot": "spaceapp.dev/review/1.1.9 (public 4e648e7a5ac758cc97549958a62529fed31054b1, tag v1.1.9 of oll4com/spaceapp; spaceapp-review-1.1.9.tar.gz SHA-256 9682ffba2705ff5933cbbde4c16c0fe923be7008d0c9f92e2988ddc86695e258)",
+          "date": "2026-11-02",
+          "method": "In-app headless runs, one CLI each: a clean folder holding only the extracted snapshot, an empty config and home for the CLI (no instructions, MCP servers or skills), the review-pack.md section 2 prompt word for word with the SHA filled in, network on (npm ci). Nothing was expected or suggested; the rating is recorded as given. Each run's whole transcript goes to spaceapp.dev/reviews/ once run-spaceapp 1.2.0 (the fix of MU-010 and MU-011, which the runs reproduce) is on npm.",
+          "reviews": [
+            {
+              "reviewer": "Claude Code 2.1.316 (claude-opus-5-5, effort xhigh)",
+              "rating": "3/5",
+              "date": "2026-11-02",
+              "report": "/var/lib/spaceapp-user/agent-workspace/active/20261102-reviews-1.1.9-inapp/claude/transcript.txt",
+              "note": "Ran: SHA-256 of every snapshot file against files.txt (all match), scripts/verify-export-provenance.mjs (ok), npm ci, npm audit --omit=dev (0 production vulnerabilities), npm run test:architecture (7/7), npm run check (pass), npm test (exit 1: 3 api and 3 web failures it sorted into date-dependent, flaky and its own environment), the failing files alone, one throwaway test of its own (deleted). Its sentence: 'The default single-owner setup is careful, but turning on team accounts lets an invited user make themselves ADMIN with one query parameter.' Its findings S1 (with team accounts on, a USER became database admin through ?mode=admin) and S2 (GET /api/turns without roomId listed every room's prompts) are MU-010 and MU-011 in review-findings.json, fixed in 77352c6691 (stable 2026-11-02 12:47Z, ships in 1.2.0)."
+            },
+            {
+              "reviewer": "Codex CLI 0.166.0 (gpt-6-astra, effort xhigh)",
+              "rating": "3/5",
+              "date": "2026-11-03",
+              "report": "/var/lib/spaceapp-user/agent-workspace/active/20261102-reviews-1.1.9-inapp/codex/transcript.txt",
+              "note": "Model as configured and as the session record states; the model's answer says it could not verify its own id. Ran: the 5,197 public blobs compared with GitHub's tree at the commit (all match), npm ci, npm audit --omit=dev (0), npm test (exit 1: 11,008 passed, 4 failed, 23 skipped; 3 calendar-dependent failures reproduced alone, 1 timeout passed alone, 2 PostgreSQL suite-setup errors from Docker's view of its bind paths), npm run test:architecture (pass), api/worker/web typechecks (pass), a restore fault injection on a real PostgreSQL 17.11 and on file renames, the shipped-image evidence gate with registry-only records. Its sentences: 'SpaceApp has substantial engineering and test evidence for a self-hosted, single-owner workspace. Two reproduced restore defects materially weaken recovery confidence.' Its findings: a failed database restore omits the failing database from the rollback list and deletes the rollback dump (scripts/portable-restore.mjs:26,195); partial file swaps escape the undo journal (portable-restore.mjs:198,255); the release evidence gate accepts registry-only verification as installation proof (shipped-image-evidence.mjs:14); --no-sandbox Chromium with database credentials; the web process inherits core secrets; calendar-dependent tests (nous.test.ts:695, memory-calendar-view.test.tsx:104); the Monitoring Copilot's 192.0.2.* collector rule; architecture.md:341 and :16 contradict the code. Not yet in review-findings.json. S1/S2 were not reproduced or named."
+            }
+          ],
+          "findings": "MU-010 and MU-011 in review-findings.json (fixed, verifiedSourceSha 77352c6691, test apps/api/tests/team-user-escalation.test.ts); the Codex run's restore, evidence-gate, sandbox, secrets, test-clock, collector-rule and documentation findings are not registered yet"
+        },
+        {
+          "snapshot": "spaceapp.dev/review/1.1.9 (public 4e648e7a5ac758cc97549958a62529fed31054b1, tag v1.1.9 of oll4com/spaceapp; spaceapp-review-1.1.9.tar.gz SHA-256 9682ffba2705ff5933cbbde4c16c0fe923be7008d0c9f92e2988ddc86695e258)",
+          "date": "2026-11-03",
+          "method": "Vendor chat sites, one chat each in a Space pane browser (profile 3, Google SSO): the review-pack.md section 2 prompt word for word with the SHA filled in, preceded by one identical line naming where the snapshot is (https://spaceapp.dev/review/1.1.9/, and the zip attached where the site accepts files). Nothing was expected or suggested; each rating is recorded as given, never re-asked. Model and mode as the site shows them; the model's own stated id beside it where it differs.",
+          "reviews": [
+            {
+              "reviewer": "Gemini (picker: Gemini Auto, Thinking High; self-stated: Gemini, Google Personal AI Collaborator)",
+              "rating": "4/5",
+              "date": "2026-11-03",
+              "report": "https://share.gemini.google/Usq4d11meifD",
+              "note": "Sent 05:12:28Z, complete 05:13:29Z. Commit inspected 4e648e7a… (Release 1.1.9). Read only: '100% static analysis of the provided source tree snapshot'; 'Executed: None.' Its sentence: 'Minor deductions stem from container security hardening (Dockerfile root execution) and broad ignore rules in vulnerability scanners, which are appropriate trade-offs for single-owner operability but require tightening if multi-tenant.' Gemini 3.1 Pro / 4 Argon locked on the free tier. Answer: ~/agent-workspace/active/20261103-reviews-1.1.9-chat/gemini/answer.md"
+            },
+            {
+              "reviewer": "ChatGPT (gpt-6-thinking, effort High, Plus)",
+              "rating": "3/5",
+              "date": "2026-11-03",
+              "report": "https://chatgpt.com/share/6ae97518-f62c-83ec-b8d7-9cbb97efb5e1",
+              "note": "Sent 05:33:42Z, complete 05:43:49Z (worked 7m34s). Commit inspected 4e648e7a… (also the GitHub commit and CI run pages). Executed in its sandbox: scripts/verify-export-provenance.mjs (5,029 files, zero problems), SHA-256 and size recheck of all 5,200 files.txt entries, 2 dependency-free architecture checks; read selected sources. Its sentence: 'SpaceApp v1.1.9 has a credible engineering base with demonstrable release and security work, but its assurance evidence has not yet caught up with the scope of the product.' Answer: …/chatgpt/answer.md"
+            },
+            {
+              "reviewer": "Grok (picker: Fast, free; self-stated: Grok 4.5 by xAI)",
+              "rating": "4/5",
+              "date": "2026-11-03",
+              "report": "https://grok.com/share/c2hhcmQtNQ_9ab67b5f-3029-409d-b4c3-073c54dfe0a4",
+              "note": "Sent 06:10:12Z, complete 06:17:56Z (worked 6m27s). Zip attached and selectively unzipped (metadata, docs/quality/*, composition roots, Dockerfile, SECURITY.md, selected tests and workflows); no tests or builds run. Its sentence: 'For the explicitly scoped single-owner, self-hosted AI-agent workspace, the system shows mature engineering discipline—digest-pinned images + attestation, real filesystem containment with tests, correlation IDs, composition-root rationale.' Auto/Expert/Heavy need SuperGrok. Answer: …/grok/answer.md"
+            },
+            {
+              "reviewer": "DeepSeek (DeepThink + Search on; no model name in the UI; self-stated: OpenAI GPT-4.1, a 'plausible model ID' per its visible reasoning)",
+              "rating": "2/5",
+              "date": "2026-11-03",
+              "report": "https://chat.deepseek.com/share/0212cs98zjr7mlqxvd",
+              "note": "Sent 06:29:49Z, complete 06:31:14Z. Zip not accepted (URL only). 'I executed nothing — no tests, no builds, no runtime probes. I only read files published in the snapshot' (12 pages: index, README, docs/quality/*). Its sentence: 'For a self-hosted workspace that handles secrets, logins and multiple AI agents, a 2/5 reflects significant work required before this commit can be considered production-ready.' Answer: …/deepseek/answer.md"
+            },
+            {
+              "reviewer": "Mistral (chat.mistral.ai 'Vibe Work', picker: Think; self-stated: GLM 5.3, Vibe agent on Mistral AI infrastructure)",
+              "rating": "4/5",
+              "date": "2026-11-03",
+              "report": "https://chat.mistral.ai/work/92e93c3d-c8fc-4691-ab96-949dc6ddfd07",
+              "note": "Sent 07:49:35Z, complete 07:58:05Z. Zip not accepted (URL only). Executed: HTTP fetches of the snapshot and raw GitHub files at the SHA, SHA-256 recomputed in its sandbox, GitHub Actions ci.yml run 40813047554 and security.yml run 40813047584 opened; 'Nothing from the repo was executed'; app.ts 617 of 8,049 lines read, App.tsx 0 of 7,431. Its sentence: 'For its stated scope (self-hosted, single-owner workspace), the security engineering is well above what this class of product usually ships.' Answer: …/mistral/answer.md"
+            },
+            {
+              "reviewer": "Kimi (www.kimi.ai, picker: Instant, Thinking effort High; K3.1 Pro and K3 refused by the free-tier capacity gate; self-stated: Kimi Chat, Moonshot AI, exact model id not disclosed)",
+              "rating": "1/5",
+              "date": "2026-11-03",
+              "report": "https://www.kimi.ai/share/1a1a0818-2882-8645-8000-00005b81fb8b",
+              "note": "Sent 08:13:39Z, complete by 08:20Z. Zip not accepted (URL only). Its tools reached only provenance.json (index rejected by its fetch tool, files.txt failed, tarball HTTP 403, file paths 404): 'No source file, test, migration, or document was read. No test suite was run. No code was executed.' Its sentence: 'Not a rating of SpaceApp's code (which I never saw) but of this review engagement: the deliverable snapshot was inaccessible through every channel provided, and the one artifact obtained contradicts the stated commit and admits to excluding the most security-relevant files.' It reads provenance.json's sourceCommit 25bcec3e77… (the private source commit) as a mismatch with 4e648e7a…. Answer: …/kimi/answer.md"
+            }
+          ],
+          "findings": "no new finding ids; each answer's claims are in its answer.md under ~/agent-workspace/active/20261103-reviews-1.1.9-chat/<site>/",
+          "notDone": {
+            "Qwen (chat.qwen.ai)": "Aliyun slider CAPTCHA after Google consent rejected every drag (5 attempts, incl. a pixel-aligned real-mouse drag); sign-in recorded FAILURE 07:01Z; needs one human drag in profile 3",
+            "Claude (claude.ai)": "Google SSO completes, then 'We couldn't verify your browser' (hCaptcha; first attempt a grocery-item challenge UNCONFIRMED, second rejected without a challenge); sign-in recorded FAILURE 08:09Z; needs a human in profile 3 (or another egress)",
+            "Kimi note": "K3.1 Pro / K3 need a subscription for priority access on the free tier; only Instant answered"
+          }
+        }
       ]
     },
     "orchestrationReduction": {
@@ -78,6 +157,58 @@
       "rtoSeconds": 10.3,
       "cleanup": "images, container and local copy removed",
       "report": "/var/lib/spaceapp-user/agent-workspace/reports/20261012-vm-restore-drill/"
+    },
+    "stableSnapshot": {
+      "recordedAt": "2026-11-04T04:15:00+00:00",
+      "purpose": "Provenance of the private stable head for a private-tree review (review-pack.md section 1: a shallow clone of one DEPLOYED commit plus QUALITY_SNAPSHOT.json). Plan clipboard:NtzEOzE3Ew00 step 8. It supersedes liveSha 39d6023113 above for that use; the other fields of this block keep their own dates.",
+      "sha": "c54e4b7f9bd9fb9a02b2739f6d04353d163cbb03",
+      "commitDate": "2026-11-04T06:00:46+02:00",
+      "promote": "q-20261104-040037-33d6 (Promote dev b38ab95b79 to stable)",
+      "promotesToday": [
+        "1b8f5511e5 q-20261104-032724-7532 (dev aafb82b8f8)",
+        "ad789e8dba q-20261104-033656-95b3 (dev b2b0aeafd8)",
+        "c4eb89da33 q-20261104-034604-c3c7 (dev d42435aaa3)",
+        "c54e4b7f9b q-20261104-040037-33d6 (dev b38ab95b79)"
+      ],
+      "liveCheck": "refs/space-queue/live-verified = c54e4b7f9b (set by the queue after its live verification); GET /version on http://127.0.0.1:4911 answered instance stable, version 0.2.5, commit c54e4b7f9bd9fb9a02b2739f6d04353d163cbb03, dirty false; /readyz 200; /opt/spaceapp clean (04:12 UTC)",
+      "docsQualityTree": "12abaf76829fa938f0ac939776e22577c1c386ed (git rev-parse c54e4b7f9b:docs/quality)",
+      "reviewFindingsBlob": "2cb5b69cc5010fcc2a0b4857cb06c4b880e8b0d4 (183 findings: fixed 131, partial 20, accepted-tradeoff 14, open 10, product-decision 4, not-a-defect 4; this commit's update moves PERF-002 to partial)",
+      "qualitySnapshot": {
+        "command": "node scripts/quality-snapshot.mjs c54e4b7f9bd9fb9a02b2739f6d04353d163cbb03",
+        "orchestrationLines": {
+          "apps/api/src/app.ts": 2257,
+          "apps/web/src/App.tsx": 7429
+        },
+        "trackedTestFiles": {
+          "apps/api": 697,
+          "apps/desktop": 12,
+          "apps/web": 414,
+          "apps/worker": 39,
+          "packages/browser-host": 1,
+          "packages/cli-host": 3,
+          "packages/codex-app-server": 10,
+          "packages/contracts": 105,
+          "packages/db": 99,
+          "packages/gateway": 64,
+          "packages/memory-graph": 6,
+          "packages/opencode-control": 2,
+          "packages/runtime": 46,
+          "packages/streaming": 8
+        },
+        "migrations": {
+          "count": 293,
+          "uniqueFullIds": 293,
+          "repeatedHistoricalPrefixes": {
+            "0034": 2,
+            "0088": 2,
+            "0089": 2,
+            "0148": 2,
+            "0154": 2,
+            "0157": 2
+          }
+        }
+      },
+      "waitsOn": "A public review snapshot (build-review-snapshot.mjs from a public release tag whose CI is green, published at spaceapp.dev/review/<version>/ and as GitHub release assets) and the internal review gate on it wait for SpaceApp 1.2.0 (plan clipboard:NtXOwLkXVN1x)."
     }
   },
   "history": [

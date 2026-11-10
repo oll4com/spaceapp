@@ -105,6 +105,9 @@ describe("DocksSettingsCard", () => {
     const rank = dockOrderRank(["media", "rooms"]);
     expect(["settings", "rooms", "tasks", "media", "room-agent"].sort((a, b) => rank(a) - rank(b)))
       .toEqual(["media", "rooms", "room-agent", "tasks", "settings"]);
+    // The Notification Center sits right after Nous in the Docks menu, never after Settings (operator 4/11: it looked gone).
+    expect(["settings", "notifications", "room-agent", "nous"].sort((a, b) => dockOrderRank([])(a) - dockOrderRank([])(b)))
+      .toEqual(["nous", "notifications", "room-agent", "settings"]);
   });
 
   const dockRows = () => Array.from(document.querySelectorAll<HTMLElement>("[data-dock-id]")).map((row) => row.dataset.dockId);

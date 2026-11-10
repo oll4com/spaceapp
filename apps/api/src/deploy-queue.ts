@@ -4,11 +4,11 @@ import {
   deployQueueReportSchema, deployQueueTicketStatusSchema,
   type DeployQueueBatch, type DeployQueueReport, type DeployQueueSubmitter, type DeployQueueTicket
 } from "@space/contracts";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
-export const defaultDeployQueueRoot = "/opt/spaceapp/var/merge-queue";
+export const defaultDeployQueueRoot = `${SPACE_INSTALL_ROOT}/var/merge-queue`;
 const ACTIVE = new Set(["AWAITING_APPROVAL", "QUEUED", "INTEGRATING", "VERIFYING", "DEPLOYING"]);
 const HEARTBEAT_STALE_MS = 90_000;
-const MAX_TICKET_FILES = 500;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -91,6 +91,14 @@ function toTicket(raw: JsonRecord): DeployQueueTicket | null {
   };
 }
 
+/** One sanitized ticket, including older records no longer in the recent list. A strict id keeps this inside tickets/. */
+export async function readDeployQueueTicket(id: string, root = defaultDeployQueueRoot): Promise<DeployQueueTicket | null> {
+  if (!/^q-\d{8}-\d{6}-[0-9a-f]{4}$/.test(id)) return null;
+  const raw = await readJson(join(root, "tickets", `${id}.json`));
+  const ticket = raw ? toTicket(raw) : null;
+  return ticket?.id === id ? ticket : null;
+}
+
 function toBatch(raw: JsonRecord | null, tickets: Map<string, DeployQueueTicket>): DeployQueueBatch | null {
   if (!raw) return null;
   const batchId = text(raw.batchId, 80);
@@ -130,7 +138,7 @@ export async function readDeployQueue(root = defaultDeployQueueRoot, now = Date.
   const state = await readJson(join(root, "state.json"));
   let fileNames: string[];
   try {
-    fileNames = (await readdir(join(root, "tickets"))).filter((name) => name.endsWith(".json")).sort().slice(-MAX_TICKET_FILES);
+    fileNames = (await readdir(join(root, "tickets"))).filter((name) => name.endsWith(".json")).sort();
   } catch {
     return deployQueueReportSchema.parse({
       available: false, daemonRunning: false, heartbeatAt: null, paused: null, current: null, next: null, active: [], recent: []
@@ -144,7 +152,8 @@ export async function readDeployQueue(root = defaultDeployQueueRoot, now = Date.
   const paused = record(state?.paused);
   const current = record(state?.current);
   const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]));
-  const active = tickets.filter((ticket) => ACTIVE.has(ticket.status)).sort((a, b) => a.submittedAt.localeCompare(b.submittedAt)).slice(0, 200);
+  const active = tickets.filter((ticket) => ACTIVE.has(ticket.status)).sort((a, b) => a.submittedAt.localeCompare(b.submittedAt));
+  // The newest 30 finished tickets are the report's window; any other ticket reads whole with readDeployQueueTicket.
   const recent = tickets.filter((ticket) => !ACTIVE.has(ticket.status)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 30);
   if (names) await nameSubmitters([...active, ...recent], names);
   return deployQueueReportSchema.parse({

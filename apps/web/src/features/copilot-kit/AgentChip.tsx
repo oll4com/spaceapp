@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Pane } from "@space/contracts";
 import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { BookmarkPlus, Check, ChevronDown, Terminal } from "../ui-theme/app-icons.js";
 import type { CopilotKind } from "./copilot-kind.js";
 import { paneModelLabel, type CopilotRuntimeOption } from "./copilot-runtimes.js";
@@ -15,6 +16,8 @@ export function AgentChip({ kind, pane, runtimeOptions, switching, onSwitchRunti
   /** New panes of this copilot open with this pane's agent and account. */
   onSetDefault(): void;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const runtimeId = pane.terminalRuntimeId ?? null;
@@ -33,16 +36,16 @@ export function AgentChip({ kind, pane, runtimeOptions, switching, onSwitchRunti
 
   return (
     <div className="jc-agent" ref={menuRef}>
-      <button type="button" className="jc-agent-chip" aria-haspopup="menu" aria-expanded={menuOpen} aria-label={`Copilot agent: ${current?.runtime.displayName ?? runtimeId ?? "none"}`}
+      <button type="button" className="jc-agent-chip" aria-haspopup="menu" aria-expanded={menuOpen} aria-label={t("Copilot agent: {agent}", { agent: current?.runtime.displayName ?? runtimeId ?? t("none") })}
         disabled={switching} onClick={() => setMenuOpen((open) => !open)}>
         {presentation ? <img src={presentation.iconSrc} alt="" aria-hidden="true" /> : <Terminal aria-hidden="true" />}
-        <span className="jc-agent-name">{switching ? "Switching…" : current?.runtime.displayName ?? presentation?.displayName ?? "Choose an agent"}</span>
+        <span className="jc-agent-name">{switching ? t("Switching…") : current?.runtime.displayName ?? presentation?.displayName ?? t("Choose an agent")}</span>
         {model ? <span className="jc-agent-model">{model}</span> : null}
         <ChevronDown aria-hidden="true" />
       </button>
       {menuOpen ? (
-        <div className="jc-menu" role="menu" aria-label="Switch copilot agent">
-          <p className="jc-menu-hint">Switching restarts this pane's CLI session.</p>
+        <div className="jc-menu" role="menu" aria-label={t("Switch copilot agent")}>
+          <p className="jc-menu-hint">{t("Switching restarts this pane's CLI session.")}</p>
           {runtimeOptions.map(({ runtime, ready, recommended }) => {
             const option = cliRuntimePresentation(runtime.id);
             const active = runtime.id === runtimeId;
@@ -53,7 +56,7 @@ export function AgentChip({ kind, pane, runtimeOptions, switching, onSwitchRunti
                 {option ? <img src={option.iconSrc} alt="" aria-hidden="true" /> : <Terminal aria-hidden="true" />}
                 <span className="jc-menu-item-copy">
                   <strong>{runtime.displayName}</strong>
-                  <small>{ready ? (recommended ? "Recommended" : "Ready") : runtime.statusReason}</small>
+                  <small>{ready ? (recommended ? t("Recommended") : t("Ready")) : runtime.statusReason}</small>
                 </span>
                 {active ? <Check aria-hidden="true" /> : null}
               </button>
@@ -63,8 +66,8 @@ export function AgentChip({ kind, pane, runtimeOptions, switching, onSwitchRunti
             onClick={() => { setMenuOpen(false); onSetDefault(); }}>
             <BookmarkPlus aria-hidden="true" />
             <span className="jc-menu-item-copy">
-              <strong>Set as default for new {kind.label} panes</strong>
-              <small>New panes open with this agent and account without asking.</small>
+              <strong>{t("Set as default for new {kind} panes", { kind: kind.label })}</strong>
+              <small>{t("New panes open with this agent and account without asking.")}</small>
             </span>
           </button>
         </div>

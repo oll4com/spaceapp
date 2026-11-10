@@ -2,7 +2,8 @@ import type {
   GatewayAccount, GatewayAccountDetail, GatewayAccountUpdateRequest, GatewayApiKey, GatewayApiKeyCreateRequest, GatewayApiKeyCreatedResponse,
   GatewayApiKeyDetail, GatewayApiKeyUpdateRequest, GatewayCompressionStats, GatewayDashboard, GatewayDashboardRange, GatewayHealth, GatewayReport,
   GatewayRequestLog, GatewayRequestLogFacets, GatewayRequestLogFilter, GatewayRequestLogList, GatewaySettings, GatewaySettingsUpdateRequest, GatewayStatus,
-  GatewayHeadroomHistory, GatewayHeadroomLifetime, GatewayHeadroomSession, GatewayAnthropicAdminStatus, GatewayAnthropicBillingReport
+  GatewayHeadroomHistory, GatewayHeadroomLifetime, GatewayHeadroomSession, GatewayAnthropicAdminStatus, GatewayAnthropicBillingReport, GatewayApiKeyProvider,
+  GatewayPoolModels, GatewayFreeLedger
 } from "@space/contracts";
 import { api } from "../../api.js";
 import { announceGatewaySettings } from "./gateway-settings-events.js";
@@ -38,7 +39,7 @@ export interface SpaceGatewayClient {
   importAuthJson(authJson: string): Promise<Connected>;
   startClaudeSignIn(): Promise<{ flowId: string; authorizationUrl: string }>;
   antigravityProfiles(): Promise<{ data: Array<{ profileId: string; email: string | null; inGateway: boolean }> }>;
-  addOpenAiApiKey(input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE" | "GOOGLE_AI"; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<Connected>;
+  addOpenAiApiKey(input: { provider?: GatewayApiKeyProvider; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<Connected>;
   importAntigravityProfile(profileId: string): Promise<Connected>;
   completeClaudeSignIn(flowId: string, code: string): Promise<Connected>;
   refreshUsage(accountId: string): Promise<{ status: string }>;
@@ -57,6 +58,10 @@ export interface SpaceGatewayClient {
   syncAnthropicBilling(): Promise<GatewayAnthropicAdminStatus>;
   /** Anthropic's bill for the last `days` UTC days, shown on the Claude API-key account. */
   anthropicBilling?(days: number): Promise<GatewayAnthropicBillingReport>;
+  /** Every key pool's supported models (the API caches the gateway's live lists). */
+  poolModels?(): Promise<GatewayPoolModels>;
+  /** The free-token ledger: per free or granted pool what was granted, spent and is left (nous_msg:d9b67550). */
+  freeLedger?(): Promise<GatewayFreeLedger>;
 }
 
 export const defaultGatewayClient: SpaceGatewayClient = {
@@ -102,7 +107,9 @@ export const defaultGatewayClient: SpaceGatewayClient = {
   saveAnthropicAdminKey: (adminKey) => api.saveGatewayAnthropicAdminKey(adminKey),
   removeAnthropicAdminKey: () => api.removeGatewayAnthropicAdminKey(),
   syncAnthropicBilling: () => api.syncGatewayAnthropicBilling(),
-  anthropicBilling: (days) => api.gatewayAnthropicBilling(days)
+  anthropicBilling: (days) => api.gatewayAnthropicBilling(days),
+  poolModels: () => api.gatewayPoolModels(),
+  freeLedger: () => api.gatewayFreeLedger()
 };
 
 export function errorText(reason: unknown, fallback: string) {

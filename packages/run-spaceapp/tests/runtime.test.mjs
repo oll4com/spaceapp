@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -130,6 +131,9 @@ test("runtime env applies bounded light and standard resource settings without s
   assert.match(standard, /^SPACEAPP_TELEMETRY=false$/m);
   // A config written before 1.1.5 keeps every optional module; new installs start with none.
   assert.match(standard, /^SPACEAPP_OPTIONAL_MODULES=all$/m);
+  // Without the env line the compose file falls back to the code's own default, none (1.2.0, operator 5/11).
+  const compose = readFileSync(new URL("../templates/compose.yml", import.meta.url), "utf8");
+  assert.match(compose, /SPACE_OPTIONAL_MODULES: "\$\{SPACEAPP_OPTIONAL_MODULES:-none\}"/);
   assert.match(renderRuntimeEnv({ ...config, optionalModules: "job-copilot,games" }), /^SPACEAPP_OPTIONAL_MODULES=job-copilot,games$/m);
   assert.throws(() => renderRuntimeEnv({ ...config, optionalModules: "games; rm -rf /" }), /optionalModules/);
   assert.match(standard, /^SPACEAPP_BROWSER_ENABLED=true$/m);
@@ -193,4 +197,12 @@ test("the CLI settings export skips tar when no settings file exists yet (1.1.8:
   await writeFile(join(providers, "codex", "config.toml"), "model = \"x\"\n");
   const listed = execFileSync("sh", ["-c", `${local} | tar -tzf -`], { encoding: "utf8" });
   assert.equal(listed.trim(), "codex/config.toml");
+});
+
+test("only the core gets the pane bridge secret; no other container mounts the secrets folder (1.2.0 review secevt:TGmxc9yQu9y_)", () => {
+  const compose = readFileSync(new URL("../templates/compose.yml", import.meta.url), "utf8");
+  const services = compose.slice(compose.indexOf("services:\n"), compose.search(/^secrets:$/m)).split(/^  (?=[a-z][\w-]*:$)/m).slice(1);
+  const holders = services.filter((block) => block.includes("agent-token-secret")).map((block) => block.split(":")[0]);
+  assert.deepEqual(holders, ["spaceapp-core"]);
+  for (const block of services) assert.doesNotMatch(block, /\.\/secrets(?!\/providers:)/, block.split(":")[0]);
 });

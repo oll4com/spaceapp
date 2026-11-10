@@ -121,7 +121,7 @@ export function registerCouncil(app: FastifyInstance, options: CouncilWiringOpti
             note: cli && !cliModels ? "Runs only on the stable instance." : null };
         });
     },
-    async callModel({ modelId, prompt, role, signal }) {
+    async callModel({ modelId, prompt, role, signal, runId }) {
       const provider = providerForModel(modelId);
       if (provider === "claude" || provider === "antigravity") {
         if (!cliModels) throw new ProviderFailure("error", "Claude and Gemini models run only on the stable instance.");
@@ -132,13 +132,14 @@ export function registerCouncil(app: FastifyInstance, options: CouncilWiringOpti
           effort: provider === "claude" ? "medium" : null,
           claudeProfile,
           prompt,
-          signal
+          signal,
+          traceId: runId
         }), signal));
       }
       const reply = await requestModelText({
         modelId, system: "Follow the instructions in the user message exactly.", user: prompt,
         signal: AbortSignal.any([signal, AbortSignal.timeout(CALL_TIMEOUT_MS)]),
-        maxTokens: role === "coordinator" ? 8_000 : 6_000, reasoningEffort: "medium", timeoutMs: CALL_TIMEOUT_MS
+        maxTokens: role === "coordinator" ? 8_000 : 6_000, reasoningEffort: "medium", timeoutMs: CALL_TIMEOUT_MS, traceId: runId
       });
       return answerText(reply.text);
     },

@@ -87,6 +87,13 @@ export function fakeRepository(): VaultStore & { delegations: unknown[] } {
     getInbox: async (owner: string) => vaults.get(owner)?.inbox ?? null,
     addPending: async (owner: string, input: any) => { pending.push({ owner, ...input }); return true; },
     listPending: async (owner: string) => pending.filter((entry) => entry.owner === owner).map(({ owner: _owner, ...entry }) => entry),
+    setLoginPage: async (owner: string, handle: string, loginPage: string | null) => {
+      const item = items.get(handle);
+      const filed = item?.owner === owner ? (item.record = { ...item.record, metadata: { ...item.record.metadata, loginPage } }, 1) : 0;
+      const waiting = pending.filter((entry) => entry.owner === owner && entry.handle === handle && entry.kind === "NEW_ACCOUNT");
+      for (const entry of waiting) entry.loginPage = loginPage;
+      return filed + waiting.length;
+    },
     deletePending: async (owner: string, id: string) => { const index = pending.findIndex((entry) => entry.owner === owner && entry.id === id); if (index < 0) return false; pending.splice(index, 1); return true; },
     addSignupGrant: async (owner: string, certificate: any) => { if (!vaults.has(owner) || certificate.claims.ownerUserId !== owner) return false; grants.push({ owner, certificate, revokedAt: null }); return true; },
     listSignupGrants: async (owner: string) => grants.filter((grant) => grant.owner === owner && !grant.revokedAt && Date.parse(grant.certificate.claims.expiresAt) > Date.now()).reverse()
@@ -121,7 +128,7 @@ export function fakeRepository(): VaultStore & { delegations: unknown[] } {
   } as VaultStore;
 }
 
-export async function fixture(options: { broker?: VaultBroker } = {}) {
+export async function fixture(options: { broker?: VaultBroker; gatewayAdminService?: Parameters<typeof createApp>[0]["gatewayAdminService"] } = {}) {
   // The test's own connector key: a clean checkout (public CI) has no host key file to seal API keys with.
   const connectorKeyFile = join(mkdtempSync(join(tmpdir(), "vault-connector-")), "space-connector.key");
   writeFileSync(connectorKeyFile, randomBytes(32).toString("hex"), { mode: 0o600 });
@@ -156,7 +163,7 @@ export async function fixture(options: { broker?: VaultBroker } = {}) {
   const repository = fakeRepository();
   const app = await createApp({
     store, config, auth: { sessionSecret, devLogin: true, secureCookies: false },
-    vault: { repository, broker }
+    vault: { repository, broker }, ...(options.gatewayAdminService ? { gatewayAdminService: options.gatewayAdminService } : {})
   });
   const session = async (user: AuthUser) => {
     await store.upsertUser(user);
@@ -186,7 +193,7 @@ export async function itemRecord(owner: string, vaultId: string, id = newVaultHa
   const scope = { ownerUserId: owner, vaultId, keyVersion: 1, itemId: id };
   const dek = vaultRandomBytes(32);
   return {
-    metadata: { id, label: "Synthetic", origins: ["https://example.com"], fieldRoles: ["PASSWORD"], policy: { agentUse: true, approvalMode: "FULL", submitAllowed: true, maxFillsPerHour: 6, acceptedOriginRisks: [] }, status: "ACTIVE", googleAccountId: null, loginKey: null },
+    metadata: { id, label: "Synthetic", origins: ["https://example.com"], fieldRoles: ["PASSWORD"], policy: { agentUse: true, approvalMode: "FULL", submitAllowed: true, maxFillsPerHour: 6, acceptedOriginRisks: [] }, status: "ACTIVE", googleAccountId: null, loginKey: null, loginPage: null },
     keyVersion: 1, history: [], dekEnvelope: await sealVaultEnvelope(vaultRandomBytes(32), dek, { ...scope, purpose: "ITEM_KEY" }),
     fields: { PASSWORD: await sealVaultEnvelope(dek, new TextEncoder().encode(SENTINEL), { ...scope, purpose: "ITEM_FIELD", field: "PASSWORD" }) }
   };

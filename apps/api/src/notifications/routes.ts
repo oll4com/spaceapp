@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { notificationIdSchema, notificationListQuerySchema, pushDeviceRegistrationSchema, pushDeviceRemovalSchema } from "@space/contracts";
+import { acceptLanguages, notificationIdSchema, notificationListQuerySchema, pushDeviceIdSchema, pushDeviceRegistrationSchema, pushDeviceRemovalSchema, pushDeviceTokenSchema } from "@space/contracts";
 import { SpaceNotFoundError } from "@space/runtime";
 import type { NotificationService } from "./service.js";
 
@@ -21,7 +21,7 @@ export function registerNotificationRoutes(app: FastifyInstance, service: Notifi
     const owner = await deps.authenticatedOwner(request);
     const raw = (request.query ?? {}) as Record<string, string | undefined>;
     const query = parseQuery(notificationListQuerySchema, { ...raw, ...(raw.limit !== undefined ? { limit: Number(raw.limit) } : {}) });
-    return { notifications: await service.list(owner, query) };
+    return { notifications: await service.list(owner, query, acceptLanguages(request.headers["accept-language"])) };
   });
 
   app.get("/api/notifications/pending", routeOptions, async (request) => {
@@ -50,6 +50,18 @@ export function registerNotificationRoutes(app: FastifyInstance, service: Notifi
   app.delete("/api/notifications/push-devices", routeOptions, async (request) => {
     const owner = await deps.authenticatedOwner(request);
     return { removed: await service.removePushDevice(owner, parseBody(pushDeviceRemovalSchema, request.body).token) };
+  });
+  // The user's own push devices (Settings › Notifications); a phone sends its token in X-Space-Push-Token to be marked current.
+  app.get("/api/notifications/push-devices", routeOptions, async (request) => {
+    const owner = await deps.authenticatedOwner(request);
+    const current = pushDeviceTokenSchema.safeParse(request.headers["x-space-push-token"]);
+    return await service.listPushDevices(owner, current.success ? current.data : null);
+  });
+  app.delete("/api/notifications/push-devices/:id", routeOptions, async (request) => {
+    const owner = await deps.authenticatedOwner(request);
+    const { id } = parseQuery(z.object({ id: pushDeviceIdSchema }), request.params);
+    if (!await service.removePushDeviceById(owner, id)) throw new SpaceNotFoundError(`Push device ${id} was not found.`);
+    return { removed: true };
   });
 
   // One record by id: what a native notification tap carries back into the app.

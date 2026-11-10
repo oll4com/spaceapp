@@ -9,6 +9,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@space/db": resolve(__dirname, "../../packages/db/src/index.ts"),
+      "@space/contracts/sentry-node": resolve(__dirname, "../../packages/contracts/src/sentry-node.ts"),
       "@space/contracts": resolve(__dirname, "../../packages/contracts/src/index.ts"),
       "@space/opencode-control": resolve(__dirname, "../../packages/opencode-control/src/index.ts"),
       "@space/runtime": resolve(__dirname, "../../packages/runtime/src/index.ts"),

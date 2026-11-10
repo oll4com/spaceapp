@@ -127,9 +127,11 @@ describe("PostgresSpaceStore task history", () => {
     expect((await store.dueTaskSchedules("2026-10-15T10:00:30.000Z", 5))[0]?.schedule).toEqual({
       recurrence: { kind: "INTERVAL", minutes: 120 }, timeZone: "Europe/Athens", nextRunAt: "2026-10-15T10:00:00.000Z", lastRunAt: null, lastOutcome: null
     });
-    expect(await store.claimTaskSchedule(taskRow.id, "2026-10-15T10:00:00.000Z", { nextRunAt: "2026-10-15T12:00:00.000Z", outcome: "Sent.", ran: true })).toBe(true);
+    await store.claimTaskSchedule(taskRow.id, "2026-10-15T10:00:00.000Z", { nextRunAt: "2026-10-15T12:00:00.000Z", outcome: "Sent.", status: "RUNNING", at: "2026-10-15T10:00:10.000Z" });
     const claim = pool.calls.at(-1)!;
+    // The claim and its task run are one statement (plan clipboard:GA__W4qBxSPR).
     expect(claim.sql).toContain("WHERE id = $1 AND next_run_at = $2");
-    expect(claim.values).toEqual([taskRow.id, "2026-10-15T10:00:00.000Z", "2026-10-15T12:00:00.000Z", "Sent.", true]);
+    expect(claim.sql).toContain("INSERT INTO task_runs");
+    expect(claim.values).toEqual([taskRow.id, "2026-10-15T10:00:00.000Z", "2026-10-15T12:00:00.000Z", "Sent.", true, "RUNNING", "2026-10-15T10:00:10.000Z"]);
   });
 });

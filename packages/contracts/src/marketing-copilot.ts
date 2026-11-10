@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { keyCountWithin } from "./record-rules.js";
+import { webUrlWithoutCredentials } from "./link-rules.js";
+import { revisionHasNote } from "./copilot-rules.js";
 
 // Marketing Copilot pane: promotes SpaceApp on the operator's own accounts through the pane's managed
 // browser, with a CLI agent session that plans, writes and (once approved) publishes. Pane metadata holds
@@ -28,7 +31,7 @@ export const marketingChannelSettingsSchema = z.object({
   enabled: z.boolean(),
   /** The highest autonomy this channel allows; the effective level is the lower of this and the pane's. */
   autonomyCap: marketingCopilotAutonomySchema,
-  /** At most `posts` publications per `perDays` days on this channel, whatever the autonomy level. */
+  /** At most `posts` publications per `perDays` days on this channel, whatever the autonomy level; replies are not counted and have no cap. */
   posts: z.number().int().min(0).max(50),
   perDays: z.number().int().min(1).max(90)
 }).strict();
@@ -156,7 +159,8 @@ export type MarketingPostKind = z.infer<typeof marketingPostKindSchema>;
  * DRAFT → IN_REVIEW (the agent asks) → APPROVED (only the operator approves) → PUBLISHING → PUBLISHED | FAILED.
  * REJECTED is final; "revise" sends a reviewed post back to DRAFT with the operator's note.
  */
-export const MARKETING_POST_STATUSES = ["DRAFT", "IN_REVIEW", "APPROVED", "PUBLISHING", "PUBLISHED", "FAILED", "REJECTED"] as const;
+// SUPERSEDED (R24-3): the copilot closed its own post in review that went stale or a newer post replaced, with evidence.
+export const MARKETING_POST_STATUSES = ["DRAFT", "IN_REVIEW", "APPROVED", "PUBLISHING", "PUBLISHED", "FAILED", "REJECTED", "SUPERSEDED"] as const;
 export const marketingPostStatusSchema = z.enum(MARKETING_POST_STATUSES);
 export type MarketingPostStatus = z.infer<typeof marketingPostStatusSchema>;
 /**
@@ -226,7 +230,7 @@ export const marketingPostReviewDecisionSchema = z.object({
   body: z.string().trim().min(1).max(40_000).optional(),
   scheduledAt: isoDateTime.nullable().optional(),
   note: z.string().trim().max(2000).optional()
-}).strict().refine((input) => input.decision !== "revise" || Boolean(input.note), "Tell the copilot what to change.");
+}).strict().refine(...revisionHasNote());
 export type MarketingPostReviewDecision = z.infer<typeof marketingPostReviewDecisionSchema>;
 
 // Memory kinds the copilot keeps: SpaceApp's voice, facts it may claim, who it talks to, each channel's
@@ -268,7 +272,8 @@ export const marketingMemoryQuerySchema = z.object({
   query: z.string().trim().max(500).optional(),
   kinds: z.array(marketingMemoryKindSchema).max(MARKETING_MEMORY_KINDS.length).optional(),
   channel: marketingChannelSchema.optional(),
-  limit: z.coerce.number().int().min(1).max(200).default(50)
+  // Every match when omitted (until 1/11 the best 50, at most 200).
+  limit: z.coerce.number().int().min(1).optional()
 }).strict();
 export type MarketingMemoryQuery = z.infer<typeof marketingMemoryQuerySchema>;
 
@@ -290,7 +295,7 @@ export const marketingEventSchema = z.object({
   type: marketingEventTypeSchema,
   /** Work-item state of a BRIEF the agent still has to handle; null for plain activity. */
   status: z.enum(["PENDING", "TAKEN", "DONE"]).nullable(),
-  message: z.string().min(1).max(1000),
+  message: z.string().min(1),
   payload: z.record(z.string(), z.unknown()),
   createdAt: isoDateTime
 }).strict();
@@ -332,7 +337,7 @@ export type MarketingRun = z.infer<typeof marketingRunSchema>;
 export const marketingPendingItemSchema = z.object({
   kind: z.enum(["REVIEW", "QUESTION", "CAMPAIGN", "RULE"]),
   id: z.string().min(1).max(200),
-  message: z.string().max(1000),
+  message: z.string(),
   payload: z.record(z.string(), z.unknown()),
   createdAt: isoDateTime
 }).strict();
@@ -340,7 +345,7 @@ export type MarketingPendingItem = z.infer<typeof marketingPendingItemSchema>;
 export const marketingRunViewSchema = z.object({
   run: marketingRunSchema.nullable(),
   status: z.enum(["IDLE", "RUNNING", "PAUSED", "STOPPED"]),
-  pending: z.array(marketingPendingItemSchema).max(200),
+  pending: z.array(marketingPendingItemSchema),
   /** Briefs not yet taken plus approved posts that are due. */
   backlog: z.number().int().min(0)
 }).strict();
@@ -349,7 +354,9 @@ export type MarketingRunView = z.infer<typeof marketingRunViewSchema>;
 export const marketingQuestionAskSchema = z.object({
   question: z.string().trim().min(1).max(1000),
   options: z.array(z.string().trim().min(1).max(200)).max(12).optional(),
-  postId: marketingPostIdSchema.optional()
+  postId: marketingPostIdSchema.optional(),
+  /** R13-5: ask even though the copilot's memory showed hits (memoryHits came back first). */
+  afterMemory: z.boolean().optional()
 }).strict();
 export const marketingQuestionAnswerSchema = z.object({ questionId: marketingQuestionIdSchema, answer: z.string().trim().min(1).max(4000) }).strict();
 
@@ -396,7 +403,7 @@ export const MARKETING_CHANNEL_HOSTS: Record<MarketingChannel, readonly string[]
 export function marketingUrlMatchesChannel(raw: string, channelId: MarketingChannel): boolean {
   let url: URL;
   try { url = new URL(raw); } catch { return false; }
-  if (url.protocol !== "https:" || url.username || url.password) return false;
+  if (!webUrlWithoutCredentials(url)) return false;
   const host = url.hostname.toLowerCase();
   return MARKETING_CHANNEL_HOSTS[channelId].some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
 }
@@ -453,7 +460,7 @@ export type MarketingMetric = z.infer<typeof marketingMetricSchema>;
 /** The agent's reading of a published post's engagement (likes, comments, views, upvotes, ...). */
 export const marketingPostMetricsRecordSchema = z.object({
   postId: marketingPostIdSchema,
-  metrics: z.record(z.string().regex(/^[a-z][a-z0-9_]{0,39}$/), z.number().min(0).max(1e12)).refine((value) => Object.keys(value).length > 0 && Object.keys(value).length <= 12, "Report 1 to 12 metrics.")
+  metrics: z.record(z.string().regex(/^[a-z][a-z0-9_]{0,39}$/), z.number().min(0).max(1e12)).refine(...keyCountWithin(1, 12, "Report 1 to 12 metrics."))
 }).strict();
 
 // ---- bookmarks -------------------------------------------------------------------------------------

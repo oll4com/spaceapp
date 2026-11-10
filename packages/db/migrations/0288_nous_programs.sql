@@ -1,0 +1,30 @@
+-- Startup programs and oll4.com funding (operator 3/11 20:09 BKK, plan clipboard:17yLAnH5ZpyF): every program applied to, under its parent,
+-- with status, amounts, dates, mails and whether to apply again; `page` is the Nous page that lists it. Class A: nothing deletes a row.
+CREATE TABLE IF NOT EXISTS nous_programs (
+  owner_user_id text NOT NULL,
+  id text NOT NULL,
+  page text NOT NULL CHECK (page IN ('startup', 'oll4-funding')),
+  parent text NOT NULL,
+  program text NOT NULL,
+  project text,
+  url text,
+  status text NOT NULL CHECK (status IN ('APPROVED', 'REJECTED', 'IN_PROGRESS', 'APPLIED', 'DRAFT', 'NOT_APPLIED', 'EXPIRED', 'CANCELLED')),
+  status_reason text,
+  applied_at timestamptz,
+  decided_at timestamptz,
+  expected_reply_by timestamptz,
+  valid_until timestamptz,
+  amount jsonb,
+  commitments text,
+  account text,
+  contacts text[] NOT NULL DEFAULT '{}',
+  mails jsonb NOT NULL DEFAULT '[]',
+  next_action text,
+  reapply jsonb,
+  sources text[] NOT NULL DEFAULT '{}',
+  notes text,
+  created_at timestamptz NOT NULL,
+  updated_at timestamptz NOT NULL,
+  PRIMARY KEY (owner_user_id, id)
+);
+CREATE INDEX IF NOT EXISTS nous_programs_owner_page ON nous_programs (owner_user_id, page);

@@ -1,5 +1,6 @@
 import { Database, Plus, Compass, ArrowRight } from "../ui-theme/app-icons.js";
 import type { DatabaseConnection } from "@space/contracts";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export interface DatabaseConnectionsOverviewProps {
   connections: DatabaseConnection[];
@@ -18,17 +19,19 @@ export function DatabaseConnectionsOverview({
   onNewConnection,
   onDiscover
 }: DatabaseConnectionsOverviewProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   return (
     <div className="db-overview-tab">
       <div className="db-overview-header">
         <div className="db-overview-info">
           <h2 className="db-overview-title">
             <Database size={20} className="db-overview-icon" />
-            <span>Databases & Connections</span>
+            <span>{t("Databases & Connections")}</span>
           </h2>
           <div className="db-overview-stats">
             <span>
-              <strong>{connections.length}</strong> {connections.length === 1 ? "connection" : "connections"} available
+              <strong>{t(connections.length === 1 ? "{count} connection available" : "{count} connections available", { count: connections.length })}</strong>
             </span>
           </div>
         </div>
@@ -38,18 +41,18 @@ export function DatabaseConnectionsOverview({
         {connections.length === 0 ? (
           <div className="db-overview-empty">
             <Database size={32} style={{ display: "block", margin: "0 auto 12px auto", opacity: 0.5 }} />
-            <div style={{ fontSize: "1rem", fontWeight: 600, marginBottom: 6 }}>No database connections found</div>
+            <div style={{ fontSize: "1rem", fontWeight: 600, marginBottom: 6 }}>{t("No database connections found")}</div>
             <div style={{ fontSize: "0.85rem", color: "var(--modern-muted)", marginBottom: 16 }}>
-              Create a new database connection or discover databases in your project.
+              {t("Create a new database connection or discover databases in your project.")}
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
               <button type="button" className="db-btn db-btn-primary" onClick={onNewConnection}>
                 <Plus size={14} />
-                <span>New Connection</span>
+                <span>{t("New Connection")}</span>
               </button>
               <button type="button" className="db-btn" onClick={onDiscover}>
                 <Compass size={14} />
-                <span>Discover Project Databases</span>
+                <span>{t("Discover Project Databases")}</span>
               </button>
             </div>
           </div>
@@ -61,7 +64,7 @@ export function DatabaseConnectionsOverview({
                 type="button"
                 className="db-overview-card"
                 onClick={() => onSelectConnection(conn)}
-                title={`Connect to ${conn.name}`}
+                title={t("Connect to {name}", { name: conn.name })}
                 style={{ padding: "14px 16px" }}
               >
                 <div className="db-overview-card-header">
@@ -76,8 +79,8 @@ export function DatabaseConnectionsOverview({
                   <span className={`db-tree-node-badge db-badge-${conn.engine.toLowerCase()}`}>
                     {conn.engine}
                   </span>
-                  {conn.isInternal && <span className="db-tree-node-badge db-badge-internal">INTERNAL</span>}
-                  {conn.isReadOnly && <span className="db-tree-node-badge db-badge-readonly">READ ONLY</span>}
+                  {conn.isInternal && <span className="db-tree-node-badge db-badge-internal">{t("INTERNAL")}</span>}
+                  {conn.isReadOnly && <span className="db-tree-node-badge db-badge-readonly">{t("READ ONLY")}</span>}
                 </div>
 
                 <div className="db-overview-card-footer" style={{ marginTop: 8, color: "var(--modern-muted)" }}>
@@ -90,12 +93,12 @@ export function DatabaseConnectionsOverview({
                       flex: 1,
                       textAlign: "left"
                     }}
-                    title={String(conn.database || conn.filename || conn.host || "Local database")}
+                    title={String(conn.database || conn.filename || conn.host || t("Local database"))}
                   >
-                    {conn.database || conn.filename || conn.host || "Local database"}
+                    {conn.database || conn.filename || conn.host || t("Local database")}
                   </span>
                   <span style={{ color: "var(--modern-accent)", fontWeight: 500, flexShrink: 0, whiteSpace: "nowrap", marginLeft: "auto" }}>
-                    Open &rarr;
+                    {t("Open →")}
                   </span>
                 </div>
               </button>

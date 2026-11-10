@@ -1,0 +1,160 @@
+/* Appointments pane (2/11, calendar and look 3/11): a day-grouped list, a week and a month, in the theme's own colours. */
+/* The room theme's colours, as the copilot kit reads them (copilot-pane.css): tints follow the text colour, so light mode works. */
+.appointments-pane {
+  --appt-text-primary: var(--room-text, #e8e6e0); --appt-text-muted: var(--room-muted, #9aa3a0); --appt-border: var(--room-border, rgba(255, 255, 255, 0.1));
+  --appt-accent: var(--room-accent, #6db7aa); --appt-bg-surface: var(--modern-on-accent, #0b1412); --appt-bg-input: var(--room-surface, #121619);
+  --appt-bg-elevated: color-mix(in srgb, var(--appt-text-primary) 4.5%, var(--room-surface, #121619)); --appt-danger: #f08a8a;
+  --appt-kind: var(--appt-accent);
+}
+.appointments-pane { container-type: inline-size; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); height: 100%; min-height: 0; color: var(--appt-text-primary); }
+.appointments-pane svg { width: 1em; height: 1em; flex: none; }
+.appointments-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--appt-border); }
+.appointments-tabs { display: inline-flex; border: 1px solid var(--appt-border); border-radius: 8px; overflow: hidden; }
+/* Three classes: the room theme paints every button (.space-shell[data-room-theme] button) with its surface. */
+.appointments-pane .appointments-tabs button { display: inline-flex; align-items: center; gap: 0.35rem; border: 0; border-radius: 0; }
+.appointments-pane .appointments-tabs button + button { border-left: 1px solid var(--appt-border); }
+.appointments-pane .appointments-tabs button[aria-pressed="true"],
+.appointments-pane .appointments-toolbar button[aria-pressed="true"] { background: var(--appt-accent); color: var(--appt-bg-surface); }
+.appointments-pane .appointments-toolbar .appointments-icon-button { display: inline-grid; place-items: center; padding: 0.35rem; }
+.appointments-zone { flex: 1; font-size: 0.75rem; color: var(--appt-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.appointments-pane button { padding: 0.3rem 0.65rem; border: 1px solid var(--appt-border); border-radius: 8px; background: var(--appt-bg-elevated); color: inherit; font: inherit; font-size: 0.8rem; cursor: pointer; }
+.appointments-pane button:disabled { opacity: 0.55; cursor: default; }
+.appointments-pane .appointments-toolbar .appointments-primary { display: inline-flex; align-items: center; gap: 0.35rem; }
+.appointments-pane :is(.appointments-toolbar, .appointments-form-actions) button.appointments-primary { background: var(--appt-accent); border-color: var(--appt-accent); color: var(--appt-bg-surface); font-weight: 600; }
+.appointments-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.5rem 0.75rem; padding: 0.75rem; border-bottom: 1px solid var(--appt-border); background: var(--appt-bg-elevated); }
+.appointments-form label { display: grid; gap: 0.2rem; font-size: 0.75rem; color: var(--appt-text-muted); }
+.appointments-form .is-wide { grid-column: 1 / -1; }
+.appointments-form :is(input, select, textarea) { padding: 0.35rem 0.5rem; border: 1px solid var(--appt-border); border-radius: 6px; background: var(--appt-bg-input); color: var(--appt-text-primary); font: inherit; font-size: 0.85rem; }
+.appointments-form-actions { display: flex; gap: 0.5rem; }
+.appointments-error { margin: 0; padding: 0.4rem 0.75rem; color: var(--appt-danger, #d64545); font-size: 0.8rem; }
+.appointments-list { min-height: 0; overflow: auto; padding: 0.25rem 0.75rem 0.75rem; }
+.appointments-muted { color: var(--appt-text-muted); font-size: 0.78rem; }
+
+/* Days and cards. */
+.appointments-day h3 { display: flex; align-items: baseline; gap: 0.45rem; margin: 0.85rem 0 0.4rem; font-size: 0.8rem; font-weight: 600; color: var(--appt-text-muted); letter-spacing: 0.02em; }
+.appointments-relative { color: var(--appt-text-primary); font-size: 0.9rem; font-weight: 700; }
+.appointments-day ul { display: grid; gap: 0.45rem; margin: 0; padding: 0; list-style: none; }
+.appointments-item { position: relative; display: grid; grid-template-columns: 2rem 7rem minmax(0, 1fr) auto; gap: 0.7rem; align-items: start; padding: 0.6rem 0.7rem 0.6rem 0.85rem;
+  border: 1px solid var(--appt-border); border-radius: 10px; background: var(--appt-bg-elevated); overflow: hidden; }
+.appointments-item::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--appt-kind); }
+.appointments-item.is-next { border-color: color-mix(in srgb, var(--appt-kind) 55%, var(--appt-border));
+  background: linear-gradient(100deg, color-mix(in srgb, var(--appt-kind) 16%, var(--appt-bg-elevated)), var(--appt-bg-elevated) 70%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--appt-kind) 25%, transparent), 0 6px 18px -10px var(--appt-kind); }
+.appointments-item:is(.is-done, .is-cancelled) { opacity: 0.6; }
+.appointments-item.is-cancelled .appointments-title { text-decoration: line-through; }
+.appointments-icon { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 9px; font-size: 1rem; color: var(--appt-kind);
+  background: color-mix(in srgb, var(--appt-kind) 16%, transparent); }
+.appointments-time { display: grid; gap: 0.1rem; font-variant-numeric: tabular-nums; }
+.appointments-time strong { font-size: 0.92rem; }
+.appointments-time span { font-size: 0.72rem; color: var(--appt-text-muted); }
+.appointments-item.is-next .appointments-countdown { color: var(--appt-kind); font-weight: 700; font-size: 0.8rem; }
+/* An UPCOMING one whose time is over stays listed until completed or cancelled (operator 7/11). */
+.appointments-overdue, .nous-appointments-overdue { font-weight: 700; color: #ef4444; }
+.appointments-time .appointments-overdue { justify-self: start; }
+.appointments-time .appointments-completed { justify-self: start; padding: 0 0.45rem; border-radius: 999px; font-weight: 600; color: var(--appt-bg-surface); background: var(--appt-accent); }
+.appointments-body { display: grid; gap: 0.2rem; min-width: 0; font-size: 0.82rem; overflow-wrap: anywhere; }
+.appointments-heading { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.appointments-title { font-weight: 600; font-size: 0.88rem; }
+.appointments-kind, .appointments-next { display: inline-block; padding: 0 0.45rem; border-radius: 999px; font-size: 0.66rem; font-weight: 600; line-height: 1.5; letter-spacing: 0.02em; }
+.appointments-kind { color: var(--appt-kind); background: color-mix(in srgb, var(--appt-kind) 14%, transparent); }
+.appointments-next { color: var(--appt-bg-surface); background: var(--appt-kind); text-transform: uppercase; }
+/* Format, timing and out-of-hours badges (6/11); also in the Nous card, outside .appointments-pane, so they read their colour from the text. */
+.appointments-badge { display: inline-block; padding: 0 0.45rem; border-radius: 999px; font-size: 0.66rem; font-weight: 600; line-height: 1.5; white-space: nowrap;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent); }
+.appointments-badge.is-flexible { color: var(--appt-accent, #6db7aa); }
+.appointments-badge.is-warning { color: var(--appt-danger, #f08a8a); }
+.appointments-where { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
+.appointments-join { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.15rem 0.6rem; border-radius: 7px; font-size: 0.78rem; font-weight: 600; text-decoration: none;
+  color: var(--appt-bg-surface); background: var(--appt-kind); }
+.appointments-join:hover, .appointments-join:focus-visible { filter: brightness(1.1); }
+.appointments-meta, .appointments-source { color: var(--appt-text-muted); font-size: 0.74rem; }
+.appointments-source { opacity: 0.75; }
+.appointments-notes { display: grid; justify-items: start; gap: 0.1rem; color: var(--appt-text-muted); font-size: 0.78rem; }
+.appointments-notes-text { white-space: pre-line; }
+/* A short note can still wrap past two lines in a narrow pane. Only clip notes that offer More. */
+.appointments-notes.is-collapsible .appointments-notes-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.appointments-notes.is-open .appointments-notes-text { display: block; }
+.appointments-pane .appointments-notes .appointments-link-button { padding: 0; border: 0; background: none; color: var(--appt-accent); font-size: 0.74rem; }
+.appointments-actions { display: flex; gap: 0.35rem; }
+.appointments-empty { display: grid; justify-items: center; gap: 0.35rem; margin: 2.5rem auto; max-width: 22rem; text-align: center; }
+.appointments-empty svg { width: 2.4rem; height: 2.4rem; color: var(--appt-accent); opacity: 0.8; }
+.appointments-empty p { margin: 0; font-weight: 600; }
+
+/* Week and month. */
+.appointments-period { display: flex; align-items: center; gap: 0.35rem; margin: 0.6rem 0; }
+.appointments-period h2 { margin: 0 0 0 0.35rem; font-size: 1rem; font-weight: 700; }
+.appointments-pane .appointments-period .appointments-icon-button { display: inline-grid; place-items: center; padding: 0.3rem; }
+.appointments-week, .appointments-month { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.appointments-weekday { padding: 0 0.3rem 0.15rem; font-size: 0.7rem; font-weight: 600; color: var(--appt-text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.appointments-week-day, .appointments-month-day { position: relative; display: grid; align-content: start; gap: 3px; min-width: 0; padding: 0.3rem;
+  border: 1px solid var(--appt-border); border-radius: 8px; background: var(--appt-bg-elevated); }
+.appointments-week-day { min-height: 9rem; }
+.appointments-month-day { min-height: 5.6rem; }
+.appointments-month-day.is-outside { opacity: 0.45; }
+:is(.appointments-week-day, .appointments-month-day).is-selected { border-color: var(--appt-accent); box-shadow: inset 0 0 0 1px var(--appt-accent); }
+/* The date button fills its cell, so a click anywhere opens the day; the chips sit above it. */
+.appointments-pane :is(.appointments-week-day, .appointments-month-day) .appointments-date { justify-self: start; display: inline-flex; align-items: baseline; gap: 0.3rem;
+  padding: 0.05rem 0.35rem; border: 0; border-radius: 999px; background: none; font-variant-numeric: tabular-nums; font-size: 0.78rem; }
+.appointments-date::after { content: ""; position: absolute; inset: 0; border-radius: 8px; }
+.appointments-date small { color: var(--appt-text-muted); font-size: 0.68rem; text-transform: uppercase; }
+/* The badge sits on the number, not the button: the shell gives buttons a minimum height. */
+.appointments-pane :is(.appointments-week-day, .appointments-month-day).is-today .appointments-date strong { padding: 0 0.35rem; border-radius: 999px;
+  background: var(--appt-accent); color: var(--appt-bg-surface); }
+.appointments-chips { position: relative; z-index: 1; display: grid; gap: 3px; min-width: 0; pointer-events: none; }
+.appointments-pane .appointments-chips .appointments-chip { pointer-events: auto; display: block; width: 100%; padding: 0.1rem 0.35rem; border: 0; border-left: 3px solid var(--appt-kind); border-radius: 5px;
+  background: color-mix(in srgb, var(--appt-kind) 18%, transparent); color: var(--appt-text-primary); font-size: 0.7rem; line-height: 1.35; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.appointments-pane .appointments-chips .appointments-chip:hover { background: color-mix(in srgb, var(--appt-kind) 30%, transparent); }
+.appointments-chip b { font-variant-numeric: tabular-nums; }
+.appointments-chip.is-cancelled { text-decoration: line-through; opacity: 0.6; }
+.appointments-chip.is-done { opacity: 0.6; }
+.appointments-more { padding-left: 0.35rem; font-size: 0.68rem; color: var(--appt-text-muted); }
+.appointments-dots { display: none; gap: 3px; justify-content: center; }
+.appointments-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--appt-kind); }
+.appointments-agenda { margin-top: 0.4rem; padding-top: 0.2rem; border-top: 1px solid var(--appt-border); }
+
+@container (max-width: 40rem) {
+  .appointments-item { grid-template-columns: 2rem minmax(0, 1fr) auto; }
+  .appointments-item .appointments-body { grid-column: 2 / -1; }
+  .appointments-item .appointments-actions { grid-column: 3; grid-row: 1; }
+}
+@container (max-width: 30rem) {
+  .appointments-pane .appointments-tabs button span, .appointments-pane .appointments-toolbar .appointments-primary span { display: none; }
+  /* Two rows: the view tabs with Add, then List's Upcoming/Past with the zone (Week and Month keep the zone on the first). */
+  .appointments-toolbar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; }
+  .appointments-toolbar > .appointments-tabs { justify-self: start; }
+  .appointments-zone { grid-row: 1; grid-column: 2; }
+  .appointments-toolbar .appointments-primary { grid-row: 1; grid-column: 3; }
+  .appointments-tabs + .appointments-tabs { grid-row: 2; grid-column: 1; }
+  .appointments-tabs + .appointments-tabs ~ .appointments-zone { grid-row: 2; grid-column: 2 / -1; }
+  .appointments-item { grid-template-columns: 2rem minmax(0, 1fr); }
+  .appointments-item .appointments-actions { grid-column: 2; grid-row: auto; }
+  /* The week becomes one row a day; the month keeps its grid with a dot per appointment. */
+  .appointments-week { grid-template-columns: minmax(0, 1fr); }
+  .appointments-week-day { min-height: 0; grid-template-columns: 4.5rem minmax(0, 1fr); align-items: start; }
+  .appointments-month-day { min-height: 3rem; justify-items: center; padding: 0.2rem 0; }
+  .appointments-pane .appointments-month-day .appointments-date { justify-self: center; }
+  .appointments-month .appointments-chips { display: none; }
+  .appointments-dots { display: flex; }
+}
+@container (max-width: 20rem) {
+  .appointments-zone-prefix { display: none; }
+}
+
+/* One appointment's whole record over the pane (4/11, nous_msg:a6016259); its row stays short. */
+.appointments-pane { position: relative; }
+.appointments-item { cursor: pointer; }
+.appointments-pane button.appointments-title { padding: 0; border: 0; background: none; text-align: start; font-weight: 600; font-size: 0.88rem; }
+.appointments-pane button.appointments-title:hover { text-decoration: underline; }
+.appointments-detail { position: absolute; inset: 0; z-index: 2; overflow: auto; display: grid; align-content: start; gap: 0.6rem; padding: 0.75rem 1rem 1.25rem;
+  background: var(--room-surface, #121619); }
+.appointments-detail-bar { display: flex; justify-content: space-between; gap: 0.5rem; }
+.appointments-detail-bar button { display: inline-flex; align-items: center; gap: 0.3rem; }
+.appointments-detail h2 { margin: 0; font-size: 1.05rem; }
+.appointments-detail p { margin: 0; }
+.appointments-detail-when { color: var(--appt-text-muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.appointments-detail-sections { display: grid; gap: 0.2rem; margin: 0; font-size: 0.85rem; }
+.appointments-detail-sections dt { margin-top: 0.55rem; color: var(--appt-accent); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.appointments-detail-sections dd { margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
+.appointments-detail a { color: var(--appt-accent); }
+.appointments-detail a.appointments-join { color: var(--appt-bg-surface); }

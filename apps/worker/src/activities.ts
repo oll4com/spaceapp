@@ -1,3 +1,4 @@
+import { claudeTurnUsage, claudeTurnUsageSource, copilotCliTurnUsage, copilotCliTurnUsageSource, deepSeekCliTurnUsage, deepSeekCliTurnUsageSource, geminiCliTurnUsage, geminiCliTurnUsageSource, hermesCliTurnUsage, hermesCliTurnUsageSource, kimiCliTurnUsage, kimiCliTurnUsageSource, openCodeCliTurnUsage, openCodeCliTurnUsageSource, qwenCliTurnUsage, qwenCliTurnUsageSource } from "./cli-turn-usage.js";
 import {
   buildCodexAppServerProcessEnv,
   codexTurnTokenUsage,
@@ -29,6 +30,7 @@ import {
   dummyTurnResultSchema,
   imageArtifactMimeTypeSchema,
   roomAgentVerificationEnvelopeSchema,
+  singleAttemptTurnOutcomeUnknownMessage,
   turnWorkflowResultSchema
 } from "@space/contracts";
 import { PostgresDotsRepository, PostgresSpaceStore } from "@space/db";
@@ -78,6 +80,7 @@ import { noteActivityFailureReason } from "./activity-observability.js";
 import { observeTurnActivity, recordTurnStatePersistenceFailure } from "./turn-observability.js";
 import { dotGatewayDeveloperInstructions, dotGatewayDynamicTools, dotGatewayIdentity, handleDotToolCall, nativeChatThreadConfig } from "./dot-tool-gateway.js";
 import { openCodeTurnUsage, openCodeTurnUsageSource, type OpenCodeTurnUsage } from "./opencode-turn-usage.js";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 let cachedStore: PostgresSpaceStore | null = null;
 
@@ -188,8 +191,17 @@ function measuredTurnUsage(metadata: Record<string, unknown> | undefined, model:
   const turn = metadata?.codexAppServer as { tokenUsage?: CodexTokenTotals; tokenUsageSource?: unknown; tokenUsageModel?: unknown } | undefined;
   const usage = turn?.tokenUsage;
   if (!usage || usage.totalTokens <= 0) return null;
-  const source = turn?.tokenUsageSource === openCodeTurnUsageSource ? openCodeTurnUsageSource : "codex-app-server:thread/tokenUsage/updated";
-  const reportedModel = typeof turn?.tokenUsageModel === "string" ? turn.tokenUsageModel : model;
+  const source = turn?.tokenUsageSource === openCodeCliTurnUsageSource ? openCodeCliTurnUsageSource
+    : turn?.tokenUsageSource === claudeTurnUsageSource ? claudeTurnUsageSource
+    : turn?.tokenUsageSource === geminiCliTurnUsageSource ? geminiCliTurnUsageSource
+    : turn?.tokenUsageSource === qwenCliTurnUsageSource ? qwenCliTurnUsageSource
+    : turn?.tokenUsageSource === deepSeekCliTurnUsageSource ? deepSeekCliTurnUsageSource
+    : turn?.tokenUsageSource === kimiCliTurnUsageSource ? kimiCliTurnUsageSource
+    : turn?.tokenUsageSource === copilotCliTurnUsageSource ? copilotCliTurnUsageSource
+    : turn?.tokenUsageSource === hermesCliTurnUsageSource ? hermesCliTurnUsageSource
+    : turn?.tokenUsageSource === openCodeTurnUsageSource ? openCodeTurnUsageSource : "codex-app-server:thread/tokenUsage/updated";
+  const reportedModel = typeof turn?.tokenUsageModel === "string" ? turn.tokenUsageModel
+    : source === claudeTurnUsageSource || source === openCodeCliTurnUsageSource || source === geminiCliTurnUsageSource || source === qwenCliTurnUsageSource || source === deepSeekCliTurnUsageSource || source === kimiCliTurnUsageSource || source === copilotCliTurnUsageSource || source === hermesCliTurnUsageSource ? null : model;
   return { status: "MEASURED", ...usage, source, observedAt: new Date().toISOString(),
     model: reportedModel && reportedModel.length <= 200 ? reportedModel : null };
 }
@@ -426,17 +438,17 @@ export function getCodexAppServerTurnActivityConfig(env: NodeJS.ProcessEnv = pro
   return {
     enableCodexTurns: env.SPACE_ENABLE_CODEX_TURNS === "true",
     codexAppServerEnabled: env.SPACE_CODEX_APP_SERVER_ENABLED === "true",
-    command: env.SPACE_CODEX_APP_SERVER_COMMAND || "/opt/spaceapp/bin/codex-vscode-parity",
+    command: env.SPACE_CODEX_APP_SERVER_COMMAND || `${SPACE_INSTALL_ROOT}/bin/codex-vscode-parity`,
     transport: env.SPACE_CODEX_APP_SERVER_TRANSPORT || "stdio",
     allowStdioSpawn: env.SPACE_CODEX_APP_SERVER_ALLOW_STDIO_SPAWN === "true",
     allowTurnExecution: env.SPACE_CODEX_APP_SERVER_ALLOW_TURN_EXECUTION === "true",
     cwd: env.SPACE_CODEX_APP_SERVER_CWD || process.cwd(),
-    home: env.SPACE_CODEX_APP_SERVER_HOME || "/var/lib/spaceapp-user/.codex",
+    home: env.SPACE_CODEX_APP_SERVER_HOME || `${SPACE_AGENT_HOME}/.codex`,
     keyFile: env.SPACE_CODEX_APP_SERVER_KEY_FILE || env.SPACE_GATEWAY_KEY_FILE || env.SPACE_CODEX_LB_KEY_FILE || null,
     keyEnv: env.SPACE_CODEX_APP_SERVER_KEY_ENV || "OPENAI_API_KEY",
     model: env.SPACE_CODEX_APP_SERVER_MODEL || null,
     turnTimeoutMs: positiveIntegerEnvMs(env.SPACE_CODEX_APP_SERVER_TURN_TIMEOUT_MS, 240_000),
-    artifactRoot: env.SPACE_ARTIFACT_ROOT || "/opt/spaceapp/var/artifacts",
+    artifactRoot: env.SPACE_ARTIFACT_ROOT || `${SPACE_INSTALL_ROOT}/var/artifacts`,
     browserToolBridgeEnabled: env.SPACE_BROWSER_TOOL_BRIDGE_ENABLED === "true",
     mcpToolBridgeEnabled: env.SPACE_MCP_TOOL_BRIDGE_ENABLED === "true",
     internalApiBaseUrl: env.SPACE_INTERNAL_API_BASE_URL || `http://127.0.0.1:${env.SPACE_API_PORT || "4910"}`,
@@ -468,13 +480,18 @@ async function dotGoalApi(path: "step" | "observe", body: Record<string, unknown
   if (!response.ok) throw new Error(`Dot Goal ${path} returned HTTP ${response.status}.`);
   return { missing: false as const, body: parsed };
 }
-export async function dotGoalStep(goalId: string, fetchImpl?: typeof fetch): Promise<{ state: string; runId: string | null; goalStatus: string }> {
+// A step scheduled before the input became an object (OBS-006) still arrives as the bare Goal id.
+type DotGoalActivityInput = { goalId: string; traceId?: string; traceparent?: string };
+export async function dotGoalStep(input: string | DotGoalActivityInput, fetchImpl?: typeof fetch): Promise<{ state: string; runId: string | null; goalStatus: string }> {
+  const goalId = typeof input === "string" ? input : input.goalId;
   const result = await dotGoalApi("step", { goalId }, fetchImpl);
   if (result.missing) return { state: "DONE", runId: null, goalStatus: "MISSING" };
   const goal = result.body.goal as { status?: string } | undefined;
   return { state: String(result.body.state), runId: typeof result.body.runId === "string" ? result.body.runId : null, goalStatus: goal?.status ?? "UNKNOWN" };
 }
-export async function dotGoalObserve(goalId: string, runId: string, fetchImpl?: typeof fetch): Promise<{ run: string; goalStatus: string }> {
+export async function dotGoalObserve(input: string | (DotGoalActivityInput & { runId: string }), legacyRunId?: string,
+  fetchImpl?: typeof fetch): Promise<{ run: string; goalStatus: string }> {
+  const { goalId, runId } = typeof input === "string" ? { goalId: input, runId: legacyRunId! } : input;
   const result = await dotGoalApi("observe", { goalId, runId }, fetchImpl);
   if (result.missing) return { run: "MISSING", goalStatus: "MISSING" };
   return { run: String(result.body.run), goalStatus: (result.body.goal as { status?: string } | undefined)?.status ?? "UNKNOWN" };
@@ -553,7 +570,7 @@ function buildCodexAppServerTurnEnv(
   baseEnv: NodeJS.ProcessEnv,
   workspace?: string | null
 ): CodexAppServerProcessEnv {
-  const codexHome = resolve(config.home ?? "/var/lib/spaceapp-user/.codex");
+  const codexHome = resolve(config.home ?? `${SPACE_AGENT_HOME}/.codex`);
   const credential = config.keyFile && (!codexHome || basename(codexHome) !== ".codex")
     ? { name: config.keyEnv, value: readFileSync(config.keyFile, "utf8").trim() }
     : null;
@@ -1737,15 +1754,8 @@ function isWorkerAttemptAbort(signal: AbortSignal): boolean {
   return reason === "WORKER_SHUTDOWN" || reason === "TIMED_OUT";
 }
 
-/**
- * CLI chat and OpenCode turns run with maximumAttempts 1 (workflows.ts) because
- * their prompt send is not idempotent, so a worker shutdown or an expired
- * attempt ends the turn for good. The runtime may already have processed the
- * prompt: record an unknown outcome for the operator instead of leaving the run
- * RUNNING or calling it an operator stop. Nothing is retried automatically.
- */
-export const singleAttemptTurnOutcomeUnknownMessage =
-  "The worker stopped during this turn. It is not retried automatically because the prompt may already have been processed; review the conversation and workspace before sending it again.";
+// The message lives in @space/contracts: the supervisor workflow names it on the mission too.
+export { singleAttemptTurnOutcomeUnknownMessage };
 
 async function recordSingleAttemptTurnAborted(input: DummyTurnInput, signal: AbortSignal, operatorStopMessage: string,
   storeOverride?: SpaceStore): Promise<void> {
@@ -2128,7 +2138,7 @@ export interface OpenCodeAgentTurnActivityConfig {
 export function getOpenCodeAgentTurnActivityConfig(env: NodeJS.ProcessEnv = process.env): OpenCodeAgentTurnActivityConfig {
   return {
     enabled: env.SPACE_ENABLE_OPENCODE_TURNS === "true",
-    stateRoot: env.SPACE_OPENCODE_STATE_ROOT || "/var/lib/spaceapp-user/.codex/space-opencode/state",
+    stateRoot: env.SPACE_OPENCODE_STATE_ROOT || `${SPACE_AGENT_HOME}/.codex/space-opencode/state`,
     messageTimeoutMs: positiveIntegerEnvMs(env.SPACE_OPENCODE_MESSAGE_TIMEOUT_MS, 60_000)
   };
 }
@@ -2443,7 +2453,7 @@ class CliAgentTurnOutputLimitError extends Error {
 export function getCliAgentTurnActivityConfig(env: NodeJS.ProcessEnv = process.env): CliAgentTurnActivityConfig {
   return {
     enabled: env.SPACE_ENABLE_CLI_CHAT_TURNS === "true",
-    brokerExecutable: env.SPACE_CLI_VPN_BROKER || "/opt/spaceapp/bin/space-cli-vpn-broker",
+    brokerExecutable: env.SPACE_CLI_VPN_BROKER || `${SPACE_INSTALL_ROOT}/bin/space-cli-vpn-broker`,
     turnTimeoutMs: positiveIntegerEnvMs(env.SPACE_CLI_CHAT_TURN_TIMEOUT_MS, 900_000),
     maxPromptBytes: positiveIntegerEnvMs(env.SPACE_CLI_CHAT_TURN_MAX_PROMPT_BYTES, 32_768),
     maxOutputBytes: positiveIntegerEnvMs(env.SPACE_CLI_CHAT_TURN_MAX_OUTPUT_BYTES, 65_536)
@@ -2522,9 +2532,10 @@ async function runCliAgentTurnImplementation(
     abortSignal?.throwIfAborted();
     const durableRun = await markSpaceAgentRunStarted(parsed, options.completionStore);
     await ensureCliTurnWorkflowRow(parsed, durableRun, options);
-    const text = await executeCliAgentTurnPrompt(runtimeId, parsed, config, abortSignal, options.completionStore);
+    const { text, usage } = await executeCliAgentTurnPrompt(runtimeId, parsed, config, abortSignal, options.completionStore);
     if (abortSignal?.aborted) throw abortSignal.reason;
-    const metadata = { codexAppServer: { agentMessageText: text ?? null, turnStatus: "COMPLETED" } };
+    const metadata = { codexAppServer: { agentMessageText: text ?? null, turnStatus: "COMPLETED",
+      ...(usage ? { tokenUsage: usage.totals, tokenUsageSource: runtimeId === "cli:opencode" ? openCodeCliTurnUsageSource : runtimeId === "cli:gemini" ? geminiCliTurnUsageSource : runtimeId === "cli:qwen" ? qwenCliTurnUsageSource : runtimeId === "cli:deepseek" ? deepSeekCliTurnUsageSource : runtimeId === "cli:kimi" ? kimiCliTurnUsageSource : runtimeId === "cli:copilot" ? copilotCliTurnUsageSource : runtimeId === "cli:hermes" ? hermesCliTurnUsageSource : claudeTurnUsageSource, tokenUsageModel: usage.model } : {}) } };
     if (!text) {
       return recordCliAgentTurnFailure(
         parsed,
@@ -2659,9 +2670,9 @@ async function executeCliAgentTurnPrompt(
   config: CliAgentTurnActivityConfig,
   abortSignal: AbortSignal | undefined,
   storeOverride?: SpaceStore
-): Promise<string | null> {
+): Promise<{ text: string | null; usage: ReturnType<typeof claudeTurnUsage> }> {
   const workspaceDir = await resolveTurnWorkspace(input, storeOverride);
-  const stdout = await runCliAgentTurnProcess(
+  const { stdout, stderr } = await runCliAgentTurnProcess(
     runtimeId,
     input.prompt,
     config,
@@ -2671,7 +2682,11 @@ async function executeCliAgentTurnPrompt(
     workspaceDir
   );
   const text = stdout.trim();
-  return text.length ? text : null;
+  return { text: text.length ? text : null, usage: runtimeId === "cli:claude" ? claudeTurnUsage(stderr)
+    : runtimeId === "cli:opencode" ? openCodeCliTurnUsage(stderr) : runtimeId === "cli:gemini" ? geminiCliTurnUsage(stderr)
+    : runtimeId === "cli:qwen" ? qwenCliTurnUsage(stderr) : runtimeId === "cli:deepseek" ? deepSeekCliTurnUsage(stderr)
+    : runtimeId === "cli:kimi" ? kimiCliTurnUsage(stderr) : runtimeId === "cli:copilot" ? copilotCliTurnUsage(stderr)
+    : runtimeId === "cli:hermes" ? hermesCliTurnUsage(stderr) : null };
 }
 
 function runCliAgentTurnProcess(
@@ -2682,7 +2697,7 @@ function runCliAgentTurnProcess(
   modelId?: string | null,
   reasoningEffort?: string | null,
   workspaceDir?: string | null
-): Promise<string> {
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolvePromise, rejectPromise) => {
     // Workspace and durable-state reads can yield after the activity's first
     // cancellation check. Never start a new side effect for that cancelled turn.
@@ -2715,6 +2730,8 @@ function runCliAgentTurnProcess(
     let stdout = "";
     let stdoutBytes = 0;
     let stderr = "";
+    let stderrTruncated = false;
+    let successfulExit = false;
     let settled = false;
     const settle = (resolve: boolean, error?: Error) => {
       if (settled) return;
@@ -2722,7 +2739,7 @@ function runCliAgentTurnProcess(
       clearTimeout(timer);
       abortSignal?.removeEventListener("abort", onAbort);
       if (resolve) {
-        resolvePromise(stdout);
+        resolvePromise({ stdout, stderr: stderrTruncated || !successfulExit ? "" : stderr });
       } else {
         rejectPromise(error ?? new Error(stderr.slice(0, 500) || "CLI chat turn process failed."));
       }
@@ -2751,10 +2768,12 @@ function runCliAgentTurnProcess(
       stdout += chunk;
     });
     child.stderr.on("data", (chunk: string) => {
+      if (chunk.length > 16_384 - stderr.length) stderrTruncated = true;
       if (stderr.length < 16_384) stderr += chunk.slice(0, 16_384 - stderr.length);
     });
     child.on("error", (error) => settle(false, error));
     child.on("close", (code) => {
+      successfulExit = code === 0;
       if (code === 0 || stdout.trim().length > 0) {
         // Some CLIs print the answer and then exit non-zero for TTY reasons
         // (e.g. deepseek reasonix bubbletea); the produced answer still counts.

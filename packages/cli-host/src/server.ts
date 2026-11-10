@@ -177,6 +177,9 @@ async function handleRequest(
     sendError(socket, isRecord(raw) && typeof raw.requestId === "string" ? raw.requestId : "unknown", error);
     return;
   }
+  const traceId = traceIdOf(request.params.traceId);
+  const startedAt = Date.now();
+  let failure: string | null = null;
   try {
     let result: unknown;
     if (request.method === "ping") {
@@ -258,9 +261,27 @@ async function handleRequest(
     }
     send(socket, { kind: "response", requestId: request.requestId, ok: true, result });
   } catch (error) {
+    failure = error instanceof CliHostError ? error.code : "CLI_HOST_INTERNAL_ERROR";
     sendError(socket, request.requestId, error);
+  } finally {
+    // OBS-001: one line per request the API traced, so GET /api/admin/traces/:traceId reaches the pane host's journal. Ids only.
+    if (traceId) {
+      const identity = isRecord(request.params.identity) ? request.params.identity : {};
+      process.stderr.write(`${JSON.stringify({
+        event: "cli_host_request",
+        method: request.method,
+        traceId,
+        cliSessionId: traceIdOf(identity.cliSessionId),
+        paneId: traceIdOf(identity.paneId),
+        status: failure ? "FAILED" : "OK",
+        ...(failure ? { code: failure } : {}),
+        durationMs: Date.now() - startedAt
+      })}\n`);
+    }
   }
 }
+
+const traceIdOf = (value: unknown): string | null => (typeof value === "string" && /^[A-Za-z0-9:._-]{1,240}$/.test(value) ? value : null);
 
 const cliHostStartedAt = new Date().toISOString();
 const cliHostBuildCommit = readCliHostBuildCommit();
@@ -271,6 +292,8 @@ function readCliHostBuildCommit(): string | null {
   try {
     return execFileSync("git", ["-c", `safe.directory=${process.cwd()}`, "rev-parse", "HEAD"], {
       cwd: process.cwd(),
+      // The host loads /opt/spaceapp/.env; git gets only what it needs, as the API's git children do (EXT-C-F8).
+      env: { PATH: process.env.PATH, HOME: process.env.HOME },
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
     }).trim();

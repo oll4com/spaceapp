@@ -17,6 +17,7 @@ import {
   SpaceConflictError,
   type CanonicalMemoryMutationOptions
 } from "@space/runtime";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 interface MemoryMutationStore {
   getMemoryChangeSet(changeSetId: string): Promise<MemoryChangeSet> | MemoryChangeSet;
@@ -47,7 +48,7 @@ function mutationsEnabled(env: NodeJS.ProcessEnv | Record<string, string | undef
 
 function defaultCoreOptions(env: NodeJS.ProcessEnv | Record<string, string | undefined>): CanonicalMemoryMutationOptions {
   const { indexPath, monthlyPath, lockPath } = resolveCanonicalSpaceMemoryPaths(env);
-  const graphRoot = env.SPACE_MEMORY_GRAPH_ROOT || "/opt/spaceapp/var/memory-graph";
+  const graphRoot = env.SPACE_MEMORY_GRAPH_ROOT || `${SPACE_INSTALL_ROOT}/var/memory-graph`;
   return {
     sources: [
       { path: indexPath, kind: "INDEX" },

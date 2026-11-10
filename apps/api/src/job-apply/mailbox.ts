@@ -1,8 +1,8 @@
 import { promises as dns } from "node:dns";
 import type { JobApplyMailboxConfig } from "@space/contracts";
 
-// The agent never sees the mailbox credential: the API opens IMAP, reads the few
-// recent messages that match, and hands back codes, links or short snippets.
+// The agent never sees the mailbox credential: the API opens IMAP, searches the mailbox for the messages that match, and hands
+// back codes, links or snippets.
 export interface MailboxMessageSummary {
   /** IMAP message UID. */
   uid?: number;
@@ -12,16 +12,22 @@ export interface MailboxMessageSummary {
   subject: string;
   receivedAt: string | null;
   snippet: string;
+  /** A DMARC aggregate or feedback report (`isMailReport`): mail about the domain, from no person. Set only by readers that see the source. */
+  report?: true;
 }
 export interface MailboxSearchFilter {
   fromContains?: string | null;
   subjectContains?: string | null;
   since?: string | null;
+  /** One message by its IMAP UID, any age. */
+  uid?: number | null;
 }
 export interface MailboxReader {
-  recent(filter: MailboxSearchFilter & { limit: number }): Promise<MailboxMessageSummary[]>;
+  recent(filter: MailboxSearchFilter & { /** No limit: every match. */ limit?: number }): Promise<MailboxMessageSummary[]>;
   /** Decoded plain text of the matching messages, newest first (bounded). */
-  texts(filter: MailboxSearchFilter & { limit: number }): Promise<Array<MailboxMessageSummary & { text: string }>>;
+  texts(filter: MailboxSearchFilter & { /** No limit: every match. */ limit?: number }): Promise<Array<MailboxMessageSummary & { text: string }>>;
+  /** Marks the INBOX messages \Seen and moves them to `folder` (created if missing); never deletes. Only the IMAP reader writes. */
+  moveTo?(uids: number[], folder: string): Promise<void>;
   close(): Promise<void>;
 }
 export interface MailboxFactory {
@@ -85,6 +91,18 @@ export function matches(summary: { from: string; subject: string }, filter: Mail
   return true;
 }
 
+/** Who and what a DMARC aggregate report looks like before its attachment is seen: Google's sender, or any "Report domain:" subject. */
+export function isReportSender(summary: { from: string; subject: string }): boolean {
+  return summary.from.trim().toLowerCase() === "noreply-dmarc-support@google.com" || /^\s*report domain:/i.test(summary.subject);
+}
+
+/** A DMARC aggregate report (that sender or subject with its .zip/.gz/.xml file) or a multipart/report feedback report (ARF). */
+export function isMailReport(summary: { from: string; subject: string }, source: string): boolean {
+  const head = (source.split(/\r?\n\r?\n/, 1)[0] ?? "").replace(/\r?\n[ \t]+/g, " ");
+  if (/^content-type:\s*multipart\/report\b[^\n]*\breport-type="?feedback-report/im.test(head)) return true;
+  return isReportSender(summary) && /\bname\*?=\s*"?[^"\r\n;]*\.(?:zip|gz|xml)\b/i.test(source);
+}
+
 /** Gmail's IMAP host resolves to IPv6 first on this host and then times out; connect by A record with SNI. */
 async function resolveImapHost(host: string): Promise<string> {
   if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return host;
@@ -113,15 +131,20 @@ export function createImapMailboxFactory(options: { connectTimeoutMs?: number } 
       });
       await client.connect();
       const lock = await client.getMailboxLock("INBOX");
-      const scan = async <T>(filter: MailboxSearchFilter & { limit: number }, withSource: boolean,
+      const scan = async <T>(filter: MailboxSearchFilter & { /** No limit: every match. */ limit?: number }, withSource: boolean,
         map: (summary: MailboxMessageSummary, source: string) => T): Promise<T[]> => {
         const mailbox = client.mailbox;
         const exists = mailbox && typeof mailbox === "object" ? mailbox.exists : 0;
         if (!exists) return [];
-        // Newest 80 messages are enough for verification codes; `since` narrows further.
+        // The server searches the whole mailbox (until 31/10 only its newest 80 messages were read); the newest `limit` matches are fetched.
         const since = filter.since ? new Date(filter.since) : null;
+        const query = { ...(since ? { since } : {}), ...(filter.fromContains ? { from: filter.fromContains } : {}),
+          ...(filter.subjectContains ? { subject: filter.subjectContains } : {}), ...(filter.uid ? { uid: String(filter.uid) } : {}) };
+        const found = await client.search(Object.keys(query).length ? query : { all: true }, { uid: true });
+        const uids = (Array.isArray(found) ? found : []).sort((left, right) => right - left).slice(0, filter.limit ?? undefined);
+        if (!uids.length) return [];
         const results: Array<{ sortKey: number; value: T }> = [];
-        for await (const message of client.fetch(`${Math.max(1, exists - 79)}:*`, { uid: true, envelope: true, internalDate: true, source: withSource })) {
+        for await (const message of client.fetch(uids.join(","), { uid: true, envelope: true, internalDate: true, source: withSource }, { uid: true })) {
           const envelope = message.envelope;
           const receivedAt = message.internalDate instanceof Date ? message.internalDate.toISOString() : null;
           if (since && receivedAt && new Date(receivedAt) < since) continue;
@@ -134,6 +157,7 @@ export function createImapMailboxFactory(options: { connectTimeoutMs?: number } 
           };
           if (!matches(summary, filter)) continue;
           const source = withSource && message.source ? message.source.toString("utf8") : "";
+          if (source && isMailReport(summary, source)) summary.report = true;
           results.push({ sortKey: message.uid, value: map(summary, source) });
         }
         return results.sort((left, right) => right.sortKey - left.sortKey).slice(0, filter.limit).map((entry) => entry.value);
@@ -141,6 +165,20 @@ export function createImapMailboxFactory(options: { connectTimeoutMs?: number } 
       return {
         recent: (filter) => scan(filter, true, (summary, source) => ({ ...summary, snippet: sourceToText(source).slice(0, 300) })),
         texts: (filter) => scan(filter, true, (summary, source) => ({ ...summary, snippet: sourceToText(source).slice(0, 300), text: `${sourceToText(source)}\n${extractLinks(source).join("\n")}` })),
+        async moveTo(uids, folder) {
+          if (!uids.length) return;
+          const range = uids.join(",");
+          // The namespace prefix is added by imapflow (Plesk's Dovecot: INBOX.DMARC, Maildir .DMARC); a new folder is subscribed so webmail lists it.
+          if ((await client.mailboxCreate(folder))?.created) await client.mailboxSubscribe(folder).catch(() => undefined);
+          await client.messageFlagsAdd(range, ["\\Seen"], { uid: true });
+          if (client.capabilities.has("MOVE")) {
+            if (!await client.messageMove(range, folder, { uid: true })) throw new Error(`IMAP MOVE to ${folder} failed.`);
+            return;
+          }
+          // imapflow's own fallback deletes and expunges even when its COPY failed: copy, check, then only flag (never expunge).
+          if (!await client.messageCopy(range, folder, { uid: true })) throw new Error(`IMAP COPY to ${folder} failed.`);
+          await client.messageFlagsAdd(range, ["\\Deleted"], { uid: true });
+        },
         async close() {
           lock.release();
           await client.logout().catch(() => undefined);

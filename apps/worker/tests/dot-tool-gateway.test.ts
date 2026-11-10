@@ -51,7 +51,7 @@ describe("Dot tool gateway in the worker", () => {
   it("declares three schema-validated native functions and the native dispatcher identity", () => {
     expect(dotGatewayDynamicTools().map((tool) => tool.name)).toEqual(["space_search_tools", "space_describe_tool", "space_call_tool"]);
     expect(nativeChatThreadConfig("/opt/spaceapp/bin/space-mcp-dispatcher.mjs", { codexConfigToml: "" })).toEqual({
-      "mcp_servers.space_dispatcher.command": "/usr/bin/node", "mcp_servers.space_dispatcher.args": ["/opt/spaceapp/bin/space-mcp-dispatcher.mjs"],
+      "mcp_servers.space_dispatcher.command": process.execPath, "mcp_servers.space_dispatcher.args": ["/opt/spaceapp/bin/space-mcp-dispatcher.mjs"],
       "mcp_servers.space_dispatcher.env.SPACE_AGENT_RUNTIME_ID": "native:dot", "shell_environment_policy.set.SPACE_AGENT_RUNTIME_ID": "native:dot" });
     // Installations without the dispatcher never receive a partial server definition.
     expect(nativeChatThreadConfig(null)).toEqual({ "shell_environment_policy.set.SPACE_AGENT_RUNTIME_ID": "native:dot" });

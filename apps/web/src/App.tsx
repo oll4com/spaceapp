@@ -1,5 +1,6 @@
 import { bridgePlanExecutionEvent } from "./features/terminal-pane/plan-execution-events.js";
 import { DOT_CALL_EVENT, OPEN_DOT_SETTINGS_EVENT, readLivePaneDot, writeLivePaneDot, type DotSettingsSection } from "./features/agent-pane/dot-home-events.js";
+import { OPEN_SETTINGS_SECTION_EVENT } from "./features/settings/settings-section-request.js";
 import type { DotSettingsRequest } from "./features/agent-pane/DotsSettingsCard.js";
 import { PANE_TOOLBAR_ACTION_ORDER_STORAGE_KEY_PREFIX, PANE_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY_PREFIX, PaneCard, SHARED_CODEX_TOOLBAR_HIDDEN_STORAGE_KEY, SHARED_CODEX_TOOLBAR_ORDER_STORAGE_KEY, dispatchAgentPaneAction, dispatchTerminalPaneAction, displayPaneTitle } from "./features/pane-card/PaneCard.js";
 export { formatTerminalSessionDebugInfo, formatTerminalSessionClipboardText } from "./features/pane-card/PaneCard.js";
@@ -200,7 +201,9 @@ import { useDockConfirm } from "./features/dock-kit/DockKit.js";
 import type { SideSurface } from "./features/docks/dock-types.js";
 import { sideSurfaceMeta } from "./features/docks/side-surface-meta.js";
 import { useSideSurfaceEffects, useSideSurfaces } from "./features/docks/useSideSurfaces.js";
-import { CompactSideSurfaceDrawer, InlineSideSurface } from "./features/docks/SideSurfaceFrame.js";
+import { CompactSideSurfaceDrawer, DockLoading, InlineSideSurface } from "./features/docks/SideSurfaceFrame.js";
+import { UiText } from "./features/ui-language/UiText.js";
+import { closeOrConfirm } from "./features/marketing-copilot-pane/close-or-confirm.js";
 import { preloadDockModules } from "./features/docks/dock-preloader.js";
 import { usePanesVisibility } from "./features/pane-visibility/use-panes-visibility.js";
 // Evaluated at its old position so the stylesheet order is unchanged; the room toolbar and rail render it.
@@ -261,6 +264,7 @@ import { registerYouTubeBrowseIntent } from "./features/browser-pane/youtube-bro
 import { registerCliResumeIntent } from "./features/terminal-pane/cli-resume-intent.js";
 import { paneRuntimeBlockedReason, roomPaneLimit } from "./pane-runtime-availability.js";
 import type { OnScreenKeyboardInput } from "./features/osk-keyboard/OnScreenKeyboard.js";
+import { routePaneKeyboardInput } from "./features/osk-keyboard/pane-keyboard-input.js";
 import { useVibeMusicMount } from "./features/vibe-music/vibe-music-session.js";
 import { StickyNoteLayer, StickyNoteWindow, useStickyNoteWindows } from "./features/clipboard-dock/StickyNoteWindow.js";
 import { usePaneOpener } from "./features/pane-card/pane-opener.js";
@@ -674,7 +678,7 @@ const LazyMarketingCopilotSettingsCard = lazyWithPreload(() => import("./feature
 const LazyFreelanceCopilotSettingsCard = lazyWithPreload(() => import("./features/freelance-copilot-pane/FreelanceCopilotSettingsCard.js").then((module) => ({ default: module.FreelanceCopilotSettingsCard })), { idle: true });
 const LazyDesignSettingsCard = lazyWithPreload(() => import("./features/design-pane/DesignSettingsCard.js").then((module) => ({ default: module.DesignSettingsCard })), { idle: true });
 const LazyAppStudioSettingsCard = lazyWithPreload(() => import("./features/app-studio-pane/AppStudioSettingsCard.js").then((module) => ({ default: module.AppStudioSettingsCard })), { idle: true }); const LazyVideoSettingsCard = lazyWithPreload(() => import("./features/video-pane/VideoSettingsCard.js").then((module) => ({ default: module.VideoSettingsCard })), { idle: true }); const LazySecurityCopilotSettingsCard = lazyWithPreload(() => import("./features/security-copilot-pane/SecurityCopilotSettingsCard.js").then((module) => ({ default: module.SecurityCopilotSettingsCard })), { idle: true }); const LazyMonitoringCopilotSettingsCard = lazyWithPreload(() => import("./features/monitoring-copilot-pane/MonitoringCopilotSettingsCard.js").then((module) => ({ default: module.MonitoringCopilotSettingsCard })), { idle: true });
-const sideSurfaceLoadingFallback = <div className="dock-muted-text" role="status">Loading panel…</div>;
+const sideSurfaceLoadingFallback = <DockLoading />;
 /** The Settings dock's cards, in the dock's order; their declarations above keep the idle preload order. */
 const agentSettingsCards: AgentSettingsCards = {
   EnvironmentPreset: LazyEnvironmentPresetCard,
@@ -3211,7 +3215,10 @@ export function App() {
     };
     window.addEventListener(DOT_CALL_EVENT, call);
     window.addEventListener(OPEN_DOT_SETTINGS_EVENT, settings);
-    return () => { window.removeEventListener(DOT_CALL_EVENT, call); window.removeEventListener(OPEN_DOT_SETTINGS_EVENT, settings); };
+    // Any surface may open Settings at a section (the Nous dock: its provider and model); the dock opens the section itself.
+    window.addEventListener(OPEN_SETTINGS_SECTION_EVENT, openSettingsSurface);
+    return () => { window.removeEventListener(DOT_CALL_EVENT, call); window.removeEventListener(OPEN_DOT_SETTINGS_EVENT, settings);
+      window.removeEventListener(OPEN_SETTINGS_SECTION_EVENT, openSettingsSurface); };
   });
 
   useEffect(() => {
@@ -3293,7 +3300,7 @@ export function App() {
       for (const roomId of roomIds) removeRoomRuntime(roomId);
     }
     try {
-      const results = await Promise.allSettled(roomIds.map((roomId) => api.deleteRoom(roomId)));
+      const results = await Promise.allSettled(roomIds.map((roomId) => closeOrConfirm((force) => api.deleteRoom(roomId, force))));
       const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
       if (failure) {
         // Only the rooms the server refused come back.
@@ -3587,7 +3594,7 @@ export function App() {
     setPanes((current) => current.filter((pane) => pane.id !== paneId));
     setSelectedPaneId((current) => (current === paneId ? null : current));
     try {
-      await api.closePane(paneId);
+      await closeOrConfirm((force) => api.closePane(paneId, force));
     } catch (err) {
       if (closingPane) {
         setPanes((current) => {
@@ -4005,16 +4012,7 @@ export function App() {
   }
 
   function routeOnScreenKeyboardInput(input: OnScreenKeyboardInput): boolean {
-    if (!activePane) return false;
-    if (activePane.mode === "TERMINAL") {
-      dispatchTerminalPaneAction(activePane.id, { action: "keyboard_input", text: input.terminalData });
-      return true;
-    }
-    if (activePane.mode === "CHAT" && input.text !== null) {
-      dispatchAgentPaneAction(activePane.id, { action: "insert_text", text: input.text });
-      return true;
-    }
-    return false;
+    return routePaneKeyboardInput(activePane, input, { terminal: dispatchTerminalPaneAction, chat: dispatchAgentPaneAction });
   }
 
   useEffect(() => {
@@ -4832,7 +4830,7 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activateRoom, sideSurfaces.openSideSurface]);
   useNotificationBootstrap(startupReady ? auth?.user?.id ?? null : null, navigateToNotification);
-  const nousFocus = useNousFocus({ rooms, panes, selectedRoomId, selectedPaneId, selectRoom, selectPane: setSelectedPaneId, toggleMaximize, restorePane, sideSurfaces });
+  const nousFocus = useNousFocus({ signedIn: Boolean(auth?.isAuthenticated), rooms, panes, selectedRoomId, selectedPaneId, selectRoom, selectPane: setSelectedPaneId, toggleMaximize, restorePane, sideSurfaces });
   const roomToolbarActions = useMemo<IconToolbarAction[]>(
     () => {
       return buildRoomToolbarActions({
@@ -4849,7 +4847,7 @@ export function App() {
         },
         create: {
           isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane,
-          addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane: () => addCopilotPane(MARKETING_COPILOT_KIND), addFreelanceCopilotPane: () => addCopilotPane(FREELANCE_COPILOT_KIND), addDesignPane: () => addCopilotPane(DESIGN_KIND), addAppStudioPane: () => addCopilotPane(APP_STUDIO_KIND), addVideoPane: () => addCopilotPane(VIDEO_KIND), addSecurityCopilotPane: () => addCopilotPane(SECURITY_COPILOT_KIND), addMonitoringCopilotPane: () => addCopilotPane(MONITORING_COPILOT_KIND), addLivePane
+          addDatabasesPane, addAppointmentsPane: async () => { if (selectedRoomId) await addRoomPanes(selectedRoomId, { panes: [{ mode: "APPOINTMENTS" }] }); }, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane: () => addCopilotPane(MARKETING_COPILOT_KIND), addFreelanceCopilotPane: () => addCopilotPane(FREELANCE_COPILOT_KIND), addDesignPane: () => addCopilotPane(DESIGN_KIND), addAppStudioPane: () => addCopilotPane(APP_STUDIO_KIND), addVideoPane: () => addCopilotPane(VIDEO_KIND), addSecurityCopilotPane: () => addCopilotPane(SECURITY_COPILOT_KIND), addMonitoringCopilotPane: () => addCopilotPane(MONITORING_COPILOT_KIND), addLivePane
         },
         tools: { desktopWidgets, openStickyNote, isBrowserFullscreen, snip: snipTool, captureRoomScreen, reloadRoomWindow, vpn: toolbarVpn },
         workspace: {
@@ -5588,7 +5586,8 @@ export function App() {
 
   async function routeClipImage(file: File, target: ClipImageTarget, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    if (!SUPPORTED_CLIP_IMAGE_TYPES.has(file.type.toLowerCase())) {
+    // Snip Tool recordings come without a pane, so they always land in Media Dock.
+    if (!SUPPORTED_CLIP_IMAGE_TYPES.has(file.type.toLowerCase()) && !(file.type === "video/webm" && !target.paneId)) {
       throw new Error("Choose a PNG, JPEG, or WebP image.");
     }
     if (target.paneMode === "TERMINAL" && target.paneId) {
@@ -5877,7 +5876,7 @@ export function App() {
     ) : surface === "shared-chat" ? (
       <LazySharedChatDock canRun={auth?.user?.role === "ADMIN" || auth?.user?.role === "OPERATOR"} />
     ) : surface === "nous" ? (
-      <LazyNousDock canRun={auth?.user?.role === "ADMIN" || auth?.user?.role === "OPERATOR"} />
+      <LazyNousDock canRun={auth?.user?.role === "ADMIN" || auth?.user?.role === "OPERATOR"} isAdmin={auth?.user?.role === "ADMIN"} />
     ) : surface === "clipboard" ? (
       <LazyClipboardDock
         canInsert={activePane?.mode === "CHAT" || activePane?.mode === "TERMINAL"}
@@ -6405,12 +6404,12 @@ export function App() {
         {layerPanes.length === 0 && layerPaneLoadState === "loading" ? (
           <div className="empty-state" role={isInteractive ? "status" : undefined}>
             <img src="/brand/space-launch.svg" alt="" width="88" height="110" />
-            <h3 className="sr-only">Loading panes</h3>
+            <h3 className="sr-only"><UiText text="Loading panes" /></h3>
           </div>
         ) : layerPanes.length === 0 && layerPaneLoadState === "error" ? (
           <div className="empty-state" role={isInteractive ? "alert" : undefined}>
             <Grid2X2 aria-hidden="true" />
-            <h3>Unable to load panes</h3>
+            <h3><UiText text="Unable to load panes" /></h3>
           </div>
         ) : layerPanes.length === 0 ? (
           <div
@@ -6419,29 +6418,29 @@ export function App() {
             aria-label={isInteractive ? "Empty room quick start" : undefined}
           >
             <Grid2X2 aria-hidden="true" />
-            <h3>Start your workspace</h3>
-            <p>Choose a pane to begin working in this room.</p>
+            <h3><UiText text="Start your workspace" /></h3>
+            <p><UiText text="Choose a pane to begin working in this room." /></p>
             <div className="empty-state-actions" aria-label="Quick start" aria-busy={paneCreationPendingMode !== null}>
               <button
                 onClick={() => void addPane("TERMINAL")}
                 disabled={!isInteractive || !selectedRoomId || paneCreationPendingMode !== null || cliPaneCreationPending}
               >
                 {paneCreationPendingMode === "TERMINAL" ? <Loader2 className="spin" aria-hidden="true" /> : <Terminal aria-hidden="true" />}
-                {paneCreationPendingMode === "TERMINAL" ? "Opening CLI…" : "Open CLI"}
+                <UiText text={paneCreationPendingMode === "TERMINAL" ? "Opening CLI…" : "Open CLI"} />
               </button>
               <button
                 onClick={() => void addPane("CHAT")}
                 disabled={!isInteractive || !selectedRoomId || paneCreationPendingMode !== null || cliPaneCreationPending}
               >
                 {paneCreationPendingMode === "CHAT" ? <Loader2 className="spin" aria-hidden="true" /> : <MessageSquare aria-hidden="true" />}
-                {paneCreationPendingMode === "CHAT" ? "Opening Chat…" : "Open Chat"}
+                <UiText text={paneCreationPendingMode === "CHAT" ? "Opening Chat…" : "Open Chat"} />
               </button>
               <button
                 onClick={() => void addPane("BROWSER")}
                 disabled={!isInteractive || !selectedRoomId || paneCreationPendingMode !== null || cliPaneCreationPending}
               >
                 {paneCreationPendingMode === "BROWSER" ? <Loader2 className="spin" aria-hidden="true" /> : <Globe aria-hidden="true" />}
-                {paneCreationPendingMode === "BROWSER" ? "Opening Browser…" : "Open Browser"}
+                <UiText text={paneCreationPendingMode === "BROWSER" ? "Opening Browser…" : "Open Browser"} />
               </button>
             </div>
           </div>
@@ -6680,7 +6679,7 @@ export function App() {
 
   async function closeDetachedPane(paneId: string) {
     try {
-      await api.closePane(paneId);
+      await closeOrConfirm((force) => api.closePane(paneId, force));
       setPanes((current) => current.filter((pane) => pane.id !== paneId));
       refreshToolbarSystemState();
     } catch (err) {

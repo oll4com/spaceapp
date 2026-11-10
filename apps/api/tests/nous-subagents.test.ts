@@ -4,7 +4,7 @@ import { InMemoryNousRepository } from "@space/db";
 import { registerNousMcpRoute, signNousToken } from "../src/nous/mcp.js";
 import { createNousService, NOUS_PERSONA, type NousRunner } from "../src/nous/service.js";
 import { createNousSubagents, NOUS_SUBAGENT_EXCLUDED, nousSubagentTools, type NousSubagentDeps } from "../src/nous/subagents.js";
-import { nousToolDefinitions } from "../src/nous/tools.js";
+import { createNousTools, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
 
 // Plan clipboard:BeaSM1Sle5du (operator request 2026-10-20): Nous runs up to 5 helpers at once through space_subagents.
 const owner = "user:operator";
@@ -32,14 +32,22 @@ function fixture(options: { deadlineIn?: number; load?: "CALM" | "BUSY" | "OVERL
 
 describe("Nous's helpers (space_subagents)", () => {
   it("caps LOW mode at one helper for every turn but a goal turn, which keeps the load cap (operator order 2026-10-27)", async () => {
-    const low = fixture({ tokenMode: "LOW", reason: "INBOX" });
-    expect(await low.subagents.run(owner, turnId, [low.task("a"), low.task("b")])).toEqual({ refused: expect.stringContaining("At most 1 helpers run at once in LOW mode") });
+    const low = fixture({ tokenMode: "LOW", reason: "INBOX", answerMs: 20 });
+    // Over the cap the first that fit start; the rest answer "Not started" for the turn to send again (1.2.0 lab 2/11).
+    const capped = await low.subagents.run(owner, turnId, [low.task("a"), low.task("b")]);
+    expect(low.started).toHaveLength(1);
+    expect((capped as { results: unknown[] }).results).toEqual([expect.objectContaining({ title: "a", status: "RUNNING" }),
+      expect.objectContaining({ title: "b", status: "FAILED", answer: "Not started: At most 1 helpers run at once in LOW mode; send it again when one finishes." })]);
+    expect(await low.subagents.run(owner, turnId, [low.task("c")])).toEqual({ refused: expect.stringContaining("At most 1 helpers run at once in LOW mode; 1 are running") });
+    low.release.forEach((release) => release());
     const goal = fixture({ tokenMode: "LOW", reason: "GOAL", answerMs: 20 });
     const started = await goal.subagents.run(owner, turnId, [goal.task("a"), goal.task("b"), goal.task("c")]);
     expect("refused" in started).toBe(false);
     expect(goal.started).toHaveLength(3);
-    const busy = fixture({ tokenMode: "LOW", reason: "GOAL", load: "BUSY" });
-    expect(await busy.subagents.run(owner, turnId, [busy.task("a"), busy.task("b"), busy.task("c")])).toEqual({ refused: expect.stringContaining("At most 2 helpers run at once while the server is BUSY") });
+    const busy = fixture({ tokenMode: "LOW", reason: "GOAL", load: "BUSY", answerMs: 20 });
+    expect(JSON.stringify(await busy.subagents.run(owner, turnId, [busy.task("a"), busy.task("b"), busy.task("c")]))).toContain("Not started: At most 2 helpers run at once while the server is BUSY");
+    expect(busy.started).toHaveLength(2);
+    busy.release.forEach((release) => release());
     const critical = fixture({ tokenMode: "CRITICAL", reason: "GOAL" });
     expect(await critical.subagents.run(owner, turnId, [critical.task("a")])).toEqual({ refused: expect.stringContaining("CRITICAL") });
     goal.release.forEach((release) => release());
@@ -68,37 +76,65 @@ describe("Nous's helpers (space_subagents)", () => {
     expect(NOUS_PERSONA).toMatch(/You keep the decisions, the operator's cards, memory and notes, the outcome and the final answer/);
   });
 
-  it("runs at most 5 helpers at once per owner and refuses the 6th clearly; 2 while BUSY, none while OVERLOADED", async () => {
+  it("has no count cap while the server is CALM (operator 31/10 16:25 BKK); 2 while BUSY, none while OVERLOADED", async () => {
     const f = fixture();
-    const first = f.subagents.run(owner, turnId, [f.task("Alex"), f.task("Bruno"), f.task("Clara")]);
-    await vi.waitFor(() => expect(f.started).toHaveLength(3));
-    expect(await f.subagents.run(owner, turnId, [f.task("Dino"), f.task("Eva"), f.task("Finn")])).toEqual({
-      refused: "At most 5 helpers run at once; 3 are running and you asked for 3. Wait for them, or send fewer tasks." });
-    const second = f.subagents.run(owner, turnId, [f.task("Dino"), f.task("Eva")]);
-    await vi.waitFor(() => expect(f.started).toHaveLength(5));
-    expect(f.subagents.liveCount(owner)).toBe(5);
-    expect(await f.subagents.run(owner, turnId, [f.task("Gus")])).toEqual({ refused: expect.stringMatching(/^At most 5 helpers run at once; 5 are running/) });
+    const first = f.subagents.run(owner, turnId, [f.task("Alex"), f.task("Bruno"), f.task("Clara"), f.task("Dino"), f.task("Eva"), f.task("Finn")]);
+    await vi.waitFor(() => expect(f.started).toHaveLength(6));
+    const second = f.subagents.run(owner, turnId, [f.task("Gus"), f.task("Hana")]);
+    await vi.waitFor(() => expect(f.started).toHaveLength(8));
+    expect(f.subagents.liveCount(owner)).toBe(8);
     f.release.forEach((answer) => answer());
     const results = [...("results" in (await first) ? (await first as { results: unknown[] }).results : []), ...((await second) as { results: unknown[] }).results];
-    expect(results).toHaveLength(5);
+    expect(results).toHaveLength(8);
     expect(f.subagents.liveCount(owner)).toBe(0);
 
-    const busy = fixture({ load: "BUSY" });
-    expect(await busy.subagents.run(owner, turnId, [busy.task("A"), busy.task("B"), busy.task("C")])).toEqual({ refused: expect.stringMatching(/^At most 2 helpers run at once while the server is BUSY/) });
+    const busy = fixture({ load: "BUSY", answerMs: 20 });
+    expect(((await busy.subagents.run(owner, turnId, [busy.task("A"), busy.task("B"), busy.task("C")])) as { results: Array<{ status: string }> }).results.map((r) => r.status)).toEqual(["RUNNING", "RUNNING", "FAILED"]);
+    busy.release.forEach((release) => release());
     const overloaded = fixture({ load: "OVERLOADED" });
     expect(await overloaded.subagents.run(owner, turnId, [overloaded.task("A")])).toEqual({ refused: expect.stringMatching(/OVERLOADED: no helpers start now/) });
     expect(await f.subagents.run(owner, "nous_turn:other", [f.task("A")])).toEqual({ refused: "Helpers start only from a running Nous turn." });
+  });
+
+  it("returns a helper's whole answer (until 31/10 cut at 6,000; execute pages a long one)", async () => {
+    const long = "finding ".repeat(1_000);
+    const subagents = createNousSubagents({ run: async () => ({ text: long, isError: false }),
+      parent: (who, id) => who === owner && id === turnId ? { deadline: Date.now() + 20 * minute, signal: new AbortController().signal } : null });
+    const outcome = await subagents.run(owner, turnId, [{ title: "Long report", instructions: "Write it all." }]);
+    expect((outcome as { results: Array<{ answer: string }> }).results[0]!.answer).toBe(long.trim());
+  });
+
+  it("keeps a long task title whole (no cap, operator 31/10 16:25 BKK); a task without instructions names the field (queue item 45f)", async () => {
+    const f = fixture({ answerMs: 20 });
+    const tools = createNousTools({ subagents: f.subagents } as unknown as NousToolDeps);
+    const ctx = { owner, turnId, callId: "toolu_1", traceId: "trace:1" };
+    const title = "Check the release train, the lab proof and every pane that joined 1.1.9 tonight please";
+    expect(title).toHaveLength(86);
+    const started = await tools.execute("space_subagents", { tasks: [{ title, instructions: "Read the train." }] }, ctx);
+    expect(started).toMatchObject({ ok: true });
+    expect(started.result).not.toContain("Clipped");
+    expect(f.started[0]!.prompt.split("\n")[0]).toBe(`# Your task from Nous: ${title}`);
+    const refused = await tools.execute("space_subagents", { tasks: [{ title: "Clara" }] }, ctx);
+    expect(refused).toMatchObject({ ok: false, display: "Starting 1 helper(s): invalid tasks.0.instructions (Invalid input: expected string, received undefined)" });
+    f.endParent();
   });
 
   it("caps each helper by the parent's remaining time, and a failed or timed-out helper never fails the others", async () => {
     const f = fixture({ deadlineIn: 5 * minute });
     const running = f.subagents.run(owner, turnId, [f.task("Alex")]);
     await vi.waitFor(() => expect(f.started).toHaveLength(1));
-    // min(10 minutes, 5 minutes left - 1 minute margin)
+    // 5 minutes left - 1 minute margin
     expect(f.started[0]!.timeoutMs).toBeGreaterThan(3.9 * minute);
     expect(f.started[0]!.timeoutMs).toBeLessThanOrEqual(4 * minute);
     f.release[0]!();
     await running;
+    // No 10-minute helper cap any more (operator 31/10 16:25 BKK): 20 minutes left gives the helper 19.
+    const long = fixture({ deadlineIn: 20 * minute });
+    const longRun = long.subagents.run(owner, turnId, [long.task("Alex")]);
+    await vi.waitFor(() => expect(long.started).toHaveLength(1));
+    expect(long.started[0]!.timeoutMs).toBeGreaterThan(18.9 * minute);
+    long.release[0]!();
+    await longRun;
     expect(await fixture({ deadlineIn: 90_000 }).subagents.run(owner, turnId, [f.task("Late")])).toEqual({ refused: expect.stringMatching(/under 2 minutes left/) });
 
     const mixed = fixture({ capMs: 150 });

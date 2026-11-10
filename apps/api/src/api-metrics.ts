@@ -47,3 +47,14 @@ export type RecoveryOutcome = "SCHEDULED" | "SUCCEEDED" | "FAILED";
 export function recordRecoveryEvent(kind: RecoveryKind, outcome: RecoveryOutcome): void {
   recoveryEvents.inc({ kind, outcome });
 }
+
+const nousTurns = apiDomainMetrics.counter(
+  "space_nous_turns_total",
+  "Nous turns by reason and final status (DONE, FAILED, STOPPED, TIMEOUT).",
+  ["reason", "status"]
+);
+
+/** One finished Nous turn (plan clipboard:xkCJ9CeYZq4D Phase 5: the collector charts turns an hour with increase()). */
+export function recordNousTurn(reason: string, status: string): void {
+  nousTurns.inc({ reason, status });
+}

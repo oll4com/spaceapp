@@ -4,6 +4,9 @@ import type { Artifact, BrowserCaptureJob, BrowserCaptureOptions, BrowserFrame, 
 import { BROWSER_PANE_ACTION_EVENT, BrowserPane, queueBrowserHttpInput } from "../src/features/browser-pane/BrowserPane.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
+import { CopilotBrowserControlHint } from "../src/features/copilot-kit/browser-control-hint.js";
+import { OnScreenKeyboard } from "../src/features/osk-keyboard/OnScreenKeyboard.js";
+import { routePaneKeyboardInput } from "../src/features/osk-keyboard/pane-keyboard-input.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -18,6 +21,8 @@ const apiMock = vi.hoisted(() => ({
   browserInput: vi.fn(),
   browserPages: vi.fn(),
   browserAccounts: vi.fn(),
+  browserRoute: vi.fn(),
+  setBrowserRoute: vi.fn(),
   selectBrowserAccount: vi.fn(),
   createPane: vi.fn(),
   setBrowserPageAccount: vi.fn(),
@@ -258,6 +263,25 @@ async function chooseBrowserAction(name: string): Promise<void> {
 }
 
 describe("BrowserPane", () => {
+  it("keeps the pane's network route from the toolbar (operator 31/10 01:00 BKK, plan clipboard:iLvBs5eOMZjF)", async () => {
+    apiMock.browserRoute.mockResolvedValue({ route: "direct" });
+    apiMock.setBrowserRoute.mockResolvedValue({ route: "greece", restarted: true });
+    render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+    await chooseBrowserAction("Network route Research Browser");
+    const group = await within(await screen.findByRole("dialog", { name: "Network route Research Browser" })).findByRole("radiogroup", { name: "Network route" });
+    await waitFor(() => expect(within(group).getByRole("radio", { name: "This server" }).getAttribute("aria-checked")).toBe("true"));
+    fireEvent.click(within(group).getByRole("radio", { name: "Greece WireGuard" }));
+    await waitFor(() => expect(within(group).getByRole("radio", { name: "Greece WireGuard" }).getAttribute("aria-checked")).toBe("true"));
+    expect(apiMock.setBrowserRoute).toHaveBeenCalledWith("pane:browser-proof", "greece");
+    expect(document.querySelector('input[type="checkbox"]')).toBeNull();
+  });
+  it("offers only this server's route on a self-hosted install, which has no VPN routes", async () => {
+    apiMock.browserRoute.mockResolvedValue({ route: "direct", routes: ["direct"] });
+    render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+    await chooseBrowserAction("Network route Research Browser");
+    const group = await within(await screen.findByRole("dialog", { name: "Network route Research Browser" })).findByRole("radiogroup", { name: "Network route" });
+    await waitFor(() => expect(within(group).getAllByRole("radio").map((radio) => radio.textContent)).toEqual(["This server"]));
+  });
   it("opens a mobile browser session with mobile viewport", async () => {
     apiMock.startBrowserSession.mockResolvedValue(sessionResponse({ viewport: "mobile" }));
     render(<BrowserPane pane={browserPane()} agentNumber={4} mobile />);
@@ -268,6 +292,8 @@ describe("BrowserPane", () => {
     vi.useRealTimers();
     MockBrowserWebSocket.reset();
     vi.stubGlobal("WebSocket", MockBrowserWebSocket);
+    // The pane is in front of the operator: Live streams only to a focused window (operator 2/11).
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
     for (const mock of Object.values(apiMock)) {
       if (typeof mock === "function" && "mockReset" in mock) mock.mockReset();
     }
@@ -534,6 +560,43 @@ describe("BrowserPane", () => {
     }
   });
 
+  it.each(["BROWSER", "JOB_APPLY", "MARKETING_COPILOT", "FREELANCE_COPILOT"] as const)("routes on-screen keyboard input to held %s independently of DOM focus", async (mode) => {
+    const pane = browserPane({ mode });
+    apiMock.browserSession.mockResolvedValue(sessionResponse());
+    apiMock.acquireBrowserControl.mockResolvedValue(operatorLease());
+    apiMock.releaseBrowserControl.mockResolvedValue({ lease: { ...operatorLease().lease, status: "RELEASED" } });
+    render(<><BrowserPane pane={pane} agentNumber={4} mobile />
+      <OnScreenKeyboard open mobile roomTheme="graphite" onOpenChange={() => undefined}
+        onInput={input => routePaneKeyboardInput(pane, input, { terminal: vi.fn(), chat: vi.fn() })} /></>);
+    const join = await screen.findByRole("button", { name: "Join browser session Research Browser" });
+    await waitFor(() => expect(join.hasAttribute("disabled")).toBe(false));
+    const tap = (key: string) => {
+      const button = document.querySelector<HTMLButtonElement>(`.osk-key[data-key="${key}"]`)!;
+      button.focus();
+      fireEvent.pointerDown(button); fireEvent.pointerUp(button); fireEvent.click(button);
+    };
+    tap("q");
+    expect(apiMock.acquireBrowserControl).not.toHaveBeenCalled();
+    expect(apiMock.browserInput).not.toHaveBeenCalled();
+    fireEvent.click(join);
+    await screen.findByRole("button", { name: "Release browser control Research Browser" });
+    tap("q");
+    await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalledWith("pane:browser-proof",
+      expect.objectContaining({ type: "KEY", eventType: "char", key: "q", text: "q", leaseId: "browser_lease:operator" })));
+    for (const [id, key] of [["enter", "Enter"], ["backspace", "Backspace"], ["tab", "Tab"], ["arrow-left", "ArrowLeft"], ["arrow-right", "ArrowRight"], ["arrow-up", "ArrowUp"], ["arrow-down", "ArrowDown"], ["escape", "Escape"]]) {
+      apiMock.browserInput.mockClear();
+      tap(id!);
+      await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalledTimes(2));
+      expect(apiMock.browserInput.mock.calls.map(call => [call[1].eventType, call[1].key])).toEqual([["keyDown", key], ["keyUp", key]]);
+    }
+    apiMock.browserInput.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Release browser control Research Browser" }));
+    await screen.findByRole("button", { name: "Join browser session Research Browser" });
+    tap("q");
+    expect(apiMock.browserInput).not.toHaveBeenCalled();
+    expect(apiMock.acquireBrowserControl).toHaveBeenCalledTimes(1);
+  });
+
   it("renews expired browser control before forwarding the next key", async () => {
     apiMock.browserSession.mockResolvedValue(sessionResponse());
     const lease = operatorLease();
@@ -568,6 +631,17 @@ describe("BrowserPane", () => {
     readText.mockRejectedValue(new DOMException("Read permission denied.", "NotAllowedError"));
     fireEvent.click(paste);
     expect(await screen.findByPlaceholderText("Type into page")).toBeTruthy();
+  });
+
+  it("keeps the handoff reason and return action on the copilot browser control icon", async () => {
+    render(<CopilotBrowserControlHint.Provider value={{ reason: "Complete the sign-in" }}>
+      <BrowserPane pane={browserPane({ mode: "JOB_APPLY", title: "Iris" })} agentNumber={4} />
+    </CopilotBrowserControlHint.Provider>);
+    const control = await screen.findByRole("button", { name: "Take control: Complete the sign-in Iris" });
+    expect(control.getAttribute("title")).toBe("Take control: Complete the sign-in");
+    fireEvent.click(control);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Return to agent Iris" })).toBeTruthy());
+    expect(document.querySelector(".jc-handoff-strip")).toBeNull();
   });
 
   it("asks the server again on a copilot's Take control while it already holds the browser, without the text box", async () => {
@@ -833,6 +907,39 @@ describe("BrowserPane", () => {
       expect(screen.queryByText("No open tabs. Use + to open a new tab.")).toBeNull();
       expect(apiMock.startBrowserSession).not.toHaveBeenCalled();
     } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  // 4/11 Sentry billing pane: after the Browser Host restart the view's own start hit the browser limit (503), an agent's
+  // session came up two minutes later, and the view stayed "Offline 0 fps"; Go to pane did not bring it either.
+  function failedOwnStart() {
+    const { before } = tabFixture();
+    apiMock.browserSession.mockRejectedValue(new Error("not found"));
+    apiMock.startBrowserSession.mockRejectedValue(new Error("Browser limit reached: 10 browsers can be open at once. Close another browser pane first."));
+    return sessionResponse({ pages: before.pages, activePageId: before.activePageId });
+  }
+
+  it("follows the browser an agent started after this view's own start failed", async () => {
+    const agent = failedOwnStart();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const view = render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+    try {
+      expect(await screen.findByText(/Browser limit reached/)).toBeTruthy();
+      apiMock.browserSession.mockResolvedValue(agent);
+      await act(() => vi.advanceTimersByTimeAsync(5000));
+      expect(screen.getByRole("tab", { name: "First tab" })).toBeTruthy();
+      expect(screen.queryByText(/Browser limit reached/)).toBeNull();
+      expect(apiMock.startBrowserSession).toHaveBeenCalledTimes(1);
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it("Go to pane shows the page of a session the view does not hold yet", async () => {
+    const agent = failedOwnStart();
+    render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+    await screen.findByText(/Browser limit reached/);
+    apiMock.browserSession.mockResolvedValue(agent);
+    act(() => { window.dispatchEvent(new CustomEvent(BROWSER_PANE_ACTION_EVENT, { detail: { paneId: "pane:browser-proof", action: "show_page", url: "https://example.com/one" } })); });
+    expect(await screen.findByRole("tab", { name: "First tab" })).toBeTruthy();
+    expect(apiMock.createBrowserPage).not.toHaveBeenCalled();
   });
 
   it("shares concurrent browser status discovery across panes", async () => {
@@ -1845,6 +1952,90 @@ describe("BrowserPane", () => {
     } finally {
       visibility.mockRestore();
     }
+  });
+
+  it("closes the frame stream while the pane is in a hidden room or minimized, keeps the last frame, and reconnects when shown", async () => {
+    apiMock.browserSession.mockResolvedValue(streamingSessionResponse());
+    apiMock.browserStreamTicket
+      .mockResolvedValueOnce({ websocket: streamTicket(1) })
+      .mockResolvedValueOnce({ websocket: streamTicket(2) })
+      .mockResolvedValueOnce({ websocket: streamTicket(3) });
+    apiMock.browserStreamWebSocketUrl.mockImplementation((ticket: { token: string }) => `ws://space.test/browser?token=${ticket.token}`);
+    const view = render(<BrowserPane pane={browserPane()} agentNumber={4} isVisible />);
+    await waitFor(() => expect(MockBrowserWebSocket.instances).toHaveLength(1));
+    const first = MockBrowserWebSocket.instances[0]!;
+    await waitFor(() => expect(first.readyState).toBe(MockBrowserWebSocket.OPEN));
+    const canvas = screen.getByRole("img", { name: "Research Browser browser frame" });
+
+    view.rerender(<BrowserPane pane={browserPane()} agentNumber={4} isVisible={false} />);
+    expect(first.readyState).toBe(MockBrowserWebSocket.CLOSED);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(MockBrowserWebSocket.instances).toHaveLength(1);
+    expect(screen.getByRole("img", { name: "Research Browser browser frame" })).toBe(canvas);
+
+    view.rerender(<BrowserPane pane={browserPane()} agentNumber={4} isVisible />);
+    await waitFor(() => expect(MockBrowserWebSocket.instances).toHaveLength(2));
+    expect(MockBrowserWebSocket.instances[1]!.url).toContain("browser-stream-ticket-2-test-value");
+    await waitFor(() => expect(MockBrowserWebSocket.instances[1]!.readyState).toBe(MockBrowserWebSocket.OPEN));
+
+    view.rerender(<BrowserPane pane={{ ...browserPane(), isMinimized: true }} agentNumber={4} isVisible />);
+    expect(MockBrowserWebSocket.instances[1]!.readyState).toBe(MockBrowserWebSocket.CLOSED);
+    view.rerender(<BrowserPane pane={browserPane()} agentNumber={4} isVisible />);
+    await waitFor(() => expect(MockBrowserWebSocket.instances).toHaveLength(3));
+  });
+
+  describe("Live only in front of the operator (operator 2/11)", () => {
+    const page = { pageId: "page:one", kind: "PAGE" as const, title: "First tab", url: "https://example.com/one",
+      isActive: true, openerPageId: null, canGoBack: false, canGoForward: false };
+    const agent = { paneId: "pane:cli", title: "Codex", paneName: "Max", roomId: "room:browser-proof", roomName: "Alex",
+      drivenAt: "2026-11-02T10:00:00.000Z", active: true };
+
+    function streamWith(driver: typeof agent | null) {
+      apiMock.browserSession.mockResolvedValue(streamingSessionResponse());
+      apiMock.browserPages.mockResolvedValue({ sessionId: "browser_session:proof", pages: [page], activePageId: page.pageId, agent: driver });
+      apiMock.browserStreamTicket.mockImplementation(async () => ({ websocket: streamTicket(MockBrowserWebSocket.instances.length + 1) }));
+      apiMock.browserStreamWebSocketUrl.mockImplementation((ticket: { token: string }, mode: string) => `ws://space.test/browser?token=${ticket.token}&mode=${mode}`);
+    }
+    function windowFocus(focused: boolean) {
+      vi.mocked(document.hasFocus).mockReturnValue(focused);
+      act(() => { window.dispatchEvent(new Event(focused ? "focus" : "blur")); });
+    }
+
+    it("stops the frames when the operator looks away from a pane no agent drives, and goes Live when they come back", async () => {
+      streamWith(null);
+      render(<BrowserPane pane={browserPane()} agentNumber={4} isVisible />);
+      await waitFor(() => expect(apiMock.browserPages).toHaveBeenCalled());
+      await waitFor(() => expect(MockBrowserWebSocket.instances).toHaveLength(1));
+      expect(MockBrowserWebSocket.instances[0]!.url).toContain("mode=REALTIME");
+      const canvas = screen.getByRole("img", { name: "Research Browser browser frame" });
+
+      windowFocus(false);
+      await waitFor(() => expect(MockBrowserWebSocket.instances[0]!.readyState).toBe(MockBrowserWebSocket.CLOSED));
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(MockBrowserWebSocket.instances).toHaveLength(1);
+      expect(apiMock.browserFrame).not.toHaveBeenCalled();
+      expect(screen.getByRole("img", { name: "Research Browser browser frame" })).toBe(canvas);
+
+      windowFocus(true);
+      await waitFor(() => expect(MockBrowserWebSocket.instances).toHaveLength(2));
+      expect(MockBrowserWebSocket.instances[1]!.url).toContain("mode=REALTIME");
+    });
+
+    it("streams Preview while an agent drives the pane out of the operator's view, Live once it is in front again", async () => {
+      streamWith(agent);
+      render(<BrowserPane pane={browserPane()} agentNumber={4} isVisible />);
+      await waitFor(() => expect(apiMock.browserPages).toHaveBeenCalled());
+      await waitFor(() => expect(MockBrowserWebSocket.instances.length).toBeGreaterThan(0));
+      expect(MockBrowserWebSocket.instances.at(-1)!.url).toContain("mode=REALTIME");
+
+      windowFocus(false);
+      await waitFor(() => expect(MockBrowserWebSocket.instances.at(-1)!.url).toContain("mode=PREVIEW"));
+      expect(MockBrowserWebSocket.instances.filter((socket) => socket.readyState !== MockBrowserWebSocket.CLOSED)).toHaveLength(1);
+
+      windowFocus(true);
+      await waitFor(() => expect(MockBrowserWebSocket.instances.at(-1)!.url).toContain("mode=REALTIME"));
+      expect(MockBrowserWebSocket.instances.filter((socket) => socket.readyState !== MockBrowserWebSocket.CLOSED)).toHaveLength(1);
+    });
   });
 
   it("fetches a fresh one-time stream ticket before reconnecting and never replays timed-out input through REST", async () => {

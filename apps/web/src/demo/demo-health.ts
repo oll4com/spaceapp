@@ -1,4 +1,5 @@
 import type { SystemHealthSnapshot } from "@space/contracts";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /** Demo-only telemetry. Live health always comes from the authenticated API. */
 export function demoHealthSnapshot(
@@ -56,7 +57,7 @@ export function demoHealthSnapshot(
         unit: "PERCENT",
         value: 61,
         total: 100,
-        detail: "/opt/spaceapp",
+        detail: SPACE_INSTALL_ROOT,
         sampledAt: at,
       },
       {

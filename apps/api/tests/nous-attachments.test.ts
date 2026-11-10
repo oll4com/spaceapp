@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,6 +45,7 @@ async function setup() {
       return message;
     }),
     messages: vi.fn(async (who: string) => messages.filter((message) => message.ownerUserId === who)),
+    messagePage: vi.fn(async (who: string) => ({ messages: messages.filter((message) => message.ownerUserId === who), hasMore: false })),
     clear: vi.fn(async () => { const count = messages.length; messages.length = 0; return count; }),
     turnRunning: () => true,
     callTool: vi.fn()
@@ -148,8 +149,32 @@ describe("Nous attachments", () => {
     expect((await app.inject({ method: "GET", url: `/api/nous/attachments/${image!.id}`, headers: { "x-owner": other } })).statusCode).toBe(404);
   });
 
-  it("rejects a file whose bytes are not its type, removes unsent files, and clears files with the conversation", async () => {
-    const { app, root } = await setup();
+  it("serves a document's text and a PDF inline for the dock's preview (plan clipboard:h90wb7l2Ns7q)", async () => {
+    const { app } = await setup();
+    const [notes, pdf, image] = (await app.inject({ method: "POST", url: "/api/nous/attachments", ...form([
+      { name: "notes.md", type: "text/markdown", data: "# Plan\nShip on Friday." },
+      { name: "report.pdf", type: "application/octet-stream", data: "%PDF-1.4\n%%EOF\n" },
+      { name: "shot.png", type: "image/png", data: png }
+    ]) })).json().attachments as Array<{ id: string; mimeType: string }>;
+    const text = await app.inject({ method: "GET", url: `/api/nous/attachments/${notes!.id}?text=1` });
+    expect(text.statusCode).toBe(200);
+    expect(text.headers["content-type"]).toBe("text/plain; charset=utf-8");
+    expect(text.headers["x-space-preview-truncated"]).toBe("false");
+    expect(text.headers["content-security-policy"]).toMatch(/sandbox/);
+    expect(text.body).toBe("# Plan\nShip on Friday.");
+    // A PDF the browser declared as bytes is still served as a PDF, inline under the sandbox.
+    expect(pdf!.mimeType).toBe("application/pdf");
+    const served = await app.inject({ method: "GET", url: `/api/nous/attachments/${pdf!.id}` });
+    expect(served.headers["content-type"]).toBe("application/pdf");
+    expect(served.headers["content-disposition"]).toMatch(/^inline;/);
+    const none = await app.inject({ method: "GET", url: `/api/nous/attachments/${image!.id}?text=1` });
+    expect(none.statusCode).toBe(415);
+    expect(none.json().error.code).toBe("PREVIEW_UNAVAILABLE");
+    expect((await app.inject({ method: "GET", url: `/api/nous/attachments/${notes!.id}?text=1`, headers: { "x-owner": other } })).statusCode).toBe(404);
+  });
+
+  it("rejects a file whose bytes are not its type, removes unsent files, and keeps sent files when the conversation is cleared", async () => {
+    const { app } = await setup();
     const fake = await app.inject({ method: "POST", url: "/api/nous/attachments", ...form([{ name: "fake.png", type: "image/png", data: "not a png" }]) });
     expect(fake.statusCode).toBe(422);
     expect(fake.json().error.message).toBe("fake.png is not a valid PNG image.");
@@ -166,11 +191,9 @@ describe("Nous attachments", () => {
     expect((await app.inject({ method: "POST", url: "/api/nous/messages", payload: { attachmentIds: [kept!.id] } })).statusCode).toBe(202);
     expect((await app.inject({ method: "DELETE", url: `/api/nous/attachments/${kept!.id}` })).statusCode).toBe(409);
 
+    // Clear conversation hides the messages and deletes nothing (operator 31/10): paging back still shows the file.
     expect((await app.inject({ method: "DELETE", url: "/api/nous/messages" })).statusCode).toBe(200);
-    expect((await app.inject({ method: "GET", url: `/api/nous/attachments/${kept!.id}` })).statusCode).toBe(404);
-    const day = (await readdir(join(root, "nous-uploads", "user_operator")).catch(() => [])).filter((name) => !name.startsWith("."));
-    const left = (await Promise.all(day.map((name) => readdir(join(root, "nous-uploads", "user_operator", name))))).flat();
-    expect(left).toEqual([]);
+    expect((await app.inject({ method: "GET", url: `/api/nous/attachments/${kept!.id}` })).statusCode).toBe(200);
   });
 
   it("sweeps only files never sent: a sent file stays with its conversation (Record Retention Invariant)", async () => {

@@ -1,5 +1,7 @@
 import { SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import type { Event, Pane, PaneBrowserSession, PaneCliSession } from "@space/contracts";
+import type { FastifyRequest } from "fastify";
+import { spaceControlInvokeHeader } from "./space-control-token.js";
 
 /** Native agent sessions run only in open CHAT panes. */
 export function assertAgentPaneCompatible(pane: Pane) {
@@ -28,6 +30,13 @@ export async function getLatestRoomEvent(store: SpaceStore, roomId: string): Pro
 }
 
 export class PaneClosedConflictError extends SpaceConflictError {}
+/** A pane that may not close yet: a Marketing Copilot with approved posts still scheduled (operator rule 9/11). HTTP 409 PANE_HAS_SCHEDULED_POSTS. */
+export class PaneCloseRefusedError extends SpaceConflictError {
+  constructor(message: string, readonly details: Record<string, unknown>) { super(message); }
+}
+/** `?force=true` counts only from the operator's own hands: never an agent's broker or proof session, never Space Control's in-process call. */
+export const operatorForce = (request: FastifyRequest) => (request.query as { force?: unknown } | undefined)?.force === "true"
+  && Boolean(request.user) && !request.user?.brokerScope && !request.sessionPrincipal && request.headers[spaceControlInvokeHeader] === undefined;
 
 // Copilot, Design, App Studio, Video, Security and Monitoring Copilot panes own a CLI agent session (Job, Marketing and Freelance Copilot also a managed browser session).
 const CLI_PANE_MODES: ReadonlyArray<Pane["mode"]> = ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO", "VIDEO", "SECURITY_COPILOT", "MONITORING_COPILOT"];

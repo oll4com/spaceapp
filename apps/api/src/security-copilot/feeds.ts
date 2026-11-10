@@ -18,6 +18,7 @@ export const NEWS_FEEDS: ReadonlyArray<{ name: string; url: string }> = [
   { name: "Proxmox announcements", url: "https://forum.proxmox.com/forums/announcements.7/index.rss" }
 ];
 const USER_AGENT = "SpaceApp-SecurityCopilot/1 (+https://spaceapp.dev)";
+/** Technical: OSV's querybatch takes at most 1,000 queries; longer lists go in several batches. */
 const OSV_BATCH = 1000;
 
 export const defaultFeedFetch: FeedFetch = (url, init) => fetch(url, {
@@ -57,13 +58,19 @@ export function createFeeds(fetchImpl: FeedFetch = defaultFeedFetch, now: () => 
       if (!Array.isArray(body.vulnerabilities)) throw new Error("KEV has no vulnerabilities list.");
       return new Map(body.vulnerabilities.filter((entry) => typeof entry?.cveID === "string").map((entry) => [entry.cveID, entry]));
     },
-    /** CVEs of one product modified in the window (NVD allows 120 days per query); one page of 2000 is plenty for 30 minutes. */
+    /** CVEs of one product modified in the window (NVD allows 120 days per query), every page of NVD's 2,000 (until 31/10 the first page only). */
     async nvdModified(product: keyof typeof PRODUCT_CPE, since: Date, until: Date): Promise<NvdCve[]> {
       const cpe = PRODUCT_CPE[product];
       if (!cpe) return [];
-      const params = new URLSearchParams({ virtualMatchString: cpe, lastModStartDate: since.toISOString(), lastModEndDate: until.toISOString() });
-      const body = await json("NVD", `https://services.nvd.nist.gov/rest/json/cves/2.0?${params}`) as { vulnerabilities?: unknown[] };
-      return (body.vulnerabilities ?? []).map(parseNvdCve).filter((cve): cve is NvdCve => cve !== null);
+      const out: NvdCve[] = [];
+      for (let startIndex = 0; ; ) {
+        const params = new URLSearchParams({ virtualMatchString: cpe, lastModStartDate: since.toISOString(), lastModEndDate: until.toISOString(), startIndex: String(startIndex) });
+        const body = await json("NVD", `https://services.nvd.nist.gov/rest/json/cves/2.0?${params}`) as { vulnerabilities?: unknown[]; totalResults?: number };
+        const page = body.vulnerabilities ?? [];
+        out.push(...page.map(parseNvdCve).filter((cve): cve is NvdCve => cve !== null));
+        startIndex += page.length;
+        if (!page.length || startIndex >= (body.totalResults ?? 0)) return out;
+      }
     },
     async nvdCve(id: string): Promise<NvdCve | null> {
       if (!/^CVE-\d{4}-\d{4,8}$/.test(id)) return null;
@@ -93,14 +100,18 @@ export function createFeeds(fetchImpl: FeedFetch = defaultFeedFetch, now: () => 
     async debianCves(release: string, packages: Array<{ source: string; version: string }>): Promise<Map<string, string[]>> {
       const out = new Map<string, string[]>();
       if (!packages.length || !/^\d+$/.test(release)) return out;
-      const body = await json("OSV", "https://api.osv.dev/v1/querybatch", { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ queries: packages.slice(0, OSV_BATCH).map((pkg) => ({ package: { name: pkg.source, ecosystem: `Debian:${release}` }, version: pkg.version })) }) }) as { results?: Array<{ vulns?: Array<{ id?: string }> }> };
-      (body.results ?? []).forEach((result, index) => {
-        const ids = (result.vulns ?? []).map((vuln) => vuln.id).filter((id): id is string => typeof id === "string");
-        // Debian's OSV ids are DSA-/DLA- advisories and DEBIAN-CVE-* records; the CVE id is inside the latter.
-        const cves = [...new Set(ids.map((id) => /CVE-\d{4}-\d{4,8}/.exec(id)?.[0]).filter((id): id is string => Boolean(id)))];
-        if (cves.length) out.set(packages[index]!.source, cves.slice(0, 40));
-      });
+      // Every package, a batch at a time (until 31/10 the first 1,000 only, the rest never checked); every CVE (until then 40).
+      for (let start = 0; start < packages.length; start += OSV_BATCH) {
+        const batch = packages.slice(start, start + OSV_BATCH);
+        const body = await json("OSV", "https://api.osv.dev/v1/querybatch", { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ queries: batch.map((pkg) => ({ package: { name: pkg.source, ecosystem: `Debian:${release}` }, version: pkg.version })) }) }) as { results?: Array<{ vulns?: Array<{ id?: string }> }> };
+        (body.results ?? []).forEach((result, index) => {
+          const ids = (result.vulns ?? []).map((vuln) => vuln.id).filter((id): id is string => typeof id === "string");
+          // Debian's OSV ids are DSA-/DLA- advisories and DEBIAN-CVE-* records; the CVE id is inside the latter.
+          const cves = [...new Set(ids.map((id) => /CVE-\d{4}-\d{4,8}/.exec(id)?.[0]).filter((id): id is string => Boolean(id)))];
+          if (cves.length) out.set(batch[index]!.source, cves);
+        });
+      }
       return out;
     },
     async internetDb(ip: string): Promise<{ ports: number[]; vulns: string[] }> {

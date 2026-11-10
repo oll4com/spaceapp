@@ -126,8 +126,8 @@ describe("VideoPane", () => {
     fireEvent.click(within(studio).getByRole("button", { name: "Make" }));
     await waitFor(() => expect(apiMock.createVideoRequest).toHaveBeenCalledWith(pane.id, {
       brief: "Three highlights, upbeat", sources: [{ artifactId: source.artifactId }], formatIds: ["youtube-short", "x"],
-      // Greek is Chatterbox-only, so the request names that engine instead of the pane's Kokoro.
-      options: { technique: "scene", transition: "auto", filter: "none", captions: "bold-center", narration: { language: "el", voice: "af_heart", engine: "chatterbox" }, music: { artifactId: music.artifactId } }
+      // Kokoro has no Greek, so the request names Murf, the first engine that speaks it, instead of the pane's Kokoro.
+      options: { technique: "scene", transition: "auto", filter: "none", captions: "bold-center", narration: { language: "el", voice: "af_heart", engine: "murf" }, music: { artifactId: music.artifactId } }
     }));
     expect(await within(studio).findByText("Queued: the editor is working on it.")).toBeTruthy();
   });

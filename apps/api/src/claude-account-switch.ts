@@ -9,7 +9,7 @@ export interface ClaudeAccountSwitchDeps {
   /** Space Control's exact native resume of the pane's task, on the given account profile. */
   resume(pane: Pane, input: { taskId: string; accountProfileId: string | null }, traceId: string): Promise<{ pane: Pane }>;
   ensureReady(pane: Pane, traceId: string, selection?: { accountProfileId: string | null }): Promise<unknown>;
-  interrupt(sessionId: string): Promise<unknown>;
+  interrupt(sessionId: string, traceId: string): Promise<unknown>;
   now(): string;
 }
 
@@ -18,10 +18,12 @@ export interface ClaudeAccountSwitchDeps {
  * shares one transcript store (claude-vscode-parity links projects/ and sessions/; credentials stay per profile), so the CLI
  * restarts on the same conversation. It restarts the CLI, so it runs only at an idle prompt.
  */
-export async function switchClaudePaneAccount(deps: ClaudeAccountSwitchDeps, pane: Pane, session: PaneCliSession, accountProfileId: string | null, traceId: string): Promise<boolean> {
+export async function switchClaudePaneAccount(deps: ClaudeAccountSwitchDeps, pane: Pane, session: PaneCliSession, accountProfileId: string | null, traceId: string,
+  options: { relaunch?: boolean } = {}): Promise<boolean> {
   const target = accountProfileId && accountProfileId !== "main" ? accountProfileId : null;
   if (target && !await deps.store.getCliAccountProfile("cli:claude", target)) throw new SpaceConflictError(`Claude Code account profile "${target}" was not found.`);
-  if ((session.accountProfileId ?? null) === target) return false;
+  // relaunch: the same profile again, so the CLI starts with the wrapper's current launch env (claude-limit-move.ts CLAUDE_LAUNCH_ENV_SINCE).
+  if (!options.relaunch && (session.accountProfileId ?? null) === target) return false;
   const observed = await deps.inspect(pane);
   if (observed.state !== "IDLE") {
     // Cleo/Dana 2026-10-21: a turn at its usage limit stayed RUNNING for hours (background agents and shells), and Esc did not end it.
@@ -33,9 +35,11 @@ export async function switchClaudePaneAccount(deps: ClaudeAccountSwitchDeps, pan
   if (session.cliTaskId && revision?.nativeTaskRef && claudeNativeSessionIdPattern.test(revision.nativeTaskRef)) {
     const resumed = await deps.resume(pane, { taskId: session.cliTaskId, accountProfileId: target }, traceId);
     await deps.ensureReady(resumed.pane, traceId);
+  } else if (options.relaunch) {
+    return false; // a relaunch never trades the conversation for a fresh session
   } else {
     // No written turn yet: a fresh session on the new account (as the pane's own account picker does).
-    await deps.interrupt(session.sessionId);
+    await deps.interrupt(session.sessionId, traceId);
     await deps.store.updatePaneCliSession(session.sessionId, { status: "EXITED", isActive: false, endedAt: deps.now(), statusReason: "Account profile switched" }, traceId);
     await deps.ensureReady(pane, traceId, { accountProfileId: target });
   }

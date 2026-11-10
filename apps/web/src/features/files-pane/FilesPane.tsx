@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import type { Pane, FileItem } from "@space/contracts";
 import { api } from "../../api.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { FileManagerToolbar } from "./FileManagerToolbar.js";
 import { FileFolderTree } from "./FileFolderTree.js";
 import { FileListView } from "./FileListView.js";
@@ -9,6 +10,7 @@ import { FilePreviewModal } from "./FilePreviewModal.js";
 import { FilePermissionsModal } from "./FilePermissionsModal.js";
 import { CreateModal, RenameModal, DeleteModal } from "./FileOperationsModals.js";
 import "./files-pane.css";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export interface FilesPaneProps {
   pane?: Pane;
@@ -19,9 +21,11 @@ export interface FilesPaneProps {
 
 const STORAGE_PATH_KEY = "space.fileManager.lastPath";
 const STORAGE_MODE_KEY = "space.fileManager.mode";
-const DEFAULT_WORKSPACE = "/opt/spaceapp";
+const DEFAULT_WORKSPACE = SPACE_INSTALL_ROOT;
 
 export function FilesPane({ pane, mobile = false, projectPath }: FilesPaneProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const effectiveProjectPath = useMemo(() => {
     return pane?.cwd?.trim() || projectPath?.trim() || null;
   }, [pane?.cwd, projectPath]);
@@ -123,7 +127,7 @@ export function FilesPane({ pane, mobile = false, projectPath }: FilesPaneProps)
       setEntries(res.entries);
       localStorage.setItem(STORAGE_PATH_KEY, res.currentPath);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to load directory";
+      const msg = err instanceof Error ? err.message : t("Failed to load directory");
       if (effectiveMode === "user") {
         try {
           const res = await api.filesList({
@@ -196,7 +200,7 @@ export function FilesPane({ pane, mobile = false, projectPath }: FilesPaneProps)
   function handleModeToggle() {
     if (mode === "user") {
       if (!isAdminCapable) {
-        alert("Admin Mode requires Administrator or Operator privileges.");
+        alert(t("Admin Mode requires Administrator or Operator privileges."));
         return;
       }
       setMode("admin");
@@ -235,7 +239,7 @@ export function FilesPane({ pane, mobile = false, projectPath }: FilesPaneProps)
       await api.filesCreate({ path: target, type: createType, mode });
       void loadDirectory(currentPath);
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to create entry");
+      alert(err instanceof Error ? err.message : t("Failed to create entry"));
     }
   }
 
@@ -247,7 +251,7 @@ export function FilesPane({ pane, mobile = false, projectPath }: FilesPaneProps)
       await api.filesRename({ oldPath: renameTarget.path, newPath, mode });
       void loadDirectory(currentPath);
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to rename entry");
+      alert(err instanceof Error ? err.message : t("Failed to rename entry"));
     }
   }
 
@@ -261,7 +265,7 @@ export function FilesPane({ pane, mobile = false, projectPath }: FilesPaneProps)
       });
       void loadDirectory(currentPath);
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to delete entry");
+      alert(err instanceof Error ? err.message : t("Failed to delete entry"));
     }
   }
 
@@ -295,7 +299,7 @@ export function FilesPane({ pane, mobile = false, projectPath }: FilesPaneProps)
     } catch (err) {
       // Some files may already be saved (UPLOAD_PARTIALLY_SAVED), so the listing is refreshed too.
       void loadDirectory(currentPath);
-      alert(err instanceof Error ? err.message : "Upload failed");
+      alert(err instanceof Error ? err.message : t("Upload failed"));
     }
   }
 

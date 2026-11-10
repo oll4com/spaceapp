@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { Database, Table as TableIcon, Search, ArrowRight } from "../ui-theme/app-icons.js";
 import type { DatabaseCatalog, DatabaseConnection } from "@space/contracts";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export interface DatabaseOverviewTabProps {
   connection: DatabaseConnection;
@@ -19,6 +20,8 @@ export function DatabaseOverviewTab({
   onToggleSidebar,
   onSelectTable
 }: DatabaseOverviewTabProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [search, setSearch] = useState("");
 
   const allTables = useMemo(() => {
@@ -49,11 +52,11 @@ export function DatabaseOverviewTab({
   const filteredTables = useMemo(() => {
     const q = search.toLowerCase().trim();
     if (!q) return allTables;
-    return allTables.filter((t) => t.name.toLowerCase().includes(q) || t.schema.toLowerCase().includes(q));
+    return allTables.filter((tb) => tb.name.toLowerCase().includes(q) || tb.schema.toLowerCase().includes(q));
   }, [allTables, search]);
 
   const totalRowsCount = useMemo(() => {
-    return allTables.reduce((acc, t) => acc + (t.rowCount || 0), 0);
+    return allTables.reduce((acc, tb) => acc + (tb.rowCount || 0), 0);
   }, [allTables]);
 
   return (
@@ -64,8 +67,8 @@ export function DatabaseOverviewTab({
             <span className={`db-tree-node-badge db-badge-${connection.engine.toLowerCase()}`}>
               {connection.engine}
             </span>
-            {connection.isInternal && <span className="db-tree-node-badge db-badge-internal">INTERNAL</span>}
-            {connection.isReadOnly && <span className="db-tree-node-badge db-badge-readonly">READ ONLY</span>}
+            {connection.isInternal && <span className="db-tree-node-badge db-badge-internal">{t("INTERNAL")}</span>}
+            {connection.isReadOnly && <span className="db-tree-node-badge db-badge-readonly">{t("READ ONLY")}</span>}
           </div>
           <h2 className="db-overview-title">
             <Database size={20} className="db-overview-icon" />
@@ -73,17 +76,17 @@ export function DatabaseOverviewTab({
           </h2>
           <div className="db-overview-stats">
             <span>
-              <strong>{allTables.length}</strong> {allTables.length === 1 ? "table" : "tables"}
+              <strong>{t(allTables.length === 1 ? "{count} table" : "{count} tables", { count: allTables.length })}</strong>
             </span>
             <span className="db-overview-dot">•</span>
             <span>
-              <strong>{totalRowsCount.toLocaleString()}</strong> rows
+              <strong>{t("{count} rows", { count: totalRowsCount.toLocaleString() })}</strong>
             </span>
             {connection.database && (
               <>
                 <span className="db-overview-dot">•</span>
                 <span>
-                  Database: <code>{connection.database}</code>
+                  {t("Database: ")}<code>{connection.database}</code>
                 </span>
               </>
             )}
@@ -97,46 +100,46 @@ export function DatabaseOverviewTab({
           <input
             type="text"
             className="db-input db-overview-search-input"
-            placeholder="Search tables..."
+            placeholder={t("Search tables...")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
           {allTables.length > 0 && (
             <span className="db-overview-count-badge">
-              {filteredTables.length} of {allTables.length}
+              {t("{shown} of {total}", { shown: filteredTables.length, total: allTables.length })}
             </span>
           )}
         </div>
 
         {isLoadingCatalog ? (
-          <div className="db-overview-loading">Loading database schema and tables...</div>
+          <div className="db-overview-loading">{t("Loading database schema and tables...")}</div>
         ) : filteredTables.length === 0 ? (
           <div className="db-overview-empty">
-            {allTables.length === 0 ? "No tables found in this database." : "No tables match your search."}
+            {allTables.length === 0 ? t("No tables found in this database.") : t("No tables match your search.")}
           </div>
         ) : (
           <div className="db-overview-grid">
-            {filteredTables.map((t) => (
+            {filteredTables.map((tb) => (
               <button
-                key={`${t.schema}.${t.name}`}
+                key={`${tb.schema}.${tb.name}`}
                 type="button"
                 className="db-overview-card"
-                onClick={() => onSelectTable(t.schema, t.name)}
-                title={`Open table ${t.name}`}
+                onClick={() => onSelectTable(tb.schema, tb.name)}
+                title={t("Open table {name}", { name: tb.name })}
               >
                 <div className="db-overview-card-header">
                   <span className="db-overview-card-name">
                     <TableIcon size={14} />
-                    <strong>{t.name}</strong>
+                    <strong>{tb.name}</strong>
                   </span>
                   <ArrowRight size={13} className="db-overview-card-arrow" />
                 </div>
                 <div className="db-overview-card-footer">
-                  <span className={`db-overview-row-badge ${(t.rowCount ?? 0) > 0 ? "has-data" : "empty"}`}>
-                    {(t.rowCount ?? 0) > 0 ? `${t.rowCount?.toLocaleString()} rows` : "0 rows"}
+                  <span className={`db-overview-row-badge ${(tb.rowCount ?? 0) > 0 ? "has-data" : "empty"}`}>
+                    {(tb.rowCount ?? 0) > 0 ? t("{count} rows", { count: tb.rowCount?.toLocaleString() ?? "" }) : t("0 rows")}
                   </span>
                   <span className="db-overview-col-count">
-                    {t.columnCount} {t.columnCount === 1 ? "col" : "cols"}
+                    {t(tb.columnCount === 1 ? "{count} col" : "{count} cols", { count: tb.columnCount })}
                   </span>
                 </div>
               </button>

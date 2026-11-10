@@ -59,7 +59,7 @@ describe("Space control Gemini quota-gated launch & safe writes", () => {
       { id: "account_unlicensed", status: "UNLICENSED", rem5h: null, remWeekly: null }
     ]);
 
-    let executedActions: any[] = [];
+    const executedActions: any[] = [];
     let deliveredPrompt: string | null = null;
     let boundAccount: string | null = null;
 

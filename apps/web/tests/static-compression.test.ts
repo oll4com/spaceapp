@@ -361,3 +361,27 @@ describe("Space static asset compression", () => {
     expect((await request(unsafe, "/homepage-config.js", "identity")).body.toString()).toContain('"contactEmail":null');
   });
 });
+
+
+describe("Sentry web delivery", () => {
+  it("never serves source maps, including encoded paths and precompressed copies", async () => {
+    const dist = await createDist();
+    for (const name of ["app.js.map", "app.js.map.gz", "app.js.map.br"]) await writeFile(path.join(dist, "assets", name), "private source");
+    const port = await startServer(dist);
+    for (const url of ["/assets/app.js.map", "/assets/app.js.map.gz", "/assets/app.js.map.br", "/assets/app.js%2emap"]) {
+      expect((await request(port, url, "br, gzip")).status).toBe(404);
+    }
+  });
+  it("exposes only opt-in public configuration, never the build token", async () => {
+    const dist = await createDist();
+    await writeFile(path.join(dist, "sentry-build.json"), JSON.stringify({ release: "a".repeat(40) }));
+    const off = await startServer(dist, { SENTRY_DSN_WEB: "", SENTRY_AUTH_TOKEN: "AUTH_SECRET" });
+    expect((await request(off, "/homepage-config.js", "identity")).body.toString()).not.toMatch(/SENTRY|AUTH_SECRET/);
+    const on = await startServer(dist, { SENTRY_DSN_WEB: "https://public@example.com/1", SENTRY_AUTH_TOKEN: "AUTH_SECRET", SPACE_INSTANCE: "dev", SPACE_API_ORIGIN: "http://127.0.0.1:4941" });
+    const body = (await request(on, "/homepage-config.js", "identity")).body.toString();
+    expect(body).toContain('window.__SPACE_SENTRY__=');
+    expect(body).toContain('"environment":"dev"');
+    expect(body).toContain("a".repeat(40));
+    expect(body).not.toContain("AUTH_SECRET");
+  });
+});

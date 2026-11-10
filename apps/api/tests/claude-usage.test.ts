@@ -146,12 +146,12 @@ describe("Claude profile usage reader", () => {
 
   it("reports a missing sign-in without calling Anthropic, and checks an API key profile's key with the free model list only", async () => {
     const root = await profileRoot();
-    await writeProfile(root, "keyed", { apiKey: true });
+    await writeProfile(root, "api", { apiKey: true });
     const fetchImpl = usageFetch(200, { data: [] });
     await expect(readClaudeProfileUsage("absent", { configRoot: root, installationKeyFile: join(root, "missing.key"), fetchImpl, now: () => now }))
       .resolves.toMatchObject({ status: "NOT_CONNECTED", email: null, fiveHourUsedPercent: null, apiKeyVerified: null });
     expect(fetchImpl).not.toHaveBeenCalled();
-    await expect(readClaudeProfileUsage("keyed", { configRoot: root, fetchImpl, now: () => now }))
+    await expect(readClaudeProfileUsage("api", { configRoot: root, installationKeyFile: join(root, "missing.key"), fetchImpl, now: () => now }))
       .resolves.toMatchObject({ status: "API_KEY", weeklyUsedPercent: null, apiKeyVerified: true });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
@@ -190,12 +190,14 @@ describe("Claude profile usage reader", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("finds the installation API key for the api and main accounts only, and checks it with the free model list", async () => {
+  it("finds an API key for the api account only, and checks it with the free model list", async () => {
     const root = await profileRoot();
     const installationKeyFile = join(root, "space-claude.key");
     await writeFile(installationKeyFile, "sk-ant-api-fixture\n");
     await writeProfile(root, "api", { credentials: false });
     await writeProfile(root, "crew", { credentials: false });
+    // main with no sign-in but its last account's name and a key file of its own: still not signed in (the launcher never starts it on a key).
+    await writeProfile(root, "main", { credentials: false, apiKey: true, email: "ntheo@spaceapp.dev" });
     const checks: { url: string; headers: Record<string, string> }[] = [];
     let keyStatus = 200;
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
@@ -205,14 +207,14 @@ describe("Claude profile usage reader", () => {
     const read = (profileId: string, keyFile = installationKeyFile) =>
       readClaudeProfileUsage(profileId, { configRoot: root, installationKeyFile: keyFile, fetchImpl, now: () => now });
     await expect(read("api")).resolves.toMatchObject({ status: "API_KEY", apiKeyVerified: true });
-    await expect(read("main")).resolves.toMatchObject({ status: "API_KEY", apiKeyVerified: true });
+    await expect(read("main")).resolves.toMatchObject({ status: "NOT_CONNECTED", email: "ntheo@spaceapp.dev", apiKeyVerified: null });
     await expect(read("crew")).resolves.toMatchObject({ status: "NOT_CONNECTED", apiKeyVerified: null });
     await expect(read("api", join(root, "missing.key"))).resolves.toMatchObject({ status: "NOT_CONNECTED" });
     // The API account bills its key even when a subscription login is stored next to it.
     await writeProfile(root, "api");
     await expect(read("api")).resolves.toMatchObject({ status: "API_KEY", apiKeyVerified: true });
     // The key only ever goes to Anthropic's free model list, as x-api-key, never as a bearer token or to the usage endpoint.
-    expect(checks).toHaveLength(3);
+    expect(checks).toHaveLength(2);
     for (const check of checks) {
       expect(check.url).toBe("https://api.anthropic.com/v1/models?limit=1");
       expect(check.headers).toMatchObject({ "x-api-key": "sk-ant-api-fixture", "anthropic-version": "2023-06-01" });
@@ -461,6 +463,22 @@ describe("Claude usage account provider", () => {
     expect(list.data[0]).toMatchObject({ email: "crew@spaceapp.dev", plan: "Team · Max 5x" });
     expect(gatewayAccounts).toHaveBeenCalledTimes(1);
     expect(list.data.some((account) => "pool" in account)).toBe(false);
+  });
+
+  it("shows a profile with no sign-in of its own with the gateway's sample of the account it names, still not signed in", async () => {
+    const provider = createClaudeUsageAccountProvider({
+      listProfiles: async () => [{ profileId: "main", displayName: "ntheo" }, { profileId: "solo", displayName: "solo" }],
+      readUsage: async (profileId) => ({ ...idle(profileId === "main" ? "ntheo@spaceapp.dev" : "solo@spaceapp.dev"), status: "NOT_CONNECTED" as const, plan: null }),
+      gatewayAccounts: async () => [record("ntheo", { status: "RATE_LIMITED", blockedUntil: "2026-10-12T02:00:00.000Z",
+        secondaryWindow: window(100, "2026-10-12T02:00:00.000Z") })],
+      now: () => now
+    });
+    const list = await provider();
+    expect(list.data[0]).toMatchObject({ id: "main", status: "NOT_CONNECTED", email: "ntheo@spaceapp.dev", weeklyRemainingPercent: 0,
+      weeklyResetAt: "2026-10-12T02:00:00.000Z", sampledAt: now.toISOString() });
+    expect(list.data[0]).not.toHaveProperty("apiKeyMonth");
+    // An account the gateway does not hold: nothing to show.
+    expect(list.data[1]).toMatchObject({ id: "solo", status: "NOT_CONNECTED", weeklyRemainingPercent: null, fiveHourRemainingPercent: null });
   });
 
   it("reports whether the api profile's key works and whether Space Gateway falls back to a Claude API key", async () => {

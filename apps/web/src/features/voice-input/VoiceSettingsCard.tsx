@@ -4,6 +4,7 @@ import { writeVoiceComposerSettings, type VoiceComposerSettings } from "../../vo
 import { Mic, RefreshCw } from "../ui-theme/app-icons.js";
 import { SettingsActionMenu } from "../settings/SettingsActionMenu.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { browserSpeechLang, browserSpeechSupported } from "./browser-speech.js";
 
 export function VoiceSettingsCard() {
   const voiceInput = useVoiceInput();
@@ -30,8 +31,16 @@ export function VoiceSettingsCard() {
 
   const providerVoiceIds = providerDescriptor?.voices.map((v) => v.id);
   const voiceOptions = providerVoiceIds && providerVoiceIds.length > 0 ? providerVoiceIds : (serverSettings?.voiceOptions ?? ["Aoede"]);
-  const statusLabel = serverSettings?.enabled ? "READY" : "DISABLED";
-  const statusToneValue = serverSettings?.enabled ? "ok" : "warn";
+  const browser = settings.engine === "browser";
+  const browserSupported = browserSpeechSupported();
+  const ready = browser ? browserSupported : Boolean(serverSettings?.enabled);
+  const statusLabel = ready ? "READY" : browser ? "UNAVAILABLE" : "DISABLED";
+  const statusToneValue = ready ? "ok" : "warn";
+  const statusText = !browser
+    ? serverSettings?.statusReason ?? (loading ? "Voice settings loading" : "Voice settings unavailable")
+    : browserSupported
+      ? "Free: this browser's own speech recognition, Greek or English. No Space key, no tokens."
+      : "This browser has no speech recognition: use Chrome, or choose the Space voice relay.";
 
   return (
     <section className="provider-settings-card settings-flat-card voice-settings-card" aria-label="Voice input settings">
@@ -39,7 +48,7 @@ export function VoiceSettingsCard() {
         <Mic aria-hidden="true" />
         <span>
           <strong>Voice input</strong>
-          <small>{serverSettings?.statusReason ?? (loading ? "Voice settings loading" : "Voice settings unavailable")}</small>
+          <small>{statusText}</small>
         </span>
         <div className="settings-flat-heading-actions">
           <span className={`status ${statusToneValue}`}>{statusLabel}</span>
@@ -69,6 +78,14 @@ export function VoiceSettingsCard() {
         checked={settings.enabled}
         onChange={(enabled) => updateVoiceSettings({ enabled })}
       />
+      <label className="settings-flat-row">
+        <span className="settings-flat-row-copy"><strong>Engine</strong><small>The browser is free; the relay bills Space's provider key.</small></span>
+        <select name="voice-input-engine" value={settings.engine} onChange={(event) => updateVoiceSettings({ engine: event.target.value as VoiceComposerSettings["engine"] })}>
+          <option value="browser">Browser speech recognition (free)</option>
+          <option value="relay">Space voice relay (paid)</option>
+        </select>
+      </label>
+      {browser ? null : <>
       <label className="settings-flat-row">
         <span className="settings-flat-row-copy"><strong>Voice provider</strong><small>Live speech engine provider.</small></span>
         <select
@@ -111,8 +128,9 @@ export function VoiceSettingsCard() {
           ))}
         </select>
       </label>
+      </>}
       <label className="settings-flat-row">
-        <span className="settings-flat-row-copy"><strong>Language</strong><small>Transcription language.</small></span>
+        <span className="settings-flat-row-copy"><strong>Language</strong><small>{browser ? "Auto is Greek when your browser lists Greek, else English." : "Transcription language."}</small></span>
         <select name="voice-input-language" value={settings.language} onChange={(event) => updateVoiceSettings({ language: event.target.value as VoiceComposerSettings["language"] })}>
           {languageOptions.map((language) => (
             <option key={language} value={language}>
@@ -128,6 +146,7 @@ export function VoiceSettingsCard() {
           <option value="replace">Replace</option>
         </select>
       </label>
+      {browser ? null : <>
       <SpaceToggle
         className="settings-flat-row settings-flat-toggle-row voice-toggle"
         name="voice-input-prewarm"
@@ -209,7 +228,10 @@ export function VoiceSettingsCard() {
           </div>
         </details>
       </div>
-      <p className="settings-flat-note voice-settings-help">Uses {providerDescriptor?.displayName || currentProvider} {settings.model} ({settings.voice}). Finished speech is submitted immediately.</p>
+      </>}
+      <p className="settings-flat-note voice-settings-help">
+        {browser ? `Uses this browser's speech recognition (${browserSpeechLang(settings.language)}).` : `Uses ${providerDescriptor?.displayName || currentProvider} ${settings.model} (${settings.voice}).`} Finished speech is submitted immediately.
+      </p>
     </section>
   );
 }

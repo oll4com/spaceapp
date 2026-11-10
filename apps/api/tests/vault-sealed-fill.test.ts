@@ -4,7 +4,7 @@ import {
   generateVaultTransportKey, newVaultHandle, openWithVaultPrivateKey, sealToVaultPublicKey, vaultBase64url, vaultRandomBytes, vaultTotp,
   decodeVaultBase32, type VaultUseClaims
 } from "@space/contracts";
-import { readVaultTarget, runSealedFill, type SealedFillBroker, type SealedFillPage } from "../src/vault/sealed-fill.js";
+import { readVaultTarget, runSealedFill, signupField, type SealedFillBroker, type SealedFillPage } from "../src/vault/sealed-fill.js";
 import { VaultBrokerRefusedError } from "../src/vault/broker-client.js";
 
 // Synthetic values only. The page is a real DOM (jsdom) behind a fake CDP: the engine's own fixed scripts run against it,
@@ -74,11 +74,24 @@ const value = (window: Window, id: string) => (window.document.getElementById(id
 const now = new Date("2026-10-17T12:00:00Z");
 
 describe("Vault sealed fill (Browser Host)", () => {
+  it("accepts a broker capability bound to the affiliated GSIS login and still refuses sibling origins", async () => {
+    const origin = "https://login.gsis.gr";
+    const { broker, request, opened } = await harness(["USERNAME", "PASSWORD"], { origin });
+    const allowed = fakePage(LOGIN, { url: `${origin}/mylogin/login.jsp` });
+    expect(await runSealedFill(allowed.page, broker, request("FILL"), now)).toMatchObject({ status: "FILLED", typed: true });
+    expect(value(allowed.window, "pass")).toBe(SECRET);
+    opened.mockClear();
+    for (const url of ["https://other.gsis.gr/login", "https://login.gsis.gr.evil.test/login"]) {
+      expect(await runSealedFill(fakePage(LOGIN, { url }).page, broker, request("FILL"), now)).toMatchObject({ status: "ORIGIN_MISMATCH", reason: "ORIGIN_CHANGED", typed: false });
+    }
+    expect(opened).not.toHaveBeenCalled();
+  });
+
   it("fills username and password at the exact origin and answers only a status", async () => {
     const { page, window, state } = fakePage(LOGIN);
     const { broker, request } = await harness(["USERNAME", "PASSWORD"]);
     const answer = await runSealedFill(page, broker, request("FILL"), now);
-    expect(answer).toEqual({ status: "FILLED", reason: null, sealedGenerated: null, typed: true, document: "loader-2" });
+    expect(answer).toEqual({ status: "FILLED", reason: null, sealedGenerated: null, typed: true, document: "loader-2", fields: { filled: ["USERNAME", "PASSWORD"], disabled: [] } });
     expect(value(window, "user")).toBe("synthetic@example.com");
     expect(value(window, "pass")).toBe(SECRET);
     expect(JSON.stringify(answer)).not.toContain(SECRET);
@@ -98,7 +111,7 @@ describe("Vault sealed fill (Browser Host)", () => {
     expect(await runSealedFill(fakePage(LOGIN).page, broker, { ...request("FILL"), selector: "#pass" }, now)).toMatchObject({ reason: "BAD_REQUEST" });
     expect(opened).not.toHaveBeenCalled();
     // A shared Chrome or a second tab no longer refuses (operator decision 2026-10-18): the API fences the filled browser instead.
-    expect(await readVaultTarget(fakePage(LOGIN).page)).toEqual({ eligible: true, reason: null, targetId: "target-1", frameId: "frame-1", origin: ORIGIN, document: "loader-1", freshDocument: true });
+    expect(await readVaultTarget(fakePage(LOGIN).page)).toEqual({ eligible: true, reason: null, targetId: "target-1", frameId: "frame-1", origin: ORIGIN, document: "loader-1", freshDocument: true, generatePolicy: true });
   });
 
   it("stops and clears what it typed when the page navigates away in the middle", async () => {
@@ -145,7 +158,7 @@ describe("Vault sealed fill (Browser Host)", () => {
     const kept = fakePage(LOGIN);
     const { broker, request } = await harness(["PASSWORD"]);
     const answer = await runSealedFill(kept.page, broker, { ...request("FILL"), freshDocument: false }, now);
-    expect(answer).toEqual({ status: "FILLED", reason: null, sealedGenerated: null, typed: true, document: "loader-1" });
+    expect(answer).toEqual({ status: "FILLED", reason: null, sealedGenerated: null, typed: true, document: "loader-1", fields: { filled: ["PASSWORD"], disabled: [] } });
     expect(kept.state.sent).not.toContain("Page.reload");
     expect(value(kept.window, "pass")).toBe(SECRET);
     // Without the field the reason says whether a reload came first: the agent then redoes the steps without scripting the page.
@@ -164,6 +177,23 @@ describe("Vault sealed fill (Browser Host)", () => {
     expect(value(window, "user")).toBe("");
     // Nothing typed yet: a missing field stops with typed false.
     expect(await runSealedFill(fakePage("<form><input id=x></form>").page, broker, request("FILL"), now)).toMatchObject({ reason: "FIELD_NOT_FOUND_AFTER_RELOAD", typed: false });
+  });
+
+  it("fills a login secret kept in a text field named for it when the page has no password field (timologio SubscriptionKey), and only one", async () => {
+    const timologio = '<form><input id="UserName" name="UserName" type="text"><input id="VatNumber" name="VatNumber" type="text"><input id="SubscriptionKey" name="SubscriptionKey" type="text"><button>Login</button></form>';
+    const { broker, request } = await harness(["USERNAME", "PASSWORD"]);
+    const filled = fakePage(timologio);
+    expect(await runSealedFill(filled.page, broker, request("FILL"), now)).toMatchObject({ status: "FILLED", typed: true });
+    expect(value(filled.window, "UserName")).toBe("synthetic@example.com");
+    expect(value(filled.window, "SubscriptionKey")).toBe(SECRET);
+    expect(value(filled.window, "VatNumber")).toBe("");
+    const password = await harness(["PASSWORD"]);
+    const twoSecrets = '<form><input id="SubscriptionKey" type="text"><input name="api_key" type="text"></form>';
+    const plain = '<form><input id="UserName" type="text"><input id="VatNumber" type="text"></form>';
+    for (const html of [twoSecrets, plain]) {
+      expect(await runSealedFill(fakePage(html).page, password.broker, password.request("FILL"), now)).toMatchObject({ reason: "FIELD_NOT_FOUND_AFTER_RELOAD", typed: false });
+    }
+    expect(password.opened).not.toHaveBeenCalled();
   });
 
   it("submits only when the capability allows it", async () => {
@@ -198,6 +228,77 @@ describe("Vault sealed fill (Browser Host)", () => {
     expect(JSON.stringify(answer)).not.toContain(generated);
     const opened = await openWithVaultPrivateKey(inbox.privateKey, inbox.publicKey, answer.sealedGenerated, { ownerUserId: claims.ownerUserId, vaultId: claims.vaultId, keyVersion: 1 });
     expect(new TextDecoder().decode(opened)).toBe(generated);
+  });
+
+  it("follows the site's stated rules for a generated password and for the sign-up field it gives the broker (queue item 37)", async () => {
+    const inbox = await generateVaultTransportKey();
+    const { page, window } = fakePage('<form><input id="n1" type="password" autocomplete="new-password" maxlength="64"></form>');
+    const { broker, request } = await harness(["PASSWORD"], { generate: { roles: ["NEW_PASSWORD"], inboxPublicKey: vaultBase64url.encode(inbox.publicKey) } });
+    expect((await runSealedFill(page, broker, { ...request("GENERATE"), policy: { minLength: 8, maxLength: 18, symbols: "NONE" } }, now)).status).toBe("FILLED");
+    expect(value(window, "n1")).toMatch(/^[A-Za-z0-9]{18}$/);
+    // Lengths alone keep the broker's old field shape (a broker before its reinstall refuses other keys); symbols add the rest.
+    expect(signupField({ minLength: null, maxLength: 64 }, { maxLength: 18 })).toEqual({ minLength: null, maxLength: 18 });
+    expect(signupField({ minLength: null, maxLength: 12 }, { maxLength: 18, symbols: "NONE" })).toEqual({ minLength: null, maxLength: 12, symbols: "", requireEachClass: true });
+    expect(signupField({ minLength: 6, maxLength: null })).toEqual({ minLength: 6, maxLength: null });
+  });
+
+  it("fills a sign-up's Retype Password with the same password, also when the call names only NEW_PASSWORD (SuccessFactors, 30/10)", async () => {
+    const inbox = await generateVaultTransportKey();
+    const owner = "user:alice", vaultId = newVaultHandle("vault");
+    const scope = { ownerUserId: owner, vaultId, keyVersion: 1 };
+    const password = "SYNTHETIC-signup-Pw-1"; // synthetic test value; gitleaks:allow
+    const asked: string[][] = [];
+    const broker = { verifyUse: async () => { throw new Error("not used"); }, openFill: async () => { throw new Error("not used"); },
+      signup: async (input: Record<string, unknown>) => {
+        const roles = input.roles as string[];
+        asked.push(roles);
+        return { sealedPassword: await sealToVaultPublicKey(inbox.publicKey, new TextEncoder().encode(password), scope),
+          sealedFields: await sealToVaultPublicKey(vaultBase64url.decode(String(input.replyPublicKey)), new TextEncoder().encode(JSON.stringify(Object.fromEntries(roles.map((role) => [role, password])))), scope) };
+      } } as unknown as SealedFillBroker;
+    const certificate = { claims: { v: 1, kind: "SIGNUP_GRANT", grantId: newVaultHandle("vault_grant" as never), ownerUserId: owner, vaultId, sites: [ORIGIN], dailyCap: 3, unlockEpoch: 1,
+      issuedAt: "2026-10-18T00:00:00.000Z", expiresAt: "2026-11-17T00:00:00.000Z" }, sig: "s".repeat(86), keyVersion: 1 };
+    const request = (roles: string[]) => ({ mode: "SIGNUP", certificate, ownerUserId: owner, vaultId, paneId: "pane:vault", targetId: "target-1", frameId: "frame-1",
+      origin: ORIGIN, roles, inboxPublicKey: vaultBase64url.encode(inbox.publicKey), submit: false });
+    // Allianz career5's shape: no autocomplete hints, labels only.
+    const successFactors = '<form><input id="fbclc_userName" name="username" type="text"><label for="fbclc_pwd">Choose Password</label>' +
+      '<input id="fbclc_pwd" name="pwd" type="password" autocomplete="off"><label for="fbclc_pwdConf">Retype Password</label>' +
+      '<input id="fbclc_pwdConf" name="pwdConf" type="password" autocomplete="off"><button>Create Account</button></form>';
+    for (const roles of [["NEW_PASSWORD"], ["NEW_PASSWORD", "CONFIRM_PASSWORD"]]) {
+      const { page, window } = fakePage(successFactors);
+      expect(await runSealedFill(page, broker, request(roles))).toMatchObject({ status: "FILLED", typed: true });
+      expect(value(window, "fbclc_pwd")).toBe(password);
+      expect(value(window, "fbclc_pwdConf")).toBe(password);
+      expect(value(window, "fbclc_userName")).toBe("");
+    }
+    expect(asked).toEqual([["NEW_PASSWORD"], ["NEW_PASSWORD", "CONFIRM_PASSWORD"]]);
+    // A single new-password field stays a single fill, and the confirm role never lands in the new field itself.
+    const single = fakePage('<form><input id="n1" type="password" autocomplete="new-password"></form>');
+    expect((await runSealedFill(single.page, broker, request(["NEW_PASSWORD"]))).status).toBe("FILLED");
+    expect(value(single.window, "n1")).toBe(password);
+    const change = '<form><input id="old" type="password" autocomplete="current-password"><input id="n1" type="password" autocomplete="new-password"></form>';
+    expect((await runSealedFill(fakePage(change).page, broker, request(["NEW_PASSWORD", "CONFIRM_PASSWORD"]))).reason).toBe("FIELD_NOT_FOUND_AFTER_RELOAD");
+  });
+
+  it("fills a confirm box the site enables only after the new password passes its rules, and names one still disabled instead of submitting (Oracle, 7/11)", async () => {
+    const inbox = await generateVaultTransportKey();
+    const generate = (roles: Array<"NEW_PASSWORD" | "CONFIRM_PASSWORD">) => ({ roles, inboxPublicKey: vaultBase64url.encode(inbox.publicKey) });
+    const oracle = '<form><input id="n1" type="password" autocomplete="new-password"><input id="n2" type="password" autocomplete="new-password" disabled><button>Change</button></form>';
+    const late = fakePage(oracle);
+    // The site opens the confirm box a moment after the new password meets its rules.
+    late.state.onInsert = () => { if (value(late.window, "n1").length >= 8) setTimeout(() => late.window.document.getElementById("n2")!.removeAttribute("disabled"), 50); };
+    const { broker, request } = await harness(["PASSWORD"], { generate: generate(["NEW_PASSWORD"]) });
+    expect(await runSealedFill(late.page, broker, request("GENERATE"), now)).toMatchObject({ status: "FILLED", reason: null, typed: true,
+      fields: { filled: ["NEW_PASSWORD", "CONFIRM_PASSWORD"], disabled: [] } });
+    expect(value(late.window, "n1")).not.toBe("");
+    expect(value(late.window, "n2")).toBe(value(late.window, "n1"));
+    // A box the site never opens: the new password stays typed, the answer names the empty box and the form is not submitted.
+    const shut = fakePage(oracle);
+    const submitting = await harness(["PASSWORD"], { submit: true, generate: generate(["NEW_PASSWORD", "CONFIRM_PASSWORD"]) });
+    expect(await runSealedFill(shut.page, submitting.broker, submitting.request("GENERATE"), now, { lateFieldWaitMs: 200 })).toMatchObject({ status: "FILLED",
+      reason: "FIELD_DISABLED", typed: true, fields: { filled: ["NEW_PASSWORD"], disabled: ["CONFIRM_PASSWORD"] } });
+    expect(value(shut.window, "n1")).not.toBe("");
+    expect(value(shut.window, "n2")).toBe("");
+    expect(shut.submitted).not.toHaveBeenCalled();
   });
 
   it("NEW_ACCOUNT: fills the broker's generated password at the bound origin and returns it only sealed to the inbox", async () => {

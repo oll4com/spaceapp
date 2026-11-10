@@ -90,6 +90,17 @@ rl.on("line", (line) => {
   }
 
   if (message.method === "tools/list") {
+    if (mode.startsWith("discovery-page-")) {
+      if (!initialized) { sendError(message.id, -32002, "Not initialized"); return; }
+      const next = Object.hasOwn(message.params ?? {}, "cursor");
+      if (mode === "discovery-page-error" && next) { sendError(message.id, -32000, "Later page failed"); return; }
+      send({ jsonrpc: "2.0", id: message.id, result: {
+        tools: [{ name: next && mode !== "discovery-page-duplicate" ? "space_second" : "space_first", inputSchema: { type: "object" } }],
+        ...(mode === "discovery-page-invalid" ? { nextCursor: 123 }
+          : !next || mode === "discovery-page-cycle" ? { nextCursor: mode === "discovery-page-empty-cursor" ? "" : "second-page" } : {})
+      } });
+      return;
+    }
     if (!initialized) {
       sendError(message.id, -32002, "Client did not send initialized notification");
       return;

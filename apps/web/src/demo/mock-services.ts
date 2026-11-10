@@ -2,11 +2,12 @@ import { SpaceApiError } from "../runtime/SpaceRuntime.js";
 import type { DemoFixture } from "./demo-fixture.js";
 import { mockProjectCatalog } from "./mock-project-catalog.js";
 import { MockCopilots } from "./mock-copilots.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const now = () => new Date().toISOString();
 const base = import.meta.env.BASE_URL;
 const media = (name: string) => `${base}demo/media/${name}`;
-const workspace = "/opt/spaceapp";
+const workspace = SPACE_INSTALL_ROOT;
 type FileRecord = { directory: boolean; content: string };
 
 export class MockServices {

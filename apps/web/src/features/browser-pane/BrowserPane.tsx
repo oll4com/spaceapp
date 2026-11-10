@@ -1,7 +1,9 @@
 import { browserReconnectDelayMs } from "./browser-reconnect.js";
+import { CopilotBrowserControlHint } from "../copilot-kit/browser-control-hint.js";
 import { usePanePolling } from "../../use-pane-polling.js";
 import { useGoogleAccountSignIn } from "./useGoogleAccountSignIn.js";
 import { useBrowserAudio } from "./useBrowserAudio.js";
+import { useBrowserPaneAudible } from "./browser-audio-gate.js";
 import { resolveBrowserAddress } from "./browser-address.js";
 import { roomPaneLimit } from "../../pane-runtime-availability.js";
 import { accountEntryForProfile, accountNeedsSignIn, effectiveAccountId, googleSignInTarget as accountSignInTarget, privatePaneProfileId, type YouTubeAccounts as GoogleAccounts } from "./youtube-accounts.js";
@@ -31,6 +33,7 @@ import {
   RefreshCw,
   RotateCcw,
   RotateCw,
+  Route,
   Send,
   Smartphone,
   Square,
@@ -42,6 +45,7 @@ import {
   X
 } from "../ui-theme/app-icons.js";
 import {
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -80,6 +84,7 @@ import {
   type UiTheme
 } from "../../ui-theme.js";
 import { BrowserCanvas, type BrowserCanvasHandle, type BrowserCanvasInput } from "./BrowserCanvas.js";
+import { browserKeyboardInputs } from "../osk-keyboard/pane-keyboard-input.js";
 import { useBrowserSelectOverlay } from "./BrowserSelectOverlay.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import {
@@ -91,10 +96,13 @@ import {
   publishBrowserPaneControl,
   registerBrowserPaneEventTarget
 } from "./events.js";
+import type { BrowserPaneKeyboardInput } from "./events.js";
 import { BrowserLiveStatus } from "./BrowserLiveStatus.js";
 import { BookmarksTab } from "../marketing-copilot-pane/BookmarksTab.js";
+import { BrowserRouteMenu } from "./BrowserRouteMenu.js";
 import { relativeTime } from "../job-apply-pane/QueueTab.js";
 import { requestNousFocus } from "../nous-focus/nous-focus-events.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 // shortcut: below this measured toolbar width the compact Live badge (state + fps, ~97px) would squeeze the address
 // field under the 160px the browser proofs require at 320px; upgrade to a two-row toolbar if phones need the badge.
@@ -178,7 +186,6 @@ const viewportSizes: Record<BrowserSessionViewport, { width: number; height: num
 };
 
 const browserInputAckTimeoutMs = 2_000;
-const browserStreamReconnectMessage = "Browser frame stream disconnected; reconnecting.";
 
 interface PendingBrowserInputAck {
   motion: boolean;
@@ -219,12 +226,30 @@ function scrollPaneIntoView(element: HTMLElement | null) {
 }
 
 export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme = "classic", isVisible = true, mobile = false }: BrowserPaneProps) {
+  const language = useUiLanguage();
+  const languageRef = useRef(language);
+  languageRef.current = language;
+  // Callbacks outlive the render that made them, so `t` reads the language through a ref.
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(languageRef.current, text, vars);
+  const reconnectMessage = () => t("Browser frame stream disconnected; reconnecting.");
+  // The session's status as the runtime indicator's accessible name; the values stay the API's.
+  const sessionStatusWord = (value: string) => ({ STARTING: t("STARTING"), READY: t("READY"), NAVIGATING: t("NAVIGATING"), ERROR: t("ERROR"), CLOSED: t("CLOSED") } as Record<string, string>)[value] ?? value;
+  // A viewport's name for its button and menu entry ("Tablet view"); the ids stay the API's.
+  const viewName = (id: BrowserSessionViewport) => ({ desktop: t("PC view"), tablet: t("Tablet view"), mobile: t("Mobile view"), wide: t("Wide view") })[id];
+  // Capture job words as the debugger lists them; the values stay the API's.
+  const captureJobWord = (value: string) => ({ SCREENSHOT: t("SCREENSHOT"), RECORDING: t("RECORDING"), QUEUED: t("QUEUED"), RUNNING: t("RUNNING"), COMPLETED: t("COMPLETED"), FAILED: t("FAILED"), CANCELLED: t("CANCELLED") } as Record<string, string>)[value] ?? value;
+  // A capture job's status as a verb, so the notice reads right for a screenshot and for a recording.
+  const captureStatusWord = (status: string) => ({ QUEUED: t("queued"), RUNNING: t("running"), COMPLETED: t("completed"), FAILED: t("failed"), CANCELLED: t("cancelled") } as Record<string, string>)[status] ?? status.toLowerCase();
   const [status, setStatus] = useState<BrowserStatusPayload | null>(null);
   const [response, setResponse] = useState<PaneBrowserSessionResponse | null>(null);
   const [frame, setFrame] = useState<BrowserFrame | null>(null);
   const browserSelect = useBrowserSelectOverlay({ paneId: pane.id, sendInput: (input) => void sendCanvasInput(input), onFrame: (next) => appendFrame(next) });
   const [url, setUrl] = useState("");
   const [handoff, setHandoff] = useState(false);
+  const copilotControlHint = useContext(CopilotBrowserControlHint);
+  const browserControlLabel = copilotControlHint
+    ? handoff ? t("Return to agent") : copilotControlHint.reason ? t("Take control: {reason}", { reason: copilotControlHint.reason }) : t("Take control")
+    : handoff ? t("Release browser control") : t("Join browser session");
   const [browserAgent, setBrowserAgent] = useState<BrowserPageListPayload["agent"]>(null);
   const [googleAccounts, setGoogleAccounts] = useState<GoogleAccounts | null>(null);
   const [googleAccountMenuOpen, setGoogleAccountMenuOpen] = useState(false);
@@ -246,9 +271,9 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const tabScoped = tabAccounts && Boolean(activeTab) && (pages.length > 1 || Boolean(activeTab?.account));
   const menuAccounts = googleAccounts && activeTab?.account
     ? { ...googleAccounts, selectedProfileId: activeTab.account.profileId, effectiveProfileId: activeTab.account.profileId } : googleAccounts;
-  const googleAccountSummary = menuAccounts ? selectedAccountSummary(menuAccounts) : null;
+  const googleAccountSummary = menuAccounts ? selectedAccountSummary(menuAccounts, t) : null;
   const tabAccountLabel = (account: NonNullable<BrowserPageSummaryPayload["account"]>) =>
-    account.label ?? (googleAccounts ? accountEntryForProfile(googleAccounts, account.profileId)?.title : undefined) ?? "Other account";
+    account.label ?? (googleAccounts ? accountEntryForProfile(googleAccounts, account.profileId, t)?.title : undefined) ?? t("Other account");
   const pageListRef = useRef<BrowserPageListPayload | null>(null);
   const pageSessionIdRef = useRef<string | null>(null);
   const pageRequestRef = useRef(0);
@@ -293,6 +318,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const [textInput, setTextInput] = useState("");
   const [textInputOpen, setTextInputOpen] = useState(false);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  const [routeOpen, setRouteOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useAutoDismiss(error, setError);
@@ -343,10 +369,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   }, []);
   const compactToolbar = toolbarWidth < 1000;
   const session = (response?.session as BrowserSessionV2 | undefined) ?? null;
-  const { audioState, resumeAudio } = useBrowserAudio(pane.id, session?.sessionId, !observerOnly && session?.status !== "CLOSED");
+  const audible = useBrowserPaneAudible(paneRef, isVisible);
+  const { audioState, resumeAudio } = useBrowserAudio(pane.id, session?.sessionId, audible && !observerOnly && session?.status !== "CLOSED");
   const viewport = session?.viewport ?? (mobile ? "mobile" : defaultViewport);
   const activeFrame = frame ?? response?.frame ?? null;
-  const statusText = session?.statusReason ?? status?.statusReason ?? "Browser session";
+  const statusText = session?.statusReason ?? status?.statusReason ?? t("Browser session");
   const canUseSession = Boolean(session && status?.enabled);
   const activeRecordingJob = captureJobs.find(
     (job) => job.options.kind === "RECORDING" && (job.status === "QUEUED" || job.status === "RUNNING")
@@ -503,7 +530,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       {
         pageId: nextSession.activePageId ?? `legacy:${nextSession.sessionId}`,
         kind: "PAGE",
-        title: nextSession.title ?? "Browser",
+        title: nextSession.title ?? t("Browser"),
         url: nextSession.currentUrl ?? nextSession.targetUrl,
         isActive: true,
         openerPageId: null,
@@ -607,14 +634,19 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
 
   // An agent can replace this browser (another Google account) or start it again after it closed: the view follows the
   // server's session instead of keeping the old one's "No open tabs" (2026-10-22). Reads only; never starts Chrome.
-  async function followServerSession(heldSessionId: string) {
+  // A view whose own start failed holds no session at all (503 browser limit after the Browser Host restart, 4/11 Sentry
+  // billing pane): it follows the session an agent starts later instead of staying "Offline".
+  async function followServerSession(heldSessionId: string | null) {
     const next = await api.browserSession(pane.id).catch(() => null);
-    if (next && next.session.sessionId !== heldSessionId && pageSessionIdRef.current === heldSessionId) applyResponse(next);
+    if (!next || next.session.sessionId === heldSessionId || pageSessionIdRef.current !== heldSessionId) return;
+    if (!heldSessionId && (next.session.status === "CLOSED" || next.session.status === "ERROR")) return;
+    if (!heldSessionId) setError(null);
+    applyResponse(next);
   }
 
   usePanePolling(async () => {
-    if (pageSessionIdRef.current) await followServerSession(pageSessionIdRef.current);
-  }, 5000, isVisible && !pane.isMinimized && session?.status === "CLOSED", false);
+    await followServerSession(pageSessionIdRef.current);
+  }, 5000, isVisible && !pane.isMinimized && Boolean(status?.enabled) && !pending && (!session || session.status === "CLOSED"), false);
 
   async function loadArtifacts() {
     setArtifactsPending(true);
@@ -622,7 +654,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       const next = await api.artifacts({ roomId: pane.roomId, paneId: pane.id, pageSize: 100, sortOrder: "desc" });
       setArtifacts(next.data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser artifacts failed to load");
+      setError(err instanceof Error ? err.message : t("Browser artifacts failed to load"));
     } finally {
       setArtifactsPending(false);
     }
@@ -660,13 +692,13 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     setError(null);
     try {
       // shortcut: checks the 16-pane maximum, not a lower room paneCap; read the room when lower caps are used.
-      if ((await api.panes(pane.roomId)).data.length >= roomPaneLimit(null)) throw new Error(`This room already has the maximum of ${roomPaneLimit(null)} panes.`);
+      if ((await api.panes(pane.roomId)).data.length >= roomPaneLimit(null)) throw new Error(t("This room already has the maximum of {count} panes.", { count: roomPaneLimit(null) }));
       const title = `Browser · ${accountEntryForProfile(googleAccounts, profileId)?.title ?? "account"}`.slice(0, 120);
       const created = await api.createPane(pane.roomId, title, "BROWSER", { split: { parentId: pane.id, direction: "horizontal", size: 50 } });
       accountTabMoves.set(created.id, { profileId, url: activePage.url && activePage.url !== "about:blank" ? activePage.url : null });
       applyPagePayload(await api.closeBrowserPage(pane.id, activePage.pageId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "The tab could not move to a new pane.");
+      setError(err instanceof Error ? err.message : t("The tab could not move to a new pane."));
     } finally {
       pageMutationRef.current = false;
       setPending(false);
@@ -683,7 +715,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     try {
       applyPagePayload(await api.setBrowserPageAccount(pane.id, pageId, profileId, signIn ? { signIn: true } : {}));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "The tab could not change its Google account.");
+      setError(err instanceof Error ? err.message : t("The tab could not change its Google account."));
     } finally {
       pageMutationRef.current = false;
       setPending(false);
@@ -718,7 +750,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       window.dispatchEvent(new CustomEvent(BROWSER_PANE_ACCOUNT_SELECTED_EVENT, { detail: { paneId: pane.id, profileId: selected.selectedProfileId } }));
       applyResponse(await api.startBrowserSession(pane.id, { viewport, targetUrl, ownerAgentId: `agent:${agentNumber}` }));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The Google account could not be opened.");
+      setError(cause instanceof Error ? cause.message : t("The Google account could not be opened."));
     } finally { setPending(false); }
   }
 
@@ -785,7 +817,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         });
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser session failed to load");
+      setError(err instanceof Error ? err.message : t("Browser session failed to load"));
     } finally {
       if (showPending) setPending(false);
     }
@@ -804,25 +836,31 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     let cancelled = false;
     void api.setBrowserViewport(pane.id, "mobile").then((next) => {
       if (!cancelled) applyResponse(next);
-    }).catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : "Browser viewport update failed"); });
+    }).catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : t("Browser viewport update failed")); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mobile, observerOnly, isVisible, pane.id, session?.sessionId, session?.viewport, session?.status]);
 
   // A hidden page (phone screen off, app in the background) needs no frames: the stream reconnects when it shows again.
+  // Neither does a pane the operator does not see (another warm room, minimized): hidden panes decoded up to 35 frames a
+  // second each (Windows 2/11). The canvas keeps its last frame. Warm change approved by the operator 2/11.
   const [pageHidden, setPageHidden] = useState(() => typeof document !== "undefined" && document.visibilityState === "hidden");
   useEffect(() => {
     const update = () => setPageHidden(document.visibilityState === "hidden");
     document.addEventListener("visibilitychange", update);
     return () => document.removeEventListener("visibilitychange", update);
   }, []);
-  const streamPausedWhileHidden = pageHidden && !observerOnly;
+  // Live only for the pane in front of the operator (operator 2/11: "Live only when it is focused on me"): out of their
+  // view a pane an agent drives gets Preview (1 fps), any other pane no frames at all.
+  const agentDriving = Boolean(browserAgent?.active);
+  const streamPausedWhileHidden = (pageHidden || !isVisible || pane.isMinimized || (!audible && !agentDriving)) && !observerOnly;
+  const liveStreamMode: BrowserStreamMode = audible || observerOnly || streamMode === "SILENT" ? streamMode : "PREVIEW";
 
   useEffect(() => {
     const fallbackTicket = response?.websocket ?? null;
     const sessionId = session?.sessionId ?? null;
-    if (!fallbackTicket || !sessionId || session?.status === "CLOSED" || streamMode === "SILENT" || streamPausedWhileHidden) {
-      updateBrowserStreamTelemetry(streamMode === "SILENT" ? "silent" : "idle");
+    if (!fallbackTicket || !sessionId || session?.status === "CLOSED" || liveStreamMode === "SILENT" || streamPausedWhileHidden) {
+      updateBrowserStreamTelemetry(liveStreamMode === "SILENT" ? "silent" : "idle");
       return;
     }
     let disposed = false;
@@ -838,7 +876,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       const delayMs = browserReconnectDelayMs(reconnectAttempt, 250);
       reconnectAttempt += 1;
       updateBrowserStreamTelemetry("reconnecting");
-      setError((current) => current ?? browserStreamReconnectMessage);
+      setError((current) => current ?? reconnectMessage());
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
         void connect();
@@ -861,11 +899,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       }
       if (disposed) return;
       if (ticket.paneId !== pane.id || ticket.sessionId !== sessionId) {
-        setError("Browser frame stream returned a ticket for a different session.");
+        setError(t("Browser frame stream returned a ticket for a different session."));
         scheduleReconnect();
         return;
       }
-      const realtimeUrl = api.browserStreamWebSocketUrl?.(ticket, streamMode) ?? null;
+      const realtimeUrl = api.browserStreamWebSocketUrl?.(ticket, liveStreamMode) ?? null;
       const socketUrl = realtimeUrl ?? api.browserFrameWebSocketUrl(ticket);
       if (!socketUrl) {
         scheduleReconnect();
@@ -897,7 +935,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             const message = realtimeMessage.data;
             if (message.type === "ready") {
               if (message.paneId !== pane.id || message.sessionId !== sessionId) {
-                setError("Browser frame stream connected to a different session.");
+                setError(t("Browser frame stream connected to a different session."));
                 socket.close(1008, "Browser stream identity mismatch");
                 return;
               }
@@ -907,7 +945,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                 fps: message.framesPerSecond,
                 mode: message.resolvedMode
               });
-              setError((current) => current === browserStreamReconnectMessage ? null : current);
+              setError((current) => current === reconnectMessage() ? null : current);
               return;
             }
             if (message.type === "viewport") {
@@ -947,7 +985,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             setError(decoded.message);
           }
         } catch {
-          setError("Browser frame stream returned invalid data.");
+          setError(t("Browser frame stream returned invalid data."));
         }
       });
       socket.addEventListener("error", () => {
@@ -975,7 +1013,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     };
     // Browser input refs intentionally keep high-frequency ACKs outside React state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.id, response?.websocket?.token, session?.sessionId, session?.status, streamMode, streamPausedWhileHidden]);
+  }, [pane.id, response?.websocket?.token, session?.sessionId, session?.status, liveStreamMode, streamPausedWhileHidden]);
 
   useEffect(() => {
     controlLeaseRef.current = controlLease?.status === "ACTIVE" ? controlLease : null;
@@ -998,7 +1036,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     const next = await api.browserFrame(pane.id, session.sessionId);
     appendFrame(next);
   }, streamMode === "INTERACTIVE" ? 1500 : 5000,
-  isVisible && !pane.isMinimized && Boolean(session && session.status !== "CLOSED") && streamMode !== "SILENT", false);
+  isVisible && !pane.isMinimized && !streamPausedWhileHidden && Boolean(session && session.status !== "CLOSED") && streamMode !== "SILENT", false);
 
   useEffect(() => {
     if (!controlLease) return;
@@ -1083,7 +1121,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       .catch((err) => {
         if (!cancelled) {
           setRecordingManifestFailedId(manifestArtifact.id);
-          setError(err instanceof Error ? err.message : "Browser recording manifest failed to load");
+          setError(err instanceof Error ? err.message : t("Browser recording manifest failed to load"));
         }
       })
       .finally(() => {
@@ -1109,7 +1147,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     setError(null);
     try {
       const submittedAddress = url.trim();
-      const targetUrl = resolveBrowserAddress(submittedAddress);
+      const targetUrl = resolveBrowserAddress(submittedAddress, t);
       let next = !session || session.status === "CLOSED"
         ? await api.startBrowserSession(pane.id, { viewport, targetUrl, ownerAgentId: `agent:${agentNumber}` })
         : await api.navigateBrowser(pane.id, targetUrl);
@@ -1118,7 +1156,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       if (urlDraftRef.current?.trim() === submittedAddress) urlDraftRef.current = null;
       applyResponse(next);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser navigation failed");
+      setError(err instanceof Error ? err.message : t("Browser navigation failed"));
     } finally {
       setPending(false);
     }
@@ -1132,7 +1170,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     try {
       applyResponse(await api.setBrowserViewport(pane.id, nextViewport));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser viewport update failed");
+      setError(err instanceof Error ? err.message : t("Browser viewport update failed"));
     } finally {
       setPending(false);
     }
@@ -1165,7 +1203,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             : previous);
         }
       } catch (error) {
-        if (!disposed) { setFitPane(false); setError(error instanceof Error ? error.message : "Browser resize failed"); }
+        if (!disposed) { setFitPane(false); setError(error instanceof Error ? error.message : t("Browser resize failed")); }
       } finally { resizeBusyRef.current = false; }
     };
     const schedule = () => { window.clearTimeout(timer); timer = window.setTimeout(() => void resize(), 250); };
@@ -1186,11 +1224,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     } catch (err) {
       if (!isUnavailableV2Feature(err)) {
         setStreamMode(previous);
-        setError(err instanceof Error ? err.message : "Browser stream mode update failed");
+        setError(err instanceof Error ? err.message : t("Browser stream mode update failed"));
         return;
       }
       setStreamMode(nextMode);
-      setCaptureNotice(`Using ${streamModeOptions.find((option) => option.id === nextMode)?.label ?? nextMode} through the legacy frame fallback.`);
+      setCaptureNotice(t("Using {mode} through the legacy frame fallback.", { mode: t(streamModeOptions.find((option) => option.id === nextMode)?.label ?? nextMode) }));
       if (!response) setStreamMode(previous);
     } finally {
       setPending(false);
@@ -1232,11 +1270,29 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     } catch (err) {
       const refreshed = await loadPages();
       if (!refreshed || refreshed.pages.some((page) => page.pageId === pageId)) {
-        setError(err instanceof Error ? err.message : "Browser tab failed to activate");
+        setError(err instanceof Error ? err.message : t("Browser tab failed to activate"));
       }
     } finally {
       pageMutationRef.current = false;
       setPending(false);
+    }
+  }
+
+  // Go to pane (Needs you, operator 1/11 11:58 BKK): the page the request is about: its open tab, else a new tab, so the agent's own tab stays.
+  async function showPage(target: { url?: string; pageId?: string }) {
+    if (observerOnly) return;
+    const list = await api.browserPages(pane.id).catch(() => null);
+    // The tab lives in a session this view does not hold yet (an agent started it after this view's start failed).
+    if (list && list.sessionId !== pageSessionIdRef.current) await followServerSession(pageSessionIdRef.current);
+    // A tab that is gone opens the card's address, never just the active tab (operator 9/11 13:31 BKK).
+    const open = list?.pages.find((page) => page.pageId === target.pageId) ?? (target.url ? list?.pages.find((page) => page.url === target.url) : undefined);
+    try {
+      if (open) { if (open.pageId !== list!.activePageId) applyPagePayload(await api.activateBrowserPage(pane.id, open.pageId)); }
+      else if (list && target.url) applyPagePayload(await api.createBrowserPage(pane.id, { url: target.url, activate: true }));
+      // No browser running: the address waits in the bar for the operator's Enter.
+      else if (target.url) { urlDraftRef.current = target.url; setUrl(target.url); }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("The page could not be shown"));
     }
   }
 
@@ -1254,7 +1310,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         applyResponse(await api.startBrowserSession(pane.id, { viewport, targetUrl: "about:blank", streamMode, ownerAgentId: `agent:${agentNumber}` }));
       } else applyPagePayload(await api.createBrowserPage(pane.id, { activate: true }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser tab failed to open");
+      setError(err instanceof Error ? err.message : t("Browser tab failed to open"));
     } finally {
       pageMutationRef.current = false;
       setPending(false);
@@ -1272,7 +1328,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     } catch (err) {
       const refreshed = await loadPages();
       if (!refreshed || refreshed.pages.some((page) => page.pageId === pageId)) {
-        setError(err instanceof Error ? err.message : "Browser tab failed to close");
+        setError(err instanceof Error ? err.message : t("Browser tab failed to close"));
       }
     } finally {
       pageMutationRef.current = false;
@@ -1292,10 +1348,10 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           : { kind, format: "WEBM" as const, maxDurationMs, maxBytes: 1024 * 1024 * 1024, frameIntervalMs: 100 };
       const next = await api.createBrowserCapture(pane.id, { options });
       setCaptureJobs((current) => [next.job, ...current.filter((job) => job.jobId !== next.job.jobId)].slice(0, 20));
-      setCaptureNotice(`${kind === "SCREENSHOT" ? "Screenshot" : "Recording"} ${next.job.status.toLowerCase()}.`);
+      setCaptureNotice(kind === "SCREENSHOT" ? t("Screenshot {status}.", { status: captureStatusWord(next.job.status) }) : t("Recording {status}.", { status: captureStatusWord(next.job.status) }));
     } catch (err) {
       if (!isUnavailableV2Feature(err)) {
-        setError(err instanceof Error ? err.message : "Browser capture failed");
+        setError(err instanceof Error ? err.message : t("Browser capture failed"));
         return;
       }
       try {
@@ -1306,9 +1362,9 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             : { type: "record", sessionId: session.sessionId, durationMs: maxDurationMs, intervalMs: 500, format: "webm" }
         );
         appendFrame(result.frame);
-        setCaptureNotice(`${kind === "SCREENSHOT" ? "Screenshot" : "Recording"} captured with the legacy browser runtime.`);
+        setCaptureNotice(kind === "SCREENSHOT" ? t("Screenshot captured with the legacy browser runtime.") : t("Recording captured with the legacy browser runtime."));
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Browser capture failed");
+        setError(err instanceof Error ? err.message : t("Browser capture failed"));
       }
     } finally {
       setPending(false);
@@ -1327,10 +1383,10 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     try {
       const next = await api.stopBrowserCapture(pane.id, activeRecordingJob.jobId);
       replaceCaptureJob(next.job);
-      setCaptureNotice(`Recording ${next.job.status.toLowerCase()} and saved.`);
+      setCaptureNotice(t("Recording {status} and saved.", { status: captureStatusWord(next.job.status) }));
       if (next.job.artifactIds.length > 0) await loadArtifacts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser recording could not be stopped");
+      setError(err instanceof Error ? err.message : t("Browser recording could not be stopped"));
     } finally {
       setRecordingActionPending(false);
     }
@@ -1343,9 +1399,9 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     try {
       const next = await api.cancelBrowserCapture(pane.id, activeRecordingJob.jobId);
       replaceCaptureJob(next.job);
-      setCaptureNotice("Recording cancelled and discarded.");
+      setCaptureNotice(t("Recording cancelled and discarded."));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser recording could not be cancelled");
+      setError(err instanceof Error ? err.message : t("Browser recording could not be cancelled"));
     } finally {
       setRecordingActionPending(false);
     }
@@ -1384,7 +1440,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             : []
         });
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Browser diagnostics failed");
+        setError(err instanceof Error ? err.message : t("Browser diagnostics failed"));
       }
     } finally {
       diagnosticsLoadingRef.current = false;
@@ -1435,7 +1491,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       );
       setArtifacts((current) => current.map((item) => item.id === updated.id ? updated : item));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser artifact retention update failed");
+      setError(err instanceof Error ? err.message : t("Browser artifact retention update failed"));
     }
   }
 
@@ -1484,13 +1540,13 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     setError(null);
     try {
       const submittedAddress = url.trim();
-      const targetUrl = shown && /^https?:/.test(shown) ? shown : submittedAddress ? resolveBrowserAddress(submittedAddress) : "about:blank";
+      const targetUrl = shown && /^https?:/.test(shown) ? shown : submittedAddress ? resolveBrowserAddress(submittedAddress, t) : "about:blank";
       let next = await api.startBrowserSession(pane.id, { viewport, targetUrl, ownerAgentId: `agent:${agentNumber}` });
       if (next.session.targetUrl !== targetUrl && next.session.currentUrl !== targetUrl) next = await api.navigateBrowser(pane.id, targetUrl);
       if (urlDraftRef.current?.trim() === submittedAddress) urlDraftRef.current = null;
       applyResponse(next);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser restart failed");
+      setError(err instanceof Error ? err.message : t("Browser restart failed"));
     } finally {
       setPending(false);
     }
@@ -1505,7 +1561,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     try {
       appendFrame((await api.browserInput(pane.id, payload)).frame);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Page reload failed");
+      setError(err instanceof Error ? err.message : t("Page reload failed"));
     }
   }
 
@@ -1516,7 +1572,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     try {
       appendFrame(await api.browserFrame(pane.id, session.sessionId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser refresh failed");
+      setError(err instanceof Error ? err.message : t("Browser refresh failed"));
     } finally {
       setPending(false);
     }
@@ -1524,7 +1580,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
 
   function openBookmarks() {
     if (!session) {
-      setError("Start a browser session before using bookmarks.");
+      setError(t("Start a browser session before using bookmarks."));
       return;
     }
     scrollPaneIntoView(paneRef.current);
@@ -1560,7 +1616,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         return null;
       }
       legacyControlRef.current = false;
-      setError(err instanceof Error ? err.message : "Browser control could not be acquired");
+      setError(err instanceof Error ? err.message : t("Browser control could not be acquired"));
       return null;
     }).finally(() => {
       controlAcquirePromiseRef.current = null;
@@ -1571,7 +1627,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
 
   async function joinSession() {
     if (!session) {
-      setError("Start a browser session before joining.");
+      setError(t("Start a browser session before joining."));
       return;
     }
     scrollPaneIntoView(paneRef.current);
@@ -1604,7 +1660,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       } catch (err) {
         // 409: the lease already ended (the server's idle release or its expiry), so the agent has the browser again.
         if (!(typeof err === "object" && err !== null && "status" in err && err.status === 409)) {
-          setError(err instanceof Error ? err.message : "Browser control release failed");
+          setError(err instanceof Error ? err.message : t("Browser control release failed"));
           setPending(false);
           return;
         }
@@ -1631,9 +1687,9 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     try {
       await api.createMarketingBookmark({ url: page.url!, ...(title ? { title } : {}), profileId, accountLabel });
       window.dispatchEvent(new CustomEvent(MARKETING_BOOKMARKS_CHANGED_EVENT, { detail: { paneId: pane.id } }));
-      setCaptureNotice(`Saved to Bookmarks${accountLabel ? ` with ${accountLabel}` : ""}.`);
+      setCaptureNotice(accountLabel ? t("Saved to Bookmarks with {account}.", { account: accountLabel }) : t("Saved to Bookmarks."));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "The bookmark could not be saved.");
+      setError(err instanceof Error ? err.message : t("The bookmark could not be saved."));
     }
   }
 
@@ -1658,13 +1714,20 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       setHandoff(false);
       setTextInputOpen(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser stop failed");
+      setError(err instanceof Error ? err.message : t("Browser stop failed"));
     } finally {
       setPending(false);
     }
   }
 
+  /** Every caller fires and forgets (`void`), so a failed send shows its error instead of an unhandled rejection
+   * (2/11 08:05Z: the toolbar's Paste over the legacy path). */
   async function sendCanvasInput(input: BrowserCanvasInput) {
+    try { await sendCanvasInputNow(input); }
+    catch (err) { setError(err instanceof Error ? err.message : t("Browser input failed")); }
+  }
+
+  async function sendCanvasInputNow(input: BrowserCanvasInput) {
     if (!session) return;
     // A bare hover is not an interaction: it must not take the browser from an agent (Job Copilot) and keep it
     // through the lease heartbeat. Hover reaches the page only while a click, scroll or key already holds control.
@@ -1693,7 +1756,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       } catch (err) {
         http.queue.length = 0;
         if (!isUnavailableV2Feature(err)) {
-          setError(err instanceof Error ? err.message : "Browser input failed");
+          setError(err instanceof Error ? err.message : t("Browser input failed"));
           return;
         }
         legacyControlRef.current = true;
@@ -1734,6 +1797,15 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     }
     if (input.type === "KEY" && (input.eventType === "keyDown" || input.eventType === "char") && input.text) {
       appendFrame((await api.browserAction(pane.id, { type: "type", text: input.text, sessionId: session.sessionId })).frame);
+    }
+  }
+
+  async function sendKeyboardInput(input: BrowserPaneKeyboardInput) {
+    for (const key of browserKeyboardInputs(input)) {
+      const lease = controlLeaseRef.current;
+      if (observerOnly || pending || !session || session.status === "CLOSED" || lease?.holderType !== "OPERATOR" ||
+        lease.status !== "ACTIVE" || lease.sessionId !== session.sessionId || Date.parse(lease.expiresAt) <= Date.now()) return;
+      await sendCanvasInput(key);
     }
   }
 
@@ -1778,7 +1850,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         return;
       } catch (err) {
         if (!isUnavailableV2Feature(err)) {
-          setError(err instanceof Error ? err.message : "Browser text input failed");
+          setError(err instanceof Error ? err.message : t("Browser text input failed"));
           return;
         }
         legacyControlRef.current = true;
@@ -1794,6 +1866,10 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       if (!(event instanceof CustomEvent)) return;
       const detail = parseBrowserPaneActionDetail(event.detail);
       if (!detail || detail.paneId !== pane.id) return;
+      if (detail.action === "keyboard_input" && detail.keyboardInput) {
+        void sendKeyboardInput(detail.keyboardInput);
+        return;
+      }
       if (detail.action === "bookmarks") {
         openBookmarks();
         return;
@@ -1805,6 +1881,10 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       // Job Copilot "Return to agent": the operator gives the browser back without the toolbar.
       if (detail.action === "release") {
         void releaseControl();
+        return;
+      }
+      if (detail.action === "show_page") {
+        void showPage(detail);
         return;
       }
       // A copilot opened a tab through the API (a Marketing bookmark): show it in the strip now, not at the next poll.
@@ -1834,9 +1914,9 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     () => [
       {
         id: "bookmarks",
-        label: "Browser bookmarks",
-        title: session ? "Browser bookmarks" : "Start a browser session before using bookmarks.",
-        ariaLabel: `Browser bookmarks ${pane.title}`,
+        label: t("Browser bookmarks"),
+        title: session ? t("Browser bookmarks") : t("Start a browser session before using bookmarks."),
+        ariaLabel: t("Browser bookmarks {title}", { title: pane.title }),
         icon: Bookmark,
         onClick: () => setBookmarksOpen((open) => !open),
         disabled: !session || pending,
@@ -1844,37 +1924,48 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         className: bookmarksOpen ? "selected" : ""
       },
       {
+        id: "route",
+        label: t("Network route"),
+        title: t("Network route: this server, or a VPN route such as Greece"),
+        ariaLabel: t("Network route {title}", { title: pane.title }),
+        icon: Route,
+        onClick: () => setRouteOpen((open) => !open),
+        disabled: !status?.enabled,
+        ariaExpanded: routeOpen,
+        className: routeOpen ? "selected" : ""
+      },
+      {
         id: "refresh",
-        label: "Refresh browser frame",
-        title: "Refresh browser frame",
-        ariaLabel: `Refresh browser frame ${pane.title}`,
+        label: t("Refresh browser frame"),
+        title: t("Refresh browser frame"),
+        ariaLabel: t("Refresh browser frame {title}", { title: pane.title }),
         icon: RefreshCw,
         onClick: () => void refreshFrame(),
         disabled: !session || pending
       },
       {
         id: "reload",
-        label: "Reload page",
-        title: "Reload the page",
-        ariaLabel: `Reload page ${pane.title}`,
+        label: t("Reload page"),
+        title: t("Reload the page"),
+        ariaLabel: t("Reload page {title}", { title: pane.title }),
         icon: RotateCcw,
         onClick: () => void reloadPage(),
         disabled: !session || pending
       },
       {
         id: "reconnect",
-        label: "Restart browser",
-        title: "Restart this pane's browser on the same page and account (sign-ins stay)",
-        ariaLabel: `Restart browser ${pane.title}`,
+        label: t("Restart browser"),
+        title: t("Restart this pane's browser on the same page and account (sign-ins stay)"),
+        ariaLabel: t("Restart browser {title}", { title: pane.title }),
         icon: RotateCw,
         onClick: () => void restartBrowser(),
         disabled: !status?.enabled || pending
       },
       {
         id: "type-text",
-        label: "Type text",
-        title: "Type text into browser",
-        ariaLabel: `Type text into browser ${pane.title}`,
+        label: t("Type text"),
+        title: t("Type text into browser"),
+        ariaLabel: t("Type text into browser {title}", { title: pane.title }),
         icon: Keyboard,
         onClick: () => void joinSession(),
         disabled: !session || pending,
@@ -1883,18 +1974,18 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       },
       {
         id: "screenshot",
-        label: "Capture screenshot",
-        title: "Capture browser screenshot",
-        ariaLabel: `Capture browser screenshot ${pane.title}`,
+        label: t("Capture screenshot"),
+        title: t("Capture browser screenshot"),
+        ariaLabel: t("Capture browser screenshot {title}", { title: pane.title }),
         icon: Camera,
         onClick: () => void capture("SCREENSHOT"),
         disabled: !session || pending
       },
       {
         id: "record",
-        label: recording ? "Recording" : "Record browser",
-        title: "Record browser session",
-        ariaLabel: `Record browser session ${pane.title}`,
+        label: recording ? t("Recording") : t("Record browser"),
+        title: t("Record browser session"),
+        ariaLabel: t("Record browser session {title}", { title: pane.title }),
         icon: Video,
         onClick: () => setRecordingControlsOpen((current) => recording ? true : !current),
         disabled: !session || pending || recordingActionPending,
@@ -1904,9 +1995,9 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       },
       {
         id: "debug",
-        label: "Browser debugger",
-        title: "Open browser debugger",
-        ariaLabel: `Open browser debugger ${pane.title}`,
+        label: t("Browser debugger"),
+        title: t("Open browser debugger"),
+        ariaLabel: t("Open browser debugger {title}", { title: pane.title }),
         icon: Bug,
         onClick: () => void toggleDebug(),
         disabled: !session,
@@ -1915,15 +2006,15 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       },
       {
         id: "stop",
-        label: "Stop browser session",
-        title: "Stop browser session",
-        ariaLabel: `Stop browser session ${pane.title}`,
+        label: t("Stop browser session"),
+        title: t("Stop browser session"),
+        ariaLabel: t("Stop browser session {title}", { title: pane.title }),
         icon: CircleStop,
         onClick: () => void stopSession(),
         disabled: !session || pending
       }
     ],
-    [bookmarksOpen, debugOpen, pane.title, pending, recording, recordingActionPending, recordingControlsOpen, session, status?.enabled, textInputOpen]
+    [bookmarksOpen, debugOpen, language, pane.title, pending, recording, recordingActionPending, recordingControlsOpen, routeOpen, session, status?.enabled, textInputOpen]
   );
   const [browserToolbarStorageKeys] = useState(() => {
     const storageKeys = uiTheme !== "classic"
@@ -1960,9 +2051,10 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   useDismissibleToolbarLayer({ containerRef: tabMenuRef, active: Boolean(tabMenu), onDismiss: () => setTabMenu(null) });
   useDismissibleToolbarLayer({
     containerRef: browserToolbarRef,
-    active: bookmarksOpen || recordingControlsOpen || textInputOpen || browserToolbar.isOverflowOpen || Boolean(browserToolbar.actionMenu),
+    active: bookmarksOpen || routeOpen || recordingControlsOpen || textInputOpen || browserToolbar.isOverflowOpen || Boolean(browserToolbar.actionMenu),
     onDismiss: () => {
       setBookmarksOpen(false);
+      setRouteOpen(false);
       setRecordingControlsOpen(Boolean(activeRecordingJob));
       setTextInputOpen(false);
       browserToolbar.closeMenus();
@@ -1978,17 +2070,17 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     <section
       ref={paneRef}
       className={`browser-pane${focusMode ? " browser-pane-focus" : ""}${debugOpen ? " debugger-open" : ""}`}
-      aria-label={`${pane.title} browser session`}
+      aria-label={t("{title} browser session", { title: pane.title })}
       data-browser-agent={agentNumber}
       data-browser-audio-state={audioState}
       data-browser-session-status={session?.status ?? "NONE"}
     >
       {pane.title === "DeepSeek Harness" ? (
       <div className="browser-pane-legacy-harness-notice" role="note" data-legacy-harness="true">
-          <span>Legacy Harness (Browser) — Convert to Harness</span>
+          <span>{t("Legacy Harness (Browser) — Convert to Harness")}</span>
         </div>
       ) : null}
-      <div className="browser-tab-strip" role="tablist" aria-label={`Browser tabs ${pane.title}`}>
+      <div className="browser-tab-strip" role="tablist" aria-label={t("Browser tabs {title}", { title: pane.title })}>
         <div className="browser-tab-scroll">
           {(emptyBrowser ? [] : pages).map((page) => {
             const selected = activePageId ? page.pageId === activePageId : page.isActive;
@@ -2002,22 +2094,22 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                   type="button"
                   role="tab"
                   aria-selected={selected}
-                  aria-label={[page.title ?? page.url ?? "Browser tab", page.account ? tabAccountLabel(page.account) : null].filter(Boolean).join(" · ")}
-                  title={[page.url ?? page.title ?? "Browser tab", page.account ? `Google account: ${tabAccountLabel(page.account)}` : null].filter(Boolean).join("\n")}
+                  aria-label={[page.title ?? page.url ?? t("Browser tab"), page.account ? tabAccountLabel(page.account) : null].filter(Boolean).join(" · ")}
+                  title={[page.url ?? page.title ?? t("Browser tab"), page.account ? t("Google account: {account}", { account: tabAccountLabel(page.account) }) : null].filter(Boolean).join("\n")}
                   disabled={observerOnly || pending || session?.status === "CLOSED" || page.pageId.startsWith("legacy:")}
                   onClick={() => void activatePage(page.pageId)}
                 >
                   {page.account ? <span className="account-menu-avatar browser-tab-account" aria-hidden="true"
                     style={{ "--account-hue": avatarHue(tabAccountLabel(page.account)) } as CSSProperties}>
                     {tabAccountLabel(page.account).charAt(0).toUpperCase()}</span> : <Globe2 aria-hidden="true" />}
-                  <span>{page.title ?? page.url ?? "New tab"}</span>
+                  <span>{page.title ?? page.url ?? t("New tab")}</span>
                 </button>
                 {!page.pageId.startsWith("legacy:") ? (
                   <button
                     type="button"
                     className="browser-tab-close"
-                    aria-label={`Close browser tab ${page.title ?? page.url ?? "tab"}`}
-                    title="Close tab"
+                    aria-label={t("Close browser tab {tab}", { tab: page.title ?? page.url ?? t("tab") })}
+                    title={t("Close tab")}
                     disabled={observerOnly || pending || session?.status === "CLOSED"}
                     onClick={() => void closePage(page.pageId)}
                   >
@@ -2028,13 +2120,13 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             );
           })}
         </div>
-        <button type="button" className="browser-new-tab" aria-label={`New browser tab ${pane.title}`} title="New tab" onClick={() => void createPage()} disabled={observerOnly || !status?.enabled || pending}>
+        <button type="button" className="browser-new-tab" aria-label={t("New browser tab {title}", { title: pane.title })} title={t("New tab")} onClick={() => void createPage()} disabled={observerOnly || !status?.enabled || pending}>
           <Plus aria-hidden="true" />
         </button>
         {tabMenu ? (
-          <div ref={tabMenuRef} className="icon-context-menu" role="menu" aria-label={`Tab menu ${tabMenu.page.title ?? tabMenu.page.url ?? "tab"}`}
+          <div ref={tabMenuRef} className="icon-context-menu" role="menu" aria-label={t("Tab menu {tab}", { tab: tabMenu.page.title ?? tabMenu.page.url ?? t("tab") })}
             style={{ left: `${tabMenu.x}px`, top: `${tabMenu.y}px` }}>
-            <button type="button" role="menuitem" onClick={() => void saveTabToBookmarks(tabMenu.page)}><BookmarkPlus aria-hidden="true" /> Save to bookmarks</button>
+            <button type="button" role="menuitem" onClick={() => void saveTabToBookmarks(tabMenu.page)}><BookmarkPlus aria-hidden="true" /> {t("Save to bookmarks")}</button>
           </div>
         ) : null}
       </div>
@@ -2044,23 +2136,23 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setGoogleAccountMenuOpen(false); googleAccountButtonRef.current?.focus(); } }}>
         <button ref={googleAccountButtonRef} type="button" className={`browser-account-trigger${effectiveAccountId(menuAccounts ?? googleAccounts) !== privatePaneProfileId ? " selected" : ""}`}
           data-account-status={googleAccountSummary?.tone}
-          aria-label={`Google account for ${pane.title}`} aria-haspopup="menu" aria-expanded={googleAccountMenuOpen}
-          title={`Google account: ${[googleAccountSummary?.name, googleAccountSummary?.status].filter(Boolean).join(" · ")}`}
+          aria-label={t("Google account for {title}", { title: pane.title })} aria-haspopup="menu" aria-expanded={googleAccountMenuOpen}
+          title={t("Google account: {account}", { account: [googleAccountSummary?.name, googleAccountSummary?.status].filter(Boolean).join(" · ") })}
           disabled={pending || observerOnly} onClick={() => {
             browserToolbar.closeMenus();
             if (!googleAccountMenuOpen) loadGoogleAccounts();
             setGoogleAccountMenuOpen(!googleAccountMenuOpen);
-          }}><Users aria-hidden="true" /></button>
-        {googleAccountMenuOpen ? <div className="browser-account-menu" role="menu" aria-label={`Google accounts for ${pane.title}`}>
+          }}><Users aria-hidden="true" />{googleAccountSummary ? <span className="browser-account-email">{googleAccountSummary.name}</span> : null}</button>
+        {googleAccountMenuOpen ? <div className="browser-account-menu" role="menu" aria-label={t("Google accounts for {title}", { title: pane.title })}>
           <GoogleAccountMenuItems accounts={menuAccounts ?? googleAccounts} onSelect={(profileId) => void chooseGoogleAccount(profileId)}
             onSignIn={(profileId) => void (tabScoped && activeTab?.account ? switchTabAccount(activeTab.pageId, profileId, true) : selectGoogleAccount(profileId, true))}
-            scope={tabScoped ? "This tab" : undefined} />
+            scope={tabScoped ? t("This tab") : undefined} />
         </div> : null}
       </div> : null}
         <form onSubmit={navigate} className="browser-url-form">
           <Globe2 aria-hidden="true" />
-          <input name="browser-url" value={url} onChange={(event) => { urlDraftRef.current = event.target.value; setUrl(event.target.value); }} aria-label={`Browser URL ${pane.title}`} placeholder="Search or enter address" autoCapitalize="none" autoCorrect="off" spellCheck={false} disabled={observerOnly} />
-          <button type="submit" title="Navigate browser" aria-label={`Navigate browser ${pane.title}`} disabled={observerOnly || pending || !url.trim()}>
+          <input name="browser-url" value={url} onChange={(event) => { urlDraftRef.current = event.target.value; setUrl(event.target.value); }} aria-label={t("Browser URL {title}", { title: pane.title })} placeholder={t("Search or enter address")} autoCapitalize="none" autoCorrect="off" spellCheck={false} disabled={observerOnly} />
+          <button type="submit" title={t("Navigate browser")} aria-label={t("Navigate browser {title}", { title: pane.title })} disabled={observerOnly || pending || !url.trim()}>
             <Send aria-hidden="true" />
           </button>
         </form>
@@ -2070,55 +2162,55 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             <span
               className={`browser-runtime-indicator ${pending ? "working" : session?.status.toLowerCase() ?? (status?.enabled ? "ready" : "disabled")}`}
               role="status"
-              aria-label={`${pending ? "Working" : session?.status ?? (status?.enabled ? "Ready" : "Disabled")}: ${statusText}`}
+              aria-label={`${pending ? t("Working") : session?.status ? sessionStatusWord(session.status) : status?.enabled ? t("Ready") : t("Disabled")}: ${statusText}`}
               title={statusText}
             />
             <select
               name="browser-stream-mode"
               value={streamMode}
               onChange={(event) => void setStream(event.target.value as BrowserStreamMode)}
-              aria-label={`Stream mode ${pane.title}`}
+              aria-label={t("Stream mode {title}", { title: pane.title })}
               disabled={!session || pending}
             >
               {streamModeOptions.map((option) => (
-                <option key={option.id} value={option.id}>{option.label}</option>
+                <option key={option.id} value={option.id}>{t(option.label)}</option>
               ))}
             </select>
           </label>
           <button type="button" className={`browser-devtools-toggle${debugOpen ? " selected" : ""}`}
-            aria-label={`DevTools ${pane.title}`} title="DevTools: console, network and agent tools"
+            aria-label={t("DevTools {title}", { title: pane.title })} title={t("DevTools: console, network and agent tools")}
             aria-expanded={debugOpen} onClick={() => void toggleDebug()} disabled={!session}>
-            <Bug aria-hidden="true" /><span>DevTools</span>
+            <Bug aria-hidden="true" /><span>{t("DevTools")}</span>
           </button>
-          <button type="button" className="browser-fit-toggle" aria-label={`Fit browser to pane ${pane.title}`}
-            title="Resize the web page to fill this pane" aria-pressed={fitPane}
+          <button type="button" className="browser-fit-toggle" aria-label={t("Fit browser to pane {title}", { title: pane.title })}
+            title={t("Resize the web page to fill this pane")} aria-pressed={fitPane}
             disabled={!canUseSession || pending}
             onClick={() => {
               if (fitPane) { setFitPane(false); return; }
-              void acquireControlForInput().then(() => setFitPane(true)).catch((error) => setError(error instanceof Error ? error.message : "Browser control unavailable"));
-            }}><Maximize2 aria-hidden="true" /><span>Fit pane</span></button>
-          {!compactToolbar ? <div className="browser-viewport-control" role="group" aria-label={`Browser viewport ${pane.title}`}>
+              void acquireControlForInput().then(() => setFitPane(true)).catch((error) => setError(error instanceof Error ? error.message : t("Browser control unavailable")));
+            }}><Maximize2 aria-hidden="true" /><span>{t("Fit pane")}</span></button>
+          {!compactToolbar ? <div className="browser-viewport-control" role="group" aria-label={t("Browser viewport {title}", { title: pane.title })}>
             {viewportOptions.map(({ id, label, title, Icon }) => (
               <button
                 key={id}
                 type="button"
                 className={viewport === id ? "selected" : ""}
-                title={title}
-                aria-label={`${label} view ${pane.title}`}
+                title={t(title)}
+                aria-label={t("{action} {title}", { action: viewName(id), title: pane.title })}
                 aria-pressed={viewport === id}
                 onClick={() => void setViewport(id)}
                 disabled={!canUseSession || pending}
               >
                 <Icon aria-hidden="true" />
-                <span>{label}</span>
+                <span>{t(label)}</span>
               </button>
             ))}
           </div> : null}
           <button
             type="button"
             className={`browser-control-toggle${handoff ? " selected" : ""}`}
-            title={handoff ? "Release browser control" : "Join browser session"}
-            aria-label={`${handoff ? "Release browser control" : "Join browser session"} ${pane.title}`}
+            title={browserControlLabel}
+            aria-label={t("{action} {title}", { action: browserControlLabel, title: pane.title })}
             aria-pressed={handoff}
             onClick={() => void (handoff ? releaseControl() : joinSession())}
             disabled={!session || pending}
@@ -2128,8 +2220,8 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           {!compactToolbar ? <button
             type="button"
             className={`browser-focus-toggle dock-fullscreen-toggle${focusMode ? " selected is-active" : ""}`}
-            title={focusMode ? "Exit browser focus mode" : "Expand browser view"}
-            aria-label={`${focusMode ? "Exit browser focus mode" : "Expand browser view"} ${pane.title}`}
+            title={focusMode ? t("Exit browser focus mode") : t("Expand browser view")}
+            aria-label={t("{action} {title}", { action: focusMode ? t("Exit browser focus mode") : t("Expand browser view"), title: pane.title })}
             aria-pressed={focusMode}
             onClick={() => void toggleFocusMode()}
             disabled={!session}
@@ -2137,16 +2229,16 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             {focusMode ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
           </button> : null}
           </> : null}
-          <div ref={browserToolbarRef} className="browser-pane-actions" aria-label={`Browser toolbar actions ${pane.title}`}>
-            <button type="button" title="Paste clipboard text into the page" aria-label={`Paste into browser ${pane.title}`}
+          <div ref={browserToolbarRef} className="browser-pane-actions" aria-label={t("Browser toolbar actions {title}", { title: pane.title })}>
+            <button type="button" title={t("Paste clipboard text into the page")} aria-label={t("Paste into browser {title}", { title: pane.title })}
               onClick={() => void pasteClipboard()} disabled={observerOnly || !session || session.status === "CLOSED" || pending}>
               <Clipboard aria-hidden="true" />
             </button>
             <div className="pane-actions-overflow browser-toolbar-overflow">
             <button
               type="button"
-              title={`More browser actions ${pane.title}`}
-              aria-label={`More browser actions ${pane.title}`}
+              title={t("More browser actions {title}", { title: pane.title })}
+              aria-label={t("More browser actions {title}", { title: pane.title })}
               aria-expanded={browserToolbar.isOverflowOpen}
               onClick={() => {
                 setGoogleAccountMenuOpen(false);
@@ -2161,25 +2253,25 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
               <MoreHorizontal aria-hidden="true" />
             </button>
             {browserToolbar.isOverflowOpen ? (
-              <div className="icon-overflow-menu browser-tools-menu" role="menu" aria-label={`Browser actions ${pane.title}`}>
+              <div className="icon-overflow-menu browser-tools-menu" role="menu" aria-label={t("Browser actions {title}", { title: pane.title })}>
                 {compactToolbar ? <>
-                  <label className="browser-menu-stream">Stream mode
-                    <select name="browser-stream-mode" value={streamMode} aria-label={`Stream mode ${pane.title}`} disabled={!session || pending}
+                  <label className="browser-menu-stream">{t("Stream mode")}
+                    <select name="browser-stream-mode" value={streamMode} aria-label={t("Stream mode {title}", { title: pane.title })} disabled={!session || pending}
                       onChange={(event) => void setStream(event.target.value as BrowserStreamMode)}>
-                      {streamModeOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                      {streamModeOptions.map((option) => <option key={option.id} value={option.id}>{t(option.label)}</option>)}
                     </select>
                   </label>
-                  <button type="button" role="menuitem" aria-label={`DevTools ${pane.title}`} aria-expanded={debugOpen} disabled={!session}
-                    onClick={() => { browserToolbar.closeMenus(); void toggleDebug(); }}><Bug aria-hidden="true" /><span>DevTools</span></button>
-                  <button type="button" role="menuitem" aria-label={`Fit browser to pane ${pane.title}`} aria-pressed={fitPane} disabled={!canUseSession || pending}
-                    onClick={() => { browserToolbar.closeMenus(); if (fitPane) { setFitPane(false); return; } void acquireControlForInput().then(() => setFitPane(true)).catch((error) => setError(error instanceof Error ? error.message : "Browser control unavailable")); }}><Maximize2 aria-hidden="true" /><span>Fit pane</span></button>
-                  <button type="button" role="menuitem" aria-label={`${handoff ? "Release browser control" : "Join browser session"} ${pane.title}`} aria-pressed={handoff} disabled={!session || pending}
-                    onClick={() => { browserToolbar.closeMenus(); void (handoff ? releaseControl() : joinSession()); }}><UserCheck aria-hidden="true" /><span>{handoff ? "Release browser control" : "Join browser session"}</span></button>
-                  <span className="browser-tools-menu-label" role="presentation">Viewport</span>
-                  {viewportOptions.map(({ id, label, Icon }) => <button key={id} type="button" role="menuitem" aria-label={`${label} view ${pane.title}`} aria-pressed={viewport === id && !fitPane} disabled={!canUseSession || pending}
-                    onClick={() => { browserToolbar.closeMenus(); void setViewport(id); }}><Icon aria-hidden="true" /><span>{label} view</span></button>)}
-                  <button type="button" role="menuitem" aria-label={`${focusMode ? "Exit browser focus mode" : "Expand browser view"} ${pane.title}`} disabled={!session}
-                    onClick={() => { browserToolbar.closeMenus(); toggleFocusMode(); }}><Maximize2 aria-hidden="true" /><span>{focusMode ? "Exit focus mode" : "Expand browser view"}</span></button>
+                  <button type="button" role="menuitem" aria-label={t("DevTools {title}", { title: pane.title })} aria-expanded={debugOpen} disabled={!session}
+                    onClick={() => { browserToolbar.closeMenus(); void toggleDebug(); }}><Bug aria-hidden="true" /><span>{t("DevTools")}</span></button>
+                  <button type="button" role="menuitem" aria-label={t("Fit browser to pane {title}", { title: pane.title })} aria-pressed={fitPane} disabled={!canUseSession || pending}
+                    onClick={() => { browserToolbar.closeMenus(); if (fitPane) { setFitPane(false); return; } void acquireControlForInput().then(() => setFitPane(true)).catch((error) => setError(error instanceof Error ? error.message : t("Browser control unavailable"))); }}><Maximize2 aria-hidden="true" /><span>{t("Fit pane")}</span></button>
+                  <button type="button" role="menuitem" aria-label={t("{action} {title}", { action: browserControlLabel, title: pane.title })} aria-pressed={handoff} disabled={!session || pending}
+                    onClick={() => { browserToolbar.closeMenus(); void (handoff ? releaseControl() : joinSession()); }}><UserCheck aria-hidden="true" /><span>{browserControlLabel}</span></button>
+                  <span className="browser-tools-menu-label" role="presentation">{t("Viewport")}</span>
+                  {viewportOptions.map(({ id, label, Icon }) => <button key={id} type="button" role="menuitem" aria-label={t("{action} {title}", { action: viewName(id), title: pane.title })} aria-pressed={viewport === id && !fitPane} disabled={!canUseSession || pending}
+                    onClick={() => { browserToolbar.closeMenus(); void setViewport(id); }}><Icon aria-hidden="true" /><span>{viewName(id)}</span></button>)}
+                  <button type="button" role="menuitem" aria-label={t("{action} {title}", { action: focusMode ? t("Exit browser focus mode") : t("Expand browser view"), title: pane.title })} disabled={!session}
+                    onClick={() => { browserToolbar.closeMenus(); toggleFocusMode(); }}><Maximize2 aria-hidden="true" /><span>{focusMode ? t("Exit focus mode") : t("Expand browser view")}</span></button>
                 </> : null}
                 {browserToolbar.visibleActions.map((action) => {
                   const Icon = action.icon;
@@ -2219,7 +2311,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                 })}
                 {browserToolbar.hiddenActions.length ? (
                   <>
-                    <span className="browser-tools-menu-label" role="presentation">Hidden tools</span>
+                    <span className="browser-tools-menu-label" role="presentation">{t("Hidden tools")}</span>
                     {browserToolbar.hiddenActions.map((action) => {
                       const Icon = action.icon;
                       return (
@@ -2241,7 +2333,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                       );
                     })}
                     <button type="button" role="menuitem" onClick={browserToolbar.restoreHiddenActions}>
-                      <span>Show all icons</span>
+                      <span>{t("Show all icons")}</span>
                     </button>
                   </>
                 ) : null}
@@ -2249,12 +2341,13 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             ) : null}
           </div>
           {bookmarksOpen ? (
-            <div className="browser-bookmark-popover toolbar-floating-menu jc-pane" role="dialog" aria-label={`Saved browser bookmarks ${pane.title}`}>
+            <div className="browser-bookmark-popover toolbar-floating-menu jc-pane" role="dialog" aria-label={t("Saved browser bookmarks {title}", { title: pane.title })}>
               <BookmarksTab paneId={pane.id} popover onOpened={() => setBookmarksOpen(false)} />
             </div>
           ) : null}
+          {routeOpen ? <BrowserRouteMenu paneId={pane.id} title={pane.title} onChanged={() => void loadPages()} /> : null}
           {textInputOpen ? (
-            <form className="browser-text-popover toolbar-floating-menu" onSubmit={sendText} aria-label={`Browser text controls ${pane.title}`}>
+            <form className="browser-text-popover toolbar-floating-menu" onSubmit={sendText} aria-label={t("Browser text controls {title}", { title: pane.title })}>
               <input
                 ref={handoffInputRef}
                 value={textInput}
@@ -2265,14 +2358,14 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                   event.preventDefault();
                   void sendPageKey(event.key);
                 }}
-                aria-label={`Browser text input ${pane.title}`}
-                placeholder="Type into page"
+                aria-label={t("Browser text input {title}", { title: pane.title })}
+                placeholder={t("Type into page")}
                 disabled={!handoff || !session}
               />
               <button
                 type="submit"
-                title="Type into browser"
-                aria-label={`Type into browser ${pane.title}`}
+                title={t("Type into browser")}
+                aria-label={t("Type into browser {title}", { title: pane.title })}
                 disabled={!handoff || !session || !textInput}
               >
                 <Send aria-hidden="true" />
@@ -2283,26 +2376,26 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             <div
               className="browser-recording-popover toolbar-floating-menu"
               role="dialog"
-              aria-label={`Browser recording controls ${pane.title}`}
+              aria-label={t("Browser recording controls {title}", { title: pane.title })}
             >
               <div className="browser-recording-heading">
-                <strong>Record browser</strong>
+                <strong>{t("Record browser")}</strong>
                 <button
                   type="button"
-                  aria-label={`Close browser recording controls ${pane.title}`}
-                  title={activeRecordingJob ? "Stop or cancel the active recording first" : "Close recording controls"}
+                  aria-label={t("Close browser recording controls {title}", { title: pane.title })}
+                  title={activeRecordingJob ? t("Stop or cancel the active recording first") : t("Close recording controls")}
                   disabled={Boolean(activeRecordingJob)}
                   onClick={() => setRecordingControlsOpen(false)}
                 >
                   <X aria-hidden="true" />
                 </button>
               </div>
-              <div className="browser-recording-durations" aria-label="Recording duration">
+              <div className="browser-recording-durations" aria-label={t("Recording duration")}>
                 {recordingDurationOptions.map((option) => (
                   <button
                     key={option.milliseconds}
                     type="button"
-                    aria-label={`${option.label} recording duration`}
+                    aria-label={t("{duration} recording duration", { duration: option.label })}
                     aria-pressed={recordingDurationMs === option.milliseconds}
                     disabled={Boolean(activeRecordingJob) || recordingActionPending}
                     onClick={() => setRecordingDurationMs(option.milliseconds)}
@@ -2314,11 +2407,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
               {activeRecordingJob ? (
                 <div className="browser-recording-progress">
                   <div>
-                    <span>{activeRecordingJob.status === "QUEUED" ? "Queued" : "Recording"}</span>
+                    <span>{activeRecordingJob.status === "QUEUED" ? t("Queued") : t("Recording")}</span>
                     <span>{activeRecordingJob.progressPercent}%</span>
                   </div>
                   <progress
-                    aria-label="Browser recording progress"
+                    aria-label={t("Browser recording progress")}
                     aria-valuenow={Math.min(100, Math.max(0, activeRecordingJob.progressPercent))}
                     max={100}
                     value={Math.min(100, Math.max(0, activeRecordingJob.progressPercent))}
@@ -2331,33 +2424,33 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                     <button
                       type="button"
                       className="browser-recording-stop"
-                      aria-label={`Stop and save browser recording ${pane.title}`}
+                      aria-label={t("Stop and save browser recording {title}", { title: pane.title })}
                       disabled={recordingActionPending}
                       onClick={() => void stopRecording()}
                     >
                       <Square aria-hidden="true" />
-                      <span>Stop & save</span>
+                      <span>{t("Stop & save")}</span>
                     </button>
                     <button
                       type="button"
-                      aria-label={`Cancel browser recording ${pane.title}`}
+                      aria-label={t("Cancel browser recording {title}", { title: pane.title })}
                       disabled={recordingActionPending}
                       onClick={() => void cancelRecording()}
                     >
                       <Trash2 aria-hidden="true" />
-                      <span>Discard</span>
+                      <span>{t("Discard")}</span>
                     </button>
                   </>
                 ) : (
                   <button
                     type="button"
                     className="browser-recording-start"
-                    aria-label={`Start browser recording ${pane.title}`}
+                    aria-label={t("Start browser recording {title}", { title: pane.title })}
                     disabled={recordingActionPending || pending}
                     onClick={() => void capture("RECORDING", recordingDurationMs)}
                   >
                     {recordingActionPending ? <Loader2 aria-hidden="true" /> : <Play aria-hidden="true" />}
-                    <span>Start recording</span>
+                    <span>{t("Start recording")}</span>
                   </button>
                 )}
               </div>
@@ -2367,11 +2460,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             <div
               className="icon-context-menu"
               role="menu"
-              aria-label={`Action menu ${browserToolbar.actionMenu.actionLabel}`}
+              aria-label={t("Action menu {action}", { action: browserToolbar.actionMenu.actionLabel })}
               style={{ left: `${browserToolbar.actionMenu.x}px`, top: `${browserToolbar.actionMenu.y}px` }}
             >
               <button type="button" role="menuitem" onClick={() => browserToolbar.hideAction(browserToolbar.actionMenu!.actionId)}>
-                Hide
+                {t("Hide")}
               </button>
             </div>
           ) : null}
@@ -2391,7 +2484,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             onPresented={() => {
               if (paneRef.current) paneRef.current.dataset.browserPresentedFrames = String(Number(paneRef.current.dataset.browserPresentedFrames ?? 0) + 1);
             }}
-            ariaLabel={`${pane.title} browser frame`}
+            ariaLabel={t("{title} browser frame", { title: pane.title })}
             viewportSize={streamDimensions ?? response?.viewportDimensions ?? viewportSizes[viewport]}
             interactive={!observerOnly && Boolean(session && session.status !== "CLOSED") && !pending}
             source={emptyBrowser ? undefined : activeFrame?.screenshotDataUrl}
@@ -2401,7 +2494,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           />
           {emptyBrowser || !activeFrame?.screenshotDataUrl ? (
             <div className="browser-frame-empty" role="status">
-              {pending ? <Loader2 aria-hidden="true" /> : emptyBrowser || session?.status === "CLOSED" ? <span>No open tabs. Use + to open a new tab.</span> : <MousePointer2 aria-hidden="true" />}
+              {pending ? <Loader2 aria-hidden="true" /> : emptyBrowser || session?.status === "CLOSED" ? <span>{t("No open tabs. Use + to open a new tab.")}</span> : <MousePointer2 aria-hidden="true" />}
             </div>
           ) : null}
           {browserAgent && browserAgent.paneId !== pane.id && !handoff && !emptyBrowser && session?.status !== "CLOSED" ? (
@@ -2409,18 +2502,18 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
               type="button"
               className="browser-agent-label"
               data-active={browserAgent.active ? "true" : "false"}
-              title={`${browserAgent.active ? "Handled" : `Last handled ${relativeTime(browserAgent.drivenAt)}`} by ${browserAgent.paneName ?? browserAgent.title} in room ${browserAgent.roomName}. Click to go to that pane.`}
+              title={browserAgent.active ? t("Handled by {pane} in room {room}. Click to go to that pane.", { pane: browserAgent.paneName ?? browserAgent.title, room: browserAgent.roomName }) : t("Last handled {time} by {pane} in room {room}. Click to go to that pane.", { time: relativeTime(browserAgent.drivenAt), pane: browserAgent.paneName ?? browserAgent.title, room: browserAgent.roomName })}
               onClick={() => requestNousFocus({ roomId: browserAgent.roomId, paneId: browserAgent.paneId, immediate: true })}
             >
-              {browserAgent.active ? "" : "Last: "}{[browserAgent.roomName, browserAgent.paneName, browserAgent.title, browserAgent.active ? null : relativeTime(browserAgent.drivenAt)].filter(Boolean).join(" · ")}
+              {browserAgent.active ? "" : `${t("Last:")} `}{[browserAgent.roomName, browserAgent.paneName, browserAgent.title, browserAgent.active ? null : relativeTime(browserAgent.drivenAt)].filter(Boolean).join(" · ")}
             </button>
           ) : null}
-          {selectedFrameIndex !== null ? <span className="browser-frame-paused">Frame {selectedFrameIndex + 1} / {canvasHistoryLength}</span> : null}
+          {selectedFrameIndex !== null ? <span className="browser-frame-paused">{t("Frame {n} / {total}", { n: selectedFrameIndex + 1, total: canvasHistoryLength })}</span> : null}
         </div>
 
         {debugOpen ? (
-          <aside className="browser-debug-drawer" aria-label={`Browser debugger ${pane.title}`}>
-            <div className="browser-debug-tabs" role="tablist" aria-label="Browser debug views">
+          <aside className="browser-debug-drawer" aria-label={t("Browser debugger {title}", { title: pane.title })}>
+            <div className="browser-debug-tabs" role="tablist" aria-label={t("Browser debug views")}>
               {(["console", "network", "timeline", "artifacts", "agents"] as BrowserDebugTab[]).map((tab) => (
                 <button
                   key={tab}
@@ -2429,32 +2522,32 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                   aria-selected={debugTab === tab}
                   onClick={() => void selectDebugTab(tab)}
                 >
-                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                  {({ console: t("Console"), network: t("Network"), timeline: t("Timeline"), artifacts: t("Artifacts"), agents: t("Agents") } as Record<BrowserDebugTab, string>)[tab]}
                 </button>
               ))}
-              <button type="button" className="browser-debug-close" aria-label="Close browser debugger" title="Close debugger" onClick={() => setDebugOpen(false)}>
+              <button type="button" className="browser-debug-close" aria-label={t("Close browser debugger")} title={t("Close debugger")} onClick={() => setDebugOpen(false)}>
                 <X aria-hidden="true" />
               </button>
             </div>
             <div className="browser-debug-body">
               {["console", "network"].includes(debugTab) ? (
                 <div className="browser-devtools-controls">
-                  <input aria-label="Filter browser diagnostics" placeholder="Filter events" value={diagnosticsFilter} onChange={(event) => setDiagnosticsFilter(event.target.value)} />
-                  <button type="button" aria-pressed={diagnosticsLive} onClick={() => setDiagnosticsLive((value) => !value)}>Live</button>
-                  <button type="button" aria-label="Refresh browser diagnostics" disabled={diagnosticsPending} onClick={() => void loadDiagnostics()}><RefreshCw aria-hidden="true" /></button>
+                  <input aria-label={t("Filter browser diagnostics")} placeholder={t("Filter events")} value={diagnosticsFilter} onChange={(event) => setDiagnosticsFilter(event.target.value)} />
+                  <button type="button" aria-pressed={diagnosticsLive} onClick={() => setDiagnosticsLive((value) => !value)}>{t("Live")}</button>
+                  <button type="button" aria-label={t("Refresh browser diagnostics")} disabled={diagnosticsPending} onClick={() => void loadDiagnostics()}><RefreshCw aria-hidden="true" /></button>
                 </div>
               ) : null}
-              {diagnosticsPending && !diagnostics.events.length ? <span role="status">Loading diagnostics...</span> : null}
+              {diagnosticsPending && !diagnostics.events.length ? <span role="status">{t("Loading diagnostics...")}</span> : null}
               {debugTab === "agents" ? (
                 <div className="browser-agent-tools">
-                  <strong>One browser, shared with your agents</strong>
-                  <p>Agents in this room can inspect and operate this session. Take control to type or sign in; release control when the agent can continue.</p>
-                  <dl><dt>Pane</dt><dd>{pane.id}</dd><dt>Session</dt><dd>{session?.sessionId ?? "No session"}</dd></dl>
-                  <p><code>space_browser_context</code> discovers this room's browsers.</p>
-                  <p><code>space_browser_devtools</code> reads console errors and network events, including while you hold control.</p>
-                  <p><code>space_browser_tabs</code>, <code>space_browser_extract_text</code> and <code>space_browser_screenshot</code> inspect the page.</p>
-                  <p><code>space_browser_click</code>, <code>space_browser_type</code>, <code>space_browser_scroll</code> and <code>space_browser_navigate</code> operate the same session.</p>
-                  <p><code>space_browser_request_handoff</code> asks you to complete login, CAPTCHA or MFA inside this browser.</p>
+                  <strong>{t("One browser, shared with your agents")}</strong>
+                  <p>{t("Agents in this room can inspect and operate this session. Take control to type or sign in; release control when the agent can continue.")}</p>
+                  <dl><dt>{t("Pane")}</dt><dd>{pane.id}</dd><dt>{t("Session")}</dt><dd>{session?.sessionId ?? t("No session")}</dd></dl>
+                  <p><code>space_browser_context</code> {t("discovers this room's browsers.")}</p>
+                  <p><code>space_browser_devtools</code> {t("reads console errors and network events, including while you hold control.")}</p>
+                  <p><code>space_browser_tabs</code>, <code>space_browser_extract_text</code> {t("and")} <code>space_browser_screenshot</code> {t("inspect the page.")}</p>
+                  <p><code>space_browser_click</code>, <code>space_browser_type</code>, <code>space_browser_scroll</code> {t("and")} <code>space_browser_navigate</code> {t("operate the same session.")}</p>
+                  <p><code>space_browser_request_handoff</code> {t("asks you to complete login, CAPTCHA or MFA inside this browser.")}</p>
                 </div>
               ) : null}
               {debugTab === "console" ? (
@@ -2464,22 +2557,22 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                       ? entry.metadata.values.map((value) => typeof value === "string" ? value : JSON.stringify(value)).join(" ")
                       : entry.message}</p><time>{new Date(entry.occurredAt).toLocaleTimeString()}</time>
                   </div>
-                )) : <span>No console events</span>
+                )) : <span>{t("No console events")}</span>
               ) : null}
               {debugTab === "network" ? (
                 networkEvents.length ? networkEvents.map((entry) => (
                   <div key={entry.eventId} className="browser-debug-entry network">
                     <span>{metadataText(entry.metadata, "method")}</span><strong>{metadataText(entry.metadata, "status")}</strong><p title={metadataText(entry.metadata, "url")}>{metadataText(entry.metadata, "url", entry.message)}</p>
                   </div>
-                )) : <span>No network events</span>
+                )) : <span>{t("No network events")}</span>
               ) : null}
               {debugTab === "timeline" ? (
                 <>
                   <div className="browser-frame-controls">
                     <button
                       type="button"
-                      aria-label="Previous browser frame"
-                      title="Previous frame"
+                      aria-label={t("Previous browser frame")}
+                      title={t("Previous frame")}
                       disabled={canvasHistoryLength === 0 || selectedFrameIndex === 0}
                       onClick={() => setSelectedFrameIndex((current) => {
                         const next = current === null ? Math.max(0, canvasHistoryLength - 2) : Math.max(0, current - 1);
@@ -2494,7 +2587,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                       min="0"
                       max={Math.max(0, canvasHistoryLength - 1)}
                       value={selectedFrameIndex ?? Math.max(0, canvasHistoryLength - 1)}
-                      aria-label="Browser frame timeline"
+                      aria-label={t("Browser frame timeline")}
                       onChange={(event) => {
                         const next = Number(event.target.value);
                         setSelectedFrameIndex(next);
@@ -2504,8 +2597,8 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                     />
                     <button
                       type="button"
-                      aria-label="Next browser frame"
-                      title="Next frame"
+                      aria-label={t("Next browser frame")}
+                      title={t("Next frame")}
                       disabled={selectedFrameIndex === null || selectedFrameIndex >= canvasHistoryLength - 1}
                       onClick={() => setSelectedFrameIndex((current) => {
                         const next = current === null || current >= canvasHistoryLength - 1 ? null : current + 1;
@@ -2518,25 +2611,25 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                     <button type="button" onClick={() => {
                       setSelectedFrameIndex(null);
                       canvasRef.current?.showHistory(null);
-                    }} disabled={selectedFrameIndex === null}>Live</button>
+                    }} disabled={selectedFrameIndex === null}>{t("Live")}</button>
                   </div>
                   {timelineEvents.length ? timelineEvents.map((entry) => (
                     <div key={entry.eventId} className="browser-debug-entry timeline">
                       <span>{entry.type}</span><p>{entry.message}</p><strong>{entry.frameIndex === null ? "" : `F${entry.frameIndex + 1}`}</strong><time>{new Date(entry.occurredAt).toLocaleTimeString()}</time>
                     </div>
-                  )) : <span>No timeline events</span>}
+                  )) : <span>{t("No timeline events")}</span>}
                 </>
               ) : null}
               {debugTab === "artifacts" ? (
                 <>
                   {captureJobs.map((job) => (
                     <div key={job.jobId} className="browser-debug-entry artifact-job">
-                      <span>{job.options.kind}</span><p>{job.statusReason ?? `${job.status} / ${job.progressPercent}%`}</p>
-                      <span>{job.artifactIds.length} file{job.artifactIds.length === 1 ? "" : "s"}</span>
+                      <span>{captureJobWord(job.options.kind)}</span><p>{job.statusReason ?? `${captureJobWord(job.status)} / ${job.progressPercent}%`}</p>
+                      <span>{job.artifactIds.length === 1 ? t("1 file") : t("{count} files", { count: job.artifactIds.length })}</span>
                     </div>
                   ))}
                   {persistedRecordings.length > 1 ? (
-                    <div className="browser-recording-selector" aria-label="Persisted browser recordings">
+                    <div className="browser-recording-selector" aria-label={t("Persisted browser recordings")}>
                       {persistedRecordings.map((recordingItem) => (
                         <button
                           key={recordingItem.jobId}
@@ -2552,8 +2645,8 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                   {selectedPersistedRecording?.manifestArtifact && !recordingManifest && recordingManifestFailedId !== selectedPersistedRecording.manifestArtifact.id ? (
                     <span role="status">
                       {recordingManifestPendingId === selectedPersistedRecording.manifestArtifact.id
-                        ? "Loading recording timeline..."
-                        : "Recording timeline unavailable"}
+                        ? t("Loading recording timeline...")
+                        : t("Recording timeline unavailable")}
                     </span>
                   ) : null}
                   {selectedPersistedRecording && (
@@ -2561,7 +2654,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                     recordingManifest ||
                     recordingManifestFailedId === selectedPersistedRecording.manifestArtifact.id
                   ) ? (
-                    <section className="browser-persisted-recording" aria-label={`Recording ${selectedPersistedRecording.jobId}`}>
+                    <section className="browser-persisted-recording" aria-label={t("Recording {id}", { id: selectedPersistedRecording.jobId })}>
                       <video
                         key={selectedPersistedRecording.jobId}
                         ref={persistedRecordingVideoRef}
@@ -2569,7 +2662,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                         controls
                         playsInline
                         preload="metadata"
-                        aria-label={`Persisted browser recording ${selectedPersistedRecording.jobId}`}
+                        aria-label={t("Persisted browser recording {id}", { id: selectedPersistedRecording.jobId })}
                         onTimeUpdate={(event) => {
                           if (persistedTimeline?.frames.length) {
                             const currentMs = event.currentTarget.currentTime * 1000;
@@ -2594,21 +2687,21 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                       <div className="browser-persisted-recording-controls">
                         <button
                           type="button"
-                          aria-label="Previous persisted recording frame"
-                          title="Previous frame"
+                          aria-label={t("Previous persisted recording frame")}
+                          title={t("Previous frame")}
                           disabled={persistedFrameCount <= 0 || persistedRecordingFrame <= 0}
                           onClick={() => stepPersistedRecording(-1)}
                         >
                           <ChevronLeft aria-hidden="true" />
                         </button>
                         <span>
-                          Frame {persistedFrameCount > 0 ? Math.min(persistedFrameCount, persistedRecordingFrame + 1) : "-"}
+                          {t("Frame {n}", { n: persistedFrameCount > 0 ? Math.min(persistedFrameCount, persistedRecordingFrame + 1) : "-" })}
                           {persistedFrameCount > 0 ? ` / ${persistedFrameCount}` : ""}
                         </span>
                         <button
                           type="button"
-                          aria-label="Next persisted recording frame"
-                          title="Next frame"
+                          aria-label={t("Next persisted recording frame")}
+                          title={t("Next frame")}
                           disabled={persistedFrameCount <= 0 || persistedRecordingFrame >= persistedFrameCount - 1}
                           onClick={() => stepPersistedRecording(1)}
                         >
@@ -2621,42 +2714,42 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                           min="0"
                           max={Math.max(0, persistedFrameCount - 1)}
                           value={Math.min(Math.max(0, persistedFrameCount - 1), persistedRecordingFrame)}
-                          aria-label="Persisted recording timeline"
+                          aria-label={t("Persisted recording timeline")}
                           disabled={persistedFrameCount < 2}
                           onChange={(event) => seekPersistedRecordingFrame(Number(event.target.value))}
                         />
                         <small>
                           {recordingTimelinePending
-                            ? "Loading segments..."
+                            ? t("Loading segments...")
                             : persistedSegments.length > 0
-                              ? `${persistedSegments.filter((segment) => segment.status === "FINALIZED").length}/${persistedSegments.length} segments ready`
-                              : "Segment timeline unavailable"}
+                              ? t("{ready}/{total} segments ready", { ready: persistedSegments.filter((segment) => segment.status === "FINALIZED").length, total: persistedSegments.length })
+                              : t("Segment timeline unavailable")}
                         </small>
                       </div>
                     </section>
                   ) : null}
-                  {artifactsPending ? <span role="status">Loading browser artifacts...</span> : null}
+                  {artifactsPending ? <span role="status">{t("Loading browser artifacts...")}</span> : null}
                   {!artifactsPending && artifacts.map((artifact) => (
                     <div key={artifact.id} className="browser-debug-entry artifact">
                       <span>{artifact.kind}</span>
                       <p>
-                        <a href={api.artifactFileUrl(artifact.id)} target="_blank" rel="noreferrer" title="Open browser artifact">
+                        <a href={api.artifactFileUrl(artifact.id)} target="_blank" rel="noreferrer" title={t("Open browser artifact")}>
                           {typeof artifact.metadata.artifactFile === "string" ? artifact.metadata.artifactFile : artifact.id}
                         </a>
-                        <small>{artifact.pinnedAt ? "Pinned" : artifact.expiresAt ? `Expires ${new Date(artifact.expiresAt).toLocaleString()}` : "No expiry"}</small>
+                        <small>{artifact.pinnedAt ? t("Pinned") : artifact.expiresAt ? t("Expires {time}", { time: new Date(artifact.expiresAt).toLocaleString() }) : t("No expiry")}</small>
                       </p>
                       <button
                         type="button"
-                        aria-label={`${artifact.pinnedAt ? "Unpin" : "Pin"} browser artifact ${artifact.id}`}
+                        aria-label={artifact.pinnedAt ? t("Unpin browser artifact {id}", { id: artifact.id }) : t("Pin browser artifact {id}", { id: artifact.id })}
                         aria-pressed={Boolean(artifact.pinnedAt)}
-                        title={artifact.pinnedAt ? "Unpin artifact" : "Pin artifact"}
+                        title={artifact.pinnedAt ? t("Unpin artifact") : t("Pin artifact")}
                         onClick={() => void toggleArtifactPin(artifact)}
                       >
                         {artifact.pinnedAt ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
                       </button>
                     </div>
                   ))}
-                  {!artifactsPending && captureJobs.length === 0 && artifacts.length === 0 ? <span>No browser artifacts</span> : null}
+                  {!artifactsPending && captureJobs.length === 0 && artifacts.length === 0 ? <span>{t("No browser artifacts")}</span> : null}
                 </>
               ) : null}
             </div>
@@ -2667,22 +2760,22 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       {captureNotice ? (
         <div className="browser-pane-notice" role="status">
           <span>{captureNotice}</span>
-          <button type="button" className="browser-pane-notice-close" aria-label="Dismiss message" onClick={() => setCaptureNotice(null)}>
+          <button type="button" className="browser-pane-notice-close" aria-label={t("Dismiss message")} onClick={() => setCaptureNotice(null)}>
             <X aria-hidden="true" />
           </button>
         </div>
       ) : null}
       {session?.status === "CLOSED" ? (
         <div className="browser-pane-notice" role="status">
-          <span>Browser is stopped.</span>
-          {!observerOnly ? <button type="button" onClick={() => void restartBrowser()} disabled={pending}>Start browser</button> : null}
+          <span>{t("Browser is stopped.")}</span>
+          {!observerOnly ? <button type="button" onClick={() => void restartBrowser()} disabled={pending}>{t("Start browser")}</button> : null}
         </div>
       ) : null}
-      {audioState === "blocked" ? <button type="button" className="browser-pane-notice" onClick={resumeAudio}>Resume audio</button> : null}
+      {audioState === "blocked" ? <button type="button" className="browser-pane-notice" onClick={resumeAudio}>{t("Resume audio")}</button> : null}
       {error ? (
         <div className="browser-pane-error" role="alert">
           <span>{error}</span>
-          <button type="button" className="browser-pane-notice-close" aria-label="Dismiss message" onClick={() => setError(null)}>
+          <button type="button" className="browser-pane-notice-close" aria-label={t("Dismiss message")} onClick={() => setError(null)}>
             <X aria-hidden="true" />
           </button>
         </div>

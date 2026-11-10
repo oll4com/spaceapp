@@ -1,0 +1,21 @@
+.nous-done { min-width: 0; }
+.nous-done-entry { min-width: 0; padding: 1rem 0; border-bottom: 1px solid var(--dock-border); overflow-wrap: anywhere; }
+.nous-done-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.4rem 1rem; color: var(--dock-muted); font-size: 0.75rem; }
+.nous-done-meta time { font-variant-numeric: tabular-nums; }
+.nous-done-entry blockquote { margin: 0.7rem 0 0; color: var(--dock-text); font-weight: 600; line-height: 1.5; }
+.nous-done-entry blockquote::before { content: "“"; }
+.nous-done-entry blockquote::after { content: "”"; }
+.nous-done-summary { margin: 0.5rem 0 0.85rem; color: var(--dock-text); white-space: pre-wrap; line-height: 1.55; }
+.nous-done-links { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1rem; margin-block: 0.25rem 0.75rem; }
+.nous-done-links :is(a, button) { min-width: 0; max-width: 100%; min-height: 44px; display: inline-flex; align-items: center; color: var(--dock-accent); font: inherit; font-size: 0.8rem; text-decoration: underline; text-underline-offset: 0.2em; overflow-wrap: anywhere; cursor: pointer; }
+.nous-done-links button { padding: 0; border: 0; background: transparent; }
+.nous-done-links :is(a, button):focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 3px; }
+.nous-done-entry > .dock-kit-button { min-height: 44px; }
+
+.nous-done-ticket { padding-block: 0.5rem; }
+.nous-done-ticket h4 { margin: 0; font-size: 0.85rem; }
+
+/* Nous › Updates (R73): an unread entry is marked at its side; the title reads first. */
+.nous-update[data-unread] { box-shadow: inset 3px 0 0 var(--dock-accent); padding-inline-start: 0.75rem; }
+.nous-update-title { margin: 0.6rem 0 0; color: var(--dock-text); font-size: 0.9rem; line-height: 1.45; }
+.nous-update > .dock-kit-button + .dock-kit-button { margin-inline-start: 0.5rem; }

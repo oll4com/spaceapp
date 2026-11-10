@@ -10,6 +10,7 @@ import {
 import type { CodexParityService } from "./codex-parity.js";
 import type { UnifiedCliTask } from "./unified-cli-task-registry.js";
 import type { UnifiedCliTaskRegistry } from "./unified-cli-task-registry.js";
+import { SPACE_AGENT_HOME } from "@space/contracts";
 
 export interface AgentSessionHistoryListInput {
   page?: number;
@@ -135,7 +136,7 @@ export class AgentSessionHistoryService {
     const start = (page - 1) * pageSize;
     const maxRounds = 6;
 
-    const codexHome = this.options.codexHome ?? "/var/lib/spaceapp-user/.codex";
+    const codexHome = this.options.codexHome ?? `${SPACE_AGENT_HOME}/.codex`;
     const nowFn = input.now ?? this.options.now ?? (() => Date.now());
     const nowMs = nowFn();
     const maxAgeDays = input.maxAgeDays !== undefined ? input.maxAgeDays : this.options.maxAgeDays;

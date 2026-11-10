@@ -15,7 +15,7 @@ const hopByHop = new Set([
 
 export function shouldDropInboundHeader(name: string): boolean {
   const lowered = name.toLowerCase();
-  return ignoredInbound.has(lowered) || hopByHop.has(lowered) || lowered.startsWith("x-forwarded-") || lowered.startsWith("cf-")
+  return ignoredInbound.has(lowered) || hopByHop.has(lowered) || lowered === "x-space-internal-token" || lowered.startsWith("x-forwarded-") || lowered.startsWith("cf-")
     || lowered.startsWith("x-space-gateway-") || lowered.startsWith("sec-websocket-");
 }
 

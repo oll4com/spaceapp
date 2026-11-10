@@ -1,0 +1,141 @@
+/* Needs you cards (plan clipboard:ytwWl09xNH0Z, design §4, approved 3/11 ~19:53 BKK): the theme's --modern-* tokens; a kind's colour only on its
+   icon tile and its one word, never body text, a side bar or a whole card. Light themes mix the kind colours toward the theme's text. */
+:root {
+  --needs-off: #e0af68;
+  --needs-ask: #82aaff;
+  --needs-review: #bb9af7;
+  --needs-pane: #ff9e64;
+  --needs-urgent: #f7768e;
+  --needs-ok: #9ece6a;
+}
+[data-color-mode="light"] {
+  --needs-off: color-mix(in srgb, #e0af68 55%, var(--modern-text, #1b1b1b));
+  --needs-ask: color-mix(in srgb, #82aaff 55%, var(--modern-text, #1b1b1b));
+  --needs-review: color-mix(in srgb, #bb9af7 55%, var(--modern-text, #1b1b1b));
+  --needs-pane: color-mix(in srgb, #ff9e64 55%, var(--modern-text, #1b1b1b));
+  --needs-urgent: color-mix(in srgb, #f7768e 60%, var(--modern-text, #1b1b1b));
+  --needs-ok: color-mix(in srgb, #9ece6a 55%, var(--modern-text, #1b1b1b));
+}
+
+/* .nous-decision.ny-card: the card keeps the old class for the proofs' masks, so its nous.css rules (one column, a box, a small h3) must lose
+   whatever order the stylesheets load in. */
+.nous-decision.ny-card {
+  --ny-kind: var(--needs-ask);
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  column-gap: 12px;
+  row-gap: 12px;
+  align-items: start;
+  padding: 14px 14px 14px 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--modern-text, var(--room-text, #f5f5f5));
+  font-size: 14px;
+  line-height: 1.45;
+}
+.ny-card.kind-off { --ny-kind: var(--needs-off); }
+.ny-card.kind-review { --ny-kind: var(--needs-review); }
+.ny-card.kind-pane { --ny-kind: var(--needs-pane); }
+.ny-tile { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: color-mix(in srgb, var(--ny-kind) 15%, transparent); color: var(--ny-kind); }
+.ny-tile svg { width: 18px; height: 18px; }
+.ny-head { min-width: 0; }
+.ny-card .ny-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ny-card.is-open .ny-title { display: block; -webkit-line-clamp: unset; }
+.ny-meta { display: flex; flex-wrap: wrap; gap: 2px 8px; margin: 3px 0 0; color: var(--modern-muted, var(--room-muted, #aaaaaa)); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.ny-meta > span + span::before { content: "·"; margin-right: 8px; }
+.ny-meta svg { width: 12px; height: 12px; margin-right: 3px; vertical-align: -1px; }
+.ny-kind { color: var(--ny-kind); font-weight: 600; }
+.ny-due { color: var(--needs-urgent); font-weight: 600; }
+.ny-corner.dock-kit-icon-button { border-color: transparent; background: transparent; color: var(--modern-muted, #aaaaaa); }
+.ny-actions, .ny-answers, .ny-sent, .ny-error, .ny-details { grid-column: 2 / -1; }
+.ny-actions, .ny-answers { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ny-answers:empty { display: none; }
+.ny-card .dock-kit-button { min-height: 34px; padding: 0 14px; border-radius: 999px; font-size: 13px; }
+.ny-card .dock-kit-button svg { width: 15px; height: 15px; }
+.ny-details { display: grid; gap: 14px; min-width: 0; }
+.ny-details section { display: grid; gap: 4px; }
+.ny-details h4 { margin: 0; color: var(--modern-muted, #aaaaaa); font-size: 12px; font-weight: 600; }
+.ny-text { max-width: 62ch; overflow-wrap: anywhere; }
+.ny-text p, .ny-text ol, .ny-text ul { margin: 0 0 4px; }
+.ny-text ol, .ny-text ul { padding-left: 20px; }
+.ny-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: 13px; }
+.ny-facts:empty { display: none; }
+.ny-facts dt { color: var(--modern-muted, #aaaaaa); }
+.ny-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.ny-facts a, .ny-text a { color: var(--modern-accent, #82aaff); }
+.ny-previews { display: grid; grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr)); gap: 8px; }
+.ny-previews figure { margin: 0; display: grid; gap: 4px; font-size: 12px; }
+.ny-previews img, .ny-previews video { width: 100%; max-height: 12rem; object-fit: contain; border-radius: 6px; }
+.ny-checked summary { cursor: pointer; color: var(--modern-muted, #aaaaaa); font-size: 12px; font-weight: 600; }
+.ny-field { display: flex; gap: 8px; align-items: center; grid-column: 2 / -1; }
+.ny-field:has(textarea) { align-items: flex-end; }
+.ny-field .dock-kit-button { flex: 0 0 auto; }
+.ny-details .ny-field { grid-column: auto; }
+.ny-actions > .ny-field { flex: 1 1 100%; }
+.ny-field input, .ny-field textarea { flex: 1 1 auto; min-width: 0; min-height: 34px; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--modern-border, #303030);
+  border-radius: 10px; background: var(--modern-bg, #090909); color: inherit; font: inherit; font-size: 14px; resize: vertical; }
+.ny-field input:focus-visible, .ny-field textarea:focus-visible { outline: 2px solid var(--modern-accent, #82aaff); outline-offset: 1px; }
+.ny-footer { display: flex; flex-wrap: wrap; gap: 4px 16px; padding-top: 8px; border-top: 1px solid var(--modern-border, #303030); }
+.ny-link { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; padding: 0; border: 0; background: transparent; color: var(--modern-muted, #aaaaaa);
+  font: inherit; font-size: 12.5px; cursor: pointer; }
+.ny-link:hover { color: var(--modern-text, #f5f5f5); }
+.ny-link svg { width: 13px; height: 13px; }
+.ny-link:focus-visible, .ny-corner:focus-visible { outline: 2px solid var(--modern-accent, #82aaff); outline-offset: 2px; border-radius: 4px; }
+.ny-sent { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--needs-ok); font-size: 13px; }
+.ny-sent svg, .ny-error svg { width: 15px; height: 15px; flex: 0 0 auto; }
+.ny-error { display: flex; align-items: flex-start; gap: 6px; margin: 0; color: var(--needs-urgent); font-size: 13px; overflow-wrap: anywhere; }
+
+/* The small window: bottom right with the toasts, one shadow and no border; Details grow it upward up to 70 % of the viewport. */
+.ny-peek {
+  display: grid;
+  border-radius: 14px;
+  /* Opaque (operator 4/11 18:42 BKK: the pane list behind showed through), on the page colour in case a theme's raised surface is glass. */
+  background: linear-gradient(color-mix(in srgb, var(--modern-surface-raised, #1c1c1c) 96%, var(--modern-text, #f5f5f5)), color-mix(in srgb, var(--modern-surface-raised, #1c1c1c) 96%, var(--modern-text, #f5f5f5))),
+    var(--modern-bg, #101010);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 0.55), 0 2px 6px rgb(0 0 0 / 0.4);
+  max-height: 70vh;
+  overflow: auto;
+  animation: ny-in 160ms ease-out;
+}
+.ny-card.is-peek .ny-answers > .dock-kit-button { flex: 1 1 9rem; justify-content: center; }
+.ny-peek-more { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; padding: 10px 16px 12px;
+  border-top: 1px solid var(--modern-border, #303030); color: var(--modern-muted, #aaaaaa); font-size: 12.5px; }
+.ny-peek-more .ny-link { color: var(--modern-accent, #82aaff); font-weight: 600; }
+@keyframes ny-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* The Needs you list: a summary line, then each group's title and its rows (siblings, so a row moving group keeps its state); each row is a
+   closed card with a 1 px separator, the open one raised. */
+.ny-list { display: grid; }
+.ny-summary { margin: 0 0 4px; color: var(--modern-muted, #aaaaaa); font-size: 13px; }
+.ny-summary strong { color: var(--needs-urgent); font-weight: 600; }
+.ny-group-title { display: flex; align-items: center; gap: 8px; margin: 16px 0 4px; color: var(--modern-muted, #aaaaaa); font-size: 12px; font-weight: 600; }
+.ny-group-title span { min-width: 18px; padding: 0 6px; border-radius: 999px; background: var(--modern-surface-raised, #1c1c1c); text-align: center; font-variant-numeric: tabular-nums; }
+.ny-card.is-row { border-top: 1px solid var(--modern-border, #303030); border-radius: 10px; }
+.ny-group-title + .ny-card.is-row, .ny-card.is-row.is-open, .ny-card.is-row.is-open + .ny-card.is-row { border-top-color: transparent; }
+.ny-card.is-row.is-open { background: var(--modern-surface-raised, #1c1c1c); }
+
+@media (pointer: coarse) {
+  .ny-card .dock-kit-button, .ny-link, .ny-corner.dock-kit-icon-button, .ny-field input, .ny-field textarea { min-height: 44px; }
+  .ny-corner.dock-kit-icon-button { width: 44px; height: 44px; }
+}
+@media (max-width: 640px) {
+  .ny-peek { max-height: 60vh; }
+  .ny-answers .dock-kit-button { flex: 1 1 100%; }
+  /* At phone width what follows the title uses the whole card, not only the column right of the icon. */
+  .ny-actions, .ny-answers, .ny-sent, .ny-error, .ny-details, .ny-field { grid-column: 1 / -1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ny-peek { animation: none; }
+}
+
+/* nous_msg:0cb8d563: the files a card names, each opening the Agent Files preview. */
+.ny-files { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.ny-file { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-height: 30px; padding: 4px 10px; border: 1px solid var(--modern-border, #3a3a3a); border-radius: 999px; background: transparent; color: inherit; font: inherit; font-size: 13px; cursor: pointer; }
+.ny-file:hover { border-color: var(--modern-accent, #82aaff); }
+.ny-file:focus-visible { outline: 2px solid var(--modern-accent, #82aaff); outline-offset: 2px; }
+.ny-file svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--modern-accent, #82aaff); }
+.ny-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ny-file small { color: var(--modern-muted, #aaaaaa); font-size: 11px; white-space: nowrap; }
+@media (max-width: 640px) { .ny-files { grid-column: 1 / -1; } }
+@media (pointer: coarse) { .ny-file { min-height: 44px; } }

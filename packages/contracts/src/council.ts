@@ -17,7 +17,6 @@ export const COUNCIL_MAX_POSITIONS = 10;
 export const COUNCIL_TOP = 3;
 export const COUNCIL_QUESTION_MAX_CHARS = 2_000;
 export const COUNCIL_PERSONAL_CONTEXT_MAX_CHARS = 2_500;
-export const COUNCIL_ANSWER_MAX_CHARS = 2_500;
 export const COUNCIL_CLAIM_MAX_CHARS = 160;
 export const COUNCIL_MAX_CLAIMS = 6;
 
@@ -89,7 +88,8 @@ const callStatus = z.enum(["PENDING", "DONE", "FAILED"]);
 export const councilAnswerSchema = z.object({
   modelId: councilModelIdSchema,
   status: callStatus,
-  text: z.string().max(COUNCIL_ANSWER_MAX_CHARS),
+  // A member's whole answer (no count since 31/10); each prompt takes its share of COUNCIL_PROMPT_LIMIT.
+  text: z.string(),
   claims: z.array(z.string().max(COUNCIL_CLAIM_MAX_CHARS)).max(COUNCIL_MAX_CLAIMS),
   error: z.string().max(300).nullable(),
   ms: z.number().int().min(0).nullable()
@@ -156,7 +156,7 @@ export const councilFinalSchema = z.object({
 }).strict();
 export type CouncilFinal = z.infer<typeof councilFinalSchema>;
 
-export const councilEventSchema = z.object({ at: isoDateTime, text: z.string().max(300) }).strict();
+export const councilEventSchema = z.object({ at: isoDateTime, text: z.string() }).strict();
 
 /** "Create plan": the coordinator turns the final answer into a PLAN record in the owner's clipboard. */
 export const councilClipboardPlanSchema = z.object({
@@ -183,7 +183,8 @@ export const councilRunSchema = z.object({
   answers: z.array(councilAnswerSchema).max(COUNCIL_MAX_MEMBERS),
   rounds: z.array(councilRoundSchema).max(COUNCIL_MAX_TOTAL_ROUNDS),
   final: councilFinalSchema.nullable(),
-  events: z.array(councilEventSchema).max(200),
+  // Every event of the run is kept (a run is a durable record; until 31/10 the newest 200 and 300 characters each).
+  events: z.array(councilEventSchema),
   clipboardPlan: councilClipboardPlanSchema.nullable().optional(),
   error: z.string().max(500).nullable(),
   createdAt: isoDateTime,

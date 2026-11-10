@@ -62,7 +62,7 @@ export async function assertRemovableWorktreePath(path: string, managedRoot: str
     root = null;
   }
   // The managed root can itself live inside the install checkout
-  // (/opt/spaceapp/var/worktrees). A directory whose nearest repository is that
+  // (<install root>/var/worktrees). A directory whose nearest repository is that
   // enclosing checkout is a leftover; anything belonging to a repository at or
   // below the managed root is not.
   const ownedByManagedRepository = git !== null && root !== null &&

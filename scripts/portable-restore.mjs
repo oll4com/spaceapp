@@ -176,6 +176,13 @@ async function restoreBackup({
         "'npx --yes run-spaceapp@latest install --profile medium', and run the restore again."
       ].join("\n"));
     }
+    // Files a failed restore could not put back are the owner's only copy: never delete them to start another restore.
+    for (const root of [dataRoot, memoryRoot]) {
+      const left = await readdir(join(root, previousName)).catch(() => []);
+      if (left.length) {
+        throw new RestoreUnchangedError(`${join(root, previousName)} holds files an earlier restore could not put back. Move them back into ${root} (or delete the folder once they are not needed) and run the restore again. Nothing was changed.`);
+      }
+    }
     await rm(rollbackDirectory, { recursive: true, force: true });
     await mkdir(rollbackDirectory, { mode: 0o700 });
     for (const [databaseName] of restores) {
@@ -192,11 +199,14 @@ async function restoreBackup({
     state.changed = true;
     try {
       for (const [databaseName, dump] of restores) {
-        await restoreDatabase(databaseName, join(backupDirectory, dump), postgresEnv(databaseName));
+        // Recorded before it changes: the schema is emptied before pg_restore, so a database whose restore fails needs its copy back too.
         restored.push(databaseName);
+        await restoreDatabase(databaseName, join(backupDirectory, dump), postgresEnv(databaseName));
       }
-      swapped = { data: await swapEntries(dataRoot, dataStaging, new Set(["memory", stagingName, rollbackName, ...hostSecretEntries])) };
-      swapped.memory = await swapEntries(memoryRoot, memoryStaging, new Set([stagingName]));
+      // The journal exists before the first move, so a swap that fails part way is undone too (1.1.9 in-app review, Codex #2).
+      swapped = {};
+      await swapEntries(dataRoot, dataStaging, new Set(["memory", stagingName, rollbackName, ...hostSecretEntries]), (swap) => { swapped.data = swap; });
+      await swapEntries(memoryRoot, memoryStaging, new Set([stagingName]), (swap) => { swapped.memory = swap; });
     } catch (error) {
       const fileProblem = swapped ? await undoSwap(swapped).then(() => null, (undoError) => undoError) : null;
       const stillRestored = [];
@@ -219,7 +229,7 @@ async function restoreBackup({
       throw new Error([
         `Restore failed (${reason}) and could not be fully undone.`,
         ...stillRestored.map((databaseName) => `${databaseName} is at the backup's state, not at its state before the restore.`),
-        ...(fileProblem ? [`The files could not be put back (${fileProblem.message}); the replaced files are in ${join(dataRoot, previousName)} and ${join(memoryRoot, previousName)}.`] : []),
+        ...(fileProblem ? [`The files could not be put back (${fileProblem.message}); the replaced files are in ${join(dataRoot, previousName)} and ${join(memoryRoot, previousName)}: move them back before running the restore again.`] : []),
         "To finish the restore instead, run the same restore again: it restores every database and the files from the backup.",
         "To put a database back as it was before the restore, run in the core container, with its database connection:",
         ...steps
@@ -251,10 +261,11 @@ async function validateTarArchive(path) {
 }
 
 // Moves the current entries of root aside into root/.spaceapp-restore-previous and the staged ones in; every move is
-// recorded so undoSwap can reverse it.
-async function swapEntries(root, staging, preserved) {
+// recorded in the journal handed to begin before it starts, so undoSwap can reverse a swap that failed part way.
+async function swapEntries(root, staging, preserved, begin) {
   const previous = join(root, previousName);
   const swap = { root, previous, movedOut: [], movedIn: [] };
+  begin(swap);
   await rm(previous, { recursive: true, force: true });
   await mkdir(previous, { mode: 0o700 });
   for (const entry of await readdir(root)) {
@@ -266,7 +277,6 @@ async function swapEntries(root, staging, preserved) {
     await rename(join(staging, entry), join(root, entry));
     swap.movedIn.push(entry);
   }
-  return swap;
 }
 
 async function undoSwap({ data, memory }) {

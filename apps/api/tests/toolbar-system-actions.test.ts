@@ -236,7 +236,8 @@ describe("toolbar system action API", () => {
       fiveHourUsedPercent: profileId === "main" ? 67 : null,
       fiveHourResetAt: profileId === "main" ? "2026-07-14T15:00:00.000Z" : null,
       weeklyUsedPercent: profileId === "main" ? 3 : null,
-      weeklyResetAt: profileId === "main" ? "2026-07-20T09:30:00.000Z" : null,
+      // Four days to the reset: 3 of 7 days passed with 3% used.
+      weeklyResetAt: profileId === "main" ? new Date(Date.now() + 4 * 86_400_000).toISOString() : null,
       weeklyScope: profileId === "main" ? "Fable" : null
     }));
     const { app } = await setup({ store, readClaudeAccountProfileUsage });
@@ -254,6 +255,9 @@ describe("toolbar system action API", () => {
       expect.objectContaining({ id: "main", label: "ntheo", status: "CONNECTED", fiveHourRemainingPercent: 33, weeklyRemainingPercent: 97, weeklyScope: "Fable" }),
       expect.objectContaining({ id: "ops", label: "ops", status: "EXPIRED", fiveHourRemainingPercent: null })
     ]);
+    // Plan clipboard:FDitYcI63D9R: the account menus' "free at reset" for the Nous app (connected accounts only), 3% + 1% a day for 4 days.
+    expect(response.json().atReset).toEqual([expect.objectContaining({ scope: null, accounts: 1, pace: "UNDER" })]);
+    expect(response.json().atReset[0].percent).toBeCloseTo(93, 0);
     expect(readClaudeAccountProfileUsage.mock.calls.map(([profileId]) => profileId).sort()).toEqual(["main", "ops"]);
     await app.close();
   });
@@ -346,7 +350,8 @@ describe("toolbar system action API", () => {
       kernelCache: { status: "CLEARED", reclaimedBytes: 48 * 1024 * 1024 }
     });
     expect(cliTerminator).toHaveBeenCalledTimes(1);
-    expect(cliTerminator).toHaveBeenCalledWith("cli_session:eligible");
+    // OBS-006: the reclaim request's id reaches the pane host's terminate line.
+    expect(cliTerminator).toHaveBeenCalledWith("cli_session:eligible", response.headers["x-request-id"]);
     expect(cliReaper).not.toHaveBeenCalled();
     expect(kernelReclaimer).toHaveBeenCalledWith();
     expect(store.listAuditEvents().map((event) => event.action)).toContain("admin.memory.reclaimed");
@@ -377,7 +382,7 @@ describe("toolbar system action API", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().cli).toEqual({ killedSessionIds: ["cli_session:closed-pane"], estimatedReclaimedBytes: 64 * 1024 * 1024, protectedSessionCount: 1 });
     expect(cliTerminator).toHaveBeenCalledTimes(1);
-    expect(cliTerminator).toHaveBeenCalledWith("cli_session:closed-pane");
+    expect(cliTerminator).toHaveBeenCalledWith("cli_session:closed-pane", response.headers["x-request-id"]);
     expect(cliReaper).not.toHaveBeenCalled();
     await app.close();
   });

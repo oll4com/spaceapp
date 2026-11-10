@@ -1,3 +1,4 @@
+import { recordCompletedSiteHandoff } from "./site-signins.js";
 import { readFileSync } from "node:fs";
 import { rename, writeFile } from "node:fs/promises";
 import type { BrowserControlLease, Pane } from "@space/contracts";
@@ -16,9 +17,11 @@ import { fenceCompletedHandoff } from "./vault/fence-hooks.js";
 export const BROWSER_CONTROL_IDLE_RELEASE_MS = 60_000;
 /**
  * A handoff for a sign-in, a code or a CAPTCHA: the operator may wait on the pane (an SMS) without touching it, so its idle
- * time counts only while they are not on the pane (operator 2026-10-27: the NBG sign-in closed while they waited for the SMS).
+ * time includes presence for a bounded reading window (operator 2026-10-29: an open phone must not hold control forever).
  */
 export const SIGN_IN_HANDOFF_REASON = /\b(?:sign[ -]?in|log[ -]?in|login|2fa|mfa|two[- ]factor|verif\w*|one[- ]time|otp|sms|codes?|captcha|password|passcode|human check)\b/i;
+/** Presence may hold a sign-in handoff only this long after the last real operator input. */
+export const BROWSER_CONTROL_PRESENCE_HOLD_MAX_MS = 3 * 60_000;
 /** A CLI agent of the room may take the browser back (space_browser_reclaim_control) after this much operator inactivity. */
 export const BROWSER_CONTROL_AGENT_RECLAIM_IDLE_MS = 60_000;
 /** How often the API checks the operator leases it watches. */
@@ -36,6 +39,19 @@ export function countsAsOperatorInput(input: { type?: unknown; eventType?: unkno
 export type BrowserControlActivity = ReturnType<typeof createBrowserControlActivity>;
 
 /**
+ * The browser pane a CLI pane drives when it names none: the room browser it drove last, else one no open pane of the room drives.
+ * Never another agent's (6/11 06:52 UTC: Dana's tools fell back to the room's first browser, Cody's). `panes`: the room's open panes.
+ */
+export function ownBrowserPane(panes: Pane[], cliPaneId: string, agents?: Pick<BrowserControlActivity, "agentFor">): Pane | undefined {
+  const browsers = panes.filter((pane) => pane.mode === "BROWSER" && !pane.isClosed);
+  const driver = (pane: Pane) => {
+    const id = agents?.agentFor(pane.id)?.paneId;
+    return id && panes.some((other) => other.id === id && !other.isClosed) ? id : null;
+  };
+  return browsers.find((pane) => driver(pane) === cliPaneId) ?? browsers.find((pane) => !driver(pane));
+}
+
+/**
  * Last operator input per control lease, kept in the API process (input arrives here: the stream socket and HTTP input).
  * The CLI pane that last drove each pane browser is also saved to `agentsFile` (operator request 2026-10-22: the label survives
  * API restarts); null keeps it in memory (tests).
@@ -44,6 +60,11 @@ export function createBrowserControlActivity(now: () => number = () => Date.now(
   // After an API restart the map is empty: every lease gets a fresh window instead of being released at once.
   const startedAt = now();
   const lastInput = new Map<string, number>();
+  const lastPresence = new Map<string, number>();
+  const inputAt = (lease: Pick<BrowserControlLease, "leaseId" | "acquiredAt">) => {
+    const acquired = Date.parse(lease.acquiredAt);
+    return Math.max(startedAt, lastInput.get(lease.leaseId) ?? 0, Number.isFinite(acquired) ? acquired : 0);
+  };
   // Operator leases the idle sweeper checks (leaseId -> paneId); acquire and heartbeat add them.
   const watchedLeases = new Map<string, string>();
   const agents = new Map<string, { paneId: string; at: number }>();
@@ -54,6 +75,9 @@ export function createBrowserControlActivity(now: () => number = () => Date.now(
       }
     } catch { /* no saved drivers yet */ }
   }
+  // The operator's last input to each pane browser, and its open live views (browser-reaper.ts: a watched browser is in use).
+  const used = new Map<string, number>();
+  const views = new Map<string, number>();
   let savedAt = 0;
   let saving = Promise.resolve();
   // shortcut: a driver noted in the last minute before the API stops is lost when the browser had the same driver; fine for a label.
@@ -76,14 +100,46 @@ export function createBrowserControlActivity(now: () => number = () => Date.now(
       const noted = agents.get(browserPaneId);
       return noted ? { ...noted, active: attached || now() - noted.at <= BROWSER_AGENT_LABEL_MS } : null;
     },
+    noteUse(paneId: string): void {
+      used.delete(paneId);
+      used.set(paneId, now());
+      if (used.size > 1000) used.delete(used.keys().next().value!);
+    },
+    /** A live view of the pane browser opened; the returned function closes it. While one is open the browser is in use. */
+    view(paneId: string): () => void {
+      views.set(paneId, (views.get(paneId) ?? 0) + 1);
+      used.set(paneId, now());
+      let open = true;
+      return () => {
+        if (!open) return;
+        open = false;
+        const left = (views.get(paneId) ?? 1) - 1;
+        if (left > 0) views.set(paneId, left); else views.delete(paneId);
+        used.set(paneId, now());
+      };
+    },
+    /** The operator's last use of a pane browser (now while a view is open); null when this process saw none. */
+    usedAt(paneId: string): number | null {
+      return views.has(paneId) ? now() : used.get(paneId) ?? null;
+    },
     noteInput(leaseId: string): void {
       lastInput.delete(leaseId);
       lastInput.set(leaseId, now());
       if (lastInput.size > 1000) lastInput.delete(lastInput.keys().next().value!);
     },
+    notePresence(leaseId: string): void {
+      lastPresence.delete(leaseId);
+      lastPresence.set(leaseId, now());
+      if (lastPresence.size > 1000) lastPresence.delete(lastPresence.keys().next().value!);
+    },
+    inputIdleMs(lease: Pick<BrowserControlLease, "leaseId" | "acquiredAt">): number {
+      return Math.max(0, now() - inputAt(lease));
+    },
     idleMs(lease: Pick<BrowserControlLease, "leaseId" | "acquiredAt">): number {
-      const acquired = Date.parse(lease.acquiredAt);
-      return Math.max(0, now() - Math.max(startedAt, lastInput.get(lease.leaseId) ?? 0, Number.isFinite(acquired) ? acquired : 0));
+      const input = inputAt(lease);
+      // Once the reading window ends, presence cannot hide real inactivity from either the sweep or agent reclaim.
+      const presence = now() - input < BROWSER_CONTROL_PRESENCE_HOLD_MAX_MS ? lastPresence.get(lease.leaseId) ?? 0 : 0;
+      return Math.max(0, now() - Math.max(input, presence));
     },
     watch(lease: Pick<BrowserControlLease, "leaseId" | "paneId" | "holderType" | "status">): void {
       if (lease.holderType !== "OPERATOR" || lease.status !== "ACTIVE") return;
@@ -95,6 +151,7 @@ export function createBrowserControlActivity(now: () => number = () => Date.now(
     },
     forget(leaseId: string): void {
       lastInput.delete(leaseId);
+      lastPresence.delete(leaseId);
       watchedLeases.delete(leaseId);
     }
   };
@@ -126,10 +183,11 @@ export async function settleEndedOperatorLease(store: LeaseStore, sessionId: str
   if (lease?.status === "ACTIVE" && Date.parse(lease.expiresAt) > Date.now()) return;
   if (lease?.status === "ACTIVE") await store.updateBrowserControlLease(lease.leaseId, { status: "EXPIRED" });
   await fenceCompletedHandoff(store, handoff.paneId, handoff.requestedByType === "AGENT" ? handoff.requestedById : undefined);
+  await recordCompletedSiteHandoff(store, handoff);
   await store.updateBrowserHandoffRequest(handoff.handoffRequestId, { status: "COMPLETED" });
 }
 
-/** Releases a lease through the same path as the operator's own release: host release, accepted handoff completed, audit. */
+/** Releases a lease through the operator's release path, fencing and settling any accepted handoff before audit. */
 export async function releaseBrowserControlLease(deps: {
   store: SpaceStore;
   browserSessionManager: Pick<BrowserSessionManagerWithHostHealth, "releaseControl">;
@@ -142,6 +200,7 @@ export async function releaseBrowserControlLease(deps: {
   traceId?: string;
   auditAction: string;
   auditMetadata?: Record<string, unknown>;
+  handoffStatus?: "COMPLETED" | "CANCELLED";
 }): Promise<BrowserControlLease> {
   if (!deps.browserSessionManager.releaseControl) throw new Error("Browser control handoff is unavailable on this runtime.");
   const traceId = input.request?.requestIdForSpace ?? input.traceId ?? `browser-control:${input.lease.leaseId}`;
@@ -155,7 +214,9 @@ export async function releaseBrowserControlLease(deps: {
   const released = await deps.browserSessionManager.releaseControl(input.pane, { leaseId: input.lease.leaseId }, traceId, holder);
   const handoff = await deps.store.getActiveBrowserHandoffRequest(released.sessionId);
   if (handoff?.status === "ACCEPTED" && handoff.controlLeaseId === released.leaseId) {
-    await deps.store.updateBrowserHandoffRequest(handoff.handoffRequestId, { status: "COMPLETED" });
+    const status = input.handoffStatus ?? "COMPLETED";
+    if (status === "COMPLETED") await recordCompletedSiteHandoff(deps.store, handoff);
+    await deps.store.updateBrowserHandoffRequest(handoff.handoffRequestId, { status });
   }
   deps.activity.forget(released.leaseId);
   const audit = { action: input.auditAction, targetType: "pane", targetId: input.pane.id,

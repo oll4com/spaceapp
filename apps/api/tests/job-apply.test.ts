@@ -164,7 +164,8 @@ describe("job apply service", () => {
     const code = await service.waitForCode("user:a", { fromContains: "greenhouse", pattern: "security code field on your application[:\\s]*([A-Za-z0-9]{8})",
       since: "2026-10-13T07:59:00.000Z", timeoutMs: 1000 });
     expect(code).toEqual({ code: "AB12cd34", from: "no-reply@us.greenhouse-mail.io", subject: "Your security code", receivedAt: "2026-10-13T08:00:00.000Z", account: "me@gmail.com" });
-    expect(gmail.requests[0]).toBe(`/gmail/v1/users/me/messages?${new URLSearchParams({ q: gmailScanQuery("2026-10-13T07:59:00.000Z"), maxResults: "30" })}`);
+    // Gmail searches the whole mailbox for the sender (31/10: until then the newest 30 messages were read and filtered here).
+    expect(gmail.requests[0]).toBe(`/gmail/v1/users/me/messages?${new URLSearchParams({ q: `${gmailScanQuery("2026-10-13T07:59:00.000Z")} from:"greenhouse"`, maxResults: "10" })}`);
     expect(gmailScanQuery("2026-10-13T07:59:00.000Z")).toBe(`-in:sent -in:drafts -in:chats after:${Date.parse("2026-10-13T07:58:00.000Z") / 1000}`);
     // Only the matching message is downloaded in full.
     expect(gmail.requests.filter((request) => request.includes("format=raw"))).toEqual(["/gmail/v1/users/me/messages/m2?format=raw"]);
@@ -253,7 +254,7 @@ describe("job apply service", () => {
       "snowflake_123456,snowflake,gh-generic,Job 123456,,greenhouse,applied,2026-08-25 09:00:00,verified",
       "linkedin_4453887122,SE Conquer AI,,,,NO_FORM,linkedin_ea,2026-09-02 20:09:07,,"].join("\n"), null);
     const result = await service.checkWithMail("user:a");
-    expect(result).toEqual({ checked: 2, confirmed: 1, unconfirmed: 1, accounts: ["me@gmail.com"] });
+    expect(result).toEqual({ checked: 2, confirmed: 1, unconfirmed: 1, unchecked: 0, accounts: ["me@gmail.com"], accountErrors: [] });
     expect(decodeURIComponent(gmail.requests[0]!.replace(/\+/g, " "))).toContain("after:2026/08/22 before:2026/09/02 {from:greenhouse-mail.io");
     const rows = new Map((await service.listApplications("user:a", { limit: 10 })).map((row) => [row.company, row]));
     expect(rows.get("databricks")).toMatchObject({ status: "VERIFIED", externalConfirmation: 'Gmail me@gmail.com: "Thank you for applying to Databricks!" 2026-08-24' });
@@ -269,6 +270,43 @@ describe("job apply service", () => {
     const none = fakeGoogle([]);
     const { service: unallowed } = await serviceFixture(undefined, { google: () => none.access });
     await expect(unallowed.checkWithMail("user:a")).rejects.toThrow("Allow Gmail for a Google account in Job Copilot Setup → Google account first.");
+  });
+
+  it("retries a rate-limited Gmail account and reports one that still fails, leaving its rows unchecked", async () => {
+    // 31/10: every lookup in the receipts account answered 403 "Quota exceeded ... per minute per user" and the check said "0 confirmed".
+    const google = fakeGoogle(["MAIL_READ"], "gmail-token", {
+      "receipts@gmail.com": { capabilities: ["MAIL_READ"], token: "limited-token" },
+      "busy@gmail.com": { capabilities: ["MAIL_READ"], token: "busy-token" },
+      "old@gmail.com": { capabilities: ["MAIL_READ"], token: "revoked-token" }
+    });
+    const receipt = { id: "r1", from: "no-reply@us.greenhouse-mail.io", subject: "Thank you for applying to Databricks!", receivedAt: "2026-08-24T10:00:00.000Z", source: "Subject: x\r\n\r\nthanks" };
+    const gmail = fakeGmail([], { "limited-token": [receipt], "busy-token": [{ ...receipt, id: "b1" }] });
+    const quota = (status: number) => new Response(JSON.stringify({ error: { code: status, status: "RESOURCE_EXHAUSTED",
+      message: "Quota exceeded for quota metric 'Queries' and limit 'Queries per minute per user'", errors: [{ reason: "rateLimitExceeded" }] } }),
+    { status, headers: { "content-type": "application/json", "retry-after": "0" } });
+    let limited = 0;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const token = (new Headers(init?.headers).get("authorization") ?? "").replace(/^Bearer /, "");
+      if (token === "limited-token" && limited < 2) { limited += 1; return quota(403); }
+      if (token === "busy-token" && !String(url).includes("/messages?")) return quota(429);
+      return gmail.fetchImpl(url, init);
+    }) as typeof fetch;
+    const { service } = await serviceFixture(undefined, { google: () => google.access, gmailFetch: fetchImpl });
+    await service.importCsv("user:a", ["id,company,board,role,geo,source,status,applied_date,notes",
+      "databricks_8569390002,databricks,gh-iframe,Job 8569390002,,greenhouse,applied,2026-08-24 09:00:00,",
+      "snowflake_123456,snowflake,gh-generic,Job 123456,,greenhouse,applied,2026-08-25 09:00:00,"].join("\n"), null);
+    const before = new Map((await service.listApplications("user:a", { limit: 10 })).map((row) => [row.company, row.notes]));
+    const result = await service.checkWithMail("user:a");
+    // The receipts account answered after its two rate limits; busy@ kept refusing its message reads; old@ has no access.
+    expect(limited).toBe(2);
+    expect(result).toEqual({ checked: 1, confirmed: 1, unconfirmed: 0, unchecked: 1, accounts: ["me@gmail.com", "receipts@gmail.com"],
+      accountErrors: [{ account: "busy@gmail.com", code: "RATE_LIMITED", count: 1 }, { account: "old@gmail.com", code: "ACCESS", count: 1 }] });
+    const rows = new Map((await service.listApplications("user:a", { limit: 10 })).map((row) => [row.company, row]));
+    expect(rows.get("databricks")).toMatchObject({ status: "VERIFIED", externalConfirmation: 'Gmail receipts@gmail.com: "Thank you for applying to Databricks!" 2026-08-24' });
+    // Unchecked, not "no confirmation email found": its notes are as they were.
+    expect(rows.get("snowflake")).toMatchObject({ status: "SUBMITTED", externalConfirmation: null, notes: before.get("snowflake") });
+    const events = await service.listEvents("user:a", { limit: 5 });
+    expect(events[0]!.message).toContain("1 left unchecked because Gmail failed for busy@gmail.com RATE_LIMITED, old@gmail.com ACCESS; check again later.");
   });
 
   it("drafts mail and keeps the calendar of the chosen Google account only with the access allowed", async () => {
@@ -588,7 +626,7 @@ describe("job apply routes", () => {
     await writeFile(join(root, "connector.key"), "synthetic-connector-key-with-enough-length-0123456789\n");
     const app = await createApp({
       store,
-      config: { ...getApiConfig({ SPACE_ARTIFACT_ROOT: root }), jobApplyRoot: join(root, "job-apply"), connectorKeyFile: join(root, "connector.key") },
+      config: { ...getApiConfig({ SPACE_ARTIFACT_ROOT: root, SPACE_MEMORY_MONTHLY_PATH: join(root, "space_memory_2026-11.md") }), jobApplyRoot: join(root, "job-apply"), connectorKeyFile: join(root, "connector.key") },
       jobApplyMailboxes: fakeMailboxes([{ from: "no-reply@us.greenhouse-mail.io", subject: "Your security code", source: greenhouseMail }]),
       auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false }
     });

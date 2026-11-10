@@ -177,6 +177,8 @@ function claudeGatewayEntry(account: ClaudeUsageAccount, pool: NonNullable<Claud
       ? `${ready} of ${pool.length} pooled ${pool.length === 1 ? "account" : "accounts"} available now.`
       : "Space Gateway has no Claude accounts to route to.",
     rows: [],
+    atReset: usable,
+    atResetWhy: !pool.length ? "no pooled accounts" : usable.length ? "no current weekly figure" : "every pooled account needs sign-in",
     capacity: quotaCapacity(usable),
   };
 }
@@ -185,7 +187,9 @@ function claudeGatewayEntry(account: ClaudeUsageAccount, pool: NonNullable<Claud
 export function claudeAccountEntries(accounts: ClaudeUsageAccount[], clock: number, bill: string[] = []): AccountQuotaEntry[] {
   return accounts.map((account) => {
     if (account.status === "GATEWAY" && account.pool) return claudeGatewayEntry(account, account.pool, clock);
-    const connected = account.status === "CONNECTED";
+    // NOT_CONNECTED with figures: Space Gateway's sample of the account the profile names; the profile has no sign-in of its own.
+    const held = account.status === "NOT_CONNECTED" && (account.fiveHourRemainingPercent != null || account.weeklyRemainingPercent != null);
+    const connected = account.status === "CONNECTED" || held;
     return {
       id: account.id,
       title: account.label,
@@ -194,6 +198,8 @@ export function claudeAccountEntries(accounts: ClaudeUsageAccount[], clock: numb
       offlineLabel: claudeStatusLabel(account),
       hint: account.status === "API_KEY" ? claudeApiKeyHint(account, clock) : claudeStatusHint(account),
       ...(account.status === "API_KEY" && bill.length ? { notes: bill } : {}),
+      ...(held ? { notes: ["Not signed in on this profile · quota from Space Gateway, which holds this account."] } : {}),
+      ...(account.status === "API_KEY" ? { atResetWhy: "paid per token, no weekly quota" } : account.status === "GATEWAY" ? { atResetWhy: "no pool data" } : {}),
       rows: connected
         ? [{ key: "claude", label: null, quota: account, threshold: ACCOUNT_AVAILABLE_THRESHOLD_PERCENT, weeklyScope: account.weeklyScope }]
         : [],

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paneSchema, roomSchema, type Pane } from "@space/contracts";
 import { AgentsDashboard, isRedundantPreview, readStoredRoomFilter } from "../src/features/agents-dashboard/AgentsDashboard.js";
@@ -141,13 +141,14 @@ describe("agents dashboard", () => {
     panes.mockResolvedValue({ data: [active, waiting], activity: {} });
     render(<AgentsDashboard rooms={[room]} completions={{}} onOpenPane={vi.fn()} onClose={vi.fn()} onSummaryChange={onSummaryChange} />);
     await screen.findByRole("button", { name: "Open Build in Dashboard test" });
-    expect(onSummaryChange).toHaveBeenCalledWith(expect.objectContaining({
+    // The summary comes from a passive effect, which can run after the row is in the DOM (a full suite on a loaded VM).
+    await waitFor(() => expect(onSummaryChange).toHaveBeenCalledWith(expect.objectContaining({
       total: 2,
       working: 1,
       waiting: 1,
       done: 0,
       loaded: true,
-    }));
+    })));
   });
   it("remembers user selected filter across close and reopen", async () => {
     panes.mockResolvedValue({ data: [pane("Active", { status: "RUNNING" }), pane("Waiting", { status: "BLOCKED" })] });

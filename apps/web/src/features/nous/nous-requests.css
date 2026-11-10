@@ -1,0 +1,28 @@
+.nous-requests { min-width: 0; }
+.nous-request { min-width: 0; padding: 0.85rem 0; border-bottom: 1px solid var(--dock-border); overflow-wrap: anywhere; }
+.nous-request-meta { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.4rem 1rem; color: var(--dock-muted); font-size: 0.75rem; }
+.nous-request-meta time { font-variant-numeric: tabular-nums; }
+.nous-request-status { padding: 0.05rem 0.5rem; border-radius: 999px; background: var(--dock-soft); color: var(--dock-muted); font-weight: 600; }
+.nous-request-status.is-done { background: var(--dock-success-soft); color: var(--dock-success); }
+.nous-request-status.is-in_progress { background: var(--dock-accent-soft); color: var(--dock-accent); }
+.nous-request-status.is-waits_for_you { background: var(--dock-warning-soft); color: var(--dock-warning); }
+.nous-request-status.is-not_done { background: var(--dock-danger-soft); color: var(--dock-danger); }
+.nous-request-text { margin: 0.5rem 0 0; color: var(--dock-text); white-space: pre-wrap; line-height: 1.5; }
+.nous-request-done { margin-top: 0.5rem; font-size: var(--dock-font-sm); }
+.nous-request-done summary { min-height: 44px; display: flex; align-items: center; color: var(--dock-accent); cursor: pointer; }
+.nous-request-done .nous-done-summary { margin: 0.25rem 0 0.4rem; }
+.nous-request-plan { margin-top: 0.5rem; min-height: 44px; }
+.nous-requests-filter { width: 100%; margin-bottom: 0.25rem; }
+/* Task runs (plan clipboard:GA__W4qBxSPR): green succeeded, red failed, amber waiting or skipped, grey running, no report or reminder. */
+.nous-task-run-status.is-succeeded { background: var(--dock-success-soft); color: var(--dock-success); }
+.nous-task-run-status.is-failed { background: var(--dock-danger-soft); color: var(--dock-danger); }
+.nous-task-run-status.is-waiting, .nous-task-run-status.is-skipped { background: var(--dock-warning-soft); color: var(--dock-warning); }
+.nous-task-runs-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 0 0.5rem; }
+/* (0,3,0) beats the room theme's button rule, like .nous-plans-btn. */
+.nous-task-runs .nous-task-run .nous-task-run-task { display: block; min-height: 44px; margin: 0.25rem 0 0; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none;
+  color: var(--dock-text); font: inherit; font-weight: 600; line-height: 1.4; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.nous-task-runs .nous-task-run .nous-task-run-task:hover { color: var(--dock-accent); }
+.nous-task-runs .nous-task-run .nous-task-run-task:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 2px; border-radius: 6px; }
+.nous-task-run-where { margin: 0; font-size: var(--dock-font-sm); }
+.nous-task-run-detail, .nous-task-run-report { margin: 0.35rem 0 0; color: var(--dock-text); font-size: var(--dock-font-sm); line-height: 1.5; }
+.nous-requests-search { margin-bottom: 0.25rem; }

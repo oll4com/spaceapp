@@ -96,6 +96,30 @@ it("records the latest answer's account usage limit (429) with its reset, until 
   expect(claudeTaskTimeline([...stopped, assistant("2026-10-20T14:02:00.000Z")], false, observedAt).rateLimit).toBeNull();
 });
 
+// Operator 6/11 (plan clipboard:DotwYXVD2N3n): Cleo/Finn's briefs ended on Space Gateway's pace hold and read COMPLETED although none ran.
+it("keeps a turn Space Gateway's pace cap refused out of COMPLETED, with the pace day's opening, until a new prompt runs", () => {
+  const paceHold = line({ type: "assistant", timestamp: "2026-11-06T04:14:57.000Z", isApiErrorMessage: true, error: "rate_limit", apiErrorStatus: 429,
+    message: { model: "<synthetic>", content: [{ type: "text", text: "API Error: Request rejected (429) · Space Gateway is holding background work: every account used "
+      + "today's share of its week (used today/allowance: lab 16%/14%, ntheo 8%/8%), so none runs out before its weekly reset. The operator's turns still run; "
+      + "background work resumes at 2026-11-06 21:00 UTC." }] } });
+  const held = [prompt("2026-11-06T04:13:20.000Z", "Targeted job application round"), paceHold, turnDuration("2026-11-06T04:14:58.000Z", 98_000)];
+  const timeline = claudeTaskTimeline(held, false, observedAt);
+  expect(timeline.tasks.at(-1)!.status).toBe("WAITING_FOR_INPUT");
+  expect(timeline.paceHold).toEqual({ taskId: "prompt-2026-11-06T04:13:20.000Z", at: "2026-11-06T04:14:58.000Z", resumesAt: "2026-11-06T21:00:00.000Z" });
+  expect(timeline.rateLimit).toEqual({ at: "2026-11-06T04:14:57.000Z", resetsAt: "2026-11-06T21:00:00.000Z", paceHold: true });
+  // Without a turn_duration (the refusal ends the turn while the session idles) it is held too; an operator's interrupt is not.
+  expect(claudeTaskTimeline(held.slice(0, 2), false, observedAt).paceHold?.resumesAt).toBe("2026-11-06T21:00:00.000Z");
+  expect(claudeTaskTimeline([...held.slice(0, 2), prompt("2026-11-06T04:15:00.000Z", "[Request interrupted by user]")], false, observedAt).tasks.at(-1)!.status).toBe("INTERRUPTED");
+  // Space types continue: the new turn runs, and the hold is gone.
+  const resumed = claudeTaskTimeline([...held, prompt("2026-11-06T21:01:00.000Z", "continue"), assistant("2026-11-06T21:02:00.000Z"), turnDuration("2026-11-06T21:02:30.000Z", 90_000)], false, observedAt);
+  expect(resumed.paceHold).toBeNull();
+  expect(resumed.tasks.map((task) => task.status)).toEqual(["WAITING_FOR_INPUT", "COMPLETED"]);
+  // A plain usage limit is no pace hold.
+  const limit = line({ type: "assistant", timestamp: "2026-11-06T04:14:57.000Z", isApiErrorMessage: true, error: "rate_limit",
+    message: { model: "<synthetic>", content: [{ type: "text", text: "All 2 Claude accounts in Space Gateway reached their usage limit. The first one is back in 40m (at 05:00)." }] } });
+  expect(claudeTaskTimeline([held[0]!, limit, held[2]!], false, observedAt)).toMatchObject({ paceHold: null, tasks: [{ status: "COMPLETED" }] });
+});
+
 // Managed plans read each stage's end and final answer here (plan clipboard:t_7CKCjc3C7r).
 it("returns the newest turns' ends and final answers, and keeps an auto-compacted turn as one turn", () => {
   const said = (timestamp: string, id: string, text: string, extra: Record<string, unknown> = {}) =>
@@ -121,6 +145,10 @@ it("returns the newest turns' ends and final answers, and keeps an auto-compacte
     // Only the idle session closes this one: not an end the transcript recorded.
     { taskId: "prompt-2026-10-21T01:04:00.000Z", ended: null, answer: null, apiError: "rate_limit", resetsAt: new Date(1792519200_000).toISOString() }
   ]);
+  // 31/10 Cleo/Andy: Space Gateway's pool 429 has no quotaLimits; its wait is read from its words.
+  const pool = claudeTaskTimeline([...lines, prompt("2026-10-31T07:06:51.000Z", "Mail Copilot run started"),
+    said("2026-10-31T07:09:55.579Z", "m4", "API Error: Request rejected (429) · All 5 Claude accounts in Space Gateway reached their usage limit. The first one is back in 2h 5m (at 11:15).", { isApiErrorMessage: true, error: "rate_limit" })], false, observedAt);
+  expect(pool.rateLimit).toEqual({ at: "2026-10-31T07:09:55.579Z", resetsAt: "2026-10-31T09:14:55.579Z" });
 });
 
 async function fixture(options: { environ?: string; procStart?: string; ancestors?: number[]; session?: Record<string, unknown> } = {}) {

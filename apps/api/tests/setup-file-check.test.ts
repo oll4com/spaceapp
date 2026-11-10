@@ -7,10 +7,12 @@ import { authUserSchema } from "@space/contracts";
 import { createSetupFunctionalChecks } from "../src/setup-local-runtime-checks.js";
 import * as files from "../src/files-service.js";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "setup-file-check-"));
+  // The credential guard (EXT-G-2) reads HOME; a CLI's TMPDIR can sit inside the real ~/.codex.
+  vi.stubEnv("HOME", join(root, "home"));
   const store = new InMemorySpaceStore();
   store.upsertUser(authUserSchema.parse({ id: "user:owner", email: "owner@example.test", role: "ADMIN" }));
   store.upsertUser(authUserSchema.parse({ id: "user:reader", email: "reader@example.test", role: "USER" }));

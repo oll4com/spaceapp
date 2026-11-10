@@ -4,11 +4,12 @@ import { z } from "zod";
 import { SpaceConflictError } from "@space/runtime";
 import type { ControlAction, Skill } from "@space/contracts";
 import { pluginsService } from "./plugins-service.js";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // Only installed Space skill directories. No arbitrary path or file reads.
 const skillRoots = [
-  "/var/lib/spaceapp-user/.codex/skills",
-  "/var/lib/spaceapp-user/.agents/skills",
+  `${SPACE_AGENT_HOME}/.codex/skills`,
+  `${SPACE_AGENT_HOME}/.agents/skills`,
   "/var/lib/spaceapp-cli/.codex/skills",
   "/var/lib/spaceapp-cli/.agents/skills"
 ];
@@ -45,9 +46,9 @@ export async function controlSkills(name?: string) {
   const path = await realpath(join(entry.root, entry.name, "SKILL.md"));
   const allowed = [
     ...skillRoots,
-    "/opt/spaceapp/agent-skills",
+    `${SPACE_INSTALL_ROOT}/agent-skills`,
     "/app/agent-skills",
-    "/var/lib/spaceapp-user/.codex/skill-bundles"
+    `${SPACE_AGENT_HOME}/.codex/skill-bundles`
   ];
   if (!allowed.some((root) => path.startsWith(resolve(root) + sep))) throw new SpaceConflictError("Installed skill target is outside approved roots.");
   const text = await readFile(path, "utf8");

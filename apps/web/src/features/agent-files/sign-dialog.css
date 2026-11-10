@@ -1,0 +1,377 @@
+/* Signature from the phone (plan clipboard:2qSLIT_csvPm): the Sign view over Agent Files. Phone first: one column, the pad and details on top. */
+.agent-files-modal-body.sign-dialog-body {
+  width: min(76rem, 100%);
+  height: min(56rem, 100%);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.sign-layout {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(17rem, 22rem) minmax(0, 1fr);
+  gap: 0.9rem;
+}
+
+.sign-controls {
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 0.6rem;
+  padding-right: 0.15rem;
+}
+
+.sign-heading {
+  margin: 0.35rem 0 0;
+  font-size: var(--dock-font-sm, 0.8rem);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dock-muted);
+}
+
+.sign-note {
+  margin: 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--dock-radius-sm, 8px);
+  background: var(--dock-accent-soft);
+  color: var(--dock-text);
+  line-height: 1.4;
+}
+
+/* The pad is paper-white in every theme: ink on it reads as it will on the document. */
+.sign-pad {
+  position: relative;
+  display: grid;
+  gap: 0.45rem;
+  justify-items: end;
+}
+
+.sign-pad-canvas {
+  width: 100%;
+  height: 11rem;
+  border: 1px solid var(--dock-border-strong, var(--dock-border));
+  border-radius: 10px;
+  background: #fbfaf7;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.sign-pad-line {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  top: 7.4rem;
+  border-bottom: 1px dashed rgba(11, 31, 77, 0.28);
+  pointer-events: none;
+}
+
+.sign-saved {
+  width: 100%;
+  max-height: 9rem;
+  object-fit: contain;
+  border: 1px solid var(--dock-border);
+  border-radius: 10px;
+  background: #fbfaf7;
+  padding: 0.5rem;
+  box-sizing: border-box;
+}
+
+.sign-choice,
+.sign-place {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.9rem;
+  align-items: center;
+  color: var(--dock-text);
+}
+
+.sign-choice label,
+.sign-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--dock-text);
+  min-height: 2rem;
+}
+
+.sign-field {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--dock-text);
+}
+
+.sign-field small {
+  color: var(--dock-muted);
+}
+
+.sign-field input {
+  min-height: 2.6rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm, 8px);
+  background: var(--dock-control, var(--dock-surface));
+  color: var(--dock-text);
+  font-size: 1rem; /* 16 px: phones do not zoom into the field */
+}
+
+.sign-place-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 2.2rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--dock-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dock-text);
+}
+
+.sign-place-option svg { width: 1rem; height: 1rem; }
+
+.sign-place-option.is-active {
+  border-color: var(--dock-accent);
+  background: var(--dock-accent-soft);
+}
+
+.sign-pages {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 0.9rem;
+  padding: 0.6rem;
+  border-radius: 10px;
+  background: var(--dock-soft, rgba(127, 127, 127, 0.08));
+}
+
+.sign-page {
+  position: relative;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 6px 18px rgba(0, 0, 0, 0.18);
+  background: #fff;
+}
+
+.sign-page-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.sign-page-number {
+  position: absolute;
+  right: 0.4rem;
+  bottom: 0.3rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 0.72rem;
+}
+
+/* A spot: the signature as it will be stamped, framed so it is found at a glance. */
+.sign-spot,
+.sign-text-spot {
+  position: absolute;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 2px solid var(--dock-accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--dock-accent) 12%, transparent);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.sign-spot img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.sign-spot span {
+  color: var(--dock-accent);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.sign-text-spot {
+  place-items: end start;
+  padding: 0 0.15rem;
+  color: #0b1f4d;
+  font-family: Helvetica, Arial, sans-serif;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.sign-spot:disabled,
+.sign-text-spot:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.sign-done {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 0.6rem;
+  text-align: center;
+  color: var(--dock-text);
+}
+
+.sign-done > svg {
+  width: 2.6rem;
+  height: 2.6rem;
+  color: var(--dock-accent);
+}
+
+.sign-done .dock-kit-meta-text {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.sign-done-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* Signature requests at the top of Agent Files. */
+.sign-requests {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0 0 0.6rem;
+  padding: 0.6rem;
+  border: 1px solid var(--dock-accent);
+  border-radius: 10px;
+  background: var(--dock-accent-soft);
+}
+
+.sign-requests-title {
+  margin: 0;
+  font-size: var(--dock-font-sm, 0.8rem);
+  font-weight: 600;
+  color: var(--dock-text);
+}
+
+.sign-request {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.4rem 0.6rem;
+  align-items: center;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--dock-radius-sm, 8px);
+  background: var(--dock-surface, var(--dock-raised));
+}
+
+.sign-request-text {
+  min-width: 0;
+  display: grid;
+  gap: 0.1rem;
+}
+
+.sign-request-text strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dock-text);
+}
+
+.sign-request-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+@media (max-width: 760px) {
+  .agent-files-modal-body.sign-dialog-body {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+    padding: 0.55rem;
+  }
+
+  /* max-content rows: the controls and the pages stack and scroll together instead of shrinking under each other. */
+  .sign-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: max-content;
+    overflow-y: auto;
+  }
+
+  .sign-controls {
+    overflow: visible;
+  }
+
+  .sign-pages {
+    overflow: visible;
+    padding: 0.35rem;
+  }
+
+  .sign-request {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Saved signatures (nous_msg:781819c5ba0440fbbee8682c): the picker in the Sign view and the list in Settings → Signatures. */
+.sign-picker {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.sign-pick {
+  display: grid !important;
+  grid-template-columns: auto 5.5rem minmax(0, 1fr);
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.25rem 0.45rem;
+  border: 1px solid var(--dock-border);
+  border-radius: 10px;
+}
+
+.sign-pick.is-active {
+  border-color: var(--dock-accent, var(--dock-border-strong, var(--dock-border)));
+}
+
+.sign-pick img {
+  width: 5.5rem;
+  height: 2.4rem;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #fbfaf7;
+}
+
+.sign-pick:last-child {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.sign-spots,
+.sign-library,
+.sign-library-new {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.sign-spots select {
+  min-height: 2.6rem;
+}
+
+.sign-library-list {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sign-library-item {
+  display: grid;
+  gap: 0.45rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--dock-border);
+}
+
+.sign-library-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}

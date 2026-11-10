@@ -256,9 +256,9 @@ describe("plan map contracts (operator request 2026-10-25)", () => {
     expect(clipboardItemSchema.parse({ ...base, waitsOn: { kind: "THIRD_PARTY", what: "the mail server" } }).waitsOn).toEqual({ kind: "THIRD_PARTY", what: "the mail server", until: null });
   });
 
-  it("takes waitsOn null to clear and refuses a 31st dependency or map fields on a note", () => {
+  it("takes waitsOn null to clear and takes any number of dependencies (since 31/10) and refuses map fields on a note", () => {
     expect(updatePlanProgressRequestSchema.parse({ waitsOn: null, dueAt: null, dependsOn: [] })).toEqual({ waitsOn: null, dueAt: null, dependsOn: [] });
-    expect(updatePlanProgressRequestSchema.safeParse({ dependsOn: Array.from({ length: 31 }, (_, index) => `clipboard:dep${index}`) }).success).toBe(false);
+    expect(updatePlanProgressRequestSchema.safeParse({ dependsOn: Array.from({ length: 31 }, (_, index) => `clipboard:dep${index}`) }).success).toBe(true);
     expect(createClipboardItemRequestSchema.safeParse({ text: "note", source: "MANUAL_NOTE", dueAt: "2026-10-30T00:00:00.000Z" }).success).toBe(false);
     expect(createClipboardItemRequestSchema.safeParse({ text: "plan", source: "PLAN", minimumModel: "m", dependsOn: ["clipboard:dep1"], dueAt: "2026-10-30T00:00:00.000Z" }).success).toBe(true);
   });

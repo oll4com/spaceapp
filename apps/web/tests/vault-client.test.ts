@@ -130,10 +130,13 @@ describe("Vault dock client", () => {
     expect(await verifyVaultMessage(key, message(["https://evil.example"]), grant.operatorSignature)).toBe(false);
   });
 
-  it("hands every active login not hidden from agents to the broker with submit and a standing expiry, signed over exactly what it sends", async () => {
+  it.each([
+    { origin: "https://shop.example", delegated: ["https://shop.example"] },
+    { origin: "https://www1.gsis.gr", delegated: ["https://www1.gsis.gr", "https://login.gsis.gr"] }
+  ])("hands active logins at $origin to agents with the exact signed origins, including reviewed login affiliates", async ({ origin, delegated }) => {
     const { client, server, transport } = await harness();
     const { unlocked } = await setUpVault(client, "user:alice", "a master", fastKdf);
-    const allowed = vaultItemRecordSchema.parse(await encryptVaultItem(unlocked, { label: "Shop", origins: ["https://shop.example"], secrets: { USERNAME: "synthetic@example.com", PASSWORD: SENTINEL },
+    const allowed = vaultItemRecordSchema.parse(await encryptVaultItem(unlocked, { label: "Shop", origins: [origin], secrets: { USERNAME: "synthetic@example.com", PASSWORD: SENTINEL },
       policy: { ...policy, agentUse: true, approvalMode: "FULL" } }));
     const notAllowed = vaultItemRecordSchema.parse(await encryptVaultItem(unlocked, { label: "Bank", origins: ["https://bank.example"], secrets: { PASSWORD: "other" }, policy }));
     const pending = vaultItemRecordSchema.parse(await encryptVaultItem(unlocked, { label: "New", origins: ["https://new.example"], status: "PENDING", secrets: { PASSWORD: "p" }, policy: { ...policy, agentUse: true } }));
@@ -141,7 +144,8 @@ describe("Vault dock client", () => {
     const done = await delegateVaultItems({ vaultBroker: client.vaultBroker, vaultDelegate: async (body: any) => { sent = body; return { generation: body.generation }; } } as never, unlocked,
       { records: [allowed, notAllowed, pending], delegationGeneration: 2 });
     expect(done).toMatchObject({ generation: 3, count: 1 });
-    expect(sent.items).toEqual([{ handle: allowed.metadata.id, origins: ["https://shop.example"], fields: ["USERNAME", "PASSWORD"], approvalMode: "FULL", submit: true }]);
+    expect(sent.items).toEqual([{ handle: allowed.metadata.id, origins: delegated, fields: ["USERNAME", "PASSWORD"], approvalMode: "FULL", submit: true }]);
+    expect(allowed.metadata.origins).toEqual([origin]);
     expect(Date.parse(sent.expiresAt) - Date.now()).toBeGreaterThan(3000 * 86_400_000);
     expect(JSON.stringify(sent)).not.toContain(SENTINEL);
     expect(vaultDelegateRequestSchema.parse(sent)).toEqual(sent);
@@ -211,7 +215,7 @@ describe("Vault dock client", () => {
     pending.push({ id: "vault_pending:AAAAAAAAAAAAAAAAAAAAAA", kind: "NEW_ACCOUNT", handle: newHandle, label: "Shop", origin: "https://shop.example", sealedUsername: await seal("synthetic-shop@example.com"), sealedPassword: await seal(`${SENTINEL}-new`), paneId: null, createdAt: "" },
       { id: "vault_pending:CCCCCCCCCCCCCCCCCCCCCC", kind: "CHANGE_PASSWORD", handle: existing.metadata.id, label: "Mail", origin: "https://mail.example", sealedUsername: null, sealedPassword: await seal(`${SENTINEL}-changed`), paneId: null, createdAt: "" },
       { id: "vault_pending:DDDDDDDDDDDDDDDDDDDDDD", kind: "NEW_ACCOUNT", handle: "vault_item:DDDDDDDDDDDDDDDDDDDDDD", label: "Forum", origin: "https://forum.example", sealedUsername: await seal("synthetic-forum"), sealedPassword: null, paneId: null, createdAt: "" });
-    expect(await importVaultPending(api, unlocked, key)).toEqual({ imported: 3, unreadable: [] });
+    expect(await importVaultPending(api, unlocked, key)).toEqual({ imported: 3, unreadable: [], failed: [] });
     expect(deleted).toHaveLength(3);
     const created = vaultItemRecordSchema.parse(stored[newHandle]);
     expect(created.metadata).toMatchObject({ status: "ACTIVE", policy: { agentUse: true, approvalMode: "FULL", submitAllowed: true } });
@@ -233,7 +237,7 @@ describe("Vault dock client", () => {
     const foreignKey = await generateVaultTransportKey();
     pending.push({ id: "vault_pending:HHHHHHHHHHHHHHHHHHHHHH", kind: "CHANGE_PASSWORD", handle: existing.metadata.id, label: "Mail", origin: "https://mail.example", sealedUsername: null,
       sealedPassword: await sealToVaultPublicKey(foreignKey.publicKey, new TextEncoder().encode(`${SENTINEL}-foreign`), scope), paneId: null, createdAt: "2026-10-19T08:15:00.000Z" });
-    expect(await importVaultPending(api, unlocked, key)).toEqual({ imported: 3, unreadable: [{ kind: "CHANGE_PASSWORD", label: "Mail", origin: "https://mail.example" }] });
+    expect(await importVaultPending(api, unlocked, key)).toEqual({ imported: 3, unreadable: [{ id: "vault_pending:HHHHHHHHHHHHHHHHHHHHHH", kind: "CHANGE_PASSWORD", label: "Mail", origin: "https://mail.example" }], failed: [] });
     expect(deleted).not.toContain("vault_pending:HHHHHHHHHHHHHHHHHHHHHH");
     expect((await decryptVaultItem(unlocked, vaultItemRecordSchema.parse(stored[existing.metadata.id]))).PASSWORD).toBe(`${SENTINEL}-changed`);
     expect(stored["vault_item:EEEEEEEEEEEEEEEEEEEEEE"]).toBeUndefined();
@@ -242,6 +246,55 @@ describe("Vault dock client", () => {
     expect((await decryptVaultItem(unlocked, shop)).PASSWORD).toBe(`${SENTINEL}-third`);
     expect(shop.history.length).toBe(2);
     expect((await decryptVaultItem(unlocked, vaultItemRecordSchema.parse(stored["vault_item:GGGGGGGGGGGGGGGGGGGGGG"]))).USERNAME).toBe("another-shop-user");
+  });
+
+  it("never lets one waiting login stop the rest: a changed password of a handle with no item becomes its own login (stable 25-30/10)", async () => {
+    const { client } = await harness();
+    const { unlocked } = await setUpVault(client, "user:alice", "master", fastKdf);
+    const stored: Record<string, any> = {};
+    let inbox: any = null;
+    const pending: any[] = [];
+    const deleted: string[] = [];
+    let refuse: string | null = null;
+    const api: VaultInboxApi = {
+      vaultInbox: async () => ({ inbox }), vaultSetInbox: async (body) => { inbox = body; return { inbox: true }; },
+      vaultPending: async () => ({ pending: pending.filter((entry) => !deleted.includes(entry.id)) }), vaultDeletePending: async (id) => { deleted.push(id); return { deleted: true }; },
+      // Like the API: an id that is no item answers 404.
+      vaultItem: async (id) => { if (!stored[id]) throw new Error("Vault item not found."); return { item: vaultItemRecordSchema.parse(stored[id]) }; },
+      vaultSaveItem: async (item) => { if (item.metadata.id === refuse) throw new Error("Request failed (500)."); stored[item.metadata.id] = item; return { item: vaultItemRecordSchema.parse(item) }; },
+      vaultItems: async () => ({ items: Object.values(stored).map((record: any) => record.metadata) })
+    };
+    const key = await vaultInboxKey(api, unlocked);
+    const scope = { ownerUserId: "user:alice", vaultId: unlocked.vaultId, keyVersion: 1 };
+    const seal = (text: string) => sealToVaultPublicKey(key.publicKey, new TextEncoder().encode(text), scope);
+    const row = async (id: string, kind: string, handle: string, label: string, origin: string, password: string, createdAt: string, username: string | null = null) =>
+      ({ id: `vault_pending:${id.repeat(22)}`, kind, handle, label, origin, sealedUsername: username ? await seal(username) : null, sealedPassword: await seal(password), paneId: null, createdAt });
+    const shop = vaultItemRecordSchema.parse(await encryptVaultItem(unlocked, { label: "Shop", origins: ["https://shop.example"], policy, secrets: { USERNAME: "synthetic@example.com", PASSWORD: "SYNTHETIC-old" } }));
+    stored[shop.metadata.id] = shop;
+    // Oldest first: a password change of a handle that is no item (its new account was merged into another login in an earlier
+    // run), then a new login, then a new account of the shop merged into its login with a password change of that handle.
+    pending.push(await row("A", "CHANGE_PASSWORD", "vault_item:OOOOOOOOOOOOOOOOOOOOOO", "Orphan (synthetic@example.com)", "https://orphan.example", `${SENTINEL}-orphan`, "2026-10-25T03:56:00.000Z"),
+      await row("B", "NEW_ACCOUNT", "vault_item:NNNNNNNNNNNNNNNNNNNNNN", "Backblaze B2 (synthetic@example.com)", "https://www.backblaze.com", `${SENTINEL}-b2`, "2026-10-30T16:28:00.000Z", "synthetic@example.com"),
+      await row("C", "NEW_ACCOUNT", "vault_item:SSSSSSSSSSSSSSSSSSSSSS", "Shop", "https://shop.example", `${SENTINEL}-reset`, "2026-10-30T16:29:00.000Z", "synthetic@example.com"),
+      await row("D", "CHANGE_PASSWORD", "vault_item:SSSSSSSSSSSSSSSSSSSSSS", "Shop", "https://shop.example", `${SENTINEL}-changed`, "2026-10-30T16:30:00.000Z"));
+    expect(await importVaultPending(api, unlocked, key)).toEqual({ imported: 4, unreadable: [], failed: [] });
+    const orphan = vaultItemRecordSchema.parse(stored["vault_item:OOOOOOOOOOOOOOOOOOOOOO"]);
+    expect(orphan.metadata).toMatchObject({ label: "Orphan (synthetic@example.com)", origins: ["https://orphan.example"], status: "ACTIVE", policy: { agentUse: true } });
+    expect(await decryptVaultItem(unlocked, orphan)).toEqual({ PASSWORD: `${SENTINEL}-orphan` });
+    expect(await decryptVaultItem(unlocked, vaultItemRecordSchema.parse(stored["vault_item:NNNNNNNNNNNNNNNNNNNNNN"]))).toEqual({ USERNAME: "synthetic@example.com", PASSWORD: `${SENTINEL}-b2` });
+    // The merged account's later password change reaches the login it was merged into; no item is made for its handle.
+    expect(stored["vault_item:SSSSSSSSSSSSSSSSSSSSSS"]).toBeUndefined();
+    expect((await decryptVaultItem(unlocked, vaultItemRecordSchema.parse(stored[shop.metadata.id]))).PASSWORD).toBe(`${SENTINEL}-changed`);
+    expect(deleted).toHaveLength(4);
+
+    // A row whose save fails is reported and stays waiting; the rows after it are still added.
+    pending.push(await row("E", "NEW_ACCOUNT", "vault_item:EEEEEEEEEEEEEEEEEEEEEE", "Broken", "https://broken.example", `${SENTINEL}-e`, "2026-10-30T17:00:00.000Z", "e@example.com"),
+      await row("F", "NEW_ACCOUNT", "vault_item:FFFFFFFFFFFFFFFFFFFFFF", "Later", "https://later.example", `${SENTINEL}-f`, "2026-10-30T17:01:00.000Z", "f@example.com"));
+    refuse = "vault_item:EEEEEEEEEEEEEEEEEEEEEE";
+    expect(await importVaultPending(api, unlocked, key)).toEqual({ imported: 1, unreadable: [],
+      failed: [{ id: `vault_pending:${"E".repeat(22)}`, kind: "NEW_ACCOUNT", label: "Broken", origin: "https://broken.example", reason: "Request failed (500)." }] });
+    expect(deleted).not.toContain(`vault_pending:${"E".repeat(22)}`);
+    expect(stored["vault_item:FFFFFFFFFFFFFFFFFFFFFF"]).toBeDefined();
   });
 
   it("plans duplicate removal: the same site, username and account more than once, the most recently changed copy stays (operator request 2026-10-22)", async () => {

@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
+import { SPACE_DOCS_ROOT } from "@space/contracts";
 
 // Space Memory file names. The canonical files move from the legacy gemini_* names
 // (gemini.md, gemini_core_*.md, gemini_history.md, gemini_history_YYYY-MM.md) to
@@ -7,7 +8,7 @@ import { basename, join } from "node:path";
 // both sets; writers follow the index file that exists, so only one set is ever written.
 // The memory-graph parser keeps its own copy of the monthly pattern (packages/memory-graph/src/memory-files.ts).
 
-export const SPACE_MEMORY_DIRECTORY = "/opt/spaceapp/docs";
+export const SPACE_MEMORY_DIRECTORY = SPACE_DOCS_ROOT;
 export const SPACE_MEMORY_INDEX_FILENAME = "space_memory.md";
 export const LEGACY_MEMORY_INDEX_FILENAME = "gemini_history.md";
 

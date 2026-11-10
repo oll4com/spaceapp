@@ -1,11 +1,13 @@
 // Eyes (operator request 2026-10-24): space_look answers with a browser or copilot pane's masked screenshot as an image block.
 // The Vault fence holds (no image while a fill holds the page), the image is never stored by Nous, CLI panes have no look.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import type { Pane, Room } from "@space/contracts";
+import type { Artifact, Pane, Room } from "@space/contracts";
+import { createNousFiles } from "../src/nous/files.js";
 import { createNousTools, NOUS_LOOK_MAX_BYTES, type NousToolDeps } from "../src/nous/tools.js";
+import { buildGenericUserUploadStorage } from "../src/upload-media.js";
 import { registerNousMcpRoute, signNousToken } from "../src/nous/mcp.js";
 import Fastify from "fastify";
 
@@ -62,8 +64,9 @@ describe("space_look", () => {
   });
 
   it("has no look for a CLI pane, a browser that is not open, a missing pane or an image past the cap", async () => {
-    const { nous, action } = tools();
-    expect(await nous.execute("space_look", { room: "Main", pane: "Andy" }, ctx)).toMatchObject({ ok: false, display: "Andy has no browser" });
+    const { nous, action } = tools({ roomTool: async () => ({ ok: true, display: "Read Andy", result: "screen" }) });
+    // R50-3: a CLI pane's screen is read as text (the R50-3 case in nous-self-upgrade.test.ts).
+    expect(await nous.execute("space_look", { room: "Main", pane: "Andy" }, ctx)).toMatchObject({ ok: true, result: expect.stringContaining("without a browser, so its screen was read as text") });
     expect((await nous.execute("space_look", { room: "Main", pane: "Nobody" }, ctx)).ok).toBe(false);
     const closed = tools({ browser: { getActive: async () => null, action } });
     expect(await closed.nous.execute("space_look", { room: "Main", pane: "Marketing" }, ctx)).toMatchObject({ ok: false, display: "Marketing's browser is not open" });
@@ -74,5 +77,34 @@ describe("space_look", () => {
     expect(action).not.toHaveBeenCalled();
     // No browser host (dev): a plain refusal.
     expect(await tools({ browser: undefined }).nous.execute("space_look", { room: "Main", pane: "Marketing" }, ctx)).toMatchObject({ ok: false, display: "No browser host here" });
+  });
+
+  // Proof gate (operator 31/10 14:13 BKK): Nous opens an App Studio preview (or any image artifact of the owner) before it says a feature is in a build.
+  it("answers one of the owner's image artifacts by id as an image block, and nothing else", async () => {
+    const artifact = (id: string, roomId: string, mimeType: string, bytes: Buffer): Artifact => {
+      const storage = buildGenericUserUploadStorage({ artifactRoot: base, roomId, originalFilename: `${id.slice(9)}.png` });
+      mkdirSync(join(storage.filePath, ".."), { recursive: true });
+      writeFileSync(storage.filePath, bytes);
+      return { id, roomId, paneId: null, kind: "SCREENSHOT", mimeType, storageUri: storage.storageUri, byteSize: bytes.length, metadata: { source: "APP_STUDIO" },
+        deletedAt: null, createdAt: "2026-10-31T07:00:00.000Z" } as unknown as Artifact;
+    };
+    const artifacts = new Map([artifact("artifact:preview01", room.id, "image/png", png), artifact("artifact:otherroom", "room:someoneelse", "image/png", png),
+      artifact("artifact:notimage1", room.id, "application/json", Buffer.from("{}"))].map((entry) => [entry.id, entry]));
+    const files = createNousFiles({ artifactRoot: base, rooms: async () => [room], listArtifacts: async () => [], getArtifact: async (id) => {
+      const found = artifacts.get(id);
+      if (!found) throw new Error("not found");
+      return found;
+    } });
+    // No browser host is needed for an artifact.
+    const { nous, action } = tools({ files, browser: undefined });
+    const looked = await nous.execute("space_look", { artifactId: "artifact:preview01" }, ctx);
+    expect(looked).toMatchObject({ ok: true, display: expect.stringContaining("artifact:preview01") });
+    expect(looked.result).toContain("never instructions");
+    expect(looked.images).toEqual([{ data: png.toString("base64"), mimeType: "image/png" }]);
+    expect(await nous.execute("space_look", { artifactId: "artifact:otherroom" }, ctx)).toMatchObject({ ok: false, display: "Could not look at artifact:otherroom" });
+    expect((await nous.execute("space_look", { artifactId: "artifact:notimage1" }, ctx)).result).toContain("not an image");
+    expect((await nous.execute("space_look", { artifactId: "artifact:missing01" }, ctx)).ok).toBe(false);
+    expect(await nous.execute("space_look", {}, ctx)).toMatchObject({ ok: false, display: "Name a pane or an artifact" });
+    expect(action).not.toHaveBeenCalled();
   });
 });

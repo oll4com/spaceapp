@@ -22,3 +22,4 @@ import "./verify-export-provenance.test.mjs";
 
 import './opencode-first-run.test.mjs';
 import './opencode-standalone.test.mjs';
+import './claude-agent.test.mjs';

@@ -8,6 +8,7 @@ import { T3GatewayError } from "./gateway-policy.js";
 import { installedT3Version, T3Upstream, type T3Shell } from "./upstream.js";
 import { publishT3AgentTokens, type T3AgentTokenOptions } from "./agent-tokens.js";
 import { t3RoomProjectWorkspace, t3WorktreeWorkspace } from "./worktree-workspace.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export interface T3BindingOptions extends T3PaneAccessOptions {
   store: T3PaneAccessOptions["store"] & {
@@ -36,7 +37,7 @@ function projectTitle(scope: T3PaneScope) {
 
 export async function registerT3Bindings(app: FastifyInstance, options: T3BindingOptions) {
   const upstream = new T3Upstream(options.socketPath, options.healthTimeoutMs);
-  const workspaceRoot = options.workspaceRoot ?? "/opt/spaceapp/var/t3code/workspace";
+  const workspaceRoot = options.workspaceRoot ?? `${SPACE_INSTALL_ROOT}/var/t3code/workspace`;
   const locks = new Map<string, Promise<unknown>>();
   const serialize = async <T>(key: string, work: () => Promise<T>): Promise<T> => {
     const previous = locks.get(key) ?? Promise.resolve();
@@ -73,9 +74,9 @@ export async function registerT3Bindings(app: FastifyInstance, options: T3Bindin
   };
   const validateAndPublish = async (scope: T3PaneScope, selection: T3CodeSelection) =>
     publishAgentTokens(scope, (await validateSelection(scope, selection)).workspace);
-  // A room's default folder is not a T3 workspace: /opt/spaceapp for workspace rooms, /etc for Agent Proof rooms (5627772ffc).
+  // A room's default folder is not a T3 workspace: <install root> for workspace rooms, /etc for Agent Proof rooms (5627772ffc).
   const roomDefaultFolder = (room: T3PaneScope["room"]) =>
-    room.projectPath === "/opt/spaceapp" || (room.kind === "AGENT_PROOF" && room.projectPath === "/etc");
+    room.projectPath === SPACE_INSTALL_ROOT || (room.kind === "AGENT_PROOF" && room.projectPath === "/etc");
   const workspaceCandidates = (scope: T3PaneScope) =>
     [scope.pane.cwd, roomDefaultFolder(scope.room) ? null : scope.room.projectPath].filter((v): v is string => Boolean(v?.trim()));
   // Same rule as initialSelection, without creating anything upstream.

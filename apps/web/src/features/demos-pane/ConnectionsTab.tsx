@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { DemoConnection, DemoConnectionProvider, DemoSheetsTarget } from "@space/contracts";
 import { api } from "../../api.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 interface ConnectionsTabProps {
   connections: DemoConnection[];
@@ -16,6 +17,8 @@ function statusTone(connection: DemoConnection): string {
 }
 
 export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: ConnectionsTabProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [salesforceId, setSalesforceId] = useState("");
   const [salesforceSecret, setSalesforceSecret] = useState("");
   const [salesforceLoginUrl, setSalesforceLoginUrl] = useState("https://login.salesforce.com");
@@ -37,7 +40,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
     try {
       await task();
     } catch (error) {
-      onNotice({ tone: "error", message: error instanceof Error ? error.message : "The action failed." });
+      onNotice({ tone: "error", message: error instanceof Error ? error.message : t("The action failed.") });
     } finally {
       setBusy(null);
     }
@@ -49,13 +52,13 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
         provider === "salesforce"
           ? { clientId: salesforceId.trim(), clientSecret: salesforceSecret.trim() || null, loginUrl: salesforceLoginUrl }
           : { clientId: googleId.trim(), clientSecret: googleSecret.trim() || null };
-      if (input.clientId.length < 5) throw new Error("Enter the client id first.");
+      if (input.clientId.length < 5) throw new Error(t("Enter the client id first."));
       await api.demoSaveConnectionSettings(provider, input);
       setSalesforceSecret("");
       setGoogleSecret("");
       if (provider === "salesforce") setEditingSalesforce(false);
       if (provider === "google-sheets") setEditingGoogle(false);
-      onNotice({ tone: "ok", message: "Client settings stored encrypted on the server." });
+      onNotice({ tone: "ok", message: t("Client settings stored encrypted on the server.") });
       await onRefresh();
     });
   }
@@ -65,10 +68,10 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
       const result = await api.demoAuthorizeConnection(provider);
       const popup = window.open(result.authorizationUrl, "space-demo-oauth", "width=560,height=720");
       if (!popup) {
-        onNotice({ tone: "warn", message: "The browser blocked the connection window. Allow popups for Space and retry." });
+        onNotice({ tone: "warn", message: t("The browser blocked the connection window. Allow popups for Space and retry.") });
         return;
       }
-      onNotice({ tone: "ok", message: "Complete the consent screen; the pane refreshes when the connection returns." });
+      onNotice({ tone: "ok", message: t("Complete the consent screen; the pane refreshes when the connection returns.") });
       const started = Date.now();
       const timer = window.setInterval(() => {
         if (popup.closed || Date.now() - started > 5 * 60_000) {
@@ -82,7 +85,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
   function disconnect(provider: DemoConnectionProvider): Promise<void> {
     return run(`disconnect-${provider}`, async () => {
       await api.demoDisconnectConnection(provider);
-      onNotice({ tone: "ok", message: "Connection removed; stored tokens were revoked and deleted." });
+      onNotice({ tone: "ok", message: t("Connection removed; stored tokens were revoked and deleted.") });
       await onRefresh();
     });
   }
@@ -93,8 +96,8 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
       onNotice({
         tone: "ok",
         message: result.sheets.headerPresent
-          ? `Spreadsheet ready: ${result.sheets.title ?? result.sheets.spreadsheetId}.`
-          : "Spreadsheet selected, but the header row is incomplete."
+          ? t("Spreadsheet ready: {title}.", { title: result.sheets.title ?? result.sheets.spreadsheetId ?? "" })
+          : t("Spreadsheet selected, but the header row is incomplete.")
       });
       await onRefresh();
     });
@@ -104,7 +107,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
     return run("sheet-create", async () => {
       const result = await api.demoCreateSheet({ tab: tab.trim() || null });
       setSpreadsheet(result.sheets.spreadsheetUrl ?? result.sheets.spreadsheetId ?? "");
-      onNotice({ tone: "ok", message: `Created spreadsheet ${result.sheets.title ?? ""}.` });
+      onNotice({ tone: "ok", message: t("Created spreadsheet {title}.", { title: result.sheets.title ?? "" }) });
       await onRefresh();
     });
   }
@@ -112,7 +115,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
   function verifySheet(): Promise<void> {
     return run("sheet-verify", async () => {
       const result = await api.demoVerifySheet();
-      onNotice({ tone: "ok", message: `Spreadsheet read-back verified at ${result.sheets.tab ?? "the selected tab"}.` });
+      onNotice({ tone: "ok", message: t("Spreadsheet read-back verified at {tab}.", { tab: result.sheets.tab ?? t("the selected tab") }) });
       await onRefresh();
     });
   }
@@ -133,24 +136,24 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
       <div className="demos-card">
         <div className="demos-row spread">
           <div>
-            <h3>OAuth Connections</h3>
+            <h3>{t("OAuth Connections")}</h3>
             <p className="demos-muted" style={{ margin: "4px 0 0" }}>
-              Active provider connections for live integrations. Sample runs remain isolated and never call external services.
+              {t("Active provider connections for live integrations. Sample runs remain isolated and never call external services.")}
             </p>
           </div>
           <button type="button" className="demos-ghost" onClick={() => void onRefresh()} disabled={busy !== null}>
-            Refresh status
+            {t("Refresh status")}
           </button>
         </div>
 
         <table className="demos-table" style={{ marginTop: 8 }}>
           <thead>
             <tr>
-              <th>Provider</th>
-              <th>Status</th>
-              <th>Connected Account</th>
-              <th>Redirect URI</th>
-              <th style={{ textAlign: "right" }}>Actions</th>
+              <th>{t("Provider")}</th>
+              <th>{t("Status")}</th>
+              <th>{t("Connected Account")}</th>
+              <th>{t("Redirect URI")}</th>
+              <th style={{ textAlign: "right" }}>{t("Actions")}</th>
             </tr>
           </thead>
           <tbody>
@@ -169,7 +172,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
                   </td>
                   <td>
                     <span className={connection ? statusTone(connection) : "demos-pill"}>
-                      {connection ? (isConfigured ? connection.status : "UNCONFIGURED") : "UNCONFIGURED"}
+                      {t(!isConfigured ? "UNCONFIGURED" : connection!.status === "UNCONFIGURED" ? "CONFIGURED" : connection!.status)}
                     </span>
                     {connection?.safeErrorMessage ? <div className="demos-muted">{connection.safeErrorMessage}</div> : null}
                   </td>
@@ -192,7 +195,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
                         disabled={!isConfigured || busy !== null}
                         onClick={() => void authorize(connection!.provider)}
                       >
-                        {isConnected ? "Reconnect" : "Connect"}
+                        {isConnected ? t("Reconnect") : t("Connect")}
                       </button>
                       {isConfigured ? (
                         <button
@@ -201,7 +204,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
                           disabled={busy !== null}
                           onClick={() => void disconnect(connection!.provider)}
                         >
-                          Disconnect
+                          {t("Disconnect")}
                         </button>
                       ) : null}
                     </div>
@@ -217,14 +220,14 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
       <div className="demos-card">
         <div className="demos-row spread">
           <div>
-            <h3>Salesforce API Credentials</h3>
+            <h3>{t("Salesforce API Credentials")}</h3>
             <p className="demos-muted" style={{ margin: "4px 0 0" }}>
-              OAuth 2.0 Connected App client credentials. Stored with AES encryption on the server.
+              {t("OAuth 2.0 Connected App client credentials. Stored with AES encryption on the server.")}
             </p>
           </div>
           {salesforce?.configured && !editingSalesforce ? (
             <button type="button" className="demos-ghost" onClick={() => setEditingSalesforce(true)}>
-              Update credentials
+              {t("Update credentials")}
             </button>
           ) : null}
         </div>
@@ -232,17 +235,17 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
         {salesforce?.configured && !editingSalesforce ? (
           <div className="demos-masked-card">
             <div className="demos-masked-field">
-              <span className="demos-masked-label">Consumer Key (Client ID)</span>
+              <span className="demos-masked-label">{t("Consumer Key (Client ID)")}</span>
               <span className="demos-masked-dots">••••••••••••••••••••••••••••••••</span>
-              <span className="demos-badge-verified">Configured & Encrypted</span>
+              <span className="demos-badge-verified">{t("Configured & Encrypted")}</span>
             </div>
             <div className="demos-masked-field">
-              <span className="demos-masked-label">Consumer Secret</span>
+              <span className="demos-masked-label">{t("Consumer Secret")}</span>
               <span className="demos-masked-dots">••••••••••••••••</span>
-              <span className="demos-badge-verified">Protected</span>
+              <span className="demos-badge-verified">{t("Protected")}</span>
             </div>
             <div className="demos-masked-field">
-              <span className="demos-masked-label">Login Host</span>
+              <span className="demos-masked-label">{t("Login Host")}</span>
               <span className="demos-mono">{salesforceLoginUrl}</span>
             </div>
           </div>
@@ -260,7 +263,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
 
             <div className="demos-grid">
               <label className="demos-field">
-                <span>Salesforce consumer key (client id)</span>
+                <span>{t("Salesforce consumer key (client id)")}</span>
                 <input
                   name="sf_cid_field"
                   autoComplete="off"
@@ -273,7 +276,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
                 />
               </label>
               <label className="demos-field">
-                <span>Salesforce consumer secret</span>
+                <span>{t("Salesforce consumer secret")}</span>
                 <input
                   type="password"
                   name="sf_secret_field"
@@ -282,23 +285,23 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
                   data-lpignore="true"
                   value={salesforceSecret}
                   onChange={(event) => setSalesforceSecret(event.target.value)}
-                  placeholder={salesforce?.configured ? "leave empty to keep the stored secret" : "Enter consumer secret"}
+                  placeholder={salesforce?.configured ? t("leave empty to keep the stored secret") : t("Enter consumer secret")}
                 />
               </label>
               <label className="demos-field">
-                <span>Salesforce login host</span>
+                <span>{t("Salesforce login host")}</span>
                 <select value={salesforceLoginUrl} onChange={(event) => setSalesforceLoginUrl(event.target.value)}>
-                  <option value="https://login.salesforce.com">login.salesforce.com (production / Developer Edition)</option>
-                  <option value="https://test.salesforce.com">test.salesforce.com (sandbox)</option>
+                  <option value="https://login.salesforce.com">{t("login.salesforce.com (production / Developer Edition)")}</option>
+                  <option value="https://test.salesforce.com">{t("test.salesforce.com (sandbox)")}</option>
                 </select>
               </label>
               <div className="demos-row" style={{ alignItems: "flex-end" }}>
                 <button type="submit" disabled={busy !== null}>
-                  {busy === "settings-salesforce" ? "Saving…" : "Save Salesforce settings"}
+                  {busy === "settings-salesforce" ? t("Saving…") : t("Save Salesforce settings")}
                 </button>
                 {salesforce?.configured ? (
                   <button type="button" className="demos-ghost" onClick={() => setEditingSalesforce(false)}>
-                    Cancel
+                    {t("Cancel")}
                   </button>
                 ) : null}
               </div>
@@ -311,14 +314,14 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
       <div className="demos-card">
         <div className="demos-row spread">
           <div>
-            <h3>Google Sheets API Credentials</h3>
+            <h3>{t("Google Sheets API Credentials")}</h3>
             <p className="demos-muted" style={{ margin: "4px 0 0" }}>
-              Google Cloud OAuth 2.0 Web Application credentials with Google Sheets & Drive scopes.
+              {t("Google Cloud OAuth 2.0 Web Application credentials with Google Sheets & Drive scopes.")}
             </p>
           </div>
           {google?.configured && !editingGoogle ? (
             <button type="button" className="demos-ghost" onClick={() => setEditingGoogle(true)}>
-              Update credentials
+              {t("Update credentials")}
             </button>
           ) : null}
         </div>
@@ -326,14 +329,14 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
         {google?.configured && !editingGoogle ? (
           <div className="demos-masked-card">
             <div className="demos-masked-field">
-              <span className="demos-masked-label">Google OAuth Client ID</span>
+              <span className="demos-masked-label">{t("Google OAuth Client ID")}</span>
               <span className="demos-masked-dots">••••••••••••••••••••••••••••••••</span>
-              <span className="demos-badge-verified">Configured & Encrypted</span>
+              <span className="demos-badge-verified">{t("Configured & Encrypted")}</span>
             </div>
             <div className="demos-masked-field">
-              <span className="demos-masked-label">Client Secret</span>
+              <span className="demos-masked-label">{t("Client Secret")}</span>
               <span className="demos-masked-dots">••••••••••••••••</span>
-              <span className="demos-badge-verified">Protected</span>
+              <span className="demos-badge-verified">{t("Protected")}</span>
             </div>
           </div>
         ) : (
@@ -350,7 +353,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
 
             <div className="demos-grid">
               <label className="demos-field">
-                <span>Google OAuth client id</span>
+                <span>{t("Google OAuth client id")}</span>
                 <input
                   name="google_cid_field"
                   autoComplete="off"
@@ -363,7 +366,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
                 />
               </label>
               <label className="demos-field">
-                <span>Google OAuth client secret</span>
+                <span>{t("Google OAuth client secret")}</span>
                 <input
                   type="password"
                   name="google_secret_field"
@@ -372,16 +375,16 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
                   data-lpignore="true"
                   value={googleSecret}
                   onChange={(event) => setGoogleSecret(event.target.value)}
-                  placeholder={google?.configured ? "leave empty to keep stored secret" : "Enter client secret"}
+                  placeholder={google?.configured ? t("leave empty to keep stored secret") : t("Enter client secret")}
                 />
               </label>
               <div className="demos-row" style={{ alignItems: "flex-end" }}>
                 <button type="submit" disabled={busy !== null}>
-                  {busy === "settings-google-sheets" ? "Saving…" : "Save Google settings"}
+                  {busy === "settings-google-sheets" ? t("Saving…") : t("Save Google settings")}
                 </button>
                 {google?.configured ? (
                   <button type="button" className="demos-ghost" onClick={() => setEditingGoogle(false)}>
-                    Cancel
+                    {t("Cancel")}
                   </button>
                 ) : null}
               </div>
@@ -394,9 +397,9 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
       <div className="demos-card">
         <div className="demos-row spread">
           <div>
-            <h3>Google Sheets Target Spreadsheet</h3>
+            <h3>{t("Google Sheets Target Spreadsheet")}</h3>
             <p className="demos-muted" style={{ margin: "4px 0 0" }}>
-              Destination spreadsheet for Account synchronizations. Appends rows with idempotency verification.
+              {t("Destination spreadsheet for Account synchronizations. Appends rows with idempotency verification.")}
             </p>
           </div>
           {sheetLink ? (
@@ -406,7 +409,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
               rel="noopener noreferrer"
               className="demos-link-button"
             >
-              Open in Google Sheets ↗
+              {t("Open in Google Sheets ↗")}
             </a>
           ) : null}
         </div>
@@ -416,24 +419,24 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
             <div className="demos-target-header">
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span className="demos-sheet-icon">📊</span>
-                <strong>{sheets.title || "Untitled Spreadsheet"}</strong>
+                <strong>{sheets.title || t("Untitled Spreadsheet")}</strong>
               </div>
               <span className={`demos-pill ${sheets.verified ? "demos-running" : "demos-starting"}`}>
-                {sheets.verified ? "VERIFIED ✓" : "UNVERIFIED"}
+                {sheets.verified ? t("VERIFIED ✓") : t("UNVERIFIED")}
               </span>
             </div>
             <div className="demos-grid" style={{ marginTop: 8 }}>
               <div className="demos-field">
-                <span>Spreadsheet ID</span>
+                <span>{t("Spreadsheet ID")}</span>
                 <span className="demos-mono">{sheets.spreadsheetId}</span>
               </div>
               <div className="demos-field">
-                <span>Tab Name</span>
-                <span className="demos-mono">{sheets.tab || "Default"}</span>
+                <span>{t("Tab Name")}</span>
+                <span className="demos-mono">{sheets.tab || t("Default")}</span>
               </div>
               <div className="demos-field">
-                <span>Header Verified</span>
-                <span>{sheets.headerPresent ? "Yes (Headers Present)" : "No"}</span>
+                <span>{t("Header Verified")}</span>
+                <span>{sheets.headerPresent ? t("Yes (Headers Present)") : t("No")}</span>
               </div>
             </div>
           </div>
@@ -442,7 +445,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
         <div className="demos-grid" style={{ marginTop: 10 }}>
           <label className="demos-field">
             <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span>Spreadsheet URL or id</span>
+              <span>{t("Spreadsheet URL or id")}</span>
               {activeSheetLink ? (
                 <a
                   href={activeSheetLink}
@@ -450,7 +453,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
                   rel="noopener noreferrer"
                   className="demos-inline-link"
                 >
-                  Open in Google Sheets ↗
+                  {t("Open in Google Sheets ↗")}
                 </a>
               ) : null}
             </span>
@@ -461,12 +464,12 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
             />
           </label>
           <label className="demos-field">
-            <span>Tab Name</span>
+            <span>{t("Tab Name")}</span>
             <input value={tab} onChange={(event) => setTab(event.target.value)} placeholder="Demo Sync" />
           </label>
           <div className="demos-row" style={{ alignItems: "flex-end" }}>
             <button type="button" disabled={busy !== null || !google?.configured} onClick={() => void saveSheet()}>
-              {busy === "sheet-save" ? "Saving…" : "Save target"}
+              {busy === "sheet-save" ? t("Saving…") : t("Save target")}
             </button>
             <button
               type="button"
@@ -474,7 +477,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
               disabled={busy !== null || !google?.configured}
               onClick={() => void createSheet()}
             >
-              {busy === "sheet-create" ? "Creating…" : "Create spreadsheet"}
+              {busy === "sheet-create" ? t("Creating…") : t("Create spreadsheet")}
             </button>
             <button
               type="button"
@@ -482,7 +485,7 @@ export function ConnectionsTab({ connections, sheets, onRefresh, onNotice }: Con
               disabled={busy !== null || !sheets.spreadsheetId || google?.status !== "CONNECTED"}
               onClick={() => void verifySheet()}
             >
-              {busy === "sheet-verify" ? "Verifying…" : "Verify read-back"}
+              {busy === "sheet-verify" ? t("Verifying…") : t("Verify read-back")}
             </button>
           </div>
         </div>

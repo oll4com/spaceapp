@@ -9,6 +9,11 @@ import type * as activities from "./memory-maintenance-activities.js";
 import type * as mutationActivities from "./memory-mutation-activity.js";
 import { MEMORY_MAINTENANCE_TASK_QUEUE } from "./memory-maintenance-config.js";
 import { MEMORY_MUTATION_TASK_QUEUE } from "./memory-mutation-config.js";
+import { logIdentifier } from "./worker-log.js";
+
+// An activity failure's cause type (the activity error's class) or its name, never its message: that can carry database or memory text (OBS-011).
+const failureType = (error: unknown) =>
+  logIdentifier((error as { cause?: { type?: unknown } } | null)?.cause?.type) ?? logIdentifier((error as { name?: unknown } | null)?.name) ?? "UNKNOWN";
 
 const {
   createScheduledMemoryAudit,
@@ -35,12 +40,12 @@ export async function memoryMaintenanceWorkflow(input: MemoryMaintenanceInput): 
   try {
     await refreshAllMonthsMemoryGraphSnapshot(input);
   } catch (error) {
-    console.warn("All-months memory graph refresh failed; the live snapshot and maintenance continue.", error);
+    console.warn("All-months memory graph refresh failed; the live snapshot and maintenance continue.", { failure: failureType(error) });
   }
   try {
     await reconcileStaleSpaceAgentSessions();
   } catch (error) {
-    console.warn("Stale space agent session reconciliation failed; maintenance continues.", error);
+    console.warn("Stale space agent session reconciliation failed; maintenance continues.", { failure: failureType(error) });
   }
   const run = await createScheduledMemoryAudit({ ...input, sourceHash: result.sourceHash });
   await executeChild(memoryConsolidationWorkflow, {

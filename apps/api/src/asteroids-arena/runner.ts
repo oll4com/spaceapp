@@ -84,6 +84,8 @@ export interface StartArenaRunInput {
   rounds: number;
   claudeAccount?: string;
   origin?: RunRecord["origin"];
+  /** Server-owned id of the request that started this run (Gateway correlation only). */
+  traceId?: string;
   /** Lockstep modes wait for wall-clock time so viewers see the windows in real time. */
   pace?: boolean;
   seed?: number;
@@ -211,6 +213,7 @@ export class ArenaBenchmarkRunner {
   private readonly claudeProfile: (() => Promise<string | null>) | null;
   private claudeChoice: { account: string; until: number } | null = null;
   private run: RunRecord | null = null;
+  private traceId: string | undefined;
   private live: LiveRunState | null = null;
   private pilots: PilotRuntime[] = [];
   private frames: LiveFrame[] = [];
@@ -263,6 +266,7 @@ export class ArenaBenchmarkRunner {
       return { id, slot, color, reference, providerId: providerForModel(id), displayName: names.get(id) || (reference ? "Scripted Baseline" : id) };
     });
     const startedAt = this.now();
+    this.traceId = input.traceId;
     const seed = Number.isInteger(input.seed) ? (input.seed as number) >>> 0 : hashSeed(`${startedAt}:${randomBytes(4).toString("hex")}`);
     const realtime = input.mode === "duel";
     this.activeTimeoutMs = realtime ? Math.min(this.decisionTimeoutMs, REALTIME_DECISION_TIMEOUT_MS) : this.decisionTimeoutMs;
@@ -480,6 +484,7 @@ export class ArenaBenchmarkRunner {
             user: buildUserPrompt(snapshot),
             snapshot,
             signal: controller.signal,
+            traceId: this.traceId,
             ...(claudeAccount ? { claudeAccount } : {})
           });
           const notice = providerNoticeKind(reply.text);
@@ -692,7 +697,7 @@ export class ArenaBenchmarkRunner {
         user = buildUserPrompt({ ...snapshot, contacts: snapshot.contacts.slice(0, 6), events: snapshot.events.slice(-3) });
       }
       const claudeAccount = await this.claudeAccountFor(pilot.contestant.id);
-      const reply = await this.requester({ modelId: pilot.contestant.id, system, user, snapshot, signal: controller.signal, ...(claudeAccount ? { claudeAccount } : {}) });
+      const reply = await this.requester({ modelId: pilot.contestant.id, system, user, snapshot, signal: controller.signal, traceId: this.traceId, ...(claudeAccount ? { claudeAccount } : {}) });
       const latencyMs = this.now() - started;
       const notice = providerNoticeKind(reply.text);
       const tokens = typeof reply.tokens === "number" ? { tokens: reply.tokens } : {};

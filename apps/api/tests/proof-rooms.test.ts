@@ -267,9 +267,15 @@ describe("agent proof rooms API", () => {
         url: `/api/panes/${encodeURIComponent(record.panes[0]!.id)}/cli/local-composer/submissions/00000000-0000-4000-8000-000000000001` });
       expect(receipt.statusCode).toBe(200);
       expect(receipt.json().status).toBe("NOT_FOUND");
-      const otherOwner = await app.inject({ method: "GET", headers: signedHeaders("ADMIN"),
-        url: `/api/panes/${encodeURIComponent(record.panes[0]!.id)}/cli/local-composer/submissions/00000000-0000-4000-8000-000000000001` });
-      expect(otherOwner.statusCode).toBe(404);
+      const receiptUrl = `/api/panes/${encodeURIComponent(record.panes[0]!.id)}/cli/local-composer/submissions/00000000-0000-4000-8000-000000000001`;
+      // Another ADMIN may type into the pane like at its terminal (a36318a05b), but reads only its own receipts.
+      const otherAdmin = await app.inject({ method: "GET", headers: signedHeaders("ADMIN"), url: receiptUrl });
+      expect(otherAdmin.statusCode).toBe(200);
+      expect(otherAdmin.json()).toMatchObject({ sessionId: null, status: "NOT_FOUND" });
+      // A USER without the room never reaches its pane.
+      const memberToken = signSession({ id: "user:member", email: "member@space.test", role: "USER" }, testSessionSecret);
+      const member = await app.inject({ method: "GET", headers: { cookie: `space_session=${memberToken}` }, url: receiptUrl });
+      expect(member.statusCode).toBe(404);
       expect(record.panes.map(pane=>pane.terminalRuntimeId)).toEqual(["cli:codex","cli:gemini","cli:opencode"]);
       expect(host.attach).toHaveBeenCalledTimes(3);
       for(const [index,call] of host.attach.mock.calls.entries()){

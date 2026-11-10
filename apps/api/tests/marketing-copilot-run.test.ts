@@ -62,6 +62,29 @@ async function fixture() {
 const cli = "/api/cli/marketing-copilot";
 
 describe("marketing copilot run loop", () => {
+  it("answers a question its own memory may answer with the memories first, and asks only with afterMemory (R13-5)", async () => {
+    const { app, agent } = await fixture();
+    try {
+      const memory = (await app.inject({ method: "POST", url: `${cli}/memory`, headers: agent, payload: { kind: "FACT", key: "reddit self promotion saturday", text: "r/selfhosted allows self-promotion on Saturdays only." } })).json().memory;
+      const ask = (afterMemory?: boolean) => app.inject({ method: "POST", url: `${cli}/question`, headers: agent, payload: { question: "Which subreddit allows self-promotion on Saturdays?", ...(afterMemory ? { afterMemory } : {}) } });
+      expect((await ask()).json()).toMatchObject({ questionId: null, memoryHits: [{ id: memory.id }], note: expect.stringContaining("afterMemory: true") });
+      expect((await ask(true)).json().questionId).toMatch(/^mktq:/);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("turns a Start on a quiet queue into one brief to plan the next posts (operator 2026-10-28)", async () => {
+    const { app, headers, agent, paneUrl } = await fixture();
+    try {
+      expect((await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers })).json()).toMatchObject({ status: "RUNNING", backlog: 1 });
+      expect((await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: { waitMs: 0 } })).json()).toMatchObject({ done: false, kind: "BRIEF", item: { message: expect.stringContaining("Plan the next posts") } });
+      expect((await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers })).json()).toMatchObject({ status: "RUNNING", backlog: 0 });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("runs a brief to a reviewed, approved and published post with the URL as evidence", async () => {
     const { app, pane, headers, agent, outsider, roomEvents, kickoffs, paneUrl } = await fixture();
     try {
@@ -94,7 +117,9 @@ describe("marketing copilot run loop", () => {
       expect(run.pending.map((item: { kind: string }) => item.kind)).toEqual(["REVIEW"]);
       // The review raises one ATTENTION notification; the operator's decision resolves it.
       const openNotifications = async () => (await app.inject({ method: "GET", url: "/api/notifications?status=OPEN&source=MARKETING_COPILOT", headers })).json().notifications as Array<{ kind: string; severity: string; link: { target?: string } }>;
-      await vi.waitFor(async () => expect(await openNotifications()).toEqual([expect.objectContaining({ kind: "REVIEW_REQUESTED", severity: "ATTENTION", link: expect.objectContaining({ target: `post:${postId}` }) })]));
+      await vi.waitFor(async () => expect(await openNotifications()).toEqual([expect.objectContaining({ kind: "REVIEW_REQUESTED", severity: "ATTENTION", link: expect.objectContaining({ target: `post:${postId}` }),
+        // R24-2: the card carries the post's id, channel and text for Nous's inbox line (it is held for Nous first when Nous holds them).
+        payload: expect.objectContaining({ review: { id: postId, channel: "X", text: "Run Codex, Claude Code and OpenCode side by side in rooms you host. npx --yes run-spaceapp@latest install" } }) })]));
       const approved = await app.inject({ method: "POST", url: `${paneUrl}/posts/${encodeURIComponent(postId)}/review`, headers, payload: { decision: "approve" } });
       expect(approved.json().post.status).toBe("APPROVED");
       await vi.waitFor(async () => expect(await openNotifications()).toEqual([]));
@@ -114,6 +139,33 @@ describe("marketing copilot run loop", () => {
       expect(roomEvents.some((event) => event.paneId === pane.id && event.payload.type === "PUBLISHED")).toBe(true);
       const all = (await app.inject({ method: "GET", url: "/api/notifications?source=MARKETING_COPILOT", headers })).json().notifications as Array<{ kind: string; severity: string }>;
       await vi.waitFor(() => expect(all.some((entry) => entry.kind === "PUBLISHED" && entry.severity === "INFO")).toBe(true));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("R24-3 (1/11 05:49 UTC: stale X reply mktpost:SUoAkMeF1xpR sat in review): the copilot closes its own stale or replaced post in review, and its card", async () => {
+    const { app, headers, agent, paneUrl } = await fixture();
+    try {
+      const draft = async (body: string) => (await app.inject({ method: "POST", url: `${cli}/posts`, headers: agent, payload: { channel: "X", kind: "REPLY", body } })).json().post.id as string;
+      const stale = await draft("Run every CLI side by side in rooms you host.");
+      await app.inject({ method: "POST", url: `${cli}/review`, headers: agent, payload: { postId: stale, summary: "X reply" } });
+      const open = async () => ((await app.inject({ method: "GET", url: "/api/notifications?status=OPEN&source=MARKETING_COPILOT", headers })).json().notifications as Array<{ link: { target?: string } }>)
+        .map((item) => item.link.target);
+      await vi.waitFor(async () => expect(await open()).toEqual([`post:${stale}`]));
+      const supersede = (payload: Record<string, unknown>) => app.inject({ method: "POST", url: `${cli}/review/supersede`, headers: agent, payload });
+      // Evidence is required, and a "replacement" must be a newer post of the same channel.
+      expect((await supersede({ postId: stale, evidence: "stale" })).statusCode).toBeGreaterThanOrEqual(400);
+      const newer = await draft("SpaceApp: every CLI in one room, self-hosted.");
+      const older = await supersede({ postId: newer, evidence: "Replaced by the stale one?", replacedBy: stale });
+      expect(older.statusCode).toBe(409);
+      const closed = await supersede({ postId: stale, evidence: "The thread moved on 6 hours ago; a newer reply replaces it.", replacedBy: newer });
+      expect(closed.json().post).toMatchObject({ id: stale, status: "SUPERSEDED", reviewNote: "Superseded: The thread moved on 6 hours ago; a newer reply replaces it." });
+      // Its review card closes, the agent's wait answers, and only a post in review can be closed this way.
+      await vi.waitFor(async () => expect(await open()).toEqual([]));
+      expect((await app.inject({ method: "POST", url: `${cli}/review/wait`, headers: agent, payload: { postId: stale, waitMs: 0 } })).json()).toMatchObject({ decided: true, status: "SUPERSEDED" });
+      expect((await supersede({ postId: newer, evidence: "Not in review, a draft." })).statusCode).toBe(409);
+      expect(((await app.inject({ method: "GET", url: `${paneUrl}/run`, headers })).json().pending as Array<{ kind: string }>).some((item) => item.kind === "REVIEW")).toBe(false);
     } finally {
       await app.close();
     }

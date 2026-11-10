@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "2d93f9fea44b973c943a8053921ae152f66b0833cb9d3b26f79f62f50ed8d8de",
-  "sourceCommit": "25fb63fd9565242858e16ddea4ff46ee0668bf3d",
-  "labSourceCommit": "1ea6bf842cf28aecf1f3eac499723b3f34b8d99e",
-  "launcherVersion": "1.1.9",
-  "runtimeVersion": "1.1.9",
-  "createdAt": "2026-10-29T03:35:51.619Z",
+  "candidateDigest": "ca071c957d22b3b2308cddbfab6b8d87d887d167aefaef1b7f763e2bc4c48cf1",
+  "sourceCommit": "64c3e719a2d0f3a4f62d678e0ee27d6e58c91765",
+  "labSourceCommit": "64c3e719a2d0f3a4f62d678e0ee27d6e58c91765",
+  "launcherVersion": "1.2.0",
+  "runtimeVersion": "1.2.0",
+  "createdAt": "2026-11-10T02:11:44.494Z",
   "checks": [
     {
       "platform": "linux",
@@ -14,11 +14,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "c7-linux-fresh-install.json",
-      "artifactSha256": "d73042b5a9a62db746dd14c51ede49c38ebc2a813f5195e24deafc1bdea27f03",
+      "artifact": "linux-fresh-install.json",
+      "artifactSha256": "b1bb79cb42ee993b0929cb660642f272d7a24d11993174706c979e7b6f6379eb",
       "ownerUi": true,
-      "carriedFrom": "c7 1ea6bf8",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "carriedFrom": "c14 1e365cf",
+      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "linux",
@@ -27,11 +27,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "c7-linux-upgrade.json",
-      "artifactSha256": "c8ef92201305f1b9210cd12a48b5ffa277ee883bed4be3edff9653da6f7bb500",
+      "artifact": "linux-upgrade.json",
+      "artifactSha256": "1b9b6301a21b2191de6b8132f6b0fd391235f06c35ab6a44a4ae216ed246da81",
       "dataPreserved": true,
-      "carriedFrom": "c7 1ea6bf8",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "carriedFrom": "c14 1e365cf",
+      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "linux",
@@ -40,11 +40,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "c7-linux-repair.json",
-      "artifactSha256": "24970d856ebb40b9a02233ecb6d622e83eb27e570e7b28929f27fabab90baefe",
+      "artifact": "c13-linux-repair.json",
+      "artifactSha256": "be54a6949ae6682720b98af1a58c4fe70c94fc34e5ec08a01946f98cbd04c05f",
       "dataPreserved": true,
-      "carriedFrom": "c7 1ea6bf8",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "carriedFrom": "c13 cf4d247, via c14 1e365cf",
+      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "linux",
@@ -53,30 +53,28 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "c7-linux-docker-stopped.json",
-      "artifactSha256": "3368e34eb059c5405243fad53f71578c6f78e2efd7826ad8bc5297adcb1966a6",
+      "artifact": "c13-linux-docker-stopped.json",
+      "artifactSha256": "525739b85d4a8384a6c211a6c9d177c4c02a411e282daa10d0f2d84e464fac3e",
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
-      "carriedFrom": "c7 1ea6bf8",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "carriedFrom": "c13 cf4d247, via c14 1e365cf",
+      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "linux",
       "scenario": "first-agent",
-      "pass": true,
+      "pass": false,
       "executed": true,
-      "exitCode": 0,
+      "exitCode": 1,
       "ready": true,
       "uiOpened": true,
-      "nativeTaskId": "ses_e7ed5449dffek14aezM1x99WmQ",
-      "responseObserved": true,
       "freeModel": true,
-      "cli": "opencode",
-      "modelId": "opencode/big-pickle",
-      "artifact": "c7-linux-first-agent.json",
-      "artifactSha256": "f9f1f3b7babdf0938216d0e7e37d55145345a7a5b71899610717041b1772ac1e",
-      "carriedFrom": "c7 1ea6bf8",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "responseObserved": false,
+      "knownException": "OpenCode Zen refused every free model from the lab's egress address (big-pickle: provider.quota, deepseek-v4.1-flash-free: provider.quota, glm-5.3-flash-free: provider.quota, iceman-free: provider.quota, inkling-2-small-free: provider.auth); everything up to the answer ran, and the Codex first agent passed on the same install",
+      "artifact": "linux-first-agent.json",
+      "artifactSha256": "2d3b652a4a5e3b5bfe0c0c84127a346da00677df7ef57f071fb3fb8276763f0f",
+      "carriedFrom": "c14 1e365cf",
+      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "linux",
@@ -92,9 +90,9 @@
       ],
       "dataPreserved": true,
       "artifact": "linux-profiles.json",
-      "artifactSha256": "84175c196e70afc524a648fe4168d1d4b865a4a34709c54e2c6785fa2ca2887b",
-      "carriedFrom": "small from c7 1ea6bf8, medium from c1 f7351c4, large from c1 f7351c4",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7 | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
+      "artifactSha256": "2052405004c7208c91af01893587daddb7ba04bbfe65de549c81891117cc9fda",
+      "carriedFrom": "medium and large from c13 cf4d247, via c14 1e365cf",
+      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "windows",
@@ -103,12 +101,12 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "c7-windows-fresh-install.json",
-      "artifactSha256": "546bf4fed8118ca9b51c35bc19255847e84df852c65f5d0863b0c5c8c8452522",
+      "artifact": "windows-fresh-install.json",
+      "artifactSha256": "667b2818fab6238b8c1e11ff1d103eb04cc8518b31aceb8019a076e1f68c49ca",
       "ownerUi": true,
       "interactiveDesktop": true,
-      "carriedFrom": "c7 1ea6bf8",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "carriedFrom": "c14 1e365cf",
+      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "windows",
@@ -117,12 +115,12 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "c7-windows-upgrade.json",
-      "artifactSha256": "6bf9fa409dc5c4e478f9d7e200ad3fd5822bf519a1ad2757c2962e46b7bd110c",
+      "artifact": "windows-upgrade.json",
+      "artifactSha256": "ac0c1f3b84bd9508a645705d52121bcba8ddddeb8decbc2dc833ccccc90aaf9c",
       "dataPreserved": true,
       "interactiveDesktop": true,
-      "carriedFrom": "c7 1ea6bf8",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "carriedFrom": "c14 1e365cf",
+      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "windows",
@@ -131,12 +129,12 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "c1-windows-repair.json",
-      "artifactSha256": "e2aee5cb3c536bce393ef9d5c8db0b7bd1ae908ba936f656a2f14189704b476f",
+      "artifact": "c13-windows-repair.json",
+      "artifactSha256": "b5e1119c42ca5ff389816428fc28d4851e166baf9fbabe4a3be4277d19b6b805",
       "dataPreserved": true,
       "interactiveDesktop": true,
-      "carriedFrom": "c1 f7351c4",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
+      "carriedFrom": "c13 cf4d247, via c14 1e365cf",
+      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "windows",
@@ -145,13 +143,30 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "c1-windows-docker-stopped.json",
-      "artifactSha256": "0225a517d85e1996fea3c45ae36ff54daadbd0f1f4dc435d61dfb1fb47af374d",
+      "artifact": "c13-windows-docker-stopped.json",
+      "artifactSha256": "425c21ee7cafa588a76b183167affed63a8b6c7882b3cf1258dfea0286e1ddaf",
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
       "interactiveDesktop": true,
-      "carriedFrom": "c1 f7351c4",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
+      "carriedFrom": "c13 cf4d247, via c14 1e365cf",
+      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+    },
+    {
+      "platform": "windows",
+      "scenario": "first-agent",
+      "pass": false,
+      "executed": true,
+      "exitCode": 1,
+      "ready": true,
+      "uiOpened": true,
+      "freeModel": true,
+      "responseObserved": false,
+      "knownException": "OpenCode Zen refused every free model from the lab's egress address (big-pickle: provider.quota, deepseek-v4.1-flash-free: provider.quota, glm-5.3-flash-free: provider.quota, iceman-free: provider.quota, inkling-2-small-free: provider.auth); everything up to the answer ran, and the Codex first agent passed on the same install",
+      "artifact": "windows-first-agent.json",
+      "artifactSha256": "a6dfa5018f34bed73b09a1bf116e6d6b49d40eedd86f285a8c61ea4ea3d5cc9f",
+      "interactiveDesktop": true,
+      "carriedFrom": "c14 1e365cf",
+      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "windows",
@@ -168,9 +183,9 @@
       "dataPreserved": true,
       "interactiveDesktop": true,
       "artifact": "windows-profiles.json",
-      "artifactSha256": "c66e7b7e790c2729888ba0d7ec149ff5e96361b657ae27e66fa718292ff4eabf",
-      "carriedFrom": "small from c1 f7351c4, medium from c2 ce4140b, large from c7 1ea6bf8",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "artifactSha256": "7e37bd9bae4505b3830967b826e71f6666d6beabf6dd9edaef4a7b7735d73276",
+      "carriedFrom": "medium and large from c13 cf4d247, via c14 1e365cf",
+      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "macos",
@@ -179,11 +194,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "c7-macos-fresh-install.json",
-      "artifactSha256": "2491d48da5b207336f5de3993b7871910610752bfbf70f61fe3de4e06bf028f9",
+      "artifact": "macos-fresh-install.json",
+      "artifactSha256": "f9e93ed7f92f107c8bf96fa1be0a66ed9272a4f9d3f474dbe3ec9c6e8398fcf3",
       "ownerUi": true,
-      "carriedFrom": "c7 1ea6bf8",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "carriedFrom": "c14 1e365cf",
+      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "macos",
@@ -192,11 +207,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "c7-macos-upgrade.json",
-      "artifactSha256": "52ae814552f29d2f1c76f802a9b44db827b0ca2d7a310bce1febf4a243e9ab20",
+      "artifact": "macos-upgrade.json",
+      "artifactSha256": "96dc0ba8ee5d1fa2e06d995697d97ccda2921b28bbf4ec850f7667751e63ee90",
       "dataPreserved": true,
-      "carriedFrom": "c7 1ea6bf8",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "carriedFrom": "c14 1e365cf",
+      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "macos",
@@ -205,11 +220,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "c1-macos-repair.json",
-      "artifactSha256": "700cb49294990afa2675079a27bbca01d3975b2d4ff428c8165528d3dffa770f",
+      "artifact": "c13-macos-repair.json",
+      "artifactSha256": "450e6c6be6b80ac51a923df058cdaf110b0862a71f07ccd80aa3f472102a5601",
       "dataPreserved": true,
-      "carriedFrom": "c1 f7351c4",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
+      "carriedFrom": "c13 cf4d247, via c14 1e365cf",
+      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "macos",
@@ -218,30 +233,28 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "c1-macos-docker-stopped.json",
-      "artifactSha256": "bcc674727699db2be12adbe872a64f405a3bfa7dd108411e77a3628c57284a91",
+      "artifact": "c13-macos-docker-stopped.json",
+      "artifactSha256": "2a9cc56171fd05dac4c1a9a44d28aa4752edc81daed546766f028ea733f82448",
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
-      "carriedFrom": "c1 f7351c4",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
+      "carriedFrom": "c13 cf4d247, via c14 1e365cf",
+      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "macos",
       "scenario": "first-agent",
-      "pass": true,
+      "pass": false,
       "executed": true,
-      "exitCode": 0,
+      "exitCode": 1,
       "ready": true,
       "uiOpened": true,
-      "nativeTaskId": "ses_e7ec4592affewcyzOu2ZQUa44s",
-      "responseObserved": true,
       "freeModel": true,
-      "cli": "opencode",
-      "modelId": "opencode/big-pickle",
-      "artifact": "c7-macos-first-agent.json",
-      "artifactSha256": "8a1a41cb1f6c53dcf17a122747bd6891ef4d866be28e7c0216a6005cf937731d",
-      "carriedFrom": "c7 1ea6bf8",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "responseObserved": false,
+      "knownException": "OpenCode Zen refused every free model from the lab's egress address (big-pickle: provider.quota, deepseek-v4.1-flash-free: provider.quota, glm-5.3-flash-free: provider.quota, iceman-free: provider.quota, inkling-2-small-free: provider.auth); everything up to the answer ran, and the Codex first agent passed on the same install",
+      "artifact": "macos-first-agent.json",
+      "artifactSha256": "74cabddf0a67bd7f6112ebf74e913e27497cac64126075c9991a791cc53220cf",
+      "carriedFrom": "c14 1e365cf",
+      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "macos",
@@ -257,210 +270,345 @@
       ],
       "dataPreserved": true,
       "artifact": "macos-profiles.json",
-      "artifactSha256": "9ab8de53af3ef36211d9e07ef998f538a79a2e954d11eb4e04af29d6a95f258d",
-      "carriedFrom": "small from c1 f7351c4, medium from c2 ce4140b, large from c2 ce4140b",
-      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS"
+      "artifactSha256": "098a2f5a21f32f9c8f79a07854e4525a19e8ef5be3e53074a2c5c8dbe94939da",
+      "carriedFrom": "medium and large from c13 cf4d247, via c14 1e365cf",
+      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     }
   ],
   "supplementary": [
     {
       "platform": "linux",
-      "scenario": "first-agent-no-permission-prompt",
+      "scenario": "first-agent-codex",
       "pass": true,
-      "artifact": "c7-linux-first-agent.json",
-      "artifactSha256": "f9f1f3b7babdf0938216d0e7e37d55145345a7a5b71899610717041b1772ac1e"
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "uiOpened": true,
+      "nativeTaskId": "rollout-2026-11-09T23-56-35-01a1c2be-0464-7ba1-ae7a-4c09dbba10b5",
+      "responseObserved": true,
+      "freeModel": false,
+      "cli": "codex",
+      "modelId": "spacegw/gpt-5-mini",
+      "approvals": 1,
+      "cleanupVerified": true,
+      "artifact": "linux-first-agent-codex.json",
+      "artifactSha256": "a1fb570961573c7a4936e7f69b4b6037799655ce5c78bfb3d8c13cf425105395",
+      "carriedFrom": "c14 1e365cf",
+      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+    },
+    {
+      "platform": "windows",
+      "scenario": "first-agent-codex",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "uiOpened": true,
+      "nativeTaskId": "rollout-2026-11-10T00-44-17-01a1c2e9-b013-7da1-aaf5-25b5f3f6f5ef",
+      "responseObserved": true,
+      "freeModel": false,
+      "cli": "codex",
+      "modelId": "spacegw/gpt-5-mini",
+      "approvals": 9,
+      "cleanupVerified": true,
+      "interactiveDesktop": true,
+      "artifact": "windows-first-agent-codex.json",
+      "artifactSha256": "c8e2f6a1cb6145dbbb428b7e7d7cecb38a765051f887ed6825127bf8b3fdd2b9",
+      "carriedFrom": "c14 1e365cf",
+      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "macos",
-      "scenario": "first-agent-no-permission-prompt",
+      "scenario": "first-agent-codex",
       "pass": true,
-      "artifact": "c7-macos-first-agent.json",
-      "artifactSha256": "8a1a41cb1f6c53dcf17a122747bd6891ef4d866be28e7c0216a6005cf937731d"
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "uiOpened": true,
+      "nativeTaskId": "rollout-2026-11-10T01-36-19-01a1c319-5600-7e40-a502-8eded17ad1e3",
+      "responseObserved": true,
+      "freeModel": false,
+      "cli": "codex",
+      "modelId": "spacegw/gpt-5-mini",
+      "approvals": 2,
+      "cleanupVerified": true,
+      "artifact": "macos-first-agent-codex.json",
+      "artifactSha256": "3e0e7266c86ab5c0bc20fa2115cffb6cbf2dbbc2993d53ea0425fe3950496ae7",
+      "carriedFrom": "c14 1e365cf",
+      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+    },
+    {
+      "platform": "linux",
+      "scenario": "first-answer-telemetry-no",
+      "pass": true,
+      "artifact": "linux-telemetry-no.json",
+      "artifactSha256": "f23740416e6db267a8d8353600016ee5a33533b027a4f1276f4f4655d940d0c1",
+      "carriedFrom": "c14 1e365cf",
+      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     }
   ],
   "carriedProofs": [
     {
       "platform": "linux",
-      "scenario": "fresh-install",
-      "artifact": "c7-linux-fresh-install.json",
-      "artifactSha256": "d73042b5a9a62db746dd14c51ede49c38ebc2a813f5195e24deafc1bdea27f03",
-      "from": "c7 1ea6bf8",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
-    },
-    {
-      "platform": "linux",
-      "scenario": "upgrade",
-      "artifact": "c7-linux-upgrade.json",
-      "artifactSha256": "c8ef92201305f1b9210cd12a48b5ffa277ee883bed4be3edff9653da6f7bb500",
-      "from": "c7 1ea6bf8",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
-    },
-    {
-      "platform": "linux",
       "scenario": "repair",
-      "artifact": "c7-linux-repair.json",
-      "artifactSha256": "24970d856ebb40b9a02233ecb6d622e83eb27e570e7b28929f27fabab90baefe",
-      "from": "c7 1ea6bf8",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "artifact": "c13-linux-repair.json",
+      "artifactSha256": "be54a6949ae6682720b98af1a58c4fe70c94fc34e5ec08a01946f98cbd04c05f",
+      "from": "c13 cf4d247",
+      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
     },
     {
       "platform": "linux",
       "scenario": "docker-stopped",
-      "artifact": "c7-linux-docker-stopped.json",
-      "artifactSha256": "3368e34eb059c5405243fad53f71578c6f78e2efd7826ad8bc5297adcb1966a6",
-      "from": "c7 1ea6bf8",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "artifact": "c13-linux-docker-stopped.json",
+      "artifactSha256": "525739b85d4a8384a6c211a6c9d177c4c02a411e282daa10d0f2d84e464fac3e",
+      "from": "c13 cf4d247",
+      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
     },
     {
       "platform": "linux",
-      "scenario": "first-agent",
-      "artifact": "c7-linux-first-agent.json",
-      "artifactSha256": "f9f1f3b7babdf0938216d0e7e37d55145345a7a5b71899610717041b1772ac1e",
-      "from": "c7 1ea6bf8",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
-    },
-    {
-      "platform": "linux",
-      "scenario": "profiles (small from c7 1ea6bf8, medium from c1 f7351c4, large from c1 f7351c4)",
+      "scenario": "profiles (medium, large)",
       "artifact": "linux-profiles.json",
-      "artifactSha256": "84175c196e70afc524a648fe4168d1d4b865a4a34709c54e2c6785fa2ca2887b",
-      "from": "small from c7 1ea6bf8, medium from c1 f7351c4, large from c1 f7351c4",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7 | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
-    },
-    {
-      "platform": "windows",
-      "scenario": "fresh-install",
-      "artifact": "c7-windows-fresh-install.json",
-      "artifactSha256": "546bf4fed8118ca9b51c35bc19255847e84df852c65f5d0863b0c5c8c8452522",
-      "from": "c7 1ea6bf8",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
-    },
-    {
-      "platform": "windows",
-      "scenario": "upgrade",
-      "artifact": "c7-windows-upgrade.json",
-      "artifactSha256": "6bf9fa409dc5c4e478f9d7e200ad3fd5822bf519a1ad2757c2962e46b7bd110c",
-      "from": "c7 1ea6bf8",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "artifactSha256": "2052405004c7208c91af01893587daddb7ba04bbfe65de549c81891117cc9fda",
+      "from": "medium and large from c13 cf4d247",
+      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
     },
     {
       "platform": "windows",
       "scenario": "repair",
-      "artifact": "c1-windows-repair.json",
-      "artifactSha256": "e2aee5cb3c536bce393ef9d5c8db0b7bd1ae908ba936f656a2f14189704b476f",
-      "from": "c1 f7351c4",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
+      "artifact": "c13-windows-repair.json",
+      "artifactSha256": "b5e1119c42ca5ff389816428fc28d4851e166baf9fbabe4a3be4277d19b6b805",
+      "from": "c13 cf4d247",
+      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
     },
     {
       "platform": "windows",
       "scenario": "docker-stopped",
-      "artifact": "c1-windows-docker-stopped.json",
-      "artifactSha256": "0225a517d85e1996fea3c45ae36ff54daadbd0f1f4dc435d61dfb1fb47af374d",
-      "from": "c1 f7351c4",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
+      "artifact": "c13-windows-docker-stopped.json",
+      "artifactSha256": "425c21ee7cafa588a76b183167affed63a8b6c7882b3cf1258dfea0286e1ddaf",
+      "from": "c13 cf4d247",
+      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
     },
     {
       "platform": "windows",
-      "scenario": "profiles (small from c1 f7351c4, medium from c2 ce4140b, large from c7 1ea6bf8)",
+      "scenario": "profiles (medium, large)",
       "artifact": "windows-profiles.json",
-      "artifactSha256": "c66e7b7e790c2729888ba0d7ec149ff5e96361b657ae27e66fa718292ff4eabf",
-      "from": "small from c1 f7351c4, medium from c2 ce4140b, large from c7 1ea6bf8",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
-    },
-    {
-      "platform": "macos",
-      "scenario": "fresh-install",
-      "artifact": "c7-macos-fresh-install.json",
-      "artifactSha256": "2491d48da5b207336f5de3993b7871910610752bfbf70f61fe3de4e06bf028f9",
-      "from": "c7 1ea6bf8",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
-    },
-    {
-      "platform": "macos",
-      "scenario": "upgrade",
-      "artifact": "c7-macos-upgrade.json",
-      "artifactSha256": "52ae814552f29d2f1c76f802a9b44db827b0ca2d7a310bce1febf4a243e9ab20",
-      "from": "c7 1ea6bf8",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "artifactSha256": "7e37bd9bae4505b3830967b826e71f6666d6beabf6dd9edaef4a7b7735d73276",
+      "from": "medium and large from c13 cf4d247",
+      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
     },
     {
       "platform": "macos",
       "scenario": "repair",
-      "artifact": "c1-macos-repair.json",
-      "artifactSha256": "700cb49294990afa2675079a27bbca01d3975b2d4ff428c8165528d3dffa770f",
-      "from": "c1 f7351c4",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
+      "artifact": "c13-macos-repair.json",
+      "artifactSha256": "450e6c6be6b80ac51a923df058cdaf110b0862a71f07ccd80aa3f472102a5601",
+      "from": "c13 cf4d247",
+      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
     },
     {
       "platform": "macos",
       "scenario": "docker-stopped",
-      "artifact": "c1-macos-docker-stopped.json",
-      "artifactSha256": "bcc674727699db2be12adbe872a64f405a3bfa7dd108411e77a3628c57284a91",
-      "from": "c1 f7351c4",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
+      "artifact": "c13-macos-docker-stopped.json",
+      "artifactSha256": "2a9cc56171fd05dac4c1a9a44d28aa4752edc81daed546766f028ea733f82448",
+      "from": "c13 cf4d247",
+      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
+    },
+    {
+      "platform": "macos",
+      "scenario": "profiles (medium, large)",
+      "artifact": "macos-profiles.json",
+      "artifactSha256": "098a2f5a21f32f9c8f79a07854e4525a19e8ef5be3e53074a2c5c8dbe94939da",
+      "from": "medium and large from c13 cf4d247",
+      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
+    },
+    {
+      "platform": "linux",
+      "scenario": "fresh-install",
+      "artifact": "linux-fresh-install.json",
+      "artifactSha256": "b1bb79cb42ee993b0929cb660642f272d7a24d11993174706c979e7b6f6379eb",
+      "from": "c14 1e365cf",
+      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+    },
+    {
+      "platform": "linux",
+      "scenario": "upgrade",
+      "artifact": "linux-upgrade.json",
+      "artifactSha256": "1b9b6301a21b2191de6b8132f6b0fd391235f06c35ab6a44a4ae216ed246da81",
+      "from": "c14 1e365cf",
+      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+    },
+    {
+      "platform": "linux",
+      "scenario": "first-agent",
+      "artifact": "linux-first-agent.json",
+      "artifactSha256": "2d3b652a4a5e3b5bfe0c0c84127a346da00677df7ef57f071fb3fb8276763f0f",
+      "from": "c14 1e365cf",
+      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+    },
+    {
+      "platform": "windows",
+      "scenario": "fresh-install",
+      "artifact": "windows-fresh-install.json",
+      "artifactSha256": "667b2818fab6238b8c1e11ff1d103eb04cc8518b31aceb8019a076e1f68c49ca",
+      "from": "c14 1e365cf",
+      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+    },
+    {
+      "platform": "windows",
+      "scenario": "upgrade",
+      "artifact": "windows-upgrade.json",
+      "artifactSha256": "ac0c1f3b84bd9508a645705d52121bcba8ddddeb8decbc2dc833ccccc90aaf9c",
+      "from": "c14 1e365cf",
+      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+    },
+    {
+      "platform": "windows",
+      "scenario": "first-agent",
+      "artifact": "windows-first-agent.json",
+      "artifactSha256": "a6dfa5018f34bed73b09a1bf116e6d6b49d40eedd86f285a8c61ea4ea3d5cc9f",
+      "from": "c14 1e365cf",
+      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+    },
+    {
+      "platform": "macos",
+      "scenario": "fresh-install",
+      "artifact": "macos-fresh-install.json",
+      "artifactSha256": "f9e93ed7f92f107c8bf96fa1be0a66ed9272a4f9d3f474dbe3ec9c6e8398fcf3",
+      "from": "c14 1e365cf",
+      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+    },
+    {
+      "platform": "macos",
+      "scenario": "upgrade",
+      "artifact": "macos-upgrade.json",
+      "artifactSha256": "96dc0ba8ee5d1fa2e06d995697d97ccda2921b28bbf4ec850f7667751e63ee90",
+      "from": "c14 1e365cf",
+      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "macos",
       "scenario": "first-agent",
-      "artifact": "c7-macos-first-agent.json",
-      "artifactSha256": "8a1a41cb1f6c53dcf17a122747bd6891ef4d866be28e7c0216a6005cf937731d",
-      "from": "c7 1ea6bf8",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+      "artifact": "macos-first-agent.json",
+      "artifactSha256": "74cabddf0a67bd7f6112ebf74e913e27497cac64126075c9991a791cc53220cf",
+      "from": "c14 1e365cf",
+      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+    },
+    {
+      "platform": "linux",
+      "scenario": "first-agent-codex",
+      "artifact": "linux-first-agent-codex.json",
+      "artifactSha256": "a1fb570961573c7a4936e7f69b4b6037799655ce5c78bfb3d8c13cf425105395",
+      "from": "c14 1e365cf",
+      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+    },
+    {
+      "platform": "windows",
+      "scenario": "first-agent-codex",
+      "artifact": "windows-first-agent-codex.json",
+      "artifactSha256": "c8e2f6a1cb6145dbbb428b7e7d7cecb38a765051f887ed6825127bf8b3fdd2b9",
+      "from": "c14 1e365cf",
+      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     },
     {
       "platform": "macos",
-      "scenario": "profiles (small from c1 f7351c4, medium from c2 ce4140b, large from c2 ce4140b)",
-      "artifact": "macos-profiles.json",
-      "artifactSha256": "9ab8de53af3ef36211d9e07ef998f538a79a2e954d11eb4e04af29d6a95f258d",
-      "from": "small from c1 f7351c4, medium from c2 ce4140b, large from c2 ce4140b",
-      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS"
+      "scenario": "first-agent-codex",
+      "artifact": "macos-first-agent-codex.json",
+      "artifactSha256": "3e0e7266c86ab5c0bc20fa2115cffb6cbf2dbbc2993d53ea0425fe3950496ae7",
+      "from": "c14 1e365cf",
+      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+    },
+    {
+      "platform": "linux",
+      "scenario": "first-answer-telemetry-no",
+      "artifact": "linux-telemetry-no.json",
+      "artifactSha256": "f23740416e6db267a8d8353600016ee5a33533b027a4f1276f4f4655d940d0c1",
+      "from": "c14 1e365cf",
+      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
     }
   ],
   "limitations": [
-    "Candidate c8: SpaceApp release commit 25bcec3e77 = c7's 4be1c81f55 + fixes for the public suite and two advisories; public tree tested at 25fb63f (full public suite, check, build, Trivy on a fresh database, images built and size-checked locally; images by ID: core sha256:b1c567c2aa898460ceb3d7221d7ad1e988299791640b6af29318d9fb550c8dd4, cli sha256:fa279fe9152df23c36a47305aa31acdb77f319583ec1a550ba28c0c2cee368d4, browser sha256:0ff99d244e2522a2553b408d2aa4e0aad16bf18259f8aa6a388085f28017a56d).",
-    "c8 was not installed in the lab: every installation proof is carried from the c7 lab (public tree 1ea6bf8) and, as c7 carried them, from c3 79357be, c2 ce4140b or c1 f7351c4; each is marked carriedFrom with its reason (what c8 changes from c7: c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7).",
-    "Lab-tested c7 artifacts: launcher run-spaceapp-1.1.9.tgz sha256 88ccadfa3bc4d316807e146c34b37e5a9e2a62fb5e29adc1fbaba14731501f14; images by ID from images-1.1.9.tar.gz sha256 18d5564f888c72e417a686485cef28173c2f3502139fbaf8f5dab2cee4e68db9: core sha256:367258b67d1604db448b9d193c185eb6947e26b24653b50342a35b7258717cc3, cli sha256:ce0155535448be0652376aac06609bf3ea9a1eb635c78c3d4622ae50de7c61c1, browser sha256:38c2cecf7ab15347ff149ca6de36707c1bfc389b5433b3ee59fe8cd23c16069f. The release workflow rebuilds the images from this source (IR117-C-F7); after npm next, the lab installs of the published package must pass scripts/shipped-image-evidence.mjs before latest.",
-    "Trivy ignores, all until 2026-11-10 and all in @temporalio/core-bridge 1.24.0: GHSA-2mjx-qc3c-rqvc and GHSA-c8m5-c952-6cm4 (rustls 0.23.36; SpaceApp reaches Temporal without TLS), CVE-2026-115905 (zip 8.5.1, only the ephemeral-server feature for @temporalio/testing, which SpaceApp never installs or calls).",
-    "VM hosts are x86_64. ARM64 container validation, including the arm64 browser image size budget, remains a release workflow gate.",
-    "Fresh installer timings use preloaded local candidate images; they exclude network image downloads."
+    "Candidate c15: public lab tree 64c3e71 (stamp 1.2.0) = c14 1e365cf + the 1.2.0 Zen first-answer exception and the 1.2.0 stamp, nothing else. Every check and supplementary proof is c14's own run (or what c14 carried from c13) and names c14 in carriedFrom with the c14..c15 diff stat. The tested launcher and images carry the lab stamp 1.2.0-nous.c14 (testedArtifacts); the release workflow rebuilds the images from this source, and the published package must pass scripts/shipped-image-evidence.mjs before latest.",
+    "Candidate c14: public lab tree 1e365cf (lab stamp 1.2.0-nous.c14, not a release version) = c13 cf4d247 + the export of Space dev 6f572c31d2, which holds 31944be0df (a busy CLI credential agent is asked again for up to 20 s instead of read as signed out) and 06146070da (self-hosted skips the gateway-priority-panes push).",
+    "c14's own runs on 1e365cf: fresh install, the real 1.1.9 -> 1.2.0-nous.c14 update and the first agent (Codex) on Linux vm218, Windows vm219 and macOS vm221, and telemetry No on Linux. Repair, Docker stopped and the medium and large profile transitions are carried from c13 cf4d247, each marked carriedFrom with its reason.",
+    "The small profile was not run as a transition of its own: every c14 fresh install selected small (7.7-8 GiB runners) and reached ready on it, and every c13 transition started from small (small -> medium, small -> large) with data preserved.",
+    "Known environment/provider limit, not a SpaceApp defect, one failed check per system (first-agent, the free-model first answer): from the lab's egress address OpenCode Zen answered \"Free usage limit reached\" (provider.quota) for big-pickle, deepseek-v4.1-flash-free, glm-5.3-flash-free and iceman-free and \"not available in your country\" (provider.auth) for inkling-2-small-free, on all three systems (records 2026-11-09T23:45:14.586Z, 2026-11-10T00:32:03.979Z, 2026-11-10T01:24:39.821Z). Decision nous-20261106-report-25457 (Nous 6/11, as 1.1.9's ZEN_KNOWN): 1.2.0 has no zenFirstAnswerExceptions entry, so scripts/release-evidence.mjs names these three checks. The Codex first agent through Space Gateway (spacegw/gpt-5-mini, not a free model) passed on all three systems as a supplementary proof.",
+    "After 'spaceapp credentials set codex' the runtime list showed Codex LOGIN_REQUIRED for 559-606 s (the 10-minute missing-credential cache); the lab waited it out. The fix ships on dev only and is not part of 1.2.0-nous.c14.",
+    "Not re-run on c13 or c14: rc3 (c13 vm218 and vm221 failed only on oneSharedServer, as c12 on all three), update badge and two native panes on Windows (c13 vm219 stopped on an upstream OpenCode catalog 503), Getting Started first prompt, telemetry Yes, upgrade from 1.1.7, automatic browser opening. See candidate-c13.md and candidate-c14.md.",
+    "Lab-tested artifacts: launcher run-spaceapp-1.2.0-nous.c14.tgz sha256 be5139e9268941fe2f52dbe29269ab87c73fce753452c0d0591d48902b89850c; images from images-1.2.0-nous.c14.tar.gz sha256 973cb01bc1c0b3a139cd639d422acc19a4388ed88c3175a5e09c253341e19e1d (core sha256:e8284f983351b68376b8f80744a058c34140e9bab44bb6c3c4fa927193639a4a, cli sha256:1612fcffb3fa3a89889a7cbeb427c779db32e1dacb38d8eec13d7bb523c5ba0e). A release bump to 1.2.0 changes the candidate digest and the versions this file was tested with, so the release candidate needs its own evidence (or carried proofs with their reason, as 1.1.9 c8).",
+    "Windows commands ran as interactive scheduled tasks in an owned RDP session; this is not keystroke coverage of every wizard prompt.",
+    "VM hosts are x86_64. ARM64 container validation remains a release workflow gate.",
+    "Fresh installer timings use preloaded local candidate images; they exclude network image downloads.",
+    "npm next publication, environment approval and latest promotion have not been done."
   ],
   "testedArtifacts": {
-    "launcherTgzSha256": "88ccadfa3bc4d316807e146c34b37e5a9e2a62fb5e29adc1fbaba14731501f14",
-    "imagesArchiveSha256": "18d5564f888c72e417a686485cef28173c2f3502139fbaf8f5dab2cee4e68db9",
+    "launcherTgzSha256": "be5139e9268941fe2f52dbe29269ab87c73fce753452c0d0591d48902b89850c",
+    "imagesArchiveSha256": "973cb01bc1c0b3a139cd639d422acc19a4388ed88c3175a5e09c253341e19e1d",
     "images": {
-      "core": "sha256:367258b67d1604db448b9d193c185eb6947e26b24653b50342a35b7258717cc3",
-      "cli": "sha256:ce0155535448be0652376aac06609bf3ea9a1eb635c78c3d4622ae50de7c61c1",
-      "browser": "sha256:38c2cecf7ab15347ff149ca6de36707c1bfc389b5433b3ee59fe8cd23c16069f"
+      "cli": "sha256:1612fcffb3fa3a89889a7cbeb427c779db32e1dacb38d8eec13d7bb523c5ba0e",
+      "core": "sha256:e8284f983351b68376b8f80744a058c34140e9bab44bb6c3c4fa927193639a4a"
     },
-    "spaceSourceCommit": "4be1c81f559c7ef08920c5321bec686cdf97c452"
+    "spaceSourceCommit": "6f572c31d2168343fb0597b632262ab9e54c96fd"
   },
   "candidate": {
-    "spaceSourceCommit": "25bcec3e772b21e7543146c971d5fb1a4d95edc0",
-    "overlayCommit": "25fb63fd9565242858e16ddea4ff46ee0668bf3d",
+    "spaceSourceCommit": "6f572c31d2168343fb0597b632262ab9e54c96fd",
+    "overlayCommit": "64c3e719a2d0f3a4f62d678e0ee27d6e58c91765",
     "images": {
-      "core": "sha256:b1c567c2aa898460ceb3d7221d7ad1e988299791640b6af29318d9fb550c8dd4",
-      "cli": "sha256:fa279fe9152df23c36a47305aa31acdb77f319583ec1a550ba28c0c2cee368d4",
-      "browser": "sha256:0ff99d244e2522a2553b408d2aa4e0aad16bf18259f8aa6a388085f28017a56d"
-    }
+      "cli": "sha256:1612fcffb3fa3a89889a7cbeb427c779db32e1dacb38d8eec13d7bb523c5ba0e",
+      "core": "sha256:e8284f983351b68376b8f80744a058c34140e9bab44bb6c3c4fa927193639a4a"
+    },
+    "testedOverlayCommit": "1e365cf236f3b46d404574c9c0baf5623960f926"
   },
   "knownIssues": [],
   "knownExceptions": [
     {
-      "platform": "windows",
+      "platform": "linux",
       "scenario": "first-agent",
-      "decision": "54b65a84",
-      "reason": "OpenCode launched on Windows and reached OpenCode Zen, which refused every free model with provider.quota (Free usage limit reached) for the lab address",
-      "observedAt": "2026-10-28T08:02:14Z",
-      "containerClockAt": "2026-10-28T07:02:06.909Z",
+      "decision": "nous-20261106-report-25457",
+      "reason": "OpenCode Zen refused every free model from the lab's egress address (big-pickle: provider.quota, deepseek-v4.1-flash-free: provider.quota, glm-5.3-flash-free: provider.quota, iceman-free: provider.quota, inkling-2-small-free: provider.auth); everything up to the answer ran, and the Codex first agent passed on the same install",
+      "observedAt": "2026-11-09T23:45:14.586Z",
       "egress": "162.55.99.104",
       "modelsRefused": [
         "opencode/big-pickle",
         "opencode/deepseek-v4.1-flash-free",
         "opencode/glm-5.3-flash-free",
-        "opencode/flint-40b-free",
-        "opencode/nemotron-3.5-super-vl-free"
+        "opencode/iceman-free",
+        "opencode/inkling-2-small-free"
       ],
-      "zenRecordSha256": "5cd09fa5250dff6d81fc7c48429f5c48d544a239029055e2f38d2a6b099cf6e2"
+      "zenRecordSha256": "1c634ec305c45df658e176d1f8ba301354c3803b1c706693c1e0817832cdb52a",
+      "artifact": "linux-first-agent.json"
+    },
+    {
+      "platform": "windows",
+      "scenario": "first-agent",
+      "decision": "nous-20261106-report-25457",
+      "reason": "OpenCode Zen refused every free model from the lab's egress address (big-pickle: provider.quota, deepseek-v4.1-flash-free: provider.quota, glm-5.3-flash-free: provider.quota, iceman-free: provider.quota, inkling-2-small-free: provider.auth); everything up to the answer ran, and the Codex first agent passed on the same install",
+      "observedAt": "2026-11-10T00:32:03.979Z",
+      "egress": "162.55.99.104",
+      "modelsRefused": [
+        "opencode/big-pickle",
+        "opencode/deepseek-v4.1-flash-free",
+        "opencode/glm-5.3-flash-free",
+        "opencode/iceman-free",
+        "opencode/inkling-2-small-free"
+      ],
+      "zenRecordSha256": "c869034784b528b3be6c43d44d9b89d2d74d5626ba7b30ff1a386c1db0a6de62",
+      "artifact": "windows-first-agent.json"
+    },
+    {
+      "platform": "macos",
+      "scenario": "first-agent",
+      "decision": "nous-20261106-report-25457",
+      "reason": "OpenCode Zen refused every free model from the lab's egress address (big-pickle: provider.quota, deepseek-v4.1-flash-free: provider.quota, glm-5.3-flash-free: provider.quota, iceman-free: provider.quota, inkling-2-small-free: provider.auth); everything up to the answer ran, and the Codex first agent passed on the same install",
+      "observedAt": "2026-11-10T01:24:39.821Z",
+      "egress": "162.55.99.104",
+      "modelsRefused": [
+        "opencode/big-pickle",
+        "opencode/deepseek-v4.1-flash-free",
+        "opencode/glm-5.3-flash-free",
+        "opencode/iceman-free",
+        "opencode/inkling-2-small-free"
+      ],
+      "zenRecordSha256": "ba3b24d522ddca79ab56d4ecd202a9eecf8bcc4fb0a2a7b5b0c07e5e0cf7d825",
+      "artifact": "macos-first-agent.json"
     }
   ]
 }

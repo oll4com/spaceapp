@@ -19,13 +19,13 @@ export function parseParticipants(value: string): MailParticipant[] {
     if (match) out.push({ name: decodeHtmlEntities(match[1]?.trim() ?? ""), address: match[2]!.trim().toLowerCase() });
     else out.push({ name: "", address: part.replace(/^<|>$/g, "").trim().toLowerCase() });
   }
-  return out.slice(0, 100);
+  return out;
 }
 
 export interface ParsedBody { text: string; html: string | null; attachments: MailAttachment[] }
 
 /** Text, HTML and attachment list of a message payload; inline parts keep their Content-ID for `cid:` images. */
-export function parsePayload(payload: Record<string, unknown> | undefined, maxText = 200_000): ParsedBody {
+export function parsePayload(payload: Record<string, unknown> | undefined): ParsedBody {
   const plain: string[] = [];
   const html: string[] = [];
   const attachments: MailAttachment[] = [];
@@ -46,7 +46,7 @@ export function parsePayload(payload: Record<string, unknown> | undefined, maxTe
   const joinedHtml = html.length ? html.join("\n") : null;
   const plainText = plain.join("\n");
   const text = plain.some((part) => part.trim()) || !joinedHtml ? (looksLikeHtml(plainText) ? htmlToText(plainText) : plainText) : htmlToText(joinedHtml);
-  return { text: text.slice(0, maxText), html: joinedHtml, attachments: attachments.slice(0, 100) };
+  return { text, html: joinedHtml, attachments };
 }
 
 function encodeHeader(value: string): string {
@@ -66,22 +66,36 @@ function textToHtml(text: string): string {
   return `<div style="white-space:pre-wrap;font-family:inherit">${escaped.replace(/\r?\n/g, "<br>")}</div>`;
 }
 
+/** A file part of an outgoing message (a review's attachments, copied from the Gmail message that held them). */
+export interface MimeAttachment { filename: string; mimeType: string; data: Buffer }
+const base64Lines = (data: Buffer) => data.toString("base64").replace(/.{76}(?=.)/g, "$&\r\n");
+
 /**
  * An RFC 2822 message (base64url for Gmail): text and HTML alternatives, Cc/Bcc, and the threading headers of a
- * reply (`In-Reply-To`, `References`) when the replied message is known.
+ * reply (`In-Reply-To`, `References`) when the replied message is known; with attachments, multipart/mixed around them.
  */
 export function buildMime(input: { from: string; fromName?: string; to: string[]; cc?: string[]; bcc?: string[]; subject: string; text: string;
-  inReplyTo?: string | null; references?: string | null }): string {
+  inReplyTo?: string | null; references?: string | null; attachments?: MimeAttachment[] }): string {
   const boundary = `space-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const mixed = `${boundary}-mixed`;
+  const files = input.attachments ?? [];
   const lines = [
     `From: ${mailbox(input.fromName, input.from)}`, `To: ${addresses(input.to)}`,
     ...(input.cc?.length ? [`Cc: ${addresses(input.cc)}`] : []), ...(input.bcc?.length ? [`Bcc: ${addresses(input.bcc)}`] : []),
     `Subject: ${encodeHeader(input.subject)}`, `Message-ID: <${boundary}@space.local>`,
     ...(input.inReplyTo ? [`In-Reply-To: ${input.inReplyTo}`, `References: ${[input.references, input.inReplyTo].filter(Boolean).join(" ")}`] : []),
-    "MIME-Version: 1.0", `Content-Type: multipart/alternative; boundary="${boundary}"`, "",
+    "MIME-Version: 1.0",
+    ...(files.length ? [`Content-Type: multipart/mixed; boundary="${mixed}"`, "", `--${mixed}`] : []),
+    `Content-Type: multipart/alternative; boundary="${boundary}"`, "",
     `--${boundary}`, "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "", Buffer.from(input.text, "utf8").toString("base64"),
     `--${boundary}`, "Content-Type: text/html; charset=UTF-8", "Content-Transfer-Encoding: base64", "", Buffer.from(textToHtml(input.text), "utf8").toString("base64"),
-    `--${boundary}--`, ""
+    `--${boundary}--`,
+    ...files.flatMap((file) => {
+      const name = encodeHeader(file.filename).replace(/"/g, "");
+      return [`--${mixed}`, `Content-Type: ${file.mimeType.replace(/[\r\n;]+/g, "")}; name="${name}"`, `Content-Disposition: attachment; filename="${name}"`,
+        "Content-Transfer-Encoding: base64", "", base64Lines(file.data)];
+    }),
+    ...(files.length ? [`--${mixed}--`] : []), ""
   ];
   return Buffer.from(lines.join("\r\n"), "utf8").toString("base64url");
 }

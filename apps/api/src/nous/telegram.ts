@@ -14,7 +14,12 @@ export const NOUS_TELEGRAM_IDLE_MS = 10_000;
 export const NOUS_TELEGRAM_POLL_SECONDS = 20;
 export const NOUS_TELEGRAM_BACKOFF_MS = 5_000;
 export const NOUS_TELEGRAM_BACKOFF_MAX_MS = 60_000;
+/** Technical: Telegram's 4,096-character message; a longer answer goes as several messages. */
 export const NOUS_TELEGRAM_CHUNK = 3_900;
+/** Whole text in Telegram-sized parts (a message holds 4,096 characters). */
+const sendWhole = async (client: NousTelegramClient, chatId: string, text: string) => {
+  for (let at = 0; at < text.length; at += NOUS_TELEGRAM_CHUNK) await client.sendMessage(chatId, text.slice(at, at + NOUS_TELEGRAM_CHUNK));
+};
 const DECISION_TAIL = /Decision (nous_decision:[A-Za-z0-9_-]{6,80})\s*$/;
 /** A button's data stays under Telegram's 64 bytes: the decision id without its prefix and one letter. */
 const BUTTON = /^nd:([A-Za-z0-9_-]{6,80}):(a|d)$/;
@@ -59,6 +64,7 @@ export function createNousTelegram(deps: NousTelegramDeps) {
       let notice: string;
       try {
         const answered = await deps.service.answer(owner, id, { answer: button[2] === "a" ? "APPROVE" : "DECLINE" }, { via: "TELEGRAM" });
+        // Technical: a callback notice holds 200 characters (Bot API answerCallbackQuery); the outcome is whole in the dock.
         notice = answered.status === "APPROVED" ? `Approved${answered.outcome ? `: ${answered.outcome.slice(0, 150)}` : "."}` : "Declined.";
       } catch (error) {
         notice = error instanceof SpaceConflictError ? "Already answered." : error instanceof SpaceNotFoundError ? "This decision no longer exists." : "That did not work; answer it in the Nous dock.";
@@ -72,9 +78,16 @@ export function createNousTelegram(deps: NousTelegramDeps) {
     if (!text) return;
     const replied = message.replyToText ? DECISION_TAIL.exec(message.replyToText) : null;
     if (replied) {
+      // Technical: a decision's answer holds 2,000 characters (nousDecisionSchema.answer); longer words reach Nous whole as the
+      // operator's message naming the decision, never cut (plan xCBrZwhCTzmC step 4).
+      if (text.length > 2_000) {
+        await deps.service.send(owner, `Answer to decision ${replied[1]} (longer than a decision answer holds, so here whole):\n${text}`, { person: true, via: "TELEGRAM" });
+        await sendWhole(client, chatId, "Too long for the card's answer, so it went to Nous whole: Nous reads your words now.");
+        return;
+      }
       try {
-        const answered = await deps.service.answer(owner, replied[1]!, { answer: "ANSWER", text: text.slice(0, 2_000) }, { via: "TELEGRAM" });
-        await client.sendMessage(chatId, answered.status === "APPROVED" ? `Approved${answered.outcome ? `: ${answered.outcome.slice(0, 500)}` : "."}` : answered.status === "DECLINED" ? "Declined." : "Noted: Nous reads your words now.");
+        const answered = await deps.service.answer(owner, replied[1]!, { answer: "ANSWER", text }, { via: "TELEGRAM" });
+        await sendWhole(client, chatId, answered.status === "APPROVED" ? `Approved${answered.outcome ? `: ${answered.outcome}` : "."}` : answered.status === "DECLINED" ? "Declined." : "Noted: Nous reads your words now.");
       } catch (error) {
         await client.sendMessage(chatId, error instanceof SpaceConflictError ? "That decision was already answered." : error instanceof SpaceNotFoundError ? "That decision no longer exists." : "That did not work; answer it in the Nous dock.").catch(() => undefined);
       }
@@ -82,7 +95,7 @@ export function createNousTelegram(deps: NousTelegramDeps) {
     }
     const sent = await deps.service.send(owner, text, { person: true, via: "TELEGRAM" });
     // /goal and /goals (2026-10-27) are answered by Space itself: the answer rides on the stored message.
-    if (typeof sent.meta.reply === "string") await client.sendMessage(chatId, sent.meta.reply.slice(0, NOUS_TELEGRAM_CHUNK)).catch(() => undefined);
+    if (typeof sent.meta.reply === "string") await sendWhole(client, chatId, sent.meta.reply).catch(() => undefined);
   }
 
   async function cycle(): Promise<void> {
@@ -132,7 +145,7 @@ export function createNousTelegram(deps: NousTelegramDeps) {
       const live = await chat();
       if (!live || (await deps.owner()) !== owner) return false;
       const body = text.trim() || "Done.";
-      for (let at = 0; at < body.length; at += NOUS_TELEGRAM_CHUNK) await live.client.sendMessage(live.chatId, body.slice(at, at + NOUS_TELEGRAM_CHUNK));
+      await sendWhole(live.client, live.chatId, body);
       return true;
     },
 
@@ -142,7 +155,11 @@ export function createNousTelegram(deps: NousTelegramDeps) {
       if (!live || (await deps.owner()) !== owner) return false;
       const tail = `\n\nDecision ${decision.id}`;
       const id = decision.id.replace(/^nous_decision:/, "");
-      await live.client.sendMessage(live.chatId, `${text.slice(0, NOUS_TELEGRAM_CHUNK - tail.length)}${tail}`,
+      // A long card goes whole: its earlier parts first, the last one (under Telegram's 4,096) with the id and the buttons.
+      const room = NOUS_TELEGRAM_CHUNK - tail.length;
+      const split = Math.max(0, text.length - room);
+      if (split) await sendWhole(live.client, live.chatId, text.slice(0, split));
+      await live.client.sendMessage(live.chatId, `${text.slice(split)}${tail}`,
         { replyMarkup: { inline_keyboard: [[{ text: "Approve", callback_data: `nd:${id}:a` }, { text: "Decline", callback_data: `nd:${id}:d` }]] } });
       return true;
     }

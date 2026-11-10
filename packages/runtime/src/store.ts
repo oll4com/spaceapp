@@ -1,4 +1,4 @@
-import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
+import { t3CodePaneMetadataSchema, type FreelanceEgressRoute, type T3CodePaneMetadata } from "@space/contracts";
 import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, appStudioPaneMetadataSchema, videoPaneMetadataSchema, securityCopilotPaneMetadataSchema, type SecurityCopilotPaneMetadata, monitoringCopilotPaneMetadataSchema, type MonitoringCopilotPaneMetadata, type AppStudioPaneMetadata, type VideoPaneMetadata, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
 import { type PlanExecutionEvent } from "./plan-execution-repository.js";
 import { managedPlanProjection } from "./plan-execution-projection.js";
@@ -6,7 +6,7 @@ import { InMemoryPlanExecutionRepository, type PlanExecutionRepository } from ".
 import type { GoogleAccount, VerifiedGoogleIdentity } from "./google-accounts.js";
 import { setupExecutionStateSchema, type SetupExecutionState } from "@space/contracts";
 import { createSetupCompletion, type CompleteSetupExecutionInput } from "./setup-execution.js";
-import { transitionAgentRunLedger, agentRunEvaluationSchema, pickNextAvailablePaneName, normalizePaneName, resolvePaneByName } from "@space/contracts";
+import { transitionAgentRunLedger, agentRunEvaluationSchema, pickNextAvailablePaneName } from "@space/contracts";
 import { splitCliHostTranscriptContent } from "@space/contracts";
 import type { PaneBatchClaim } from "@space/contracts";
 import type { TaskTitleState } from "@space/contracts";
@@ -90,6 +90,10 @@ import {
   updateTaskItemInputSchema,
   upsertTaskItemInputSchema,
   taskScheduleNextRunAt,
+  taskRunStatusOfReport,
+  TASK_RUN_NO_REPORT_MS,
+  TASK_RUN_STATUSES,
+  historySince,
   ownerWorkingTimeZone,
   resolveTaskScheduleZone,
   listUserLinksQuerySchema,
@@ -162,6 +166,7 @@ import {
   userSettingsSchema,
   updateUserSettingsInputSchema
 } from "@space/contracts";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 import type {
   AdminOperationRun,
   AdminUserItem,
@@ -233,6 +238,10 @@ import type {
   ListArtifactsQuery,
   ListClipboardItemsQuery,
   ListTaskItemsQuery,
+  ListTaskRunsQuery,
+  TaskRun,
+  TaskRunListResponse,
+  TaskRunStatus,
   ListUserLinksQuery,
   ListImportCandidatesQuery,
   ListMemoryChangeSetsQuery,
@@ -666,6 +675,11 @@ export interface TaskItemListResult {
   total: number;
 }
 
+/** One handled occurrence of a scheduled task (plan clipboard:GA__W4qBxSPR): advanced and logged together. RUNNING: typed into its pane. */
+export interface TaskScheduleClaim { nextRunAt: string | null; outcome: string; status: Extract<TaskRunStatus, "RUNNING" | "SKIPPED" | "FAILED" | "REMINDER">; at: string }
+/** A pane report as the task run log reads it (pane_reports). */
+export interface TaskRunReport { paneId: string; at: string; status: string; summary: string }
+
 export interface UserLinkListResult {
   items: UserLink[];
   total: number;
@@ -981,8 +995,17 @@ export interface SpaceStore {
   updateTaskItem(ownerUserId: string, taskItemId: string, input: UpdateTaskItemInput): MaybePromise<TaskItem>;
   deleteTaskItem(ownerUserId: string, taskItemId: string): MaybePromise<TaskItem>;
   clearTaskItems(ownerUserId: string): MaybePromise<number>;
-  dueTaskSchedules(nowIso: string, limit: number): MaybePromise<Array<TaskItem & { ownerUserId: string }>>;
-  claimTaskSchedule(taskItemId: string, expectedNextRunAt: string, update: { nextRunAt: string | null; outcome: string; ran: boolean }): MaybePromise<boolean>;
+  /** Every scheduled task due by `nowIso`, oldest first (`limit`: at most that many). */
+  dueTaskSchedules(nowIso: string, limit?: number): MaybePromise<Array<TaskItem & { ownerUserId: string }>>;
+  claimTaskSchedule(taskItemId: string, expectedNextRunAt: string, update: TaskScheduleClaim): MaybePromise<boolean>;
+  /** The owner's task runs since `since` (their history period), newest first, paged by id. */
+  listTaskRuns(ownerUserId: string, query: ListTaskRunsQuery & { since?: string }): MaybePromise<TaskRunListResponse>;
+  /** A pane report decides (or refreshes) the newest run typed into that pane before it; false when no open run took it. */
+  noteTaskRunReport(ownerUserId: string, report: TaskRunReport): MaybePromise<boolean>;
+  /** Typed runs with no report for TASK_RUN_NO_REPORT_MS end NO_REPORT. */
+  settleTaskRuns(nowIso: string): MaybePromise<number>;
+  /** Task runs are a class-B log: each owner's runs older than their history period (history.periodDays) go. */
+  pruneTaskRuns(nowIso: string): MaybePromise<number>;
   listUserLinks(ownerUserId: string, query?: ListUserLinksQuery): MaybePromise<UserLinkListResult>;
   createUserLink(input: CreateUserLinkInput): MaybePromise<UserLink>;
   updateUserLink(ownerUserId: string, linkId: string, input: UpdateUserLinkRequest): MaybePromise<UserLink>;
@@ -1252,6 +1275,9 @@ export interface SpaceStore {
   }): MaybePromise<void>;
   getActivePaneBrowserSession(paneId: string): MaybePromise<PaneBrowserSession | null>;
   getPaneBrowserSession(sessionId: string): MaybePromise<PaneBrowserSession | null>;
+  /** The network route a pane browser leaves from (plan clipboard:iLvBs5eOMZjF); null: never chosen. */
+  getPaneBrowserRoute(paneId: string): MaybePromise<FreelanceEgressRoute | null>;
+  setPaneBrowserRoute(paneId: string, route: FreelanceEgressRoute): MaybePromise<void>;
   getLatestPaneBrowserSession(paneId: string): MaybePromise<PaneBrowserSession | null>;
   listActivePaneBrowserSessions(roomId?: string): MaybePromise<PaneBrowserSession[]>;
   createPaneBrowserSession(input: CreatePaneBrowserSessionInput, traceId?: string): MaybePromise<PaneBrowserSession>;
@@ -1297,8 +1323,13 @@ export interface SpaceStore {
   listEventChanges(input: ListEventChangesInput): MaybePromise<EventChange[]>;
   recordAuditEvent(input: CreateAuditEventInput): MaybePromise<AuditEvent>;
   listAuditEvents(): MaybePromise<AuditEvent[]>;
+  /** One page of every audit event, newest first, and how many there are (the admin audit route; 31/10: it paged inside the newest 500). */
+  listAuditEventsPage?(input: { offset: number; limit: number }): MaybePromise<{ items: AuditEvent[]; total: number }>;
   /** The newest audit event for one action on one target. Optional so partial test stores keep compiling. */
   findLatestAuditEvent?(input: { action: string; targetType: string; targetId: string }): MaybePromise<AuditEvent | null>;
+  /** Audit events of these actions since a time, newest first (Nous reads the operator's pane moves, R10-2). Optional like the above. */
+  /** No limit: every matching event of the window. */
+  listAuditEventsSince?(input: { actions: string[]; since: string; limit?: number }): MaybePromise<AuditEvent[]>;
   /**
    * Durable records that carry one Space trace id (the API request id):
    * events (for example TURN_QUEUED/TURN_FAILED with payload.reasonCode),
@@ -2142,12 +2173,12 @@ function buildMcpCatalog(options: Pick<StaticCatalogOptions, "mcpServerConfigs" 
   };
 }
 
-const defaultCodexSkillRoots = ["/var/lib/spaceapp-user/.codex/skills"];
-const defaultCodexPluginSkillRoots = ["/var/lib/spaceapp-user/.codex/plugins/cache/personal"];
+const defaultCodexSkillRoots = [`${SPACE_AGENT_HOME}/.codex/skills`];
+const defaultCodexPluginSkillRoots = [`${SPACE_AGENT_HOME}/.codex/plugins/cache/personal`];
 const codexSkillBodyMaxLength = 18_000;
 const codexSkillSearchMaxDepth = 8;
 const legacySpaceHostNamePattern = new RegExp(`${"vm"}${"207"}`, "gi");
-const legacySpaceHostAddressPattern = new RegExp(`10\\.100\\.0\\.${"207"}`, "g");
+const legacySpaceHostAddressPattern = new RegExp(`192\\.0\\.2\\.${"207"}`, "g");
 
 function redactSpaceHostReference(value: string): string {
   return value.replace(legacySpaceHostNamePattern, "Space host").replace(legacySpaceHostAddressPattern, "Space host");
@@ -2502,6 +2533,8 @@ export interface TraceRecords {
   roomAgentTaskRuns?: TraceRoomAgentTaskRun[];
   /** CLI sessions allocated under the trace, with their logical task and revision. */
   cliSessions?: TraceCliSession[];
+  /** Space Gateway request log rows whose request id is the trace (a Space caller's x-request-id). */
+  gatewayRequests?: Array<{ provider: string; model: string; status: string; errorCode: string | null; latencyMs: number | null; requestedAt: string }>;
 }
 
 export interface TraceCliSession {
@@ -2568,6 +2601,7 @@ export class InMemorySpaceStore implements SpaceStore {
   private paneCliCodexThreadOwnerships = new Map<string, PaneCliCodexThreadOwnership>();
   private codexCliTurnMarkers = new Map<string, CodexCliTurnMarkerRecord>();
   private paneBrowserSessions = new Map<string, PaneBrowserSession>();
+  private readonly paneBrowserRoutes = new Map<string, FreelanceEgressRoute>();
   private browserControlLeases = new Map<string, BrowserControlLease>();
   private browserCaptureJobs = new Map<string, BrowserCaptureJob>();
   private browserCaptureSegments = new Map<string, BrowserCaptureSegment>();
@@ -2606,6 +2640,7 @@ export class InMemorySpaceStore implements SpaceStore {
   private auditChainEntries = new Map<number, AuditChainEntry>();
   private clipboardSequence = 0;
   private taskItems = new Map<string, InMemoryTaskItemRecord>();
+  private taskRuns: Array<Omit<TaskRun, "roomName" | "paneName"> & { ownerUserId: string }> = [];
   private taskSequence = 0;
   private userLinks = new Map<string, InMemoryUserLinkRecord>();
   private initializedUserLinkLibraries = new Set<string>();
@@ -2934,7 +2969,7 @@ export class InMemorySpaceStore implements SpaceStore {
         name: "Getting Started",
         description: "SpaceApp setup and connection workspace.",
         initialPaneCount: 0,
-        projectPath: "/opt/spaceapp"
+        projectPath: SPACE_INSTALL_ROOT
       },
       makeSpaceId("trace"),
       owner.id
@@ -2949,7 +2984,7 @@ export class InMemorySpaceStore implements SpaceStore {
           title: "OpenCode CLI",
           mode: "TERMINAL",
           terminalRuntimeId: "cli:opencode",
-          cwd: "/opt/spaceapp"
+          cwd: SPACE_INSTALL_ROOT
         }
       ],
       makeSpaceId("trace")
@@ -2991,7 +3026,7 @@ export class InMemorySpaceStore implements SpaceStore {
         name: "Getting Started",
         description: "SpaceApp setup and connection workspace.",
         initialPaneCount: 0,
-        projectPath: "/opt/spaceapp"
+        projectPath: SPACE_INSTALL_ROOT
       },
       traceId
     );
@@ -3005,7 +3040,7 @@ export class InMemorySpaceStore implements SpaceStore {
             title: "OpenCode CLI",
             mode: "TERMINAL",
             terminalRuntimeId: "cli:opencode",
-            cwd: "/opt/spaceapp"
+            cwd: SPACE_INSTALL_ROOT
           }
         ],
         traceId
@@ -3688,7 +3723,8 @@ export class InMemorySpaceStore implements SpaceStore {
     const pending = existing?.item.schedule ?? null;
     const given = resolveTaskScheduleZone(parsed.schedule, ownerWorkingTimeZone(this.getUserSettings(parsed.ownerUserId)));
     const schedule = given !== undefined ? given : pending && { recurrence: pending.recurrence, timeZone: pending.timeZone };
-    const nextRunAt = taskScheduleNextRunAt(schedule ?? null, parsed.status, Date.now(), pending);
+    const nextRunAt = taskScheduleNextRunAt(schedule ?? null, parsed.status, Date.now(), pending,
+      existing ? { createdAt: existing.item.createdAt, lastRunAt: pending?.lastRunAt ?? null } : null);
     const item = taskItemSchema.parse({
       id: existing?.item.id ?? makeSpaceId("task"),
       title: parsed.title,
@@ -3759,7 +3795,8 @@ export class InMemorySpaceStore implements SpaceStore {
     const pending = record.item.schedule;
     const given = resolveTaskScheduleZone(parsed.schedule, ownerWorkingTimeZone(this.getUserSettings(ownerUserId)));
     const schedule = given !== undefined ? given : pending && { recurrence: pending.recurrence, timeZone: pending.timeZone };
-    const nextRunAt = taskScheduleNextRunAt(schedule, parsed.status ?? record.item.status, Date.now(), pending);
+    const nextRunAt = taskScheduleNextRunAt(schedule, parsed.status ?? record.item.status, Date.now(), pending,
+      { createdAt: record.item.createdAt, lastRunAt: pending?.lastRunAt ?? null });
     const updated = taskItemSchema.parse({
       ...record.item,
       ...(parsed.title !== undefined ? { title: parsed.title } : {}),
@@ -3773,7 +3810,7 @@ export class InMemorySpaceStore implements SpaceStore {
     return updated;
   }
 
-  dueTaskSchedules(nowIso: string, limit: number): Array<TaskItem & { ownerUserId: string }> {
+  dueTaskSchedules(nowIso: string, limit?: number): Array<TaskItem & { ownerUserId: string }> {
     const now = Date.parse(nowIso);
     return [...this.taskItems.values()].map((record) => ({ ...record.item, ownerUserId: record.ownerUserId }))
       .filter((item) => item.schedule?.nextRunAt && Date.parse(item.schedule.nextRunAt) <= now)
@@ -3781,13 +3818,56 @@ export class InMemorySpaceStore implements SpaceStore {
       .slice(0, limit);
   }
 
-  claimTaskSchedule(taskItemId: string, expectedNextRunAt: string, update: { nextRunAt: string | null; outcome: string; ran: boolean }): boolean {
+  claimTaskSchedule(taskItemId: string, expectedNextRunAt: string, update: TaskScheduleClaim): boolean {
     const record = this.taskItems.get(taskItemId);
     const schedule = record?.item.schedule;
     if (!record || !schedule || schedule.nextRunAt !== expectedNextRunAt) return false;
+    const typed = update.status === "RUNNING";
     record.item = taskItemSchema.parse({ ...record.item, schedule: { ...schedule, nextRunAt: update.nextRunAt,
-      lastOutcome: update.outcome.slice(0, 500), lastRunAt: update.ran ? new Date().toISOString() : schedule.lastRunAt } });
+      lastOutcome: update.outcome.slice(0, 500), lastRunAt: typed ? update.at : schedule.lastRunAt } });
+    const id = String((Number(this.taskRuns.at(-1)?.id ?? 0)) + 1);
+    this.taskRuns.push({ id, ownerUserId: record.ownerUserId, taskId: record.item.id, taskTitle: record.item.title, roomId: record.item.roomId,
+      paneId: record.item.paneId, dueAt: expectedNextRunAt, at: update.at, status: update.status, typed, detail: update.outcome.slice(0, 500), reportAt: null, report: null });
     return true;
+  }
+
+  listTaskRuns(ownerUserId: string, query: ListTaskRunsQuery & { since?: string }): TaskRunListResponse {
+    const mine = this.taskRuns.filter((run) => run.ownerUserId === ownerUserId && (!query.since || run.at >= query.since)).reverse();
+    const ofTask = mine.filter((run) => !query.taskId || run.taskId === query.taskId);
+    const page = ofTask.filter((run) => (!query.before || Number(run.id) < Number(query.before)) && (!query.status || run.status === query.status));
+    const counts = Object.fromEntries(TASK_RUN_STATUSES.map((status) => [status, ofTask.filter((run) => run.status === status).length])) as TaskRunListResponse["counts"];
+    const tasks = new Map<string, { taskId: string; title: string; runs: number }>();
+    for (const run of mine) {
+      const task = tasks.get(run.taskId) ?? tasks.set(run.taskId, { taskId: run.taskId, title: run.taskTitle, runs: 0 }).get(run.taskId)!;
+      task.runs += 1;
+    }
+    const runs = page.slice(0, query.limit).map(({ ownerUserId: _owner, ...run }) => {
+      const pane = run.paneId ? this.panes.get(run.paneId) : undefined;
+      const room = this.rooms.get(pane?.roomId ?? run.roomId ?? "");
+      return { ...run, roomId: room?.id ?? run.roomId, roomName: room?.name ?? null, paneName: pane ? pane.paneName ?? pane.title : null };
+    });
+    return { runs, hasMore: page.length > query.limit, counts, tasks: [...tasks.values()] };
+  }
+
+  noteTaskRunReport(ownerUserId: string, report: TaskRunReport): boolean {
+    const run = this.taskRuns.filter((entry) => entry.ownerUserId === ownerUserId && entry.typed && entry.paneId === report.paneId && entry.at <= report.at).at(-1);
+    const decided = taskRunStatusOfReport(report.status);
+    if (!run || !(decided ? ["RUNNING", "WAITING", "NO_REPORT"].includes(run.status) : run.status === "RUNNING")) return false;
+    Object.assign(run, { status: decided ?? run.status, reportAt: report.at, report: report.summary.slice(0, 500) });
+    return true;
+  }
+
+  pruneTaskRuns(nowIso: string): number {
+    const before = this.taskRuns.length;
+    this.taskRuns = this.taskRuns.filter((run) => run.at >= historySince(this.getUserSettings(run.ownerUserId), Date.parse(nowIso)));
+    return before - this.taskRuns.length;
+  }
+
+  settleTaskRuns(nowIso: string): number {
+    const before = Date.parse(nowIso) - TASK_RUN_NO_REPORT_MS;
+    const stale = this.taskRuns.filter((run) => run.status === "RUNNING" && Date.parse(run.reportAt ?? run.at) < before);
+    for (const run of stale) run.status = "NO_REPORT";
+    return stale.length;
   }
 
   deleteTaskItem(ownerUserId: string, taskItemId: string): TaskItem {
@@ -3866,7 +3946,7 @@ export class InMemorySpaceStore implements SpaceStore {
   listRooms(ownerUserId?: string | null): Room[] {
     const all = [...this.rooms.values()].map((r) => {
       if (!r.projectPath) {
-        r.projectPath = "/opt/spaceapp";
+        r.projectPath = SPACE_INSTALL_ROOT;
       }
       return r;
     }).sort((a, b) => a.order - b.order || a.createdAt.localeCompare(b.createdAt));
@@ -3914,7 +3994,7 @@ export class InMemorySpaceStore implements SpaceStore {
     const existing = [...this.rooms.values()].find((r) => (r.ownerUserId === userId || !r.ownerUserId) && r.name === "Getting Started")
       ?? [...this.rooms.values()].find((r) => r.ownerUserId === userId);
     if (existing) return existing;
-    const room = this.createRoom({ name: "Getting Started", initialPaneCount: 0, projectPath: "/opt/spaceapp" }, traceId, userId);
+    const room = this.createRoom({ name: "Getting Started", initialPaneCount: 0, projectPath: SPACE_INSTALL_ROOT }, traceId, userId);
     this.createPanes(
       [
         {
@@ -3922,7 +4002,7 @@ export class InMemorySpaceStore implements SpaceStore {
           title: "OpenCode CLI",
           mode: "TERMINAL",
           terminalRuntimeId: "cli:opencode",
-          cwd: "/opt/spaceapp"
+          cwd: SPACE_INSTALL_ROOT
         }
       ],
       traceId
@@ -4264,7 +4344,7 @@ export class InMemorySpaceStore implements SpaceStore {
       throw new SpaceNotFoundError(`Room ${roomId} was not found.`);
     }
     if (!room.projectPath) {
-      room.projectPath = "/opt/spaceapp";
+      room.projectPath = SPACE_INSTALL_ROOT;
     }
     return room;
   }
@@ -4275,7 +4355,7 @@ export class InMemorySpaceStore implements SpaceStore {
       id: makeSpaceId("room"),
       name: input.name,
       description: input.description ?? null,
-      projectPath: input.projectPath ?? "/opt/spaceapp",
+      projectPath: input.projectPath ?? SPACE_INSTALL_ROOT,
       kind: input.kind ?? "WORKSPACE",
       order: this.rooms.size,
       paneLayoutColumns: null,
@@ -5485,8 +5565,7 @@ export class InMemorySpaceStore implements SpaceStore {
           updatedAt: session.updatedAt
         };
       })
-      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
-      .slice(0, 100);
+      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
   }
 
   upsertAgentPaneStoredSession(
@@ -5629,8 +5708,7 @@ export class InMemorySpaceStore implements SpaceStore {
           updatedAt: session.updatedAt
         };
       })
-      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
-      .slice(0, 100);
+      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
   }
 
   createSpaceAgentSession(
@@ -6159,8 +6237,9 @@ export class InMemorySpaceStore implements SpaceStore {
     return updated;
   }
 
-  listPaneCliSessions(paneId: string, limit = 20): PaneCliSession[] {
-    const boundedLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
+  listPaneCliSessions(paneId: string, limit?: number): PaneCliSession[] {
+    // Every session of the pane unless a caller asks for fewer (until 31/10 20 by default, 100 at most).
+    const boundedLimit = limit === undefined ? undefined : Math.max(1, Math.trunc(limit));
     return [...this.paneCliSessions.values()]
       .filter((session) => session.paneId === paneId)
       .sort((left, right) => {
@@ -7048,6 +7127,15 @@ export class InMemorySpaceStore implements SpaceStore {
     return [...this.paneBrowserSessions.values()].find((session) => session.paneId === paneId && session.isActive) ?? null;
   }
 
+  getPaneBrowserRoute(paneId: string): FreelanceEgressRoute | null {
+    return this.paneBrowserRoutes.get(paneId) ?? null;
+  }
+
+  setPaneBrowserRoute(paneId: string, route: FreelanceEgressRoute): void {
+    this.getPane(paneId);
+    this.paneBrowserRoutes.set(paneId, route);
+  }
+
   getPaneBrowserSession(sessionId: string): PaneBrowserSession | null {
     return this.paneBrowserSessions.get(sessionId) ?? null;
   }
@@ -7760,6 +7848,15 @@ export class InMemorySpaceStore implements SpaceStore {
     return this.auditEvents.findLast((event) =>
       event.action === input.action && event.targetType === input.targetType && event.targetId === input.targetId
     ) ?? null;
+  }
+
+  listAuditEventsPage(input: { offset: number; limit: number }): { items: AuditEvent[]; total: number } {
+    const all = this.listAuditEvents();
+    return { items: all.slice(input.offset, input.offset + input.limit), total: all.length };
+  }
+
+  listAuditEventsSince(input: { actions: string[]; since: string; limit?: number }): AuditEvent[] {
+    return this.listAuditEvents().filter((event) => input.actions.includes(event.action) && event.createdAt > input.since).slice(0, input.limit);
   }
 
   listTraceRecords(traceId: string, options: ListTraceRecordsOptions = {}): TraceRecords {
@@ -9250,7 +9347,7 @@ export class InMemorySpaceStore implements SpaceStore {
       } catch {}
     }
 
-    let userLinks: UserLink[] = [];
+    const userLinks: UserLink[] = [];
     if (userId) {
       let page = 1;
       while (true) {
@@ -9262,7 +9359,7 @@ export class InMemorySpaceStore implements SpaceStore {
       }
     }
 
-    let clipboardItems: ClipboardItem[] = [];
+    const clipboardItems: ClipboardItem[] = [];
     if (userId) {
       let page = 1;
       while (true) {
@@ -9274,7 +9371,7 @@ export class InMemorySpaceStore implements SpaceStore {
       }
     }
 
-    let taskItems: TaskItem[] = [];
+    const taskItems: TaskItem[] = [];
     if (userId) {
       let page = 1;
       while (true) {

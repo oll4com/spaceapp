@@ -1,7 +1,8 @@
+import { isGatewayFreePlan } from "@space/contracts";
 import type { GatewayAccountRecord, GatewayRepository } from "@space/db";
 import type { AccountPool } from "../../accounts/account-pool.js";
 import { startAccountUsagePoller } from "../../accounts/usage-poller.js";
-import { CodeAssistError, fetchQuotaSummary, type AntigravityGroupUsage, type AntigravityQuotaGroup } from "./code-assist.js";
+import { CodeAssistError, fetchQuotaSummary, loadCodeAssist, type AntigravityGroupUsage, type AntigravityQuotaGroup } from "./code-assist.js";
 
 const FIVE_HOURS_MINUTES = 300;
 const WEEK_MINUTES = 7 * 24 * 60;
@@ -21,9 +22,17 @@ export async function storeAntigravityUsage(repository: GatewayRepository, accou
 }
 
 export async function refreshAntigravityAccountUsage(input: { repository: GatewayRepository; pool: AccountPool; account: GatewayAccountRecord; fetchImpl?: typeof fetch }) {
-  const credentials = await input.pool.credentials(input.account);
-  const groups = await fetchQuotaSummary(credentials.accessToken, credentials.upstreamAccountId, { fetchImpl: input.fetchImpl });
-  await storeAntigravityUsage(input.repository, input.account.id, groups);
+  const credentials = await input.pool.credentials(input.account, { allowFreePlan: true });
+  let account = input.account;
+  let project = credentials.upstreamAccountId;
+  if (isGatewayFreePlan(account.planType) || !project) {
+    const info = await loadCodeAssist(credentials.accessToken, { fetchImpl: input.fetchImpl });
+    project = info.project ?? project;
+    account = await input.pool.recordPlanType(account, info.planType);
+    if (isGatewayFreePlan(account.planType)) return null;
+  }
+  const groups = await fetchQuotaSummary(credentials.accessToken, project, { fetchImpl: input.fetchImpl });
+  await storeAntigravityUsage(input.repository, account.id, groups);
   input.pool.invalidate();
   return groups;
 }
@@ -31,7 +40,7 @@ export async function refreshAntigravityAccountUsage(input: { repository: Gatewa
 export function startAntigravityUsagePoller(input: { repository: GatewayRepository; pool: AccountPool; intervalMs: number; fetchImpl?: typeof fetch;
   onError?: (accountId: string, error: unknown) => void }) {
   return startAccountUsagePoller({
-    pool: input.pool, intervalMs: input.intervalMs, onError: input.onError,
+    pool: input.pool, intervalMs: input.intervalMs, onError: input.onError, includeFreePaused: true,
     refresh: (account) => refreshAntigravityAccountUsage({ repository: input.repository, pool: input.pool, account, fetchImpl: input.fetchImpl }),
     isAuthError: (error) => error instanceof CodeAssistError && (error.statusCode === 401 || error.statusCode === 403),
     isTokenRejected: (error) => error instanceof CodeAssistError && error.statusCode === 401

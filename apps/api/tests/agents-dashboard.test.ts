@@ -1,8 +1,32 @@
 import { describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
-import { claudeDashboardActivity, cliUsageLimited, createCliDashboardActivityReader, DASHBOARD_SCREEN_SETTLE_MS, dashboardScreenState, openCodeDashboardActivity, readDashboardActivity, type CliDashboardActivityReaders } from "../src/agents-dashboard.js";
+import { geminiTurnRunning } from "../src/gemini-native-turns.js";
+import { roomTerminalState } from "../src/room-terminal-screen.js";
+import { claudeDashboardActivity, cliUsageLimited, createCliDashboardActivityReader, createDashboardAgentsReader, DASHBOARD_SCREEN_SETTLE_MS, dashboardScreenState, openCodeDashboardActivity, readDashboardActivity, type CliDashboardActivityReaders } from "../src/agents-dashboard.js";
 
 describe("dashboard native activity", () => {
+  it("shares one read per room among its callers, keeps it 2.5 s, and keeps no answer an invalidation overtook (API audit 4/11 F2)", async () => {
+    let clock = 0;
+    let release: (value: string) => void = () => undefined;
+    const load = vi.fn((roomId: string) => new Promise<string>((resolve) => { release = (value) => resolve(`${roomId} ${value}`); }));
+    const reader = createDashboardAgentsReader(load, 2500, () => clock);
+    const [a, b] = [reader.read("room:a"), reader.read("room:a")];
+    release("1");
+    expect(await Promise.all([a, b])).toEqual(["room:a 1", "room:a 1"]);
+    await Promise.resolve();
+    expect(await reader.read("room:a")).toBe("room:a 1");
+    expect(load).toHaveBeenCalledTimes(1);
+    clock = 2501;
+    const late = reader.read("room:a");
+    reader.invalidate("room:a");
+    release("2");
+    await late;
+    const fresh = reader.read("room:a");
+    release("3");
+    expect(await fresh).toBe("room:a 3");
+    expect(load).toHaveBeenCalledTimes(3);
+  });
+
   it("reports three working native tasks even when every persisted pane is idle", async () => {
     const store = new InMemorySpaceStore();
     const room = store.createRoom({ name: "Dashboard", initialPaneCount: 0 });
@@ -85,7 +109,8 @@ describe("dashboard native activity", () => {
     };
     const { activity, details } = await readDashboardActivity(panes, store, createCliDashboardActivityReader(readers));
     expect(panes.map(pane => activity[pane.id])).toEqual(["working", "waiting", "done", "idle", "working"]);
-    expect(details[panes[0]!.id]).toEqual({ status: "working", since: "2026-10-11T06:00:00.000Z", modelId: "claude-fable-5-1", source: "native", reason: null });
+    expect(details[panes[0]!.id]).toEqual({ status: "working", since: "2026-10-11T06:00:00.000Z", modelId: "claude-fable-5-1", source: "native", reason: null,
+      sessionId: (await store.getActivePaneCliSession(panes[0]!.id))!.sessionId });
     expect(details[panes[1]!.id]).toMatchObject({ reason: "Permission prompt", since: "2026-10-11T06:01:00.000Z" });
     expect(details[panes[2]!.id]).toMatchObject({ since: "2026-10-11T06:02:59.000Z", modelId: "claude-opus-5-5" });
     expect(details[panes[4]!.id]).toMatchObject({ source: "screen" });
@@ -96,6 +121,11 @@ describe("dashboard native activity", () => {
     expect(claudeDashboardActivity({ busy: false, status: "waiting", waitingFor: "anything else", tasks: [] }).reason).toBe("Needs input");
     expect(claudeDashboardActivity({ busy: false, status: "idle", apiError: true, tasks: [] })).toMatchObject({ status: "waiting", reason: "API error" });
     expect(claudeDashboardActivity({ busy: true, status: "busy", apiError: true, tasks: [] }).status).toBe("working");
+    // Operator 6/11 (Cleo/Finn): a turn Space Gateway's pace cap refused waits for the pace day; it is not done.
+    const held = { busy: false, status: "idle", apiError: false, paceHold: { at: "2026-11-06T04:14:58.000Z", resumesAt: "2026-11-06T21:00:00.000Z" },
+      tasks: [{ status: "WAITING_FOR_INPUT", timing: { startedAt: "2026-11-06T04:13:20.000Z", completedAt: "2026-11-06T04:14:58.000Z" } }] };
+    expect(claudeDashboardActivity(held)).toMatchObject({ status: "waiting", reason: "Pace cap until 21:00 UTC", since: "2026-11-06T04:14:58.000Z" });
+    expect(claudeDashboardActivity({ ...held, busy: true }).status).toBe("working");
   });
   it("keeps the rest of the room when one CLI cannot be read", async () => {
     const store = new InMemorySpaceStore();
@@ -120,6 +150,9 @@ describe("dashboard native activity", () => {
       openCode: async () => openCode, claude: async () => null
     });
     expect(await read(session("cli:codex"))).toMatchObject({ status: "done", since: "2026-10-11T06:00:00.000Z", source: "native" });
+    // R9-7: a turn cut off by "model at capacity" waits on an API error (the monitor's STUCK, the Room Agent's continue).
+    codex = { status: "COMPLETED", lastActivityAtMs: Date.parse("2026-10-28T07:55:48.722Z"), apiError: true };
+    expect(await read(session("cli:codex"))).toMatchObject({ status: "waiting", reason: "API error", since: "2026-10-28T07:55:48.722Z", source: "native" });
     codex = { status: "ABORTED" };
     expect(await read(session("cli:codex"))).toMatchObject({ status: "waiting", reason: "Interrupted" });
     codex = { status: "PENDING" }; screen = "WAITING_FOR_INPUT";
@@ -128,7 +161,9 @@ describe("dashboard native activity", () => {
     gemini = [{ status: "COMPLETED", timing: { startedAt: "2026-10-11T05:00:00.000Z", completedAt: "2026-10-11T05:01:00.000Z" } }];
     expect(await read(session("cli:gemini"))).toMatchObject({ status: "done", since: "2026-10-11T05:01:00.000Z" });
     gemini.push({ status: "RUNNING", timing: { startedAt: "2026-10-11T05:02:00.000Z", completedAt: null } });
-    expect(await read(session("cli:gemini"))).toMatchObject({ status: "working", since: "2026-10-11T05:02:00.000Z" });
+    screen = "RUNNING";
+    expect(await read(session("cli:gemini"))).toMatchObject({ status: "working", since: "2026-10-11T05:02:00.000Z", source: "native" });
+    screen = "IDLE";
     const assistant = (completed: number | null, extra: Record<string, unknown> = {}) => ({ info: { role: "assistant", modelID: "deepseek-v4-flash-free", time: { created: 1, completed }, finish: "stop", ...extra } });
     openCode = { busy: true, messages: async () => [] };
     expect(await read(session("cli:opencode"))).toMatchObject({ status: "working", source: "native" });
@@ -142,6 +177,27 @@ describe("dashboard native activity", () => {
     expect(await read(session("cli:kimi"))).toMatchObject({ status: "working", source: "screen", rule: "busy-key" });
     expect(await read(session("cli:claude"))).toMatchObject({ status: "working", source: "screen" });
   });
+  it("corrects a Claude session row whose model is the launch guess, once per change (R9-8)", async () => {
+    // 28/10: Cleo/Emma's row said "sonnet" (the runtime default, never passed to Claude at launch) while every turn ran Opus 5.5.
+    let model = "claude-opus-5-5";
+    const observed = vi.fn();
+    const read = createCliDashboardActivityReader({
+      screenText: async () => "", codexTurn: vi.fn(), openCode: vi.fn(), geminiTurns: vi.fn(), observedModel: observed,
+      claude: async () => ({ status: "idle", busy: false, modelId: model, tasks: [] })
+    });
+    const row = { sessionId: "cli_session:emma", runtimeId: "cli:claude", paneId: "pane:emma", modelId: "sonnet" } as never;
+    expect(await read(row)).toMatchObject({ modelId: "claude-opus-5-5" });
+    await read(row);
+    expect(observed).toHaveBeenCalledTimes(1);
+    expect(observed).toHaveBeenCalledWith(row, "claude-opus-5-5");
+    model = "claude-sonnet-5-5";
+    await read(row);
+    expect(observed).toHaveBeenLastCalledWith(row, "claude-sonnet-5-5");
+    // A row that already names the model is left alone.
+    await read({ sessionId: "cli_session:other", runtimeId: "cli:claude", paneId: "pane:x", modelId: "claude-sonnet-5-5" } as never);
+    expect(observed).toHaveBeenCalledTimes(2);
+  });
+
   it("adds Space chat run timing and failures without exposing run text", async () => {
     const store = new InMemorySpaceStore();
     const room = store.createRoom({ name: "Dashboard", initialPaneCount: 0 });
@@ -265,6 +321,42 @@ describe("dashboard native activity", () => {
     expect(cliUsageLimited(screen, { rateLimit: null }, null, now)).toBe(false);
     expect(cliUsageLimited(screen, { rateLimit: limit }, "2026-10-20T13:58:00.000Z", now)).toBe(false);
     expect(cliUsageLimited(screen, { rateLimit: limit }, null, Date.parse("2026-10-20T15:31:00.000Z"))).toBe(false);
+    // 31/10 Cleo/Andy: Space Gateway's pool 429 has no reset time; it held the pane 8 hours. It counts 5 minutes from the 429.
+    const pool = { at: "2026-10-31T07:09:55.579Z", resetsAt: null };
+    expect(cliUsageLimited(composer, { rateLimit: pool }, null, Date.parse("2026-10-31T07:12:00.000Z"))).toBe(true);
+    expect(cliUsageLimited(composer, { rateLimit: pool }, null, Date.parse("2026-10-31T07:15:00.000Z"))).toBe(false);
+  });
+  it("reads Antigravity's quota stop as a usage limit (EXT-G-6, 2/11 dev: a Gemini pane on an account without quota read idle)", () => {
+    // The real screen of agy 1.4.12 after a turn on that account (~/agent-workspace/reports/20261102-ext-g-6-gemini/p2-main-turn.txt).
+    const screen = ["> Reply with exactly: MAIN-OK",
+      "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in", "54h52m49s.",
+      "Error ID: c80b28e5-a7d7-493b-a271-425b73f2de78-1", ">",
+      "? for shortcuts                                               accept-edits · Gemini 3.8 Flash · high"].join("\n");
+    expect(dashboardScreenState(screen)).toMatchObject({ state: "WAITING_FOR_INPUT", reason: "Usage limit" });
+    expect(cliUsageLimited(screen, undefined, null)).toBe(true);
+  });
+  it("reads an idle Antigravity composer as idle over a native turn an interrupt left RUNNING (6/11 Bruno/Kate, Dino/Paul)", async () => {
+    // Real agy 1.5.1 screens (~/agent-workspace/active/20261106-gemini-idle/): Esc and ctrl+c write no native step, so the turn stays RUNNING.
+    const border = "─".repeat(60), model = "accept-edits · Gemini 3.8 Flash · high";
+    const working = ["> Run the shell command: sleep 25; then reply with exactly DONE-PROBE", "⣻  Generating...", border, ">", border, `esc to cancel                    ${model}`].join("\n");
+    const interrupted = ["> Write a 400-word essay about tides.", "  ⎿  Interrupted · What should Antigravity CLI do instead?", border, ">", border, `? for shortcuts                  ${model}`].join("\n");
+    const ctrlC = interrupted.replace("? for shortcuts", "press ctrl+c again to exit");
+    const acceptEdits = [border, "> Accept-edits mode: file edits auto-approved", border, `press ctrl+c again to exit · ${model}`].join("\n");
+    let screen = "";
+    const read = createCliDashboardActivityReader({
+      screenText: async () => screen, codexTurn: vi.fn(), openCode: vi.fn(), claude: vi.fn(),
+      geminiTurns: async () => [{ status: "RUNNING", timing: { startedAt: "2026-11-06T10:00:00.000Z", completedAt: null } }]
+    });
+    const gemini = { sessionId: "cli_session:gemini", runtimeId: "cli:gemini", paneId: "pane:g" } as never;
+    for (screen of [interrupted, ctrlC, acceptEdits]) {
+      expect(roomTerminalState(screen)).toBe("IDLE"); // room inspect, AFTER_TURN delivery and stop confirmation
+      expect(geminiTurnRunning({ status: "RUNNING" }, true)).toBe(false);
+      expect(await read(gemini)).toMatchObject({ status: "idle" });
+    }
+    screen = working;
+    expect(roomTerminalState(screen)).toBe("RUNNING");
+    expect(geminiTurnRunning({ status: "RUNNING" }, false)).toBe(true);
+    expect(await read(gemini)).toMatchObject({ status: "working", since: "2026-11-06T10:00:00.000Z", source: "native" });
   });
   it("shows Done for screen-only CLIs once a watched turn goes quiet, and when each state began", async () => {
     let clock = Date.parse("2026-10-12T08:00:00.000Z");

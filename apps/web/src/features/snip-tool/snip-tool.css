@@ -45,6 +45,9 @@
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--snip-accent) 22%, transparent);
 }
 .snip-ui .snip-icon-btn:is(.is-active, [aria-pressed="true"]):hover:not(:disabled) { border-color: var(--snip-accent-hover); background: color-mix(in srgb, var(--snip-accent) 30%, transparent); color: #ffffff; }
+.snip-ui .snip-icon-btn.is-recording { display: inline-flex; gap: 4px; width: auto; padding: 0 6px; }
+.snip-ui .snip-icon-btn.is-recording svg { fill: currentColor; }
+.snip-ui .snip-icon-btn.is-recording .snip-countdown { font-size: 12px; }
 .snip-ui .snip-icon-btn.is-locked,
 .snip-ui .snip-icon-btn.is-locked:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--snip-warn) 70%, transparent);
@@ -243,6 +246,8 @@
 /* The page capture leaves this layer out by itself. It must not pre-hide: the screen-share fallback
    waits for the frame that hiding the layer produces. */
 .snip-layer.is-capturing { cursor: progress; }
+/* Drawn just outside the recorded area, so the video never shows it. */
+.snip-record-frame { position: fixed; z-index: 1000004; box-sizing: border-box; border: 2px solid var(--snip-danger); pointer-events: none; }
 .snip-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 /* ---------- editor ---------- */

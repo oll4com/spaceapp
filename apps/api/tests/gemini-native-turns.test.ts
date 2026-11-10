@@ -67,6 +67,10 @@ it("keeps recovery markers beyond the bounded display title", () => {
   expect(turns[0]!.title).not.toContain("marker-long");
   expect(geminiTurnActivity(turns, "marker-long", { markerAtMs: at * 1000 })).toMatchObject({ status: "COMPLETED", turnId: id1 });
 });
+it("completes a turn whose final reply is over 20 KB (6/11 Dino/Paul: 25,627 bytes read RUNNING for hours)", () => {
+  const long = row(1, 15); long.step_payload = proto([[1, 15], [4, 3], [5, long.metadata], [20, proto([[1, "x".repeat(25_627)], [12, 2]])]]);
+  expect(decode(row(0, 14), long)[0]).toMatchObject({ status: "COMPLETED", finalResponse: "x".repeat(25_627) });
+});
 it("requires both final text and a native completion timestamp", () => {
   const noTime = row(1, 15); noTime.metadata = proto([[1, proto([[1, at + 1]])], [12, id1]]);
   expect(decode(row(0, 14), noTime)[0]!.finalResponse).toBeNull();

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { keyCountWithin } from "./record-rules.js";
 
 // Optional Jev decisions contract. Nothing here is required for MCP control
 // to work: when no token is configured, callers receive available:false and
@@ -40,8 +41,7 @@ export type JevQuestion = z.infer<typeof jevQuestionSchema>;
 export const jevDecideInputSchema = z.object({
   state: z.unknown(),
   questions: z.record(z.string().trim().min(1).max(120), jevQuestionSchema).refine(
-    (questions) => Object.keys(questions).length >= 1 && Object.keys(questions).length <= 16,
-    "Provide 1 through 16 questions."
+    ...keyCountWithin(1, 16, "Provide 1 through 16 questions.")
   )
 }).strict();
 export type JevDecideInput = z.infer<typeof jevDecideInputSchema>;

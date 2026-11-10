@@ -10,6 +10,10 @@ import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 
 const newId = (prefix: string) => `${prefix}:${randomBytes(9).toString("base64url")}`;
 const OPEN: SecurityFindingStatus[] = ["NEW", "TRIAGING", "FIXING", "FAILED"];
+// A triage decision covers the CVEs it saw: an id the advisory did not have then (e.g. a KEV added later) reopens the finding.
+const TRIAGED: SecurityFindingStatus[] = ["NOT_AFFECTED", "ACCEPTED", "MITIGATED"];
+const REOPEN_SQL = `security_copilot_findings.status='FIXED' OR (security_copilot_findings.status IN ('NOT_AFFECTED','ACCEPTED','MITIGATED')
+  AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(EXCLUDED.advisory->'aliases') AS alias(id) WHERE NOT (security_copilot_findings.advisory->'aliases') ? alias.id))`;
 const PRIORITY_RANK: Record<SecurityPriority, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
 
 export interface SecurityHostRecord {
@@ -17,14 +21,14 @@ export interface SecurityHostRecord {
   status: SecurityHost["status"]; note: string | null;
 }
 export type SecurityFindingRecord = Pick<SecurityFinding, "ownerUserId" | "hostId" | "advisoryId" | "advisory" | "package" | "installedVersion" | "fixedVersion" | "priority">;
-export interface SecurityFindingFilter { hostId?: string; status?: SecurityFindingStatus[]; limit: number }
+export interface SecurityFindingFilter { hostId?: string; status?: SecurityFindingStatus[]; limit?: number }
 export type SecurityActionCreateRecord = Omit<SecurityAction, "id" | "startedAt" | "finishedAt" | "verification" | "reviewEventId"> & { reviewEventId?: string | null };
 export type SecurityActionPatch = Partial<Pick<SecurityAction, "status" | "verification" | "reviewEventId" | "finishedAt">>;
 export type SecurityMemoryCreateRecord = Omit<SecurityMemory, "id" | "uses" | "lastUsedAt" | "createdAt" | "updatedAt">;
 export type SecurityMemoryPatch = Partial<Pick<SecurityMemory, "text" | "tags" | "pinned">>;
-export interface SecurityMemoryQuery { query?: string | null; kinds?: SecurityMemory["kind"][]; hostId?: string | null; limit: number }
+export interface SecurityMemoryQuery { query?: string | null; kinds?: SecurityMemory["kind"][]; hostId?: string | null; limit?: number }
 export type SecurityEventCreateRecord = Omit<SecurityEvent, "id" | "createdAt" | "updatedAt">;
-export interface SecurityEventFilter { types?: SecurityEventType[]; status?: SecurityEventStatus[]; limit: number }
+export interface SecurityEventFilter { types?: SecurityEventType[]; status?: SecurityEventStatus[]; /** No limit: every matching event (a brief watch must see every waiting brief, operator 31/10). */ limit?: number }
 
 export interface SecurityCopilotRepository {
   /** Inserts or updates the host with this alias; `inventory` replaces the stored one when given. */
@@ -48,7 +52,7 @@ export interface SecurityCopilotRepository {
   getAction(owner: string, id: string): Promise<SecurityAction | null>;
   /** Changes the action only while it is in one of `fromStatus`; null otherwise. */
   updateAction(owner: string, id: string, patch: SecurityActionPatch, fromStatus: SecurityActionStatus[]): Promise<SecurityAction | null>;
-  listActions(owner: string, filter: { hostId?: string; status?: SecurityActionStatus[]; since?: string; limit: number }): Promise<SecurityAction[]>;
+  listActions(owner: string, filter: { hostId?: string; status?: SecurityActionStatus[]; since?: string; limit?: number }): Promise<SecurityAction[]>;
   listMemory(owner: string, query: SecurityMemoryQuery): Promise<SecurityMemory[]>;
   /** Inserts, or replaces the memory with the same kind, key and host. */
   upsertMemory(input: SecurityMemoryCreateRecord): Promise<SecurityMemory>;
@@ -103,7 +107,8 @@ export class InMemorySecurityCopilotRepository implements SecurityCopilotReposit
       this.findings.set(row.id, row);
       return { finding: copy(row), created: true, reopened: false };
     }
-    const reopened = existing.status === "FIXED";
+    const reopened = existing.status === "FIXED"
+      || (TRIAGED.includes(existing.status) && input.advisory.aliases.some((id) => !existing.advisory.aliases.includes(id)));
     const row: SecurityFinding = { ...existing, advisory: copy(input.advisory), installedVersion: input.installedVersion, fixedVersion: input.fixedVersion ?? existing.fixedVersion,
       priority: higher(existing.priority, input.priority), lastSeenAt: at, ...(reopened ? { status: "NEW" as const, closedAt: null } : {}) };
     this.findings.set(row.id, row);
@@ -148,7 +153,7 @@ export class InMemorySecurityCopilotRepository implements SecurityCopilotReposit
     this.actions.set(id, next);
     return copy(next);
   }
-  async listActions(owner: string, filter: { hostId?: string; status?: SecurityActionStatus[]; since?: string; limit: number }) {
+  async listActions(owner: string, filter: { hostId?: string; status?: SecurityActionStatus[]; since?: string; limit?: number }) {
     return [...this.actions.values()].filter((row) => row.ownerUserId === owner && (!filter.hostId || row.hostId === filter.hostId)
       && (!filter.status?.length || filter.status.includes(row.status)) && (!filter.since || row.startedAt >= filter.since))
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.id.localeCompare(a.id)).slice(0, filter.limit).map(copy);
@@ -280,18 +285,18 @@ export class PostgresSecurityCopilotRepository implements SecurityCopilotReposit
         fixed_version=coalesce(EXCLUDED.fixed_version, security_copilot_findings.fixed_version), last_seen_at=now(),
         priority=CASE WHEN ${PRIORITY_SQL.replace(/priority/g, "EXCLUDED.priority")} < ${PRIORITY_SQL.replace(/priority/g, "security_copilot_findings.priority")}
           THEN EXCLUDED.priority ELSE security_copilot_findings.priority END,
-        status=CASE WHEN security_copilot_findings.status='FIXED' THEN 'NEW' ELSE security_copilot_findings.status END,
-        closed_at=CASE WHEN security_copilot_findings.status='FIXED' THEN NULL ELSE security_copilot_findings.closed_at END
+        status=CASE WHEN ${REOPEN_SQL} THEN 'NEW' ELSE security_copilot_findings.status END,
+        closed_at=CASE WHEN ${REOPEN_SQL} THEN NULL ELSE security_copilot_findings.closed_at END
       RETURNING ${FINDING_COLUMNS}, (xmax = 0) AS "created", (SELECT status FROM previous) AS "previousStatus"`,
     [newId("secfind"), input.ownerUserId, input.hostId, input.advisoryId, JSON.stringify(input.advisory), input.package, input.installedVersion, input.fixedVersion, input.priority])).rows[0]!;
     const { created, previousStatus, ...finding } = row;
-    return { finding: findingRow(finding), created: Boolean(created), reopened: previousStatus === "FIXED" };
+    return { finding: findingRow(finding), created: Boolean(created), reopened: Boolean(previousStatus) && previousStatus !== "NEW" && finding.status === "NEW" };
   }
   getFinding(owner: string, id: string) { return this.one(`SELECT ${FINDING_COLUMNS} FROM security_copilot_findings WHERE owner_user_id=$1 AND id=$2`, [owner, id], findingRow); }
   listFindings(owner: string, filter: SecurityFindingFilter) {
     return this.many(`SELECT ${FINDING_COLUMNS} FROM security_copilot_findings WHERE owner_user_id=$1 AND ($2::text IS NULL OR host_id=$2)
       AND ($3::text[] IS NULL OR status = ANY($3::text[])) ORDER BY ${PRIORITY_SQL}, last_seen_at DESC LIMIT $4`,
-    [owner, filter.hostId ?? null, filter.status?.length ? filter.status : null, filter.limit], findingRow);
+    [owner, filter.hostId ?? null, filter.status?.length ? filter.status : null, filter.limit ?? null], findingRow);
   }
   updateFinding(owner: string, id: string, patch: { status?: SecurityFindingStatus; note?: string | null; confirmedBy?: string | null }) {
     return this.one(`UPDATE security_copilot_findings SET status=coalesce($3, status),
@@ -322,10 +327,10 @@ export class PostgresSecurityCopilotRepository implements SecurityCopilotReposit
       WHERE owner_user_id=$1 AND id=$2 AND status = ANY($7::text[]) RETURNING ${ACTION_COLUMNS}`,
     [owner, id, patch.status ?? null, patch.verification ?? null, patch.reviewEventId ?? null, patch.finishedAt ?? null, fromStatus], actionRow);
   }
-  listActions(owner: string, filter: { hostId?: string; status?: SecurityActionStatus[]; since?: string; limit: number }) {
+  listActions(owner: string, filter: { hostId?: string; status?: SecurityActionStatus[]; since?: string; limit?: number }) {
     return this.many(`SELECT ${ACTION_COLUMNS} FROM security_copilot_actions WHERE owner_user_id=$1 AND ($2::text IS NULL OR host_id=$2)
       AND ($3::text[] IS NULL OR status = ANY($3::text[])) AND ($4::timestamptz IS NULL OR started_at >= $4) ORDER BY started_at DESC, id DESC LIMIT $5`,
-    [owner, filter.hostId ?? null, filter.status?.length ? filter.status : null, filter.since ?? null, filter.limit], actionRow);
+    [owner, filter.hostId ?? null, filter.status?.length ? filter.status : null, filter.since ?? null, filter.limit ?? null], actionRow);
   }
 
   listMemory(owner: string, query: SecurityMemoryQuery) {
@@ -333,7 +338,7 @@ export class PostgresSecurityCopilotRepository implements SecurityCopilotReposit
     return this.many(`SELECT ${MEMORY_COLUMNS} FROM security_copilot_memory WHERE owner_user_id=$1 AND ($3::text[] IS NULL OR kind = ANY($3::text[]))
         AND ($4::text IS NULL OR host_id IS NULL OR host_id=$4) AND ($2::text IS NULL OR search @@ websearch_to_tsquery('simple', $2))
       ORDER BY pinned DESC, CASE WHEN $2::text IS NULL THEN 0 ELSE ts_rank(search, websearch_to_tsquery('simple', $2)) END DESC, uses DESC, updated_at DESC LIMIT $5`,
-    [owner, text, query.kinds?.length ? query.kinds : null, query.hostId ?? null, query.limit], memoryRow);
+    [owner, text, query.kinds?.length ? query.kinds : null, query.hostId ?? null, query.limit ?? null], memoryRow);
   }
   async upsertMemory(input: SecurityMemoryCreateRecord) {
     return (await this.one(`INSERT INTO security_copilot_memory(id, owner_user_id, kind, key, text, host_id, tags, source, pinned) VALUES ($1,$2,$3,$4,$5,$6,$7::text[],$8,$9)
@@ -361,7 +366,7 @@ export class PostgresSecurityCopilotRepository implements SecurityCopilotReposit
   listEvents(owner: string, paneId: string, filter: SecurityEventFilter) {
     return this.many(`SELECT ${EVENT_COLUMNS} FROM security_copilot_events WHERE owner_user_id=$1 AND pane_id=$2
         AND ($3::text[] IS NULL OR type = ANY($3::text[])) AND ($4::text[] IS NULL OR status = ANY($4::text[])) ORDER BY created_at DESC, id DESC LIMIT $5`,
-    [owner, paneId, filter.types?.length ? filter.types : null, filter.status?.length ? filter.status : null, filter.limit], eventRow);
+    [owner, paneId, filter.types?.length ? filter.types : null, filter.status?.length ? filter.status : null, filter.limit ?? null], eventRow);
   }
   updateEvent(owner: string, id: string, patch: { status: SecurityEventStatus; payload?: Record<string, unknown> }, fromStatus: SecurityEventStatus[]) {
     return this.one(`UPDATE security_copilot_events SET status=$3, payload = payload || $4::jsonb, updated_at=now()

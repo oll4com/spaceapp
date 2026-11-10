@@ -5,6 +5,7 @@ import {
   getLiveSessionStats,
   subscribeLiveSessionStats
 } from "./live-stats.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 interface LiveStatsWindowProps {
   onClose: () => void;
@@ -24,6 +25,8 @@ export function LiveStatsWindow({
   position,
   onPositionChange
 }: LiveStatsWindowProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [stats, setStats] = useState<LiveSessionStats>(getLiveSessionStats);
   const [copied, setCopied] = useState(false);
 
@@ -120,7 +123,7 @@ export function LiveStatsWindow({
   return (
     <section
       className="live-rail-stats-window"
-      aria-label="Live Voice Telemetry & Statistics"
+      aria-label={t("Live Voice Telemetry & Statistics")}
       style={{
         left: effectivePos.left,
         top: effectivePos.top,
@@ -131,9 +134,9 @@ export function LiveStatsWindow({
       <header className="live-rail-stats-header" onPointerDown={handlePointerDown}>
         <div className="live-stats-header-title">
           <span className={`live-stats-pulse-dot ${stats.sessionActive ? "is-active" : ""}`} />
-          <strong>Live Voice Telemetry</strong>
+          <strong>{t("Live Voice Telemetry")}</strong>
           <span className={`live-stats-status-badge ${stats.sessionActive ? "is-active" : "is-idle"}`}>
-            {stats.sessionActive ? "ACTIVE" : "IDLE"}
+            {stats.sessionActive ? t("ACTIVE") : t("IDLE")}
           </span>
           {stats.sessionActive && (
             <span className="live-stats-duration-badge">
@@ -146,14 +149,14 @@ export function LiveStatsWindow({
             type="button"
             className="live-stats-btn-copy"
             onClick={handleCopyReport}
-            title="Copy telemetry JSON to clipboard"
+            title={t("Copy telemetry JSON to clipboard")}
           >
-            {copied ? "✓ Copied" : "Copy Report"}
+            {copied ? t("✓ Copied") : t("Copy Report")}
           </button>
           <button
             type="button"
             className="live-stats-close-btn"
-            aria-label="Close telemetry window"
+            aria-label={t("Close telemetry window")}
             onClick={onClose}
           >
             ×
@@ -165,38 +168,38 @@ export function LiveStatsWindow({
         {/* Section 1: Active Voice & Upstream Models */}
         <div className="live-stats-section">
           <div className="live-stats-section-title">
-            <span>Voice &amp; Upstream Models</span>
+            <span>{t("Voice & Upstream Models")}</span>
             <span className="live-stats-source-tag">
-              {stats.sessionActive ? "🟢 Session Active" : "Configured (Ready)"}
+              {stats.sessionActive ? t("🟢 Session Active") : t("Configured (Ready)")}
             </span>
           </div>
 
           <div className="live-stats-grid">
             <div className="live-stats-item">
-              <span className="live-stats-label">Voice Model</span>
+              <span className="live-stats-label">{t("Voice Model")}</span>
               <strong className="live-stats-value is-highlight">{stats.model}</strong>
             </div>
             <div className="live-stats-item">
-              <span className="live-stats-label">Delegated Model</span>
-              <strong className="live-stats-value">{stats.delegatedModel || "None"}</strong>
+              <span className="live-stats-label">{t("Delegated Model")}</span>
+              <strong className="live-stats-value">{stats.delegatedModel || t("None")}</strong>
             </div>
             <div className="live-stats-item">
-              <span className="live-stats-label">Reasoning Effort</span>
+              <span className="live-stats-label">{t("Reasoning Effort")}</span>
               <strong className={`live-stats-value ${stats.delegatedReasoningEffort === "minimal" || stats.delegatedReasoningEffort === "low" ? "is-efficient" : "is-warning"}`}>
                 {stats.delegatedReasoningEffort || "minimal"}
               </strong>
             </div>
             <div className="live-stats-item">
-              <span className="live-stats-label">Voice &amp; Language</span>
+              <span className="live-stats-label">{t("Voice & Language")}</span>
               <strong className="live-stats-value">{stats.voice} · {stats.language}</strong>
             </div>
             <div className="live-stats-item">
-              <span className="live-stats-label">Web Search</span>
-              <strong className="live-stats-value">{stats.webSearch ? "Enabled" : "Disabled"}</strong>
+              <span className="live-stats-label">{t("Web Search")}</span>
+              <strong className="live-stats-value">{stats.webSearch ? t("Enabled") : t("Disabled")}</strong>
             </div>
             <div className="live-stats-item">
-              <span className="live-stats-label">Active Tools</span>
-              <strong className="live-stats-value">{stats.toolsCount} configured</strong>
+              <span className="live-stats-label">{t("Active Tools")}</span>
+              <strong className="live-stats-value">{t("{count} configured", { count: stats.toolsCount })}</strong>
             </div>
           </div>
         </div>
@@ -204,50 +207,50 @@ export function LiveStatsWindow({
         {/* Section 2: Network & WebRTC Telemetry */}
         <div className="live-stats-section">
           <div className="live-stats-section-title">
-            <span>Network &amp; Audio Telemetry</span>
-            <span className="live-stats-source-tag">PeerConnection stats</span>
+            <span>{t("Network & Audio Telemetry")}</span>
+            <span className="live-stats-source-tag">{t("PeerConnection stats")}</span>
           </div>
 
           <div className="live-stats-grid">
             <div className="live-stats-item">
-              <span className="live-stats-label">WebRTC Peer</span>
+              <span className="live-stats-label">{t("WebRTC Peer")}</span>
               <strong className="live-stats-value">{stats.connectionState}</strong>
             </div>
             <div className="live-stats-item">
-              <span className="live-stats-label">ICE State</span>
+              <span className="live-stats-label">{t("ICE State")}</span>
               <strong className="live-stats-value">{stats.iceConnectionState}</strong>
             </div>
             <div className="live-stats-item">
-              <span className="live-stats-label">Round-Trip Latency (RTT)</span>
+              <span className="live-stats-label">{t("Round-Trip Latency (RTT)")}</span>
               <strong className="live-stats-value is-latency">
-                {stats.roundTripTimeMs != null ? `${stats.roundTripTimeMs} ms` : "Measuring..."}
+                {stats.roundTripTimeMs != null ? `${stats.roundTripTimeMs} ms` : t("Measuring...")}
               </strong>
             </div>
             <div className="live-stats-item">
-              <span className="live-stats-label">Connect Time</span>
+              <span className="live-stats-label">{t("Connect Time")}</span>
               <strong className="live-stats-value is-latency">{stats.connectMs != null ? `${stats.connectMs} ms` : "—"}</strong>
             </div>
             <div className="live-stats-item">
-              <span className="live-stats-label">Reply Latency</span>
+              <span className="live-stats-label">{t("Reply Latency")}</span>
               <strong className="live-stats-value is-latency">{stats.lastReplyMs != null ? `${stats.lastReplyMs} ms` : "—"}</strong>
             </div>
             <div className="live-stats-item">
-              <span className="live-stats-label">Jitter</span>
+              <span className="live-stats-label">{t("Jitter")}</span>
               <strong className="live-stats-value">
-                {stats.jitterMs != null ? `${stats.jitterMs.toFixed(1)} ms` : "Measuring..."}
+                {stats.jitterMs != null ? `${stats.jitterMs.toFixed(1)} ms` : t("Measuring...")}
               </strong>
             </div>
             <div className="live-stats-item">
-              <span className="live-stats-label">Audio Sent (Mic)</span>
+              <span className="live-stats-label">{t("Audio Sent (Mic)")}</span>
               <strong className="live-stats-value">
-                {formatBytes(stats.bytesSent)} · {stats.packetsSent.toLocaleString()} pkts
+                {t("{bytes} · {packets} pkts", { bytes: formatBytes(stats.bytesSent), packets: stats.packetsSent.toLocaleString() })}
               </strong>
             </div>
             <div className="live-stats-item">
-              <span className="live-stats-label">Audio Received (AI)</span>
+              <span className="live-stats-label">{t("Audio Received (AI)")}</span>
               <strong className="live-stats-value">
-                {formatBytes(stats.bytesReceived)} · {stats.packetsReceived.toLocaleString()} pkts
-                {stats.packetsLost > 0 ? ` (${stats.packetsLost} lost)` : ""}
+                {t("{bytes} · {packets} pkts", { bytes: formatBytes(stats.bytesReceived), packets: stats.packetsReceived.toLocaleString() })}
+                {stats.packetsLost > 0 ? ` ${t("({count} lost)", { count: stats.packetsLost })}` : ""}
               </strong>
             </div>
           </div>
@@ -255,7 +258,7 @@ export function LiveStatsWindow({
           {/* Audio levels indicator */}
           <div className="live-stats-audio-levels">
             <div className="live-stats-meter-row">
-              <span className="live-stats-meter-label">Mic In</span>
+              <span className="live-stats-meter-label">{t("Mic In")}</span>
               <div className="live-stats-meter-bar">
                 <div
                   className="live-stats-meter-fill is-input"
@@ -264,7 +267,7 @@ export function LiveStatsWindow({
               </div>
             </div>
             <div className="live-stats-meter-row">
-              <span className="live-stats-meter-label">AI Out</span>
+              <span className="live-stats-meter-label">{t("AI Out")}</span>
               <div className="live-stats-meter-bar">
                 <div
                   className="live-stats-meter-fill is-output"
@@ -278,34 +281,34 @@ export function LiveStatsWindow({
         {/* Section 3: DataChannel Traffic */}
         <div className="live-stats-section">
           <div className="live-stats-section-title">
-            <span>DataChannel Traffic</span>
+            <span>{t("DataChannel Traffic")}</span>
             <span className="live-stats-duration">{formatDuration(stats.sessionDurationSec)}</span>
           </div>
 
           <div className="live-stats-grid">
             <div className="live-stats-item">
-              <span className="live-stats-label">DataChannel</span>
+              <span className="live-stats-label">{t("DataChannel")}</span>
               <strong className="live-stats-value">{stats.dataChannelState}</strong>
             </div>
             <div className="live-stats-item">
-              <span className="live-stats-label">Events Traffic</span>
+              <span className="live-stats-label">{t("Events Traffic")}</span>
               <strong className="live-stats-value">
-                ↑ {stats.eventsSentCount} sent · ↓ {stats.eventsReceivedCount} recv
+                {t("↑ {sent} sent · ↓ {received} recv", { sent: stats.eventsSentCount, received: stats.eventsReceivedCount })}
               </strong>
             </div>
             <div className="live-stats-item full-width">
-              <span className="live-stats-label">Last Event Sent</span>
-              <code className="live-stats-code">{stats.lastEventSent || "none"}</code>
+              <span className="live-stats-label">{t("Last Event Sent")}</span>
+              <code className="live-stats-code">{stats.lastEventSent || t("none")}</code>
             </div>
             <div className="live-stats-item full-width">
-              <span className="live-stats-label">Last Event Received</span>
-              <code className="live-stats-code">{stats.lastEventReceived || "none"}</code>
+              <span className="live-stats-label">{t("Last Event Received")}</span>
+              <code className="live-stats-code">{stats.lastEventReceived || t("none")}</code>
             </div>
           </div>
 
           {stats.lastError && (
             <div className="live-stats-error-banner">
-              <strong>Last Error:</strong> {stats.lastError}
+              <strong>{t("Last Error:")}</strong> {stats.lastError}
             </div>
           )}
         </div>

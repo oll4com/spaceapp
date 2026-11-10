@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { BrowserFrame, PaneBrowserSessionResponse } from "@space/contracts";
 import { api, type BrowserControlLeasePayload } from "../../api.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 interface GoogleAccountSignInOptions {
   paneId: string;
@@ -17,6 +18,9 @@ export function useGoogleAccountSignIn(options: GoogleAccountSignInOptions) {
   const { paneId, targetUrl, session, enabled } = options;
   const callbacks = useRef(options);
   callbacks.current = options;
+  const language = useUiLanguage();
+  const languageRef = useRef(language);
+  languageRef.current = language;
   const continuedSession = useRef<string | null>(null);
 
   useEffect(() => {
@@ -44,7 +48,7 @@ export function useGoogleAccountSignIn(options: GoogleAccountSignInOptions) {
         await api.browserInput(paneId, { type: "KEY", eventType: "keyUp", key: "Enter", code: "Enter", modifiers: 0, leaseId: lease.leaseId });
         if (!disposed) callbacks.current.onFrame(next.frame);
       } catch (cause) {
-        if (!disposed) callbacks.current.onError(cause instanceof Error ? cause.message : "Google sign-in could not continue.");
+        if (!disposed) callbacks.current.onError(cause instanceof Error ? cause.message : uiText(languageRef.current, "Google sign-in could not continue."));
       }
     })(); }, 1000);
     return () => { disposed = true; window.clearTimeout(timer); };

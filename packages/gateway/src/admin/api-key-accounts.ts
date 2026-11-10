@@ -11,15 +11,17 @@ import { createAdminGuard, publicAccountSummary, type ProviderAccountActions } f
 
 /** A provider whose API keys become gateway accounts: the key's shape, its free check, and the plan it is filed under. */
 interface ApiKeyProviderEntry {
-  provider: Extract<GatewayProvider, "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE" | "GOOGLE_AI">;
+  provider: KeyPoolProvider["provider"] | Extract<GatewayProvider, "CLAUDE" | "GOOGLE_AI">;
   label: string;
   keyPattern: RegExp;
   planType: string;
   check: (apiKey: string, fetchImpl: typeof fetch) => Promise<{ ok: boolean; status: number }>;
+  keyFrom?: (pasted: string) => string | null;
 }
 
 const poolEntry = (entry: KeyPoolProvider): ApiKeyProviderEntry => ({
-  provider: entry.provider, label: entry.label, keyPattern: entry.keyPattern, planType: "api", check: (apiKey, fetchImpl) => checkPoolKey(entry, apiKey, fetchImpl)
+  provider: entry.provider, label: entry.label, keyPattern: entry.keyPattern, planType: "api", check: (apiKey, fetchImpl) => checkPoolKey(entry, apiKey, fetchImpl),
+  keyFrom: entry.keyFrom
 });
 
 /**
@@ -36,6 +38,15 @@ export const googleAiEntry: ApiKeyProviderEntry = {
   provider: "GOOGLE_AI", label: "Google AI", keyPattern: GOOGLE_AI_KEY_PATTERN, planType: "api", check: (apiKey, fetchImpl) => checkGoogleAiKey(apiKey, fetchImpl)
 };
 
+/**
+ * The providers whose accounts a `<who>-free-pools` gateway key may reach (scripts/space-admin-action.mjs FREE_POOL_PROVIDERS): a new account of
+ * one joins those keys at once (7/11: Inception joined at 12:05Z and no free-pools key reached it, so Nous and the panes could not use it).
+ */
+export const FREE_POOL_KEY_PROVIDERS: ReadonlySet<GatewayProvider> = new Set(["NVIDIA", "GROQ", "CLOUDFLARE_AI", "ADAPTION", "AMD_TOKEN_LAB", "INCEPTION",
+  "JINA", "MIXEDBREAD", "AGENTROUTER", "FREEAI", "AZURE_OPENAI", "ZAI", "SILICONFLOW", "OVH", "MISTRAL", "GOOGLE_AI", "OPENROUTER"]);
+/** Never on Nous's `nous-free-pools` key (space-admin-action NOUS_FREE_POOL_PROVIDERS): relays, embedding pools, Mistral's training free tier. */
+export const NOUS_FREE_POOL_KEY_EXCLUDED: ReadonlySet<GatewayProvider> = new Set(["AGENTROUTER", "FREEAI", "JINA", "MIXEDBREAD", "MISTRAL"]);
+
 function entryFor(provider: unknown): ApiKeyProviderEntry | null {
   if (provider === "CLAUDE") return claudeEntry;
   if (provider === "GOOGLE_AI") return googleAiEntry;
@@ -44,7 +55,7 @@ function entryFor(provider: unknown): ApiKeyProviderEntry | null {
 }
 
 /**
- * Provider API keys as gateway accounts: OpenAI (embeddings and its key pool), OpenRouter and DeepSeek (key pools),
+ * Provider API keys as gateway accounts: OpenAI (embeddings and its key pool), OpenRouter, DeepSeek and the free pools (key pools),
  * Claude (the per-token fallback behind the subscription accounts) and Google AI (Gemini embeddings). The key is checked with the provider's
  * free check request, stored encrypted, and identified only by a hash prefix and its last four characters.
  */
@@ -54,13 +65,25 @@ export function registerApiKeyAccountRoutes(app: FastifyInstance, options: {
 }) {
   const guard = createAdminGuard(options.internalToken);
   const now = options.now ?? Date.now;
+  // Whether a key is already an account (the API's Vault reconcile, 7/11: keys saved before their pool existed never joined): by the stored
+  // key's hash, so nothing is sent to the provider and an account's label stays as it is.
+  app.post("/__space-gateway/admin/api-key/known", async (request, reply) => {
+    if (!(await guard(request, reply))) return reply;
+    const body = (request.body ?? {}) as { provider?: unknown; apiKey?: unknown };
+    const entry = entryFor(body.provider);
+    if (!entry || typeof body.apiKey !== "string") return reply.code(422).send({ error: { code: "unsupported_provider", message: "Name a key-pool provider and a key." } });
+    const apiKey = (entry.keyFrom ? entry.keyFrom(body.apiKey.trim()) : body.apiKey.trim()) ?? "";
+    const externalAccountId = `key:${createHash("sha256").update(apiKey).digest("hex").slice(0, 32)}`;
+    return { known: (await options.repository.listAccounts()).some((account) => account.provider === entry.provider && account.externalAccountId === externalAccountId) };
+  });
   app.post("/__space-gateway/admin/api-key/add", async (request, reply) => {
     if (!(await guard(request, reply))) return reply;
     const body = (request.body ?? {}) as { provider?: unknown; apiKey?: unknown; label?: unknown; sourceRef?: unknown };
     const entry = entryFor(body.provider);
     const pool = entry ? options.pools[entry.provider] : undefined;
-    if (!entry || !pool) return reply.code(422).send({ error: { code: "unsupported_provider", message: "API keys can be added for OpenAI, OpenRouter, DeepSeek, Claude and Google AI." } });
-    const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+    if (!entry || !pool) return reply.code(422).send({ error: { code: "unsupported_provider", message: "API keys can be added for OpenAI, OpenRouter, DeepSeek, Groq, NVIDIA, Cloudflare Workers AI, Adaption Labs, AMD Token Lab, Inception Labs, Jina AI, Mixedbread, AgentRouter, Free.ai, Azure OpenAI, Z.AI, SiliconFlow, OVHcloud AI Endpoints (no key), Mistral, Claude on Amazon Bedrock, Claude on Google Vertex AI, Claude and Google AI." } });
+    const pasted = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+    const apiKey = (entry.keyFrom ? entry.keyFrom(pasted) : pasted) ?? "";
     if (!entry.keyPattern.test(apiKey)) return reply.code(422).send({ error: { code: "invalid_api_key", message: `This does not look like a ${entry.label} API key.` } });
     const cipher = options.cipher();
     if (!cipher) return reply.code(503).send({ error: { code: "credential_key_missing", message: "The Space Gateway encryption key is missing. Redeploy Space to create it." } });
@@ -79,6 +102,14 @@ export function registerApiKeyAccountRoutes(app: FastifyInstance, options: {
       credentialsEncrypted: cipher.encrypt(JSON.stringify(credentials), boundId), credentialsExpiresAt: null, source: "API_KEY", sourceRef,
       lastRefreshAt: new Date(now()).toISOString() });
     pool.signedIn(saved.id);
+    // A new free or granted pool's account joins every `<who>-free-pools` key (Nous's, OpenCode's), as space-admin-action
+    // gateway-free-pools-key-sync does by hand: 7/11 Inception joined and stayed out of reach until that ran.
+    if (!existing && FREE_POOL_KEY_PROVIDERS.has(entry.provider)) {
+      for (const key of await options.repository.listApiKeys()) {
+        if (key.name === "nous-free-pools" && NOUS_FREE_POOL_KEY_EXCLUDED.has(entry.provider)) continue;
+        if (/(^|-)free-pools$/.test(key.name) && !key.accountIds.includes(saved.id)) await options.repository.updateApiKey(key.id, { accountIds: [...key.accountIds, saved.id] });
+      }
+    }
     return { status: "CONNECTED", account: publicAccountSummary(saved) };
   });
 }

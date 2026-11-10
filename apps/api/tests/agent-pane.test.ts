@@ -1035,7 +1035,7 @@ describe("Space API native agent panes", () => {
     expect(session.binding.sessionId).toMatch(/^agent_session:/);
     expect(store.getActiveSpaceAgentSession(pane.id)?.sessionId).toBe(session.binding.sessionId);
     expect(control.modelCalls).toBe(1);
-    expect(JSON.stringify(session)).not.toMatch(new RegExp("10\\.100\\.0\\.216|api[_-]?key|sec" + "ret|pass" + "word|tok" + "en", "i"));
+    expect(JSON.stringify(session)).not.toMatch(new RegExp("192\\.0\\.2\\.216|api[_-]?key|sec" + "ret|pass" + "word|tok" + "en", "i"));
   });
 
   it("starts runtime capability discovery while the one catalog snapshot is pending", async () => {

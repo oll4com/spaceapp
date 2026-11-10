@@ -50,7 +50,7 @@ describe("browser census", () => {
     expect(copilot).toMatchObject({ profile: "cli-accounts/3916b5f5c837", accountEmail: null, control: null, handoff: { status: "REQUESTED", requestedAt: "t4" } });
     expect(browser!.accountEmail).toBeNull();
     expect(copilot!.tabs).toEqual([{ pageId: "T3", title: null, url: "about:", isActive: true, account: "work@example.com" }]);
-    expect(JSON.stringify(census)).not.toMatch(/secret|token=|\/srv\/space/);
+    expect(JSON.stringify(census)).not.toMatch(/secret|token=|\/opt\/spaceapp/);
   });
 
   it("names each session's account email from the API's own records, and none for a pane's own profile", async () => {

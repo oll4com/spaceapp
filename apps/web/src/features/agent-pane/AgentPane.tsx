@@ -42,6 +42,7 @@ import type { AgentPaneModelProvider } from "@space/contracts";
 import { CodexNotification, copyableCodexTranscript, visibleChatMessages, visibleCodexThreadItems } from "./CodexTranscript.js";
 import { useTranscriptScroll } from "./useTranscriptScroll.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import {
   AGENT_PANE_ACTION_EVENT,
   AGENT_PANE_ATTACHMENTS_EVENT,
@@ -223,6 +224,8 @@ function CodexGoalDialog({
   onSave: (objective: string) => void;
   onClear: () => void;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [objective, setObjective] = useState(goal?.objective ?? "");
   const trimmedObjective = objective.trim();
 
@@ -237,13 +240,13 @@ function CodexGoalDialog({
         className="attachment-modal-body codex-resume-modal-body"
         role="dialog"
         aria-modal="true"
-        aria-label={`Manage goal ${paneTitle}`}
+        aria-label={t("Manage goal {pane}", { pane: paneTitle })}
         onClick={(event) => event.stopPropagation()}
       >
         <button
           type="button"
           className="terminal-upload-modal-close codex-resume-modal-close"
-          aria-label="Close goal editor"
+          aria-label={t("Close goal editor")}
           disabled={pending}
           onClick={onClose}
         >
@@ -252,16 +255,16 @@ function CodexGoalDialog({
         <div className="codex-resume-modal-header">
           <span className="terminal-upload-modal-label codex-resume-modal-label">
             <Crosshair aria-hidden="true" />
-            Goal
+            {t("Goal")}
           </span>
-          <strong>Manage task goal</strong>
-          <small>Keep Codex focused on a durable objective for {paneTitle}.</small>
+          <strong>{t("Manage task goal")}</strong>
+          <small>{t("Keep Codex focused on a durable objective for {pane}.", { pane: paneTitle })}</small>
         </div>
         <form className="codex-goal-editor" onSubmit={submit}>
           <label>
-            <span>Goal objective</span>
+            <span>{t("Goal objective")}</span>
             <textarea
-              aria-label="Goal objective"
+              aria-label={t("Goal objective")}
               autoFocus
               value={objective}
               disabled={pending}
@@ -271,10 +274,10 @@ function CodexGoalDialog({
           </label>
           <div>
             {goal ? (
-              <button type="button" disabled={pending} onClick={onClear}>Clear goal</button>
+              <button type="button" disabled={pending} onClick={onClear}>{t("Clear goal")}</button>
             ) : null}
-            <button type="button" disabled={pending} onClick={onClose}>Cancel</button>
-            <button type="submit" disabled={pending || !trimmedObjective}>Save goal</button>
+            <button type="button" disabled={pending} onClick={onClose}>{t("Cancel")}</button>
+            <button type="submit" disabled={pending || !trimmedObjective}>{t("Save goal")}</button>
           </div>
         </form>
       </section>
@@ -292,6 +295,8 @@ export function AgentPane({
   onActionAvailabilityChange
 }: AgentPaneProps) {
   const isCodexEnabled = codexEnvironment?.isCodexEnabled ?? true;
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const initialDraft = readAgentPaneDraft(pane.id);
   const [session, setSession] = useState<AgentPaneSession | null>(null);
   const sessionRef = useRef(session);
@@ -384,7 +389,7 @@ export function AgentPane({
   const isChatEnabled = session
     ? (session.modelProviders ?? []).length > 0 || (session.modelOptions ?? []).length > 0
     : true;
-  const chatDisabledReason = "Enable a Chat provider in Settings";
+  const chatDisabledReason = t("Enable a Chat provider in Settings");
   const trimmedPrompt = prompt.trim();
   const hasAttachments = attachments.length > 0;
   const canSend =
@@ -427,16 +432,16 @@ export function AgentPane({
         if (dotFlow.isCurrent(dotFlow.generationRef.current)) { setDots(profiles); setDotsError(null); }
         return profiles;
       }).catch(() => {
-        if (dotFlow.isCurrent(dotFlow.generationRef.current)) setDotsError("Dots unavailable.");
+        if (dotFlow.isCurrent(dotFlow.generationRef.current)) setDotsError(t("Dots unavailable."));
         return [];
       }).finally(() => { dotsRequestRef.current = null; });
     }
     return dotsRequestRef.current;
   }
   function publishSession(next: AgentPaneSession, newTask = false) {
-    if (next.binding.paneId !== pane.id) throw Error("Session pane identity mismatch.");
+    if (next.binding.paneId !== pane.id) throw Error(t("Session pane identity mismatch."));
     const profile = dotsRef.current.find(dot => dot.dotId === next.dotId);
-    if (next.dotId && !profile) throw Error("The active Dot is unavailable. Reconnect before sending.");
+    if (next.dotId && !profile) throw Error(t("The active Dot is unavailable. Reconnect before sending."));
     const changed = next.binding.sessionId !== sessionRef.current?.binding.sessionId || next.dotId !== sessionRef.current?.dotId;
     if (profile && (loadedDraftDotRef.current !== profile.dotId || newTask)) {
       const draft = newTask ? { prompt: "", attachments: [], acceptance: undefined } : readDotDraft(pane.id, profile);
@@ -457,13 +462,13 @@ export function AgentPane({
         let target = sessionId;
         if (target === undefined && dot) {
           const history = await api.dotCollection(dot.dotId, "sessions");
-          if (history.dotId !== dot.dotId) throw Error("Dot session history identity mismatch.");
+          if (history.dotId !== dot.dotId) throw Error(t("Dot session history identity mismatch."));
           target = history.items.find(item => item.dotId === dot.dotId && item.roomId === pane.roomId)?.sessionId ?? null;
         }
         const next = await api.createAgentSession(pane.id, { dotId: desiredDotId, sessionId: target ?? null,
           ...(target ? {} : { title: session?.binding.title ?? pane.title, threadId: null,
             selectedModelConfigId: selectedModelConfigId ?? session?.selectedModelConfigId ?? null, selectedToolIds: session?.selectedToolIds ?? [] }) });
-        if (desiredDotId && next.dotId !== desiredDotId) throw Error("The server did not confirm the selected Dot.");
+        if (desiredDotId && next.dotId !== desiredDotId) throw Error(t("The server did not confirm the selected Dot."));
         newTaskConfirmed = newTask;
         return next;
       },
@@ -566,7 +571,7 @@ export function AgentPane({
     };
   }, [permissionsOpen, isVisible, pane.isMinimized]);
   const runErrorMessage = session?.runStatus === "ERROR"
-    ? session.statusReason || "The Chat run failed."
+    ? session.statusReason || t("The Chat run failed.")
     : null;
   const runError = runErrorMessage && runErrorMessage !== dismissedRunError ? runErrorMessage : null;
 
@@ -589,7 +594,7 @@ export function AgentPane({
       await loadDots();
       if (!contextCurrent(token)) return;
       if (token.sessionId && (nextSession.binding.sessionId !== token.sessionId || nextSession.dotId !== token.dotId)) {
-        setSessionUnavailable(true); setError("The active Dot session changed. Reconnect before sending."); return;
+        setSessionUnavailable(true); setError(t("The active Dot session changed. Reconnect before sending.")); return;
       }
       const remembered = readAgentPaneModelSelection(pane.id);
       // A Dot's model comes from Settings → Dots, never from this pane's earlier pick.
@@ -612,7 +617,7 @@ export function AgentPane({
     } catch (err) {
       if (!contextCurrent(token)) return;
       setSessionUnavailable(true);
-      setError(err instanceof Error ? err.message : "Agent session failed to load");
+      setError(err instanceof Error ? err.message : t("Agent session failed to load"));
     } finally {
       if (showLoading && dotFlow.isCurrent(token.generation)) setLoading(false);
     }
@@ -674,7 +679,7 @@ export function AgentPane({
       : copyableCodexTranscript(thread?.items ?? [], session?.messages ?? []);
     if (!text) {
       setNotice(null);
-      setError("There are no visible Chat contents to copy.");
+      setError(t("There are no visible Chat contents to copy."));
       return;
     }
     setNotice(null);
@@ -682,10 +687,10 @@ export function AgentPane({
       const runtimeKind = await writeClipboardText(text);
       void captureClipboardText({ text, source: "COPY", roomId: pane.roomId, paneId: pane.id, paneTitle: pane.title });
       setError(null);
-      setNotice(runtimeKind === "demo" ? DEMO_LOCAL_REPLY : "Chat contents copied.");
+      setNotice(runtimeKind === "demo" ? DEMO_LOCAL_REPLY : t("Chat contents copied."));
     } catch (err) {
       setNotice(null);
-      setError(err instanceof Error ? err.message : "Chat copy failed");
+      setError(err instanceof Error ? err.message : t("Chat copy failed"));
     }
   }
 
@@ -699,14 +704,14 @@ export function AgentPane({
           resolve: async () => {
             const history = await api.dotCollection(selectedDot.dotId, "sessions");
             const target = history.dotId === selectedDot.dotId ? history.items.find(item => item.dotId === selectedDot.dotId && item.roomId === pane.roomId && item.threadId === threadId) : null;
-            if (!target?.sessionId) throw Error("This conversation does not belong to the selected Dot and room.");
+            if (!target?.sessionId) throw Error(t("This conversation does not belong to the selected Dot and room."));
             const next = await api.createAgentSession(pane.id, { dotId: selectedDot.dotId, sessionId: target.sessionId });
-            if (next.dotId !== selectedDot.dotId) throw Error("Conversation Dot identity mismatch.");
+            if (next.dotId !== selectedDot.dotId) throw Error(t("Conversation Dot identity mismatch."));
             return next;
           }, reconcile: () => api.agentSession(pane.id), publish: publishSession });
       }
       // Old clients without Dots can only open their active conversation.
-      if (threadId !== session.threadId) { setCodexError("This conversation does not belong to the selected Dot and room."); return false; }
+      if (threadId !== session.threadId) { setCodexError(t("This conversation does not belong to the selected Dot and room.")); return false; }
     }
     const token = contextToken();
     if (dotFlow.lockedRef.current || threadId !== sessionRef.current?.threadId) return false;
@@ -724,7 +729,7 @@ export function AgentPane({
     } catch (err) {
       if (!contextCurrent(token)) return false;
       if (codexThreadNotWrittenYet(err, sessionRef.current, threadId, loadedThreadIdsRef.current)) return notWrittenYet();
-      setThread(null); setCodexError(err instanceof Error ? err.message : "Codex thread failed to load"); return false;
+      setThread(null); setCodexError(err instanceof Error ? err.message : t("Codex thread failed to load")); return false;
     } finally { if (contextCurrent(token)) setThreadLoading(false); }
   }
 
@@ -934,10 +939,10 @@ export function AgentPane({
     setError(null);
     try {
       const updated = await api.updateAgentSettings(pane.id, { collaborationMode });
-      if (updated.collaborationMode !== collaborationMode) throw new Error("The provider did not confirm the selected Plan mode.");
+      if (updated.collaborationMode !== collaborationMode) throw new Error(t("The provider did not confirm the selected Plan mode."));
       setSession(updated);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Agent settings update failed");
+      setError(err instanceof Error ? err.message : t("Agent settings update failed"));
     } finally {
       setPending(false);
     }
@@ -949,21 +954,21 @@ export function AgentPane({
     setError(null);
     try {
       const updated = await api.updateAgentSettings(pane.id, { permissionMode });
-      if (updated.permissionState.effectiveMode !== permissionMode) throw new Error("The provider did not confirm the selected permissions.");
+      if (updated.permissionState.effectiveMode !== permissionMode) throw new Error(t("The provider did not confirm the selected permissions."));
       setSession(updated);
       setPermissionsOpen(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Permissions update failed.");
+      setError(err instanceof Error ? err.message : t("Permissions update failed."));
     } finally { setPending(false); }
   }
 
   async function updateModelConfig(selectedModelConfigId: string): Promise<string | null> {
-    if (blockedNow()) throw new Error("Finish or stop the current action before switching Dots.");
+    if (blockedNow()) throw new Error(t("Finish or stop the current action before switching Dots."));
     if (!isChatEnabled) {
       throw new Error(chatDisabledReason);
     }
     if (!session?.capabilities.canSelectModel) {
-      throw new Error("Model selection is unavailable for this Chat session.");
+      throw new Error(t("Model selection is unavailable for this Chat session."));
     }
     const providerChanged = modelConfigProviderKey(session.selectedModelConfigId) !== modelConfigProviderKey(selectedModelConfigId);
     const hasConversation = Boolean(session.threadId || session.messages.some((message) => message.content.trim().length > 0));
@@ -974,9 +979,9 @@ export function AgentPane({
       await transitionSession(selectedDot, null, false, selectedModelConfigId);
       const updated = sessionRef.current;
       if (dotFlow.lockedRef.current || updated?.selectedModelConfigId !== selectedModelConfigId) {
-        throw new Error("Model selection is unconfirmed. Reconnect before sending.");
+        throw new Error(t("Model selection is unconfirmed. Reconnect before sending."));
       }
-      setNotice(`Started a new ${updated.binding.selectedProviderName ?? "Codex"} Chat task.`);
+      setNotice(t("Started a new {provider} Chat task.", { provider: updated.binding.selectedProviderName ?? "Codex" }));
       return updated.selectedModelConfigId;
     }
     setPending(true);
@@ -987,7 +992,7 @@ export function AgentPane({
       rememberModelSelection(updated);
       return updated.selectedModelConfigId;
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Agent model update failed";
+      const message = err instanceof Error ? err.message : t("Agent model update failed");
       setError(message);
       throw err instanceof Error ? err : new Error(message);
     } finally {
@@ -1003,7 +1008,7 @@ export function AgentPane({
       setSession(await api.updateAgentGoal(pane.id, objective));
       setGoalDialogOpen(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Goal update failed");
+      setError(err instanceof Error ? err.message : t("Goal update failed"));
     } finally {
       setPending(false);
     }
@@ -1017,7 +1022,7 @@ export function AgentPane({
       setSession(await api.clearAgentGoal(pane.id));
       setGoalDialogOpen(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Goal clear failed");
+      setError(err instanceof Error ? err.message : t("Goal clear failed"));
     } finally {
       setPending(false);
     }
@@ -1040,7 +1045,7 @@ export function AgentPane({
     if (!rememberSubmission(submission)) {
       unconfirmedSubmissionRef.current = null;
       setUnconfirmedSubmission(null);
-      setError("This browser could not save the request for recovery. Enable session storage before sending.");
+      setError(t("This browser could not save the request for recovery. Enable session storage before sending."));
       sendInFlightRef.current = false;
       setPending(false);
       return false;
@@ -1056,7 +1061,7 @@ export function AgentPane({
       const nextSession = submission.sessionId || submission.dotId
         ? await api.sendAgentMessage(...requestArgs, { sessionId: submission.sessionId, dotId: submission.dotId })
         : await api.sendAgentMessage(...requestArgs);
-      if ((submission.dotId && nextSession.dotId !== submission.dotId) || (submission.sessionId && nextSession.binding.sessionId !== submission.sessionId)) throw Error("Submission Dot identity mismatch.");
+      if ((submission.dotId && nextSession.dotId !== submission.dotId) || (submission.sessionId && nextSession.binding.sessionId !== submission.sessionId)) throw Error(t("Submission Dot identity mismatch."));
       const matchesCurrent = (!submission.dotId || submission.dotId === sessionRef.current?.dotId)
         && (!submission.sessionId || submission.sessionId === sessionRef.current?.binding.sessionId);
       // Submission succeeded even if the subsequent transcript read fails.
@@ -1094,7 +1099,7 @@ export function AgentPane({
         setAttachments(submission.attachments);
         saveDraft({ prompt: promptToRestore, attachments: submission.attachments, acceptance: submission.acceptance });
       }
-      setError(err instanceof Error ? err.message : "Request confirmation failed");
+      setError(err instanceof Error ? err.message : t("Request confirmation failed"));
       return false;
     } finally {
       sendInFlightRef.current = false;
@@ -1133,7 +1138,7 @@ export function AgentPane({
         selectedModelConfigId: selection?.selectedModelConfigId ?? null, selectedToolIds: selection?.selectedToolIds ?? [],
         attachments: [] }, content, false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Agent quick action failed");
+      setError(err instanceof Error ? err.message : t("Agent quick action failed"));
     } finally { setPending(false); }
   }
 
@@ -1154,7 +1159,7 @@ export function AgentPane({
       dispatchArtifactsUpdated(pane.roomId, uploaded.artifacts);
       setAttachments((current) => mergeArtifacts(current, uploaded.artifacts));
     } catch (err) {
-      if (contextCurrent(token)) setError(err instanceof Error ? err.message : "Agent file import failed");
+      if (contextCurrent(token)) setError(err instanceof Error ? err.message : t("Agent file import failed"));
     } finally {
       assetOperationsRef.current = Math.max(0, assetOperationsRef.current - 1);
       if (dotFlow.isCurrent(token.generation)) { setUploading(assetOperationsRef.current > 0); setDragActive(false); }
@@ -1175,10 +1180,10 @@ export function AgentPane({
       const file = new File([bytes], captured.filename, { type: "image/jpeg" });
       await uploadFiles([file], "USER_UPLOAD");
       if (!contextCurrent(token)) return;
-      setNotice(`${source === "screen" ? "Screen" : "Camera"} image attached. Review it before sending.`);
+      setNotice(source === "screen" ? t("Screen image attached. Review it before sending.") : t("Camera image attached. Review it before sending."));
     } catch (err) {
       if (contextCurrent(token) && !controller.signal.aborted && !(err instanceof DOMException && ["AbortError", "NotAllowedError"].includes(err.name))) {
-        setError(err instanceof Error ? err.message : "Visual capture failed");
+        setError(err instanceof Error ? err.message : t("Visual capture failed"));
       }
     } finally {
       if (visualCaptureRef.current === controller) visualCaptureRef.current = null;
@@ -1210,7 +1215,7 @@ export function AgentPane({
       await uploadFiles([file], "DROP");
     } catch (err) {
       setDragActive(false);
-      if (contextCurrent(token)) setError(err instanceof Error ? err.message : "Agent file drop failed");
+      if (contextCurrent(token)) setError(err instanceof Error ? err.message : t("Agent file drop failed"));
     } finally {
       assetOperationsRef.current = Math.max(0, assetOperationsRef.current - 1);
       if (dotFlow.isCurrent(token.generation)) setUploading(assetOperationsRef.current > 0);
@@ -1385,10 +1390,10 @@ export function AgentPane({
         setPrompt(nextPrompt);
         if (!nextPrompt.trim()) return;
         if (!(await submitMessage(nextPrompt.trim(), nextPrompt))) {
-          throw new Error("Voice transcript could not be submitted.");
+          throw new Error(t("Voice transcript could not be submitted."));
         }
       }
-    }).catch(err => { if (contextCurrent(token)) setError(err instanceof Error ? err.message : "Voice input unavailable."); }).finally(() => { voiceStartingRef.current = false; if (dotFlow.isCurrent(token.generation)) setVoiceStarting(false); });
+    }).catch(err => { if (contextCurrent(token)) setError(err instanceof Error ? err.message : t("Voice input unavailable.")); }).finally(() => { voiceStartingRef.current = false; if (dotFlow.isCurrent(token.generation)) setVoiceStarting(false); });
   }
 
   async function interrupt() {
@@ -1398,7 +1403,7 @@ export function AgentPane({
     try {
       setSession(await api.interruptAgent(pane.id));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Agent interrupt failed");
+      setError(err instanceof Error ? err.message : t("Agent interrupt failed"));
     } finally {
       setPending(false);
     }
@@ -1418,11 +1423,11 @@ export function AgentPane({
     !voiceOwned
       ? null
       : voiceInput.status === "connecting"
-      ? "Connecting"
+      ? t("Connecting")
       : voiceInput.status === "recording"
-        ? voiceInput.preview || "Listening"
+        ? voiceInput.preview || t("Listening")
         : voiceInput.status === "transcribing"
-          ? voiceInput.preview || "Transcribing"
+          ? voiceInput.preview || t("Transcribing")
           : voiceInput.error;
 
   async function retryLatestError() {
@@ -1430,12 +1435,12 @@ export function AgentPane({
     if (retryInFlightRef.current || pending || isRunning || dotFlow.lockedRef.current || uploading || voiceUnfinished) return;
     const freshPrompt = composerSnapshotRef.current?.() ?? prompt;
     if (freshPrompt.trim() || attachments.length) {
-      setNotice("Your draft is still here. Review it before sending; no task was started.");
+      setNotice(t("Your draft is still here. Review it before sending; no task was started."));
       setComposerFocusRequest(current => current + 1);
       return;
     }
     if (session?.capabilities.canSend === false) {
-      setNotice("Another attempt is unavailable while this Chat pane is not accepting new messages.");
+      setNotice(t("Another attempt is unavailable while this Chat pane is not accepting new messages."));
       return;
     }
     retryInFlightRef.current = true;
@@ -1451,9 +1456,9 @@ export function AgentPane({
       setComposerFocusRequest(current => current + 1);
       setCodexError(null);
       setDismissedRunError(runError);
-      setNotice("Original request and files restored. Review them before sending a new attempt; earlier actions may already have completed.");
+      setNotice(t("Original request and files restored. Review them before sending a new attempt; earlier actions may already have completed."));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "The original request could not be restored.");
+      setError(err instanceof Error ? err.message : t("The original request could not be restored."));
     } finally {
       retryInFlightRef.current = false;
       setPending(false);
@@ -1462,7 +1467,7 @@ export function AgentPane({
   return (
     <section
       className={dragActive ? "coder-agent-pane vscode-codex-pane drag-active" : "coder-agent-pane vscode-codex-pane"}
-      aria-label={`Native agent ${pane.title}`}
+      aria-label={t("Native agent {pane}", { pane: pane.title })}
       data-agent-pane-id={pane.id}
       data-codex-enabled={isCodexEnabled ? "true" : "false"}
       data-chat-enabled={isChatEnabled ? "true" : "false"}
@@ -1521,22 +1526,22 @@ export function AgentPane({
             { label: "Copy conversation", onSelect: () => void copyChat() },
             ...(dotFlow.transitionError || sessionUnavailable ? [{ label: "Reconnect", onSelect: () => void reconnectChat() }] : [])
           ]} />
-        {dotsError ? <p className="dots-switch-hint" role="status">{dotsError} <button type="button" onClick={() => void loadDots()}>Retry</button></p> : null}
-        {dotFlow.transitionError ? <p className="dots-switch-hint" role="status">{dotFlow.transitionError}</p> : null}
-        {dotFlow.transitionError || sessionUnavailable ? <p className="dots-switch-hint"><button type="button" onClick={() => void reconnectChat()}>Reconnect</button></p> : null}
+        {dotsError ? <p className="dots-switch-hint" role="status">{dotsError} <button type="button" onClick={() => void loadDots()}>{t("Retry")}</button></p> : null}
+        {dotFlow.transitionError ? <p className="dots-switch-hint" role="status">{t(dotFlow.transitionError)}</p> : null}
+        {dotFlow.transitionError || sessionUnavailable ? <p className="dots-switch-hint"><button type="button" onClick={() => void reconnectChat()}>{t("Reconnect")}</button></p> : null}
         <div className="dots-chat-content">
         {session?.collaborationMode === "plan" ? (
           <button
             type="button"
             className="codex-plan-mode-indicator"
-            aria-label={`Disable Plan mode ${pane.title}`}
+            aria-label={t("Disable Plan mode {pane}", { pane: pane.title })}
             aria-pressed="true"
-            title="Plan mode is active. Click to return to Default mode."
+            title={t("Plan mode is active. Click to return to Default mode.")}
             disabled={pending || !isChatEnabled}
             onClick={() => void updateCollaborationMode("default")}
           >
             <PanelRight aria-hidden="true" />
-            <span>Plan mode on</span>
+            <span>{t("Plan mode on")}</span>
           </button>
         ) : null}
         <div className="chat-transcript-region">
@@ -1548,7 +1553,7 @@ export function AgentPane({
               running={isRunning ? { status: session?.runStatus ?? "RUNNING", elapsedSeconds, progress: runProgress } : null}
               latestRun={session?.latestRun ?? null} />
           </div>
-        {showJumpToLatest ? <button type="button" className="chat-jump-latest" onClick={jumpToLatest}><ArrowUp aria-hidden="true" />Jump to latest</button> : null}
+        {showJumpToLatest ? <button type="button" className="chat-jump-latest" onClick={jumpToLatest}><ArrowUp aria-hidden="true" />{t("Jump to latest")}</button> : null}
         </div>
         <DotGoalStrip dot={selectedDot} sessionId={session?.dotId && session.dotId === selectedDot?.dotId ? session.binding.sessionId ?? null : null}
           refreshKey={`${session?.latestRun?.runId ?? ""}:${session?.latestRun?.status ?? ""}:${session?.runStatus ?? ""}:${goalRevision}`}
@@ -1560,16 +1565,16 @@ export function AgentPane({
             <CodexNotification tone="warning" message={session.statusReason} />
           ) : null}
           {unconfirmedSubmission ? <CodexNotification tone={pending ? "info" : "warning"}
-            title={pending ? "Confirming request" : "Check submission"}
-            message={pending ? "Confirming your request…" : "Request confirmation is missing. Check the saved request before sending anything else. This uses the same submission and does not start a second task."}
-            onRetry={checkSubmission} retryLabel="Check submission" retryDisabled={pending} /> : null}
+            title={pending ? t("Confirming request") : t("Check submission")}
+            message={pending ? t("Confirming your request…") : t("Request confirmation is missing. Check the saved request before sending anything else. This uses the same submission and does not start a second task.")}
+            onRetry={checkSubmission} retryLabel={t("Check submission")} retryDisabled={pending} /> : null}
           {notice ? <CodexNotification tone="info" message={notice} onDismiss={() => setNotice(null)} /> : null}
           {!unconfirmedSubmission && (error || codexError || runError) ? (
             <CodexNotification
               tone="error"
-              message={error ?? codexError ?? runError ?? "Codex error"}
+              message={error ?? codexError ?? runError ?? t("Codex error")}
               onRetry={unconfirmedSubmission ? undefined : retryLatestError}
-              retryLabel="Review request"
+              retryLabel={t("Review request")}
               retryDisabled={pending}
               onDismiss={() => {
                 if (error) setError(null);
@@ -1581,7 +1586,7 @@ export function AgentPane({
           {uploading || dragActive ? (
             <CodexNotification
               tone="info"
-              message={uploading ? "Importing files for the next turn" : "Drop files or screenshots to attach"}
+              message={uploading ? t("Importing files for the next turn") : t("Drop files or screenshots to attach")}
             />
           ) : null}
           {voiceStatusText ? (
@@ -1593,7 +1598,7 @@ export function AgentPane({
           snapshotRef={composerSnapshotRef}
           paneTitle={pane.title}
           isVisible={isVisible}
-          disabledReason={session?.dotId && !selectedDot ? "Dot identity unavailable. Reconnect before sending." : dotFlow.transitioning ? "Confirm the selected session before sending" : sessionUnavailable ? "Session status unavailable. Reconnect before sending." : uploading ? "Finish importing files before sending" : unconfirmedSubmission ? "Check the unconfirmed submission first" : isChatEnabled ? null : chatDisabledReason}
+          disabledReason={session?.dotId && !selectedDot ? t("Dot identity unavailable. Reconnect before sending.") : dotFlow.transitioning ? t("Confirm the selected session before sending") : sessionUnavailable ? t("Session status unavailable. Reconnect before sending.") : uploading ? t("Finish importing files before sending") : unconfirmedSubmission ? t("Check the unconfirmed submission first") : isChatEnabled ? null : chatDisabledReason}
           prompt={prompt}
           focusRequestKey={composerFocusRequest}
           restorePromptKey={composerRestoreKey}
@@ -1642,10 +1647,10 @@ export function AgentPane({
             else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
           }
         }}>
-          <section ref={permissionsRef} className="attachment-modal-body codex-resume-modal-body" role="dialog" aria-modal="true" aria-label="Chat permissions" onClick={event => event.stopPropagation()}>
-            <button className="terminal-upload-modal-close codex-resume-modal-close" type="button" aria-label="Close permissions" onClick={() => setPermissionsOpen(false)}><X aria-hidden="true" /></button>
-            <div className="codex-resume-modal-header"><strong>Permissions</strong><small>Choose permissions for the next Chat turn.</small></div>
-            <p>{session?.permissionState.statusReason ?? "Loading permissions…"}</p>
+          <section ref={permissionsRef} className="attachment-modal-body codex-resume-modal-body" role="dialog" aria-modal="true" aria-label={t("Chat permissions")} onClick={event => event.stopPropagation()}>
+            <button className="terminal-upload-modal-close codex-resume-modal-close" type="button" aria-label={t("Close permissions")} onClick={() => setPermissionsOpen(false)}><X aria-hidden="true" /></button>
+            <div className="codex-resume-modal-header"><strong>{t("Permissions")}</strong><small>{t("Choose permissions for the next Chat turn.")}</small></div>
+            <p>{session?.permissionState.statusReason ?? t("Loading permissions…")}</p>
             {session?.permissionOptions.map(option => (
               <div key={option.mode}>
               <button type="button" key={option.mode} data-permission-mode={option.mode} disabled={pending || isRunning || !option.isAvailable}
@@ -1678,7 +1683,7 @@ export function AgentPane({
         onClose={() => { setAcceptanceDialogOpen(false); setComposerFocusRequest(value => value + 1); }}
         onSave={value => { setAcceptance(value); setAcceptanceDialogOpen(false);
           setComposerFocusRequest(current => current + 1);
-          setNotice(value ? "Result check saved for your next message." : "Result check removed."); }} />}
+          setNotice(value ? t("Result check saved for your next message.") : t("Result check removed.")); }} />}
     </section>
   );
 }

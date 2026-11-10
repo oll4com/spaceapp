@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../src/live-api.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
-import { captureLiveVisual } from "../src/features/live-pane/live-visual-capture.js";
+import { captureLiveVisual, LIVE_SCREEN_UNSUPPORTED } from "../src/features/live-pane/live-visual-capture.js";
 import { captureClientScreenshot } from "../src/features/room-agent/space-control-client.js";
 import { executeLiveFunction } from "../src/features/live-pane/live-session.js";
 
@@ -22,6 +22,7 @@ function mediaFixture(width = 1920, height = 1080) {
   vi.spyOn(canvas, "toDataURL").mockReturnValue("data:image/jpeg;base64,real-frame-fixture");
   const createElement = document.createElement.bind(document);
   vi.spyOn(document, "createElement").mockImplementation((tag: string, options?: ElementCreationOptions) => tag === "video" ? video : tag === "canvas" ? canvas : createElement(tag, options));
+  vi.spyOn(liveRuntime.platform, "displayMediaSupported", "get").mockReturnValue(true);
   vi.spyOn(liveRuntime.platform, "getDisplayMedia").mockResolvedValue(stream);
   vi.spyOn(liveRuntime.platform, "getUserMedia").mockResolvedValue(stream);
   return { video, canvas, track, audioTrack, stream, drawImage, signal: new AbortController() };
@@ -36,6 +37,13 @@ describe("Real operator-selected visual capture", () => {
     expect(source === "screen" ? liveRuntime.platform.getDisplayMedia : liveRuntime.platform.getUserMedia).toHaveBeenCalledWith({ video: true, audio: false });
     expect(f.track.stop).toHaveBeenCalledOnce();expect(f.audioTrack.stop).toHaveBeenCalledOnce();
     expect(f.video.srcObject).toBeNull();
+  });
+  it("says screen sharing is missing instead of asking for it (SpaceApp Android's WebView)", async () => {
+    const f = mediaFixture();
+    vi.spyOn(liveRuntime.platform, "displayMediaSupported", "get").mockReturnValue(false);
+    await expect(captureLiveVisual("screen", f.signal.signal)).rejects.toThrow(LIVE_SCREEN_UNSUPPORTED);
+    expect(liveRuntime.platform.getDisplayMedia).not.toHaveBeenCalled();
+    await expect(captureLiveVisual("camera", f.signal.signal)).resolves.toMatchObject({ filename: "camera-capture.jpg" });
   });
   it("shrinks an image until it fits the voice relay limit", async () => {
     const f = mediaFixture(1920, 1080);

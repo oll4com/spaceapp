@@ -13,18 +13,24 @@ services:
       SPACE_DEV_LOGIN: "false"
       SPACE_APP_VERSION: "${SPACEAPP_IMAGE_TAG}"
       SPACE_TELEMETRY_ENABLED: "${SPACEAPP_TELEMETRY}"
-      SPACE_OPTIONAL_MODULES: "${SPACEAPP_OPTIONAL_MODULES:-all}"
+      SPACE_OPTIONAL_MODULES: "${SPACEAPP_OPTIONAL_MODULES:-none}"
       SPACE_INSTALL_ID: "${SPACEAPP_INSTALL_ID:-}"
       SPACE_RUNTIME_STORE: postgres
       SPACE_DATABASE_URL_SOURCE_FILE: /run/secrets/database-url
       SPACE_DATABASE_URL_FILE: /run/spaceapp/database-url
       SPACE_SESSION_SECRET_FILE: /run/secrets/session-secret
       SPACE_SETUP_TOKEN_SOURCE_FILE: /run/secrets/setup-token
+      # The pane bridge (1.2.0): the API signs each CLI pane's own tokens (browser, copilot tools, space-progress, space-task,
+      # Agent Files, Space Control) with this install's random secret; panes reach it at SPACE_CLI_API_BASE_URL.
+      SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true"
+      SPACE_AGENT_TOKEN_SECRET_FILE: /run/secrets/agent-token-secret
       SPACE_API_HOST: 127.0.0.1
       SPACE_API_PORT: 4910
       SPACE_WEB_HOST: 0.0.0.0
       SPACE_WEB_PORT: 4911
       SPACE_API_ORIGIN: http://127.0.0.1:4910
+      # Where spaceapp-cli reaches this API on the compose network: Nous's turns there call its tools back here.
+      SPACE_CLI_API_BASE_URL: http://spaceapp-core:4911
       SPACE_TEMPORAL_ADDRESS: temporal:7233
       SPACEAPP_WORKFLOWS_ENABLED: "${SPACEAPP_WORKFLOWS_ENABLED}"
       SPACE_MEMORY_ROOT: /var/lib/spaceapp/memory
@@ -65,6 +71,7 @@ services:
       - setup-token
       - session-secret
       - database-url
+      - agent-token-secret
     depends_on:
       postgres:
         condition: service_healthy
@@ -184,7 +191,7 @@ services:
       - spaceapp
 
   postgres:
-    image: pgvector/pgvector:0.8.7-pg17-trixie@sha256:7a7e9f22015b67edb4bef5c59daeebcd7e74bfa570df6ce60ae01237c8648a84
+    image: pgvector/pgvector:0.8.7-pg17-trixie@sha256:01215e09bd4bd582d20230e025b6c971deeeffee49ceef1aae167e839cb62a7e
     restart: unless-stopped
     mem_limit: "${SPACEAPP_POSTGRES_MEMORY_LIMIT}"
     cpus: "${SPACEAPP_POSTGRES_CPU_LIMIT}"
@@ -243,6 +250,8 @@ secrets:
     file: ./secrets/database-url
   session-secret:
     file: ./secrets/session-secret
+  agent-token-secret:
+    file: ./secrets/agent-token-secret
   postgres-password:
     file: ./secrets/postgres-password
 

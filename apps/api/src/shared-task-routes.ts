@@ -48,8 +48,12 @@ export function registerSharedTaskRoutes(app: FastifyInstance, options: {
     const page = parseQuery(listSharedTasksQuerySchema, request.query);
     const tasks: SharedTask[] = [];
     if (page.source === "all" || page.source === "space_swarm") {
-      const swarmTasks = await store.listSwarmTasks({ page: 1, pageSize: 100, sortOrder: page.sortOrder });
-      tasks.push(...swarmTasks.map(sharedTaskFromSwarmTask));
+      // Every swarm task (until 31/10 the first 100, then paged: the rest never showed).
+      for (let swarmPage = 1; ; swarmPage += 1) {
+        const swarmTasks = await store.listSwarmTasks({ page: swarmPage, pageSize: 100, sortOrder: page.sortOrder });
+        tasks.push(...swarmTasks.map(sharedTaskFromSwarmTask));
+        if (swarmTasks.length < 100) break;
+      }
     }
     if (page.source === "all" || page.source === "codex_goal") {
       tasks.push(...(await codexGoals.list()));

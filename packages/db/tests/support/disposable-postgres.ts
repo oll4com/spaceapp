@@ -127,3 +127,30 @@ export async function startDisposablePostgres(label: string): Promise<Disposable
     stop
   };
 }
+
+/** Whether a maintainer-provided PostgreSQL socket is a run's own `<name>` in the reports folder
+ * (~/agent-workspace/reports/<run>/<name>). The home directory is read here, not written as a path, so the public
+ * export leaves the tests that use it as written (EXT-C-F18). */
+export function isReportsSocket(socket: string | undefined, name = "pg-socket"): boolean {
+  const root = `${path.join(os.homedir(), "agent-workspace", "reports")}/`;
+  return !!socket?.startsWith(root) && new RegExp(`^[^/]+/${name}$`).test(socket.slice(root.length));
+}
+
+/** For integration tests that once ran only on a maintainer's socket: that socket when given (a reports-folder one),
+ * else a disposable container, so they also run wherever Docker and the pinned image are, the public suite too
+ * (EXT-C-F15). `skip` is true when neither can run. */
+export function integrationPostgres(maintainerSocket: string | undefined, label: string) {
+  let server: DisposablePostgres | undefined;
+  return {
+    skip: !maintainerSocket && disposablePostgresUnavailableReason() !== null,
+    async socket(name = "pg-socket"): Promise<string> {
+      if (maintainerSocket) {
+        if (!isReportsSocket(maintainerSocket, name)) throw new Error("Disposable test socket required.");
+        return maintainerSocket;
+      }
+      server = await startDisposablePostgres(label);
+      return server.socketDir;
+    },
+    async stop() { await server?.stop(); }
+  };
+}

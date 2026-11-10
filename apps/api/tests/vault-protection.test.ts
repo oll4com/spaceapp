@@ -1,3 +1,4 @@
+import { InMemorySiteSigninsRepository } from "@space/db";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { generateVaultTransportKey, newVaultHandle, openWithVaultPrivateKey, sealVaultEnvelope, vaultBase64url, vaultHostSignupRequestSchema, vaultRandomBytes, type Pane, type VaultHostTarget } from "@space/contracts";
@@ -123,6 +124,23 @@ describe("Vault protected browser", () => {
     await app.close();
   });
 
+  it("lets the pane holding the fence upload its own file into the page, nobody else, and reads nothing back (31/10: a CV after the Vault password)", async () => {
+    const { app, rows } = await fencedApp(null);
+    const command = (paneId: string, type: string, extra: Record<string, unknown> = {}) => app.inject({ method: "POST", url: "/api/cli/browser/commands",
+      headers: { [cliBrowserBridgeTokenHeader]: agentToken(paneId), "content-type": "application/json" }, payload: { targetPaneId: PROTECTED, command: { type, ...extra } } });
+    const upload = { paths: ["/var/lib/spaceapp-user/agent-workspace/cv.pdf"] };
+    expect((await command(PROTECTED, "UPLOAD_FILE", upload)).statusCode).toBe(200);
+    expect((await command(OTHER, "UPLOAD_FILE", upload)).json().error.code).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+    // The masked readout (7/11 Oracle: no blind Sign In after a fill): the pane holding the fence only.
+    expect((await command(PROTECTED, "PAGE_READOUT")).statusCode).toBe(200);
+    expect((await command(OTHER, "PAGE_READOUT")).json().error.code).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+    // Every read stays refused for the pane holding the fence too, and the fence is still there.
+    for (const type of ["LIST_PAGES", "DEVTOOLS", "START_CAPTURE"]) expect((await command(PROTECTED, type)).json().error.code, type).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+    expect((await app.inject({ url: "/api/cli/browser/cdp/status", headers: { [cliBrowserBridgeTokenHeader]: agentToken(PROTECTED) } })).statusCode).toBe(409);
+    expect(rows.get(PROTECTED)?.fill).toEqual({ targetId: "target-1", origin: LOGIN, document: "doc-1" });
+    await app.close();
+  });
+
   it("gives the agent that asked for a handoff masked screenshots of the page the operator left, nothing else (2026-10-25)", async () => {
     const { app, protection } = await fencedApp(null);
     // A completed handoff fences the page with its requester (fence-hooks.ts); other agents keep no view of it.
@@ -134,6 +152,10 @@ describe("Vault protected browser", () => {
     expect(await protection.viewerOf(PROTECTED)).toBe("cli:cli_session:asker01");
     expect((await action("cli_session:asker01", "masked_screenshot")).statusCode).toBe(200);
     expect((await action("cli_session:other002", "masked_screenshot")).json().error.code).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+    const captcha = (cliSessionId: string) => app.inject({ method: "POST", url: "/api/cli/browser/commands", headers: headers(cliSessionId),
+      payload: { targetPaneId: PROTECTED, command: { type: "TEXT_CAPTCHA", action: "inspect" } } });
+    expect((await captcha("cli_session:asker01")).statusCode).toBe(200);
+    expect((await captcha("cli_session:other002")).json().error.code).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
     for (const type of ["screenshot", "extract_text", "record"]) expect((await action("cli_session:asker01", type)).json().error.code, type).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
     await app.close();
   });
@@ -267,13 +289,16 @@ describe("Vault protected browser", () => {
 
 describe("Vault fill path for agents and Nous", () => {
   async function bridgeApp(options: { access?: boolean; origin?: string; approvalMode?: "ASSIST" | "FULL"; agentUse?: boolean; grants?: string[][];
-    hostStatus?: "FILLED" | "BLOCKED"; signup?: (request: { certificate: unknown }) => { status: "FILLED" | "BLOCKED"; reason: string | null }; delegation?: false; autoGrantRefusal?: string;
+    hostStatus?: "FILLED" | "SUBMITTED" | "BLOCKED"; signup?: (request: { certificate: unknown }) => { status: "FILLED" | "BLOCKED"; reason: string | null }; delegation?: false; autoGrantRefusal?: string;
     /** What the Browser Host reports with the status (hosts since 2026-10-22): a value entered the page; the document the fill ran in. */
     hostTyped?: boolean; hostDocument?: string;
     /** The CDP proxy's document marks: whether an agent session scripted the document (absent: the host reloads every time). */
     documentDirty?: (paneId: string, targetId: string, document: string | null) => boolean;
+    documentDirtiedBy?: (paneId: string, targetId: string, document: string | null) => string | null;
     /** Whether the host says it takes freshDocument (default: when the marks are given); an older host never gets the field. */
-    hostAcceptsFresh?: boolean } = {}) {
+    hostAcceptsFresh?: boolean;
+    /** Whether the host says it takes a generate policy (queue item 37: after its guarded restart). */
+    hostTakesPolicy?: boolean } = {}) {
     const repository = fakeRepository() as ReturnType<typeof fakeRepository> & Record<string, any>;
     const { body } = await enrollment((await generateVaultTransportKey()).publicKey, "user:alice");
     const { sealedServerShare: _sealed, ...rest } = body;
@@ -307,11 +332,13 @@ describe("Vault fill path for agents and Nous", () => {
       const status = options.hostStatus ?? "FILLED";
       return { status, reason: status === "FILLED" ? null : "FIELD_NOT_FOUND", sealedGenerated: status === "FILLED" && (request.mode === "GENERATE" || request.mode === "SIGNUP") ? sealed : null, ...reported };
     });
-    const vaultTarget = vi.fn(async () => page({ origin: options.origin ?? LOGIN, ...((options.hostAcceptsFresh ?? Boolean(options.documentDirty)) ? { freshDocument: true } : {}) }));
+    const vaultTarget = vi.fn(async () => page({ origin: options.origin ?? LOGIN, ...((options.hostAcceptsFresh ?? Boolean(options.documentDirty)) ? { freshDocument: true } : {}),
+      ...(options.hostTakesPolicy ? { generatePolicy: true } : {}) }));
     const panes = [{ id: "pane:cliterminal1", roomId: "room:vaultroom1", mode: "TERMINAL", isClosed: false }, { id: PROTECTED, roomId: "room:vaultroom1", mode: "BROWSER", isClosed: false },
       { id: OTHER, roomId: "room:vaultroom1", mode: "BROWSER", isClosed: false }, { id: "pane:bobsbrowser", roomId: "room:vaultroom1", mode: "BROWSER", isClosed: false }] as Pane[];
-    const agent = createVaultAgent({ repository, broker: { issueUse, signupAutoGrant } as never, protection, browser: { vaultTarget, vaultFill }, listPanes: async () => panes,
-      paneOwner: async (paneId) => paneId === "pane:bobsbrowser" ? "user:bob" : "user:alice", documentDirty: options.documentDirty });
+    const siteSignins = new InMemorySiteSigninsRepository();
+    const agent = createVaultAgent({ siteSignins, paneAccount: async () => "google:synthetic", repository, broker: { issueUse, signupAutoGrant } as never, protection, browser: { vaultTarget, vaultFill }, listPanes: async () => panes,
+      paneOwner: async (paneId) => paneId === "pane:bobsbrowser" ? "user:bob" : "user:alice", documentDirty: options.documentDirty, documentDirtiedBy: options.documentDirtiedBy });
     const vault = { repository, protection, broker: { issueUse }, agent } as unknown as VaultModule;
     const app = Fastify();
     registerVaultAgentBridge(app, vault, { store: { getRoom: () => ({ ownerUserId: "user:alice" }) }, requireBridge: async () => ({ claims: { roomId: "room:vaultroom1", paneId: "pane:cliterminal1" } }) });
@@ -320,8 +347,35 @@ describe("Vault fill path for agents and Nous", () => {
     const generate = (purpose: "NEW_ACCOUNT" | "CHANGE_PASSWORD") => post("generate-fill",
       purpose === "CHANGE_PASSWORD" ? { purpose, handle, roles: ["NEW_PASSWORD", "CONFIRM_PASSWORD"] } : { purpose, label: "Synthetic new", username: "synthetic@example.com" });
     const audits = async () => (await repository.listAudit("user:alice", { limit: 50 })).map((entry) => entry.event);
-    return { app, post, fill, generate, issueUse, signupAutoGrant, vaultFill, vaultTarget, audits, repository, rows, sealed, handle, inbox, vault, vaultId: body.vaultId };
+    return { app, post, fill, generate, siteSignins, issueUse, signupAutoGrant, vaultFill, vaultTarget, audits, repository, rows, sealed, handle, inbox, vault, vaultId: body.vaultId };
   }
+
+  it("refuses a password reset while the stored sign-in works, unless the operator's order is passed (nous_msg:fe72e061)", async () => {
+    const changed = await bridgeApp({ grants: [[LOGIN]], hostTakesPolicy: true });
+    try {
+      const reset = (patch: Record<string, unknown> = {}) => changed.post("generate-fill", { purpose: "CHANGE_PASSWORD", handle: changed.handle, ...patch });
+      // A SUCCESS in the last 30 days: refused with Space's sentence, and the host never asked.
+      await changed.siteSignins.record("user:alice", { site: LOGIN, accountLabel: "main", outcome: "SUCCESS", method: "VAULT_LOGIN" }, "cli:test");
+      const refused = (await reset()).json();
+      expect(refused).toMatchObject({ status: "BLOCKED", reason: "SIGNIN_WORKS" });
+      expect(refused.message).toMatch(/^Stored sign-in works \(SUCCESS \d{4}-\d{2}-\d{2}, method VAULT_LOGIN\)\. Sign in with it; a reset needs the operator's explicit order\.$/);
+      expect(changed.vaultFill).not.toHaveBeenCalled();
+      // The operator's order goes ahead and is audited, in the Vault audit and in the site's record.
+      expect((await reset({ operatorOrder: "nous_msg:fe72e061203043b6af2039e9" })).json()).toMatchObject({ status: "FILLED", reason: "OPERATOR_ORDER" });
+      expect(await changed.audits()).toContainEqual(expect.objectContaining({ action: "GENERATE", result: "FILLED", reason: "OPERATOR_ORDER" }));
+      expect((await changed.siteSignins.get("user:alice", LOGIN))!.history.map((event) => event.reason))
+        .toContain("Password reset on the operator's order nous_msg:fe72e061203043b6af2039e9");
+    } finally { await changed.app.close(); }
+  });
+
+  it("records a submitted Vault login as pending, without claiming sign-in success", async () => {
+    const {app, fill, siteSignins, handle} = await bridgeApp({hostStatus: "SUBMITTED"});
+    try {
+      expect((await fill({submit:true})).json()).toMatchObject({status:"SUBMITTED"});
+      const signin = await siteSignins.get("user:alice", LOGIN);
+      expect(signin).toMatchObject({method:"VAULT_LOGIN",successCount:0,lastSuccessAt:null,pendingAttempt:{vaultHandle:handle,browserProfileId:"google:synthetic"}});
+    } finally {await app.close();}
+  });
 
   it("fills with no approval and no hourly limit, protecting the room's browser for the filled page", async () => {
     const { app, fill, issueUse, vaultFill, rows, audits } = await bridgeApp({ approvalMode: "ASSIST" });
@@ -392,11 +446,48 @@ describe("Vault fill path for agents and Nous", () => {
     await clean.fill();
     expect(asked).toEqual([[PROTECTED, "target-1", "doc-1"]]);
     expect(clean.vaultFill.mock.calls[0]![1]).toMatchObject({ mode: "FILL", freshDocument: false });
+    expect((await clean.fill()).json()).not.toHaveProperty("reloaded");
     await clean.app.close();
+    // R20-7 (30/10 13:15 BKK, Allianz: FILLED, nothing said, the reload had emptied every other field): a fill after a reload says so and why.
+    const reloadedFill = await bridgeApp({ documentDirty: () => true, documentDirtiedBy: () => "Page.captureScreenshot" });
+    expect((await reloadedFill.fill()).json()).toMatchObject({ reloaded: true, dirtiedBy: "Page.captureScreenshot" });
+    await reloadedFill.app.close();
     const dirty = await bridgeApp({ grants: [[LOGIN]], signup: () => ({ status: "BLOCKED", reason: "FIELD_NOT_FOUND_AFTER_RELOAD" }), documentDirty: () => true });
     expect((await dirty.generate("NEW_ACCOUNT")).json()).toEqual({ status: "BLOCKED", auditId: expect.stringMatching(/^vault_audit:/), reason: "FIELD_NOT_FOUND_AFTER_RELOAD" });
     expect(dirty.vaultFill.mock.calls[0]![1]).toMatchObject({ mode: "SIGNUP", freshDocument: true });
     await dirty.app.close();
+    // 28/10 (Workday and amazon.jobs sign-ups lost their step to the reload): the answer names the command that dirtied the page.
+    const named = await bridgeApp({ grants: [[LOGIN]], signup: () => ({ status: "BLOCKED", reason: "FIELD_NOT_FOUND_AFTER_RELOAD" }), documentDirty: () => true,
+      documentDirtiedBy: () => "Runtime.callFunctionOn" });
+    expect((await named.generate("NEW_ACCOUNT")).json()).toEqual({ status: "BLOCKED", auditId: expect.stringMatching(/^vault_audit:/), reason: "FIELD_NOT_FOUND_AFTER_RELOAD",
+      dirtiedBy: "Runtime.callFunctionOn" });
+    await named.app.close();
+  });
+
+  it("passes a site's stated password rules only to a host that takes them; an older host stops the call with the reason (queue item 37)", async () => {
+    const policy = { minLength: 8, maxLength: 18, symbols: "NONE" };
+    const older = await bridgeApp({ grants: [[LOGIN]], signup: () => ({ status: "FILLED", reason: null }) });
+    expect((await older.post("generate-fill", { purpose: "NEW_ACCOUNT", label: "Synthetic SuccessFactors", policy })).json())
+      .toEqual({ status: "BLOCKED", auditId: expect.stringMatching(/^vault_audit:/), reason: "POLICY_NEEDS_HOST_RESTART" });
+    expect(older.vaultFill).not.toHaveBeenCalled();
+    // Without a policy the older host works as before.
+    expect((await older.generate("NEW_ACCOUNT")).json().status).toBe("FILLED");
+    expect(older.vaultFill.mock.calls[0]![1]).not.toHaveProperty("policy");
+    await older.app.close();
+    const restarted = await bridgeApp({ grants: [[LOGIN]], signup: () => ({ status: "FILLED", reason: null }), hostTakesPolicy: true });
+    expect((await restarted.post("generate-fill", { purpose: "NEW_ACCOUNT", label: "Synthetic SuccessFactors", policy })).json().status).toBe("FILLED");
+    expect(restarted.vaultFill.mock.calls[0]![1]).toMatchObject({ mode: "SIGNUP", policy });
+    // 7/11 Oracle: a second password set at the same site waits until the first was filled and read back, and RESET_WAIT_MS.
+    expect((await restarted.post("generate-fill", { purpose: "CHANGE_PASSWORD", handle: restarted.handle, policy: { maxLength: 16 } })).json())
+      .toEqual({ status: "BLOCKED", auditId: expect.stringMatching(/^vault_audit:/), reason: "RESET_PENDING" });
+    // A policy that names an impossible length never reaches the host.
+    await restarted.post("generate-fill", { purpose: "NEW_ACCOUNT", label: "x", policy: { minLength: 20, maxLength: 10 } });
+    expect(restarted.vaultFill).toHaveBeenCalledTimes(1);
+    await restarted.app.close();
+    const changed = await bridgeApp({ grants: [[LOGIN]], hostTakesPolicy: true });
+    expect((await changed.post("generate-fill", { purpose: "CHANGE_PASSWORD", handle: changed.handle, policy: { maxLength: 16 } })).json().status).toBe("FILLED");
+    expect(changed.vaultFill.mock.calls[0]![1]).toMatchObject({ mode: "GENERATE", policy: { maxLength: 16 } });
+    await changed.app.close();
   });
 
   it("NEW_ACCOUNT runs under the site's signed grant, else one the broker mints from the delegation, through the Browser Host, into the inbox", async () => {
@@ -451,12 +542,31 @@ describe("Vault fill path for agents and Nous", () => {
     expect(await open(pending!.sealedUsername)).toBe("synthetic@example.com");
     expect((await post("save", { site: "https://shop.example", username: "only-a-name", label: "No password" })).json().status).toBe("SAVED");
     expect((await repository.listPending("user:alice"))[1]).toMatchObject({ sealedPassword: null });
-    // The two saved logins wait for an unlocked dock: agents and Nous see how many (2026-10-19).
-    expect((await post("list", {})).json()).toEqual({ status: "LISTED", auditId: expect.any(String), items: [{ handle, label: "Synthetic", origins: [LOGIN], fields: ["USERNAME", "PASSWORD"] }], pendingItems: 2 });
-    expect((await post("status", {})).json()).toMatchObject({ status: "LISTED", agentAccess: true, delegatedItems: 1, pendingItems: 2 });
+    // This delegation carries no inbox key (signed before 2026-10-20), so the saved logins join only the next one; no answer
+    // counts them as waiting for the operator (31/10).
+    expect((await post("list", {})).json()).toEqual({ status: "LISTED", auditId: expect.any(String), items: [{ handle, label: "Synthetic", origins: [LOGIN], fields: ["USERNAME", "PASSWORD"] }] });
+    expect((await post("status", {})).json()).toEqual({ status: "LISTED", auditId: expect.any(String), agentAccess: true, delegatedItems: 1 });
     const audit = (await post("audit", { limit: 5 })).json();
     expect(audit.entries.map((entry: { action: string; result: string }) => `${entry.action}:${entry.result}`)).toEqual(["AGENT_LIST:LISTED", "AGENT_LIST:LISTED", "ITEM_SAVE:SAVED", "ITEM_SAVE:SAVED"]);
     expect(JSON.stringify(audit)).not.toContain(SENTINEL);
+    await app.close();
+  });
+
+  it("sets a saved login's login page by handle on its own site only, with no unlock, and lists it (nous_msg:cc5aba71)", async () => {
+    const { app, post, repository, handle } = await bridgeApp();
+    const before = await repository.getItem("user:alice", handle);
+    expect((await post("save", { handle, loginPage: `${LOGIN}/portal-gui/login` })).json()).toMatchObject({ status: "SAVED", reason: null });
+    const after = await repository.getItem("user:alice", handle);
+    expect(after!.metadata.loginPage).toBe(`${LOGIN}/portal-gui/login`);
+    expect({ dek: after!.dekEnvelope, fields: after!.fields }).toEqual({ dek: before!.dekEnvelope, fields: before!.fields });
+    expect((await post("list", {})).json().items).toEqual([expect.objectContaining({ handle, loginPage: `${LOGIN}/portal-gui/login` })]);
+    expect((await post("save", { handle, loginPage: "https://evil.example/login" })).json()).toMatchObject({ status: "BLOCKED", reason: "LOGIN_PAGE_OFF_SITE" });
+    expect((await post("save", { handle: newVaultHandle("vault_item"), loginPage: `${LOGIN}/login` })).json()).toMatchObject({ status: "BLOCKED", reason: "ITEM_NOT_FOUND" });
+    expect((await post("save", { handle, loginPage: null })).json().status).toBe("SAVED");
+    expect((await post("list", {})).json().items[0]).not.toHaveProperty("loginPage");
+    // A new login carries its login page to the pending record the dock files.
+    expect((await post("save", { site: "https://shop.example", username: "synthetic@example.com", label: "Shop", loginPage: "https://shop.example/login" })).json().status).toBe("SAVED");
+    expect((await repository.listPending("user:alice"))[0]).toMatchObject({ origin: "https://shop.example", loginPage: "https://shop.example/login" });
     await app.close();
   });
 

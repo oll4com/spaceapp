@@ -9,6 +9,7 @@ import type {
   Pane
 } from "@space/contracts";
 import { api } from "../../api.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { DatabasesToolbar } from "./DatabasesToolbar.js";
 import { DatabasesSidebar } from "./DatabasesSidebar.js";
 import { DataTab } from "./DataTab.js";
@@ -34,6 +35,8 @@ const STORAGE_CONN_KEY = "space.dbManager.lastConnectionId";
 const STORAGE_TABLE_KEY_PREFIX = "space.dbManager.lastTable.";
 
 export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPaneProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const effectiveProjectPath = useMemo(() => {
     return pane?.cwd?.trim() || projectPath?.trim() || null;
   }, [pane?.cwd, projectPath]);
@@ -441,13 +444,14 @@ export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPa
   };
 
   // SQL execution
-  const handleExecuteSql = async (sqlText: string, limit?: number): Promise<DatabaseExecuteSqlResponse> => {
-    if (!selectedConnection) throw new Error("No database selected.");
+  const handleExecuteSql = async (sqlText: string, limit?: number, sessionId?: string): Promise<DatabaseExecuteSqlResponse> => {
+    if (!selectedConnection) throw new Error(t("No database selected."));
     return await api.databasesExecuteSql({
       connectionId: selectedConnection.id,
       sql: sqlText,
       schema: selectedSchema || undefined,
       limit: limit ?? 100,
+      sessionId,
       mode
     });
   };
@@ -499,7 +503,7 @@ export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPa
         onModeToggle={() => {
           if (mode === "user") {
             if (!isAdminCapable) {
-              alert("Admin Mode requires Administrator or Operator privileges.");
+              alert(t("Admin Mode requires Administrator or Operator privileges."));
               return;
             }
             setMode("admin");
@@ -550,7 +554,7 @@ export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPa
       {/* Error Banner */}
       {errorNotice && (
         <div style={{ padding: "6px 14px", background: "rgba(239, 68, 68, 0.15)", color: "var(--modern-danger, #ef4444)", fontSize: "0.82rem" }}>
-          {errorNotice}
+          {t(errorNotice)}
         </div>
       )}
 
@@ -593,7 +597,7 @@ export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPa
             setShowConnectionModal(true);
           }}
           onDeleteConnection={async (conn) => {
-            if (confirm(`Remove connection '${conn.name}'? (The actual database will not be affected).`)) {
+            if (confirm(t("Remove connection '{name}'? (The actual database will not be affected).", { name: conn.name }))) {
               await api.databasesDeleteConnection(conn.id, mode);
               void loadConnections();
             }
@@ -612,7 +616,7 @@ export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPa
                   className={`db-tab-btn ${activeTab === "data" ? "active" : ""}`}
                   onClick={() => setActiveTab("data")}
                 >
-                  Data
+                  {t("Data")}
                 </button>
                 <button
                   role="tab"
@@ -620,7 +624,7 @@ export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPa
                   className={`db-tab-btn ${activeTab === "structure" ? "active" : ""}`}
                   onClick={() => setActiveTab("structure")}
                 >
-                  Structure
+                  {t("Structure")}
                 </button>
                 <button
                   role="tab"
@@ -628,7 +632,7 @@ export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPa
                   className={`db-tab-btn ${activeTab === "sql" ? "active" : ""}`}
                   onClick={() => setActiveTab("sql")}
                 >
-                  SQL Editor
+                  {t("SQL Editor")}
                 </button>
               </div>
 

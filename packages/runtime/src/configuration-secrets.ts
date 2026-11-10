@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { EncryptedConfigSecrets, ImportConfigResult, SpaceConfigBundle } from "@space/contracts";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // Allowlist: only third-party provider keys travel; instance keys (gateway encryption/internal
 // tokens, sessions, harness gateway keys) are bound to the source host and never leave it.
@@ -118,7 +119,7 @@ export function collectExportableApiKeys(): Record<string, string> {
 
   const candidateDirs = [
     process.env.SPACE_SECRETS_ROOT,
-    "/opt/spaceapp/secrets",
+    `${SPACE_INSTALL_ROOT}/secrets`,
     "./secrets",
     "/run/spaceapp-secrets/providers",
     "./secrets/providers",
@@ -146,7 +147,7 @@ export function collectExportableApiKeys(): Record<string, string> {
   }
 
   const envFileCandidates = [
-    "/opt/spaceapp/var/deepseek-harness/secrets/providers.env",
+    `${SPACE_INSTALL_ROOT}/var/deepseek-harness/secrets/providers.env`,
     "./var/deepseek-harness/secrets/providers.env"
   ];
   for (const envFile of envFileCandidates) {

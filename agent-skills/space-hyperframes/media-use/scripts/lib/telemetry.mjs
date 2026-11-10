@@ -9,7 +9,8 @@ import { dirname, join } from "node:path";
 import { withFileLock } from "./config-lock.mjs";
 import { globalMediaDir } from "./media-home.mjs";
 
-const POSTHOG_API_KEY = "phc_zjjbX0PnWxERXrMHhkEJWj9A9BhGVLRReICgsfTMmpx"; // write-only PostHog project key, public by design; gitleaks:allow
+// Space: HyperFrames' own PostHog project key is not shipped. MEDIA_USE_POSTHOG_KEY names a project to send to; empty sends nothing.
+const posthogKey = () => process.env.MEDIA_USE_POSTHOG_KEY?.trim() || "";
 const POSTHOG_HOST = "https://us.i.posthog.com";
 const TIMEOUT_MS = 1500;
 let identifiedAccount = false;
@@ -163,7 +164,7 @@ async function postBatch(batch) {
     await fetch(`${posthogHost()}/batch/`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Connection: "close" },
-      body: JSON.stringify({ api_key: POSTHOG_API_KEY, batch }),
+      body: JSON.stringify({ api_key: posthogKey(), batch }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch {
@@ -196,7 +197,7 @@ async function identifyAccount(anonId) {
  * opted out) is swallowed. `properties` must be non-PII (no intent/paths).
  */
 export async function track(event, properties = {}) {
-  if (optedOut()) return;
+  if (!posthogKey() || optedOut()) return;
   showTelemetryNotice();
   const anonId = anonymousId();
   await identifyAccount(anonId);

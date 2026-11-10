@@ -37,7 +37,10 @@ export interface RoomAgentMonitorRepository {
   updateEvent(eventId: string, patch: { status?: RoomAgentEventStatus; decision?: string | null; detail?: string | null }, from?: RoomAgentEventStatus[]): Promise<RoomAgentEvent | null>;
   getEvent(eventId: string): Promise<RoomAgentEvent | null>;
   /** Newest first. */
+  /** No limit: every matching event (kept 30 days). */
   listEvents(roomId: string, options?: { limit?: number; statuses?: RoomAgentEventStatus[]; paneId?: string }): Promise<RoomAgentEvent[]>;
+  /** Every event of the owner's rooms since `since`, rooms deleted since included (W46: their waits are part of the week). Newest first. */
+  listOwnerEvents(ownerUserId: string, since: string): Promise<RoomAgentEvent[]>;
   /** Attention events still waiting (OPEN or ESCALATED) per room. */
   pendingCounts(roomIds: string[]): Promise<Record<string, number>>;
   /** Newest attention events still waiting across these rooms. */
@@ -102,8 +105,12 @@ export class InMemoryRoomAgentMonitorRepository implements RoomAgentMonitorRepos
     return [...this.events.values()]
       .filter((event) => event.roomId === roomId && (!options.statuses || options.statuses.includes(event.status)) && (!options.paneId || event.paneId === options.paneId))
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .slice(0, options.limit ?? 50)
+      .slice(0, options.limit)
       .map((event) => ({ ...event }));
+  }
+  // shortcut: the in-memory store knows no room owners, so every event counts as the owner's; fine for single-owner tests.
+  async listOwnerEvents(_ownerUserId: string, since: string) {
+    return [...this.events.values()].filter((event) => event.createdAt >= since).sort((left, right) => right.createdAt.localeCompare(left.createdAt)).map((event) => ({ ...event }));
   }
   async pendingCounts(roomIds: string[]) {
     const counts: Record<string, number> = {};
@@ -184,8 +191,8 @@ export class PostgresRoomAgentMonitorRepository implements RoomAgentMonitorRepos
   }
   async addEvent(input: AddRoomAgentEventInput) {
     const event = newEvent(input, new Date().toISOString());
-    const result = await this.pool.query<EventRow>(`INSERT INTO room_agent_events (event_id, room_id, pane_id, pane_name, kind, severity, title, detail, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING ${eventColumns}`,
+    const result = await this.pool.query<EventRow>(`INSERT INTO room_agent_events (event_id, room_id, pane_id, pane_name, kind, severity, title, detail, status, owner_user_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, (SELECT owner_user_id FROM rooms WHERE id = $2)) RETURNING ${eventColumns}`,
     [event.eventId, event.roomId, event.paneId, event.paneName, event.kind, event.severity, event.title, event.detail, event.status]);
     return eventFromRow(result.rows[0]!);
   }
@@ -204,7 +211,13 @@ export class PostgresRoomAgentMonitorRepository implements RoomAgentMonitorRepos
   async listEvents(roomId: string, options: { limit?: number; statuses?: RoomAgentEventStatus[]; paneId?: string } = {}) {
     const result = await this.pool.query<EventRow>(`SELECT ${eventColumns} FROM room_agent_events
       WHERE room_id = $1 AND ($2::text[] IS NULL OR status = ANY($2::text[])) AND ($3::text IS NULL OR pane_id = $3)
-      ORDER BY created_at DESC, event_id DESC LIMIT $4`, [roomId, options.statuses ?? null, options.paneId ?? null, Math.min(200, options.limit ?? 50)]);
+      ORDER BY created_at DESC, event_id DESC LIMIT $4`, [roomId, options.statuses ?? null, options.paneId ?? null, options.limit ?? null]);
+    return result.rows.map(eventFromRow);
+  }
+  async listOwnerEvents(ownerUserId: string, since: string) {
+    const result = await this.pool.query<EventRow>(`SELECT ${eventColumns} FROM room_agent_events
+      WHERE (owner_user_id = $1 OR (owner_user_id IS NULL AND $1 = 'user:operator')) AND created_at >= $2
+      ORDER BY created_at DESC, event_id DESC`, [ownerUserId, since]);
     return result.rows.map(eventFromRow);
   }
   async pendingCounts(roomIds: string[]) {

@@ -126,6 +126,22 @@ describe("Google account management and SSO", () => {
     expect((await callback(flow, user().cookie)).headers.location).toContain("googleLinkError");
     expect((await callback(flow)).headers.location).toContain("googleLinkError");
   });
+  it("hands a link that ended in the phone's browser back to SpaceApp Android's Web tab; sign-in is never handed (R8)", async () => {
+    const u = user(); google(claims(`${u.actor.id}-app`));
+    const ua = "Mozilla/5.0 (Linux; Android 16; wv) SpaceApp-Android/0.2.6";
+    const begin = async (path: string, cookie?: string) => {
+      const res = await app.inject({ method: "GET", url: path, headers: { "user-agent": ua, ...(cookie ? { cookie } : {}) } });
+      return { res, state: res.cookies.find(c => c.name === "space_oauth_state")?.value, cookies: res.cookies.filter(c => c.value).map(c => `${c.name}=${c.value}`) };
+    };
+    const flow = await begin("/api/auth/google/start?link=true", u.cookie);
+    const url = `/api/auth/google/callback?code=test-code&state=${encodeURIComponent(flow.state!)}`;
+    const handed = await app.inject({ method: "GET", url });
+    expect(handed.headers.location).toBe(`com.oll4.spaceapp:/oauth-return?to=${encodeURIComponent(url)}`);
+    expect(handed.cookies.find(c => c.name === "space_session")).toBeUndefined();
+    expect((await callback(flow, u.cookie)).headers.location).toBe("/?googleLinked=true");
+    const signIn = await begin("/api/auth/google/start");
+    expect((await app.inject({ method: "GET", url: `/api/auth/google/callback?code=test-code&state=${encodeURIComponent(signIn.state!)}` })).headers.location).not.toMatch(/^com\.oll4/);
+  });
   it("rejects another user's account and leaves both registries intact", async () => {
     const a = user(), b = user(), sub = `${a.actor.id}-sub`; google(claims(sub));
     expect((await callback(await start(a.cookie), a.cookie)).headers.location).toBe("/?googleLinked=true");

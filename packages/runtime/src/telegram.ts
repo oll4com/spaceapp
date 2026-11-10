@@ -11,6 +11,7 @@ import {
 } from "@space/contracts";
 import { nanoid } from "nanoid";
 import { z } from "zod";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const telegramApiOrigin = "https://api.telegram.org";
 const secretVersionPattern = /^telegram_[A-Za-z0-9_-]{8,96}$/;
@@ -262,7 +263,7 @@ export class TelegramBotApiClient implements TelegramBotClient {
 export class TelegramSecretStore {
   private readonly tokensDirectory: string;
 
-  constructor(private readonly rootDirectory = "/opt/spaceapp/secrets/telegram") {
+  constructor(private readonly rootDirectory = `${SPACE_INSTALL_ROOT}/secrets/telegram`) {
     this.tokensDirectory = join(rootDirectory, "tokens");
   }
 
@@ -784,7 +785,9 @@ export class TelegramIntegrationManager {
     const integration = await this.options.persistence.getIntegration();
     if (!integration.isEnabled || integration.connectionStatus !== "CONNECTED" || !integration.secretVersion || !integration.chatId) return false;
     const botToken = await this.options.secrets.read(integration.secretVersion);
-    await this.clientFactory(botToken).sendMessage(integration.chatId, text.slice(0, 3900));
+    // Technical: Telegram takes 4,096 characters a message, so a longer text goes whole in parts of 3,900.
+    const client = this.clientFactory(botToken);
+    for (let at = 0; at < Math.max(1, text.length); at += 3900) await client.sendMessage(integration.chatId, text.slice(at, at + 3900));
     return true;
   }
 

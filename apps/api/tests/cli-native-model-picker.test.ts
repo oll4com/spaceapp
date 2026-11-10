@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { claudeModelMenu, claudeSwitchModelQuestion, findNativeCliModel, nativeCliCatalogModels, nativeCliConfirmedModel, nativeCliConfirmedReasoning, switchNativeCliModel, switchNativeCliReasoning, prepareNativeCliSettings } from "../src/cli-native-model-picker.js";
+import { claudeModelMenu, claudeSwitchModelQuestion, findNativeCliModel, geminiLaunchModel, nativeCliCatalogModels, nativeCliConfirmedModel, nativeCliConfirmedReasoning, switchNativeCliModel, switchNativeCliReasoning, prepareNativeCliSettings } from "../src/cli-native-model-picker.js";
 import { roomTerminalState } from "../src/room-terminal-screen.js";
 import { dashboardScreenState } from "../src/agents-dashboard.js";
 
@@ -462,6 +462,32 @@ describe('narrow native model controls', () => {
     await switchNativeCliModel({...control(read),runtimeId:'cli:gemini',model:gemini});
     expect(nativeCliConfirmedModel((await read()).text,[gemini],'cli:gemini')).toBe(gemini.id);
   });
+  it('R41: types the id agy advertises for a family and effort (claude-opus-4-6-thinking, claude-sonnet-4-6), never "<family>-high"', async()=>{
+    // The live agy catalog of 2/11 (var/gemini-models.last-good.json): "/model claude-opus-4-6-high" was rejected twice.
+    const catalog=nativeCliCatalogModels('/bin/gemini-vscode-parity',['gemini-3.8-flash-high\tGemini 3.8 Flash (High)','gemini-3.8-flash-low\tGemini 3.8 Flash (Low)',
+      'claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)','claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)'].join('\n'));
+    const typed=async(id:string,effort:string,ack:string)=>{
+      let screen={text:'>',revision:1};
+      const write=vi.fn(async(data:string)=>{if(data==='\r')screen={text:`  ⎿ Model set to ${ack}\n>`,revision:2};});
+      await switchNativeCliModel({...control(async()=>screen,write),runtimeId:'cli:gemini',model:catalog.find(entry=>entry.id===id)!,effort});
+      return write.mock.calls.map(([data])=>data).join('');
+    };
+    expect(await typed('claude-opus-4-6','high','Claude Opus 4.6 (Thinking)')).toContain('/model claude-opus-4-6-thinking');
+    expect(await typed('claude-sonnet-4-6','high','Claude Sonnet 4.6 (Thinking)')).toMatch(/\/model claude-sonnet-4-6(?!-)/);
+    expect(await typed('gemini-3.8-flash','low','Gemini 3.8 Flash (Low)')).toContain('/model gemini-3.8-flash-low');
+  });
+  it('3/11: a pane on a retired model starts on the newest of its family with agy\'s label, never agy\'s default Gemini', () => {
+    // The pro pool's agy catalog of 3/11 (Claude Opus 4.6 retired: "Please switch to Claude Opus 5.5").
+    const catalog = nativeCliCatalogModels('/bin/gemini-vscode-parity', ['gemini-4-argon-high\tGemini 4 Argon (High)', 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)',
+      'claude-opus-5-5-low\tClaude Opus 5.5 (Low)', 'claude-opus-5-5-high\tClaude Opus 5.5 (High)', 'claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)',
+      'gpt-oss-120b-medium\tGPT-OSS 120B (Medium)'].join('\n'));
+    expect(geminiLaunchModel(catalog, 'claude-opus-4-6', 'high')).toEqual({ modelId: 'claude-opus-5-5', reasoningEffort: 'high', label: 'Claude Opus 5.5 (High)' });
+    expect(geminiLaunchModel(catalog, 'claude-sonnet-4-6', 'high')).toMatchObject({ modelId: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (High)' });
+    expect(geminiLaunchModel(catalog, 'gemini-3.7-flash', 'high')).toMatchObject({ modelId: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash (High)' });
+    // A listed model keeps itself, with its own label; nothing of the family leaves the launch as configured.
+    expect(geminiLaunchModel(catalog, 'claude-opus-5-5', 'low')).toEqual({ modelId: 'claude-opus-5-5', reasoningEffort: 'low', label: 'Claude Opus 5.5 (Low)' });
+    expect(geminiLaunchModel(catalog, 'gemini-3.1-pro', 'high')).toBeNull();
+  });
   it('uses a complete acknowledgement when DeepSeek truncates its footer',()=>{
     const deepseek={...model,id:'deepseek-flash/deepseek-v4-flash',displayName:'DeepSeek Flash'};
     expect(nativeCliConfirmedModel('Model changed to deepseek-v4-flash\nMODEL deep…flash EFFORT auto',[deepseek],'cli:deepseek')).toBe(deepseek.id);
@@ -880,7 +906,7 @@ describe('Claude Code per-pane model selection', () => {
     const scrolled = window63x20.replace('❯ 1. Default (recommended) ✔', '↑ 2. Opus                 ').replace('↓ 2. Opus    ', '❯ 3. Fable   ').replace('+3 models', '+2 models');
     expect(claudeModelMenu(scrolled)).toMatchObject({ rows: [{ number: 2, label: 'Opus' }, { number: 3, label: 'Fable', highlighted: true }],
       moreAbove: true, moreBelow: true });
-    expect(claudeModelMenu(window63x20.replace(/\n   Esc to cancel$/, '                   ↓'))?.hintsVisible).toBe(false);
+    expect(claudeModelMenu(window63x20.replace(/\n {3}Esc to cancel$/, '                   ↓'))?.hintsVisible).toBe(false);
   });
 
   // Replays Claude Code's windowed menu: two visible rows, the highlight scrolling the window, PgDn
@@ -963,6 +989,43 @@ describe('Claude Code per-pane model selection', () => {
       read: async () => writes.length < 2 ? { text: idle, revision: 1 } : { text: clipped, revision: 1 + writes.length },
       assertCurrent: async () => undefined, wait: async () => undefined })).rejects.toThrow('does not fit this pane');
     expect(writes).not.toContain('s');
+  });
+
+  // 4/11 (Alex/Dana, Bruno/Bob): a narrow pane is widened for the menu instead of refusing, and gets its size back.
+  it('widens a pane too small for the menu, picks for this session only, then gives the pane its size back', async () => {
+    const clipped = [banner, border, '   Select model', '   Switch between Claude models. Your', '',
+      '     1. Default (recommend…  Use the', '                             default   ↓'].join('\n');
+    const pane = shortPane({ highlighted: 1, top: 1, effort: 'xhigh', clipped: false });
+    let wide = false;
+    const sizes: string[] = [];
+    await switchNativeCliModel({ ...pane, model: models.find(entry => entry.id === 'claude:opus')!, effort: 'xhigh', runtimeId: 'cli:claude',
+      read: async () => { const screen = await pane.read(); return wide || !screen.text.includes('Select model') ? screen : { ...screen, text: clipped }; },
+      widen: async () => { wide = true; sizes.push('100x30'); return async () => { sizes.push('44x15'); }; } });
+    expect(pane.writes).toEqual(['/model', '\r', down, 's']);
+    expect(sizes).toEqual(['100x30', '44x15']);
+  });
+
+  // 5/11 Bruno/Bob (52×12, Claude Code 2.1.317 PTY capture): PgDn scrolled the open menu past both its title and its key hints, the
+  // pick parsed no row, waited out its 15 s ("has not confirmed") and the cleanup's Esc printed "Kept model as Sonnet 5.5".
+  it('widens a pane whose open menu shows neither its title nor its key hints', async () => {
+    const paged52x12 = ['', '✻ Sautéed for 0s · done 10:15 AM', '▔'.repeat(52), '   --model.                                       ↑', '',
+      '   ❯ 2. Opus                   Opus 5.5 · Best', '                               for everyday,', '                               complex tasks ·',
+      '                               $4/$20 per Mtok', '      … +3 models', '', '                                                  ↓'].join('\n');
+    const opus = models.find(entry => entry.id === 'claude:opus')!;
+    const short = (wide: () => boolean) => {
+      const pane = shortPane({ highlighted: 1, top: 1, effort: 'xhigh', clipped: false });
+      return { ...pane, read: async () => { const screen = await pane.read(); return wide() || !screen.text.includes('Select model') ? screen : { ...screen, text: paged52x12 }; } };
+    };
+    let wide = false;
+    const sizes: string[] = [];
+    const pane = short(() => wide);
+    await switchNativeCliModel({ ...pane, model: opus, effort: 'xhigh', runtimeId: 'cli:claude',
+      widen: async () => { wide = true; sizes.push('100x30'); return async () => { sizes.push('52x12'); }; } });
+    expect(pane.writes).toEqual(['/model', '\r', down, 's']);
+    expect(sizes).toEqual(['100x30', '52x12']);
+    const fixed = short(() => false);
+    await expect(switchNativeCliModel({ ...fixed, model: opus, effort: 'xhigh', runtimeId: 'cli:claude' })).rejects.toThrow('does not fit this pane');
+    expect(fixed.writes).toEqual(['/model', '\r', '\u001b']); // the failed pick's cleanup closes the menu
   });
 
   it('closes a model menu whose title PgDn scrolled away before changing settings', async () => {

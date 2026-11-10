@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { finishedChangeHasProof } from "./copilot-rules.js";
 
 // Monitoring Copilot pane (plan clipboard:xkCJ9CeYZq4D, operator request 2026-10-24): the work of public-host (ai-guardian) and public-host
 // (monitoring-pro) moves into Space. A collector outside public-host (CT 210: Prometheus, Alertmanager, blackbox, Loki and the guardian
@@ -20,30 +21,54 @@ export const monitoringAutonomySchema = z.enum(MONITORING_AUTONOMY_LEVELS);
 export type MonitoringAutonomy = z.infer<typeof monitoringAutonomySchema>;
 
 /**
- * Only a collector on the fleet's private bridge, over plain HTTP with an explicit port: Space never fetches anything else for
- * this pane, so a stored setting cannot turn the watcher into a request forwarder.
+ * Only a collector on a private network (10/8, 172.16/12, 192.168/16), over plain HTTP with an explicit port and nothing else: Space
+ * never fetches anything else for this pane, so a stored setting cannot turn the watcher into a request forwarder. Which network and
+ * which default addresses an installation uses is its API's configuration (MON-001: SPACE_MONITORING_COLLECTOR_NETWORK and
+ * SPACE_MONITORING_COLLECTOR_HOST), never code; an empty field is one not set yet.
  */
-/** The collector network, one plain string: the public export rewrites it like every private address, so the pattern built
- * from it below matches the public tree's own defaults (EXP-001: a regex-escaped copy was left private and rejected them). */
-export const MONITORING_COLLECTOR_NETWORK = "192.0.2.";
-export const monitoringCollectorUrlSchema = z.string().regex(
-  new RegExp(`^http://${MONITORING_COLLECTOR_NETWORK.replace(/\./g, "\\.")}(?:[1-9]\\d?|1\\d\\d|2[0-4]\\d|25[0-4]):(?:[1-9]\\d{1,4})$`),
-  `Use http://${MONITORING_COLLECTOR_NETWORK}<host>:<port> (the collector on the fleet's private bridge).`);
-export const MONITORING_COLLECTOR_DEFAULTS = {
-  prometheusUrl: "http://192.0.2.210:9090",
-  alertmanagerUrl: "http://192.0.2.210:9093",
-  lokiUrl: "http://192.0.2.210:3100"
-} as const;
+const OCTET = "(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+const COLLECTOR_URL = new RegExp(`^http://${OCTET}\\.${OCTET}\\.${OCTET}\\.${OCTET}:([1-9]\\d{1,4})$`);
+const ipv4Number = (octets: number[]) => octets.reduce((value, octet) => value * 256 + octet, 0);
+function collectorAddress(url: string): number | null {
+  const match = COLLECTOR_URL.exec(url);
+  if (!match) return null;
+  const [a, b, , d, port] = match.slice(1).map(Number) as [number, number, number, number, number];
+  const isPrivate = a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  return isPrivate && d !== 0 && d !== 255 && port <= 65_535 ? ipv4Number(match.slice(1, 5).map(Number)) : null;
+}
+/** `a.b.c.d/n` as its first address and size, or null when it is no IPv4 network. */
+export function parseMonitoringCollectorNetwork(network: string): { first: number; size: number } | null {
+  const match = new RegExp(`^${OCTET}\\.${OCTET}\\.${OCTET}\\.${OCTET}/(3[0-2]|[12]?\\d)$`).exec(network);
+  if (!match) return null;
+  const size = 2 ** (32 - Number(match[5]));
+  return { first: Math.floor(ipv4Number(match.slice(1, 5).map(Number)) / size) * size, size };
+}
+/** Whether `url` is a collector address, inside `network` when the installation configured one. */
+export function monitoringCollectorUrlAllowed(url: string, network: string | null): boolean {
+  const address = collectorAddress(url);
+  if (address === null || !network) return address !== null;
+  const range = parseMonitoringCollectorNetwork(network);
+  return !!range && address >= range.first && address < range.first + range.size;
+}
+export const monitoringCollectorUrlSchema = z.string().refine((url) => collectorAddress(url) !== null,
+  "Use http://<private IPv4 address>:<port> (the collector on a private network).");
+export interface MonitoringCollectorUrls { prometheusUrl: string; alertmanagerUrl: string; lokiUrl: string }
+/** What the API tells the Setup tab: the network collector addresses must be on, and the addresses an empty field reads as. */
+export interface MonitoringCollectorConfig { network: string | null; defaults: MonitoringCollectorUrls | null }
+/** A collector host's Prometheus, Alertmanager and Loki on their standard ports. */
+export const monitoringCollectorDefaults = (host: string): MonitoringCollectorUrls =>
+  ({ prometheusUrl: `http://${host}:9090`, alertmanagerUrl: `http://${host}:9093`, lokiUrl: `http://${host}:3100` });
+const collectorUrlField = monitoringCollectorUrlSchema.or(z.literal("")).default("");
 
 export const monitoringCopilotPaneSettingsSchema = z.object({
   /** The agent takes no new work while paused; the watcher keeps reading alerts (they matter even then). */
   paused: z.boolean().default(false),
   autonomy: monitoringAutonomySchema.default("ASSIST"),
   collector: z.object({
-    prometheusUrl: monitoringCollectorUrlSchema.default(MONITORING_COLLECTOR_DEFAULTS.prometheusUrl),
-    alertmanagerUrl: monitoringCollectorUrlSchema.default(MONITORING_COLLECTOR_DEFAULTS.alertmanagerUrl),
-    lokiUrl: monitoringCollectorUrlSchema.default(MONITORING_COLLECTOR_DEFAULTS.lokiUrl)
-  }).strict().default(MONITORING_COLLECTOR_DEFAULTS),
+    prometheusUrl: collectorUrlField,
+    alertmanagerUrl: collectorUrlField,
+    lokiUrl: collectorUrlField
+  }).strict().default({ prometheusUrl: "", alertmanagerUrl: "", lokiUrl: "" }),
   notifications: z.object({
     /** critical alerts: ATTENTION notifications, so Nous gets them in its inbox. */
     critical: z.boolean().default(true),
@@ -136,10 +161,40 @@ export function monitoringGuardianLevel(message: string): MonitoringGuardianLeve
   if (/\b(ALERT|FAILED|FAILURE|DOWN|CRITICAL|ESCALATION|LIMIT)\b/i.test(message)) return "ALERT";
   return "INFO";
 }
-/** Repeats of one kind of message share a key: digits and dates fold, so "Daily backup missing for 2026-10-25" is one card. */
+/**
+ * Repeats of one kind of message share a key: digits and dates fold, so "Daily backup missing for 2026-10-25" is one card, and a
+ * Proxmox task id goes (each vzdump run has its own UPID, so every failure was a new card: plan clipboard:ctqx7SPqkWR2 step 3).
+ */
 export function monitoringGuardianKey(message: string): string {
-  return message.split("\n")[0]!.replace(/\[[^\]]*\]/g, " ").replace(/\d+/g, "N").replace(/[^\p{L}\p{N} _:-]+/gu, " ")
+  return message.split("\n")[0]!.replace(/\[[^\]]*\]/g, " ").replace(/\(?UPID:[^)\s]*\)?/gi, " ").replace(/\d+/g, "N").replace(/[^\p{L}\p{N} _:-]+/gu, " ")
     .replace(/\s+/g, " ").trim().slice(0, 80).toLowerCase();
+}
+/** Words that say how a check stands or who relays it, never which check it is. */
+const GUARDIAN_NOT_SUBJECT = /^(?:alert|alerts|recovery|recovered|clear|cleared|up|down|ok|healthy|again|still|failed|failure|critical|escalation|error|resolved|back|ai|guardian|event|on|the|is|of|for|in|at|to|and|a)$/;
+/**
+ * Which check a guardian message is about: the head line's words before its first `key=value` or sentence end, without state and
+ * filler words, digits folded and `_UP`/`_DOWN` suffixes dropped. "OVPN DOWN (openwrt-th) reason=stale_last_ref" and "OVPN UP
+ * (openwrt-th) reason=client_present" are both ovpn openwrt-th; "AI Guardian RECOVERY: dc2 lag monitor healthy again." is dcn lag monitor.
+ */
+export function monitoringGuardianSubject(message: string): string[] {
+  const words: string[] = [];
+  for (const raw of message.split("\n")[0]!.replace(/\[[^\]]*\]/g, " ").replace(/\(?UPID:[^)\s]*\)?/gi, " ").split(/\s+/)) {
+    if (raw.includes("=")) break;
+    const word = raw.toLowerCase().replace(/\d+/g, "n").replace(/[^\p{L}\p{N}_-]+/gu, "").replace(/_(?:up|down)$/, "");
+    if (word && !/^n+$/.test(word) && !GUARDIAN_NOT_SUBJECT.test(word)) words.push(word);
+    if (/[a-z)][.!;]$/i.test(raw)) break;
+  }
+  return words;
+}
+/**
+ * Whether a RECOVERY message ends an alert card (operator 2/11: recoveries worded unlike their alert never closed one): the two share
+ * the check's first two subject words, and the card holds most of the recovery's words, so "MIKROTIK WAN UP … WAN1_UP" ends the WAN1
+ * card, not MainWAN's, and a memory-pressure recovery never ends the memory-controller card.
+ */
+export function monitoringGuardianRecovers(recovery: string, alert: string): boolean {
+  const [ended, card] = [monitoringGuardianSubject(recovery), monitoringGuardianSubject(alert)];
+  if (ended.length < 2 || ended[0] !== card[0] || ended[1] !== card[1]) return false;
+  return ended.filter((word) => card.includes(word)).length >= 0.6 * ended.length;
 }
 
 // ---- on-demand queries (the agent and Nous) --------------------------------------------------------
@@ -167,6 +222,9 @@ export const monitoringLogQuerySchema = z.object({
   range: rangeSchema.optional()
 }).strict();
 export type MonitoringLogQuery = z.infer<typeof monitoringLogQuerySchema>;
+/** The pane's Charts tab: fixed windows only (the server holds the queries; no PromQL comes from the page). */
+export const MONITORING_CHART_WINDOWS = ["1h", "6h", "24h"] as const;
+export type MonitoringChartWindow = (typeof MONITORING_CHART_WINDOWS)[number];
 /** One series of a query answer: labels and [unix seconds, value] points (an instant answer has one point). */
 export const monitoringSeriesSchema = z.object({
   labels: z.record(z.string(), z.string()),
@@ -184,7 +242,7 @@ export const monitoringMemorySchema = z.object({
   kind: monitoringMemoryKindSchema,
   key: z.string().min(1).max(300).nullable(),
   text: z.string().min(1).max(MONITORING_TEXT_MAX),
-  /** An instance or host the memory is about (e.g. "192.0.2.2:9100" or "pve"), or null for everything. */
+  /** An instance or host the memory is about (e.g. "10.20.30.2:9100" or a host name), or null for everything. */
   target: z.string().min(1).max(200).nullable(),
   tags: z.array(z.string().min(1).max(60)).max(20),
   source: z.enum(["USER", "AGENT"]),
@@ -222,7 +280,7 @@ export const MONITORING_EVENT_TYPES = [
 ] as const;
 export const monitoringEventTypeSchema = z.enum(MONITORING_EVENT_TYPES);
 export type MonitoringEventType = z.infer<typeof monitoringEventTypeSchema>;
-export const monitoringEventStatusSchema = z.enum(["PENDING", "TAKEN", "DONE", "FAILED", "OPEN", "ANSWERED", "APPROVED", "DECLINED"]);
+export const monitoringEventStatusSchema = z.enum(["PENDING", "TAKEN", "DONE", "FAILED", "OPEN", "ANSWERED", "APPROVED", "DECLINED", "SUPERSEDED"]);
 export type MonitoringEventStatus = z.infer<typeof monitoringEventStatusSchema>;
 export const monitoringEventSchema = z.object({
   id: monitoringEventIdSchema,
@@ -230,7 +288,7 @@ export const monitoringEventSchema = z.object({
   paneId: idOf("pane"),
   type: monitoringEventTypeSchema,
   status: monitoringEventStatusSchema.nullable(),
-  message: z.string().min(1).max(2000),
+  message: z.string().min(1),
   payload: z.record(z.string(), z.unknown()),
   createdAt: isoDateTime,
   updatedAt: isoDateTime
@@ -263,9 +321,10 @@ export type MonitoringActionKind = z.infer<typeof monitoringActionKindSchema>;
 export const MONITORING_ALWAYS_ASK_KINDS: readonly MonitoringActionKind[] = ["HOST_REBOOT", "DATA_DELETE", "OTHER"];
 /** Kinds whose `backup` must name what restores the host (a copy of the file, a snapshot). */
 export const MONITORING_BACKUP_KINDS: readonly MonitoringActionKind[] = ["CONFIG_CHANGE"];
-/** At most this many autonomous changes per target and hour; one RUNNING change per target at a time. */
+/** Safety: at most this many autonomous changes per target and hour (more becomes a REVIEW, never lost); one RUNNING change per target. */
 export const MONITORING_MAX_ACTIONS_PER_TARGET_HOUR = 4;
-export const MONITORING_ACTION_STATUSES = ["RUNNING", "ASKED", "APPROVED", "DECLINED", "VERIFIED", "FAILED", "ROLLED_BACK"] as const;
+// R13-14: SUPERSEDED, a held change the copilot closed because its target was already met (never a person's answer).
+export const MONITORING_ACTION_STATUSES = ["RUNNING", "ASKED", "APPROVED", "DECLINED", "VERIFIED", "FAILED", "ROLLED_BACK", "SUPERSEDED"] as const;
 export const monitoringActionStatusSchema = z.enum(MONITORING_ACTION_STATUSES);
 export type MonitoringActionStatus = z.infer<typeof monitoringActionStatusSchema>;
 export const monitoringActionIdSchema = idOf("monact");
@@ -304,6 +363,8 @@ export const monitoringActionBeginSchema = z.object({
 }).strict();
 export type MonitoringActionBegin = z.infer<typeof monitoringActionBeginSchema>;
 export const monitoringActionFinishSchema = z.object({
-  status: z.enum(["VERIFIED", "FAILED", "ROLLED_BACK"]),
-  verification: text()
-}).strict();
+  status: z.enum(["VERIFIED", "FAILED", "ROLLED_BACK", "SUPERSEDED"]),
+  verification: text().optional(),
+  /** R13-14: SUPERSEDED's proof that the target is already there (the version installed, the service's start time, the finding or alert closed). */
+  evidence: z.string().trim().min(3).max(2000).optional()
+}).strict().refine(...finishedChangeHasProof());

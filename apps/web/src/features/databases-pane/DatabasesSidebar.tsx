@@ -13,6 +13,7 @@ import {
   Lock
 } from "../ui-theme/app-icons.js";
 import type { DatabaseCatalog, DatabaseConnection } from "@space/contracts";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export interface DatabasesSidebarProps {
   connections: DatabaseConnection[];
@@ -43,6 +44,8 @@ export function DatabasesSidebar({
   onDeleteConnection,
   collapsed = false
 }: DatabasesSidebarProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterWithData, setFilterWithData] = useState(false);
   const [collapsedSchemas, setCollapsedSchemas] = useState<Record<string, boolean>>({});
@@ -71,9 +74,9 @@ export function DatabasesSidebar({
     let withData = 0;
     for (const s of catalog.schemas) {
       if (isInternalSchema(s.name)) continue;
-      for (const t of s.tables || []) {
+      for (const tb of s.tables || []) {
         total++;
-        if ((t.rowCount ?? 0) > 0) withData++;
+        if ((tb.rowCount ?? 0) > 0) withData++;
       }
     }
     return { totalTables: total, tablesWithData: withData };
@@ -90,12 +93,12 @@ export function DatabasesSidebar({
         let views = schema.views || [];
 
         if (filterWithData) {
-          tables = tables.filter((t) => (t.rowCount ?? 0) > 0);
+          tables = tables.filter((tb) => (tb.rowCount ?? 0) > 0);
           views = [];
         }
 
         if (q) {
-          tables = tables.filter((t) => t.name.toLowerCase().includes(q));
+          tables = tables.filter((tb) => tb.name.toLowerCase().includes(q));
           views = views.filter((v) => v.name.toLowerCase().includes(q));
           if (tables.length === 0 && views.length === 0 && !schema.name.toLowerCase().includes(q)) {
             return null;
@@ -116,7 +119,7 @@ export function DatabasesSidebar({
   return (
     <aside
       className={`db-sidebar ${collapsed ? "db-sidebar-collapsed" : ""}`}
-      aria-label="Databases Sidebar"
+      aria-label={t("Databases Sidebar")}
     >
       {/* Search Header */}
       <div className="db-sidebar-header">
@@ -124,7 +127,7 @@ export function DatabasesSidebar({
           <Search size={13} style={{ color: "var(--modern-muted)" }} />
           <input
             type="text"
-            placeholder="Filter tables & schemas..."
+            placeholder={t("Filter tables & schemas...")}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
@@ -133,7 +136,7 @@ export function DatabasesSidebar({
           type="button"
           className="db-btn db-btn-icon-only"
           onClick={onNewConnection}
-          title="Add Connection"
+          title={t("Add Connection")}
         >
           <Plus size={14} />
         </button>
@@ -147,15 +150,15 @@ export function DatabasesSidebar({
             className={`db-sidebar-filter-btn ${!filterWithData ? "active" : ""}`}
             onClick={() => setFilterWithData(false)}
           >
-            All <span className="db-filter-count">{totalTables}</span>
+            {t("All")} <span className="db-filter-count">{totalTables}</span>
           </button>
           <button
             type="button"
             className={`db-sidebar-filter-btn ${filterWithData ? "active" : ""}`}
             onClick={() => setFilterWithData(true)}
-            title="Show only tables that contain records (rows > 0)"
+            title={t("Show only tables that contain records (rows > 0)")}
           >
-            With Data <span className={`db-filter-count ${tablesWithData > 0 ? "has-data" : ""}`}>{tablesWithData}</span>
+            {t("With Data")} <span className={`db-filter-count ${tablesWithData > 0 ? "has-data" : ""}`}>{tablesWithData}</span>
           </button>
         </div>
       )}
@@ -175,7 +178,7 @@ export function DatabasesSidebar({
               color: "var(--modern-faint)"
             }}
           >
-            Connections ({connections.length})
+            {t("Connections ({count})", { count: connections.length })}
           </div>
 
           {connections.map((conn) => {
@@ -191,19 +194,19 @@ export function DatabasesSidebar({
                     {conn.name}
                   </span>
                   {conn.isReadOnly && (
-                    <span title="Read-only" style={{ display: "inline-flex" }}>
+                    <span title={t("Read-only")} style={{ display: "inline-flex" }}>
                       <Lock size={11} style={{ color: "var(--modern-warning, #f59e0b)" }} />
                     </span>
                   )}
                   <span className={`db-badge-engine ${getEngineBadgeClass(conn.engine, conn.isInternal)}`}>
-                    {conn.isInternal ? "INTERNAL" : conn.engine}
+                    {conn.isInternal ? t("INTERNAL") : conn.engine}
                   </span>
                   {!conn.isInternal && (
                     <div style={{ display: "flex", gap: 2 }} onClick={(e) => e.stopPropagation()}>
                       <button
                         className="db-crumb-btn"
                         style={{ padding: 2 }}
-                        title="Edit Connection"
+                        title={t("Edit Connection")}
                         onClick={() => onEditConnection(conn)}
                       >
                         <Settings size={12} />
@@ -211,7 +214,7 @@ export function DatabasesSidebar({
                       <button
                         className="db-crumb-btn"
                         style={{ padding: 2, color: "var(--modern-danger)" }}
-                        title="Delete Connection"
+                        title={t("Delete Connection")}
                         onClick={() => onDeleteConnection(conn)}
                       >
                         <Trash2 size={12} />
@@ -225,11 +228,11 @@ export function DatabasesSidebar({
                   <div style={{ paddingLeft: 12, borderLeft: "1px dashed var(--modern-border, #2a3947)", marginLeft: 10, marginTop: 4 }}>
                     {isLoadingCatalog ? (
                       <div style={{ padding: "8px 6px", fontSize: "0.75rem", color: "var(--modern-muted)" }}>
-                        Loading catalog...
+                        {t("Loading catalog...")}
                       </div>
                     ) : filteredSchemas.length === 0 ? (
                       <div style={{ padding: "8px 6px", fontSize: "0.75rem", color: "var(--modern-muted)" }}>
-                        No tables found.
+                        {t("No tables found.")}
                       </div>
                     ) : (
                       filteredSchemas.map((schema) => {
@@ -271,7 +274,7 @@ export function DatabasesSidebar({
                                       {table.rowCount !== undefined && (
                                         <span
                                           className={`db-tree-node-count ${table.rowCount > 0 ? "has-data" : "empty"}`}
-                                          title={`${table.rowCount.toLocaleString()} rows`}
+                                          title={t("{count} rows", { count: table.rowCount.toLocaleString() })}
                                         >
                                           {table.rowCount >= 1000000
                                             ? `${(table.rowCount / 1000000).toFixed(1)}M`
@@ -292,7 +295,7 @@ export function DatabasesSidebar({
                                     onClick={() => onSelectTable(schema.name, view.name)}
                                   >
                                     <Eye size={13} style={{ flexShrink: 0, color: "var(--modern-accent)" }} />
-                                    <span className="db-tree-node-title" title={`View: ${view.name}`}>
+                                    <span className="db-tree-node-title" title={t("View: {name}", { name: view.name })}>
                                       {view.name}
                                     </span>
                                   </div>

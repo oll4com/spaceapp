@@ -5,7 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   VIDEO_CAPTION_STYLES, VIDEO_FILTERS, VIDEO_REFRAME_MODES, VIDEO_TECHNIQUES, VIDEO_TRANSITIONS, VIDEO_TTS_ENGINES, VIDEO_TTS_LANGUAGES, videoAssetIdSchema, videoJobIdSchema,
-  videoReframeSchema, videoRequestCreateSchema, videoRequestIdSchema, videoTechniqueSchema, videoTimelineSchema, videoTtsEngineSchema, type DesignAssetMadeBy, type Pane
+  videoReframeSchema, videoRequestCreateSchema, videoRequestIdSchema, videoTechniqueSchema, videoTimelineSchema, videoSttEngineSchema, videoTtsEngineSchema, type DesignAssetMadeBy, type Pane
 } from "@space/contracts";
 import { SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import { withStagedUploads } from "../multipart-upload.js";
@@ -34,7 +34,7 @@ const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 /** The model the editor declares it runs (e.g. claude-opus-5-5): mandatory on every file it makes. */
 const madeByModelSchema = z.string().trim().min(1).max(120);
 const artifactIdSchema = z.string().regex(/^artifact:[A-Za-z0-9_-]{6,80}$/);
-const selection = { requestId: videoRequestIdSchema.optional(), sourceArtifactIds: z.array(artifactIdSchema).max(8).optional(), sourceIndex: z.number().int().min(0).max(7).optional() };
+const selection = { requestId: videoRequestIdSchema.optional(), sourceArtifactIds: z.array(artifactIdSchema).optional(), sourceIndex: z.number().int().min(0).max(7).optional() };
 const languageTag = z.string().regex(/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/);
 
 export function registerVideoAgentRoutes(app: FastifyInstance, service: VideoService, deps: VideoAgentRouteDependencies): void {
@@ -86,7 +86,7 @@ export function registerVideoAgentRoutes(app: FastifyInstance, service: VideoSer
   handle("get", "assets/:id/file", false, async ({ owner, pane }, request, reply) => {
     const { id } = parseQuery(z.object({ id: videoAssetIdSchema }), request.params);
     if (pane.mode !== "VIDEO") {
-      const delivered = await service.listRequests(owner, { requesterPaneId: pane.id, status: ["DELIVERED"], limit: 100 });
+      const delivered = await service.listRequests(owner, { requesterPaneId: pane.id, status: ["DELIVERED"] });
       if (!delivered.some((row) => row.resultAssetIds.includes(id))) throw new SpaceNotFoundError(`Video asset ${id} is not in a delivered request of this pane.`);
     }
     const { asset, path } = await service.assetFile(owner, id, pane.mode === "VIDEO" ? pane.roomId : undefined);
@@ -102,7 +102,7 @@ export function registerVideoAgentRoutes(app: FastifyInstance, service: VideoSer
     return { job: await service.fetch(bridge.owner, bridge.pane, { ...input, madeBy: madeBy(bridge, input.madeByModel) }) };
   });
   handle("post", "probe", true, async ({ owner, pane }, request) => ({ job: await service.probe(owner, pane, parseBody(z.object(selection).strict(), request.body ?? {})) }));
-  handle("post", "transcribe", true, async ({ owner, pane }, request) => ({ job: await service.transcribe(owner, pane, parseBody(z.object({ ...selection, language: languageTag.nullable().optional() }).strict(), request.body ?? {})) }));
+  handle("post", "transcribe", true, async ({ owner, pane }, request) => ({ job: await service.transcribe(owner, pane, parseBody(z.object({ ...selection, language: languageTag.nullable().optional(), engine: videoSttEngineSchema.optional() }).strict(), request.body ?? {})) }));
   handle("post", "analyze", true, async ({ owner, pane }, request) => ({ job: await service.analyze(owner, pane, parseBody(z.object({ ...selection, technique: videoTechniqueSchema.optional(), reframe: videoReframeSchema.optional(),
     wordsPath: z.string().max(1000).nullable().optional(), silenceDb: z.number().min(-60).max(0).optional(), minSilenceSec: z.number().min(0.1).max(10).optional(), sceneThreshold: z.number().min(1).max(100).optional() }).strict(), request.body ?? {})) }));
   handle("post", "assemble", true, async (bridge, request) => {
@@ -146,7 +146,7 @@ export function registerVideoAgentRoutes(app: FastifyInstance, service: VideoSer
     return service.ask(owner, pane, input.requestId, input.question);
   });
   handle("post", "deliver", true, async ({ owner, pane }, request) => {
-    const input = parseBody(z.object({ requestId: videoRequestIdSchema, assetIds: z.array(videoAssetIdSchema).min(1).max(32), message: z.string().trim().max(2000).optional() }).strict(), request.body ?? {});
+    const input = parseBody(z.object({ requestId: videoRequestIdSchema, assetIds: z.array(videoAssetIdSchema).min(1), message: z.string().trim().max(2000).optional() }).strict(), request.body ?? {});
     const delivered = await service.deliver(owner, pane, input.requestId, input);
     await deps.audit(request, "video.request.deliver", input.requestId, { paneId: pane.id, status: delivered.request.status, assets: input.assetIds.length });
     return delivered;

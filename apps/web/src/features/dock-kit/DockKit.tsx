@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useEffectEvent,
   useId,
   useRef,
   useState,
@@ -20,6 +21,9 @@ import {
   X,
   type LucideIcon
 } from "../ui-theme/app-icons.js";
+import { isTransientUpstreamErrorMessage } from "../../app-shell-utils.js";
+import { coreApiOutageText, useCoreApiOutage } from "../../core-api-availability.js";
+import { useUiLanguage } from "../ui-language/ui-language.js";
 import "./dock-kit.css";
 
 // One shared look for every dock: toolbar, buttons, search, filter chips,
@@ -159,6 +163,10 @@ export interface DockChipOption<T extends string> {
   count?: number;
   /** An icon before the label; the label then sits in its own span, so a compact bar can show the icon alone (the name stays the button's name and tooltip). */
   icon?: LucideIcon;
+  /** Consecutive options with the same section sit in their own labelled group under a heading. */
+  section?: string;
+  /** "attention": the count is something waiting on the operator, shown in the warning colour; otherwise it is neutral. */
+  tone?: "attention";
 }
 
 export function DockChips<T extends string>({ options, value, onChange, label, className }: {
@@ -168,24 +176,37 @@ export function DockChips<T extends string>({ options, value, onChange, label, c
   label: string;
   className?: string;
 }) {
+  const id = useId();
+  const chip = (option: DockChipOption<T>) => {
+    const Icon = option.icon;
+    return (
+      <button
+        key={option.id}
+        type="button"
+        className="dock-kit-chip"
+        aria-pressed={option.id === value}
+        onClick={() => onChange(option.id)}
+        {...(Icon ? { title: option.label } : {})}
+      >
+        {Icon ? <><Icon className="dock-kit-chip-icon" aria-hidden="true" /><span className="dock-kit-chip-label">{option.label}</span></> : option.label}
+        {option.count != null ? <span className={cx("dock-kit-chip-count", option.tone && `is-${option.tone}`)}>{option.count}</span> : null}
+      </button>
+    );
+  };
+  // An option without a section is a section of its own, with no heading.
+  const sections: Array<{ title: string; options: DockChipOption<T>[] }> = [];
+  for (const option of options) {
+    if (option.section && sections.at(-1)?.title === option.section) sections.at(-1)!.options.push(option);
+    else sections.push({ title: option.section ?? "", options: [option] });
+  }
   return (
     <div className={cx("dock-kit-chips", className)} role="group" aria-label={label}>
-      {options.map((option) => {
-        const Icon = option.icon;
-        return (
-          <button
-            key={option.id}
-            type="button"
-            className="dock-kit-chip"
-            aria-pressed={option.id === value}
-            onClick={() => onChange(option.id)}
-            {...(Icon ? { title: option.label } : {})}
-          >
-            {Icon ? <><Icon className="dock-kit-chip-icon" aria-hidden="true" /><span className="dock-kit-chip-label">{option.label}</span></> : option.label}
-            {option.count != null ? <span className="dock-kit-chip-count">{option.count}</span> : null}
-          </button>
-        );
-      })}
+      {sections.map((section, index) => section.title ? (
+        <div key={section.title} className="dock-kit-chips-section" role="group" aria-labelledby={`${id}-${index}`}>
+          <span id={`${id}-${index}`} className="dock-kit-chips-heading">{section.title}</span>
+          {section.options.map(chip)}
+        </div>
+      ) : chip(section.options[0]!))}
     </div>
   );
 }
@@ -221,12 +242,37 @@ export function DockState({ kind, icon, title, detail, action, className }: {
   );
 }
 
-export function DockNotice({ tone = "error", children, onDismiss, className }: {
+type DockNoticeProps = {
   tone?: "error" | "warning" | "success" | "info";
   children: ReactNode;
   onDismiss?: () => void;
   className?: string;
-}) {
+};
+
+export function DockNotice(props: DockNoticeProps) {
+  // A request that failed while Space restarts (nous_msg:1be51d08): the shared calm notice, gone by itself once Space answers.
+  if ((props.tone ?? "error") === "error" && typeof props.children === "string" && isTransientUpstreamErrorMessage(props.children)) {
+    return <DockOutageNotice onDismiss={props.onDismiss} className={props.className} />;
+  }
+  return <DockNoticeBox {...props} />;
+}
+
+function DockOutageNotice({ onDismiss, className }: Pick<DockNoticeProps, "onDismiss" | "className">) {
+  const outage = useCoreApiOutage();
+  const language = useUiLanguage();
+  const dismiss = useEffectEvent(() => onDismiss?.());
+  useEffect(() => {
+    if (outage === null) dismiss(); // the dock's stored error goes with the outage
+  }, [outage]);
+  if (outage === null) return null;
+  return (
+    <DockNoticeBox tone={outage.phase === "down" ? "error" : "info"} onDismiss={onDismiss} className={className}>
+      {coreApiOutageText(language, outage)}
+    </DockNoticeBox>
+  );
+}
+
+function DockNoticeBox({ tone = "error", children, onDismiss, className }: DockNoticeProps) {
   const Icon = tone === "error" ? CircleAlert : tone === "warning" ? AlertTriangle : tone === "success" ? CheckCircle2 : Info;
   return (
     <div className={cx("dock-kit-notice", `is-${tone}`, className)} role={tone === "error" ? "alert" : "status"}>

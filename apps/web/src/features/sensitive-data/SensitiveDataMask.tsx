@@ -1,9 +1,10 @@
 import { useEffect } from "react";
+import { siteSigninDomain } from "@space/contracts";
 
 const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
 
 const INTERNAL_DOMAIN_SUFFIX =
-  "(?:local|internal|lan|home|corp|intranet|localhost|home\\.arpa|oll4\\.com)";
+  "(?:local|internal|lan|home|corp|intranet|localhost|home\\.arpa)";
 const INTERNAL_URL_PATTERN = new RegExp(
   `https?://[^\\s"'<>]*\\b(?:[A-Za-z0-9-]+\\.)*${INTERNAL_DOMAIN_SUFFIX}\\b[^\\s"'<>]*|www\\.(?:[A-Za-z0-9-]+\\.)*${INTERNAL_DOMAIN_SUFFIX}\\b`,
   "i"
@@ -24,7 +25,25 @@ export function normalizeText(text: string): string {
   return text.normalize("NFKC").replace(/\s+/g, " ").trim();
 }
 
-export function hasSensitiveText(text: string): boolean {
+/** The registrable domain this instance is served from (EXP-001: no build names one); null for localhost and IPs. */
+export function instanceDomain(host: string): string | null {
+  try { return siteSigninDomain(host); } catch { return null; }
+}
+
+const ownDomainPatterns = new Map<string, RegExp>();
+function ownDomainPattern(domain: string): RegExp {
+  let pattern = ownDomainPatterns.get(domain);
+  if (!pattern) {
+    const name = domain.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    pattern = new RegExp(`(?:^|[\\s/@"'<>(])(?:[A-Za-z0-9-]+\\.)*${name}\\b`, "i");
+    ownDomainPatterns.set(domain, pattern);
+  }
+  return pattern;
+}
+
+const pageDomain = typeof location === "undefined" ? null : instanceDomain(location.hostname);
+
+export function hasSensitiveText(text: string, ownDomain: string | null = pageDomain): boolean {
   const normalized = normalizeText(text);
   if (normalized.length < 2) return false;
   if (EMAIL_PATTERN.test(normalized)) return true;
@@ -32,6 +51,7 @@ export function hasSensitiveText(text: string): boolean {
   if (IPV6_INTERNAL_PATTERN.test(normalized)) return true;
   if (INTERNAL_URL_PATTERN.test(normalized)) return true;
   if (INTERNAL_DOMAIN_PATTERN.test(normalized)) return true;
+  if (ownDomain && ownDomainPattern(ownDomain).test(normalized)) return true;
   return false;
 }
 

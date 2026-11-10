@@ -1,6 +1,7 @@
 import { defaultUserSettings } from "@space/contracts";
 import { createDemoFixture, type DemoFixture } from "./demo-fixture.js";
 import { copilotPanes, copilotTasks, copilotsRoom } from "./mock-copilots.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export function createCurrentMockFixture(): DemoFixture {
   const fixture = createDemoFixture();
@@ -43,7 +44,7 @@ export function createCurrentMockFixture(): DemoFixture {
   const researchChat = fixture.panes.find(p => p.id === "pane:demo-research-chat")!;
   const researchPane = (id: string, title: string, mode: "YOUTUBE" | "BROWSER" | "FILES", order: number) => ({
     ...structuredClone(template), id, roomId: researchRoomId, title, mode, order,
-    terminalRuntimeId: null, cwd: "/opt/spaceapp", isMinimized: false, isClosed: false
+    terminalRuntimeId: null, cwd: SPACE_INSTALL_ROOT, isMinimized: false, isClosed: false
   });
   fixture.panes = [...terminals,
     { ...structuredClone(researchChat), order: 0 },

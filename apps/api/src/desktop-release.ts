@@ -1,4 +1,5 @@
 import { readFile, realpath, stat } from "node:fs/promises";
+import { sentryDsnConfigured, sentryDsnFor, sentryEnvironmentFor } from "@space/contracts/sentry";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FastifyReply, FastifyRequest } from "fastify";
@@ -49,6 +50,16 @@ export async function readDesktopRelease(directory = desktopReleaseDirectory) {
     debUrl: url("linux", "deb"),
     targets
   };
+}
+
+const clientSentryDsnVariables = { desktop: "DESKTOP", spaceapp: "ANDROID", nous: "NOUS_ANDROID" } as const;
+export type SentryClientApp = keyof typeof clientSentryDsnVariables;
+export const isSentryClientApp = (app: unknown): app is SentryClientApp => typeof app === "string" && Object.hasOwn(clientSentryDsnVariables, app);
+
+/** The desktop and Android apps report crashes to this server's own Sentry project, only when the server sets the app's public DSN. */
+export function clientSentryConfig(app: SentryClientApp, env: NodeJS.ProcessEnv = process.env) {
+  const dsn = sentryDsnFor(clientSentryDsnVariables[app], env)?.trim();
+  return { dsn: dsn && sentryDsnConfigured(dsn) ? dsn : null, environment: sentryEnvironmentFor(env) };
 }
 
 export function createDesktopLatestHandler(directory = desktopReleaseDirectory) {

@@ -74,7 +74,8 @@ export async function applyMigration(
       return;
     } catch (error) {
       // A lost connection fails ROLLBACK too: keep the migration's error and do not retry on that client.
-      if (await rollbackKeepingError(client)) throw error;
+      const rollback = await rollbackKeepingError(client, error);
+      if (rollback.failed) throw rollback.error;
       const code = errorCode(error);
       if (!code || !retryableTransactionCodes.has(code) || attempt === maxAttempts) throw error;
 

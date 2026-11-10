@@ -25,6 +25,17 @@ test("CI creates and validates only the sanitized public candidate", async () =>
   assert.doesNotMatch(ci, /public-deployment-config\.test\.ts/);
 });
 
+test("CI and the release run the *-postgres tests on the compose file's pinned PostgreSQL image", async () => {
+  const compose = await readFile(join(root, "packages", "run-spaceapp", "templates", "compose.yml"), "utf8");
+  assert.match(compose, /image: pgvector\/pgvector:[^@\s]+@sha256:[0-9a-f]{64}\n/);
+  for (const name of ["ci.yml", "release.yml"]) {
+    const text = await workflow(name);
+    const pull = text.indexOf("docker pull \"$pinned\" && docker tag \"$pinned\" \"${pinned%@*}\"");
+    assert.ok(pull > 0, name);
+    assert.ok(pull < text.indexOf("npm run test:public"), `${name} pulls before the tests`);
+  }
+});
+
 test("launcher and container matrices cover the declared operating systems and architectures", async () => {
   const platform = await workflow("platform-matrix.yml");
   const containers = await workflow("containers.yml");
@@ -44,8 +55,14 @@ test("launcher and container matrices cover the declared operating systems and a
     platform,
     /if: runner\.arch != 'ARM64'[\s\S]*run: npm ci/
   );
+  // Every host runs Node 20, 22 and 26; Windows also keeps 24 (03c9b2f, plan NtXOwLkXVN1x step 5).
+  for (const os of ["ubuntu-latest", "macos-latest", "windows-latest"]) {
+    for (const node of ["20.20.2", "22.23.4", "26.13.0"]) {
+      assert.match(platform, new RegExp(`- os: ${os}\\s+node: "${node.replaceAll(".", "\\.")}"`));
+    }
+  }
   assert.match(platform, /- os: windows-latest\s+node: "24"/);
-  assert.equal([...platform.matchAll(/- os: windows-latest/g)].length, 2);
+  assert.equal([...platform.matchAll(/- os: windows-latest/g)].length, 4);
   for (const target of ["core", "browser", "cli"]) {
     assert.match(containers, new RegExp(`- ${target}`));
   }
@@ -243,4 +260,38 @@ test("workflow actions use full commit SHA pins with version comments", async ()
     const pinnedCount = [...content.matchAll(/uses:\s+[^@\s]+@[0-9a-f]{40}\s+#\s+v?\d+\.\d+\.\d+/g)].length;
     assert.equal(pinnedCount, usesCount, `${name} must pin every action by full commit SHA`);
   }
+});
+
+// Review 5/5 F5 (plan clipboard:NtzEOzE3Ew00 step 4): BuildKit's provenance sits unsigned in the registry, so anyone
+// who can push there could replace it; each published image also gets a Sigstore-signed GitHub attestation bound to
+// this workflow, and the release verifies it names this repository, this workflow and this run's commit.
+test("published images get a signed build provenance attestation the release verifies against its own commit", async () => {
+  const release = await workflow("release.yml");
+  const job = (name) => release.match(new RegExp(`\\n  ${name}:\\n([\\s\\S]*?)(?=\\n  [\\w-]+:\\n|$)`))?.[1] || "";
+  for (const name of ["publish-containers", "publish-amd64-containers"]) {
+    const block = job(name);
+    assert.match(block, /permissions:[\s\S]*packages: write[\s\S]*id-token: write[\s\S]*attestations: write/, name);
+    assert.match(
+      block,
+      /uses: docker\/build-push-action@[0-9a-f]{40}[^\n]*\n\s+id: push\n/,
+      `${name}: the build step must expose its digest`
+    );
+    assert.match(
+      block,
+      /uses: actions\/attest-build-provenance@[0-9a-f]{40} # v\d+\.\d+\.\d+\n\s+with:\n\s+subject-name: ghcr\.io\/oll4com\/spaceapp-\$\{\{ matrix\.target \}\}\n\s+subject-digest: \$\{\{ steps\.push\.outputs\.digest \}\}\n\s+push-to-registry: true\n/,
+      `${name}: attest the pushed digest`
+    );
+  }
+  const verify = (block, targets) => {
+    assert.match(block, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+    assert.match(block, new RegExp(`for target in ${targets}; do`));
+    assert.match(
+      block,
+      /gh attestation verify "oci:\/\/ghcr\.io\/oll4com\/spaceapp-\$target:\$\{\{ inputs\.version \}\}"[\s\\]+--repo oll4com\/spaceapp[\s\\]+--signer-workflow oll4com\/spaceapp\/\.github\/workflows\/release\.yml[\s\\]+--source-digest "\$\{\{ github\.sha \}\}"/
+    );
+  };
+  verify(job("verify-containers"), "core browser cli");
+  // The amd64 mode copies an earlier release's browser manifest: only the images this run built carry its commit.
+  verify(job("verify-amd64-containers"), "core cli");
+  assert.equal([...release.matchAll(/attestations: write/g)].length, 2, "only the two publish jobs sign");
 });

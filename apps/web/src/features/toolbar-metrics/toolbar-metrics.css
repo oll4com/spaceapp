@@ -462,6 +462,22 @@
   margin-top: 0.4rem;
 }
 
+/* Resources › Accounts & quotas heads each provider with the Nous Quotas / AI Quota widget card (plan clipboard:sJpyQIBFGszW). */
+.toolbar-metric-provider-section + .toolbar-metric-provider-section {
+  margin-top: 0.9rem;
+}
+/* Resources sizes every icon at 18px (.health-theme-root svg); the provider ring is a 44px chart, not an icon. */
+.resources-provider-summary .aiq-ring svg {
+  width: 100%;
+  height: 100%;
+}
+.resources-empty-state {
+  padding: 1rem;
+  border: 1px dashed var(--health-border, #2a3949);
+  border-radius: 10px;
+  text-align: center;
+}
+
 .toolbar-metric-provider-section > header {
   display: flex;
   align-items: center;

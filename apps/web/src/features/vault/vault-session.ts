@@ -52,24 +52,43 @@ export async function handOverToAgents(current: UnlockedVault | null = keys): Pr
   await delegate(records).catch((error) => records.length > VAULT_OLD_BROKER_DELEGATION_MAX ? delegate(records.slice(0, VAULT_OLD_BROKER_DELEGATION_MAX)) : Promise.reject(error));
 }
 
-/** Adds the logins agents saved or the Vault generated; hands them over when there were any. An unusable inbox is reported, not swallowed. */
+/** The last inbox problem, kept so a dock opened after the 30 s import failed still shows it; a clean import clears it. */
+let inboxProblem: string | null = null;
+export const vaultInboxProblem = (): string | null => inboxProblem;
+/** Why a waiting login is still waiting after the last import, by its row id: the dock shows it on that row. */
+let rowProblems = new Map<string, string>();
+export const vaultInboxRowProblem = (id: string): string | null => rowProblems.get(id) ?? null;
+const reportInbox = (message: string) => { inboxProblem = message; emit({ kind: "inbox-error", message }); };
+const names = (entries: Array<{ label: string }>) => entries.slice(0, 3).map((entry) => entry.label).join(", ");
+const logins = (count: number) => `${count} waiting login${count === 1 ? "" : "s"}`;
+
+/** Adds the logins agents saved or the Vault generated; hands them over when there were any. Every failure is reported, never swallowed. */
 export async function importVaultInbox(current: UnlockedVault | null = keys): Promise<number> {
   if (!current) return 0;
   let result;
   try { result = await importVaultPending(api, current, await vaultInboxKey(api, current)); }
-  catch (error) { if (error instanceof VaultInboxError) emit({ kind: "inbox-error", message: error.message }); throw error; }
-  const { imported: count, unreadable } = result;
-  if (unreadable.length) {
-    const names = unreadable.slice(0, 3).map((entry) => entry.label).join(", ");
-    emit({ kind: "inbox-error", message: `${unreadable.length} waiting login${unreadable.length === 1 ? "" : "s"} (${names}) cannot be opened with your inbox key and stay waiting. Check Activity for an INBOX_SET entry you did not make.` });
+  catch (error) {
+    reportInbox(error instanceof VaultInboxError ? error.message
+      : `Adding the logins agents saved failed (${error instanceof Error ? error.message : String(error)}). They stay waiting; the Vault tries again every 30 seconds.`);
+    throw error;
   }
+  const { imported: count, unreadable, failed } = result;
+  rowProblems = new Map([...unreadable.map((entry) => [entry.id, "Sealed to another inbox key; it stays waiting."] as const),
+    ...failed.map((entry) => [entry.id, `Could not be added (${entry.reason}); the Vault tries again every 30 seconds.`] as const)]);
+  const problems = [
+    ...(unreadable.length ? [`${logins(unreadable.length)} (${names(unreadable)}) cannot be opened with your inbox key and stay waiting. Check Activity for an INBOX_SET entry you did not make.`] : []),
+    ...(failed.length ? [`${logins(failed.length)} (${names(failed)}) could not be added (${failed[0]!.reason}) and stay waiting; the Vault tries again every 30 seconds.`] : [])
+  ];
+  if (problems.length) reportInbox(problems.join(" "));
+  else inboxProblem = null;
   if (count) { emit({ kind: "imported", count }); await handOverToAgents(current); }
   return count;
 }
 
-/** After an unlock: the inbox key exists, saved logins are added, and agents get the current items. */
+/** After an unlock: the inbox key exists, saved logins are added, and agents get the current items, also when the import failed. */
 export async function openVaultInbox(current: UnlockedVault): Promise<void> {
-  if ((await importVaultInbox(current)) === 0) await handOverToAgents(current);
+  // The import shows its own failure; the hand-over must not wait on it (30/10 16:46 UTC: a failed import skipped it at the unlock).
+  if ((await importVaultInbox(current).catch(() => 0)) === 0) await handOverToAgents(current);
 }
 
 /** Keeps the unlocked keys for the tab and starts the background import and the operator's auto-lock rules. */
@@ -81,6 +100,7 @@ export function holdVaultKeys(next: UnlockedVault): void {
     const timer = window.setInterval(() => {
       if (!keys || importing) return;
       importing = true;
+      // importVaultInbox reports its own failure to the dock (vaultInboxProblem); the tick only must not end unhandled.
       void importVaultInbox().catch(() => undefined).finally(() => { importing = false; });
     }, IMPORT_EVERY_MS);
     const stopAutoLock = startVaultAutoLock(readVaultAutoLock, (reason) => {
@@ -97,6 +117,8 @@ export function holdVaultKeys(next: UnlockedVault): void {
 export function lockVaultSession(reason: VaultLockReason): void {
   stopTimers?.();
   stopTimers = null;
+  inboxProblem = null;
+  rowProblems = new Map();
   if (!keys) return;
   lockVaultKeys(keys);
   keys = null;

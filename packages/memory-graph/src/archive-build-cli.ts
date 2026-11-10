@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Builds the all-months memory archive snapshot out of process so a long build never blocks the
 // Space API event loop. Usage:
-//   node archive-build-cli.js --memory-dir /opt/spaceapp/docs --index /opt/spaceapp/docs/space_memory.md \
-//     --root /opt/spaceapp/var/memory-graph [--filename snapshot-all-months.json] [--generated-at <iso>]
+//   node archive-build-cli.js --memory-dir <docs root> --index <docs root>/space_memory.md \
+//     --root <install root>/var/memory-graph [--filename snapshot-all-months.json] [--generated-at <iso>]
+// (the docs and install roots are SPACE_DOCS_ROOT and SPACE_INSTALL_ROOT in @space/contracts)
 import { ALL_MONTHS_SNAPSHOT_FILENAME, buildMemoryGraphArchiveSnapshot } from "./archive-build.js";
 
 function argumentValue(name: string): string | null {

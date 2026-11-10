@@ -1,4 +1,5 @@
 import { CheckCircle2, RotateCcw, SlidersHorizontal, Sparkles, X } from "../ui-theme/app-icons.js";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import { useEnvironmentPreset } from "./use-environment-preset.js";
 import "./environment-preset.css";
 
@@ -17,18 +18,20 @@ export function EnvironmentPresetCard({
     preset,
     isActivating,
     activationProgress,
-    activationStepLabel,
+    activationText,
     activationComplete,
     restoredCustom,
     dismissBanners,
     switchToMax,
     switchToCustom
   } = useEnvironmentPreset({ isAdmin, canManageCliRuntimes, userId });
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
 
   return (
     <section
       className="settings-environment-preset-card"
-      aria-label="Workspace environment preset"
+      aria-label={t("Workspace environment preset")}
     >
       <div className="environment-preset-header">
         <div className="environment-preset-icon-badge">
@@ -36,24 +39,24 @@ export function EnvironmentPresetCard({
         </div>
         <div className="environment-preset-title-wrap">
           <div className="environment-preset-heading-row">
-            <strong>Workspace environment</strong>
+            <strong>{t("Workspace environment")}</strong>
             <span className={`environment-preset-mode-tag ${preset === "max" ? "is-max" : "is-custom"}`}>
-              {preset === "max" ? "MAX" : "CUSTOM"}
+              {preset === "max" ? t("MAX") : t("CUSTOM")}
             </span>
           </div>
           <small>
             {preset === "max"
-              ? "Max: every dock, pane, widget and AI coding tool is on."
-              : "Custom: only the docks, panes, widgets and AI coding tools you picked are on."}
+              ? t("Max: every dock, pane, widget and AI coding tool is on.")
+              : t("Custom: only the docks, panes, widgets and AI coding tools you picked are on.")}
           </small>
         </div>
       </div>
 
-      <div className="environment-preset-controls" role="group" aria-label="Select workspace environment">
+      <div className="environment-preset-controls" role="group" aria-label={t("Select workspace environment")}>
         <button
           type="button"
           className={`environment-pill ${preset === "custom" ? "is-active" : ""}`}
-          aria-label="Custom environment"
+          aria-label={t("Custom environment")}
           aria-pressed={preset === "custom"}
           disabled={isActivating}
           onClick={switchToCustom}
@@ -62,8 +65,8 @@ export function EnvironmentPresetCard({
             <SlidersHorizontal className="environment-pill-icon" />
           </span>
           <span className="environment-pill-content">
-            <span className="environment-pill-name">Custom</span>
-            <span className="environment-pill-hint">Only your picks</span>
+            <span className="environment-pill-name">{t("Custom")}</span>
+            <span className="environment-pill-hint">{t("Only your picks")}</span>
           </span>
           {preset === "custom" && (
             <span className="environment-pill-indicator" aria-hidden="true" />
@@ -73,7 +76,7 @@ export function EnvironmentPresetCard({
         <button
           type="button"
           className={`environment-pill ${preset === "max" ? "is-active" : ""}`}
-          aria-label="Max environment"
+          aria-label={t("Max environment")}
           aria-pressed={preset === "max"}
           disabled={isActivating}
           onClick={switchToMax}
@@ -82,8 +85,8 @@ export function EnvironmentPresetCard({
             <Sparkles className="environment-pill-icon" />
           </span>
           <span className="environment-pill-content">
-            <span className="environment-pill-name">Max</span>
-            <span className="environment-pill-hint">Everything on</span>
+            <span className="environment-pill-name">{t("Max")}</span>
+            <span className="environment-pill-hint">{t("Everything on")}</span>
           </span>
           {preset === "max" && (
             <span className="environment-pill-indicator" aria-hidden="true" />
@@ -91,12 +94,12 @@ export function EnvironmentPresetCard({
         </button>
       </div>
 
-      <div className="environment-preset-note">Switch at any time: going back to Custom restores your picks.</div>
+      <div className="environment-preset-note">{t("Switch at any time: going back to Custom restores your picks.")}</div>
 
       {isActivating && (
         <div className="environment-progress-container" role="status" aria-live="polite">
           <div className="environment-progress-header">
-            <span>{activationStepLabel}</span>
+            <span>{t(activationText.text, activationText.vars)}</span>
             <span>{activationProgress}%</span>
           </div>
           <div className="environment-progress-bar-rail">
@@ -112,14 +115,14 @@ export function EnvironmentPresetCard({
         <div className="environment-status-banner is-success" role="status">
           <CheckCircle2 aria-hidden="true" />
           <span className="environment-status-banner-text">
-            Done: every dock, pane and AI coding tool is now on.
+            {t("Done: every dock, pane and AI coding tool is now on.")}
           </span>
           <button
             type="button"
             className="environment-status-banner-dismiss"
             onClick={dismissBanners}
-            title="Dismiss notification"
-            aria-label="Dismiss notification"
+            title={t("Dismiss notification")}
+            aria-label={t("Dismiss notification")}
           >
             <X aria-hidden="true" />
           </button>
@@ -130,14 +133,14 @@ export function EnvironmentPresetCard({
         <div className="environment-status-banner is-custom-restored" role="status">
           <RotateCcw aria-hidden="true" />
           <span className="environment-status-banner-text">
-            Switched to Custom environment. Your picks are back.
+            {t("Switched to Custom environment. Your picks are back.")}
           </span>
           <button
             type="button"
             className="environment-status-banner-dismiss"
             onClick={dismissBanners}
-            title="Dismiss notification"
-            aria-label="Dismiss notification"
+            title={t("Dismiss notification")}
+            aria-label={t("Dismiss notification")}
           >
             <X aria-hidden="true" />
           </button>

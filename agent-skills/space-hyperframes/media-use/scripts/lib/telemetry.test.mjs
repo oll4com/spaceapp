@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { optedOut } from "./telemetry.mjs";
+import { optedOut, track } from "./telemetry.mjs";
 
 // optedOut() reads ~/.hyperframes/config.json and env vars. Point HOME at a temp
 // dir so the run never touches the real config, and pin the env opt-outs to a
@@ -15,6 +15,7 @@ const ENV_KEYS = [
   "DO_NOT_TRACK",
   "CI",
   "NODE_ENV",
+  "MEDIA_USE_POSTHOG_KEY",
 ];
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 const home = mkdtempSync(join(tmpdir(), "mu-telemetry-"));
@@ -69,5 +70,24 @@ test("optedOut still honors the env opt-outs", () => {
     assert.equal(optedOut(), true);
   } finally {
     delete process.env.DO_NOT_TRACK;
+  }
+});
+
+// Space: no PostHog project key ships, so track() sends nothing unless MEDIA_USE_POSTHOG_KEY names one.
+test("track sends nothing without MEDIA_USE_POSTHOG_KEY and posts to the named project with it", async () => {
+  writeConfig(null);
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => { calls.push({ url: String(url), body: JSON.parse(init.body) }); return new Response("{}"); };
+  try {
+    await track("media_resolved", { kind: "image" });
+    assert.equal(calls.length, 0);
+    process.env.MEDIA_USE_POSTHOG_KEY = "phc_test";
+    await track("media_resolved", { kind: "image" });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.api_key, "phc_test");
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.MEDIA_USE_POSTHOG_KEY;
   }
 });

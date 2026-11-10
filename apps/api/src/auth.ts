@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createHash, createHmac, createPublicKey, randomBytes, scrypt as scryptCallback, timingSafeEqual, verify as verifySignature, type KeyObject, type ScryptOptions } from "node:crypto";
 import { authUserSchema, resolveSpaceInstance, sessionCookieNameFor, type AuthUser, type LoginInput } from "@space/contracts";
-import { persistentOperatorSessionTtlSeconds, signPersistentOperatorSessionToken, signSessionTokenWithTtl } from "@space/runtime";
+import { persistentOperatorSessionTtlSeconds } from "@space/runtime";
 import { ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET } from "./antigravity-usage-services.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // A dev instance on another port of the same host must not overwrite the stable session cookie.
 const SESSION_COOKIE = sessionCookieNameFor(resolveSpaceInstance(process.env));
@@ -40,6 +41,12 @@ export interface GoogleAuthUserInfo {
   sub: string;
   name?: string;
   picture?: string;
+  /** When Google last asked for the password (seconds); only a step-up asks for it (max_age). */
+  authTime?: number;
+  /** When Google issued the ID token (seconds). */
+  issuedAt?: number;
+  /** The nonce the auth request sent (a step-up's own), echoed by Google in the ID token. */
+  nonce?: string;
 }
 
 export interface SessionPayload {
@@ -54,6 +61,8 @@ export interface SessionPayload {
   sid?: string;
   /** A mobile app's device session (app-signin.ts): a fixed lifetime, never renewed. */
   app?: string;
+  /** A paired phone's channel session (signMobileSession): the device and its scopes. */
+  mobile?: { device: string; scopes: string[] };
 }
 
 export const cookieName = SESSION_COOKIE;
@@ -64,7 +73,7 @@ export function getAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
   let googleClientSecret = env.SPACE_GOOGLE_CLIENT_SECRET || env.GOOGLE_CLIENT_SECRET || undefined;
   if (!googleClientId) {
     try {
-      const candidates = ["/opt/spaceapp/secrets/google-oauth.json", "/var/lib/spaceapp/google-oauth.json"];
+      const candidates = [`${SPACE_INSTALL_ROOT}/secrets/google-oauth.json`, "/var/lib/spaceapp/google-oauth.json"];
       for (const p of candidates) {
         if (existsSync(p)) {
           const raw = JSON.parse(readFileSync(p, "utf8"));
@@ -157,6 +166,18 @@ export function signSessionWithTtl(user: AuthUser, secret: string, ttlSeconds: n
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
   const sig = createHmac("sha256", secret).update(body).digest("base64url");
   return `${body}.${sig}`;
+}
+
+/**
+ * A phone's per-channel session (Nous Pro 1b, ADR-013 §5): at most an hour, the paired device's own session id (so its revoke ends it), the
+ * app, and the device with its scopes. It works only inside the API process: the mobile gate also wants the in-process secret header.
+ */
+export function signMobileSession(user: AuthUser, secret: string, input: { sid: string; app: string; device: string; scopes: string[] }, nowMs = Date.now()): string {
+  if (secret.length < 16) throw new Error("SPACE_SESSION_SECRET must be at least 16 characters.");
+  const payload: SessionPayload = { user, exp: Math.floor(nowMs / 1000) + 3600, iat: Math.floor(nowMs / 1000), v: 2, sid: input.sid, app: input.app,
+    mobile: { device: input.device, scopes: input.scopes } };
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  return `${body}.${createHmac("sha256", secret).update(body).digest("base64url")}`;
 }
 
 export function signSession(user: AuthUser, secret: string, nowMs = Date.now(), carried: { iat?: number; lc?: string; sid?: string; app?: string } = {}): string {
@@ -545,11 +566,43 @@ export function verifyPkce(codeVerifier: string, codeChallenge: string): boolean
   return compBuf.length === chalBuf.length && timingSafeEqual(compBuf, chalBuf);
 }
 
+export const GOOGLE_STEP_UP_MAX_AGE_S = 300;
+
+/** Clock skew allowed between Google and this server for a step-up token's iat. */
+const GOOGLE_STEP_UP_SKEW_S = 60;
+
+/**
+ * Why a step-up's Google sign-in does not prove a fresh sign-in (Nous Pro P1-5), or null when its auth_time is within the last 5 minutes.
+ * Without auth_time (stable 7/11: Google sends it only with "Session age claims" on), a browser step-up (`stepUp`: the nonce it sent Google
+ * and when it started) passes on a token issued for that very request: its nonce, and an iat inside the step-up's window. Never a token of
+ * an older sign-in: that one carries another nonce or none.
+ */
+export function googleStepUpRefusal(info: Pick<GoogleAuthUserInfo, "authTime" | "issuedAt" | "nonce">, nowS = Math.floor(Date.now() / 1000),
+  stepUp?: { nonce: string; startedAtS: number }): { reason: "AUTH_TIME_MISSING" | "AUTH_TIME_STALE" | "NONCE_MISMATCH" | "IAT_OUTSIDE_STEP_UP"; message: string } | null {
+  const stale = { message: "Sign in with your own Google account, with its password, to confirm it is you." };
+  if (info.authTime !== undefined) return nowS - info.authTime > GOOGLE_STEP_UP_MAX_AGE_S ? { reason: "AUTH_TIME_STALE", ...stale } : null;
+  if (!stepUp) return { reason: "AUTH_TIME_MISSING", message: "Google did not say when you signed in (no auth_time), so Space cannot confirm it is you. "
+    + "Turn on Session age claims for this app (Google Cloud console > Google Auth Platform > Settings > Advanced Settings; the app must be published and verified), then try again. Until then, confirm with your SpaceApp password instead." };
+  if (typeof info.nonce !== "string" || !safeEqual(info.nonce, stepUp.nonce)) return { reason: "NONCE_MISMATCH", ...stale };
+  const iat = info.issuedAt;
+  if (iat === undefined || iat < stepUp.startedAtS - GOOGLE_STEP_UP_SKEW_S || iat > nowS + GOOGLE_STEP_UP_SKEW_S || nowS - iat > GOOGLE_STEP_UP_MAX_AGE_S) {
+    return { reason: "IAT_OUTSIDE_STEP_UP", ...stale };
+  }
+  return null;
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a), right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
 export function buildGoogleAuthUrl(input: {
   clientId: string;
   redirectUri: string;
   state: string;
   codeChallenge?: string;
+  /** A step-up (Nous Pro security review P1-5): the ID token carries auth_time (or the step-up's nonce), the caller checks it is fresh. */
+  reauth?: { loginHint?: string; nonce?: string };
 }): string {
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   url.searchParams.set("client_id", input.clientId);
@@ -557,7 +610,15 @@ export function buildGoogleAuthUrl(input: {
   url.searchParams.set("response_type", "code");
   url.searchParams.set("scope", "openid email profile");
   url.searchParams.set("access_type", "online");
-  url.searchParams.set("prompt", "select_account");
+  url.searchParams.set("prompt", input.reauth ? "login" : "select_account");
+  if (input.reauth) {
+    // max_age=0 asks Google for a sign-in now and for auth_time in the ID token (OIDC Core 3.1.2.1); the claims request covers clients with
+    // "Session age claims" on. Where Google still leaves auth_time out, the token's nonce binds it to this step-up (googleStepUpRefusal).
+    url.searchParams.set("claims", JSON.stringify({ id_token: { auth_time: { essential: true } } }));
+    url.searchParams.set("max_age", "0");
+    if (input.reauth.nonce) url.searchParams.set("nonce", input.reauth.nonce);
+    if (input.reauth.loginHint) url.searchParams.set("login_hint", input.reauth.loginHint);
+  }
   url.searchParams.set("state", input.state);
   if (input.codeChallenge) {
     url.searchParams.set("code_challenge", input.codeChallenge);
@@ -635,6 +696,9 @@ export async function verifyGoogleIdToken(input: {
     iss?: unknown;
     exp?: unknown;
     email_verified?: unknown;
+    auth_time?: unknown;
+    iat?: unknown;
+    nonce?: unknown;
     name?: string;
     picture?: string;
   };
@@ -668,6 +732,9 @@ export async function verifyGoogleIdToken(input: {
     email: payload.email,
     sub: payload.sub,
     name: payload.name,
-    picture: payload.picture
+    picture: payload.picture,
+    ...(typeof payload.auth_time === "number" ? { authTime: payload.auth_time } : {}),
+    ...(typeof payload.iat === "number" ? { issuedAt: payload.iat } : {}),
+    ...(typeof payload.nonce === "string" ? { nonce: payload.nonce } : {})
   };
 }

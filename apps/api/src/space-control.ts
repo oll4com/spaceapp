@@ -13,9 +13,11 @@ import type { ControlRecord, ControlRepository } from "@space/db";
 import { makeSpaceId, nowIso, SpaceConflictError, redactMemoryText, type SpaceStore } from "@space/runtime";
 import type { RoomPaneController, RoomPaneObservation } from "./room-pane-control.js";
 import { isCliPane } from "./pane-guards.js";
+import { CliTaskNotResumableError } from "./unified-cli-task-registry.js";
 import { type ControlActor, resolveControlSettingsAction, executeControlPluginAction, restoreControlSettingsSnapshot, executeControlAppearanceAction, ALLOWED_APPEARANCE_THEMES, controlPluginActionSchema, controlRollbackSchema } from "./space-control-settings.js";
 import type { DecisionsService } from "./decisions-service.js";
 import type { ControlCaptureParams } from "./space-control-capture.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /** `dotId` attributes operations and schedules to the Space Dot acting for this user. */
 export type { ControlActor } from "./space-control-settings.js";
@@ -71,16 +73,22 @@ export function assertSecurityPolicy(spec: ControlAction): void {
 }
 export function createSpaceControl(options:{store:SpaceStore;repository:ControlRepository;controller:RoomPaneController;
   phase?: 1 | 2;
+  /** How long a watch or schedule tick waits for its pane's read before it tries again next tick (default 8 s, under the lock's 30 s). */
+  observeBudgetMs?: number;
   /** @deprecated Disconnected transient actions stay pending until an authenticated client is available. */
   queueDisconnected?: boolean;
   publish(roomId:string):Promise<void>;
   publishEvent?: (event: Event) => void;
-  send(pane:Pane,text:string,traceId:string):Promise<unknown>;
+  /** A room-lock timeout (room-watchdog-notices.ts: journal and the room-hour line for Nous; a banner only for a room stuck 10 minutes). */
+  reportWatchdog?: (event: Event) => void;
+  send(pane:Pane,text:string,traceId:string,sourceRequestId?:string):Promise<unknown>;
   closePane?(actor:ControlActor,pane:Pane,traceId:string):Promise<unknown>;
   /** pane start on a rail-tab CLI pane (copilots, Design, App Studio, Video): opens its session as its terminal does and starts the CLI. */
   startRailCli?(actor:ControlActor,pane:Pane,traceId:string):Promise<unknown>;
   resolveActor?(id:string):Promise<ControlActor>;
   checkQuota?(pane:Pane):Promise<{allowed:boolean;reason:string;resetAt?:string}>;
+  /** Why a prompt typed into this pane now would not start a turn (its CLI still works, its composer holds text); null when it would. */
+  promptNotReady?(pane:Pane):Promise<string|null>;
   requireClientAcknowledgement?:boolean;
   integration?(actor:ControlActor,roomId:string,action:ControlAction):Promise<unknown>;
   inspectExtra?(actor:ControlActor,input:ControlInspect):Promise<unknown>;
@@ -116,15 +124,31 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
  const supportsRuntime = (p: Pane) => supportsControlRuntime(p, phase);
  const assertRuntime = (p: Pane) => assertControlRuntime(p, phase);
  const active=new Map<string,Promise<void>>();
+ // Watch and schedule ticks read the pane (screen, transcript, native reader) before the room lock, bounded well under its 30 s:
+ // 2/11 02:30-02:55 UTC each tick held its room 30 s inside inspect, and the throw ended the tick for every room. One read per pane
+ // at a time, so a read the bound left running is shared, not stacked.
+ const observeBudgetMs=options.observeBudgetMs??8_000;
+ const observing=new Map<string,Promise<RoomPaneObservation>>();
+ function observe(pane:Pane):Promise<RoomPaneObservation|null>{
+  let read=observing.get(pane.id);
+  if(!read){read=controller.inspect(pane);observing.set(pane.id,read);void read.catch(()=>{}).finally(()=>{if(observing.get(pane.id)===read)observing.delete(pane.id);});}
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const late=new Promise<null>(resolve=>{timer=setTimeout(()=>resolve(null),observeBudgetMs);timer.unref?.();});
+  return Promise.race([read,late]).finally(()=>clearTimeout(timer));
+ }
  // Nested native adapters must share the same room critical section, including
  // authenticated internal HTTP calls. Expired contexts cannot bypass the lock.
- const roomContext=new AsyncLocalStorage<{roomId:string;held:boolean}>();
+ // A stack: a pane's lock taken inside the room's (a scheduled prompt) still sees the room lock held.
+ const roomContext=new AsyncLocalStorage<ReadonlyArray<{key:string;held:boolean}>>();
  // Who takes a room lock: the watchdog alert names the blocked mutation's pane and the current holder
  // (operator request 2026-10-17: the alert named the room's first pane, closed ones included).
  // retrying: another attempt follows, so the journal gets the timeout but the room gets no alert yet.
  type RoomLockOwner={source:string;paneIds?:readonly string[];requestId?:string|null;actorId?:string|null;retrying?:boolean};
  class RoomLockTimeoutError extends SpaceConflictError { readonly code="ROOM_LOCK_TIMEOUT"; }
- const roomLockHolders=new Map<string,RoomLockOwner&{since:number}>();
+ type LockHolder=RoomLockOwner&{since:number;until:number|null};
+ // Who held each lock lately: a waiter that times out names the holder that held it longest during its wait, not the one that took it
+ // a moment before (R9-10, 28/10: a prompt held room Bruno 30 s and the alert named the 705 ms close that came after it).
+ const roomLockHolders=new Map<string,LockHolder[]>();
  // The panes and request a control record targets: an execute command, a schedule's command, a watch's pane.
  const lockTarget=(value:unknown):Pick<RoomLockOwner,"paneIds"|"requestId">=>{
   const v=value as {paneId?:unknown;requestId?:unknown;actions?:unknown;command?:{requestId?:unknown;actions?:unknown}}|null;
@@ -134,27 +158,36 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   const requestId=typeof v?.requestId==="string"?v.requestId:typeof v?.command?.requestId==="string"?v.command.requestId:null;
   return {paneIds:[...new Set(paneIds)],requestId};
  };
- async function withRoomLock<T>(roomId:string,work:()=>Promise<T>,owner:RoomLockOwner={source:"control"}):Promise<T>{
+ // paneId: that pane's own lock instead of the room's (a pane's prompts); it never stands for the room lock.
+ async function withRoomLock<T>(roomId:string,work:()=>Promise<T>,owner:RoomLockOwner={source:"control"},paneId?:string):Promise<T>{
+  const key=paneId?`room:${roomId}:pane:${paneId}`:`room:${roomId}`;
   const context=roomContext.getStore();
-  if(context?.held&&context.roomId===roomId)return work();
+  if(context?.some(scope=>scope.held&&scope.key===key))return work();
   const waitingSince=Date.now();
+  const holders=roomLockHolders.get(key)??[];
+  roomLockHolders.set(key,holders);
+  const entry:LockHolder={...owner,since:0,until:null};
   try {
-    return await repository.withLock(`room:${roomId}`,async()=>{
-     const scope={roomId,held:true};
-     const holder={...owner,since:Date.now()};
-     roomLockHolders.set(roomId,holder);
-     try{return await roomContext.run(scope,work);}finally{scope.held=false;if(roomLockHolders.get(roomId)===holder)roomLockHolders.delete(roomId);}
+    return await repository.withLock(key,async()=>{
+     const scope={key,held:true};
+     entry.since=Date.now();
+     const kept=holders.filter(h=>h.until===null||h.until>entry.since-120_000).slice(-20);
+     holders.splice(0,holders.length,...kept,entry);
+     try{return await roomContext.run([...(context??[]),scope],work);}finally{scope.held=false;entry.until??=Date.now();}
     }, 30000);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     if (msg.includes("timed out") || msg.includes("freeze")) {
       const describe=(who:RoomLockOwner)=>`${who.source}${who.paneIds?.length?` for ${who.paneIds.join(", ")}`:""}${who.requestId?` (request ${who.requestId})`:""}`;
-      const current=roomLockHolders.get(roomId);
-      // A holder of this process; the lock is held elsewhere (another process) or was just released when there is none.
-      const holder=current?{source:current.source,paneIds:current.paneIds??[],requestId:current.requestId??null,actorId:current.actorId??null,heldMs:Date.now()-current.since}:null;
-      const blocked={source:owner.source,paneIds:owner.paneIds??[],requestId:owner.requestId??null,actorId:owner.actorId??null,waitedMs:Date.now()-waitingSince};
       // The repository's execution timer: this mutation held the lock itself past the timeout (it keeps running, unlocked).
       const overran=msg.includes("holding lock");
+      if(overran)entry.until??=Date.now();
+      const now=Date.now();
+      const during=(h:LockHolder)=>Math.min(h.until??now,now)-Math.max(h.since,waitingSince);
+      // A holder of this process; the lock is held elsewhere (another process) when there is none.
+      const current=overran?entry:holders.filter(h=>h!==entry&&h.since>0&&during(h)>0).sort((a,b)=>during(b)-during(a))[0];
+      const holder=current?{source:current.source,paneIds:current.paneIds??[],requestId:current.requestId??null,actorId:current.actorId??null,heldMs:(current.until??now)-current.since}:null;
+      const blocked={source:owner.source,paneIds:owner.paneIds??[],requestId:owner.requestId??null,actorId:owner.actorId??null,waitedMs:now-waitingSince};
       const alertEvent: Event = {
         id: makeSpaceId("event"),
         roomId,
@@ -179,11 +212,9 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         createdAt: nowIso()
       };
       console.warn(JSON.stringify({level:40,time:Date.now(),event:"space_control.room_lock_timeout",roomId,blocked,holder,retrying:Boolean(owner.retrying),error:msg}));
-      if (!owner.retrying) {
-        // Publish the stored copy: it gets its own id, and a later latest-event republish must not raise a second URGENT card.
-        const recorded = await Promise.resolve(store.recordRoomEvent(alertEvent)).catch(() => null);
-        options.publishEvent?.(recorded ?? alertEvent);
-      }
+      // 2/11: a timeout recovers by itself (the caller hears ROOM_LOCK_TIMEOUT, an overrun's lock is free again): the room-hour summary for
+      // Nous, never a banner or a room event (50 in an hour stacked red banners and filled the room's 50-event replay).
+      if (!owner.retrying) options.reportWatchdog?.(alertEvent);
       throw new RoomLockTimeoutError(`Room watchdog prevented freeze on room "${roomId}": lock timed out (${holder?`held by ${describe(current!)} for ${holder.heldMs} ms`:"holder unknown"}).`);
     }
     throw error;
@@ -442,10 +473,11 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
       : [...selectedPanes].sort((a, b) => (a.isClosed === b.isClosed ? 0 : a.isClosed ? 1 : -1));
     return Promise.all(panes.slice(normalizedInput.offset, normalizedInput.offset + normalizedInput.limit).map(async pane => {
      if (!supportsRuntime(pane)) return { paneId: pane.id, paneName: pane.paneName ?? null, title: pane.title, mode: pane.mode, closed: pane.isClosed, supported: false, reason: "CLI adapter deferred to phase two." };
-     if (!["TERMINAL", "CHAT"].includes(pane.mode)) return { paneId: pane.id, paneName: pane.paneName ?? null, title: pane.title, mode: pane.mode, closed: pane.isClosed, supported: false, reason: "Native content adapter is unavailable for this pane type." };
+     // Every pane with a CLI session (copilots, Design, App Studio, Video, Security, Monitoring) reads like a terminal (SpaceApp Android 31/10).
+     if (!isCliPane(pane) && pane.mode !== "CHAT") return { paneId: pane.id, paneName: pane.paneName ?? null, title: pane.title, mode: pane.mode, closed: pane.isClosed, supported: false, reason: "Native content adapter is unavailable for this pane type." };
       try {
         const observation = await Promise.race([
-          controller.inspect(pane),
+          normalizedInput.section === "CONTENT" && normalizedInput.styled ? controller.inspect(pane, { styled: true }) : controller.inspect(pane),
           new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Pane inspection timed out after 2500ms")), 2500))
         ]);
         if (normalizedInput.section === "MODELS") { const { text, ...metadata } = observation; return { closed: pane.isClosed, paneName: pane.paneName ?? null, ...metadata }; }
@@ -517,7 +549,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   }finally{clientCommands.delete(command.id);}
  }
  async function saveLayout(roomId:string,value:unknown){const old=await layoutRecord(roomId);await writeValue("layout","shared",roomId,roomId,value,old?.version??0);await options.publish(roomId);}
- async function action(actor:ControlActor,command:ControlExecute,spec:ControlAction,index:number):Promise<ControlResult[]>{
+ async function action(actor:ControlActor,command:ControlExecute,spec:ControlAction,index:number,sourceRequestId?:string):Promise<ControlResult[]>{
   const roomId=command.roomId, traceId=command.requestId;
   const done=(evidence:unknown,detail="Control applied."):ControlResult[]=>[{index,status:"COMPLETED",detail,evidence:{result:evidence}}];
 
@@ -811,7 +843,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     await store.reorderPanes(roomId,value.order,traceId);await store.updateRoomPaneLayout(roomId,{paneLayoutColumns:value.columns},traceId);await saveLayout(roomId,value.layout);return applied({snapshotId:targetSnapshotId});
    }
    if(spec.operation==="sort"){
-    let values=new Map<string,string|null>();
+    const values=new Map<string,string|null>();
     if(spec.sortBy==="taskStartedAt")for(const pane of await select(roomId,{state:"OPEN"})){try{const o=await controller.inspect(pane);values.set(pane.id,o.tasks.at(-1)?.timing.startedAt??null);}catch{values.set(pane.id,null);}}
     const key=(p:typeof open[number])=>spec.sortBy==="taskStartedAt"?values.get(p.id):p[spec.sortBy];
     open.sort((a,b)=>{const x=key(a),y=key(b);if(!x||!y)return x?-1:y?1:a.order-b.order;return (String(x).localeCompare(String(y))*(spec.direction==="asc"?1:-1))||a.order-b.order;});
@@ -890,6 +922,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
        }
      }else if(spec.kind==="pane"&&["reopen","restart","resume","start"].includes(spec.operation)){
       const priorSession=pane.mode==="TERMINAL"?await lastCli(pane):null;
+      let fresh=false;
       if(pane.isClosed)pane=await store.updatePane(pane.id,{isClosed:false,status:"IDLE"},traceId);
       // Only an explicit start starts a rail-tab CLI; opening such a pane never does (operator decision 2026-10-23).
       if(!["TERMINAL","CHAT"].includes(pane.mode))evidence=spec.operation==="start"&&isCliPane(pane)&&options.startRailCli?await options.startRailCli(actor,pane,traceId):pane;
@@ -903,13 +936,19 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         }
        }
        else if(spec.operation==="reopen"&&priorSession?.isActive&&!["ERROR","EXITED"].includes(priorSession.status))evidence=await controller.start(pane,traceId);
-       else evidence=await controller.resume(pane,priorSession?.cliTaskId??undefined,traceId);
+       else evidence=await controller.resume(pane,priorSession?.cliTaskId??undefined,traceId).catch(error=>{
+        // A CLI that never ran a command has nothing to resume: restart and reopen start a fresh session; resume still promises the task (2/11).
+        if(spec.operation==="resume"||!(error instanceof CliTaskNotResumableError))throw error;
+        fresh=true;return controller.start(pane,traceId);
+       });
       if(pane.mode==="TERMINAL"){
        const observed=await controller.inspect(pane,{fresh:true});
-       if(priorSession?.codexThreadId&&observed.nativeTaskRef!==priorSession.codexThreadId)
+       // An explicit start is a new session (startCli); only reopen, restart and resume promise the prior native task (EXT-G-6, 2/11).
+       if(spec.operation!=="start"&&!fresh&&priorSession?.codexThreadId&&observed.nativeTaskRef!==priorSession.codexThreadId)
         return {index,paneId,status:"UNKNOWN" as const,detail:"The original native task has not been confirmed after resume.",evidence:{result:evidence}};
        if(["EXITED","ERROR","UNKNOWN"].includes(observed.state))return {index,paneId,status:"UNKNOWN" as const,detail:"CLI readiness has not been confirmed.",evidence:{result:evidence}};
       }
+      if(fresh)return {index,paneId,status:"COMPLETED" as const,detail:"Nothing to resume (the CLI never ran a command): a fresh CLI session started.",evidence:{result:evidence}};
      }else{
       // An account switch restarts the CLI, so whether it waits for the turn is decided on a fresh read.
       let observed=await controller.inspect(pane,spec.kind==="configure"&&spec.accountProfileId!==undefined?{fresh:true}:undefined);
@@ -917,15 +956,18 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
       if(!observed.sessionId)observed=await controller.inspect(pane,{fresh:true});
       if(spec.kind==="pane"&&(spec.operation==="stop"||spec.operation==="cancel")){
        await rememberStop(pane);evidence=await controller.interrupt(pane,traceId);
-       let after=await controller.inspect(pane,{fresh:true});
-       if(after.state==="RUNNING"){
-        for(let i=0;i<10;i++){
+       const settled=async()=>{
+        let after=await controller.inspect(pane,{fresh:true});
+        for(let i=0;i<10&&after.state==="RUNNING";i++){
          await new Promise(r=>setTimeout(r,350));
          // Fresh: the 15 s cached read never changed inside this loop (stable 2026-10-22: Nous's stops answered "not yet confirmed").
          after=await controller.inspect(pane,{fresh:true});
-         if(after.state!=="RUNNING")break;
         }
-       }
+        return after;
+       };
+       let after=await settled();
+       // omp: Escape during a pty:true command ends only the command and the turn goes on (step 9, 3/11); once more ends the turn.
+       if(after.state==="RUNNING"&&after.runtimeId==="cli:omp"){evidence=await controller.interrupt(pane,traceId);after=await settled();}
        if(after.state==="RUNNING")return {index,paneId,status:"UNKNOWN" as const,detail:"Native stop is not yet confirmed; process is still yielding.",evidence:{result:evidence}};
        return {index,paneId,status:"COMPLETED" as const,detail:"Native execution stopped successfully.",evidence:{result:evidence,state:after.state}};
       }
@@ -939,11 +981,11 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
          const ready=await controller.inspect(pane);
          if(ready.nativeTaskRef!==previous.codexThreadId||ready.state!=="IDLE")throw new SpaceConflictError("The same native task is not ready to continue.");
         }
-        evidence=await options.send(pane,spec.text??"Continue the existing approved task from its last completed step.",traceId);
+        evidence=await options.send(pane,spec.text??"Continue the existing approved task from its last completed step.",traceId,sourceRequestId);
        }else evidence=await controller.resume(pane,undefined,traceId);
       }else if(spec.kind==="pane"&&spec.operation==="prompt"){
        if(observed.state==="RUNNING"&&spec.when==="AFTER_TURN"){
-        const scheduled=await defer(actor,command,{...spec,target:{paneIds:[paneId],state:"OPEN"},when:"NOW"});
+        const scheduled=await defer(actor,command,{...spec,target:{paneIds:[paneId],state:"OPEN"},when:"NOW"},sourceRequestId);
         return {index,paneId,status:"PENDING" as const,detail:"Prompt scheduled after the current native turn.",evidence:{scheduleId:scheduled.id}};
        }
        let readyObserved=observed;
@@ -962,8 +1004,14 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         }
        }
        if(readyObserved.state!=="IDLE"&&readyObserved.state!=="WAITING_FOR_INPUT")throw new SpaceConflictError("The pane is not confirmed ready for input.");
+       // 31/10 Alex/Max: a CLI whose screen still shows it working (or a held composer) gets an after-turn prompt at its next empty prompt, never typed now.
+       const notReady=spec.when==="AFTER_TURN"?await options.promptNotReady?.(pane):null;
+       if(notReady){
+        const scheduled=await defer(actor,command,{...spec,target:{paneIds:[paneId],state:"OPEN"},when:"NOW"},sourceRequestId).catch(()=>{throw new SpaceConflictError(`The pane is not confirmed ready for input: ${notReady}.`);});
+        return {index,paneId,status:"PENDING" as const,detail:`Prompt scheduled for the pane's next empty prompt (${notReady}).`,evidence:{scheduleId:scheduled.id}};
+       }
        const submittedAt = nowIso();
-       evidence=await options.send(pane,required(spec.text,"Prompt text is required."),traceId);
+       evidence=await options.send(pane,required(spec.text,"Prompt text is required."),traceId,sourceRequestId);
        try {
          const autoTaskRef = (evidence as any)?.turnId ?? null;
          const autoWatchId = makeSpaceId("control_watch");
@@ -1005,7 +1053,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
        const when=spec.when;
        if(observed.state==="UNKNOWN"&&!(spec.kind==="configure"&&spec.accountProfileId))throw new SpaceConflictError("Native state is unknown.");
        if(when==="AFTER_TURN"&&observed.state==="RUNNING"){
-        const scheduled=await defer(actor,command,{...spec,target:{paneIds:[paneId],state:"OPEN"},when:"NOW"});
+        const scheduled=await defer(actor,command,{...spec,target:{paneIds:[paneId],state:"OPEN"},when:"NOW"},sourceRequestId);
         return {index,paneId,status:"PENDING" as const,detail:"Change scheduled after the current native turn.",evidence:{scheduleId:scheduled.id}};
        }
        const expectedSessionId=required(observed.sessionId,"Pane has no active session.");
@@ -1024,17 +1072,19 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   return results;
  }
  async function operation(actor:ControlActor,roomId:string,id:string){const record=required(await repository.get("operation",actor.id,id),"Operation not found.");if(record.roomId!==roomId)throw new SpaceConflictError("Operation belongs to another room.");return controlOperationSchema.parse(record.value);}
- async function execute(actor:ControlActor,raw:ControlExecute,waitForCompletion=false){
+ async function execute(actor:ControlActor,raw:ControlExecute,waitForCompletion=false,sourceRequestId?:string){
   const command=controlExecuteSchema.parse(raw);await activeRoom(command.roomId);
   if(actor.role!=="ADMIN"&&actor.role!=="USER")throw new SpaceConflictError("Space control requires an authorized user role.");
   const key=hash([command.roomId,command.requestId]),payloadHash=hash(command),previous=await repository.get("operation",actor.id,key);
   if(previous){const value=controlOperationSchema.parse(previous.value);if(value.payloadHash!==payloadHash)throw new SpaceConflictError("Request ID was reused with a different payload.");return value;}
   const initial:ControlOperation={...(actor.dotId?{dotId:actor.dotId}:{}),id:key,actorId:actor.id,roomId:command.roomId,requestId:command.requestId,payloadHash,status:"RUNNING",createdAt:nowIso(),updatedAt:nowIso(),results:[],cancelRequested:false,command,nextIndex:0};
-  if(!await repository.write({kind:"operation",actorId:actor.id,key,roomId:command.roomId,version:1,value:initial},0))return execute(actor,raw,waitForCompletion);
-  return drive(actor,command,key,waitForCompletion);
+  if(!await repository.write({kind:"operation",actorId:actor.id,key,roomId:command.roomId,version:1,value:initial},0))return execute(actor,raw,waitForCompletion,sourceRequestId);
+  return drive(actor,command,key,waitForCompletion,sourceRequestId);
  }
  const ROOM_LOCK_ATTEMPTS=2;
- async function drive(actor:ControlActor,command:ControlExecute,key:string,waitForCompletion=false){
+ async function drive(actor:ControlActor,command:ControlExecute,key:string,waitForCompletion=false,requestedBy?:string){
+  // OBS-006: a caller with no HTTP request (Space Autopilot, the Room Agent, Scheduled Tasks, a resumed operation) names its command's own request id.
+  const sourceRequestId=requestedBy??command.requestId;
   const readOnlyAudit=command.actions.length===1&&(command.actions[0]?.kind==="screenshot"||(command.actions[0]?.kind==="pane"&&command.actions[0].operation==="visual_audit"));
   // Diagnostics and read-only captures (a video runs for minutes) must never enter the room mutation watchdog (which can interrupt tasks).
   // A mutation that cannot take the room lock tries once more, then fails back as ROOM_LOCK_TIMEOUT before the caller is
@@ -1042,9 +1092,12 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   let started=false,markStarted!:()=>void;
   const startedSignal=new Promise<void>((resolve)=>{markStarted=resolve;});
   const owner={source:"execute",...lockTarget(command),actorId:actor.id};
+  // A prompt waits seconds for its CLI to take the text (submitCliPrompt's confirm and re-press): one pane's prompts lock that pane, not
+  // the room, so the room's other work (the operator's attach and control) never waits behind them (R9-10, 28/10: 30 s, Bob's attach aborted).
+  const promptPane=command.actions.every(a=>a.kind==="pane"&&a.operation==="prompt")&&owner.paneIds?.length===1?owner.paneIds[0]:undefined;
   const locked=async <T>(work:()=>Promise<T>):Promise<T>=>{
    for(let attempt=1;;attempt++){
-    try{return await withRoomLock(command.roomId,()=>{started=true;markStarted();return work();},{...owner,retrying:attempt<ROOM_LOCK_ATTEMPTS});}
+    try{return await withRoomLock(command.roomId,()=>{started=true;markStarted();return work();},{...owner,retrying:attempt<ROOM_LOCK_ATTEMPTS},promptPane);}
     catch(error){if(started||attempt>=ROOM_LOCK_ATTEMPTS||!(error instanceof RoomLockTimeoutError))throw error;}
    }
   };
@@ -1085,7 +1138,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         } catch {}
       }
       if (!isHeldBySafety) {
-        try{results=await action(actor,command,spec,index);}catch(error){const msg=message(error);results=[{index,status:"FAILED",detail:msg,error:msg,evidence:{}}];}
+        try{results=await action(actor,command,spec,index,sourceRequestId);}catch(error){const msg=message(error);results=[{index,status:"FAILED",detail:msg,error:msg,evidence:{}}];}
       }
       if (!readOnlyAudit && options.decisionsService && !command.dryRun && !(spec as any).dryRun) {
         for (const r of results) {
@@ -1220,7 +1273,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   }
   return latest;
  }
- async function createSchedule(actor:ControlActor,roomId:string,input:ControlExecute,dueAt:string,condition:"AT_TIME"|"AFTER_TURN",parentOperationId?:string){
+ async function createSchedule(actor:ControlActor,roomId:string,input:ControlExecute,dueAt:string,condition:"AT_TIME"|"AFTER_TURN",parentOperationId?:string,sourceRequestId?:string){
   if(input.roomId!==roomId)throw new SpaceConflictError("Schedule room mismatch.");
   const expectedTasks:Record<string,string|null>={},expectedModels:Record<string,string|null>={},stopVersions:Record<string,number>={};
   const actions:ControlAction[]=[];
@@ -1242,12 +1295,12 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    actions.push({...spec,target:{paneIds:panes.map(p=>p.id),state:"ALL"}} as ControlAction);
   }
   const value=controlScheduleSchema.parse({...(actor.dotId?{dotId:actor.dotId}:{}),id:makeSpaceId("control_schedule"),actorId:actor.id,roomId,dueAt,
-   command:{...input,actions,expectedRevision:undefined},status:"SCHEDULED",condition,parentOperationId,expectedTasks,expectedModels,stopVersions,createdAt:nowIso()});
+   command:{...input,actions,expectedRevision:undefined},status:"SCHEDULED",condition,parentOperationId,...(sourceRequestId?{sourceRequestId}:{}),expectedTasks,expectedModels,stopVersions,createdAt:nowIso()});
   value.command.requestId=`schedule:${value.id}`;
   await writeValue("schedule",actor.id,value.id,roomId,value,0);return value;
  }
- async function defer(actor:ControlActor,command:ControlExecute,spec:ControlAction){
-  return createSchedule(actor,command.roomId,{...command,actions:[spec]},nowIso(),"AFTER_TURN",hash([command.roomId,command.requestId]));
+ async function defer(actor:ControlActor,command:ControlExecute,spec:ControlAction,sourceRequestId?:string){
+  return createSchedule(actor,command.roomId,{...command,actions:[spec]},nowIso(),"AFTER_TURN",hash([command.roomId,command.requestId]),sourceRequestId);
  }
  async function schedules(actor:ControlActor,roomId:string,op:string,id?:string,dueAt?:string,command?:ControlExecute){
   await activeRoom(roomId);
@@ -1265,7 +1318,9 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   return withRoomLock(roomId,()=>createSchedule(actor,roomId,input,time,"AT_TIME"));
  }
  async function recover(){
-  for(const record of await repository.list("operation",null)){
+  // Only a RUNNING receipt can change: locking and rewriting all of them (6,208, 2 RUNNING, 6/11) took 31 s per start and past
+  // the 120 s onReady limit on the Greece DR copy's slow disk, so the API exited before it listened.
+  for(const record of (await repository.list("operation",null)).filter(r=>(r.value as {status?:unknown}|null)?.status==="RUNNING")){
    await withRoomLock(record.roomId,async()=>{
     await updateRecord("operation",record.actorId,record.key,raw=>{
      const value=controlOperationSchema.parse(raw);
@@ -1277,10 +1332,12 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    });
   }
  }
+ // 2/11 (room watchdog, load 45 on 24 cores): the checks inspect each pane (30 s then) and the command types a prompt; held under the room
+ // lock they stopped every control of the room. The lock now guards only the claim and the final write; execute takes its own locks.
  async function advanceSchedule(saved:ControlRecord){
-  return withRoomLock(saved.roomId,async()=>{
+  const lockOwner={source:"schedule tick",...lockTarget(saved.value),actorId:saved.actorId};
   const record=required(await repository.get("schedule",saved.actorId,saved.key),"Schedule disappeared.");
-  let value=controlScheduleSchema.parse(record.value);
+  const value=controlScheduleSchema.parse(record.value);
   if(!["SCHEDULED","RUNNING"].includes(value.status)||Date.parse(value.dueAt)>Date.now())return;
   try{
    if(!options.resolveActor)throw new SpaceConflictError("Operator authorization cannot be refreshed.");
@@ -1294,29 +1351,42 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
      const pane=await store.getPane(paneId);
      if(pane.roomId!==value.roomId||pane.isClosed)throw new SpaceConflictError("Scheduled pane moved or was closed.");
      if(((await repository.get("pane_state","shared",paneId))?.version??0)!==value.stopVersions[paneId])throw new SpaceConflictError("A newer operator stop superseded this schedule.");
-     const observed=await controller.inspect(pane);
+     const observed=await observe(pane);
+     if(!observed)return;
      const taskRef=observed.nativeTaskRef||observed.sessionId;
      const modelId=observed.modelId||pane.modelId;
      if(taskRef!==nativeTask||modelId!==value.expectedModels[paneId])throw new SpaceConflictError("Scheduled native task or model changed.");
      if(observed.state==="RUNNING")return;
+     if(value.command.actions.every(a=>(a.kind==="pane"&&a.operation==="prompt")||(a.kind==="configure"&&a.modelId!==undefined))&&await options.promptNotReady?.(pane))return;
      if(observed.state==="UNKNOWN"||observed.state==="WAITING_FOR_INPUT")throw new SpaceConflictError("Native task is not confirmed ready for scheduled continuation.");
      if(value.condition==="AT_TIME"){
       const quota=await options.checkQuota?.(pane);
       if(!quota?.allowed)throw new SpaceConflictError(quota?.reason??"Native quota evidence is unavailable; automatic continuation was withheld.");
      }
     }
-    value.status="RUNNING";
-    if(!await repository.write({...record,value},record.version))return;
+    // The claim: only while nobody changed the schedule (a cancel, a clock change) or stopped one of its panes since the checks.
+    const claimed=await withRoomLock(saved.roomId,async()=>{
+     for(const paneId of Object.keys(value.expectedTasks))
+      if(((await repository.get("pane_state","shared",paneId))?.version??0)!==value.stopVersions[paneId])throw new SpaceConflictError("A newer operator stop superseded this schedule.");
+     value.status="RUNNING";
+     return repository.write({...record,value},record.version);
+    },lockOwner);
+    if(!claimed)return;
    }
-   const result=existing?controlOperationSchema.parse(existing.value):await execute(actor,value.command,true);
+   // OBS-006: an AT_TIME schedule starts from no request, so the server names one for the schedule and its due time (a deferred one keeps its HTTP request's).
+   const sourceRequestId=value.sourceRequestId??(value.condition==="AT_TIME"?`sched-${value.id}-${value.dueAt}`:undefined);
+   const result=existing?controlOperationSchema.parse(existing.value):await execute(actor,value.command,true,sourceRequestId);
    value.operationId=result.id;
    value.status=result.status==="RUNNING"?"RUNNING":result.status==="COMPLETED"?"COMPLETED":result.status==="CANCELLED"?"CANCELLED":"BLOCKED";
    value.reason=value.status==="BLOCKED"?result.results.map(r=>r.detail).join("\n").slice(0,2000):null;
-  }catch(error){value.status="BLOCKED";value.reason=message(error);}
-  await updateRecord("schedule",record.actorId,record.key,raw=>{
+  }catch(error){
+   // A busy room lock blocks nothing: the schedule stays as it was and the next tick tries again.
+   if(error instanceof RoomLockTimeoutError)throw error;
+   value.status="BLOCKED";value.reason=message(error);
+  }
+  await withRoomLock(saved.roomId,()=>updateRecord("schedule",record.actorId,record.key,raw=>{
    const latest=controlScheduleSchema.parse(raw);return latest.status==="CANCELLED"?latest:value;
-  });
-  },{source:"schedule tick",...lockTarget(saved.value),actorId:saved.actorId});
+  }),lockOwner);
  }
  
   async function watches(actor:ControlActor,roomId:string,op:string,params:{id?:string;paneId?:string;targetTaskRef?:string;timeoutMs?:number;maxRetries?:number;verificationPrompt?:string;remediationPrompt?:string}){
@@ -1328,6 +1398,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     if(schedule.roomId!==roomId)throw new SpaceConflictError("Schedule belongs to another room.");
     return controlScheduleSchema.parse(schedule.value);
    }
+   // 31/10: a request moved off a busy pane takes its after-turn text with it (Nous cancels the schedule by the id its send answered).
+   if(op==="cancel"&&params.id?.startsWith("control_schedule:"))return schedules(actor,roomId,"cancel",params.id);
    if(op==="status"||op==="get"){
     const record=required(await repository.get("watch",actor.id,required(params.id,"Watch ID is required.")),"Watch not found.");
     if(record.roomId!==roomId)throw new SpaceConflictError("Watch belongs to another room.");
@@ -1391,10 +1463,19 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    const list=await repository.list("watch",actor.id,roomId);
    return list.map(r=>controlWatchSchema.parse(r.value)).filter(w=>w.voiceDelivery.queued&&!w.voiceDelivery.acknowledged);
   }
+  // 2/11: the pane inspection (a screen read, the CLI's transcript; 30 s at load 45) runs before the room lock, never under it.
+  async function observeWatchedPane(saved:ControlRecord):Promise<{pane:Pane;observed:RoomPaneObservation|null}|null>{
+   const value=controlWatchSchema.parse(saved.value);
+   if(!["PENDING","RUNNING","VERIFYING"].includes(value.status)||Date.now()-Date.parse(value.createdAt)>value.timeoutMs)return null;
+   const pane=await Promise.resolve().then(()=>store.getPane(value.paneId)).catch(()=>null);
+   return pane&&!pane.isClosed?{pane,observed:await observe(pane)}:null;
+  }
   async function advanceWatch(saved:ControlRecord){
+   const early=await observeWatchedPane(saved);
+   if(early?.observed===null)return;
    return withRoomLock(saved.roomId,async()=>{
     const record=required(await repository.get("watch",saved.actorId,saved.key),"Watch disappeared.");
-    let value=controlWatchSchema.parse(record.value);
+    const value=controlWatchSchema.parse(record.value);
     if(!["PENDING","RUNNING","VERIFYING"].includes(value.status))return;
     const populatePaneDetails = (p?: Pane, obs?: RoomPaneObservation) => {
       const pId = p?.id || value.paneId;
@@ -1458,7 +1539,9 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
      await notifyQueued(saved.roomId, value);
      return;
     }
-    const observed=await controller.inspect(pane);
+    // Read before the lock; a pane that timed out, closed or vanished since is settled above, anything else waits for the next tick.
+    if(!early?.observed||early.pane.id!==pane.id)return;
+    const observed=early.observed;
     if(value.status==="PENDING"){
      if(observed.state==="RUNNING"){
       value.status="RUNNING";value.taskState="RUNNING";value.updatedAt=nowIso();
@@ -1586,13 +1669,14 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     const val=controlWatchSchema.parse(record.value);
     if(activeWatchStatuses.includes(val.status)){
      found+=1;
-     const fresh=await repository.get("watch",record.actorId,record.key);if(fresh)await advanceWatch(fresh);
+     // One record's failure (a room lock timeout) waits for the next tick without stopping every other room's records.
+     const fresh=await repository.get("watch",record.actorId,record.key);if(fresh)await advanceWatch(fresh).catch(()=>{});
     }
    }
    for(const record of await listActiveRecords("schedule",activeScheduleStatuses)){
     if(!activeScheduleStatuses.includes(controlScheduleSchema.parse(record.value).status))continue;
     found+=1;
-    const fresh=await repository.get("schedule",record.actorId,record.key);if(fresh)await advanceSchedule(fresh);
+    const fresh=await repository.get("schedule",record.actorId,record.key);if(fresh)await advanceSchedule(fresh).catch(()=>{});
    }
    for(const record of await listActiveRecords("operation",activeOperationStatuses)){
     const value=controlOperationSchema.parse(record.value);if(!activeOperationStatuses.includes(value.status))continue;
@@ -1626,7 +1710,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   async function screenshot(actor:ControlActor,roomId:string,params:z.infer<typeof controlToolSchemas.space_screenshot>|{format?:"jpeg"|"png"|"webp";viewport?:(typeof controlScreenshotViewports)[number]}){
    const p=params as Partial<z.infer<typeof controlToolSchemas.space_screenshot>>;
    const spec:ControlAction={kind:"screenshot",operation:"capture",target:"APP",format:p.format??"jpeg",quality:p.quality??80,maxWidth:p.maxWidth,maxHeight:p.maxHeight,
-    viewport:p.viewport??(p.aspect?controlCaptureAspects[p.aspect]:undefined),paneId:p.paneId,crop:p.crop,dock:p.dock,settings:p.settings,health:p.health,video:p.video,fitTerminals:p.fitTerminals};
+    viewport:p.viewport??(p.aspect?controlCaptureAspects[p.aspect]:undefined),paneId:p.paneId,crop:p.crop,dock:p.dock,settings:p.settings,health:p.health,video:p.video,fitTerminals:p.fitTerminals,language:p.language};
    // A still waits for its image; a video answers RUNNING at once and the caller polls space_operations get.
    // shortcut: an API restart during a recording runs it again from the start and leaves the old directory; add a started marker if that matters.
    const op=await execute(actor,{roomId,requestId:makeSpaceId("control_shot"),actions:[spec]},!p.video);
@@ -1888,7 +1972,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
           failedTools: failedTools.map(f => ({ tool: f.tool, error: f.error })),
           agentHandoffPrompt
         }) + "\n";
-        appendFileSync("/opt/spaceapp/var/live-voice-logs/debug-incidents.jsonl", line);
+        appendFileSync(`${SPACE_INSTALL_ROOT}/var/live-voice-logs/debug-incidents.jsonl`, line);
       } catch {}
     }
 
@@ -1996,7 +2080,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
 
     let recentIncidents: any[] = [];
     try {
-      const content = await fsPromises.readFile("/opt/spaceapp/var/live-voice-logs/debug-incidents.jsonl", "utf8");
+      const content = await fsPromises.readFile(`${SPACE_INSTALL_ROOT}/var/live-voice-logs/debug-incidents.jsonl`, "utf8");
       recentIncidents = content.trim().split("\n").filter(Boolean).map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean).slice(-5);
     } catch {}
 

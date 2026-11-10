@@ -3,7 +3,7 @@ import { z } from "zod";
 import {
   vaultAgentAccessRequestSchema, vaultAuditQuerySchema, vaultEnrollRequestSchema,
   vaultItemIdSchema, vaultItemRecordSchema, vaultPasswordRotateRequestSchema, vaultRecoverySetRequestSchema, vaultUnlockRequestSchema,
-  vaultBase64url, vaultCanonicalJson, vaultDelegateRequestSchema, vaultInboxKeySetRequestSchema, vaultPendingIdSchema,
+  vaultBase64url, vaultCanonicalJson, vaultDelegateRequestSchema, vaultDelegationOrigins, vaultInboxKeySetRequestSchema, vaultPendingIdSchema,
   vaultDelegationCertificateSchema, vaultDigest, verifyVaultCertificate, verifyVaultMessage, vaultOperatorRequestMessage,
   vaultSignupGrantCertificateSchema, vaultSignupGrantIdSchema, vaultSignupGrantRequestSchema, VAULT_SIGNUP_GRANT_LIMITS, VAULT_BROKER_API_MAX_BYTES,
   vaultItemBatchRequestSchema, vaultItemDeleteRequestSchema, vaultSiteCheckRequestSchema, type VaultAuditEvent, type VaultOperatorSignedKind,
@@ -25,7 +25,7 @@ export const cliVaultPathPrefix = "/api/cli/space-vault/";
 export type VaultStore = Pick<PostgresVaultRepository,
   "getVault" | "enroll" | "rotateUnlock" | "setRecovery" | "bumpEpoch" | "saveItem" | "saveItems" | "deleteItems" | "getItem" | "listItems" | "listItemRecords" | "itemsByLoginKey" | "itemStats"
   | "enableAgentAccess" | "revokeAgentAccess" | "issueNonce" | "consumeNonce" | "appendAudit" | "listAudit" | "verifyAudit" | "createDelegation" | "getActiveDelegation" | "extendDelegation"
-  | "setInbox" | "getInbox" | "addPending" | "listPending" | "deletePending" | "addSignupGrant" | "listSignupGrants" | "revokeSignupGrant"
+  | "setInbox" | "getInbox" | "addPending" | "listPending" | "deletePending" | "setLoginPage" | "addSignupGrant" | "listSignupGrants" | "revokeSignupGrant"
   | "addHandoffKey" | "listHandoffKeys" | "takeHandoffKey" | "useHandoffKey" | "deleteHandoffKey">;
 
 const notEnrolled = (): never => { throw new GitControlError("VAULT_NOT_ENROLLED", "Set up the Vault first.", 404); };
@@ -51,6 +51,8 @@ export interface VaultRouteDependencies {
   siteCheck?: (origins: string[]) => Promise<VaultSiteResult[]>;
   /** Seals the API keys the operator hands to agents (server-readable by design, unlike logins). */
   crypto: ConnectorCrypto;
+  /** A key just added (Space Gateway takes the free ones). */
+  keySaved?(owner: string, key: { label: string; value: string }): void;
 }
 
 export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDependencies): void {
@@ -87,7 +89,7 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
     const brokerAvailable = await broker.transportKey().then(() => true, () => false);
     return {
       ownerUserId: owner, enrolled: vault !== null, brokerAvailable, agentAccess: vault?.agentAccess ?? false, delegatedItems: delegation?.certificate.claims.items.length ?? 0,
-      // Logins agents saved or the Vault generated that wait for an unlocked dock to add and hand them over.
+      // Logins agents saved or the Vault generated that the dock has not filed as items yet (agents fill them already).
       pendingItems: vault ? (await repository().listPending(owner)).length : 0,
       vault: vault && { vaultId: vault.vaultId, epoch: vault.epoch, delegationGeneration: vault.delegationGeneration, kdf: vault.kdf,
         unlockKeyVersion: vault.unlockKeyVersion, hasRecovery: vault.recovery !== null, auditSeq: vault.auditSeq, createdAt: vault.createdAt, updatedAt: vault.updatedAt }
@@ -241,9 +243,10 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
         throw await refuse("ITEM_NOT_DELEGABLE");
       }
       if (Object.keys(body.fillEnvelopes[requested.handle] ?? {}).sort().join() !== [...requested.fields].sort().join()) throw await refuse("ENVELOPES_MISMATCH");
-      // The operator signs the item's own exact origins; any other set never reaches the broker.
-      if ([...requested.origins].sort().join("\n") !== [...metadata.origins].sort().join("\n")) throw await refuse("ORIGINS_MISMATCH");
-      items.push({ handle: requested.handle, origins: metadata.origins, fields: requested.fields, approvalMode: requested.approvalMode, submit: requested.submit });
+      // Accept the exact stored set (older unlocked tabs) or its reviewed login affiliates, all covered by the unlock signature.
+      const signedOrigins = [...requested.origins].sort().join("\n");
+      if (![metadata.origins, vaultDelegationOrigins(metadata.origins)].some(origins => [...origins].sort().join("\n") === signedOrigins)) throw await refuse("ORIGINS_MISMATCH");
+      items.push({ handle: requested.handle, origins: requested.origins, fields: requested.fields, approvalMode: requested.approvalMode, submit: requested.submit });
     }
     if (Object.keys(body.fillEnvelopes).some((handle) => !body.items.some((item) => item.handle === handle))) throw await refuse("ENVELOPES_MISMATCH");
     // Generation, epoch and expiry are part of what the operator signed; they must also be this vault's next ones. A standing
@@ -341,7 +344,12 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
     await repository().appendAudit(owner, { actor: "OPERATOR", action: "INBOX_SET", result: "OK" });
     return { inbox: true };
   });
-  app.get(route("/pending"), routeOptions, async (request) => ({ pending: await repository().listPending(await deps.owner(request)) }));
+  // `sealed=0`: the rows only (label, site, kind, time) for the dock's list, which shows them locked or unlocked; the import reads the sealed values.
+  app.get(route("/pending"), routeOptions, async (request) => {
+    const pending = await repository().listPending(await deps.owner(request));
+    if (parseQuery(z.object({ sealed: z.enum(["0", "1"]).optional() }).strict(), request.query).sealed !== "0") return { pending };
+    return { pending: pending.map((entry) => ({ ...entry, sealedUsername: null, sealedPassword: null })) };
+  });
   app.delete(route("/pending/:id"), routeOptions, async (request) => {
     const owner = await deps.owner(request);
     const { id } = parseQuery(z.object({ id: vaultPendingIdSchema }).strict(), request.params);
@@ -361,6 +369,7 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
     const stored = await repository().addHandoffKey(owner, { id, label: body.label, valueSealed: deps.crypto.seal(body.value, connectorSealContext("vault-handoff-key", owner, id)), expiresAt, kept: body.kept });
     if (!stored) throw new GitControlError("VAULT_KEY_NOT_STORED", "The key could not be stored.", 409);
     await repository().appendAudit(owner, { actor: "OPERATOR", action: "KEY_HANDOFF", result: "OK", reason: "ADDED" });
+    deps.keySaved?.(owner, { label: body.label, value: body.value });
     return reply.code(201).send({ key: { id, label: body.label, createdAt: createdAt.toISOString(), expiresAt, takenAt: null, takenByPaneId: null, usedAt: null, usedByPaneId: null, hasValue: true, kept: body.kept, savedBy: null } });
   });
   app.get(route("/keys"), routeOptions, async (request) => ({ keys: await repository().listHandoffKeys(await deps.owner(request)) }));

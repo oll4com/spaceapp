@@ -237,6 +237,49 @@ describe("SetupConnectionCheckRunManager", () => {
     expect(fake.verifyCalls.get("cli:codex")).toBe(2);
     expect(fake.verifyCalls.get("cli:gemini")).toBe(1);
   });
+
+  it("DATA-001: a run the previous API left RUNNING is finished instead of blocking every new check", async () => {
+    const store = new InMemorySpaceStore();
+    claimOwner(store);
+    const fake = fakeSetupService("cli:claude");
+    const before = new SetupConnectionCheckRunManager({ store, setupConnections: fake.service });
+    const orphan = await before.startAll("user:owner");
+    await waitForCompletedCount(store, orphan.run.id, 15);
+
+    // A new API process on the same database (restart or deploy while cli:claude was still being checked).
+    const after = new SetupConnectionCheckRunManager({ store, setupConnections: fake.service });
+    const streamed = await after.replay(orphan.run.id, 0);
+    expect(after.isStreamTerminal(streamed)).toBe(true);
+    expect(streamed.run).toMatchObject({ status: "COMPLETED", completedCount: 16 });
+    expect(streamed.events.filter((event) => event.connectionId === "cli:claude" && event.state === "COMPLETED"))
+      .toEqual([expect.objectContaining({ stage: "Provider failed", reasonCode: "CHECK_EXECUTION_FAILED" })]);
+    expect(streamed.events.filter((event) => event.state === "COMPLETED")).toHaveLength(16);
+
+    const single = await after.startSingle("cli:claude", "user:owner");
+    expect(single.reused).toBe(false);
+    fake.releaseBlocked();
+    await Promise.all([before.whenSettled(orphan.run.id), after.whenSettled(single.run.id)]);
+  });
+
+  it("DATA-001: new checks start once the previous API's orphaned run is finished", async () => {
+    const store = new InMemorySpaceStore();
+    claimOwner(store);
+    const fake = fakeSetupService("cli:claude");
+    const before = new SetupConnectionCheckRunManager({ store, setupConnections: fake.service });
+    const orphan = await before.startAll("user:owner");
+    await waitForCompletedCount(store, orphan.run.id, 15);
+
+    const after = new SetupConnectionCheckRunManager({ store, setupConnections: fake.service });
+    const [all, single] = [await after.startAll("user:owner"), await after.startSingle("cli:claude", "user:owner")];
+    expect(all.reused).toBe(false);
+    expect(all.run.id).not.toBe(orphan.run.id);
+    expect(single).toMatchObject({ reused: true, run: { id: all.run.id } });
+    expect(store.getSetupConnectionCheckRun(orphan.run.id)).toMatchObject({ status: "COMPLETED", completedCount: 16 });
+
+    fake.releaseBlocked();
+    await Promise.all([after.whenSettled(all.run.id), after.whenSettled(single.run.id), before.whenSettled(orphan.run.id)]);
+    expect(store.getSetupConnectionCheckRun(all.run.id)).toMatchObject({ status: "COMPLETED", completedCount: 16 });
+  });
 });
 
 describe("setup connection check run API", () => {

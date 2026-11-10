@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from 
 import { dotPersonalities, type AgentPaneSession, type DotMood, type DotProfile } from "@space/contracts";
 import { ChevronDown, MoreHorizontal, PanelRight, Phone, Settings, SquarePen } from "../ui-theme/app-icons.js";
 import { DotAvatar, statusMood } from "./DotAvatar.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 const artwork: Record<DotProfile["appearance"]["character"], string> = {
   astronaut: "orbit", star: "nova", robot: "byte", comet: "comet", moon: "luna", planet: "cosmo"
@@ -59,6 +60,8 @@ export function DotHeader({ dots, selected, status, mood, blocked, motionActive,
   panelOpen: boolean; onTogglePanel: () => void;
   actions: DotHeaderAction[]; unread?: number;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState !== "hidden");
   const dotTrigger = useRef<HTMLButtonElement>(null);
   const dotMenu = useRef<HTMLDivElement>(null);
@@ -87,43 +90,43 @@ export function DotHeader({ dots, selected, status, mood, blocked, motionActive,
   const name = selected?.name ?? "Dots";
   return <header className="dots-header">
     <div className="dots-header-start">
-      <button type="button" className="dots-icon-button" aria-label="New conversation" title="New conversation" disabled={newConversationDisabled}
+      <button type="button" className="dots-icon-button" aria-label={t("New conversation")} title={t("New conversation")} disabled={newConversationDisabled}
         onClick={onNewConversation}><SquarePen aria-hidden="true" /></button>
     </div>
     <div className="dots-header-center">
-      <button ref={dotTrigger} type="button" className="dots-identity" aria-label={`Choose Dot (${name})`} aria-haspopup="menu" aria-expanded={dotsPopup.open}
-        title={blocked ? "Finish or stop the current action before switching Dots." : "Choose Dot"}
+      <button ref={dotTrigger} type="button" className="dots-identity" aria-label={t("Choose Dot ({name})", { name })} aria-haspopup="menu" aria-expanded={dotsPopup.open}
+        title={blocked ? t("Finish or stop the current action before switching Dots.") : t("Choose Dot")}
         disabled={blocked || dots.length !== 6} onClick={() => dotsPopup.setOpen((value) => !value)}>
         {selected ? <span className="dots-selected-mascot" data-motion-active={motionActive && documentVisible ? "true" : "false"}>
           <DotAvatar character={selected.appearance.character} mood={mood ?? statusMood(status)} size={32}
             motion={motionActive && documentVisible ? "on" : "off"} />
           {unread ? <span className="dots-unread" aria-hidden="true" /> : null}
         </span> : null}
-        <span className="dots-identity-text"><strong>{name}</strong><span className="dots-status" data-status={statusTone(status)}>{status}</span></span>
+        <span className="dots-identity-text"><strong>{name}</strong><span className="dots-status" data-status={statusTone(status)}>{t(status)}</span></span>
         <ChevronDown aria-hidden="true" />
       </button>
-      <span className="sr-only" role="status">{`${name}: ${status}${unread ? `, ${unread} unread` : ""}`}</span>
-      {dotsPopup.open ? <div ref={dotMenu} className="dots-choice-menu" role="menu" aria-label="Dots">
-        {dots.map((dot, i) => <button key={dot.dotId} type="button" role="menuitemradio" aria-checked={selected?.dotId === dot.dotId} aria-label={`Select ${dot.name}`}
+      <span className="sr-only" role="status">{unread ? t("{name}: {status}, {count} unread", { name, status: t(status), count: unread }) : t("{name}: {status}", { name, status: t(status) })}</span>
+      {dotsPopup.open ? <div ref={dotMenu} className="dots-choice-menu" role="menu" aria-label={t("Dots")}>
+        {dots.map((dot, i) => <button key={dot.dotId} type="button" role="menuitemradio" aria-checked={selected?.dotId === dot.dotId} aria-label={t("Select {name}", { name: dot.name })}
           title={dotPersonalities[dot.appearance.character].archetype}
           onKeyDown={(event) => navigate(event, i, dots.length + 1, 3, dotsPopup, dotMenu)} onClick={() => { dotsPopup.close(); onSelect(dot); }}>
           <DotAvatar character={dot.appearance.character} size={36} motion="hover" /><span>{dot.name}</span>
         </button>)}
         <button type="button" role="menuitem" className="dots-choice-manage" onKeyDown={(event) => navigate(event, dots.length, dots.length + 1, 3, dotsPopup, dotMenu)}
-          onClick={() => { dotsPopup.close(); onManage(); }}><Settings aria-hidden="true" /><span>Manage Dots in Settings</span></button>
+          onClick={() => { dotsPopup.close(); onManage(); }}><Settings aria-hidden="true" /><span>{t("Manage Dots in Settings")}</span></button>
       </div> : null}
     </div>
     <div className="dots-header-end">
-      <button ref={moreTrigger} type="button" className="dots-icon-button" aria-label="More actions" title="More actions" aria-haspopup="menu"
+      <button ref={moreTrigger} type="button" className="dots-icon-button" aria-label={t("More actions")} title={t("More actions")} aria-haspopup="menu"
         aria-expanded={morePopup.open} onClick={() => morePopup.setOpen((value) => !value)}><MoreHorizontal aria-hidden="true" /></button>
-      {morePopup.open ? <div ref={moreMenu} className="dots-more-menu" role="menu" aria-label="More actions">
+      {morePopup.open ? <div ref={moreMenu} className="dots-more-menu" role="menu" aria-label={t("More actions")}>
         {actions.map((action, i) => <button key={action.label} type="button" role="menuitem" disabled={action.disabled}
           onKeyDown={(event) => navigate(event, i, actions.length, 1, morePopup, moreMenu)}
-          onClick={() => { morePopup.close(); action.onSelect(); }}>{action.label}</button>)}
+          onClick={() => { morePopup.close(); action.onSelect(); }}>{t(action.label)}</button>)}
       </div> : null}
-      <button type="button" className="dots-icon-button" aria-label={`Call ${name}`} title={callDisabledReason ?? `Call ${name}`}
+      <button type="button" className="dots-icon-button" aria-label={t("Call {name}", { name })} title={callDisabledReason ? t(callDisabledReason) : t("Call {name}", { name })}
         disabled={Boolean(callDisabledReason)} onClick={onCall}><Phone aria-hidden="true" /></button>
-      <button type="button" className="dots-icon-button" aria-label={`${name} details`} title={panelOpen ? "Hide details" : "Show details"}
+      <button type="button" className="dots-icon-button" aria-label={t("{name} details", { name })} title={panelOpen ? t("Hide details") : t("Show details")}
         aria-pressed={panelOpen} onClick={onTogglePanel}><PanelRight aria-hidden="true" /></button>
     </div>
   </header>;

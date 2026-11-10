@@ -14,9 +14,10 @@ import type {
   SourceControlConnectionRecord,
   SpaceStore
 } from "@space/runtime";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const controlCommand = "/usr/bin/sudo";
-const controlExecutable = "/opt/spaceapp/bin/space-release-control";
+const controlExecutable = `${SPACE_INSTALL_ROOT}/bin/space-release-control`;
 const secretReferenceSchema = z.string().regex(/^source_control_(?:gitea|github)_[A-Za-z0-9_-]{8,96}$/);
 const previewStateSchema = releasePreviewSchema.omit({ id: true, createdAt: true });
 const activeStatuses = new Set(["QUEUED", "RUNNING"]);

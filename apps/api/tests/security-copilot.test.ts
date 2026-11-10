@@ -10,11 +10,12 @@ import { InMemorySecurityCopilotRepository } from "@space/db";
 import { InMemorySpaceStore, SpaceEventBus } from "@space/runtime";
 import { defaultSecurityCopilotPaneMetadata, type NotificationRaiseInput, type SecurityInventory } from "@space/contracts";
 import { createSecurityCopilotService } from "../src/security-copilot/service.js";
-import type { SecurityFeeds } from "../src/security-copilot/feeds.js";
+import { createFeeds, type SecurityFeeds } from "../src/security-copilot/feeds.js";
 import {
   compareVersions, cpeRangeMatches, distroFindings, newsFindings, parseFeed, parseNvdCve, productFindings, type KevEntry
 } from "../src/security-copilot/matcher.js";
 import { createApp } from "../src/app.js";
+import { createCsrfToken, csrfHeaderName, signSessionWithTtl } from "../src/auth.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { getApiConfig } from "../src/config.js";
 
@@ -92,7 +93,7 @@ describe("Security Copilot matching", () => {
   });
 });
 
-function serviceFixture(feedOverrides: Partial<SecurityFeeds> = {}) {
+function serviceFixture(feedOverrides: Partial<SecurityFeeds> = {}, askOwnHosts = false) {
   const store = new InMemorySpaceStore();
   const room = store.createRoom({ name: "Security", initialPaneCount: 0 });
   const ownerUserId = "user:operator";
@@ -110,10 +111,66 @@ function serviceFixture(feedOverrides: Partial<SecurityFeeds> = {}) {
   const service = createSecurityCopilotService({
     repository, store: { updateSecurityCopilotMetadata: (paneId, metadata) => store.updateSecurityCopilotMetadata(paneId, metadata), listRooms: () => [{ id: room.id, ownerUserId }], listPanes: (roomId, includeClosed) => store.listPanes(roomId, includeClosed) },
     feeds, notifications: { raise: async (input) => { raised.push(input as NotificationRaiseInput); return {} as never; }, resolve: async (_owner, key) => { resolved.push(key); return 1; } },
-    kickoff: { ready: async () => true, send: async (target) => { kickoffs.push(target.id); } }, fetchPage: async () => "<html><body>Fixed CVE-2026-109618 in PHP 8.4.27</body></html>", now: () => clock
+    kickoff: { ready: async () => true, send: async (target) => { kickoffs.push(target.id); } }, fetchPage: async () => "<html><body>Fixed CVE-2026-109618 in PHP 8.4.27</body></html>", now: () => clock,
+    askOwnHosts: async () => askOwnHosts
   });
   return { store, room, pane, repository, service, raised, resolved, kickoffs, owner: ownerUserId, tick: (ms: number) => { clock += ms; } };
 }
+
+describe("Security Copilot feeds read everything (operator 31/10 «Βγάλε όλα τα όρια»)", () => {
+  it("reads every NVD page and checks every package in OSV batches of 1,000 (until 31/10 the first page and the first 1,000)", async () => {
+    const urls: string[] = [];
+    const bodies: string[] = [];
+    const fetchImpl = async (url: string, init?: { body?: unknown }) => {
+      urls.push(url);
+      if (url.includes("nvd.nist.gov")) {
+        const start = Number(new URL(url).searchParams.get("startIndex"));
+        const page = Array.from({ length: start === 0 ? 2 : 1 }, (_, index) => ({ cve: { id: `CVE-2026-${1000 + start + index}` } }));
+        return new Response(JSON.stringify({ totalResults: 3, vulnerabilities: page }));
+      }
+      bodies.push(String(init?.body));
+      const queries = (JSON.parse(String(init?.body)) as { queries: unknown[] }).queries;
+      return new Response(JSON.stringify({ results: queries.map((_, index) => ({ vulns: [{ id: `DEBIAN-CVE-2026-${String(index).padStart(4, "0")}` }] })) }));
+    };
+    const feeds = createFeeds(fetchImpl as never);
+    const cves = await feeds.nvdModified("php", new Date("2026-10-30T00:00:00Z"), new Date("2026-10-31T00:00:00Z"));
+    expect(cves.map((cve) => cve.id)).toEqual(["CVE-2026-1000", "CVE-2026-1001", "CVE-2026-1002"]);
+    const packages = Array.from({ length: 2_500 }, (_, index) => ({ source: `pkg${index}`, version: "1" }));
+    const debian = await feeds.debianCves("12", packages);
+    expect(bodies).toHaveLength(3);
+    expect(debian.size).toBe(2_500);
+    expect(debian.get("pkg2499")).toEqual(["CVE-2026-0499"]);
+  });
+});
+
+describe("Security Copilot brief kick (queue item 33, 28/10 01:47 UTC: a brief waited 35+ minutes at an idle prompt)", () => {
+  it("serves a waiting brief before one it parked, and the parked one again after 30 minutes untouched (31/10)", async () => {
+    const { service, pane, owner, tick } = serviceFixture();
+    const parked = (await service.addBrief(owner, pane, "Wait for the vendor's fix", "NOUS")).brief;
+    expect(await service.next(owner, pane)).toMatchObject({ type: "BRIEF", brief: { id: parked.id } });
+    tick(1_000); // the two briefs differ in time, so the oldest TAKEN one is a fact, not a tie on random ids
+    const waiting = (await service.addBrief(owner, pane, "Check every PHP build", "NOUS")).brief;
+    tick(17 * 60_000);
+    expect(await service.next(owner, pane)).toMatchObject({ type: "BRIEF", brief: { id: waiting.id } });
+    tick(14 * 60_000);
+    expect(await service.next(owner, pane)).toMatchObject({ type: "BRIEF", brief: { id: parked.id } });
+  });
+
+  it("types a PENDING brief within a minute although the agent's last next was a minute ago, again every 10 minutes while it waits", async () => {
+    const { service, pane, owner, kickoffs, tick } = serviceFixture();
+    await service.next(owner, pane);
+    tick(60_000);
+    await service.addBrief(owner, pane, "APPROVED: proceed with secact:e0brlYK6qlQg now", { kind: "NOUS", label: "Nous" } as never);
+    // The brief's own kick waits for the agent's 20 minutes; the minute kick does not when the prompt is empty.
+    kickoffs.length = 0;
+    expect(await service.kickBriefs()).toBe(1);
+    expect(kickoffs).toEqual([pane.id]);
+    tick(60_000);
+    expect(await service.kickBriefs()).toBe(0);
+    tick(9 * 60_000);
+    expect(await service.kickBriefs()).toBe(1);
+  });
+});
 
 describe("Security Copilot service", () => {
   it("ingests an inventory, announces new findings and closes them when the next inventory no longer has them", async () => {
@@ -175,6 +232,30 @@ describe("Security Copilot service", () => {
     await expect(service.recordImageScan(owner, pane, { alias: "local", images: [{ id: pg, vulns: [{ ...vulns[0], pkg: "x; rm -rf /" }] }] })).rejects.toThrow();
   });
 
+  it("keeps an image finding FIXED after a verified container update until a scan made after the fix; the stale scan raises nothing (public-host secfind:KHbAoBsRHhN7, 4/11)", async () => {
+    const { service, pane, owner, repository, raised, tick } = serviceFixture();
+    const old = `sha256:${"c".repeat(64)}`;
+    const vulns = [{ id: "CVE-2026-1001", pkg: "libssl3t64", installed: "3.5.1-1", fixed: "3.5.6-1", severity: "CRITICAL" as const }];
+    await service.ingestInventory(owner, pane, inventory({ alias: "local", reach: "LOCAL", pendingSecurity: [], images: [{ ref: "nero-stack_frontend", id: old }] }));
+    await service.recordImageScan(owner, pane, { alias: "local", images: [{ id: old, vulns }] });
+    const [finding] = await service.findings(owner, {});
+    const host = (await repository.listHosts(owner)).find((entry) => entry.alias === "local")!;
+    tick(60_000);
+    const update = await service.beginAction(owner, pane, { hostId: host.id, findingIds: [finding!.id], kind: "CONTAINER_UPDATE", summary: "rebuild nero-stack_frontend",
+      commands: "docker compose up -d --build frontend", backup: "docker tag old frontend:pre-fix", rollback: "docker tag frontend:pre-fix && up -d" });
+    expect(update.gate).toBe("GO");
+    await service.finishAction(owner, pane, update.actionId, { status: "VERIFIED", verification: "runs 811e1bd16ad5, Trivy 0 fixable" });
+    const notices = raised.length;
+    // The stored inventory still holds the pre-fix scan of the old image: every pass rebuilt the finding from it, reopened it and raised the alert again.
+    tick(3_600_000);
+    expect(await service.watch()).toMatchObject({ newFindings: 0 });
+    expect(await repository.getFinding(owner, finding!.id)).toMatchObject({ status: "FIXED" });
+    expect(raised.slice(notices).filter((entry) => entry.dedupeKey === `security:finding:${finding!.id}`)).toEqual([]);
+    // A scan made after the fix that still finds the vulnerabilities reopens it.
+    expect(await service.recordImageScan(owner, pane, { alias: "local", images: [{ id: old, vulns }] })).toMatchObject({ newFindings: 1 });
+    expect(await repository.getFinding(owner, finding!.id)).toMatchObject({ status: "NEW" });
+  });
+
   it("flags a Windows build past Microsoft's end of support and matches pending Windows security updates by KB", async () => {
     const { service, pane, owner } = serviceFixture();
     const windows = (build: string, version: string, product: "windows" | "windows_server") => inventory({ alias: "qm:105", label: "public-host ora2008-migrated", reach: "QM_GUEST_EXEC",
@@ -210,6 +291,10 @@ describe("Security Copilot service", () => {
     const reboot = await service.beginAction(owner, pane, { ...base, kind: "HOST_REBOOT", summary: "reboot into the new kernel", commands: "reboot" });
     expect(reboot).toMatchObject({ gate: "ASK" });
     expect(raised.at(-1)).toMatchObject({ source: "SECURITY_COPILOT", severity: "ATTENTION", kind: "SECURITY_REVIEW" });
+    // R12-3 (29/10 01:20 BKK: two Node KEV upgrades asked as OTHER): a runtime upgrade with a backup and a rollback is a package upgrade.
+    await expect(service.beginAction(owner, pane, { ...base, findingIds: [], kind: "OTHER", summary: "Upgrade Node.js to 22.23.4 (KEV)", commands: "n 22.23.4" }))
+      .rejects.toThrow(/begin it as PACKAGE_UPGRADE/);
+    expect((await service.beginAction(owner, pane, { ...base, findingIds: [], kind: "OTHER", summary: "Upgrade Node.js to 22.23.4, restarts the pane host", commands: "n 22.23.4" })).gate).toBe("ASK");
     const free = await service.beginAction(owner, pane, { ...base, findingIds: [], kind: "OTHER", summary: "tune sysctl", commands: "sysctl -w x=1" });
     expect(free.gate).toBe("ASK");
 
@@ -254,6 +339,63 @@ describe("Security Copilot service", () => {
     await expect(service.updateFinding(owner, finding!.id, { status: "ACCEPTED", note: "x" }, "AGENT")).resolves.toBeTruthy();
   });
 
+  it("runs a change on the operator's own host with a backup and a rollback at every autonomy, unless they asked to be asked (R16-7)", async () => {
+    // Operator rule f360b58c 29/10 16:07 BKK «Τέτοια τύπου approve μην με ρωτάς τα προχωράς άμεσα»: four such asks that day (Node KEV upgrades, ct210, public-host nginx).
+    for (const ask of [false, true]) {
+      const { service, pane, owner, store, repository } = serviceFixture({}, ask);
+      await service.ingestInventory(owner, pane, inventory());
+      const host = (await repository.listHosts(owner))[0]!;
+      const [finding] = await service.findings(owner, {});
+      const metadata = defaultSecurityCopilotPaneMetadata();
+      metadata.settings.autonomy = "ASSIST";
+      const assist = await store.updateSecurityCopilotMetadata(pane.id, metadata);
+      const upgrade = { hostId: host.id, findingIds: [finding!.id], kind: "PACKAGE_UPGRADE" as const, summary: "Node 22.23.4 (KEV)", commands: "apt-get install nodejs=22.23.4",
+        backup: "apt-mark showmanual > /root/pkgs.txt; nodejs 22.23.3 kept in the apt cache", rollback: "apt-get install nodejs=22.23.3" };
+      const started = await service.beginAction(owner, assist, upgrade);
+      expect(started.gate).toBe(ask ? "ASK" : "GO");
+      if (started.gate === "GO") await service.finishAction(owner, assist, started.actionId, { status: "VERIFIED", verification: "node -v 22.23.4" });
+      if (ask) continue;
+      // Reboots and no-backup changes still ask; a change no finding names runs only for a Nous brief the agent took.
+      expect((await service.beginAction(owner, assist, { ...upgrade, kind: "HOST_REBOOT" })).gate).toBe("ASK");
+      expect((await service.beginAction(owner, assist, { ...upgrade, kind: "SERVICE_RESTART", backup: "" })).gate).toBe("ASK");
+      expect(await service.beginAction(owner, assist, { ...upgrade, findingIds: [] })).toMatchObject({ gate: "ASK", reason: "No finding names this change." });
+      await service.addBrief(owner, assist, "Upgrade Node on this host", "NOUS");
+      expect(await service.next(owner, assist)).toMatchObject({ type: "BRIEF" });
+      expect((await service.beginAction(owner, assist, { ...upgrade, findingIds: [] })).gate).toBe("GO");
+    }
+  });
+
+  it("supersedes a held change whose target is already there: the copilot's finish and the watch pass close it, its review and card (R13-14)", async () => {
+    // 29/10 13:17 BKK: «Approve service restart on local?» stayed after the restart had run at 12:18; the operator pressed Approve at 13:17.
+    const { service, pane, owner, store, repository, resolved } = serviceFixture();
+    await service.ingestInventory(owner, pane, inventory());
+    const host = (await repository.listHosts(owner))[0]!;
+    const [finding] = await service.findings(owner, {});
+    const metadata = defaultSecurityCopilotPaneMetadata();
+    metadata.settings.autonomy = "ASSIST";
+    const assist = await store.updateSecurityCopilotMetadata(pane.id, metadata);
+    const told: string[] = [];
+    service.onSuperseded((_owner, reviewId) => { told.push(reviewId); });
+    const base = { hostId: host.id, findingIds: [finding!.id], kind: "SERVICE_RESTART" as const, summary: "restart the gateway", commands: "systemctl restart space-gateway", backup: "", rollback: "systemctl start space-gateway" };
+    const first = await service.beginAction(owner, assist, base) as { actionId: string; reviewId: string };
+    const items = await service.items(owner, assist);
+    expect(await service.heldState(owner, items.reviews[0]!)).toMatchObject({ minutes: 0, met: null });
+    expect(await service.finishAction(owner, assist, first.actionId, { status: "SUPERSEDED", evidence: "space-gateway started 12:18, after the review" })).toMatchObject({ status: "SUPERSEDED" });
+    expect((await service.items(owner, assist)).reviews).toEqual([]);
+    expect(resolved).toContain(`security:review:${first.reviewId}`);
+    expect(told).toEqual([first.reviewId]);
+    await expect(service.finishAction(owner, assist, first.actionId, { status: "SUPERSEDED", evidence: "again" })).rejects.toThrow(/not held/);
+    // The watch pass closes one whose findings all closed by itself; one with an open finding stays.
+    const second = await service.beginAction(owner, assist, base) as { actionId: string; reviewId: string };
+    await service.watch();
+    expect((await repository.getAction(owner, second.actionId))!.status).toBe("ASKED");
+    await service.updateFinding(owner, finding!.id, { status: "NOT_AFFECTED", note: "the package was upgraded by hand" }, "OPERATOR");
+    expect((await service.heldState(owner, (await service.items(owner, assist)).reviews[0]!)).met).toContain("every finding it fixes is closed");
+    await service.watch();
+    expect((await repository.getAction(owner, second.actionId))!).toMatchObject({ status: "SUPERSEDED", verification: expect.stringContaining("Target already met") });
+    expect(told).toEqual([first.reviewId, second.reviewId]);
+  });
+
   it("refuses an agent's ACCEPTED on a P0/P1 finding and raises URGENT when a fix fails", async () => {
     const { service, pane, owner, raised, repository } = serviceFixture();
     await service.ingestInventory(owner, pane, inventory());
@@ -284,6 +426,20 @@ describe("Security Copilot service", () => {
     tick(25 * 60_000);
     await service.addBrief(owner, pane, "Second", "OPERATOR");
     expect(kickoffs).toEqual([pane.id, pane.id]);
+  });
+
+  it("turns a Start with nothing queued into one brief to triage the open findings, those an earlier pass left TRIAGING too (operator 2026-10-28)", async () => {
+    const { service, pane, owner, kickoffs } = serviceFixture();
+    await service.registerHosts(owner, [{ alias: "vm100", label: "public-host", reach: "SSH", status: "ACTIVE", osFamily: "UNKNOWN" }]);
+    await service.ingestInventory(owner, pane, inventory());
+    expect(await service.next(owner, pane)).toMatchObject({ type: "FINDINGS" });
+    expect(await service.next(owner, pane)).toMatchObject({ done: true });
+    kickoffs.length = 0;
+    expect(await service.setRun(owner, pane, "start")).toMatchObject({ status: "RUNNING", pendingBriefs: 1, kickoffSent: true });
+    expect(kickoffs).toEqual([pane.id]);
+    expect(await service.next(owner, pane)).toMatchObject({ type: "BRIEF", brief: { text: expect.stringContaining("Triage the open findings") } });
+    await service.setRun(owner, pane, "start");
+    expect((await service.items(owner, pane)).briefs).toHaveLength(1);
   });
 
   it("keeps its own memory with recall by text and host", async () => {
@@ -342,7 +498,13 @@ describe("Security Copilot routes", () => {
     expect(asked.json()).toMatchObject({ gate: "ASK" });
     // The agent has no route that decides a review; the operator's does.
     expect((await app.inject({ method: "POST", url: `/api/cli/security-copilot/reviews/${asked.json().reviewId}/decide`, headers: bridge, payload: { approve: true } })).statusCode).toBe(404);
-    const decided = await app.inject({ method: "POST", url: `${url}/reviews/${asked.json().reviewId}/decide`, headers, payload: { approve: false, note: "not tonight" } });
+    // An agent's broker session (a pane's test login) cannot approve a held reboot or delete; the operator in person can.
+    const proof = signSessionWithTtl({ id: "user:operator-proof", email: "space@space.local", role: "ADMIN", brokerScope: "UI_PROOF" }, "test-secret-with-enough-length", 60);
+    const proofHeaders = { cookie: `space_session=${proof}`, [csrfHeaderName]: createCsrfToken(proof, "test-secret-with-enough-length")! };
+    const refused = await app.inject({ method: "POST", url: `${url}/reviews/${asked.json().reviewId}/decide`, headers: proofHeaders, payload: { approve: true } });
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json().error.message).toMatch(/Only the operator/);
+    const decided = await app.inject({ method: "POST", url: `${url}/reviews/${asked.json().reviewId}/decide`, headers, payload: { approve: true, note: "ok tonight" } });
     expect(decided.statusCode).toBe(200);
     expect(updates).toContain("REVIEWED");
     expect((await app.inject({ method: "POST", url: "/api/cli/security-copilot/advisory", headers: bridge, payload: { url: "https://evil.example/" } })).statusCode).toBe(409);

@@ -294,7 +294,8 @@ export function registerDatabasesRoutes(app: FastifyInstance) {
         sql: body.sql,
         database: body.database,
         schema: body.schema,
-        limit: body.limit
+        limit: body.limit,
+        sessionId: body.sessionId
       });
       return reply.send({ ok: true, ...result });
     } catch (err) {

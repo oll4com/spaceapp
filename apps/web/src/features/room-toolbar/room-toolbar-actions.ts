@@ -73,6 +73,7 @@ export interface RoomToolbarActionsContext {
     addPane: (mode: Pane["mode"]) => unknown;
     addFilesPane: () => Promise<void>;
     addDatabasesPane: () => Promise<void>;
+    addAppointmentsPane: () => Promise<void>;
     addDemosPane: () => Promise<void>;
     addT3CodePane: () => Promise<void>;
     addJobApplyPane: () => Promise<void>;
@@ -134,7 +135,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
   } = context.popovers;
   const { cliFloatsHidden, toggleCliFloats, maskSensitiveData, toggleMaskSensitiveData, isRoomFocusMode, toggleRoomFocusMode, isRoomToolbarHidden, terminalFontSize } = context.preferences;
   const { activeRoom, selectedRoomId, panes, paneLayoutPending, setPaneLayoutError, activeRoomCategoryFilter, activeRoomCategoryColors, cycleRoomCategoryColor } = context.room;
-  const { isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane, addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane, addFreelanceCopilotPane, addDesignPane, addAppStudioPane, addSecurityCopilotPane, addMonitoringCopilotPane, addVideoPane, addLivePane } = context.create;
+  const { isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane, addDatabasesPane, addAppointmentsPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane, addFreelanceCopilotPane, addDesignPane, addAppStudioPane, addSecurityCopilotPane, addMonitoringCopilotPane, addVideoPane, addLivePane } = context.create;
   const { desktopWidgets, openStickyNote, isBrowserFullscreen, captureRoomScreen, reloadRoomWindow } = context.tools;
   const { isSnipToolOpen, setIsSnipToolOpen } = context.tools.snip;
   const { toolbarVpnRoute, vpnCityPending, rotateVpnCityFromToolbar } = context.tools.vpn;
@@ -539,6 +540,20 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         onClick: () => {
           if (!activeRoom) return;
           void addDatabasesPane();
+        },
+        disabled: !activeRoom || panes.length >= 16
+      }]
+    : []),
+  ...(!isPaneHidden("appointments")
+    ? [{
+        id: "add-appointments",
+        label: "Appointments",
+        title: "Add Appointments pane",
+        ariaLabel: "Add Appointments pane",
+        icon: modeIcons.APPOINTMENTS,
+        onClick: () => {
+          if (!activeRoom) return;
+          void addAppointmentsPane();
         },
         disabled: !activeRoom || panes.length >= 16
       }]

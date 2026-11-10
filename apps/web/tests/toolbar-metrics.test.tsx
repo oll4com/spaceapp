@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexEnvironment, SystemAnalyticsModelsResponse, ToolbarModelStats } from "@space/contracts";
 import { SpaceApiError } from "../src/api.js";
 import { AccountQuotaCard } from "../src/features/toolbar-metrics/AccountQuotaCards.js";
+import { cliAccountForecasts } from "../src/features/cli-accounts/cli-account-availability.js";
 import {
   formatAccountReset,
   getToolbarMetricsSnapshot,
@@ -371,7 +372,7 @@ describe("ToolbarMetrics", () => {
     const oneCard = (await within(panel).findByText("one@example.test")).closest("li") as HTMLElement;
     expect(oneCard).toBeTruthy();
     expect(within(oneCard).getByRole("meter", { name: "5h remaining" }).getAttribute("aria-valuenow")).toBe("70");
-    expect(within(oneCard).getByText("70%")).toBeTruthy();
+    expect(within(oneCard).getByText("70% left")).toBeTruthy();
     expect(within(panel).getAllByRole("button", { name: "Resets …" })).toHaveLength(2);
     expect(client.usageAccounts).toHaveBeenCalledTimes(1);
     expect(client.resetCredits).toHaveBeenCalledTimes(1);
@@ -417,6 +418,18 @@ describe("ToolbarMetrics", () => {
     expect(screen.getByRole("region", { name: "Account usage details" })).toBe(panel);
     await waitFor(() => expect(client.usageAccounts).toHaveBeenCalledTimes(2));
     expect(client.resetCredits).toHaveBeenCalledTimes(2);
+  });
+
+  it("redeems a reset credit in User mode too (operator 2/11: Resets 2 was greyed out)", async () => {
+    const client = createClient();
+    render(<ToolbarMetrics environment={environment} client={client} allowChanges={false} />);
+
+    fireEvent.mouseEnter(screen.getByRole("button", { name: "ALL 62%" }));
+    const panel = await screen.findByRole("region", { name: "Account usage details" });
+    const reset = await within(panel).findByRole("button", { name: "Resets 2" });
+    expect(reset).toHaveProperty("disabled", false);
+    fireEvent.click(reset);
+    await waitFor(() => expect(client.redeemResetCredit).toHaveBeenCalledTimes(1));
   });
 
   it("stays locked until post-redemption usage and credit refreshes finish", async () => {
@@ -728,8 +741,8 @@ describe("model stats MDL badge", () => {
     expect(within(card("in1")).getByText("resets in 1h 35m")).toBeTruthy();
 
     // Both windows are always visible, each with its own tone.
-    expect(within(section).getAllByTitle(/: Exhausted/).map((cell) => cell.textContent)).toEqual(["0%", "0%", "0%", "0%", "0%"]);
-    expect(within(section).getAllByTitle(/: Near exhaustion/).map((cell) => cell.textContent)).toEqual(["25%", "25%"]);
+    expect(within(section).getAllByTitle(/: Exhausted/).map((cell) => cell.textContent)).toEqual(["0% left", "0% left", "0% left", "0% left", "0% left"]);
+    expect(within(section).getAllByTitle(/: Near exhaustion/).map((cell) => cell.textContent)).toEqual(["25% left", "25% left"]);
 
     expect(within(panel).getByRole("button", { name: "All (4)" })).toBeTruthy();
     expect(within(panel).getByRole("button", { name: "Available (2)" })).toBeTruthy();
@@ -742,8 +755,8 @@ describe("model stats MDL badge", () => {
     // Codex accounts use the same cards; a 30% weekly window is near exhaustion.
     fireEvent.click(within(panel).getByRole("button", { name: "All (4)" }));
     fireEvent.click(within(panel).getByRole("tab", { name: "Codex" }));
-    const codexSection = within(panel).getByText("Codex usage").closest(".toolbar-metric-provider-section") as HTMLElement;
-    expect(within(codexSection).getAllByTitle(/: Near exhaustion/).map((cell) => cell.textContent)).toEqual(["30%"]);
+    const codexSection = panel.querySelector('.toolbar-metric-provider-section[data-provider="codex"]') as HTMLElement;
+    expect(within(codexSection).getAllByTitle(/: Near exhaustion/).map((cell) => cell.textContent)).toEqual(["30% left"]);
   });
 
   it("raises a rail alert when Space Gateway sends Claude requests through the paid API key", async () => {
@@ -810,7 +823,7 @@ describe("model stats MDL badge", () => {
 
     fireEvent.click(within(panel).getByRole("tab", { name: "Claude" }));
     expect(within(panel).getByRole("tab", { name: "Claude" }).getAttribute("aria-selected")).toBe("true");
-    expect(within(panel).queryByText("Codex usage")).toBeNull();
+    expect(panel.querySelector('.toolbar-metric-provider-section[data-provider="codex"]')).toBeNull();
     const section = within(panel).getAllByText("Claude").find((el) => el.tagName === "STRONG")!
       .closest(".toolbar-metric-provider-section") as HTMLElement;
     const titles = () => [...section.querySelectorAll(".account-quota-title")].map((title) => title.textContent);
@@ -825,12 +838,93 @@ describe("model stats MDL badge", () => {
     expect(within(card("ops")).getByText("Sign-in expired")).toBeTruthy();
     expect(within(card("api")).getByText("Not signed in")).toBeTruthy();
     expect(within(card("api")).getByText("Sign in from a Claude pane that uses this profile.")).toBeTruthy();
-    expect(within(section).getByTitle("1 available")).toBeTruthy();
-    expect(within(section).getByTitle("1 back soon")).toBeTruthy();
-    expect(within(section).getByTitle("1 exhausted")).toBeTruthy();
+    // The provider card of Nous › Quotas and the AI Quota widget heads the section (plan clipboard:sJpyQIBFGszW).
+    expect(within(section).getByText("1/5 ready")).toBeTruthy();
 
     fireEvent.click(within(panel).getByRole("button", { name: "Available (1)" }));
     expect(titles()).toEqual(["lab"]);
+  });
+
+  it("shows each account's and each pool's share free at the weekly reset, as the pane account menus do, and why when unknown", async () => {
+    const now = Date.now();
+    const days = (count: number) => new Date(now + count * 86_400_000).toISOString();
+    const client = createClient();
+    const claude = { email: null, plan: null, fiveHourRemainingPercent: 80, fiveHourResetAt: null, weeklyScope: null, sampledAt };
+    const claudeList = {
+      data: [
+        // 12% of the week used with 3 of 7 days passed: 28% used by the reset, 31 points under pace.
+        { ...claude, id: "main", label: "ntheo", status: "CONNECTED" as const, weeklyRemainingPercent: 88, weeklyResetAt: days(4) },
+        { ...claude, id: "dev", label: "dev", status: "CONNECTED" as const, weeklyRemainingPercent: 0, weeklyResetAt: days(3) },
+        { ...claude, id: "ops", label: "ops", status: "EXPIRED" as const, fiveHourRemainingPercent: null, weeklyRemainingPercent: null, weeklyResetAt: null },
+        { ...claude, id: "space-gateway", label: "Space Gateway (pooled)", status: "GATEWAY" as const, fiveHourRemainingPercent: null, weeklyRemainingPercent: null, weeklyResetAt: null,
+          pool: [
+            { label: "crew", signInRequired: false, fiveHourRemainingPercent: 90, fiveHourResetAt: null, weeklyRemainingPercent: 50, weeklyResetAt: days(2) },
+            { label: "lab", signInRequired: false, fiveHourRemainingPercent: 90, fiveHourResetAt: null, weeklyRemainingPercent: 80, weeklyResetAt: days(5) },
+          ] },
+        { ...claude, id: "api", label: "api", status: "API_KEY" as const, fiveHourRemainingPercent: null, weeklyRemainingPercent: null, weeklyResetAt: null, apiKeyVerified: true },
+      ],
+      pagination: { page: 1, pageSize: 100, totalItems: 5, totalPages: 1 }, source: "space-claude-profiles", isStale: false, error: null, checkedAt: sampledAt,
+    };
+    client.claudeAccounts = vi.fn(async () => claudeList);
+    const group = (weeklyRemainingPercent: number | null, weeklyResetAt: string | null) => ({ displayName: "g", fiveHourRemainingPercent: 90, fiveHourResetAt: null, weeklyRemainingPercent, weeklyResetAt });
+    client.antigravityAccounts = vi.fn(async () => ({
+      data: [{ id: "agy", label: "agy", email: null, tier: "Google AI Pro", status: "CONNECTED" as const, gemini: group(60, days(4)), claude: group(95, days(6)), sampledAt }],
+      pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 }, source: "space-gemini-profiles", isStale: false, error: null, checkedAt: sampledAt,
+    }));
+    client.apiProviderAccounts = vi.fn(async () => ({
+      data: [
+        { id: "openrouter", providerId: "openrouter", label: "OpenRouter", status: "CONNECTED" as const, balance: "$4.00", currency: "USD", sampledAt },
+        { id: "deepseek", providerId: "deepseek", label: "DeepSeek", status: "UNCONFIGURED" as const, balance: null, currency: null, sampledAt: null },
+      ],
+      pagination: { page: 1, pageSize: 2, totalItems: 2, totalPages: 1 }, isStale: false, error: null, source: "mock" as const, checkedAt: sampledAt,
+    }));
+
+    render(<ToolbarMetrics environment={environment} client={client} />);
+    fireEvent.mouseEnter(screen.getByRole("button", { name: "ALL 62%" }));
+    const panel = await screen.findByRole("region", { name: "Account usage details" });
+    await waitFor(() => expect(client.claudeAccounts).toHaveBeenCalledTimes(1));
+    const section = (provider: string) => panel.querySelector(`.toolbar-metric-provider-section[data-provider="${provider}"]`) as HTMLElement;
+    const card = (provider: string, title: string) => within(section(provider)).getByText(title, { selector: ".account-quota-title" }).closest("li") as HTMLElement;
+    const lines = (root: HTMLElement) => (root.matches(".quota-at-reset") ? [root] : [...root.querySelectorAll(".quota-at-reset")]).map((line) => line.textContent!.replace(/ free (?:at|in) .*? · /g, " free · "));
+    const header = (provider: string) => section(provider).querySelector(".resources-provider-summary .quota-at-reset") as HTMLElement;
+    await waitFor(() => expect(within(section("claude")).getAllByText(/free at /).length).toBeGreaterThan(0));
+
+    // The section header is the pane account menu's own figure over the same sample (CONNECTED accounts only).
+    const [claudeForecast] = cliAccountForecasts("cli:claude", { codex: null, agy: null, claude: claudeList, api: null, fetchedAt: now }, now);
+    const pickerPercent = Math.round(claudeForecast!.percent ?? -1);
+    expect(lines(header("claude"))).toEqual([`At reset${pickerPercent}% free · ahead of pace`]);
+    // The pool's 4 + 25 points a day (7/11: dev's pace moves to ntheo) leave ntheo 1 by dev's fresh week a day before ntheo's reset,
+    // which then takes 28 of it: 72 / 2.
+    expect(pickerPercent).toBe(36);
+    const probe = document.createElement("b");
+    probe.style.color = claudeForecast!.color;
+    expect(within(header("claude")).getByText("36%").style.color).toBe(probe.style.color);
+
+    // Each account: the share left now, and its share free at its own reset with its pace.
+    expect(within(card("claude", "ntheo")).getByTitle("Week: Healthy (88% left)")).toBeTruthy();
+    expect(lines(card("claude", "ntheo"))).toEqual(["At reset72% free · under pace"]);
+    expect(lines(card("claude", "dev"))).toEqual(["At reset0% free · ahead of pace"]);
+    // The Space Gateway profile pools the accounts above: no card of its own (operator 7/11).
+    expect(within(section("claude")).queryByText("Space Gateway (pooled)", { selector: ".account-quota-title" })).toBeNull();
+    expect(lines(card("claude", "ops"))).toEqual(["At resetunknown (sign-in expired)"]);
+    expect(lines(card("claude", "api"))).toEqual(["At resetunknown (paid per token, no weekly quota)"]);
+
+    // Antigravity: one figure per model group, in the header and on each row.
+    expect(lines(header("antigravity"))).toEqual(["At resetGemini 7% free · on paceClaude · GPT 65% free · under pace"]);
+    expect(lines(card("antigravity", "agy"))).toEqual(["At reset7% free · on pace", "At reset65% free · under pace"]);
+
+    // Codex: an account without a weekly reset says so.
+    expect(lines(card("codex", "two@example.test"))).toEqual(["At resetunknown (no current weekly figure)"]);
+
+    // API providers never report a reset.
+    fireEvent.click(within(panel).getByRole("tab", { name: "API Providers" }));
+    const api = await within(panel).findByText("OpenRouter");
+    expect(lines(api.closest("li") as HTMLElement)).toEqual(["At resetunknown (paid per token, the provider reports no reset)"]);
+    expect(within(panel).queryByText("DeepSeek")).toBeNull();
+
+    // The Claude tab counts its four accounts, not the gateway profile.
+    fireEvent.click(within(panel).getByRole("tab", { name: "Claude" }));
+    expect(within(panel).getByRole("button", { name: "All (4)" })).toBeTruthy();
   });
 
   it("shows Anthropic's bill and the last sync on the Claude API key's card", async () => {
@@ -868,11 +962,12 @@ describe("model stats MDL badge", () => {
       data: [
         { id: "anthropic", providerId: "anthropic", label: "Claude API (Anthropic)", status: "CONNECTED" as const, balance: null, currency: "USD",
           usage: "$363.10", limit: null, remainingPercent: null, detail: "Today $61.18 (estimate) · 7 days $93.27 · 31 days $363.10", sampledAt },
-        { id: "openrouter", providerId: "openrouter", label: "OpenRouter", status: "CONNECTED" as const, balance: "$0.00", currency: "USD",
-          usage: "$15.23", limit: "$15.00", remainingPercent: 0, detail: "Credits: $15.00 · Used: $15.23", sampledAt },
+        { id: "openrouter", providerId: "openrouter", label: "OpenRouter", status: "CONNECTED" as const, balance: "$2.40", currency: "USD",
+          usage: "$12.60", limit: "$15.00", remainingPercent: 16, detail: "Credits: $15.00 · Used: $12.60", sampledAt },
+        { id: "vercel-gateway", providerId: "vercel-gateway", label: "Vercel AI Gateway", status: "EXHAUSTED" as const, balance: "$-3.20", currency: "USD", sampledAt },
         { id: "deepseek", providerId: "deepseek", label: "DeepSeek", status: "UNCONFIGURED" as const, balance: null, currency: null, detail: "No DEEPSEEK_API_KEY found", sampledAt: null },
       ],
-      pagination: { page: 1, pageSize: 3, totalItems: 3, totalPages: 1 }, isStale: false, error: null, source: "mock" as const, checkedAt: sampledAt,
+      pagination: { page: 1, pageSize: 4, totalItems: 4, totalPages: 1 }, isStale: false, error: null, source: "mock" as const, checkedAt: sampledAt,
     }));
 
     render(<ToolbarMetrics environment={environment} client={client} />);
@@ -887,9 +982,12 @@ describe("model stats MDL badge", () => {
     expect(within(claude).queryByRole("meter")).toBeNull();
     const openRouter = within(panel).getByText("OpenRouter").closest("li") as HTMLElement;
     expect(within(openRouter).getByText("Balance")).toBeTruthy();
-    expect(within(openRouter).getByRole("meter", { name: "Left of $15.00 remaining" }).getAttribute("aria-valuenow")).toBe("0");
-    expect(within(panel).getByText("DeepSeek").closest("li")!.className).toContain("is-offline");
-    expect(within(panel).getByText("Not set up")).toBeTruthy();
+    expect(within(openRouter).getByRole("meter", { name: "Of $15.00 remaining" }).getAttribute("aria-valuenow")).toBe("16");
+    // Nothing left to spend: no card (operator 6/11 21:49 BKK, nous_msg:71a41c2e).
+    expect(within(panel).queryByText("Vercel AI Gateway")).toBeNull();
+    // A provider without a key is not in this installation: no card (operator 5/11, plan clipboard:sJpyQIBFGszW).
+    expect(within(panel).queryByText("DeepSeek")).toBeNull();
+    expect(within(panel).queryByText("Not set up")).toBeNull();
   });
 
   it("leaves out the 5h cell of an account that has only a weekly limit", () => {

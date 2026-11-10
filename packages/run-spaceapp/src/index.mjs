@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   chmod,
   mkdir,
@@ -23,6 +23,7 @@ import { IMAGE_TARGETS, imageDigestEnv, PACKAGE_IMAGE_LOCK, parseRecordedDigests
 
 const CONFIG_SCHEMA_VERSION = 4;
 const CONTAINER_SECRET_MODE = 0o644;
+const AGENT_TOKEN_SECRET_MODE = 0o600;
 export const MIN_INSTALL_FREE_DISK_BYTES_STANDARD = 15 * 1024 ** 3;
 export const MIN_INSTALL_FREE_DISK_BYTES_LIGHT = 7 * 1024 ** 3;
 export const MIN_INSTALL_FREE_DISK_BYTES = MIN_INSTALL_FREE_DISK_BYTES_STANDARD;
@@ -426,6 +427,15 @@ function userOf(config, userId) {
   const user = (config.users ?? []).find((candidate) => candidate.id === userId);
   if (!user) throw new Error(`User "${userId}" is not registered: run "${UNIVERSAL_COMMAND} user add ${userId}" first.`);
   return user;
+}
+
+/**
+ * An install that opted in before install ids existed has none, and the collector links every event but the old
+ * "install" ping by it, so its daily active pings never counted (item 47, 2026-10-28). It gets one, kept in
+ * config.json beside the opt-in; an install that never opted in gets nothing.
+ */
+export function withTelemetryInstallId(config) {
+  return config.telemetry === true && !config.installId ? { ...config, installId: randomUUID() } : config;
 }
 
 export async function saveConfig(root, config) {
@@ -943,6 +953,22 @@ async function ensureOwnerOnlySecrets(root) {
   if (info && (info.mode & 0o077) !== 0) await chmod(secrets, 0o700);
 }
 
+// The pane bridge's signing secret (1.2.0): random per install, made when missing and kept otherwise; only the core's
+// entrypoint (root) reads it, so it stays 0600 inside the 0700 secrets folder. install, update and repair all write the
+// runtime files, so a 1.1.x install gets one on update, and deleting it then running repair rotates it.
+async function ensureAgentTokenSecret(root) {
+  const agentTokenSecretPath = join(root, "secrets", "agent-token-secret");
+  try {
+    await stat(agentTokenSecretPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+    await atomicWrite(agentTokenSecretPath, randomBytes(48).toString("base64url"), AGENT_TOKEN_SECRET_MODE);
+  }
+  if (process.platform !== "win32") await chmod(agentTokenSecretPath, AGENT_TOKEN_SECRET_MODE);
+}
+
 /** The image digests this installation recorded per runtime version (image-digests.json). */
 export async function readRecordedDigests(root) {
   return parseRecordedDigests(await readFile(join(root, "image-digests.json"), "utf8").catch(() => "{}"));
@@ -953,6 +979,7 @@ export async function writeRuntimeFiles(root, config, imageLock = PACKAGE_IMAGE_
   validateConfig(config);
   await mkdir(root, { recursive: true, mode: 0o700 });
   await ensureOwnerOnlySecrets(root);
+  await ensureAgentTokenSecret(root);
   // Each runtime version a locked package installs keeps its digests, for a later rollback to it.
   const recorded = await readRecordedDigests(root);
   if (imageLock && imageLock.runtimeVersion === config.version) {
@@ -998,7 +1025,7 @@ export async function prepareInstallation(root, {
     : resolveInstallProfile(profile, profile === "auto" ? await inspectSystemResources(root) : totalmem());
   let config;
   try {
-    config = await loadConfig(root);
+    config = withTelemetryInstallId(await loadConfig(root));
   } catch (error) {
     if (error?.code !== "ENOENT") {
       throw error;
@@ -1067,6 +1094,8 @@ export async function prepareInstallation(root, {
     await atomicWrite(sessionSecretPath, randomBytes(48).toString("base64url"), CONTAINER_SECRET_MODE);
   }
   await ensureContainerSecretReadable(sessionSecretPath);
+
+  await ensureAgentTokenSecret(root);
 
   const setupTokenPath = join(root, "secrets", "setup-token");
   let setupToken = null;

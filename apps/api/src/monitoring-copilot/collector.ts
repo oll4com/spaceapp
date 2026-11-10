@@ -1,11 +1,11 @@
 import {
-  MONITORING_QUERY_MAX_SERIES, alertmanagerAlertSchema, monitoringCollectorUrlSchema,
+  MONITORING_QUERY_MAX_SERIES, alertmanagerAlertSchema, monitoringCollectorUrlAllowed,
   type AlertmanagerAlert, type MonitoringLogQuery, type MonitoringPromQuery, type MonitoringSeries
 } from "@space/contracts";
 import { SpaceConflictError } from "@space/runtime";
 
 // The Monitoring Copilot's only network reach (plan clipboard:xkCJ9CeYZq4D): the collector's Alertmanager, Prometheus and Loki on
-// the fleet's private bridge. Every URL is checked against the contract's 192.0.2.x shape again here, redirects are refused,
+// a private network. Every URL is checked against the contract's shape and the configured network again here, redirects are refused,
 // answers are capped, and Loki answers with raw log lines ("streams") never leave this file except the guardian relay's own
 // messages, which the watcher parses into its own fields.
 
@@ -27,9 +27,11 @@ export interface MonitoringCollector {
   targets(prometheusUrl: string): Promise<MonitoringTarget[]>;
 }
 
-function base(url: string): string {
+function checked(url: string, network: string | null): string {
+  if (!url) throw new SpaceConflictError("Set the collector's addresses in the pane's Setup first.");
   // The stored setting already passed this; checking again keeps a test or a future caller from widening the reach.
-  return monitoringCollectorUrlSchema.parse(url);
+  if (!monitoringCollectorUrlAllowed(url, network)) throw new SpaceConflictError(`${url} is no collector address${network ? ` on ${network}` : ""}.`);
+  return url;
 }
 
 async function getJson(url: string): Promise<unknown> {
@@ -59,6 +61,7 @@ export function seriesOf(data: unknown): { resultType: string; series: Monitorin
     return { resultType, series: [{ labels: {}, points: [[Number(value[0]) || 0, String(value[1] ?? "")]] }], truncated: false };
   }
   const result = Array.isArray(record.result) ? record.result : [];
+  // Technical: one answer's series stay what an agent reads and the collector serves (CT 210); past them `truncated` says to narrow the query.
   const series = result.slice(0, MONITORING_QUERY_MAX_SERIES).map((entry) => {
     const item = asRecord(entry);
     const raw = Array.isArray(item.values) ? item.values : Array.isArray(item.value) ? [item.value] : [];
@@ -79,7 +82,9 @@ function rangeParams(range: { minutes: number; stepSeconds: number } | undefined
   return params;
 }
 
-export function createMonitoringCollector(now: () => number = Date.now): MonitoringCollector {
+export function createMonitoringCollector(options: { network?: string | null; now?: () => number } = {}): MonitoringCollector {
+  const now = options.now ?? Date.now;
+  const base = (url: string) => checked(url, options.network ?? null);
   return {
     async alerts(alertmanagerUrl) {
       const body = await getJson(`${base(alertmanagerUrl)}/api/v2/alerts?active=true&silenced=false&inhibited=false`);

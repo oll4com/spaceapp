@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Pane, PaneCliSession } from "@space/contracts";
-import { CLAUDE_LAST_ANSWER_MAX_CHARS, claudeTaskTimeline } from "../src/claude-native-turns.js";
+import { claudeTaskTimeline } from "../src/claude-native-turns.js";
 import { createPaneLastAnswer } from "../src/nous/last-answer.js";
 import { createNousTools, type NousToolDeps } from "../src/nous/tools.js";
 
@@ -25,8 +25,9 @@ describe("a CLI pane's last answer", () => {
     ];
     expect(claudeTaskTimeline(lines, false, observedAt).lastAnswer).toBe("Done: step 3 merged.\nTicket q-1 DEPLOYED.");
     expect(claudeTaskTimeline([lines[0]!], false, observedAt).lastAnswer).toBeNull();
-    const long = claudeTaskTimeline([assistant("msg_4", [{ type: "text", text: `${"a".repeat(CLAUDE_LAST_ANSWER_MAX_CHARS)}END` }])], false, observedAt).lastAnswer!;
-    expect([long.length, long.endsWith("END")]).toEqual([CLAUDE_LAST_ANSWER_MAX_CHARS, true]);
+    // Whole since 31/10 (until then the newest 6,000 characters).
+    const long = claudeTaskTimeline([assistant("msg_4", [{ type: "text", text: `START${"a".repeat(10_000)}END` }])], false, observedAt).lastAnswer!;
+    expect([long.length, long.startsWith("START"), long.endsWith("END")]).toEqual([10_008, true, true]);
   });
 
   it("reads Claude through the launcher with the pane host's process, Codex from its last finished turn, nothing for other CLIs", async () => {

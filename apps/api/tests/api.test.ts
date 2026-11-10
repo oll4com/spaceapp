@@ -11,7 +11,7 @@ import type { BrowserHostHealth } from "@space/browser-host";
 import { launchReadinessSchema, observabilitySnapshotSchema, type BrowserCaptureJob, type BrowserFrame, type BrowserPageSummary, type BrowserSessionViewport, type BrowserToolActionInput, type DummyTurnInput, type Pane, type PaneBrowserSessionResponse } from "@space/contracts";
 import { storageReadinessSchema, workerReadinessSchema } from "@space/contracts";
 import { InMemoryAppDiagnosticsRepository } from "@space/db";
-import { InMemorySpaceStore, SpaceFeatureDisabledError, createCanonicalSpaceMemoryBridge, hashMcpSchema } from "@space/runtime";
+import { InMemorySpaceStore, SpaceEventBus, SpaceFeatureDisabledError, createCanonicalSpaceMemoryBridge, hashMcpSchema } from "@space/runtime";
 import { createApp as createApiApp, redactRequestUrlForLog, sweepExpiredBrowserArtifacts, type CreateAppOptions } from "../src/app.js";
 import { AppDiagnosticsService } from "../src/app-diagnostics.js";
 import { createCsrfToken, hashPassword, signSession, signSessionWithTtl } from "../src/auth.js";
@@ -19,6 +19,8 @@ import type { BrowserSessionManager } from "../src/browser-sessions.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { getApiConfig } from "../src/config.js";
 import { fetchPublicUrl } from "../src/public-url-fetch.js";
+import { markSignin } from "../src/signin-readback.js";
+import { fakeRepository } from "./support/vault-fakes.js";
 import type { SpaceAgentControl } from "../src/space-agent.js";
 
 vi.mock("../src/public-url-fetch.js", async (importOriginal) => {
@@ -617,6 +619,8 @@ describe("Space API", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ ok: true, service: "space-api" });
+    // Promote q-20261103-172721-9b35: a loaded host must not crash-loop startup on Fastify's default 10 s onReady limit.
+    expect(app.initialConfig.pluginTimeout).toBe(120_000);
   });
 
   it("returns sanitized Space integration inventory for authenticated operators", async () => {
@@ -2087,6 +2091,19 @@ describe("Space API", () => {
     expect(rejected.json().error.code).toBe("VALIDATION_ERROR");
   });
 
+  it("API audit 4/11: concurrent dashboard-agents reads of a room share one read", async () => {
+    // 79 s a call before the 01:33 UTC heap crash: every caller during a slow read started its own.
+    const store = new InMemorySpaceStore();
+    const { app, cookie, csrfToken } = await authedApp({ store });
+    const room = (await app.inject({ method: "POST", url: "/api/rooms", headers: { cookie, [csrfHeaderName]: csrfToken }, payload: { name: "Dashboard room", initialPaneCount: 2 } })).json();
+    const listPanes = store.listPanes.bind(store);
+    const spy = vi.spyOn(store, "listPanes").mockImplementation(async (roomId) => { await new Promise((resolve) => setTimeout(resolve, 50)); return listPanes(roomId); });
+    const answers = await Promise.all([1, 2, 3, 4, 5].map(() => app.inject({ method: "GET", url: `/api/rooms/${encodeURIComponent(room.id)}/dashboard-agents`, headers: { cookie } })));
+    expect(answers.map((answer) => answer.statusCode)).toEqual([200, 200, 200, 200, 200]);
+    expect(answers.every((answer) => answer.json().data.length === 2)).toBe(true);
+    expect(spy.mock.calls.filter(([roomId]) => roomId === room.id)).toHaveLength(1);
+  });
+
   it("applies idempotent room pane layout presets atomically and audits bounded metadata", async () => {
     const { app, cookie, csrfToken } = await authedApp();
     const roomResponse = await app.inject({
@@ -2243,6 +2260,9 @@ describe("Space API", () => {
     });
     expect(sourceAfterResponse.json().data).toEqual([]);
     expect(targetAfterResponse.json().data).toEqual([expect.objectContaining({ title: sourcePane.title })]);
+    // A moved pane's CLI reads its current room by the pane id (R9-13).
+    const paneAfterResponse = await app.inject({ method: "GET", url: `/api/panes/${encodeURIComponent(sourcePane.id)}`, headers: { cookie } });
+    expect(paneAfterResponse.json()).toMatchObject({ id: sourcePane.id, roomId: targetRoom.id });
 
     const auditResponse = await app.inject({
       method: "GET",
@@ -2332,6 +2352,27 @@ describe("Space API", () => {
     expect(response.statusCode).toBe(500);
     expect(store.getRoom(room.id)).toBeDefined();
     expect(store.getActivePaneBrowserSession(pane.id)).not.toBeNull();
+    await app.close();
+  });
+
+  it("closing a browser pane stops its browser while an agent holds control", async () => {
+    // pane:6iGtx15xLOHA (3/11): the operator's close met the agent's lease, the stop threw, and the closed pane kept its Chrome.
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Agent-driven browser", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Browser", mode: "BROWSER" });
+    const manager = fakeBrowserSessionManager();
+    const { session } = await manager.startOrRestore({ pane, traceId: "test:browser" });
+    store.createPaneBrowserSession(session);
+    // As the real manager's lease check: an actor that does not hold the agent's lease is refused.
+    manager.stopPane = vi.fn(async (_paneId: string, _traceId?: string, context?: unknown) => {
+      if (context) throw new Error("Browser control is held by agent cli:session.");
+      store.updatePaneBrowserSession(session.sessionId, { isActive: false, status: "CLOSED" });
+    });
+    const { app, cookie, csrfToken } = await authedApp({ store, browserSessionManager: manager });
+    const response = await app.inject({ method: "DELETE", url: `/api/panes/${encodeURIComponent(pane.id)}`, headers: { cookie, [csrfHeaderName]: csrfToken } });
+    expect(response.statusCode).toBe(200);
+    expect(store.getPane(pane.id).isClosed).toBe(true);
+    expect(store.getActivePaneBrowserSession(pane.id)).toBeNull();
     await app.close();
   });
 
@@ -5097,6 +5138,23 @@ describe("Space API", () => {
     });
   });
 
+  it("publishes a pane's close to the room streams at once, not only through the durable relay", async () => {
+    // Stable mobile 1/11 22:02 UTC: a deleted Browser pane's PANE_CLOSED reached no page stream within a minute and its card stayed.
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Close publish", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Browser", mode: "BROWSER" });
+    (store as unknown as { listEventChanges: () => [] }).listEventChanges = () => []; // the relay delivers nothing here
+    const eventBus = new SpaceEventBus();
+    const published: string[] = [];
+    eventBus.subscribe((event) => { if (event.paneId === pane.id) published.push(event.type); });
+    const { app, cookie, csrfToken } = await authedApp({ store, eventBus, browserSessionManager: fakeBrowserSessionManager() });
+    try {
+      const closed = await app.inject({ method: "DELETE", url: `/api/panes/${encodeURIComponent(pane.id)}`, headers: { cookie, [csrfHeaderName]: csrfToken } });
+      expect(closed.statusCode).toBe(200);
+      expect(published).toContain("PANE_CLOSED");
+    } finally { await app.close(); }
+  });
+
   it("persists YouTube playback through close/reopen and guards the playback endpoint", async () => {
     const root = await mkdtemp(join(tmpdir(), "youtube-api-"));
     const store = new InMemorySpaceStore();
@@ -5135,8 +5193,12 @@ describe("Space API", () => {
     const summary = (id: string, payload: unknown) => app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(id)}/youtube/summary`, headers, payload });
     try {
       expect((await app.inject({ method: "PATCH", url: "/api/user-settings", headers, payload: { youtubeSummaryModel: "gemini-3.5-flash-lite" } })).statusCode).toBe(200);
-      expect((await summary(pane.id, { videoId: "jNQXAC9IVRw", kind: "transcript" })).json()).toEqual({ text: "Words.", model: "gemini-3.5-flash-lite" });
+      const transcript = await summary(pane.id, { videoId: "jNQXAC9IVRw", kind: "transcript" });
+      expect(transcript.json()).toEqual({ text: "Words.", model: "gemini-3.5-flash-lite" });
       const sent = gateway.mock.calls.find(([input]) => String(input).endsWith("/gemini/v1/generate"));
+      // EXT-G-5: the gateway's log row carries the request's own id (OBS-006's x-request-id rule).
+      expect((sent?.[1]?.headers as Record<string, string>)["x-request-id"]).toBe(transcript.headers["x-request-id"]);
+      expect(transcript.headers["x-request-id"]).toMatch(/^req:/);
       expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({ model: "gemini-3.5-flash-lite", videoUrl: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
         prompt: expect.stringMatching(/^Transcribe/) });
       expect((await summary(pane.id, { videoId: "jNQXAC9IVRw", kind: "translate" })).statusCode).toBe(422);
@@ -5773,12 +5835,14 @@ describe("Space API", () => {
     }
   });
 
-  it("keeps a sign-in handoff with the operator while they stay on the pane, and lets it go 60 s after they leave (operator 2026-10-27)", async () => {
+  it.each(["idle", "typing", "cancel", "reclaim"])("bounds a present sign-in handoff by real input and lets its requesting agent recover it (%s)", async (mode) => {
     const start = Date.parse("2026-10-27T09:00:00.000Z");
     vi.useFakeTimers({ toFake: ["Date"], now: start });
     try {
       const store = new InMemorySpaceStore();
       const room = store.createRoom({ name: "Bank", initialPaneCount: 0 });
+      const agent = store.createPane({ roomId: room.id, title: "Requesting agent", mode: "T3CODE" });
+      const otherAgent = store.createPane({ roomId: room.id, title: "Other agent", mode: "T3CODE" });
       const pane = store.createPane({ roomId: room.id, title: "Bank", mode: "BROWSER" });
       const sessionId = `browser_session:${pane.id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
       store.createPaneBrowserSession({
@@ -5786,29 +5850,68 @@ describe("Space API", () => {
         profilePath: `/tmp/${pane.id}`, viewport: "desktop", targetUrl: "https://www.google.com/", currentUrl: "https://www.google.com/",
         title: "Bank", status: "READY", isActive: true
       });
-      const { app, cookie, csrfToken } = await authedApp({ store, config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "true" }), browserSessionManager: fakeBrowserSessionManager({ enabled: true }) });
+      const config = getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "true", SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true", SPACE_INTERNAL_API_TOKEN: "test-internal-token" });
+      const manager = fakeBrowserSessionManager({ enabled: true });
+      const releaseControl = manager.releaseControl!;
+      manager.releaseControl = async (...args) => {
+        const released = await releaseControl(...args);
+        store.updateBrowserControlLease(released.leaseId, { status: released.status });
+        return released;
+      };
+      const { app, cookie, csrfToken } = await authedApp({ store, config, browserSessionManager: manager });
       const headers = { cookie, [csrfHeaderName]: csrfToken };
       store.createBrowserControlLease({ leaseId: "browser_lease:test", sessionId, paneId: pane.id, roomId: room.id, holderType: "OPERATOR",
         holderId: "user:dev-operator", reason: "Direct browser interaction", ttlSeconds: 300 });
-      const handoff = store.createBrowserHandoffRequest({ sessionId, paneId: pane.id, roomId: room.id, requestedByType: "AGENT", requestedById: "cli:cli_session:test",
+      const handoff = store.createBrowserHandoffRequest({ sessionId, paneId: pane.id, roomId: room.id, requestedByType: "AGENT", requestedById: `cli:t3code:${agent.id}`,
         reason: "Sign in to NBG: enter the SMS code", ttlSeconds: 1800 });
       const acquired = await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/browser/control/acquire`, headers,
         payload: { holderType: "OPERATOR", holderId: "space-user", ttlSeconds: 60 } });
       const leaseId = acquired.json().lease.leaseId as string;
       const heartbeat = (present?: boolean) => app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/browser/control/heartbeat`, headers,
         payload: { leaseId, ttlSeconds: 60, ...(present === undefined ? {} : { present }) } });
+      const command = async (type: "CANCEL_HANDOFF" | "RECLAIM_CONTROL", caller = agent) => {
+        const token = issueCliBrowserBridgeToken(config, { roomId: room.id, paneId: caller.id, cliSessionId: `t3code:${caller.id}` })!;
+        const response = await app.inject({ method: "POST", url: "/api/cli/browser/commands", headers: { [cliBrowserBridgeTokenHeader]: token },
+          payload: { targetPaneId: pane.id, command: { type } } });
+        expect(response.statusCode).toBe(200);
+        return response.json();
+      };
       expect((await heartbeat(true)).json()).toMatchObject({ lease: { status: "ACTIVE" }, presenceHold: true });
-      // Five minutes without a key while they wait on the pane for the SMS: still theirs.
-      for (let minute = 1; minute <= 5; minute += 1) {
-        vi.setSystemTime(start + minute * 60_000);
+      // Reading a code is allowed for up to three minutes; presence and a bare hover are not real input.
+      for (let seconds = 30; seconds <= 150; seconds += 30) {
+        vi.setSystemTime(start + seconds * 1000);
+        const response = await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/browser/input`, headers,
+          payload: mode === "typing" && seconds === 150
+            ? { type: "KEY", leaseId, eventType: "keyDown", key: "a", code: "KeyA", text: "a" }
+            : { type: "POINTER", leaseId, eventType: "mouseMoved", x: 140, y: 90, button: "none" } });
+        expect(response.statusCode).toBe(200);
         expect((await heartbeat(true)).json().lease.status).toBe("ACTIVE");
       }
-      // They leave the pane: idle counts from then, and 60 s later the browser goes back to the agent.
-      vi.setSystemTime(start + 5 * 60_000 + 30_000);
-      expect((await heartbeat(false)).json().lease.status).toBe("ACTIVE");
-      vi.setSystemTime(start + 6 * 60_000 + 1_000);
-      expect((await heartbeat(false)).json().lease).toMatchObject({ leaseId, status: "RELEASED" });
-      expect(store.getBrowserHandoffRequest(handoff.handoffRequestId)?.status).toBe("COMPLETED");
+      vi.setSystemTime(start + 179_000);
+      expect((await heartbeat(true)).json().lease.status).toBe("ACTIVE");
+      expect(await command("CANCEL_HANDOFF")).toMatchObject({ cancelled: false, handoff: { status: "ACCEPTED" } });
+      expect(await command("RECLAIM_CONTROL")).toMatchObject({ reclaimed: false, reason: "OPERATOR_ACTIVE" });
+      vi.setSystemTime(start + 180_000);
+      if (mode === "typing") {
+        // Typing at 150 s resets the cap even though the pane has been visible for three minutes.
+        expect((await heartbeat(true)).json().lease.status).toBe("ACTIVE");
+        expect(await command("CANCEL_HANDOFF")).toMatchObject({ cancelled: false });
+        // Leaving the pane still returns it after 60 s from the last presence heartbeat.
+        vi.setSystemTime(start + 210_000);
+        expect((await heartbeat(false)).json().lease.status).toBe("ACTIVE");
+        vi.setSystemTime(start + 241_000);
+        expect((await heartbeat(false)).json().lease).toMatchObject({ leaseId, status: "RELEASED" });
+      } else if (mode === "cancel") {
+        expect(await command("CANCEL_HANDOFF", otherAgent)).toMatchObject({ cancelled: false, handoff: { status: "ACCEPTED" } });
+        expect(await command("CANCEL_HANDOFF")).toMatchObject({ cancelled: true, handoff: { status: "CANCELLED" } });
+      } else if (mode === "reclaim") {
+        expect(await command("RECLAIM_CONTROL")).toMatchObject({ reclaimed: true, lease: { status: "RELEASED" } });
+      } else {
+        // Presence cannot keep the lease once three minutes have passed without a real input.
+        expect((await heartbeat(true)).json().lease).toMatchObject({ leaseId, status: "RELEASED" });
+      }
+      expect(store.getBrowserControlLease(leaseId)?.status).toBe("RELEASED");
+      expect(store.getBrowserHandoffRequest(handoff.handoffRequestId)?.status).toBe(mode === "cancel" ? "CANCELLED" : "COMPLETED");
     } finally {
       vi.useRealTimers();
     }
@@ -5912,6 +6015,64 @@ describe("Space API", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("uses stored site sign-in recipes before raising LOGIN handoff through the real CLI bridge", async () => {
+    const store = new InMemorySpaceStore();
+    store.upsertUser({id:"user:signin-owner",email:"signin@space.local",role:"ADMIN"});
+    const room = store.createRoom({name:"Site sign-in bridge",initialPaneCount:0}, undefined, "user:signin-owner");
+    const cli = store.createPane({roomId:room.id,title:"T3 Code",mode:"T3CODE"});
+    const browser = store.createPane({roomId:room.id,title:"Browser",mode:"BROWSER"});
+    store.createPaneBrowserSession({sessionId:"browser_session:site-signin",paneId:browser.id,roomId:room.id,ownerAgentId:"agent:1",agentNumber:1,
+      profileId:"profile:signin",profilePath:"/tmp/site-signin-synthetic",viewport:"desktop",targetUrl:"https://example.com",currentUrl:"https://auth.example.com",title:"Example",status:"READY",isActive:true});
+    const config = getApiConfig({SPACE_BROWSER_SESSIONS_ENABLED:"true",SPACE_BROWSER_TOOL_BRIDGE_ENABLED:"true",SPACE_INTERNAL_API_TOKEN:"test-internal-token"});
+    const token = issueCliBrowserBridgeToken(config,{roomId:room.id,paneId:cli.id,cliSessionId:`t3code:${cli.id}`})!;
+    const {app} = await authedApp({store,config,browserSessionManager:fakeBrowserSessionManager({enabled:true})});
+    const headers = {[cliBrowserBridgeTokenHeader]:token};
+    const recorded=await app.inject({method:"POST",url:"/api/cli/site-signins",headers,payload:{site:"example.com",method:"GOOGLE",googleAccountEmail:"sso@example.com",mailbox:"inbox@example.com",outcome:"SUCCESS"}});
+    expect(recorded.statusCode).toBe(200);
+    expect((await app.inject({url:"/api/cli/browser/context",headers})).json().browserSessions[0].signin).toMatchObject({method:"GOOGLE",successCount:1});
+    const ask = (triedStored?:boolean) => app.inject({method:"POST",url:"/api/cli/browser/commands",headers,payload:{targetPaneId:browser.id,command:{type:"REQUEST_HANDOFF",kind:"LOGIN",reason:"challenge",...(triedStored?{triedStored}:{})}}});
+    const first=await ask();
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({status:"TRY_STORED_SIGNIN",signin:{method:"GOOGLE",mailbox:"inbox@example.com"}});
+    expect(store.listBrowserHandoffRequests(room.id)).toHaveLength(0);
+    const second=await ask(true);
+    expect(second.statusCode).toBe(200);
+    expect(second.json().handoff.reason).toContain("Stored method GOOGLE");
+    expect(store.listBrowserHandoffRequests(room.id)).toHaveLength(1);
+  });
+
+  it("refuses a LOGIN handoff for a login the Vault holds until it was filled and read back, triedStored or not (7/11 Oracle)", async () => {
+    const owner = "user:readback-owner";
+    const store = new InMemorySpaceStore();
+    store.upsertUser({id:owner,email:"readback@space.local",role:"ADMIN"});
+    const room = store.createRoom({name:"Vault read-back",initialPaneCount:0}, undefined, owner);
+    const cli = store.createPane({roomId:room.id,title:"T3 Code",mode:"T3CODE"});
+    const browser = store.createPane({roomId:room.id,title:"Browser",mode:"BROWSER"});
+    store.createPaneBrowserSession({sessionId:"browser_session:readback",paneId:browser.id,roomId:room.id,ownerAgentId:"agent:1",agentNumber:1,
+      profileId:"profile:readback",profilePath:"/tmp/readback-synthetic",viewport:"desktop",targetUrl:"https://signon.oracle.example",currentUrl:"https://signon.oracle.example/signin",title:"Sign In",status:"READY",isActive:true});
+    // An enrolled Vault with agent access and no login delegated: the site record's handle alone says the Vault holds it.
+    const repository = fakeRepository();
+    await repository.enroll(owner, {} as never);
+    await repository.enableAgentAccess(owner);
+    const config = getApiConfig({SPACE_BROWSER_SESSIONS_ENABLED:"true",SPACE_BROWSER_TOOL_BRIDGE_ENABLED:"true",SPACE_INTERNAL_API_TOKEN:"test-internal-token"});
+    const token = issueCliBrowserBridgeToken(config,{roomId:room.id,paneId:cli.id,cliSessionId:`t3code:${cli.id}`})!;
+    const {app} = await authedApp({store,config,browserSessionManager:fakeBrowserSessionManager({enabled:true}),vault:{repository:repository as never}});
+    const headers = {[cliBrowserBridgeTokenHeader]:token};
+    expect((await app.inject({method:"POST",url:"/api/cli/site-signins",headers,payload:{site:"oracle.example",method:"VAULT_LOGIN",vaultHandle:"vault_item:synthetic01",outcome:"SUCCESS"}})).statusCode).toBe(200);
+    const ask = (kind:string, reason:string) => app.inject({method:"POST",url:"/api/cli/browser/commands",headers,payload:{targetPaneId:browser.id,command:{type:"REQUEST_HANDOFF",kind,reason,triedStored:true}}});
+    const held = await ask("LOGIN","Invalid username or password");
+    expect(held.statusCode, held.body).toBe(200);
+    expect(held.json()).toMatchObject({status:"READ_BACK_FIRST",message:expect.stringContaining("space_vault_request_fill")});
+    markSignin(owner,"https://signon.oracle.example/","tried");
+    expect((await ask("LOGIN","Invalid username or password")).json()).toMatchObject({status:"READ_BACK_FIRST",message:expect.stringContaining("never read")});
+    // A bot check stays the operator's.
+    expect((await ask("CAPTCHA","Solve the hCaptcha")).json().handoff).toBeDefined();
+    expect(store.listBrowserHandoffRequests(room.id)).toHaveLength(1);
+    await app.inject({method:"POST",url:"/api/cli/browser/commands",headers,payload:{targetPaneId:browser.id,command:{type:"CANCEL_HANDOFF"}}});
+    markSignin(owner,"https://signon.oracle.example/","read",Date.now()+1);
+    expect((await ask("LOGIN","Invalid username or password after the Vault login")).json().handoff.reason).toContain("Stored method VAULT_LOGIN");
   });
 
   it("lets an open T3 Code pane use the browser bridge of its own room under its T3 principal", async () => {

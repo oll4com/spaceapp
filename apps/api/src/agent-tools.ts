@@ -1,5 +1,6 @@
 import { mkdir, readdir, readFile, realpath, rename, writeFile, access } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
+import { openCodeConfigProblem, openCodeConfigRefusal } from "./opencode-config-file.js";
 import { spawn } from "./safe-child-process.js";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -20,6 +21,7 @@ import {
 import { parseSkillFrontmatter, type SpaceStore } from "@space/runtime";
 import { cliRuntimeDescriptors } from "./cli-runtime-descriptors.js";
 import { nestedBundleSkills } from "./plugins-service.js";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export interface AgentToolsOptions {
   baseRoot?: string;
@@ -30,10 +32,10 @@ export interface AgentToolsOptions {
 }
 
 const defaultOptions: Required<Pick<AgentToolsOptions, "baseRoot" | "configHome" | "skillsRoot" | "canonicalRoot">> = {
-  baseRoot: "/var/lib/spaceapp-user",
-  configHome: "/var/lib/spaceapp-user/.config/opencode",
-  skillsRoot: "/var/lib/spaceapp-user/.codex/skills",
-  canonicalRoot: "/opt/spaceapp/bin"
+  baseRoot: SPACE_AGENT_HOME,
+  configHome: `${SPACE_AGENT_HOME}/.config/opencode`,
+  skillsRoot: `${SPACE_AGENT_HOME}/.codex/skills`,
+  canonicalRoot: `${SPACE_INSTALL_ROOT}/bin`
 };
 
 type EffectiveAgentToolsOptions = Required<
@@ -1071,6 +1073,12 @@ export async function applyAgentTools(
           files.push({ path: writePath, action: "UNCHANGED", changed: false });
         }
       } else {
+        if (runtimeLayout.runtimeId === "cli:opencode") {
+          // The shared OpenCode config is never rebuilt from an empty or broken file (28/10: an ENOSPC write emptied it).
+          const raw = await rootReadFile(effective.rootWriterCommand, writePath);
+          const problem = raw === null ? null : openCodeConfigProblem(raw);
+          if (problem) throw await openCodeConfigRefusal(writePath, problem);
+        }
         const config = (await rootReadJsonFile(effective.rootWriterCommand, writePath)) ?? {};
         const objectKey = writeSource.keyPath || mcpObjectKey(runtimeLayout.runtimeId);
         const currentObject = isJsonObject(getByKeyPath(config, objectKey)) ? (getByKeyPath(config, objectKey) as JsonObject) : {};

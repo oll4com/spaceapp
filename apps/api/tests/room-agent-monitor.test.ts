@@ -4,8 +4,10 @@ import { InMemoryRoomAgentMonitorRepository } from "@space/db";
 import { SpaceNotFoundError } from "@space/runtime";
 import type { DashboardActivityDetail } from "../src/agents-dashboard.js";
 import {
-  createRoomAgentMonitor, notePaneReached, ROOM_MONITOR_ACTIVE_MS, ROOM_MONITOR_EMPTY_MS, ROOM_MONITOR_OVERLAP_MS, ROOM_MONITOR_QUIET_MS, roomMonitorEventText, roomMonitorTransition
+  createRoomAgentMonitor, notePanePrompted, notePaneReached, notePaneSent, OVERLAP_COORDINATED, ROOM_MONITOR_ACTIVE_MS, ROOM_MONITOR_PROMPTED_MS, ROOM_MONITOR_EMPTY_MS, ROOM_MONITOR_OVERLAP_MS, ROOM_MONITOR_OVERLAP_REPEAT_MS, ROOM_MONITOR_QUIET_MS, roomMonitorEventText, roomMonitorTransition
 } from "../src/room-agent-monitor.js";
+import { waitCloser } from "../src/nous/progress.js";
+import { roomMonitorEventText, roomMonitorTransition } from "../src/room-agent-monitor.js";
 
 const at = "2026-10-13T05:00:00.000Z";
 const room = (id: string, extra: Partial<Room> = {}) => ({ id, name: id, kind: "WORKSPACE", archivedAt: null, ...extra }) as Room;
@@ -32,7 +34,8 @@ function setup() {
   return {
     repository, monitor, readActivity, onEvent, onActivity, rooms,
     set(next: Record<string, DashboardActivityDetail>) { details = next; },
-    advance(ms: number) { now += ms; }
+    advance(ms: number) { now += ms; },
+    now: () => now
   };
 }
 
@@ -212,6 +215,115 @@ describe("room agent monitor", () => {
     overlaps = [];
     now += ROOM_MONITOR_OVERLAP_MS;
     await monitor.tick();
-    expect(await repository.getEvent(event!.eventId)).toMatchObject({ status: "RESOLVED", decision: "The overlap is gone." });
+    // W45 step 1: a handled overlap keeps who handled it and when; only an unanswered one resolves when it is gone.
+    expect(await repository.getEvent(event!.eventId)).toMatchObject({ status: "HANDLED" });
+    overlaps = [{ title: "Bob and Erin change the same files", detail: "Shared files: b.ts." }];
+    now += ROOM_MONITOR_OVERLAP_MS;
+    await monitor.tick();
+    const second = (await repository.listEvents("room:monitor1")).find((entry) => entry.title === "Bob and Erin change the same files");
+    overlaps = [];
+    now += ROOM_MONITOR_OVERLAP_MS;
+    await monitor.tick();
+    expect(await repository.getEvent(second!.eventId)).toMatchObject({ status: "RESOLVED", decision: "The overlap is gone." });
+  });
+
+  it("records an overlap HANDLED once Nous's text goes to one of its panes, queued after its turn too (W45 step 1)", async () => {
+    // 27/10-3/11: 97 OVERLAP notices, none answered by an agent, each open until the overlap went away (median 5.1 min).
+    let now = 1_000_000;
+    const repository = new InMemoryRoomAgentMonitorRepository();
+    const overlaps = [{ title: "Ivy and Kim change the same files", detail: "Shared files: a.ts.", files: ["a.ts"], paneIds: ["pane:ivy-w45", "pane:kim-w45"] }];
+    const onEvent = vi.fn();
+    const monitor = createRoomAgentMonitor({ repository, listRooms: async () => [room("room:monitor-w45")], readOverlaps: async () => overlaps, onEvent, now: () => now,
+      readActivity: async () => ({ data: [pane("pane:ivy-w45", "Ivy"), pane("pane:kim-w45", "Kim")], details: {} }) });
+    notePaneSent("pane:kim-w45", Date.now() - 60_000);
+    await monitor.tick();
+    const [event] = await repository.listEvents("room:monitor-w45");
+    // A text sent before the overlap was recorded is no coordination of it.
+    now += ROOM_MONITOR_EMPTY_MS;
+    await monitor.tick();
+    expect(await repository.getEvent(event!.eventId)).toMatchObject({ status: "OPEN" });
+    notePaneSent("pane:kim-w45");
+    now += ROOM_MONITOR_EMPTY_MS;
+    await monitor.tick();
+    const handled = await repository.getEvent(event!.eventId);
+    expect(handled).toMatchObject({ status: "HANDLED", decision: OVERLAP_COORDINATED });
+    expect(waitCloser(handled!)).toEqual({ who: "a coordination text Space sent for Nous or the Room Agent", byAgent: true });
+    expect(onEvent).toHaveBeenLastCalledWith(expect.objectContaining({ eventId: event!.eventId, status: "HANDLED" }));
+  });
+
+  it("records an overlap that comes back on the same files once an hour; a new file or a merge conflict at once (R10-6)", async () => {
+    // 28/10: "Dana and Emma change the same files" was recorded 5 times in 2 hours (09:02-10:59 UTC), each gone a few minutes later.
+    let now = 1_000_000;
+    const repository = new InMemoryRoomAgentMonitorRepository();
+    const pair = (files: string[]) => ({ title: "Dana and Emma change the same files", detail: `Shared files: ${files.join(", ")}.`, files });
+    let overlaps: Array<{ title: string; detail: string; files?: string[] }> = [pair(["docs/quality/KNOWN_LIMITATIONS.md", "review-findings.json"])];
+    const monitor = createRoomAgentMonitor({ repository, listRooms: async () => [room("room:monitor2")], readOverlaps: async () => overlaps, now: () => now,
+      readActivity: async () => ({ data: [pane("pane:dana-term", "Dana"), pane("pane:emma-term", "Emma")], details: {} }) });
+    const step = async (next: typeof overlaps) => { overlaps = next; now += ROOM_MONITOR_OVERLAP_MS; await monitor.tick(); };
+    const recorded = async () => (await repository.listEvents("room:monitor2")).filter((event) => event.kind === "OVERLAP").length;
+    await monitor.tick();
+    expect(await recorded()).toBe(1);
+    // Gone, then back on the same files 4 minutes later: not recorded again within the hour.
+    await step([]);
+    await step([pair(["review-findings.json"])]);
+    now += 2 * ROOM_MONITOR_OVERLAP_MS;
+    await step([]);
+    await step([pair(["docs/quality/KNOWN_LIMITATIONS.md", "review-findings.json"])]);
+    expect(await recorded()).toBe(1);
+    // A new shared file is recorded at once, and so is a merge conflict.
+    await step([pair(["docs/quality/KNOWN_LIMITATIONS.md", "review-findings.json", "apps/api/src/app.ts"])]);
+    expect(await recorded()).toBe(2);
+    await step([{ title: "Dana's queue ticket q-1 hit a merge conflict", detail: "Conflicting files: a.ts.", files: ["a.ts"] }]);
+    await step([]);
+    await step([{ title: "Dana's queue ticket q-1 hit a merge conflict", detail: "Conflicting files: a.ts.", files: ["a.ts"] }]);
+    expect(await recorded()).toBe(4);
+    // After the hour the same files are recorded again.
+    await step([]);
+    now += ROOM_MONITOR_OVERLAP_REPEAT_MS;
+    await step([pair(["review-findings.json"])]);
+    expect(await recorded()).toBe(5);
+  });
+
+  it("reads a room at once and on every tick after Space types a prompt, so a 4 s turn files FINISHED (c11 lab N4 5/11)", async () => {
+    const c = setup();
+    const idle: Record<string, DashboardActivityDetail> = { "pane:bob-term": { status: "idle", source: "screen" }, "pane:dana-term": { status: "idle", source: "native" } };
+    // Bob works 1.5-5.5 s after the prompt, inside one quiet-room interval; one tick a second for 12 s.
+    const turn = async () => {
+      const start = c.now();
+      for (let second = 1; second <= 12; second++) {
+        c.advance(1_000);
+        const elapsed = c.now() - start;
+        c.set(elapsed >= 1_500 && elapsed < 5_500 ? { ...idle, "pane:bob-term": { status: "working", source: "screen" } } : idle);
+        await c.monitor.tick();
+      }
+    };
+    c.set(idle);
+    await c.monitor.tick();
+    await turn();
+    expect(await c.repository.listEvents("room:monitor1")).toEqual([]);
+
+    notePanePrompted("room:monitor1", c.now());
+    await turn();
+    expect((await c.repository.listEvents("room:monitor1")).map((event) => [event.paneName, event.kind])).toEqual([["Bob", "FINISHED"]]);
+    expect(c.readActivity).toHaveBeenCalledWith("room:monitor1", true);
+
+    // Past the window the room is read at its quiet pace again, through the shared cache.
+    c.advance(ROOM_MONITOR_PROMPTED_MS);
+    await c.monitor.tick();
+    expect(c.readActivity).toHaveBeenLastCalledWith("room:monitor1", false);
+    const reads = c.readActivity.mock.calls.length;
+    c.advance(1_000);
+    await c.monitor.tick();
+    expect(c.readActivity.mock.calls.length).toBe(reads);
+  });
+});
+
+describe("pace cap hold (operator 6/11, plan clipboard:DotwYXVD2N3n)", () => {
+  it("files one line that the pane is held by the pace cap until the pace day, never a finish and never a call for help", () => {
+    const held = { activity: "WAITING" as const, reason: "Pace cap until 21:00 UTC" };
+    expect(roomMonitorTransition({ activity: "WORKING", reason: null }, held)).toEqual({ kind: "USAGE_LIMIT", severity: "INFO" });
+    expect(roomMonitorTransition(held, held)).toBeNull();
+    expect(roomMonitorEventText("USAGE_LIMIT", "Finn", held.reason, { title: null, summary: null }).title).toBe("Finn held by pace cap until 21:00 UTC");
+    expect(roomMonitorEventText("USAGE_LIMIT", "Finn", "Usage limit", { title: null, summary: null }).title).toBe("Finn hit a usage limit");
   });
 });

@@ -53,7 +53,7 @@ export function registerSecurityCopilotAgentRoutes(app: FastifyInstance, service
   handle("get", "hosts", async ({ owner }) => ({ hosts: await service.hostList(owner) }));
   handle("post", "hosts", async ({ owner, pane }, request) => {
     const input = parseBody(z.object({ hosts: z.array(z.object({ alias: securityHostAliasSchema, label: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,79}$/),
-      reach: securityHostReachSchema, status: securityHostStatusSchema, osFamily: securityOsFamilySchema }).strict()).min(1).max(200) }).strict(), request.body ?? {});
+      reach: securityHostReachSchema, status: securityHostStatusSchema, osFamily: securityOsFamilySchema }).strict()).min(1) }).strict(), request.body ?? {});
     const hosts = await service.registerHosts(owner, input.hosts);
     await deps.audit(request, "security_copilot.hosts.register", pane.id, { hosts: hosts.length });
     return { hosts: hosts.map(withoutInventory) };
@@ -76,7 +76,7 @@ export function registerSecurityCopilotAgentRoutes(app: FastifyInstance, service
 
   // ---- findings and vendor pages
   handle("get", "findings", async ({ owner }, request) => {
-    const query = parseQuery(z.object({ hostId: securityHostIdSchema.optional(), all: z.enum(["true", "false"]).optional(), limit: z.coerce.number().int().min(1).max(500).optional() }).strict(), request.query);
+    const query = parseQuery(z.object({ hostId: securityHostIdSchema.optional(), all: z.enum(["true", "false"]).optional(), limit: z.coerce.number().int().min(1).optional() }).strict(), request.query);
     return { findings: await service.findings(owner, { hostId: query.hostId, open: query.all !== "true", limit: query.limit }) };
   });
   handle("post", "findings/:id", async ({ owner, pane }, request) => {
@@ -120,7 +120,7 @@ export function registerSecurityCopilotAgentRoutes(app: FastifyInstance, service
     return result;
   });
   handle("get", "actions", async ({ owner }, request) => {
-    const query = parseQuery(z.object({ hostId: securityHostIdSchema.optional(), limit: z.coerce.number().int().min(1).max(200).optional() }).strict(), request.query);
+    const query = parseQuery(z.object({ hostId: securityHostIdSchema.optional(), limit: z.coerce.number().int().min(1).optional() }).strict(), request.query);
     return { actions: await service.actions(owner, query) };
   });
 
@@ -136,12 +136,12 @@ export function registerSecurityCopilotAgentRoutes(app: FastifyInstance, service
   });
   handle("post", "events/:id/wait", async ({ owner, pane }, request) => service.waitForAnswer(owner, pane, id(request, securityEventIdSchema),
     parseBody(z.object({ waitMs: z.number().int().min(0).max(50_000).default(30_000) }).strict(), request.body ?? {}).waitMs));
-  handle("post", "note", async ({ owner, pane }, request) => ({ event: await service.note(owner, pane, parseBody(z.object({ message: text(2000) }).strict(), request.body ?? {}).message) }));
+  handle("post", "note", async ({ owner, pane }, request) => ({ event: await service.note(owner, pane, parseBody(z.object({ message: z.string().trim().min(1) }).strict(), request.body ?? {}).message) }));
 
   // ---- memory
   handle("post", "memory/recall", async ({ owner }, request) => {
     const query = parseBody(z.object({ query: z.string().max(300).optional(), hostId: securityHostIdSchema.optional(), kinds: z.array(securityMemoryKindSchema).max(7).optional(),
-      limit: z.number().int().min(1).max(50).optional() }).strict(), request.body ?? {});
+      limit: z.number().int().min(1).optional() }).strict(), request.body ?? {});
     return { memories: await service.recall(owner, query) };
   });
   handle("post", "memory", async ({ owner }, request) => ({ memory: await service.remember(owner, parseBody(securityMemoryCreateSchema, request.body ?? {}), "AGENT") }));

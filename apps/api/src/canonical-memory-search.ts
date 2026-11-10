@@ -19,7 +19,7 @@ export class CanonicalMemorySearch {
   private error: string | null = null;
   constructor(private readonly options: {
     canonical: CanonicalMemoryBridge;
-    repository: Pick<CanonicalMemoryEmbeddings, "list" | "upsert" | "search" | "close">;
+    repository: Pick<CanonicalMemoryEmbeddings, "list" | "upsert" | "remove" | "search" | "close">;
     provider: string;
     model: string;
     ready: () => Promise<boolean>;
@@ -44,6 +44,10 @@ export class CanonicalMemorySearch {
     const deadline = Date.now() + 120_000;
     let updated = 0;
     try {
+      // Vectors of removed, archived and superseded entries were only filtered at search (DATA-004); an empty read never prunes.
+      const current = new Set(entries.map(e => e.id));
+      const dead = [...indexed.keys()].filter(id => !current.has(id));
+      if (entries.length && dead.length) await this.options.repository.remove(dead);
       for (let start = 0; start < missing.length && Date.now() < deadline && !this.stopped; start += 16) {
         const batch = missing.slice(start, start + 16);
         // Only redacted canonical text reaches the configured, dedicated provider.
@@ -65,7 +69,7 @@ export class CanonicalMemorySearch {
 
   async search(query: ListMemoryQuery, embedding: number[]): Promise<MemoryEntry[]> {
     const all = await this.options.canonical.list({ ...query, q: undefined, searchMode: "keyword" });
-    const hits = await this.options.repository.search(embedding, this.options.provider, this.options.model, all.map(e => e.id));
+    const hits = await this.options.repository.search(embedding, this.options.provider, this.options.model, all.map(e => e.id), minimumSimilarity(this.options.model));
     // Recheck scope, existence and the current content hash. Removed, archived and
     // changed entries cannot leak through old vectors, even during index rebuilds.
     const current = new Map(all.map(e => [e.id, e]));
@@ -75,7 +79,8 @@ export class CanonicalMemorySearch {
     });
     // The canonical reader ranks full source bodies before selecting a bounded
     // evidence window. Searching the list projection would miss late evidence.
-    const lexical = query.q ? (await this.options.canonical.list({ ...query, searchMode: "keyword" })).slice(0, 100) : [];
+    // Every keyword match and every vector hit above the noise floor (until 31/10 the first 100 of each); the route pages them.
+    const lexical = query.q ? await this.options.canonical.list({ ...query, searchMode: "keyword" }) : [];
     const merged = new Map(lexical.map(e => [e.id, e]));
     for (const entry of semantic) if (!merged.has(entry.id)) merged.set(entry.id, entry);
     return [...merged.values()];

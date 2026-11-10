@@ -4,6 +4,7 @@ import {
   DESIGN_REQUEST_OPEN_STATUSES, DESIGN_REQUEST_STATUSES, designRequestStatusSchema, resolveDesignFormat, type DesignFormat
 } from "./design.js";
 import type { MarketingChannel } from "./marketing-copilot.js";
+import { orderedRange } from "./range-rules.js";
 
 // Video pane (plan clipboard:-HpLbbtWKj53, operator request 2026-10-21): a video studio with the Design pane's philosophy. Agents,
 // Nous, Dots, the Live pane, the Marketing Copilot and the operator send a video (or a brief) and get back a finished video in
@@ -50,16 +51,25 @@ export type VideoFilter = z.infer<typeof videoFilterSchema>;
 export const VIDEO_CAPTION_STYLES = ["none", "karaoke", "bold-center", "lower-third"] as const;
 export const videoCaptionStyleSchema = z.enum(VIDEO_CAPTION_STYLES);
 export type VideoCaptionStyle = z.infer<typeof videoCaptionStyleSchema>;
-/** Narration engines: Kokoro (Apache, fast, 9 languages) and Chatterbox (MIT, 23 languages incl. Greek, voice cloning); both local. */
-export const VIDEO_TTS_ENGINES = ["kokoro", "chatterbox"] as const;
+/** Narration engines: Kokoro (Apache, fast, 8 languages) and Chatterbox (MIT, 23 languages incl. Greek, voice cloning), both local;
+ * Murf (cloud Gen2 voices, 17 languages incl. Greek el-GR-stavros, paid from the Murf API credits; key in secrets/space-murf.key);
+ * the startup voice grants (2026-11-08): Cartesia Sonic 3, Fish Audio S1 and LiveKit Inference (Sonic 3 through LiveKit), all cloud. */
+export const VIDEO_TTS_ENGINES = ["kokoro", "chatterbox", "murf", "cartesia", "fish", "livekit"] as const;
 export const videoTtsEngineSchema = z.enum(VIDEO_TTS_ENGINES);
 export type VideoTtsEngine = z.infer<typeof videoTtsEngineSchema>;
-/** Narration languages and the engines that speak them (BCP-47 base tags). */
+/** Transcription engines: faster-whisper (local, the default) or a cloud grant (AssemblyAI, Cartesia Ink, LiveKit Inference's Deepgram Nova 3). */
+export const VIDEO_STT_ENGINES = ["whisper", "assemblyai", "cartesia", "livekit"] as const;
+export const videoSttEngineSchema = z.enum(VIDEO_STT_ENGINES);
+export type VideoSttEngine = z.infer<typeof videoSttEngineSchema>;
+/** Narration languages and the engines that speak them (BCP-47 base tags); where Kokoro is missing, Murf comes first (Chatterbox is an optional install);
+ * the cloud grants follow (Cartesia and LiveKit: Sonic 3's languages; Fish: S1's published ones). */
 export const VIDEO_TTS_LANGUAGES: Readonly<Record<string, readonly VideoTtsEngine[]>> = Object.freeze({
-  en: ["kokoro", "chatterbox"], es: ["kokoro", "chatterbox"], fr: ["kokoro", "chatterbox"], hi: ["kokoro", "chatterbox"], it: ["kokoro", "chatterbox"],
-  pt: ["kokoro", "chatterbox"], ja: ["kokoro", "chatterbox"], zh: ["kokoro", "chatterbox"],
-  ar: ["chatterbox"], da: ["chatterbox"], de: ["chatterbox"], el: ["chatterbox"], fi: ["chatterbox"], he: ["chatterbox"], ko: ["chatterbox"], ms: ["chatterbox"],
-  nl: ["chatterbox"], no: ["chatterbox"], pl: ["chatterbox"], ru: ["chatterbox"], sv: ["chatterbox"], sw: ["chatterbox"], tr: ["chatterbox"]
+  en: ["kokoro", "chatterbox", "murf", "cartesia", "fish", "livekit"], es: ["kokoro", "chatterbox", "murf", "cartesia", "fish", "livekit"], fr: ["kokoro", "chatterbox", "murf", "cartesia", "fish", "livekit"], hi: ["kokoro", "chatterbox", "murf", "cartesia", "livekit"],
+  it: ["kokoro", "chatterbox", "murf", "cartesia", "fish", "livekit"], pt: ["kokoro", "chatterbox", "murf", "cartesia", "fish", "livekit"], ja: ["kokoro", "chatterbox", "murf", "cartesia", "fish", "livekit"], zh: ["kokoro", "chatterbox", "murf", "cartesia", "fish", "livekit"],
+  de: ["murf", "chatterbox", "cartesia", "fish", "livekit"], el: ["murf", "chatterbox", "cartesia", "livekit"], ko: ["murf", "chatterbox", "cartesia", "fish", "livekit"], nl: ["murf", "chatterbox", "cartesia", "fish", "livekit"], pl: ["murf", "chatterbox", "cartesia", "fish", "livekit"],
+  bn: ["murf", "cartesia", "livekit"], hr: ["murf", "cartesia", "livekit"], sk: ["murf", "cartesia", "livekit"], ta: ["murf", "cartesia", "livekit"],
+  ar: ["chatterbox", "cartesia", "fish", "livekit"], da: ["chatterbox", "cartesia", "livekit"], fi: ["chatterbox", "cartesia", "livekit"], he: ["chatterbox", "cartesia", "livekit"], ms: ["chatterbox", "cartesia", "livekit"], no: ["chatterbox", "cartesia", "livekit"], ru: ["chatterbox", "cartesia", "fish", "livekit"], sv: ["chatterbox", "cartesia", "livekit"],
+  sw: ["chatterbox"], tr: ["chatterbox", "cartesia", "livekit"]
 });
 const languageTag = z.string().regex(/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/);
 
@@ -81,23 +91,23 @@ export const videoSourceSchema = z.union([
   z.object({ url: z.string().url().max(2000).refine((url) => url.startsWith("https://"), "Only https sources."), rightsConfirmed: z.literal(true), label: z.string().trim().max(120).optional() }).strict()
 ]);
 export type VideoSource = z.infer<typeof videoSourceSchema>;
-export const VIDEO_REQUEST_MAX_SOURCES = 8;
+
 /** Where the Studio's "Save to Agent Files" files a video: Agent Files › Media / Video. */
 export const VIDEO_AGENT_FILES_FOLDER = "MEDIA/Video";
 
 // ---- timeline -----------------------------------------------------------------------------------
-export const VIDEO_TIMELINE_MAX_CLIPS = 200;
+// A request's sources and formats and a timeline's clips, overlays and outputs have no count since 31/10 (until then 8, 8, 200, 20, 8).
+/** Technical: the Video pane's default formats live in its pane metadata, which the running Browser Host parses with the contracts it loaded. */
 export const VIDEO_TIMELINE_MAX_OUTPUTS = 8;
-export const VIDEO_TIMELINE_MAX_OVERLAYS = 20;
 export const VIDEO_NARRATION_MAX = 8000;
 const seconds = z.number().min(0).max(86_400);
 export const videoClipSchema = z.object({
   /** Index into the request's or the pane's sources. */
-  sourceIndex: z.number().int().min(0).max(VIDEO_REQUEST_MAX_SOURCES - 1),
+  sourceIndex: z.number().int().min(0),
   inSec: seconds,
   outSec: seconds,
   speed: z.number().min(0.25).max(4).default(1)
-}).strict().refine((clip) => clip.outSec > clip.inSec, "A clip ends after it starts.");
+}).strict().refine(...orderedRange("inSec", "outSec", "A clip ends after it starts.", true));
 export const videoCaptionsSchema = z.object({
   style: videoCaptionStyleSchema.default("none"),
   /** null: the transcript's language. */
@@ -111,7 +121,7 @@ export const videoOverlaySchema = z.object({
   toSec: seconds,
   position: z.enum(["top-left", "top-right", "bottom-left", "bottom-right", "center", "full"]).default("bottom-right"),
   opacity: z.number().min(0).max(1).default(1)
-}).strict().refine((overlay) => overlay.toSec > overlay.fromSec, "An overlay ends after it starts.");
+}).strict().refine(...orderedRange("fromSec", "toSec", "An overlay ends after it starts.", true));
 export const videoNarrationSchema = z.object({
   engine: videoTtsEngineSchema.default("kokoro"),
   voice: z.string().trim().max(60).nullable().default(null),
@@ -131,16 +141,16 @@ export const videoMusicSchema = z.object({
 /** What the agent sends to assemble: the cut list and every layer, rendered once per output format. */
 export const videoTimelineSchema = z.object({
   version: z.literal(1),
-  clips: z.array(videoClipSchema).min(1).max(VIDEO_TIMELINE_MAX_CLIPS),
+  clips: z.array(videoClipSchema).min(1),
   transition: videoTransitionSchema.default("auto"),
   transitionSec: z.number().min(0.1).max(1.5).default(0.4),
   filter: videoFilterSchema.default("none"),
   reframe: videoReframeSchema.default("FACE"),
   captions: videoCaptionsSchema.default({ style: "none", language: null, position: "BOTTOM" }),
-  overlays: z.array(videoOverlaySchema).max(VIDEO_TIMELINE_MAX_OVERLAYS).default([]),
+  overlays: z.array(videoOverlaySchema).default([]),
   narration: videoNarrationSchema.nullable().default(null),
   music: videoMusicSchema.nullable().default(null),
-  outputs: z.array(z.object({ formatId: videoFormatRefSchema, label: z.string().trim().max(120).optional() }).strict()).min(1).max(VIDEO_TIMELINE_MAX_OUTPUTS),
+  outputs: z.array(z.object({ formatId: videoFormatRefSchema, label: z.string().trim().max(120).optional() }).strict()).min(1),
   /** Shorter than the format's own limit when set. */
   maxDurationSec: z.number().min(1).max(3600).optional()
 }).strict();
@@ -231,17 +241,17 @@ export const videoRequestSchema = z.object({
   videoPaneId: paneIdSchema.nullable(),
   requester: designRequesterSchema,
   brief: z.string().min(1).max(VIDEO_BRIEF_MAX),
-  sources: z.array(videoSourceSchema).max(VIDEO_REQUEST_MAX_SOURCES),
-  formatIds: z.array(videoFormatRefSchema).min(1).max(VIDEO_TIMELINE_MAX_OUTPUTS),
+  sources: z.array(videoSourceSchema),
+  formatIds: z.array(videoFormatRefSchema).min(1),
   options: videoRequestOptionsSchema,
   callback: designRequestCallbackSchema.nullable(),
   status: designRequestStatusSchema,
-  resultAssetIds: z.array(videoAssetIdSchema).max(32),
+  resultAssetIds: z.array(videoAssetIdSchema),
   /** The Video agent's open question to the operator, and the answer. */
   question: z.string().max(2000).nullable(),
   answer: z.string().max(2000).nullable(),
   /** The delivery note or the failure reason. */
-  message: z.string().max(2000).nullable(),
+  message: z.string().nullable(),
   takenAt: isoDateTime.nullable(),
   deliveredAt: isoDateTime.nullable(),
   createdAt: isoDateTime,
@@ -252,8 +262,8 @@ export type VideoRequest = z.infer<typeof videoRequestSchema>;
 /** What a requester sends; formats default to the Video pane's default formats. */
 export const videoRequestCreateSchema = z.object({
   brief: z.string().trim().min(1).max(VIDEO_BRIEF_MAX),
-  sources: z.array(videoSourceSchema).max(VIDEO_REQUEST_MAX_SOURCES).default([]),
-  formatIds: z.array(videoFormatRefSchema).max(VIDEO_TIMELINE_MAX_OUTPUTS).default([]),
+  sources: z.array(videoSourceSchema).default([]),
+  formatIds: z.array(videoFormatRefSchema).default([]),
   options: videoRequestOptionsSchema.default({}),
   videoPaneId: paneIdSchema.optional(),
   callback: designRequestCallbackSchema.optional()
@@ -333,7 +343,7 @@ export const videoEventSchema = z.object({
   requestId: videoRequestIdSchema.nullable(),
   assetId: videoAssetIdSchema.nullable(),
   type: videoEventTypeSchema,
-  message: z.string().max(2000),
+  message: z.string(),
   payload: z.record(z.string(), z.unknown()),
   createdAt: isoDateTime
 }).strict();

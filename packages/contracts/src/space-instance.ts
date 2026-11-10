@@ -1,3 +1,5 @@
+import { SPACE_INSTALL_ROOT } from "./host-paths.js";
+
 // One host can run two Space installations: the operator's "stable" instance
 // and a "dev" instance that receives every change before the operator promotes
 // it. Without SPACE_INSTANCE every process behaves exactly as before (stable).
@@ -15,7 +17,7 @@ export const stableInstanceDefaults = {
   cliHostSocket: "/run/space-codex-pane-host/pane-host.sock",
   cliAdminHostSocket: "/run/space-admin-pane-host/pane-host.sock",
   browserHostSocket: "/run/space-browser-host/browser-host.sock",
-  installRoot: "/opt/spaceapp"
+  installRoot: SPACE_INSTALL_ROOT
 } as const;
 
 const stableSessionCookieName = "space_session";
@@ -64,6 +66,10 @@ export const instanceBackgroundJobs = [
   "security-copilot-watch",
   // Monitoring Copilot pulls the collector's active alerts and the guardian relay's messages; one instance raises the notifications.
   "monitoring-copilot-watch",
+  // Mail Campaigns mails approved campaigns to their recipients; a dev copy must never mail them twice.
+  "mail-campaign-sender",
+  // Mail Campaigns checks address health and reads Gmail senders' bounces and replies; one instance updates the lists.
+  "mail-campaign-health",
   // Notifies the admins when an exhausted Codex account is usable again; one instance announces it.
   "codex-quota-reset-notify",
   // Notifies the admins when the daily Space Memory maintenance run failed; only stable runs the memory workers.
@@ -74,8 +80,12 @@ export const instanceBackgroundJobs = [
   "token-usage-claude",
   // Nous answers panes and copilots on its own from the monitor and the notifications; one instance acts for an owner.
   "nous",
+  // Appointment reminders (Telegram, push): a dev copy of the database must not remind the operator twice.
+  "appointment-reminders",
   // Nous's pane board: one cheap Claude summary run per changed batch of panes, in stable's worker only.
-  "nous-pane-board"
+  "nous-pane-board",
+  // Space Gateway's pace cap exempts the panes of open operator requests; one instance sends that list (dev shares the gateway).
+  "gateway-priority-panes"
 ] as const;
 export type InstanceBackgroundJob = (typeof instanceBackgroundJobs)[number];
 
@@ -84,6 +94,9 @@ export type InstanceBackgroundJob = (typeof instanceBackgroundJobs)[number];
  * job in SPACE_INSTANCE_ENABLED_JOBS (comma separated) to test it on purpose.
  */
 export function instanceBackgroundJobEnabled(env: Env, job: InstanceBackgroundJob): boolean {
+  // A self-hosted install has no Space Gateway: its down card only misled Nous (1.2.0 lab, 2/11), and its priority-pane push
+  // only logged "Space Gateway answered 503" (1.2.0 c13 lab, 9/11).
+  if ((job === "gateway-down-notify" || job === "gateway-priority-panes") && env.SPACE_PUBLIC_DISTRIBUTION === "true") return false;
   if (resolveSpaceInstance(env) === "stable") return true;
   const enabled = (env.SPACE_INSTANCE_ENABLED_JOBS ?? "")
     .split(",")

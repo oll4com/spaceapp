@@ -103,6 +103,7 @@ export function projectTraceRecords(traceId: string, records: TraceRecords): Tra
       startedAt: session.startedAt,
       endedAt: session.endedAt ?? null
     })),
+    gatewayRequests: (records.gatewayRequests ?? []).map((row) => ({ ...row, errorCode: identifier(row.errorCode) })),
     events,
     auditEvents: records.auditEvents.map((audit) => ({
       id: audit.id,
@@ -122,7 +123,10 @@ export function projectTraceRecords(traceId: string, records: TraceRecords): Tra
     })),
     logQueries: {
       api: `journalctl -u space-api.service -o cat | grep -F '"reqId":"${traceId}"'`,
-      worker: `journalctl -u space-worker.service -o cat | grep -F '"traceId":"${traceId}"'`
+      worker: `journalctl -u space-worker.service -o cat | grep -F '"traceId":"${traceId}"'`,
+      // OBS-001: the hosts' cli_host_request and browser_host_request lines (ids only).
+      cliHost: `journalctl -u codex-pane-host.service -u space-admin-pane-host.service -o cat | grep -F '"traceId":"${traceId}"'`,
+      browserHost: `journalctl -u space-browser-host.service -o cat | grep -F '"traceId":"${traceId}"'`
     }
   });
 }

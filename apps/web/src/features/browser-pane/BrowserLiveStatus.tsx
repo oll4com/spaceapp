@@ -1,8 +1,11 @@
 import { useEffect, useState, type RefObject } from "react";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export function BrowserLiveStatus({ paneRef, sessionId, paused, handoff, compact = false }: {
   paneRef: RefObject<HTMLElement | null>; sessionId: string | null; paused: boolean; handoff: boolean; compact?: boolean;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [sample, setSample] = useState({ fps: 0, rtt: "", state: "idle", mode: "" });
   useEffect(() => {
     let previous = Number(paneRef.current?.dataset.browserPresentedFrames ?? 0);
@@ -21,11 +24,11 @@ export function BrowserLiveStatus({ paneRef, sessionId, paused, handoff, compact
     return () => window.clearInterval(timer);
   }, [paneRef, sessionId]);
   const connected = sample.state === "ready" || sample.state === "legacy-ready";
-  return <div className={`browser-live-status${compact ? " browser-live-status-compact" : ""}`} aria-label="Browser live performance"
-    title={`${handoff ? "You have control" : "Shared with room agents"}${sample.rtt ? ` · ${sample.rtt} ms input` : ""}`}>
-    <span>{!sessionId ? "Offline" : paused ? "Paused" : connected ? "Live" : sample.state === "silent" ? "Silent" : "Connecting"}</span>
-    <span title="Actual rendered frames per second; Live targets up to 35. Static pages only send changed frames.">{sample.fps} fps</span>
-    {!compact && sample.rtt ? <span title="Last input acknowledgement round trip">{sample.rtt} ms input</span> : null}
-    {!compact ? <span>{handoff ? "You have control" : "Shared with room agents"}</span> : null}
+  return <div className={`browser-live-status${compact ? " browser-live-status-compact" : ""}`} aria-label={t("Browser live performance")}
+    title={`${handoff ? t("You have control") : t("Shared with room agents")}${sample.rtt ? ` · ${t("{ms} ms input", { ms: sample.rtt })}` : ""}`}>
+    <span>{!sessionId ? t("Offline") : paused ? t("Paused") : connected ? t("Live") : sample.state === "silent" ? t("Silent") : t("Connecting")}</span>
+    <span title={t("Actual rendered frames per second; Live targets up to 35. Static pages only send changed frames.")}>{t("{fps} fps", { fps: sample.fps })}</span>
+    {!compact && sample.rtt ? <span title={t("Last input acknowledgement round trip")}>{t("{ms} ms input", { ms: sample.rtt })}</span> : null}
+    {!compact ? <span>{handoff ? t("You have control") : t("Shared with room agents")}</span> : null}
   </div>;
 }

@@ -4,6 +4,7 @@ import type { Pane, VncPreset } from "@space/contracts";
 import { api } from "../../api.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import RFB from "@novnc/novnc";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 interface VncPaneProps {
   pane: Pane;
@@ -13,6 +14,11 @@ interface VncPaneProps {
 type VncConnectionState = "idle" | "connecting" | "connected" | "error" | "closed";
 
 export function VncPane({ pane, observerOnly = false }: VncPaneProps) {
+  const language = useUiLanguage();
+  const languageRef = useRef(language);
+  languageRef.current = language;
+  // Callbacks outlive the render that made them, so `t` reads the language through a ref.
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(languageRef.current, text, vars);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rfbRef = useRef<RFB | null>(null);
   const pendingTargetRef = useRef<{ host: string; port: number; password?: string } | null>(null);
@@ -82,18 +88,18 @@ export function VncPane({ pane, observerOnly = false }: VncPaneProps) {
         rfb.addEventListener("disconnect", (event) => {
           if (!isCurrent()) return;
           setState("closed");
-          setStatusMessage(event.detail.message || (event.detail.clean ? "Disconnected." : "Connection closed."));
+          setStatusMessage(event.detail.message || (event.detail.clean ? t("Disconnected.") : t("Connection closed.")));
           rfbRef.current = null;
         });
         rfb.addEventListener("credentialsrequired", () => {
           if (!isCurrent()) return;
           setState("error");
-          setStatusMessage("Password required. Reconnect with the VNC password.");
+          setStatusMessage(t("Password required. Reconnect with the VNC password."));
         });
         rfb.addEventListener("securityfailure", (event) => {
           if (!isCurrent()) return;
           setState("error");
-          setStatusMessage(event.detail.reason || "VNC security failure.");
+          setStatusMessage(event.detail.reason || t("VNC security failure."));
         });
         rfb.addEventListener("desktopname", (event) => {
           if (isCurrent()) setDesktopName(event.detail.name);
@@ -102,7 +108,7 @@ export function VncPane({ pane, observerOnly = false }: VncPaneProps) {
         if (cancelled) return;
         rfbRef.current = null;
         setState("error");
-        setStatusMessage("VNC connection could not be started. Retry the connection.");
+        setStatusMessage(t("VNC connection could not be started. Retry the connection."));
       }
     }
 
@@ -144,7 +150,7 @@ export function VncPane({ pane, observerOnly = false }: VncPaneProps) {
     rfbRef.current?.disconnect();
     rfbRef.current = null;
     setState("closed");
-    setStatusMessage("Disconnected.");
+    setStatusMessage(t("Disconnected."));
   }
 
   function handleFullscreen() {
@@ -164,24 +170,24 @@ export function VncPane({ pane, observerOnly = false }: VncPaneProps) {
       <div className="vnc-pane-toolbar">
         <span className="vnc-pane-status" data-state={state}>
           {state === "connected"
-            ? desktopName || "Connected"
+            ? desktopName || t("Connected")
             : state === "connecting"
-              ? "Connecting..."
+              ? t("Connecting...")
               : state === "error"
-                ? "Error"
+                ? t("Error")
                 : state === "closed"
-                  ? "Disconnected"
-                  : "Idle"}
+                  ? t("Disconnected")
+                  : t("Idle")}
         </span>
         <div className="vnc-pane-actions">
-          <button type="button" title="Connect to a VNC server" aria-label="Connect to a VNC server" onClick={() => setDialogOpen(true)} disabled={state === "connecting"}>
+          <button type="button" title={t("Connect to a VNC server")} aria-label={t("Connect to a VNC server")} onClick={() => setDialogOpen(true)} disabled={state === "connecting"}>
             <Globe2 aria-hidden="true" />
-            <span>Connect</span>
+            <span>{t("Connect")}</span>
           </button>
-          <button type="button" title="Disconnect" aria-label="Disconnect" onClick={handleDisconnect} disabled={!rfbRef.current}>
+          <button type="button" title={t("Disconnect")} aria-label={t("Disconnect")} onClick={handleDisconnect} disabled={!rfbRef.current}>
             <Unplug aria-hidden="true" />
           </button>
-          <button type="button" title="Fullscreen" aria-label="Fullscreen" onClick={handleFullscreen} disabled={state !== "connected"}>
+          <button type="button" title={t("Fullscreen")} aria-label={t("Fullscreen")} onClick={handleFullscreen} disabled={state !== "connected"}>
             <Maximize2 aria-hidden="true" />
           </button>
         </div>
@@ -190,7 +196,7 @@ export function VncPane({ pane, observerOnly = false }: VncPaneProps) {
         <div className="vnc-pane-notice" role="status">
           <span>{statusMessage}</span>
           {state === "error" ? (
-            <button type="button" className="vnc-pane-notice-close" aria-label="Dismiss message" onClick={() => setStatusMessage(null)}>
+            <button type="button" className="vnc-pane-notice-close" aria-label={t("Dismiss message")} onClick={() => setStatusMessage(null)}>
               ×
             </button>
           ) : null}
@@ -200,13 +206,13 @@ export function VncPane({ pane, observerOnly = false }: VncPaneProps) {
         <form className="vnc-connect-dialog" onSubmit={handleConnectSubmit}>
           <div className="vnc-connect-head">
             <Monitor aria-hidden="true" />
-            <strong>VNC connection</strong>
+            <strong>{t("VNC connection")}</strong>
           </div>
           {presets.length > 0 ? (
             <label className="vnc-connect-field">
-              <span>Preset</span>
+              <span>{t("Preset")}</span>
               <select value={presetId} onChange={(event) => applyPreset(event.target.value)}>
-                <option value="">Custom…</option>
+                <option value="">{t("Custom…")}</option>
                 {presets.map((preset) => (
                   <option key={preset.id} value={preset.id}>
                     {preset.name}
@@ -216,40 +222,40 @@ export function VncPane({ pane, observerOnly = false }: VncPaneProps) {
             </label>
           ) : null}
           <label className="vnc-connect-field">
-            <span>Host</span>
+            <span>{t("Host")}</span>
             <input value={host} onChange={(event) => setHost(event.target.value)} placeholder="192.0.2.20" autoComplete="off" required />
           </label>
           <label className="vnc-connect-field">
-            <span>Port</span>
+            <span>{t("Port")}</span>
             <input value={port} onChange={(event) => setPort(event.target.value)} inputMode="numeric" placeholder="5900" required />
           </label>
           <label className="vnc-connect-field">
-            <span>Password</span>
+            <span>{t("Password")}</span>
             <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="off" />
           </label>
           <SpaceToggle
             className="vnc-connect-remember-toggle"
-            label="Remember this target"
+            label={t("Remember this target")}
             checked={remember}
             onChange={setRemember}
           />
           <div className="vnc-connect-actions">
             <button type="submit" disabled={state === "connecting"}>
               {state === "connecting" ? <Loader2 className="spin" aria-hidden="true" /> : <Lock aria-hidden="true" />}
-              <span>Connect</span>
+              <span>{t("Connect")}</span>
             </button>
             <button type="button" onClick={() => setDialogOpen(false)} className="vnc-connect-cancel">
-              Cancel
+              {t("Cancel")}
             </button>
           </div>
         </form>
       ) : (
         <div className="vnc-pane-screen" ref={containerRef} />
       )}
-      {observerOnly ? <div className="vnc-pane-observer-note">Observer mode — input is disabled.</div> : null}
+      {observerOnly ? <div className="vnc-pane-observer-note">{t("Observer mode — input is disabled.")}</div> : null}
       <div className="vnc-pane-hint">
         <Keyboard aria-hidden="true" />
-        <span>Click the screen to capture keyboard input.</span>
+        <span>{t("Click the screen to capture keyboard input.")}</span>
       </div>
     </div>
   );

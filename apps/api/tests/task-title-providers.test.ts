@@ -284,6 +284,12 @@ describe("economical title model routing", () => {
         { type: "input_image", image_url: `data:image/png;base64,${Buffer.from("png-bytes").toString("base64")}` },
       ]);
       expect(body.tools).toEqual([]);
+      // OBS-006: the gateway row is named by the task's key, and an id that is no header value sends none.
+      expect(new Headers(f.fetchImpl.mock.calls.at(-1)?.[1]?.headers).get("x-request-id")).toBeNull();
+      await gateway!.generate("Name the task", AbortSignal.timeout(1000), undefined, "cli:codex:default:task-1");
+      expect(new Headers(f.fetchImpl.mock.calls.at(-1)?.[1]?.headers).get("x-request-id")).toBe("cli:codex:default:task-1");
+      await gateway!.generate("Name the task", AbortSignal.timeout(1000), undefined, "x".repeat(121));
+      expect(new Headers(f.fetchImpl.mock.calls.at(-1)?.[1]?.headers).get("x-request-id")).toBeNull();
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it("rests a free model the service has retired for a day", async () => {

@@ -7,7 +7,10 @@ import { useCopilotLayout } from "../copilot-kit/copilot-layout.js";
 import { copilotRuntimeOptions } from "../copilot-kit/copilot-runtimes.js";
 import { RAIL_DEFAULT_WIDTH, RAIL_MAX_WIDTH, RAIL_MIN_WIDTH, readRailPreference, writeRailPreference, type RailPreference } from "../copilot-kit/rail-preference.js";
 import { useCopilotAgent } from "../copilot-kit/useCopilotAgent.js";
-import { Activity, Brain, Mail, Settings, ShieldCheck, Terminal } from "../ui-theme/app-icons.js";
+import { useNousReviewing } from "../copilot-kit/nous-reviewing.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
+import { Activity, Brain, Mail, Mails, Settings, ShieldCheck, Terminal } from "../ui-theme/app-icons.js";
+import { CampaignsTab } from "./CampaignsTab.js";
 import { AccountsView, paneAccounts } from "./AccountsView.js";
 import { ActivityTab } from "./ActivityTab.js";
 import { MemoryTab } from "./MemoryTab.js";
@@ -17,8 +20,10 @@ import { MailClient } from "./MailClient.js";
 import { useMailbox } from "./useMailbox.js";
 import { SetupTab } from "./SetupTab.js";
 import { useMailCopilotData } from "./useMailCopilot.js";
+import { onPaneTarget } from "../notifications/pane-target.js";
 import "../copilot-kit/copilot-pane.css";
 import "./mail-copilot-pane.css";
+import { CopilotNotice } from "../copilot-kit/CopilotNotice.js";
 
 export interface MailCopilotPaneProps {
   pane: Pane;
@@ -27,10 +32,10 @@ export interface MailCopilotPaneProps {
   terminal: ReactNode;
 }
 
-export type MailRailTab = "mail" | "activity" | "memory" | "rules" | "setup" | "terminal";
-const RAIL_TABS: readonly MailRailTab[] = ["activity", "memory", "rules", "setup", "terminal"];
-const TAB_LABELS: Record<MailRailTab, string> = { mail: "Mail", activity: "Activity", memory: "Memory", rules: "Rules", setup: "Setup", terminal: "Terminal" };
-const TAB_ICONS = { mail: Mail, activity: Activity, memory: Brain, rules: ShieldCheck, setup: Settings, terminal: Terminal } as const;
+export type MailRailTab = "mail" | "activity" | "campaigns" | "memory" | "rules" | "setup" | "terminal";
+const RAIL_TABS: readonly MailRailTab[] = ["activity", "campaigns", "memory", "rules", "setup", "terminal"];
+const TAB_LABELS: Record<MailRailTab, string> = { mail: "Mail", activity: "Activity", campaigns: "Campaigns", memory: "Memory", rules: "Rules", setup: "Setup", terminal: "Terminal" };
+const TAB_ICONS = { mail: Mail, activity: Activity, campaigns: Mails, memory: Brain, rules: ShieldCheck, setup: Settings, terminal: Terminal } as const;
 
 function railStorageKey(paneId: string): string {
   return `space:mail-copilot:rail:${paneId}`;
@@ -53,6 +58,8 @@ export function resolveActiveTab(tab: string | null | undefined, layout: "split"
  * mailbox as a tab, the tab strip at the bottom.
  */
 export function MailCopilotPane({ pane, isVisible, terminal }: MailCopilotPaneProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const data = useMailCopilotData(pane, isVisible);
   const paneRef = useRef<HTMLDivElement | null>(null);
   const layout = useCopilotLayout(paneRef);
@@ -68,7 +75,10 @@ export function MailCopilotPane({ pane, isVisible, terminal }: MailCopilotPanePr
   const mailboxReady = usedAccounts.some((account) => account.capabilities.includes("MAIL_READ"));
   const mailbox = useMailbox(pane.id, isVisible && mailboxReady, data.settings?.view ? { account: data.settings.view.account, labelId: data.settings.view.labelId } : {});
   const onSwitched = useCallback(() => { setRail((current) => ({ ...current, collapsed: false, tab: "terminal" })); void data.refresh(); }, [data]);
-  const pending = useMemo(() => data.run?.pending ?? [], [data.run]);
+  // Replies Nous decides under "May send" are not the operator's: no count, badge or tab switch (Activity shows them as "Nous reviewing").
+  const nousReviewing = useNousReviewing();
+  const allPending = useMemo(() => data.run?.pending ?? [], [data.run]);
+  const pending = useMemo(() => allPending.filter((item) => !nousReviewing || item.kind !== "REVIEW"), [allPending, nousReviewing]);
   const runState = data.run?.status ?? "IDLE";
   const runAction = useCallback(async (action: "start" | "pause" | "stop") => {
     if (runBusy) return;
@@ -80,11 +90,11 @@ export function MailCopilotPane({ pane, isVisible, terminal }: MailCopilotPanePr
       if (action === "start") setRail((current) => ({ ...current, collapsed: false, tab: current.tab === "setup" ? "activity" : current.tab }));
       void data.refresh();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "The run could not be changed.");
+      setNotice(error instanceof Error ? error.message : uiText(language, "The run could not be changed."));
     } finally {
       setRunBusy(false);
     }
-  }, [data, pane.id, runBusy]);
+  }, [data, language, pane.id, runBusy]);
   // A new review or question opens the Activity tab; a notification click opens the conversation it points at.
   const lastPendingRef = useRef<string | null>(null);
   useEffect(() => {
@@ -104,14 +114,16 @@ export function MailCopilotPane({ pane, isVisible, terminal }: MailCopilotPanePr
     void mailbox.showOnlyThread({ account, threadId });
     if (layout === "stacked") setRail((current) => ({ ...current, tab: "mail" }));
   }, [layout, mailbox]);
+  // A campaign's review card opens the campaign here (target campaign:<id>).
+  const [campaignTarget, setCampaignTarget] = useState<{ id: string; at: number } | null>(null);
   useEffect(() => {
-    const onOpen = (event: Event) => {
-      const detail = (event as CustomEvent<{ paneId?: string; target?: string }>).detail;
-      const match = detail?.paneId === pane.id ? /^thread:([^:]+):(.+)$/.exec(detail.target ?? "") : null;
+    // A pane that mounts after the click still gets it (onPaneTarget keeps it for it).
+    return onPaneTarget(pane.id, (target) => {
+      const campaign = /^campaign:(mcamp:[A-Za-z0-9_-]+)$/.exec(target);
+      if (campaign) { setCampaignTarget({ id: campaign[1]!, at: Date.now() }); setRail((current) => ({ ...current, collapsed: false, tab: "campaigns" })); return; }
+      const match = /^thread:([^:]+):(.+)$/.exec(target);
       if (match) openThread(match[1]!, match[2]!);
-    };
-    window.addEventListener("space:notification-open", onOpen);
-    return () => window.removeEventListener("space:notification-open", onOpen);
+    });
   }, [openThread, pane.id]);
   const agent = useCopilotAgent({ kind: MAIL_COPILOT_KIND, pane, runtimeOptions, onSwitched, onNotice: setNotice });
 
@@ -159,23 +171,24 @@ export function MailCopilotPane({ pane, isVisible, terminal }: MailCopilotPanePr
         runState={runState} counters={data.run?.run?.counters ?? null} needsYou={pending.length} runBusy={runBusy} onRun={(action) => void runAction(action)}
         railOpen={railOpen} layout={layout} switching={agent.switching} onSwitchRuntime={(runtimeId) => void agent.switchAgent(runtimeId)} onSetDefault={() => void agent.setAsDefault()}
         onTogglePaused={(checked) => void togglePaused(checked)} onToggleRail={toggleRail} />
-      {notice || data.error ? <div className="jc-notice" role="status">{notice ?? data.error}</div> : null}
+      <CopilotNotice text={notice || data.error} loaded={Boolean(data.settings)} />
       <div className="jc-body">
-        <section className="jc-main mc-main" aria-label="Mailbox" data-active={mailShown ? "true" : "false"} aria-hidden={mailShown ? undefined : "true"}>
+        <section className="jc-main mc-main" aria-label={t("Mailbox")} data-active={mailShown ? "true" : "false"} aria-hidden={mailShown ? undefined : "true"}>
           {mailboxReady ? <MailClient paneId={pane.id} mailbox={mailbox} signature={data.settings?.settings.signature ?? null} stacked={layout === "stacked"} />
             : <AccountsView settings={data.settings} accounts={data.accounts} loading={data.loading} />}
         </section>
-        <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label="Resize the copilot rail" aria-hidden={rail.collapsed ? "true" : undefined}
+        <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label={t("Resize the copilot rail")} aria-hidden={rail.collapsed ? "true" : undefined}
           onPointerDown={onResizeStart} onPointerMove={onResizeMove} onPointerUp={onResizeEnd} onPointerCancel={onResizeEnd} onDoubleClick={() => setRail((current) => ({ ...current, width: RAIL_DEFAULT_WIDTH }))} />
-        <CopilotRail tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
-          {railOpen && activeTab === "activity" ? <ActivityTab paneId={pane.id} events={data.events} pending={pending} onChanged={() => void data.refresh()} onOpenThread={openThread} onShowThread={showOnlyThread} /> : null}
+        <CopilotRail firstRead={{ text: notice || data.error, loaded: Boolean(data.settings) }} tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
+          {railOpen && activeTab === "activity" ? <ActivityTab paneId={pane.id} nousReviewing={nousReviewing} events={data.events} pending={allPending} onChanged={() => void data.refresh()} onOpenThread={openThread} onShowThread={showOnlyThread} /> : null}
+          {railOpen && activeTab === "campaigns" ? <CampaignsTab isVisible={isVisible} target={campaignTarget} /> : null}
           {railOpen && activeTab === "memory" ? <MemoryTab paneId={pane.id} /> : null}
           {railOpen && activeTab === "rules" ? <RulesTab paneId={pane.id} /> : null}
           {railOpen && activeTab === "setup" && data.settings ? (
             <SetupTab pane={pane} settings={data.settings} accounts={data.accounts} runtimeOptions={runtimeOptions} switching={agent.switching} accountRevision={agent.accountRevision}
               onSettingsChange={data.setSettings} onSwitchAgent={(runtimeId, accountProfileId) => void agent.switchAgent(runtimeId, accountProfileId)} onSetDefault={() => void agent.setAsDefault()} />
           ) : null}
-          {railOpen && activeTab === "setup" && !data.settings ? <p className="jc-muted jc-panel-loading" role="status">Loading setup…</p> : null}
+          {railOpen && activeTab === "setup" && !data.settings ? <p className="jc-muted jc-panel-loading" role="status">{t("Loading setup…")}</p> : null}
           <div key={agent.terminalKey} className="jc-panel-terminal" role="tabpanel" id="jc-panel-terminal" aria-labelledby="jc-tab-terminal" data-active={railOpen && activeTab === "terminal" ? "true" : "false"}>
             {terminal}
           </div>

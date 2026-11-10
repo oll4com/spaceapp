@@ -7,6 +7,7 @@ import { NOTIFICATION_STREAM_EVENT } from "../notifications/useNotifications.js"
 import { NOUS_PANE_BOARD_EVENT, requestNousFocus } from "../nous-focus/nous-focus-events.js";
 import { modeIcons } from "../pane-card/pane-mode-icons.js";
 import { ChevronDown, ChevronRight, Nous, RefreshCw, Send, Terminal, X } from "../ui-theme/app-icons.js";
+import { useNousUiIds, useNousUiState } from "./nous-ui-state.js";
 
 /**
  * Nous's pane board (operator request 2026-10-19, plan clipboard:Y9cgKVHFaHrr): every open pane by room with its live line
@@ -17,6 +18,8 @@ import { ChevronDown, ChevronRight, Nous, RefreshCw, Send, Terminal, X } from ".
  */
 type WaitsFilter = "ALL" | Exclude<NousPaneWaitsOn, "OPERATOR">;
 const WAITS_FILTERS = ["DATE", "PROMOTE", "THIRD_PARTY", "NOUS", "NONE"] as const;
+const isWaitsFilter = (value: unknown): value is WaitsFilter => value === "ALL" || WAITS_FILTERS.some((entry) => entry === value);
+const isText = (value: unknown): value is string => typeof value === "string";
 const FILTER_LABELS: Record<(typeof WAITS_FILTERS)[number], string> = {
   DATE: "Waits on a date", PROMOTE: "Waits on a promote", THIRD_PARTY: "Waits on a third party", NOUS: "Waits on Nous", NONE: "Waits on nothing"
 };
@@ -45,9 +48,11 @@ export function NousPaneBoard({ active, decisions, overview, renderDecision, onS
 }) {
   const [board, setBoard] = useState<Board | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<WaitsFilter>("ALL");
-  const [room, setRoom] = useState("ALL");
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  // Both filters stay as the operator left them (nous_msg:40a252b1); a room that closed reads as every room below.
+  const [filter, setFilter] = useNousUiState<WaitsFilter>("panes.waitsOn", "ALL", isWaitsFilter);
+  const [room, setRoom] = useNousUiState("panes.room", "ALL", isText);
+  // Collapsed rooms stay collapsed on this device; rooms with no open pane left are forgotten.
+  const collapsed = useNousUiIds("panes.collapsed", board ? board.rooms.map((entry) => entry.roomId) : null);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(() => api.nousPaneBoard().then((result) => { setBoard(result.board); setError(null); })
@@ -68,7 +73,7 @@ export function NousPaneBoard({ active, decisions, overview, renderDecision, onS
     };
   }, [active, load]);
 
-  const decisionById = useMemo(() => new Map(decisions.filter((decision) => decision.status === "OPEN").map((decision) => [decision.id, decision])), [decisions]);
+  const decisionById = useMemo(() => new Map(decisions.filter((decision) => decision.status === "OPEN" && !decision.runsWhen).map((decision) => [decision.id, decision])), [decisions]);
   const checks = useMemo(() => new Map((overview?.panes ?? []).map((check) => [check.paneId, check])), [overview]);
   if (!board) return error ? <DockNotice>{error}</DockNotice> : <DockState kind="loading" title="Loading the pane board" />;
   const panes = board.rooms.flatMap((entry) => entry.panes);
@@ -113,7 +118,7 @@ export function NousPaneBoard({ active, decisions, overview, renderDecision, onS
         return (
           <section key={entry.roomId} className="nous-board-room" aria-label={`Room ${entry.name}`}>
             <button type="button" className="nous-board-room-head" aria-expanded={open}
-              onClick={() => setCollapsed((current) => { const next = new Set(current); if (next.has(entry.roomId)) next.delete(entry.roomId); else next.add(entry.roomId); return next; })}>
+              onClick={() => collapsed.toggle(entry.roomId)}>
               {/* Wrapped: the shell paints expanded buttons with a direct icon child as active toggles. */}
               <span className="nous-board-room-chevron" aria-hidden="true">{open ? <ChevronDown /> : <ChevronRight />}</span>
               <strong className="nous-board-room-name">{entry.name}</strong>

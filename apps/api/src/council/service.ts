@@ -1,5 +1,5 @@
 import {
-  COUNCIL_ANSWER_MAX_CHARS, COUNCIL_CLAIM_MAX_CHARS, COUNCIL_MAX_CLAIMS, COUNCIL_MAX_EVIDENCE, COUNCIL_MAX_MEMBERS, COUNCIL_MAX_POSITIONS,
+  COUNCIL_CLAIM_MAX_CHARS, COUNCIL_MAX_CLAIMS, COUNCIL_MAX_EVIDENCE, COUNCIL_MAX_MEMBERS, COUNCIL_MAX_POSITIONS,
   COUNCIL_MAX_QUESTION_ROUNDS, COUNCIL_MAX_REVIEW_ROUNDS, COUNCIL_MAX_SEARCHES, COUNCIL_MAX_TOTAL_ROUNDS, COUNCIL_PERSONAL_CONTEXT_MAX_CHARS, COUNCIL_TOP,
   councilPlanSchema, councilVerdictSchema,
   type CouncilAnswer, type CouncilApproveInput, type CouncilEvidence, type CouncilModel, type CouncilPlan, type CouncilPosition, type CouncilReview,
@@ -21,8 +21,9 @@ export interface CouncilServiceDeps {
   /** Every model with its availability on this instance. */
   catalog(): Promise<CouncilModel[]>;
   /** Text from one model; the dependency enforces the per-call timeout and the provider's concurrency. */
-  callModel(input: { modelId: string; prompt: string; role: "coordinator" | "member"; signal: AbortSignal }): Promise<string>;
-  searchWeb(query: string, question: string, signal: AbortSignal): Promise<CouncilEvidence[]>;
+  callModel(input: { modelId: string; prompt: string; role: "coordinator" | "member"; signal: AbortSignal; runId: string }): Promise<string>;
+  /** `runId` is the Council run; Space Gateway's request log rows of the search carry it (OBS-006). */
+  searchWeb(query: string, question: string, signal: AbortSignal, runId?: string): Promise<CouncilEvidence[]>;
   webSearchAvailable: boolean;
   /** The operator's CV, profile and memory as one text block for the coordinator (extra keyword searches optional). */
   personalData(owner: string, question: string, memoryQueries: readonly string[]): Promise<string>;
@@ -124,17 +125,17 @@ export function parseCouncilAnswer(text: string): { text: string; claims: string
   const answer = typeof json?.answer === "string" ? json.answer.trim() : "";
   if (answer) {
     const claims = strings(json?.claims, COUNCIL_MAX_CLAIMS, COUNCIL_CLAIM_MAX_CHARS);
-    return { text: clip(answer, COUNCIL_ANSWER_MAX_CHARS), claims: claims.length ? claims : deriveClaims(answer) };
+    return { text: answer, claims: claims.length ? claims : deriveClaims(answer) };
   }
   // Broken JSON (quotes inside the text not escaped): take the answer between its key and the claims.
   // The broken claims array cannot be trusted either, so the claims come from the answer itself.
   const loose = /"answer"\s*:\s*"([\s\S]+?)"\s*,\s*"claims"\s*:/.exec(text);
   if (loose?.[1]) {
     const answerText = loose[1].replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\").trim();
-    return { text: clip(answerText, COUNCIL_ANSWER_MAX_CHARS), claims: deriveClaims(answerText) };
+    return { text: answerText, claims: deriveClaims(answerText) };
   }
   const plain = text.trim();
-  return plain.length >= 40 && !plain.startsWith("{") ? { text: clip(plain, COUNCIL_ANSWER_MAX_CHARS), claims: deriveClaims(plain) } : null;
+  return plain.length >= 40 && !plain.startsWith("{") ? { text: plain, claims: deriveClaims(plain) } : null;
 }
 
 export function parseCouncilMerge(text: string): { merged: string; positions: CouncilPosition[] } | null {
@@ -246,7 +247,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       update(change: (run: CouncilRun) => CouncilRun, event?: string): Promise<CouncilRun> {
         const next = queue.then(async () => {
           let updated = change(current);
-          if (event) updated = { ...updated, events: [...updated.events, { at: now(), text: clip(event, 300) }].slice(-200) };
+          if (event) updated = { ...updated, events: [...updated.events, { at: now(), text: event }] };
           current = await save({ ...updated, updatedAt: now() });
           return current;
         });
@@ -306,7 +307,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       throwIfAborted(signal);
       const prompt = buildPlanPrompt({ question: run.question, qa: w.current.qa, questionsAllowed, models, webSearch: deps.webSearchAvailable, personalData,
         previousPlan: w.current.plan, changeRequests: w.current.changeRequests, memoryQueriesAllowed });
-      const reply = await deps.callModel({ modelId: run.coordinatorModelId, prompt, role: "coordinator", signal });
+      const reply = await deps.callModel({ runId: w.current.id, modelId: run.coordinatorModelId, prompt, role: "coordinator", signal });
       const json = jsonReply(reply);
       const questions = strings(json?.questions, 4, 400);
       if (questionsAllowed && questions.length && !json?.plan) {
@@ -339,7 +340,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
     const queries = w.current.plan?.searchQueries ?? [];
     if (queries.length) {
       await w.update((current) => current, `Searching the web (${queries.length} ${queries.length === 1 ? "search" : "searches"}).`);
-      const results = await Promise.allSettled(queries.map((query) => deps.searchWeb(query, w.current.question, signal)));
+      const results = await Promise.allSettled(queries.map((query) => deps.searchWeb(query, w.current.question, signal, w.current.id)));
       throwIfAborted(signal);
       const found: CouncilEvidence[] = [];
       for (const result of results) {
@@ -365,7 +366,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       let result: CouncilAnswer;
       try {
         let parsed: ReturnType<typeof parseCouncilAnswer> = null;
-        for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) parsed = parseCouncilAnswer(await deps.callModel({ modelId, prompt, role: "member", signal }));
+        for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) parsed = parseCouncilAnswer(await deps.callModel({ runId: w.current.id, modelId, prompt, role: "member", signal }));
         result = parsed ? { modelId, status: "DONE", text: parsed.text, claims: parsed.claims, error: null, ms: Date.now() - started }
           : { modelId, status: "FAILED", text: "", claims: [], error: "No usable answer.", ms: Date.now() - started };
       } catch (error) {
@@ -388,7 +389,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       previous: previous ? { merged: previous.merged, positions: previous.positions, ranking: previous.ranking, reviews: previous.reviews } : null });
     await w.update((current) => current, previous ? `The coordinator revises the merged answer (round ${previous.round + 1}).` : "The coordinator merges the answers without names.");
     let merged: ReturnType<typeof parseCouncilMerge> = null;
-    for (let attempt = 0; attempt < 2 && !merged; attempt += 1) merged = parseCouncilMerge(await deps.callModel({ modelId: run.coordinatorModelId, prompt, role: "coordinator", signal }));
+    for (let attempt = 0; attempt < 2 && !merged; attempt += 1) merged = parseCouncilMerge(await deps.callModel({ runId: w.current.id, modelId: run.coordinatorModelId, prompt, role: "coordinator", signal }));
     if (!merged) throw new Error("The coordinator did not return a usable merge.");
     const round: CouncilRound = { round: (previous?.round ?? 0) + 1, merged: merged.merged, positions: merged.positions, reviews: [], ranking: [] };
     await w.update((current) => ({ ...current, stage: "REVIEW", rounds: [...current.rounds, round] }), `Merged into ${round.positions.length} positions.`);
@@ -411,7 +412,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       let result: CouncilReview;
       try {
         let parsed: ReturnType<typeof parseCouncilReview> = null;
-        for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) parsed = parseCouncilReview(await deps.callModel({ modelId, prompt, role: "member", signal }), round.positions);
+        for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) parsed = parseCouncilReview(await deps.callModel({ runId: w.current.id, modelId, prompt, role: "member", signal }), round.positions);
         result = parsed ? { modelId, status: "DONE", ...parsed, error: null } : { modelId, status: "FAILED", scores: [], corrections: [], missing: [], error: "No usable review." };
       } catch (error) {
         if (signal.aborted) return;
@@ -435,7 +436,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
     await w.update((current) => ({ ...current, stage: "FINAL" }), "The coordinator writes the final answer.");
     const prompt = buildFinalPrompt({ question: run.question, plan: run.plan!, evidence: run.evidence, merged: round.merged, positions: round.positions,
       ranking: round.ranking, reviews: round.reviews, top: COUNCIL_TOP });
-    const text = anonymizeModelText((await deps.callModel({ modelId: run.coordinatorModelId, prompt, role: "coordinator", signal })).trim());
+    const text = anonymizeModelText((await deps.callModel({ runId: w.current.id, modelId: run.coordinatorModelId, prompt, role: "coordinator", signal })).trim());
     if (text.length < 40) throw new Error("The coordinator returned no final answer.");
     const byId = new Map(round.positions.map((position) => [position.id, position]));
     const top = councilTopEntries(round.ranking, COUNCIL_TOP).map((entry) => ({
@@ -451,7 +452,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
     try {
       const prompt = buildClipboardPlanPrompt({ question: run.question, personalContext: run.plan?.personalContext ?? "", final: run.final?.text ?? "" });
       let parsed: CouncilClipboardPlanDraft | null = null;
-      for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) parsed = parseCouncilClipboardPlan(await deps.callModel({ modelId: run.coordinatorModelId, prompt, role: "coordinator", signal }));
+      for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) parsed = parseCouncilClipboardPlan(await deps.callModel({ runId: w.current.id, modelId: run.coordinatorModelId, prompt, role: "coordinator", signal }));
       if (!parsed) throw new Error("The coordinator did not return a usable plan.");
       const draft = parsed;
       const coordinator = displayName(await catalog(), run.coordinatorModelId);
@@ -522,7 +523,8 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       return created;
     },
 
-    list(owner: string, limit = 20): Promise<CouncilRunSummary[]> {
+    /** Every run's summary, newest first (until 31/10 the newest 20). */
+    list(owner: string, limit?: number): Promise<CouncilRunSummary[]> {
       return deps.repository.list(owner, limit);
     },
 
@@ -539,7 +541,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       const last = run.qa.at(-1)!;
       const answersById = Object.fromEntries(last.questions.map((question) => [question.id, clip((provided[question.id] ?? "").trim(), 2_000)]));
       const saved = await save({ ...run, status: "PLANNING", qa: [...run.qa.slice(0, -1), { ...last, answers: answersById }],
-        events: [...run.events, { at: now(), text: "You answered; the coordinator continues the plan." }].slice(-200), updatedAt: now() });
+        events: [...run.events, { at: now(), text: "You answered; the coordinator continues the plan." }], updatedAt: now() });
       launch(saved, plan);
       return saved;
     },
@@ -549,7 +551,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       assertStatus(run, ["AWAITING_APPROVAL"], "change its plan");
       if (run.changeRequests.length >= 10) throw new SpaceConflictError("This plan has had ten change requests; approve it or start a new question.");
       const saved = await save({ ...run, status: "PLANNING", changeRequests: [...run.changeRequests, text],
-        events: [...run.events, { at: now(), text: "You asked for changes; the coordinator revises the plan." }].slice(-200), updatedAt: now() });
+        events: [...run.events, { at: now(), text: "You asked for changes; the coordinator revises the plan." }], updatedAt: now() });
       launch(saved, plan);
       return saved;
     },
@@ -569,7 +571,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       let saved: CouncilRun;
       try {
         saved = await save({ ...run, status: "RUNNING", stage: "RESEARCH", plan: approved, estimate: estimateCouncil(approved), error: null,
-          events: [...run.events, { at: now(), text: "You approved the plan." }].slice(-200), updatedAt: now() });
+          events: [...run.events, { at: now(), text: "You approved the plan." }], updatedAt: now() });
       } catch (error) {
         if (error instanceof CouncilActiveRunError) throw new SpaceConflictError(error.message);
         throw error;
@@ -598,7 +600,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
         await entry.done;
         return load(owner, id);
       }
-      return save({ ...run, status: "CANCELLED", error: "Cancelled.", events: [...run.events, { at: now(), text: "Cancelled." }].slice(-200), updatedAt: now() });
+      return save({ ...run, status: "CANCELLED", error: "Cancelled.", events: [...run.events, { at: now(), text: "Cancelled." }], updatedAt: now() });
     },
 
     async resume(owner: string, id: string): Promise<CouncilRun> {
@@ -609,7 +611,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       let saved: CouncilRun;
       try {
         saved = await save({ ...run, status: planning ? "PLANNING" : "RUNNING", error: null,
-          events: [...run.events, { at: now(), text: "Resumed where it stopped." }].slice(-200), updatedAt: now() });
+          events: [...run.events, { at: now(), text: "Resumed where it stopped." }], updatedAt: now() });
       } catch (error) {
         if (error instanceof CouncilActiveRunError) throw new SpaceConflictError(error.message);
         throw error;
@@ -626,7 +628,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       let saved: CouncilRun;
       try {
         saved = await save({ ...run, status: "RUNNING", stage: "MERGE", error: null,
-          events: [...run.events, { at: now(), text: "You asked for another review round." }].slice(-200), updatedAt: now() });
+          events: [...run.events, { at: now(), text: "You asked for another review round." }], updatedAt: now() });
       } catch (error) {
         if (error instanceof CouncilActiveRunError) throw new SpaceConflictError(error.message);
         throw error;
@@ -641,7 +643,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       assertStatus(run, ["COMPLETED"], "write a plan");
       if (running.has(id)) throw new SpaceConflictError("This Council run is already working.");
       const saved = await save({ ...run, clipboardPlan: { status: "WRITING", itemId: null, title: null, error: null },
-        events: [...run.events, { at: now(), text: "You asked the coordinator for a plan in your clipboard." }].slice(-200), updatedAt: now() });
+        events: [...run.events, { at: now(), text: "You asked the coordinator for a plan in your clipboard." }], updatedAt: now() });
       launch(saved, writeClipboardPlan);
       return saved;
     },

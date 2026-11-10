@@ -1,4 +1,4 @@
-import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, taskScheduleNextRunAt, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName, roomLimitReached, SETUP_CATALOG, SETUP_CATALOG_VERSION, buildSetupSelection } from "@space/contracts";
+import { GATEWAY_DEFAULT_PROVIDER_ORDER, taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, taskScheduleNextRunAt, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName, roomLimitReached, SETUP_CATALOG, SETUP_CATALOG_VERSION, buildSetupSelection } from "@space/contracts";
 import { demoHealthSnapshot } from "./demo-health.js";
 import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath, dotUserSettingsFrom, summarizeDotProactiveUsage } from "@space/contracts";
 import type { DotUserSettings, UpdateDotUserSettings } from "@space/contracts";
@@ -54,6 +54,7 @@ import { CLI_RUNTIME_PRESENTATIONS, cliRuntimeLabel } from "../cli-runtime-prese
 import { createDemoFixture, DEMO_FIXED_AT, type DemoFixture } from "./demo-fixture.js";
 import { MockServices } from "./mock-services.js";
 import { getCliMockTranscript, getCliMockModel, getCliMockCwd, getCliMockDefinition } from "./mock-cli-transcripts.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export const DEMO_WARNING = "DEMO MODE — Everything is simulated locally. No production service is connected.";
 export { DEMO_LOCAL_REPLY } from "../runtime/SpaceRuntime.js";
@@ -1209,7 +1210,9 @@ export class DemoStore {
       });
       case "gatewayReport": {
         const empty = { key: "total", requests: 0, errors: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, reasoningReported: 0, costUsd: 0, compressionTokensSaved: 0 };
-        return Promise.resolve({ from: String(args[0]), to: String(args[1]), days: [], models: [], accounts: [], totals: empty });
+        const lost = { windows: 0, lostPercent: 0, lostTokens: 0, lostCostUsd: 0, unpriced: 0 };
+        return Promise.resolve({ from: String(args[0]), to: String(args[1]), days: [], models: [], accounts: [], providers: [], totals: empty, fallbacks: [], windows: [],
+          lost: { from: String(args[0]), to: String(args[1]), windows: [], weeks: [], totals: { ...lost, unobserved: 0 } } });
       }
       case "previewCodexHistoryPurge": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.historyPurgePreview));
       case "executeCodexHistoryPurge": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.historyPurgeResult));
@@ -2581,11 +2584,11 @@ export class DemoStore {
       cliTypes: [
         entry("codex", "Codex CLI", "0.162.1", "0.162.1"),
         entry("claude", "Claude Code CLI", "2.1.296", "2.1.300", [
-          { kind: "config", path: "/opt/spaceapp/deploy/claude-space-settings.json", label: "Claude Space settings overlay" },
-          { kind: "mcp", path: "/opt/spaceapp/deploy/claude-space-mcp.json", label: "Claude Space MCP config" }
+          { kind: "config", path: `${SPACE_INSTALL_ROOT}/deploy/claude-space-settings.json`, label: "Claude Space settings overlay" },
+          { kind: "mcp", path: `${SPACE_INSTALL_ROOT}/deploy/claude-space-mcp.json`, label: "Claude Space MCP config" }
         ]),
         entry("qwen", "Qwen Code CLI", "0.23.2-space.1", "0.23.2-space.1", [
-          { kind: "script", path: "/opt/spaceapp/scripts/patch-qwen-distribution.mjs", label: "Qwen Space patch (distribution)" }
+          { kind: "script", path: `${SPACE_INSTALL_ROOT}/scripts/patch-qwen-distribution.mjs`, label: "Qwen Space patch (distribution)" }
         ]),
         { ...entry("hermes", "Hermes Agent CLI", "0.21.0", "0.21.0"), managed: false, updateKind: "not-managed" }
       ]
@@ -2598,7 +2601,7 @@ export class DemoStore {
   }
   private demoGatewaySettings = {
     routingStrategy: "CAPACITY_WEIGHTED" as const, stickyThreadsEnabled: true, preferEarlierReset: false, planPriority: ["plus", "prolite", "pro"],
-    stickyReallocationBudgetThresholdPercent: 95, exhaustionFloorPercent: 3, compressionMode: "OFF" as const, compressionProfile: "TOKEN" as const, compressionCodeText: "ON" as const,
+    stickyReallocationBudgetThresholdPercent: 95, exhaustionFloorPercent: 3, claudeReservePercent: 20, subscriptionRouting: "FILL_FIRST" as const, providerOrder: GATEWAY_DEFAULT_PROVIDER_ORDER.map((entry) => ({ ...entry })), compressionMode: "OFF" as const, compressionProfile: "TOKEN" as const, compressionCodeText: "ON" as const,
     compressionTimeBudgetMs: 250, compressionProviders: {}, requestLogRetentionDays: 30, displayTimeFormat: "24H" as const, displayAccountWindows: "BOTH" as const,
     displayBurnProjection: true, upstreamStreamTransport: "DEFAULT" as const, promptCacheTtlSeconds: 1800, importWithoutOverwrite: true, warmupEnabled: false,
     warmupWindows: "BOTH" as const, warmupModel: "auto", warmupPrompt: "Say OK.", warmupCooldownSeconds: 3600, warmupMinAvailablePercent: 100, claudeApiKeyFallback: false, anthropicMonthlyBudgetUsd: null, anthropicCreditsUsd: null,

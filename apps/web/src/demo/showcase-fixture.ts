@@ -1,5 +1,6 @@
 import type { Pane } from "@space/contracts";
 import { createCurrentMockFixture } from "./mock-fixture.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // A separate, ephemeral fixture; the ordinary interactive mock is unchanged.
 export function createShowcaseFixture() {
@@ -38,7 +39,7 @@ export function createShowcaseFixture() {
     terminalRuntimeId: mode === "TERMINAL" ? "cli:codex" : null,
     providerId: mode === "CHAT" ? "demo-codex" : null,
     modelId: mode === "CHAT" ? "gpt-5.6-sol" : null,
-    cwd: "/opt/spaceapp",
+    cwd: SPACE_INSTALL_ROOT,
     isClosed: false,
     isMinimized: false,
     isMaximized: false,

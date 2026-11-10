@@ -10,15 +10,19 @@ import {
 } from "@space/contracts";
 import { getSpaceRuntime } from "./runtime/SpaceRuntime.js";
 import { normalizeHiddenCliShortcuts } from "./features/osk-keyboard/cli-shortcuts.js";
-import { api } from "./api.js";
+import { saveUserSettingImmediate } from "./features/user-settings/user-settings-save-queue.js";
 
 export const VOICE_SETTINGS_STORAGE_KEY = "space.voiceTranscription.settings";
 export const VOICE_SETTINGS_UPDATED_EVENT = "space:voice-transcription-settings-updated";
 
 export type VoiceInsertMode = "append" | "replace";
 
+export type VoiceEngine = "browser" | "relay";
+
 export interface VoiceComposerSettings {
   enabled: boolean;
+  /** "browser": the browser's own free speech recognition (default); "relay": Space's paid voice providers. */
+  engine: VoiceEngine;
   provider?: LiveAudioProviderId;
   model: VoiceTranscriptionModel | string;
   voice: VoiceModelVoice | string;
@@ -47,6 +51,7 @@ export interface VoiceComposerSettings {
 
 export const defaultVoiceComposerSettings: VoiceComposerSettings = {
   enabled: true,
+  engine: "browser",
   provider: "google",
   model: "gemini-3.8-live",
   voice: "Aoede",
@@ -95,6 +100,8 @@ export function readVoiceComposerSettings(options?: { strict?: boolean }): Voice
       : (parsed.model ? inferProviderFromModel(parsed.model) : defaultVoiceComposerSettings.provider);
     return {
       enabled: booleanSetting(parsed.enabled, defaultVoiceComposerSettings.enabled),
+      // The public demo never captures the microphone: it stays on the relay, which the demo refuses (voice-realtime.ts).
+      engine: parsed.engine === "relay" || getSpaceRuntime().kind === "demo" ? "relay" : "browser",
       provider,
       model: typeof parsed.model === "string" && parsed.model.trim() ? parsed.model.trim() : (provider === "google" ? "gemini-3.8-live" : defaultVoiceComposerSettings.model),
       voice: typeof parsed.voice === "string" && parsed.voice.trim() ? parsed.voice.trim() : (provider === "google" ? "Aoede" : defaultVoiceComposerSettings.voice),
@@ -146,6 +153,7 @@ export function applyServerVoiceSettings(settings: Partial<VoiceComposerSettings
 export function writeVoiceComposerSettings(settings: VoiceComposerSettings) {
   const persisted: VoiceComposerSettings = {
     enabled: settings.enabled,
+    engine: settings.engine,
     provider: settings.provider,
     model: settings.model,
     voice: settings.voice,
@@ -174,9 +182,7 @@ export function writeVoiceComposerSettings(settings: VoiceComposerSettings) {
   getSpaceRuntime().platform.localStorage.setItem(VOICE_SETTINGS_STORAGE_KEY, JSON.stringify({ ...persisted, terminalControlsVersion: 2 }));
   window.dispatchEvent(new CustomEvent(VOICE_SETTINGS_UPDATED_EVENT, { detail: persisted }));
   try {
-    void api.updateUserSettings({ voice: persisted }).catch(() => {
-      // Session/offline fallback
-    });
+    void saveUserSettingImmediate("voice", persisted);
   } catch {
     // Runtime unavailable (e.g. isolated unit tests)
   }

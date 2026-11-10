@@ -1,5 +1,5 @@
 import type { CreateRemoteRepositoryInput, GitRemoteRepository, RepositoryListInput, RepositoryProviderAdapter, RepositoryTarget, RepositoryTargetListInput } from "@space/contracts";
-import { AdapterBase, array, invalid, numericId, object, permission, repositoryName, requiredTarget, segment, text } from "./base.js";
+import { AdapterBase, invalid, numericId, object, permission, repositoryName, requiredTarget, segment, text } from "./base.js";
 import { GitControlError } from "../errors.js";
 
 /** GitHub and the compatible Gitea/Forgejo APIs share mapping, never provider identity. */

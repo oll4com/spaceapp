@@ -120,6 +120,11 @@ jobs:
       - name: Install ripgrep and ffmpeg (the file search tests run the real rg, the Nous attachment tests make media with ffmpeg)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep ffmpeg
 
+      - name: Pull the compose file's PostgreSQL image (the *-postgres tests start it with --pull=never and skip without it)
+        run: |
+          pinned=$(grep -oE 'pgvector/pgvector:[^@ ]+@sha256:[0-9a-f]{64}' packages/run-spaceapp/templates/compose.yml)
+          docker pull "$pinned" && docker tag "$pinned" "${pinned%@*}"
+
       - name: Test candidate
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm run test:public
@@ -457,6 +462,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -480,6 +486,7 @@ jobs:
 
       - name: Publish immutable exact-version image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        id: push
         with:
           context: ${{ runner.temp }}/publish-context/spaceapp-public-export
           target: ${{ matrix.target }}
@@ -490,6 +497,14 @@ jobs:
           provenance: mode=max,version=v1
           cache-from: type=gha,scope=publish-${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=publish-${{ matrix.target }}
+
+      # Signed (Sigstore) provenance bound to this workflow, beside BuildKit's unsigned one (review 5/5 F5).
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/oll4com/spaceapp-${{ matrix.target }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
 
   publish-amd64-containers:
     name: Publish ${{ matrix.target }} linux-amd64 image
@@ -511,6 +526,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -533,6 +549,7 @@ jobs:
 
       - name: Publish immutable exact-version amd64 image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        id: push
         with:
           context: ${{ runner.temp }}/publish-context/spaceapp-public-export
           target: ${{ matrix.target }}
@@ -543,6 +560,14 @@ jobs:
           provenance: mode=max,version=v1
           cache-from: type=gha,scope=candidate-${{ matrix.target }}-amd64
           cache-to: type=gha,mode=max,scope=publish-${{ matrix.target }}-amd64
+
+      # Signed (Sigstore) provenance bound to this workflow, beside BuildKit's unsigned one (review 5/5 F5).
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/oll4com/spaceapp-${{ matrix.target }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
 
   reuse-browser-manifest:
     name: Reuse the existing signed browser manifest
@@ -605,6 +630,18 @@ jobs:
           --version "${{ inputs.version }}"
           --workflow-sha "${{ github.sha }}"
 
+      # The signed attestation must name this repository, the release workflow and this run's commit.
+      - name: Verify the signed build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for target in core browser cli; do
+            gh attestation verify "oci://ghcr.io/oll4com/spaceapp-$target:${{ inputs.version }}" \
+              --repo oll4com/spaceapp \
+              --signer-workflow oll4com/spaceapp/.github/workflows/release.yml \
+              --source-digest "${{ github.sha }}"
+          done
+
   verify-amd64-containers:
     name: Verify published amd64 manifests and attestations
     needs:
@@ -640,6 +677,18 @@ jobs:
           --version "${{ inputs.version }}"
           --targets core,cli,browser
           --architectures amd64
+
+      # The signed attestation must name this repository, the release workflow and this run's commit.
+      - name: Verify the signed build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for target in core cli; do
+            gh attestation verify "oci://ghcr.io/oll4com/spaceapp-$target:${{ inputs.version }}" \
+              --repo oll4com/spaceapp \
+              --signer-workflow oll4com/spaceapp/.github/workflows/release.yml \
+              --source-digest "${{ github.sha }}"
+          done
 
   publish-npm:
     name: Publish run-spaceapp with npm OIDC
@@ -701,7 +750,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22.23.0
+          node-version-file: .nvmrc
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:

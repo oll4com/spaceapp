@@ -15,6 +15,7 @@ import {
   VolumeX,
   Zap,
 } from "../ui-theme/app-icons.js";
+import { CLI_ACCOUNT_BLOCKED_COLOR, cliAccountAvailabilityColor } from "../cli-accounts/cli-account-availability.js";
 import { formatAppTime, useDateTimeSettings, type DateTimeSettings } from "../date-time-settings/date-time-settings.js";
 import {
   AccountQuotaCard,
@@ -26,8 +27,10 @@ import {
 import { formatUntil, matchesAvailabilityFilter } from "../toolbar-metrics/account-availability.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { AlarmLogModal } from "./AlarmLogModal.js";
+import { QuotaAtReset } from "./QuotaAtReset.js";
 import { DesktopWidgetContainer } from "./DesktopWidgetContainer.js";
-import { computeApiProviderMetrics } from "./quota-aggregates.js";
+import { computeApiProviderMetrics, configuredApiProviders } from "./quota-aggregates.js";
+import { lowQuotaText } from "./quota-low.js";
 import {
   buildQuotaOverview,
   watchedQuota,
@@ -132,22 +135,31 @@ function AvailabilityBar({ counts }: { counts: AvailabilityCounts }) {
   );
 }
 
-function AverageMeter({ label, value }: { label: string; value: number | null }) {
+function AverageMeter({ label, value, resets }: { label: string; value: number | null; resets?: string | null }) {
   const tone = value == null ? "none" : value < 1 ? "critical" : value <= 30 ? "warning" : "healthy";
   return (
-    <span className={`aiq-avg is-${tone}`} title={`Average ${label === "5h" ? "5-hour" : "weekly"} quota left across connected accounts`}>
-      <span>{label}</span>
-      <span className="aiq-avg-track"><span style={{ width: `${Math.min(Math.max(value ?? 0, 0), 100)}%` }} /></span>
-      <b>{value == null ? "—" : `${Math.round(value)}%`}</b>
-    </span>
+    <>
+      <span className={`aiq-avg is-${tone}`} title={`Average ${label === "5h" ? "5-hour" : "weekly"} quota left now across connected accounts`}>
+        <span>{label}</span>
+        <span className="aiq-avg-track"><span style={{ width: `${Math.min(Math.max(value ?? 0, 0), 100)}%` }} /></span>
+        <b>{value == null ? "—" : `${Math.round(value)}%`}</b>
+      </span>
+      {resets ? <small className="aiq-avg-resets">resets {resets}</small> : null}
+    </>
   );
 }
 
-function ProviderSummary({ overview, clock, settings, onOpen }: {
+// An API provider's detail names its account's e-mail at times ("Account: x@y.com (Limited tier)"); quotas never show one (operator 6/11).
+export const withoutEmails = (text: string) =>
+  text.replace(/(?:\bAccount:\s*)?[\w.+-]+@[\w-]+(?:\.[\w-]+)+\s*/gi, "").replace(/\s*·\s*(?=·|$)/g, "").trim();
+
+export function ProviderSummary({ overview, clock, settings, onOpen, perProvider = false }: {
   overview: ProviderQuotaOverview;
   clock: number;
   settings?: DateTimeSettings;
   onOpen?: () => void;
+  /** The Nous dock's card (operator 6/11): the provider's windows with their resets, never a count or name of an account. */
+  perProvider?: boolean;
 }) {
   const { counts } = overview;
   const state = healthOf(counts);
@@ -162,19 +174,22 @@ function ProviderSummary({ overview, clock, settings, onOpen }: {
           counts.exhausted ? `${counts.exhausted} exhausted` : null,
           offline ? `${offline} not connected` : null,
         ].filter(Boolean).join(" · ");
+  const resets = (at: string | null) => (perProvider && at ? formatUntil(at, clock, settings) : null);
   const body = (
     <>
-      <AvailabilityRing counts={counts} state={state} />
+      {perProvider ? null : <AvailabilityRing counts={counts} state={state} />}
       <span className="aiq-provider-body">
         <span className="aiq-provider-head">
           <strong>{overview.label}</strong>
-          <span className={`aiq-provider-ready is-${state}`}>{counts.available}/{counts.all} ready</span>
+          {perProvider ? null : <span className={`aiq-provider-ready is-${state}`}>{counts.available}/{counts.all} ready</span>}
         </span>
         <span className="aiq-provider-meters">
-          <AverageMeter label="5h" value={overview.fiveHourAverage} />
-          <AverageMeter label="Week" value={overview.weeklyAverage} />
+          <span className="quota-at-reset-label">Left now</span>
+          <AverageMeter label="5h" value={overview.fiveHourAverage} resets={resets(overview.fiveHourResetAt)} />
+          <AverageMeter label="Week" value={overview.weeklyAverage} resets={resets(overview.weeklyResetAt)} />
         </span>
-        <small>{note}</small>
+        <QuotaAtReset atReset={overview.atReset} clock={clock} />
+        {perProvider ? null : <small>{note}</small>}
       </span>
       {onOpen ? <ChevronRight className="aiq-provider-chevron" aria-hidden="true" /> : null}
     </>
@@ -276,19 +291,25 @@ function AlertsCard({ config, watched, clock, settings, onUpdate, onTest }: {
   );
 }
 
-function ApiProviders({ sample }: { sample: SharedQuotaCache | null }) {
-  const providers = sample?.api?.data ?? [];
+export function ApiProviders({ sample }: { sample: SharedQuotaCache | null }) {
+  const providers = configuredApiProviders(sample?.api);
   return (
     <ul className="aiq-api-list">
-      {providers.map((provider) => (
-        <li key={provider.id} className={`aiq-api-row is-${provider.status.toLowerCase()}`}>
-          <span className="aiq-api-head">
-            <strong>{provider.label}</strong>
-            <span className="aiq-api-badge">{provider.balance ? provider.balance : provider.status === "CONNECTED" ? "Connected" : provider.status.toLowerCase()}</span>
-          </span>
-          {provider.detail ? <small>{provider.detail}</small> : null}
-        </li>
-      ))}
+      {providers.map((provider) => {
+        // What is left now (API keys are paid per token and have no weekly reset): the balance, else the share the provider reports.
+        const percent = provider.remainingPercent ?? null;
+        const left = provider.balance?.startsWith("$") ? `${provider.balance} left` : percent != null ? `${Math.round(percent)}% left`
+          : provider.status === "UNCONFIGURED" ? "No key" : provider.status === "EXHAUSTED" ? "No balance" : "Unknown";
+        return (
+          <li key={provider.id} className={`aiq-api-row is-${provider.status.toLowerCase()}`}>
+            <span className="aiq-api-head">
+              <strong>{provider.label}</strong>
+              <span className="aiq-api-badge" style={percent != null ? { color: percent >= 1 ? cliAccountAvailabilityColor(percent) : CLI_ACCOUNT_BLOCKED_COLOR } : undefined}>{left}</span>
+            </span>
+            {provider.detail && withoutEmails(provider.detail) ? <small>{withoutEmails(provider.detail)}</small> : null}
+          </li>
+        );
+      })}
       {!providers.length ? <li className="aiq-empty">No API providers configured.</li> : null}
     </ul>
   );
@@ -317,7 +338,8 @@ export function AiQuotaPanel({ sample, overview, watched, config, onUpdate, cloc
   const tabs: Array<{ key: AiQuotaTab; label: string; badge: string | null }> = [
     { key: "all", label: "All", badge: null },
     ...overview.providers.map((provider) => ({ key: provider.provider as AiQuotaTab, label: provider.label, badge: `${provider.counts.available}/${provider.counts.all}` })),
-    { key: "api", label: "API", badge: api.totalProviders ? `${api.connectedProviders}/${api.totalProviders}` : null },
+    // API only when a provider has a key in this installation (plan clipboard:sJpyQIBFGszW).
+    ...(api.totalProviders ? [{ key: "api" as AiQuotaTab, label: "API", badge: `${api.connectedProviders}/${api.totalProviders}` }] : []),
   ];
   const readyTitles = watched?.availableAccounts.slice(0, 3).map((account) => `${shortName(account.title)} (${account.provider})`).join(", ");
   let body: ReactNode;
@@ -339,13 +361,13 @@ export function AiQuotaPanel({ sample, overview, watched, config, onUpdate, cloc
           ))}
           {!overview.providers.length ? <p className="aiq-empty">{loading ? "Loading accounts…" : "No AI accounts reported yet."}</p> : null}
         </div>
-        <button type="button" className="aiq-api-strip" onClick={() => onUpdate({ activeTab: "api" })}>
+        {api.totalProviders ? <button type="button" className="aiq-api-strip" onClick={() => onUpdate({ activeTab: "api" })}>
           <Globe aria-hidden="true" />
           <span>API providers</span>
           <b>{api.connectedProviders}/{api.totalProviders} connected</b>
           {api.totalBalanceUsd > 0 ? <small>${api.totalBalanceUsd.toFixed(2)}</small> : null}
           <ChevronRight aria-hidden="true" />
-        </button>
+        </button> : null}
         <AlertsCard config={config} watched={watched} clock={clock} settings={settings} onUpdate={onUpdate} onTest={onTestAlert} />
         <button
           type="button"
@@ -482,6 +504,7 @@ export function AiQuotaWidget({
   }, [config.autoRefresh, config.refreshIntervalSeconds, refresh]);
 
   const overview = useMemo(() => buildQuotaOverview(sample, clock), [sample, clock]);
+  const quotaLow = useMemo(() => lowQuotaText(sample, clock), [sample, clock]);
   const watched = useMemo(
     () => (sample ? watchedQuota(sample, clock, { provider: config.alertProvider ?? "all", proOnly: config.proOnly === true }) : null),
     [sample, clock, config.alertProvider, config.proOnly]
@@ -549,7 +572,9 @@ export function AiQuotaWidget({
     <DesktopWidgetContainer
       id="ai-quota"
       title="AI Quota & Usage"
-      icon={<Gauge className="widget-header-svg" />}
+      icon={quotaLow
+        ? <span className="aiq-quota-low" title={`Quota low: ${quotaLow}`}><Gauge className="widget-header-svg" /></span>
+        : <Gauge className="widget-header-svg" />}
       x={state.x}
       y={state.y}
       zIndex={state.zIndex}

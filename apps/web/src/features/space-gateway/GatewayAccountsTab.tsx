@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { GatewayAccount, GatewayAccountDetail, GatewayAnthropicBillingReport, GatewaySettings } from "@space/contracts";
+import { gatewayFreeLedgerLine, type GatewayAccount, type GatewayAccountDetail, type GatewayAnthropicBillingReport, type GatewayFreeLedger, type GatewayPoolModels,
+  type GatewaySettings } from "@space/contracts";
 import { matchesAvailabilityFilter, type AccountAvailabilityFilter } from "../toolbar-metrics/account-availability.js";
 import { AvailabilityFilterBar, countAvailability } from "../toolbar-metrics/AccountQuotaCards.js";
 import { anthropicBillLines } from "../toolbar-metrics/account-entries.js";
@@ -7,6 +8,7 @@ import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { AddAccount, CopyButton, SignInAgain } from "./gateway-add-account.js";
 import { RemainingBar, TrendChart } from "./gateway-charts.js";
 import { errorText, type SpaceGatewayClient } from "./gateway-client.js";
+import { PoolModels } from "./PoolModels.js";
 import {
   accountName, accountStatusLabel, accountStatusTone, formatAgo, formatCostPrecise, formatCountdown, formatDateTime, formatPercent, formatTokens,
   gatewayAccountAvailability, planLabel, providerLabel
@@ -62,10 +64,22 @@ function tokenExpiry(expiresAt: string | null, now: number, status: GatewayAccou
   return `Valid, ${formatCountdown(expiresAt, now).replace(/^Resets in/, "expires in")}`;
 }
 
+/** On unless paused or deactivated; a deactivated account comes back only by signing in again. */
+function AccountSwitch({ account, compact = false, disabled = false, detail, onChange }: {
+  account: GatewayAccount; compact?: boolean; disabled?: boolean; detail?: string; onChange: (enabled: boolean) => void;
+}) {
+  const deactivated = account.status === "DEACTIVATED";
+  return <SpaceToggle compact={compact} className={compact ? "gw-row-switch" : undefined} label={compact ? "" : "In use"} ariaLabel={compact ? `Use ${accountName(account)}` : undefined}
+    title={deactivated ? "Sign the account in again to reactivate it" : undefined} detail={detail}
+    checked={account.status !== "PAUSED" && !deactivated} disabled={disabled || deactivated} onChange={onChange} />;
+}
+
 const yesNo = (value: boolean | null, yes: string, no: string) => (value === null ? "Unknown" : value ? yes : no);
 
-function AccountDetail({ account, client, settings, hideEmails, now, openSignIn, onChanged }: {
+function AccountDetail({ account, client, settings, hideEmails, now, openSignIn, onChanged, ledgerRow = null }: {
   account: GatewayAccount; client: SpaceGatewayClient; settings: GatewaySettings | null; hideEmails: boolean; now: number;
+  /** This provider's free-token ledger row (granted, spent, left), when it is a free or granted pool. */
+  ledgerRow?: GatewayFreeLedger["rows"][number] | null;
   /** Changes when the list's "Sign in again" label was clicked: opens the sign-in. */
   openSignIn: number;
   onChanged: (message?: string) => void;
@@ -89,6 +103,9 @@ function AccountDetail({ account, client, settings, hideEmails, now, openSignIn,
   }, [apiKeyAccount, client, account.id]);
   const signInNeeded = needsSignIn(account);
   useEffect(() => { if (openSignIn && signInNeeded) setSigningIn(true); }, [openSignIn, signInNeeded]);
+  const [pools, setPools] = useState<GatewayPoolModels | null>(null);
+  const loadPools = useCallback(() => { void client.poolModels?.().then(setPools).catch(() => undefined); }, [client]);
+  useEffect(loadPools, [loadPools]);
 
   const loadDetail = useCallback(async () => {
     try { setDetail(await client.accountDetail(account.id)); setDetailError(null); }
@@ -141,6 +158,16 @@ function AccountDetail({ account, client, settings, hideEmails, now, openSignIn,
         </div>
       </header>
       {account.statusReason ? <p className="space-gateway-account-reason">{account.statusReason}</p> : null}
+      {account.hiddenModels?.length ? (
+        <p className="space-gateway-account-reason">
+          Hidden models ({account.hiddenModels.length}, they answered 410 or 404; back when they answer again):{" "}
+          {account.hiddenModels.map((hidden) => (
+            <span key={hidden.model} title={hidden.reason ?? undefined}>{hidden.model} ({hidden.status}{hidden.since ? `, ${new Date(hidden.since).toLocaleString()}` : ""}) </span>
+          ))}
+        </p>
+      ) : null}
+      {ledgerRow ? <p className="space-gateway-note gw-free-ledger-line"><strong>Free tokens</strong> {gatewayFreeLedgerLine(ledgerRow)}</p> : null}
+      <PoolModels entry={pools?.data.find((pool) => pool.provider === account.provider)} />
       {needsSignIn(account) ? (
         <div className="gw-signin-needed" role="status">
           <span>Space Gateway no longer sends requests to this account. Sign it in again to bring it back.</span>
@@ -214,6 +241,8 @@ function AccountDetail({ account, client, settings, hideEmails, now, openSignIn,
         </>
       ) : detailError ? null : <p className="space-gateway-empty">Loading details…</p>}
 
+      <AccountSwitch account={account} disabled={pending} detail={account.status === "DEACTIVATED" ? "Sign the account in again to reactivate it." : "Space Gateway sends requests to this account only while it is on."}
+        onChange={(enabled) => void run(async () => { await client.setAccountPaused(account.id, !enabled); return `${name} ${enabled ? "resumed" : "paused"}.`; }, "Could not update the account.")} />
       <SpaceToggle checked={account.warmupEnabled} label="Limit warm-up"
         detail={settings?.warmupEnabled ? "Send one tiny request right after this account's window resets." : "Limit warm-up is off in Settings; this account joins when it is turned on."}
         onChange={(checked) => void run(async () => { await client.updateAccount(account.id, { warmupEnabled: checked }); return checked ? "Warm-up enabled." : "Warm-up disabled."; }, "Could not change warm-up.")} />
@@ -221,11 +250,6 @@ function AccountDetail({ account, client, settings, hideEmails, now, openSignIn,
       {notice ? <p className={notice.tone === "ok" ? "space-gateway-success" : "space-gateway-alert"} role={notice.tone === "ok" ? "status" : "alert"}>{notice.text}</p> : null}
 
       <div className="space-gateway-toolbar">
-        <button type="button" className="space-gateway-button" disabled={pending || account.status === "DEACTIVATED"}
-          title={account.status === "DEACTIVATED" ? "Sign the account in again to reactivate it" : undefined}
-          onClick={() => void run(async () => { await client.setAccountPaused(account.id, account.status !== "PAUSED"); return account.status === "PAUSED" ? `${name} resumed.` : `${name} paused.`; }, "Could not update the account.")}>
-          {account.status === "PAUSED" ? "Resume" : "Pause"}
-        </button>
         <button type="button" className="space-gateway-button" disabled={pending} title="Send one tiny request with this account"
           onClick={() => void run(async () => {
             const result = await client.testAccount(account.id);
@@ -233,7 +257,7 @@ function AccountDetail({ account, client, settings, hideEmails, now, openSignIn,
             return result.model ? `${name} answered with ${result.model} in ${result.latencyMs} ms.` : `${name} is signed in and reachable (${result.latencyMs} ms).`;
           }, "The test failed.")}>Test</button>
         <button type="button" className="space-gateway-button" disabled={pending} title="Read the current 5h and weekly usage from the provider"
-          onClick={() => void run(async () => { await client.refreshUsage(account.id); return `Usage refreshed for ${name}.`; }, "Could not refresh usage.")}>Refresh usage</button>
+          onClick={() => void run(async () => { await client.refreshUsage(account.id); loadPools(); return `Usage refreshed for ${name}.`; }, "Could not refresh usage.")}>Refresh usage</button>
         {account.resetCreditsAvailable ? (confirm === "reset"
           ? <button type="button" className="space-gateway-button danger" disabled={pending}
             onClick={() => void run(async () => { const result = await client.useResetCredit(account.id, crypto.randomUUID()); return `${name}: ${resetOutcomes[result.outcome] ?? result.outcome}`; }, "Could not use the reset credit.")}>Confirm reset</button>
@@ -287,11 +311,25 @@ export function GatewayAccountsTab({ client, settings, initialAccountId, initial
   const [now, setNow] = useState(() => Date.now());
   const windows = settings?.displayAccountWindows ?? "BOTH";
 
+  // The free-token ledger (nous_msg:d9b67550): granted, spent and left per free or granted pool, also for a grant whose key has not joined yet.
+  const [ledger, setLedger] = useState<GatewayFreeLedger | null>(null);
   const load = useCallback(async () => {
+    void client.freeLedger?.().then(setLedger).catch(() => undefined);
     try { setAccounts((await client.accounts()).data); setError(null); setNow(Date.now()); }
     catch (reason) { setError(errorText(reason, "Could not load accounts.")); }
   }, [client]);
   useEffect(() => { void load(); }, [load]);
+  const [switching, setSwitching] = useState<string | null>(null);
+  async function setEnabled(account: GatewayAccount, enabled: boolean) {
+    setSwitching(account.id);
+    try {
+      await client.setAccountPaused(account.id, !enabled);
+      setNotice(`${accountName(account)} ${enabled ? "resumed" : "paused"}.`);
+      await load();
+      onChanged();
+    } catch (reason) { setError(errorText(reason, "Could not update the account.")); }
+    finally { setSwitching(null); }
+  }
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
@@ -342,11 +380,19 @@ export function GatewayAccountsTab({ client, settings, initialAccountId, initial
       {settings ? <p className="space-gateway-note">Imports {settings.importWithoutOverwrite ? "never replace" : "may replace"} an account with the same email but a different upstream account (Settings).</p> : null}
       {error ? <p className="space-gateway-alert" role="alert">{error}</p> : null}
       {notice ? <p className="space-gateway-success" role="status">{notice}</p> : null}
+      {ledger?.rows.length ? (
+        <details className="gw-free-ledger">
+          <summary>Free tokens ({ledger.rows.length} pools): granted, used and left</summary>
+          <ul>{ledger.rows.map((row) => (
+            <li key={row.provider}><strong>{row.label}</strong>{row.accounts ? "" : " (no account yet)"} · {gatewayFreeLedgerLine(row)}</li>
+          ))}</ul>
+        </details>
+      ) : null}
       {accounts.length === 0 ? <p className="space-gateway-empty">No accounts connected yet. Accounts appear here once a provider is signed in through Space Gateway.</p> : (
         <div className="gw-split">
           <ul className="gw-list" aria-label="Accounts">
             {visible.length === 0 ? <li className="space-gateway-empty">No account matches.</li> : visible.map((account) => (
-              <li key={account.id}>
+              <li key={account.id} className="gw-list-row">
                 <button type="button" className={`gw-list-item${selected?.id === account.id ? " is-selected" : ""} status-${account.status.toLowerCase()}`}
                   aria-pressed={selected?.id === account.id} onClick={(event) => {
                     setSelectedId(account.id);
@@ -360,10 +406,12 @@ export function GatewayAccountsTab({ client, settings, initialAccountId, initial
                   <span className="space-gateway-note">{providerLabel(account.provider)} · {planLabel(account.planType)}{account.email ? ` · ${hideEmails ? "Email hidden" : account.email}` : ""}</span>
                   <UsageWindows account={account} windows={windows} now={now} compact />
                 </button>
+                <AccountSwitch account={account} compact disabled={switching === account.id} onChange={(enabled) => void setEnabled(account, enabled)} />
               </li>
             ))}
           </ul>
           {selected ? <AccountDetail key={selected.id} account={selected} client={client} settings={settings} hideEmails={hideEmails} now={now}
+            ledgerRow={ledger?.rows.find((row) => row.provider === selected.provider) ?? null}
             openSignIn={signInRequest?.id === selected.id ? signInRequest.at : 0} onChanged={(message) => { if (message) setNotice(message); void load(); onChanged(); }} /> : null}
         </div>
       )}

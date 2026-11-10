@@ -381,11 +381,12 @@ describe("Video agent bridge", () => {
   });
 
   it("refuses engine jobs while the server is overloaded or two already run", async () => {
-    let level = "OVERLOADED";
-    const engine = createVideoEngine({ load: () => ({ level, reasons: ["load 40 on 20 cores"] }), run: async (request, _timeout, onProgress) => { onProgress({ progress: 10, message: "x" }); return JSON.stringify({ result: { echo: JSON.parse(request).op } }); } });
+    let swap = 95;
+    // Only the physical host's swap past 90% refuses a job (operator 3/11); this VM's own numbers never do.
+    const engine = createVideoEngine({ hostSwap: { read: async () => ({ percent: swap, host: "pve", at: null, error: null }) }, run: async (request, _timeout, onProgress) => { onProgress({ progress: 10, message: "x" }); return JSON.stringify({ result: { echo: JSON.parse(request).op } }); } });
     const job = { op: "probe" as const, workDir: "/nowhere", toolsDir: "/nowhere" };
-    await expect(engine(job)).rejects.toThrow(/overloaded/);
-    level = "CALM";
+    await expect(engine(job)).rejects.toThrow(/overloaded \(pve swap 95\.00%\)/);
+    swap = 44.2;
     const progress: number[] = [];
     expect(await engine(job, (step) => progress.push(step.progress))).toEqual({ echo: "probe" });
     expect(progress).toEqual([10]);

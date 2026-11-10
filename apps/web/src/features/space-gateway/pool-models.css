@@ -1,0 +1,13 @@
+/* A pool's supported models (PoolModels.tsx): wrapped ids, opened by a click; used by the Gateway accounts view and the Nous dock. */
+.gw-pool-models { color: #aeb8b4; font-size: 0.78rem; line-height: 1.45; }
+.gw-pool-models summary { cursor: pointer; }
+.gw-pool-models ul { display: flex; flex-wrap: wrap; gap: 0.2rem 0.6rem; margin: 0.35rem 0 0; padding: 0; list-style: none; }
+.gw-pool-models code { font-size: 0.74rem; overflow-wrap: anywhere; }
+.gw-pool-models .gw-model-free, .gw-pool-models .gw-model-paid { border-radius: 3px; font-size: 0.68rem; padding: 0 0.25rem; }
+.gw-pool-models .gw-model-free { background: rgba(74, 222, 128, 0.16); color: #86efac; }
+.gw-pool-models .gw-model-paid { background: rgba(251, 191, 36, 0.12); color: #fcd34d; }
+/* The free-token ledger (GatewayAccountsTab): granted, used and left per free or granted pool. */
+.gw-free-ledger { color: #aeb8b4; font-size: 0.8rem; line-height: 1.45; margin: 0.4rem 0; }
+.gw-free-ledger summary { cursor: pointer; }
+.gw-free-ledger ul { display: grid; gap: 0.2rem; margin: 0.35rem 0 0; padding: 0; list-style: none; }
+.gw-free-ledger li, .gw-free-ledger-line { overflow-wrap: anywhere; }

@@ -4,6 +4,7 @@ import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { readStoredBoolean } from "../../stored-boolean.js";
 import { LiveRailContextMenu } from "./LiveRailContextMenu.js";
 import type { LiveTranscriptItem } from "./live-session.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 // The lower rail's Live voice button: the shared Live session status it mirrors,
 // its right-click menu and the per-browser choice to hide its animated graphic.
@@ -64,25 +65,27 @@ export function useLiveRail(panes: Pane[]): LiveRail {
 }
 
 /** Tooltip of the Live voice controls for each status. */
-export function liveRailTitle(status: LiveRailStatus): string {
+export function liveRailTitle(status: LiveRailStatus, t: (text: string) => string = (text) => text): string {
   return status === "listening"
-    ? "User speaking..."
+    ? t("User speaking...")
     : status === "speaking"
-    ? "Agent speaking..."
+    ? t("Agent speaking...")
     : status === "active"
-    ? "Live voice active (Listening)"
+    ? t("Live voice active (Listening)")
     : status === "connecting"
-    ? "Connecting Live voice model..."
+    ? t("Connecting Live voice model...")
     : status === "thinking"
-    ? "Live voice is thinking..."
+    ? t("Live voice is thinking...")
     : status === "error"
-    ? "Live voice disconnected. Tap to retry."
-    : "Start Live voice conversation";
+    ? t("Live voice disconnected. Tap to retry.")
+    : t("Start Live voice conversation");
 }
 
 /** The Live voice button of the lower rail with its right-click menu. */
 export function LiveRailButton({ liveRail, onActivate, disabled }: { liveRail: LiveRail; onActivate: () => void; disabled: boolean }) {
   const { liveRailStatus, setLiveRailContextMenu, isLiveRailGraphicDisabled } = liveRail;
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   return (
       <button
         type="button"
@@ -93,22 +96,22 @@ export function LiveRailButton({ liveRail, onActivate, disabled }: { liveRail: L
         } ${liveRailStatus === "listening" ? "is-listening is-user-speaking" : ""} ${
           liveRailStatus === "speaking" ? "is-speaking is-agent-speaking" : ""
         } ${liveRailStatus === "connecting" ? "is-connecting" : ""}`}
-        title={liveRailTitle(liveRailStatus)}
+        title={liveRailTitle(liveRailStatus, t)}
         data-rail-id="live-model"
         data-live-status={liveRailStatus}
         data-graphic-disabled={isLiveRailGraphicDisabled ? "true" : undefined}
         aria-label={
           liveRailStatus === "connecting"
-            ? "Connecting Live voice model"
+            ? t("Connecting Live voice model")
             : liveRailStatus === "listening"
-            ? "User speaking"
+            ? t("User speaking")
             : liveRailStatus === "speaking"
-            ? "Agent speaking"
+            ? t("Agent speaking")
             : liveRailStatus === "thinking"
-            ? "Live voice is thinking"
+            ? t("Live voice is thinking")
             : liveRailStatus === "error"
-            ? "Retry Live voice conversation"
-            : "Start Live voice conversation"
+            ? t("Retry Live voice conversation")
+            : t("Start Live voice conversation")
         }
         aria-pressed={liveRailStatus !== "idle" && liveRailStatus !== "error"}
         aria-busy={liveRailStatus === "connecting"}

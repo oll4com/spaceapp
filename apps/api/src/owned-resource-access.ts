@@ -16,11 +16,14 @@ export interface OwnedResourceRefusal {
 // A USER reaches only these route families, with or without multi-user (deny by default; operator decisions 2026-10-17,
 // security review MU-001). Each is confined to the user's rooms by the check below or keeps its own owner check; everything
 // else (Space Memory, Shared Chat, audit, Council, Space Control, /api/admin, providers, settings, files, Codex history,
-// CLI tasks, Nous, ...) has no owner yet and answers 404. Swarm and Review are read-only and only for a named room.
-// `/api/nous` is intentionally absent from this allowlist, preserving its ownerless-feature denial.
+// CLI tasks, Nous, ...) has no owner yet and answers 404. Swarm, Review and the turn list read only a named room.
+// Nous stays denied except its team-scoped shared-memory routes, whose writes require an ADMIN person.
 const userRoutes: ReadonlyArray<{ prefix: string; methods?: readonly string[]; namesRoom?: true }> = [
+  { prefix: "/api/nous/shared-memory" },
   { prefix: "/api/auth" }, { prefix: "/api/app", methods: ["GET"] }, { prefix: "/api/client-errors", methods: ["POST"] },
-  { prefix: "/api/rooms" }, { prefix: "/api/panes" }, { prefix: "/api/artifacts" }, { prefix: "/api/events" }, { prefix: "/api/turns" },
+  { prefix: "/api/rooms" }, { prefix: "/api/panes" }, { prefix: "/api/artifacts" }, { prefix: "/api/events" },
+  // The turn list names its room (it lists every room's prompts otherwise; 1.1.9 review S2); a new turn names its room in the body.
+  { prefix: "/api/turns", methods: ["GET"], namesRoom: true }, { prefix: "/api/turns", methods: ["POST"] },
   { prefix: "/api/clipboard-items" }, { prefix: "/api/task-items" }, { prefix: "/api/links" }, { prefix: "/api/notifications" },
   { prefix: "/api/user-settings" }, { prefix: "/api/dots" }, { prefix: "/api/live" }, { prefix: "/api/voice" }, { prefix: "/api/databases" },
   { prefix: "/api/job-apply" }, { prefix: "/api/mail-copilot" }, { prefix: "/api/marketing-copilot" }, { prefix: "/api/freelance-copilot" },

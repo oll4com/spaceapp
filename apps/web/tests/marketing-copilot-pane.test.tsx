@@ -6,6 +6,7 @@ import { MarketingCopilotPane, resolveActiveTab, tabsForLayout } from "../src/fe
 import { MARKETING_COPILOT_KIND, copilotKindForMode } from "../src/features/copilot-kit/copilot-kind.js";
 import { summarizeMetrics } from "../src/features/marketing-copilot-pane/AnalyticsTab.js";
 import { registerBrowserPaneEventTarget } from "../src/features/browser-pane/events.js";
+import { resetNousReviewing } from "../src/features/copilot-kit/nous-reviewing.js";
 
 const apiMock = vi.hoisted(() => ({
   artifactFileUrl: (id: string) => `/api/artifacts/${encodeURIComponent(id)}/file`,
@@ -36,7 +37,8 @@ const apiMock = vi.hoisted(() => ({
   deleteMarketingBookmark: vi.fn(),
   openMarketingBookmark: vi.fn(),
   requestDesignFromPane: vi.fn(),
-  requestVideoFromPane: vi.fn()
+  requestVideoFromPane: vi.fn(),
+  nousApprovals: vi.fn()
 }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
 vi.mock("../src/runtime/SpaceRuntime.js", () => ({ getSpaceRuntime: () => ({ platform: { localStorage: window.localStorage } }) }));
@@ -87,6 +89,8 @@ describe("MarketingCopilotPane", () => {
     apiMock.marketingBookmarks.mockResolvedValue({ bookmarks: [] });
     apiMock.openMarketingBookmark.mockResolvedValue({});
     apiMock.deleteMarketingBookmark.mockResolvedValue({ deleted: true });
+    apiMock.nousApprovals.mockResolvedValue({ nousReviewing: false });
+    resetNousReviewing();
   });
   afterEach(() => cleanup());
 
@@ -171,17 +175,12 @@ describe("MarketingCopilotPane", () => {
     expect(screen.queryByRole("textbox", { name: "Address" })).toBeNull();
   });
 
-  it("shows the login request in a strip above the browser, never over it", async () => {
+  it("keeps the login request on the browser control icon without a handoff strip", async () => {
     apiMock.browserHandoff.mockResolvedValue({ handoff: { handoffRequestId: "handoff:1", status: "REQUESTED", reason: "X asks for a login before posting", requestedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 600_000).toISOString(), acceptedAt: null } });
     const { container } = render(<MarketingCopilotPane pane={pane} isVisible terminal={<div />} browser={<div data-testid="browser" />} />);
-    const strip = await screen.findByRole("status", { name: "The copilot needs you" });
-    expect(strip.textContent).toContain("X asks for a login before posting");
-    expect(within(strip).getByRole("button", { name: "Take control" })).toBeTruthy();
-    // The strip sits beside the browser (the operator can work in the page at once), and the pane marks the request
-    // so the browser's control icon pulses.
-    expect(strip.classList.contains("jc-handoff-strip")).toBe(true);
-    expect(strip.contains(screen.getByTestId("browser"))).toBe(false);
-    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await waitFor(() => expect(container.querySelector("[data-handoff]")?.getAttribute("data-handoff")).toBe("requested"));
+    expect(container.querySelector(".jc-handoff-strip")).toBeNull();
+    expect(screen.getByTestId("browser")).toBeTruthy();
     expect(container.querySelector("[data-handoff]")?.getAttribute("data-handoff")).toBe("requested");
   });
 
@@ -207,6 +206,31 @@ describe("MarketingCopilotPane", () => {
     await waitFor(() => expect(apiMock.createMarketingBrief).toHaveBeenCalledWith(pane.id, { text: "A launch thread for 0.2.5" }));
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(apiMock.marketingCopilotRunAction).toHaveBeenCalledWith(pane.id, "start"));
+  });
+
+  it("shows a review Nous decides under \"May send\" as Nous reviewing: no needs-you chip, badge or Approve; with it off the operator decides (operator 2/11 15:08 BKK)", async () => {
+    // Cleo/Kate on stable: "1 needs you" and Approve for mktpost:8GLHGsG9nGfa while the review was held for Nous.
+    const post = { id: "mktpost:8GLHGsG9nGfa", ownerUserId: "user:operator", paneId: pane.id, campaignId: null, channel: "REDDIT", kind: "POST", target: null, title: "Art 10",
+      body: "SpaceApp runs your AI coding CLIs side by side.", assets: [], status: "IN_REVIEW", scheduledAt: null, reviewNote: null, ruleId: null, publishedUrl: null, publishedAt: null,
+      evidence: {}, metrics: {}, createdAt: "2026-11-02T08:00:00.000Z", updatedAt: "2026-11-02T08:00:00.000Z" } as MarketingPost;
+    apiMock.marketingPosts.mockResolvedValue({ posts: [post] });
+    apiMock.marketingCopilotRun.mockResolvedValue({ run: null, status: "IDLE", backlog: 0,
+      pending: [{ kind: "REVIEW", id: post.id, message: "Review a Reddit post", payload: {}, createdAt: "2026-11-02T08:00:00.000Z" }] });
+    apiMock.nousApprovals.mockResolvedValue({ nousReviewing: true });
+    const { unmount } = render(<MarketingCopilotPane pane={pane} isVisible terminal={<div />} browser={<div />} />);
+    const held = await screen.findByRole("region", { name: "Nous reviewing" });
+    expect(within(held).getByText(post.body)).toBeTruthy();
+    expect(within(held).queryByRole("button", { name: /Approve|Send back|Reject/ })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Needs your review" })).toBeNull();
+    expect(screen.queryByText(/needs? you$/)).toBeNull();
+    unmount();
+
+    resetNousReviewing();
+    apiMock.nousApprovals.mockResolvedValue({ nousReviewing: false });
+    render(<MarketingCopilotPane pane={pane} isVisible terminal={<div />} browser={<div />} />);
+    const mine = await screen.findByRole("region", { name: "Needs your review" });
+    expect(within(mine).getByRole("button", { name: /^Approve$/ })).toBeTruthy();
+    expect(await screen.findByText("1 needs you")).toBeTruthy();
   });
 });
 
@@ -335,7 +359,8 @@ describe("marketing analytics tab", () => {
     const { AnalyticsTab } = await import("../src/features/marketing-copilot-pane/AnalyticsTab.js");
     (apiMock as Record<string, unknown>).marketingAnalytics = vi.fn(async () => ({ published: 0, topPosts: [], metrics: [
       { day: "2026-10-07", source: "GITHUB", key: "stars", value: 1200 }, { day: "2026-10-14", source: "GITHUB", key: "stars", value: 1284 },
-      { day: "2026-10-07", source: "GITHUB", key: "open_issues", value: 3 }, { day: "2026-10-14", source: "GITHUB", key: "open_issues", value: 5 }
+      { day: "2026-10-07", source: "GITHUB", key: "open_issues", value: 3 }, { day: "2026-10-14", source: "GITHUB", key: "open_issues", value: 5 },
+      { day: "2026-10-07", source: "GITHUB", key: "open_prs", value: 250 }, { day: "2026-10-14", source: "GITHUB", key: "open_prs", value: 265 }
     ] }));
     render(<AnalyticsTab />);
     const tiles = within(await screen.findByRole("list", { name: "Public numbers" })).getAllByRole("listitem");
@@ -343,6 +368,9 @@ describe("marketing analytics tab", () => {
     expect(within(tiles[0]!).getByText("+84 in 7 days").className).toContain("up");
     // More open issues is not good news: the change stays neutral.
     expect(within(tiles[1]!).getByText("+2 in 7 days").className).toContain("flat");
+    // Queue item 41: pull requests have their own tile, neutral too.
+    expect(tiles[2]!.textContent).toContain("GitHub open pull requests");
+    expect(within(tiles[2]!).getByText("+15 in 7 days").className).toContain("flat");
     expect(within(tiles[0]!).getByRole("img", { name: "GitHub stars, last 2 days: 1200 to 1284" })).toBeTruthy();
     expect(screen.getByRole("table", { name: "Public numbers table" })).toBeTruthy();
   });

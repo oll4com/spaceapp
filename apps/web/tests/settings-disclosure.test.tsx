@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { SettingsDisclosure, SettingsSections } from "../src/features/settings/SettingsDisclosure.js";
+import { SettingsDisclosure, SettingsSections, settingsSearchMatches } from "../src/features/settings/SettingsDisclosure.js";
 import { Settings } from "../src/features/ui-theme/app-icons.js";
 afterEach(cleanup);
 it("loads a section on demand and retains its draft when another section opens", () => {
@@ -40,4 +40,12 @@ it("allows an initially open section to close", () => {
   fireEvent.click(toggle);
   expect(toggle.getAttribute("aria-expanded")).toBe("false");
   expect(screen.getByText("Section content").closest(".settings-disclosure-content")?.hasAttribute("hidden")).toBe(true);
+});
+
+it("searches without accents or case, so Greek words typed plainly are found", () => {
+  expect(settingsSearchMatches("ειδοποιησεις", ["Ειδοποιήσεις"])).toBe(true);
+  expect(settingsSearchMatches("ΜΕΤΑΦΟΡΑ αντιγραφα", ["Αντίγραφα & μεταφορά"])).toBe(true);
+  expect(settingsSearchMatches("γλωσσα", ["Language", "Γλώσσα"])).toBe(true);
+  expect(settingsSearchMatches("notif", ["Notifications"])).toBe(true);
+  expect(settingsSearchMatches("ειδοποιησεις", ["Language"])).toBe(false);
 });

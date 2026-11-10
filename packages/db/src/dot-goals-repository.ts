@@ -61,7 +61,7 @@ export class PostgresDotGoalsRepository implements DotGoalsRepository {
   openForSession(sessionId: string) { return this.one(`${select} WHERE session_id=$1 AND status IN ('ACTIVE','PAUSED','BLOCKED')`, [sessionId]); }
   async list(owner: string, dotId: string, sessionId?: string) {
     return (await this.pool.query<Record<string, unknown>>(`${select} g WHERE g.owner_user_id=$1 AND g.dot_id=$2 AND ($3::text IS NULL OR g.session_id=$3)
-      AND EXISTS (SELECT 1 FROM rooms r WHERE r.id=g.room_id AND r.owner_user_id=$1) ORDER BY g.updated_at DESC, g.goal_id LIMIT 20`,
+      AND EXISTS (SELECT 1 FROM rooms r WHERE r.id=g.room_id AND r.owner_user_id=$1) ORDER BY g.updated_at DESC, g.goal_id`,
       [owner, dotId, sessionId ?? null])).rows.map(goal);
   }
   async listOpen(limit: number) {

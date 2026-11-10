@@ -11,6 +11,8 @@ export default defineConfig({
       "@space/cli-host": resolve(__dirname, "../../packages/cli-host/src/index.ts"),
       "@space/db": resolve(__dirname, "../../packages/db/src/index.ts"),
       "@space/gateway": resolve(__dirname, "../../packages/gateway/src/index.ts"),
+      "@space/contracts/sentry-node": resolve(__dirname, "../../packages/contracts/src/sentry-node.ts"),
+      "@space/contracts/sentry": resolve(__dirname, "../../packages/contracts/src/sentry.ts"),
       "@space/contracts": resolve(__dirname, "../../packages/contracts/src/index.ts"),
       "@space/opencode-control": resolve(__dirname, "../../packages/opencode-control/src/index.ts"),
       "@space/runtime": resolve(__dirname, "../../packages/runtime/src/index.ts"),
@@ -23,6 +25,8 @@ export default defineConfig({
       "**/dist/**",
       "**/.git/**"
     ],
+    // Each test's own plugins folder instead of stable's /opt/spaceapp/var/plugins.
+    setupFiles: ["./tests/support/isolate-plugins.ts", "./tests/support/isolate-programs.ts", "./tests/support/chrome-sandbox.ts"],
     maxWorkers: 2,
     minWorkers: 1,
     // Most API tests build the whole app; on the shared public-host that alone can pass 5 s under load

@@ -21,7 +21,8 @@ export interface NousAwayRepository {
   /** Null when the session is not open any more. */
   end(owner: string, id: string, reason: NousAwayEndReason, at: string): Promise<NousAwaySession | null>;
   log(awayId: string, entry: NousAwayLogEntry): Promise<void>;
-  listLog(awayId: string, limit: number): Promise<NousAwayLogEntry[]>;
+  /** No limit: the whole log (the return briefing and its clipboard note keep every line, operator 31/10). */
+  listLog(awayId: string, limit?: number): Promise<NousAwayLogEntry[]>;
   dispose(): Promise<void>;
 }
 
@@ -52,7 +53,7 @@ export class InMemoryNousAwayRepository implements NousAwayRepository {
     return { ...session };
   }
   async log(awayId: string, entry: NousAwayLogEntry) { this.logs.set(awayId, [...(this.logs.get(awayId) ?? []), { ...entry }]); }
-  async listLog(awayId: string, limit: number) { return (this.logs.get(awayId) ?? []).slice(-limit).map((entry) => ({ ...entry })); }
+  async listLog(awayId: string, limit?: number) { return (this.logs.get(awayId) ?? []).slice(limit === undefined ? 0 : -limit).map((entry) => ({ ...entry })); }
   async dispose() {}
 }
 
@@ -100,10 +101,10 @@ export class PostgresNousAwayRepository implements NousAwayRepository {
     await this.pool.query(`INSERT INTO nous_away_log (away_id, at, source, what, result) VALUES ($1, $2, $3, $4, $5)`,
       [awayId, entry.at, entry.source, entry.what, entry.result]);
   }
-  async listLog(awayId: string, limit: number) {
+  async listLog(awayId: string, limit?: number) {
     const result = await this.pool.query<{ at: Date | string; source: string; what: string; result: string }>(
       `SELECT at, source, what, result FROM (SELECT id, at, source, what, result FROM nous_away_log WHERE away_id = $1 ORDER BY id DESC LIMIT $2) newest ORDER BY id`,
-      [awayId, limit]);
+      [awayId, limit ?? null]);
     return result.rows.map((row) => ({ ...row, at: iso(row.at)! }));
   }
   async dispose() { await (this.pool as PgPoolLike & { end?: () => Promise<void> }).end?.(); }

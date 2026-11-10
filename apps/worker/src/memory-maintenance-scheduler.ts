@@ -1,4 +1,5 @@
 import { Connection, WorkflowClient } from "@temporalio/client";
+import { redactSecretText } from "@space/runtime";
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
 import { memoryMaintenanceEnabled } from "./memory-maintenance-config.js";
 import { scheduleMemoryMaintenance } from "./memory-maintenance-scheduler-lib.js";
@@ -22,7 +23,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
     console.error(JSON.stringify({
       service,
       status: "failed",
-      error: error instanceof Error ? error.message : "Unknown maintenance scheduler failure."
+      error: error instanceof Error ? redactSecretText(error.message) : "Unknown maintenance scheduler failure."
     }));
     process.exitCode = 1;
   } finally {

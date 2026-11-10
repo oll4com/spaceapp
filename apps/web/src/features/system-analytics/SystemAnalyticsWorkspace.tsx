@@ -38,6 +38,7 @@ import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { modelColumns, sortModels, type ModelSortKey } from "./model-sort.js";
 import { formatUsd, groupModelTokens, recordedTotal, sumCost, sumTokenCounts } from "./token-totals.js";
 import { ShareBar, TokenCompositionBar, TokenTimelineChart } from "./TokenUsageCharts.js";
+import { rangeFits, useHistoryPeriodDays } from "../history-period/use-history-period.js";
 import { AnthropicBillingPanel } from "./AnthropicBillingPanel.js";
 
 /** An account's week (plan clipboard:nUloPOH3blDT): used against the share passed, the pace in points; ahead runs out before the reset. */
@@ -196,7 +197,8 @@ export function SystemAnalyticsWorkspace({
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [tokenRoute, setTokenRoute] = useState<SystemAnalyticsTokenRoute>("all");
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
-  const [range, setRange] = useState<SystemAnalyticsRange>(modelsOnly ? "24h" : "10m");
+  const [range, setRange] = useState<SystemAnalyticsRange>(modelsOnly || initialTab === "models" ? "24h" : "10m");
+  const historyDays = useHistoryPeriodDays();
   const [overview, setOverview] = useState<SystemAnalyticsOverviewResponse | null>(null);
   const [models, setModels] = useState<SystemAnalyticsModelsResponse | null>(null);
   const [resources, setResources] = useState<SystemAnalyticsResourcesResponse | null>(null);
@@ -387,7 +389,7 @@ export function SystemAnalyticsWorkspace({
         </button>)}
       </div>}
       <div className="system-analytics-ranges" role="group" aria-label="Analytics range">
-        {ranges.map((item) => <button key={item.value} data-range={item.value} type="button" aria-pressed={range === item.value} onClick={() => { setRange(item.value); setProcessPage(1); }}>{item.label}</button>)}
+        {ranges.filter((item) => rangeFits(item.value, historyDays)).map((item) => <button key={item.value} data-range={item.value} type="button" aria-pressed={range === item.value} onClick={() => { setRange(item.value); setProcessPage(1); }}>{item.label}</button>)}
       </div>
       {tab === "models" && <div className="system-analytics-ranges" role="group" aria-label="Token route">
         {tokenRoutes.map((item) => <button key={item.value} data-token-route={item.value} type="button" aria-pressed={tokenRoute === item.value} onClick={() => { setTokenRoute(item.value); setSelectedAccount(null); }}>{item.label}</button>)}

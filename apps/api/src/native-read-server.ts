@@ -11,6 +11,30 @@ import { spawn } from "./safe-child-process.js";
  * its first answer (an older launcher, dev without sudo) is left alone for a minute; one that answered
  * starts again at the next read. A read that times out answers null and restarts the server.
  */
+/** The launcher side: one `{id, paneId, sessionId, rootPid}` JSON request per stdin line, one `{id, result}` line per answer,
+ * with the one-shot read's validation (an invalid identity answers null). Ends when `input` closes. */
+export async function serveNativeReads<T>(
+  input: NodeJS.ReadableStream,
+  output: NodeJS.WritableStream,
+  valid: (identity: { paneId: string; sessionId: string; rootPid: number | null }) => boolean,
+  read: (identity: { paneId: string; sessionId: string; rootPid: number | null }) => Promise<T | null>
+): Promise<void> {
+  for await (const line of createInterface({ input, crlfDelay: Infinity })) {
+    if (line.length > 1_024) continue;
+    let request: Record<string, unknown>;
+    try { request = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+    const id = request?.id;
+    if (typeof id !== "number" || !Number.isSafeInteger(id)) continue;
+    const identity = {
+      paneId: typeof request.paneId === "string" ? request.paneId : "",
+      sessionId: typeof request.sessionId === "string" ? request.sessionId : "",
+      rootPid: typeof request.rootPid === "number" ? request.rootPid : null
+    };
+    const result = valid(identity) ? read(identity).catch(() => null) : Promise.resolve(null);
+    void result.then((value) => output.write(`${JSON.stringify({ id, result: value })}\n`));
+  }
+}
+
 export function createNativeReadServer<T>(options: {
   command: string;
   args: string[];

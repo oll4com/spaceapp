@@ -38,12 +38,12 @@ export const videoAssetQuerySchema = z.object({
   formatId: videoFormatRefSchema.optional(),
   kind: z.enum(VIDEO_ASSET_KINDS).optional(),
   requestId: videoRequestIdSchema.optional(),
-  limit: z.coerce.number().int().min(1).max(500).default(200)
+  limit: z.coerce.number().int().min(1).optional()
 }).strict();
 export const videoMusicSearchSchema = z.object({ query: z.string().trim().min(1).max(200), limit: z.number().int().min(1).max(50).optional() }).strict();
 export const videoMusicFetchSchema = z.object({ url: z.string().url().max(2000).refine((url) => url.startsWith("https://"), "Only https."), title: z.string().trim().max(200).optional(), artist: z.string().trim().max(200).optional(),
   attribution: z.string().trim().min(1).max(1000) }).strict();
-const deliverBodySchema = z.object({ assetIds: z.array(videoAssetIdSchema).max(32).optional(), message: z.string().trim().max(2000).nullable().optional() }).strict();
+const deliverBodySchema = z.object({ assetIds: z.array(videoAssetIdSchema).optional(), message: z.string().trim().max(2000).nullable().optional() }).strict();
 const assetQuery = (filter: z.infer<typeof videoAssetQuerySchema>) => ({ formatId: filter.formatId, kinds: filter.kind ? [filter.kind] : undefined, requestId: filter.requestId, limit: filter.limit });
 
 /** Operator routes of the Video pane: settings and view, sources, the library, requests, jobs and music. */
@@ -164,7 +164,7 @@ export function registerVideoRoutes(app: FastifyInstance, service: VideoService,
   // ---- requests ---------------------------------------------------------------------------------
   app.get("/api/panes/:id/video/requests", routeOptions, async (request) => {
     const { owner, pane } = await paneOf(request);
-    const query = parseQuery(z.object({ status: z.enum(VIDEO_REQUEST_STATUSES).optional(), limit: z.coerce.number().int().min(1).max(200).default(100) }).strict(), request.query ?? {});
+    const query = parseQuery(z.object({ status: z.enum(VIDEO_REQUEST_STATUSES).optional(), limit: z.coerce.number().int().min(1).optional() }).strict(), request.query ?? {});
     // This pane's requests and the ones no Video pane has taken yet.
     const requests = (await service.listRequests(owner, { status: query.status ? [query.status] : undefined, limit: query.limit }))
       .filter((entry) => entry.videoPaneId === pane.id || entry.videoPaneId === null);
@@ -181,7 +181,7 @@ export function registerVideoRoutes(app: FastifyInstance, service: VideoService,
   app.get("/api/panes/:id/video/requests/:requestId", routeOptions, async (request) => {
     const params = parseQuery(requestParamsSchema, request.params);
     const { owner } = await paneOf(request);
-    return { ...(await service.request(owner, params.requestId)), events: await service.events(owner, { requestId: params.requestId, limit: 100 }) };
+    return { ...(await service.request(owner, params.requestId)), events: await service.events(owner, { requestId: params.requestId }) };
   });
   for (const action of ["approve", "deliver"] as const) {
     app.post(`/api/panes/:id/video/requests/:requestId/${action}`, routeOptions, async (request) => {
@@ -209,7 +209,7 @@ export function registerVideoRoutes(app: FastifyInstance, service: VideoService,
   });
   app.get("/api/panes/:id/video/events", routeOptions, async (request) => {
     const { owner, pane } = await paneOf(request);
-    const query = parseQuery(z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }).strict(), request.query ?? {});
+    const query = parseQuery(z.object({ limit: z.coerce.number().int().min(1).optional() }).strict(), request.query ?? {});
     return { events: await service.events(owner, { paneId: pane.id, limit: query.limit }) };
   });
 

@@ -6,10 +6,11 @@ import { brotliCompress, constants as zlib, gzip } from "node:zlib";
 import type { FastifyInstance } from "fastify";
 import { authorizeT3Owner } from "./access.js";
 import { T3_APP_CSP, T3_ASSET_EXTENSION, T3_IMMUTABLE_CACHE, T3_SHARED_ASSETS_PATH, T3GatewayError } from "./gateway-policy.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // The installed runtime's own client build (root-owned, verified by its
 // manifest). Hashed file names make every response immutable.
-export const T3_CLIENT_ASSETS_ROOT = "/opt/spaceapp/var/cli-versions/t3code/current/dist/client/assets";
+export const T3_CLIENT_ASSETS_ROOT = `${SPACE_INSTALL_ROOT}/var/cli-versions/t3code/current/dist/client/assets`;
 export interface T3StaticAssetOptions { enabled: boolean; sessionSecret: string; root?: string; maxCacheBytes?: number }
 type Encoding = "br" | "gzip" | "identity";
 interface Variant { body: Buffer; etag: string }

@@ -8,3 +8,4 @@ export { createApiBudgetPacer } from "./providers/claude/api-budget.js";
 export { lanAccessFromSettings } from "./lan-access.js";
 export { claudeCostUsd, costUsd, geminiCostUsd, inputPrices } from "./pricing/pricing.js";
 export { codexUsageWindows } from "./providers/codex/weekly-remaining.js";
+export { quotaGroupForModel } from "./providers/antigravity/code-assist.js";

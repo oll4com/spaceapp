@@ -1,0 +1,32 @@
+/* The provider cards' share free at the weekly reset (plan clipboard:FDitYcI63D9R). */
+.quota-at-reset {
+  display: grid;
+  grid-template-columns: 3.6rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 0.66rem;
+}
+
+.quota-at-reset-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  min-width: 0;
+  white-space: normal;
+}
+
+.quota-at-reset-values > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.quota-at-reset b {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Also heads the provider cards' "Left now" bars, in the same column. */
+.quota-at-reset-label {
+  font-size: 0.64rem;
+  opacity: 0.7;
+}

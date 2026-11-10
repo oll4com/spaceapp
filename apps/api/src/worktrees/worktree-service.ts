@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { constants as fsConstants, existsSync } from "node:fs";
-import { access, chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { access, chmod, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import type {
   CreateWorktreeInput,
   MergeWorktreeInput,
@@ -393,15 +393,28 @@ export class WorktreeService {
    * resolution is identical, but an npm run inside the worktree then rewrites
    * the worktree's own directory and can no longer mutate the live tree (a
    * worktree install replaced apps/api/node_modules/nanoid under the running
-   * API on 2026-10-11 and crash-looped it).
+   * API on 2026-10-11 and crash-looped it). Scope folders (@grpc, @types, ...)
+   * and .bin are real directories of per-entry links too, and npm's own dot
+   * entries (the hidden lockfile, caches, retired copies) stay out: on
+   * 2026-10-29 at 20:03 UTC an npm install in a worktree emptied 124 scoped
+   * packages of the live tree through linked scope folders and rewrote its
+   * hidden lockfile through the linked file. Old links of that kind are
+   * converted in place (`repairNodeModules`).
    */
-  static async linkNodeModulesOverlay(sourceDir: string, targetDir: string): Promise<void> {
+  static async linkNodeModulesOverlay(sourceDir: string, targetDir: string, nested = false): Promise<void> {
     await mkdir(targetDir, { recursive: true });
     const entries = await readdir(sourceDir, { withFileTypes: true });
     await Promise.all(
       entries.map(async (entry) => {
         const source = join(sourceDir, entry.name);
         const target = join(targetDir, entry.name);
+        const real = !nested && entry.isDirectory() && (entry.name.startsWith("@") || entry.name === ".bin");
+        const skipped = entry.name.startsWith(".") && !real;
+        const oldLink = await readlink(target).then((link) => link === source, () => false);
+        if (oldLink && (real || skipped)) await unlink(target);
+        if (skipped) return;
+        // A folder that is already real (made here, or by an npm run in the worktree) is the worktree's own.
+        if (real) return oldLink || !existsSync(target) ? WorktreeService.linkNodeModulesOverlay(source, target, true) : undefined;
         try {
           await symlink(source, target, entry.isDirectory() ? "dir" : "file");
         } catch (error) {
@@ -413,38 +426,49 @@ export class WorktreeService {
     );
   }
 
-  private async linkDependenciesAndConfig(repoRoot: string, targetDir: string): Promise<void> {
-    // 1. Root node_modules overlay
-    const rootNodeModules = join(repoRoot, "node_modules");
-    const targetNodeModules = join(targetDir, "node_modules");
-    try {
-      const stat = await lstat(rootNodeModules);
-      if (stat.isDirectory()) {
-        await WorktreeService.linkNodeModulesOverlay(rootNodeModules, targetNodeModules);
-      }
-    } catch {}
-
-    // 2. Monorepo apps and packages node_modules overlays
+  /** Each node_modules of the source tree (root, apps/*, packages/*) and where the worktree keeps its overlay. */
+  private static async nodeModulesPairs(repoRoot: string, targetDir: string): Promise<Array<{ source: string; target: string }>> {
+    const pairs = [{ source: join(repoRoot, "node_modules"), target: join(targetDir, "node_modules") }];
     for (const subDir of ["apps", "packages"]) {
-      const sourceSub = join(repoRoot, subDir);
-      const targetSub = join(targetDir, subDir);
+      const entries = await readdir(join(repoRoot, subDir), { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) {
+        if (entry.isDirectory()) pairs.push({ source: join(repoRoot, subDir, entry.name, "node_modules"), target: join(targetDir, subDir, entry.name, "node_modules") });
+      }
+    }
+    const isDir = async (path: string) => (await lstat(path).catch(() => null))?.isDirectory() ?? false;
+    return (await Promise.all(pairs.map(async (pair) => (await isDir(pair.source) ? [pair] : [])))).flat();
+  }
+
+  private static async linkNodeModules(repoRoot: string, targetDir: string): Promise<void> {
+    for (const { source, target } of await WorktreeService.nodeModulesPairs(repoRoot, targetDir)) {
       try {
-        const entries = await readdir(sourceSub, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.isDirectory()) {
-            const pkgModules = join(sourceSub, entry.name, "node_modules");
-            const targetPkgModules = join(targetSub, entry.name, "node_modules");
-            try {
-              const mStat = await lstat(pkgModules);
-              if (mStat.isDirectory()) {
-                await mkdir(join(targetSub, entry.name), { recursive: true });
-                await WorktreeService.linkNodeModulesOverlay(pkgModules, targetPkgModules);
-              }
-            } catch {}
-          }
-        }
+        await mkdir(dirname(target), { recursive: true });
+        await WorktreeService.linkNodeModulesOverlay(source, target);
       } catch {}
     }
+  }
+
+  /**
+   * Converts the overlays of a worktree made before 2026-10-30 in place; returns how many node_modules it changed. Only a real
+   * folder still holding links this overlay made (a linked scope folder, .bin or hidden lockfile) is touched: a node_modules the
+   * worktree installed itself, or one that is a link to another tree, is left as it is.
+   */
+  static async repairNodeModules(repoRoot: string, targetDir: string): Promise<number> {
+    let repaired = 0;
+    for (const { source, target } of await WorktreeService.nodeModulesPairs(repoRoot, targetDir)) {
+      if (!(await lstat(target).catch(() => null))?.isDirectory()) continue;
+      const entries = await readdir(target, { withFileTypes: true });
+      const old = await Promise.all(entries.filter((entry) => entry.isSymbolicLink() && (entry.name.startsWith("@") || entry.name.startsWith(".")))
+        .map(async (entry) => (await readlink(join(target, entry.name)).catch(() => "")) === join(source, entry.name)));
+      if (!old.includes(true)) continue;
+      await WorktreeService.linkNodeModulesOverlay(source, target);
+      repaired++;
+    }
+    return repaired;
+  }
+
+  private async linkDependenciesAndConfig(repoRoot: string, targetDir: string): Promise<void> {
+    await WorktreeService.linkNodeModules(repoRoot, targetDir);
 
     // 3. Local configuration copies (non-sensitive / dev config)
     for (const conf of [".env.local", ".env.test", ".nvmrc"]) {
@@ -468,7 +492,18 @@ export class WorktreeService {
     }
 
     const blocks = listResult.stdout.split("\n\n").filter(Boolean);
-    const worktrees: SpaceWorktree[] = [];
+    // Every branch's ahead/behind main in one git run: one `git rev-list` per worktree made the Source Control dock's
+    // list ~600 sequential git spawns on the API's loop (stable 4/11, 299 worktrees: 51-68 s, loop 98 % busy).
+    const aheadBehind = new Map<string, [number, number]>();
+    const refs = await execGit(repoRoot, ["for-each-ref", "--format=%(refname:lstrip=2)%00%(ahead-behind:main)", "refs/heads/"]);
+    if (refs.code === 0) {
+      for (const line of refs.stdout.split("\n")) {
+        const [name, counts = ""] = line.split("\0");
+        const [ahead = 0, behind = 0] = counts.split(" ").map((count) => Number.parseInt(count, 10) || 0);
+        if (name) aheadBehind.set(name, [ahead, behind]);
+      }
+    }
+    const entries: Array<{ wtPath: string; headSha: string; branch: string }> = [];
 
     for (const block of blocks) {
       const lines = block.split("\n");
@@ -490,33 +525,23 @@ export class WorktreeService {
 
       if (!wtPath) continue;
       if (!existsSync(wtPath)) continue;
+      entries.push({ wtPath, headSha, branch });
+    }
 
+    const describe = async ({ wtPath, headSha, branch }: { wtPath: string; headSha: string; branch: string }): Promise<SpaceWorktree> => {
       // Skip the main repository itself from the worktrees list if desired, or mark it as root
       const isRoot = wtPath === repoRoot;
       const id = isRoot ? "wt:root" : `wt:${basename(wtPath)}`;
 
       // Check dirty status and ahead/behind
       let isDirty = false;
-      let aheadCount = 0;
-      let behindCount = 0;
       let status: WorktreeStatus = "ACTIVE";
+      const [aheadCount, behindCount] = branch && !branch.startsWith("detached") ? aheadBehind.get(branch) ?? [0, 0] : [0, 0];
 
       try {
         const statusResult = await execGit(wtPath, ["status", "--porcelain"], 5000);
         isDirty = statusResult.code === 0 && statusResult.stdout.trim().length > 0;
         status = isDirty ? "DIRTY" : "ACTIVE";
-
-        if (branch && !branch.startsWith("detached")) {
-          const abResult = await execGit(wtPath, ["rev-list", "--left-right", "--count", `main...${branch}`], 5000);
-          if (abResult.code === 0) {
-            const parts = abResult.stdout.trim().split(/\s+/);
-            const p0 = parts[0];
-            const p1 = parts[1];
-            behindCount = p0 ? Number.parseInt(p0, 10) || 0 : 0;
-            aheadCount = p1 ? Number.parseInt(p1, 10) || 0 : 0;
-          }
-        }
-
       } catch {}
 
       const now = new Date().toISOString();
@@ -531,7 +556,7 @@ export class WorktreeService {
         });
       }
 
-      worktrees.push({
+      return {
         id,
         repoPath: repoRoot,
         worktreePath: wtPath,
@@ -546,9 +571,18 @@ export class WorktreeService {
         behindCount,
         createdAt: now,
         updatedAt: now
-      });
-    }
+      };
+    };
 
+    // Technical bound: 8 `git status` at a time keeps the list quick without ~300 git processes at once on a busy host.
+    const worktrees = new Array<SpaceWorktree>(entries.length);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(8, entries.length) }, async () => {
+      while (next < entries.length) {
+        const index = next++;
+        worktrees[index] = await describe(entries[index]!);
+      }
+    }));
     return worktrees;
   }
 

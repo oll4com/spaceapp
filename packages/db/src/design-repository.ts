@@ -11,12 +11,12 @@ export type DesignBrandKitCreateRecord = Omit<DesignBrandKit, "id" | "builtIn" |
 export type DesignBrandKitPatch = Partial<Pick<DesignBrandKit, "name" | "colors" | "fonts" | "logos" | "voice">>;
 export type DesignRequestCreateRecord = Omit<DesignRequest, "id" | "status" | "resultAssetIds" | "question" | "answer" | "message" | "takenAt" | "deliveredAt" | "createdAt" | "updatedAt">;
 export type DesignRequestPatch = Partial<Pick<DesignRequest, "designPaneId" | "status" | "resultAssetIds" | "question" | "answer" | "message" | "takenAt" | "deliveredAt">>;
-export interface DesignRequestFilter { status?: DesignRequestStatus[]; designPaneId?: string; requesterPaneId?: string; limit: number }
+export interface DesignRequestFilter { status?: DesignRequestStatus[]; designPaneId?: string; requesterPaneId?: string; /** No limit: every matching request. */ limit?: number }
 export type DesignAssetCreateRecord = Omit<DesignAsset, "id" | "createdAt" | "updatedAt">;
 export type DesignAssetPatch = Partial<Pick<DesignAsset, "label" | "pinned" | "requestId">>;
-export interface DesignAssetFilter { paneId?: string; requestId?: string; formatIds?: string[]; brandKitId?: string; ids?: string[]; parentIds?: string[]; limit: number }
+export interface DesignAssetFilter { paneId?: string; requestId?: string; formatIds?: string[]; brandKitId?: string; ids?: string[]; parentIds?: string[]; /** No limit: every match. */ limit?: number }
 export type DesignEventCreateRecord = Omit<DesignEvent, "id" | "createdAt">;
-export interface DesignEventFilter { paneId?: string; requestId?: string; limit: number }
+export interface DesignEventFilter { paneId?: string; requestId?: string; /** No limit: every match. */ limit?: number }
 
 export interface DesignRepository {
   listBrandKits(owner: string): Promise<DesignBrandKit[]>;
@@ -87,7 +87,7 @@ export class InMemoryDesignRepository implements DesignRepository {
   async listRequests(owner: string, filter: DesignRequestFilter) {
     return [...this.requests.values()].filter((row) => row.ownerUserId === owner && (!filter.status?.length || filter.status.includes(row.status))
       && (!filter.designPaneId || row.designPaneId === filter.designPaneId) && (!filter.requesterPaneId || row.requester.paneId === filter.requesterPaneId))
-      .sort(byNewest).slice(0, filter.limit).map(copy);
+      .sort(byNewest).slice(0, filter.limit ?? undefined).map(copy);
   }
   async updateRequest(owner: string, id: string, patch: DesignRequestPatch, fromStatus?: DesignRequestStatus[]) {
     const row = this.owned(this.requests, owner, id);
@@ -121,7 +121,7 @@ export class InMemoryDesignRepository implements DesignRepository {
       && (!filter.requestId || row.requestId === filter.requestId) && (!filter.formatIds?.length || filter.formatIds.includes(row.formatId))
       && (!filter.brandKitId || row.brandKitId === filter.brandKitId) && (!filter.ids || filter.ids.includes(row.id))
       && (!filter.parentIds || (row.parentAssetId !== null && filter.parentIds.includes(row.parentAssetId))))
-      .sort(byNewest).slice(0, filter.limit).map(copy);
+      .sort(byNewest).slice(0, filter.limit ?? undefined).map(copy);
   }
   async updateAsset(owner: string, id: string, patch: DesignAssetPatch) {
     const row = this.owned(this.assets, owner, id);
@@ -145,7 +145,7 @@ export class InMemoryDesignRepository implements DesignRepository {
   }
   async listEvents(owner: string, filter: DesignEventFilter) {
     return this.events.filter((row) => row.ownerUserId === owner && (!filter.paneId || row.paneId === filter.paneId) && (!filter.requestId || row.requestId === filter.requestId))
-      .sort(byNewest).slice(0, filter.limit).map(copy);
+      .sort(byNewest).slice(0, filter.limit ?? undefined).map(copy);
   }
   async dispose() {}
 }
@@ -235,7 +235,7 @@ export class PostgresDesignRepository implements DesignRepository {
   async listRequests(owner: string, filter: DesignRequestFilter) {
     return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(requestTable as Table<unknown>)} FROM design_requests WHERE owner_user_id=$1 AND ($2::text[] IS NULL OR status = ANY($2::text[]))
         AND ($3::text IS NULL OR design_pane_id=$3) AND ($4::text IS NULL OR requester->>'paneId'=$4) ORDER BY created_at DESC, id DESC LIMIT $5`,
-      [owner, filter.status?.length ? filter.status : null, filter.designPaneId ?? null, filter.requesterPaneId ?? null, filter.limit])).rows.map(requestTable.row);
+      [owner, filter.status?.length ? filter.status : null, filter.designPaneId ?? null, filter.requesterPaneId ?? null, filter.limit ?? null])).rows.map(requestTable.row);
   }
   updateRequest(owner: string, id: string, patch: DesignRequestPatch, fromStatus?: DesignRequestStatus[]) {
     return fromStatus ? this.update(requestTable, owner, id, patch, "AND status = ANY($3::text[])", [fromStatus]) : this.update(requestTable, owner, id, patch);
@@ -255,7 +255,7 @@ export class PostgresDesignRepository implements DesignRepository {
     return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(assetTable as Table<unknown>)} FROM design_assets WHERE owner_user_id=$1 AND ($2::text IS NULL OR pane_id=$2)
         AND ($3::text IS NULL OR request_id=$3) AND ($4::text[] IS NULL OR format_id = ANY($4::text[])) AND ($5::text IS NULL OR brand_kit_id=$5)
         AND ($6::text[] IS NULL OR id = ANY($6::text[])) AND ($8::text[] IS NULL OR parent_asset_id = ANY($8::text[])) ORDER BY created_at DESC, id DESC LIMIT $7`,
-      [owner, filter.paneId ?? null, filter.requestId ?? null, filter.formatIds?.length ? filter.formatIds : null, filter.brandKitId ?? null, filter.ids ?? null, filter.limit,
+      [owner, filter.paneId ?? null, filter.requestId ?? null, filter.formatIds?.length ? filter.formatIds : null, filter.brandKitId ?? null, filter.ids ?? null, filter.limit ?? null,
         filter.parentIds ?? null])).rows.map(assetTable.row);
   }
   updateAsset(owner: string, id: string, patch: DesignAssetPatch) { return this.update(assetTable, owner, id, patch); }
@@ -267,7 +267,7 @@ export class PostgresDesignRepository implements DesignRepository {
   createEvent(input: DesignEventCreateRecord) { return this.insert(eventTable, { ...input, id: newId("devt") }); }
   async listEvents(owner: string, filter: DesignEventFilter) {
     return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(eventTable as Table<unknown>)} FROM design_events WHERE owner_user_id=$1 AND ($2::text IS NULL OR pane_id=$2)
-        AND ($3::text IS NULL OR request_id=$3) ORDER BY created_at DESC, id DESC LIMIT $4`, [owner, filter.paneId ?? null, filter.requestId ?? null, filter.limit])).rows.map(eventTable.row);
+        AND ($3::text IS NULL OR request_id=$3) ORDER BY created_at DESC, id DESC LIMIT $4`, [owner, filter.paneId ?? null, filter.requestId ?? null, filter.limit ?? null])).rows.map(eventTable.row);
   }
   async dispose() { await (this.pool as PgPoolLike & { end?: () => Promise<void> }).end?.(); }
 }

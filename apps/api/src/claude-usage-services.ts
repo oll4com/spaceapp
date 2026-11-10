@@ -187,6 +187,8 @@ export function createClaudeUsageAccountProvider(
     const current = now();
     if (usage?.status === "CONNECTED") lastConnected.set(profileId, { usage, sampledAt: current });
     else if (usage && usage.status !== "IDLE" && usage.status !== "ERROR") lastConnected.delete(profileId);
+    // A profile without a sign-in of its own that still names an account the gateway holds: that account's quota, still NOT_CONNECTED.
+    if (usage?.status === "NOT_CONNECTED" && held) return { usage: { ...usage, ...held, weeklyScope: null }, sampledAt: current };
     if (usage?.status !== "IDLE") return { usage, sampledAt: current };
     if (held) return { usage: { ...usage, ...held, weeklyScope: null, status: "CONNECTED" }, sampledAt: current };
     const last = lastConnected.get(profileId);
@@ -203,7 +205,8 @@ export function createClaudeUsageAccountProvider(
     const sampled = await options.readUsage(profile.profileId)
       .then((value) => claudeProfileUsageSchema.parse(value))
       .catch(() => null);
-    const held = sampled?.status === "IDLE" ? claudeGatewayAccountUsage((await gateway()) ?? [], sampled.email, now().getTime()) : null;
+    const held = sampled?.status === "IDLE" || sampled?.status === "NOT_CONNECTED"
+      ? claudeGatewayAccountUsage((await gateway()) ?? [], sampled.email, now().getTime()) : null;
     const { usage, sampledAt } = resolveIdle(profile.profileId, sampled, held);
     const status = usage?.status ?? "ERROR";
     const accounts = status === "GATEWAY" ? await gateway() : null;
@@ -243,7 +246,7 @@ export function createClaudeUsageAccountProvider(
 
   async function collect(): Promise<ClaudeUsageAccountList> {
     const profiles = await options.listProfiles();
-    // Read once per collection, and only when a profile signs in through the gateway, sits idle or bills a key.
+    // Read once per collection, and only when a profile signs in through the gateway, sits idle, has no sign-in or bills a key.
     let accounts: Promise<GatewayAccountRecord[] | null> | null = null;
     const gateway = () => (accounts ??= options.gatewayAccounts ? options.gatewayAccounts().catch(() => null) : Promise.resolve(null));
     let settings: Promise<GatewayClaudeSettings | null> | null = null;

@@ -55,3 +55,8 @@ Identity checks, phone, payout, tax forms, CAPTCHAs (after the single matching b
 - Profile with braintrust@example.invalid at https://app.usebraintrust.com ; identity and payout checks are the operator's.
   Apply to jobs that fit the niche; the client's interview is the operator's.
 - URL: the job application page on app.usebraintrust.com.
+
+## Guru (guru.com) and PeoplePerHour (peopleperhour.com) — kinds PROPOSAL, MESSAGE, FOLLOW_UP
+- Channels `GURU` and `PEOPLEPERHOUR` (2/11). Setup shows them on their defaults (on, Full, 10 a day, the pane's route); their limits
+  become editable with the next guarded Browser Host restart. Sign-in, identity and payout checks are the operator's.
+- URL: the job or message page on guru.com / peopleperhour.com.

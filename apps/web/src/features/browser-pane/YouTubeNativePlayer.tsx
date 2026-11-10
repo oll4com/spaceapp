@@ -2,6 +2,7 @@ import { getSpaceVolume, subscribeSpaceVolume } from '../../space-audio.js';
 import { useEffect, useRef, useState } from 'react';
 import { loadYouTubeIframeApi } from '../vibe-music/youtubePlaylistPlayer.js';
 import type { YouTubePlayback } from './youtube-playback.js';
+import { useUiLanguage, uiText } from '../ui-language/ui-language.js';
 
 type Player = InstanceType<Awaited<ReturnType<typeof loadYouTubeIframeApi>>['Player']>;
 
@@ -54,6 +55,11 @@ export function YouTubeNativePlayer({
   const activePlayer = useRef<Player | null>(null);
   const playerReadyRef = useRef<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const language = useUiLanguage();
+  const languageRef = useRef(language);
+  languageRef.current = language;
+  // Callbacks outlive the render that made them, so `t` reads the language through a ref.
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(languageRef.current, text, vars);
   const [ready, setReady] = useState(false);
   const [generation, setGeneration] = useState(0);
 
@@ -274,17 +280,17 @@ export function YouTubeNativePlayer({
             }
             if (event.data === 0 || event.data === 1 || event.data === 2) save();
           },
-          onAutoplayBlocked: () => { if (!disposed) setError('Press Play in the video to continue.'); },
+          onAutoplayBlocked: () => { if (!disposed) setError(t('Press Play in the video to continue.')); },
           onError: (event) => {
             if (disposed) return;
             const code = event.data ?? 0;
             setError([101, 150, 152].includes(code)
-              ? 'This video cannot play in an embedded player. Use Browse YouTube to watch it with your saved pane account.'
-              : `YouTube could not play this video (${code}). Retry or use Browse YouTube.`);
+              ? t('This video cannot play in an embedded player. Use Browse YouTube to watch it with your saved pane account.')
+              : t('YouTube could not play this video ({code}). Retry or use Browse YouTube.', { code }));
           }
         }
       });
-    }).catch(() => { if (!disposed) setError('YouTube player could not connect. Retry when your connection is available.'); });
+    }).catch(() => { if (!disposed) setError(t('YouTube player could not connect. Retry when your connection is available.')); });
     return () => {
       save();
       disposed = true;
@@ -303,9 +309,9 @@ export function YouTubeNativePlayer({
 
   return <div className="youtube-native-player" data-youtube-player-ready={ready}>
     <div ref={container} className="youtube-native-stage" />
-    {!ready && !error ? <p className="youtube-player-loading" role="status">Loading YouTube…</p> : null}
+    {!ready && !error ? <p className="youtube-player-loading" role="status">{t("Loading YouTube…")}</p> : null}
     {error ? <div className="youtube-player-message" role="alert"><span>{error}</span>
-      <button type="button" onClick={() => setGeneration((value) => value + 1)}>Retry player</button>
+      <button type="button" onClick={() => setGeneration((value) => value + 1)}>{t("Retry player")}</button>
     </div> : null}
   </div>;
 }

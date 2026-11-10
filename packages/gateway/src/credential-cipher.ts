@@ -37,9 +37,20 @@ export function createCredentialCipher(keyMaterial: Buffer): CredentialCipher {
   };
 }
 
-/** Reads the key file (base64 of at least 32 random bytes, created once by the deploy). Its contents are never logged. */
+/** Where the key material comes from: the key file (Space Gateway), or a KMS unwrap (Nous Gateway, `nous/kms.ts`). */
+export interface CredentialKeyProvider {
+  load(): Promise<Buffer>;
+}
+
+/** The key file: base64 of at least 32 random bytes, created once by the deploy. Its contents are never logged. */
+export const fileKeyProvider = (path: string): CredentialKeyProvider => ({
+  async load() {
+    const raw = (await readFile(path, "utf8")).trim();
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(raw)) throw new Error("Gateway encryption key file must hold base64.");
+    return Buffer.from(raw, "base64");
+  }
+});
+
 export async function loadCredentialCipher(path: string): Promise<CredentialCipher> {
-  const raw = (await readFile(path, "utf8")).trim();
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(raw)) throw new Error("Gateway encryption key file must hold base64.");
-  return createCredentialCipher(Buffer.from(raw, "base64"));
+  return createCredentialCipher(await fileKeyProvider(path).load());
 }

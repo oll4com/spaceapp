@@ -331,7 +331,8 @@ export class StreamingService {
     }
 
     const externalAuthorizationUrl = this.adapters[provider].authorizationUrl({ client, state, codeChallenge: codeChallenge(verifier) });
-    const origin = client.redirectUri ? new URL(client.redirectUri).origin : "http://127.0.0.1:4911";
+    // Without a redirect URI the link stays relative: the browser opens it on the Space it came from (EXT-C-F18).
+    const origin = client.redirectUri ? new URL(client.redirectUri).origin : "";
     const internalAuthorizationUrl = `${origin}/api/admin/streaming/providers/${provider}/oauth/authorize?state=${encodeURIComponent(state)}`;
     this.pendingAuthorizations.set(state, {
       provider,

@@ -6,7 +6,7 @@ import { InMemoryGatewayRepository, InMemorySystemAnalyticsRepository, type Gate
 import type { SpaceStore } from "@space/runtime";
 import { SystemAnalyticsService } from "../src/system-analytics-service.js";
 import {
-  CLAUDE_TIME_CURSOR, GEMINI_GATEWAY_CURSOR, ingestClaudeTranscripts, ingestGatewayLogs, type TokenUsageSourceOptions
+  CLAUDE_TIME_CURSOR, GEMINI_GATEWAY_CURSOR, ingestAutohandSessions, ingestClaudeTranscripts, ingestCopilotSessions, ingestDeepseekSessions, ingestGatewayLogs, ingestGrokSessions, ingestQwenSessions, tokenUsageSourcesFor, type TokenUsageSourceOptions
 } from "../src/token-usage-sources.js";
 
 const now = new Date("2027-02-01T12:00:00.000Z");
@@ -41,7 +41,7 @@ async function sources(claude: unknown[] | null, owners: Record<string, string |
       { profileId: "lab", email: "LAB@spaceapp.dev", lastSessionIds: [] }], messages: claude
   });
   const options: TokenUsageSourceOptions = {
-    repository, gateway: () => gateway, readClaude, now: () => now,
+    repository, gateway: () => gateway, readClaude, readCodexHistory: async () => null, readDeepseekHistory: async () => null, readQwenHistory: async () => null, readGrokHistory: async () => null, readCopilotHistory: async () => null, readAutohandHistory: async () => null, readKimiHistory: async () => null, now: () => now,
     gatewayAccounts: async () => [
       { id: lab, provider: "CLAUDE", email: "lab@spaceapp.dev", label: "lab" },
       { id: pooled, provider: "CLAUDE", email: "crew@spaceapp.dev", label: "crew" }
@@ -196,6 +196,141 @@ describe("token usage sources", () => {
     expect(direct.models.map((model) => [model.modelId, model.tokensOut])).toEqual(expect.arrayContaining([["claude-opus-5-5", 20], ["gpt-6-astra", 100]]));
     expect((await service.models("24h", "gateway")).models.map((model) => [model.modelId, model.tokensOut])).toEqual([["claude-opus-5-5", 7]]);
     await service.dispose();
+  });
+
+  // CTX-001: DeepSeek (Reasonix) panes on their own keys; one event per session, replaced as the session's counters grow.
+  it("counts DeepSeek sessions from the helper once per session, as direct usage", async () => {
+    const { repository, options } = await sources(null);
+    const session = (promptTokens: number, completionTokens: number) => ({ sessionId: "20270201-100000.1-deepseek-flash", provider: "deepseek-flash",
+      model: "deepseek-v4-flash", startedAt: "2027-02-01T10:00:00.000Z", endedAt: "2027-02-01T10:30:00.000Z", promptTokens, completionTokens,
+      reasoningTokens: 5, cacheHitTokens: 800, requestCount: 3 });
+    let history: unknown = null;
+    options.readDeepseekHistory = async () => history;
+    expect(await ingestDeepseekSessions(options)).toBe(0);
+    history = { schema: 2, generatedAt: now.toISOString(), deepseekSessions: [session(1000, 50)] };
+    expect(await ingestDeepseekSessions(options)).toBe(1);
+    history = { schema: 2, generatedAt: now.toISOString(), deepseekSessions: [session(1500, 70)] };
+    await ingestDeepseekSessions(options);
+    const events = await repository.listModelEvents("2027-01-01T00:00:00.000Z");
+    expect(events.map((event) => [event.eventKey, event.runtimeId, event.providerId, event.modelId, event.route, event.accountKey,
+      event.tokensIn, event.tokensOut, event.tokensCacheRead])).toEqual([
+      ["deepseek:20270201-100000.1-deepseek-flash", "cli:deepseek", "deepseek", "deepseek-v4-flash", "DIRECT", "cli:deepseek/deepseek-flash", 1500, 70, 800]
+    ]);
+  });
+
+  // CTX-001: Qwen Code panes on their own keys; one event per session and model, from Qwen's per-session usage log.
+  it("counts Qwen sessions from the helper once per session and model, as direct usage", async () => {
+    const { repository, options } = await sources(null);
+    const session = (provider: string, model: string, promptTokens: number) => ({ sessionId: "6f1c2b9e-0000-4000-8000-000000000001", provider, model,
+      startedAt: "2027-02-01T10:00:00.000Z", endedAt: "2027-02-01T10:30:00.000Z", promptTokens, completionTokens: 50, reasoningTokens: 0,
+      cacheHitTokens: 600, requestCount: 11 });
+    let history: unknown = null;
+    options.readQwenHistory = async () => history;
+    expect(await ingestQwenSessions(options)).toBe(0);
+    history = { schema: 2, generatedAt: now.toISOString(), qwenSessions: [session("openrouter", "qwen/qwen3.7-max", 1000), session("qwen", "qwen3.7-max", 400)] };
+    expect(await ingestQwenSessions(options)).toBe(2);
+    await ingestQwenSessions(options);
+    const events = await repository.listModelEvents("2027-01-01T00:00:00.000Z");
+    expect(events.map((event) => [event.eventKey, event.runtimeId, event.providerId, event.modelId, event.route, event.accountKey,
+      event.tokensIn, event.tokensOut, event.tokensReasoning, event.tokensCacheRead, event.costUsd]).sort()).toEqual([
+      ["qwen:6f1c2b9e-0000-4000-8000-000000000001:qwen/qwen3.7-max", "cli:qwen", "openrouter", "qwen/qwen3.7-max", "DIRECT", "cli:qwen/openrouter", 1000, 50, null, 600, null],
+      ["qwen:6f1c2b9e-0000-4000-8000-000000000001:qwen3.7-max", "cli:qwen", "qwen", "qwen3.7-max", "DIRECT", "cli:qwen/qwen", 400, 50, null, 600, null]
+    ]);
+  });
+
+  // CTX-001: Grok CLI panes on their own xAI account; one event per session and model, with xAI's own cost when Grok has it.
+  it("counts Grok sessions from the helper once per session and model, with xAI's reported cost", async () => {
+    const { repository, options } = await sources(null);
+    const session = (model: string, promptTokens: number, costUsd: number | null) => ({ sessionId: "6f1c2b9e-0000-4000-8000-00000000000a", provider: "xai",
+      model, startedAt: "2027-02-01T10:00:00.000Z", endedAt: "2027-02-01T10:30:00.000Z", promptTokens, completionTokens: 50, reasoningTokens: 30,
+      cacheHitTokens: 600, requestCount: 3, costUsd });
+    let history: unknown = null;
+    options.readGrokHistory = async () => history;
+    expect(await ingestGrokSessions(options)).toBe(0);
+    history = { schema: 2, generatedAt: now.toISOString(), grokSessions: [session("grok-4.7", 1000, 0.11738), session("grok-4.6", 400, null)] };
+    expect(await ingestGrokSessions(options)).toBe(2);
+    await ingestGrokSessions(options);
+    const events = await repository.listModelEvents("2027-01-01T00:00:00.000Z");
+    expect(events.map((event) => [event.eventKey, event.runtimeId, event.providerId, event.modelId, event.route, event.accountKey,
+      event.tokensIn, event.tokensOut, event.tokensReasoning, event.tokensCacheRead, event.costUsd]).sort()).toEqual([
+      ["grok:6f1c2b9e-0000-4000-8000-00000000000a:grok-4.6", "cli:grok", "xai", "grok-4.6", "DIRECT", "cli:grok/xai", 400, 50, 30, 600, null],
+      ["grok:6f1c2b9e-0000-4000-8000-00000000000a:grok-4.7", "cli:grok", "xai", "grok-4.7", "DIRECT", "cli:grok/xai", 1000, 50, 30, 600, 0.11738]
+    ]);
+  });
+
+  // CTX-001: GitHub Copilot CLI panes on their own Copilot accounts; one event per session and model, no price (Copilot bills premium requests).
+  it("counts Copilot sessions from the helper once per session and model, with no price", async () => {
+    const { repository, options } = await sources(null);
+    const session = (model: string, promptTokens: number) => ({ sessionId: "60e2e3bc-0000-4000-8000-00000000000a", provider: "copilot",
+      model, startedAt: "2027-02-01T10:00:00.000Z", endedAt: "2027-02-01T10:30:00.000Z", promptTokens, completionTokens: 80, reasoningTokens: 60,
+      cacheHitTokens: 1200, requestCount: 2, costUsd: null });
+    let history: unknown = null;
+    options.readCopilotHistory = async () => history;
+    expect(await ingestCopilotSessions(options)).toBe(0);
+    history = { schema: 2, generatedAt: now.toISOString(), copilotSessions: [session("gpt-6-luna", 3000), session("gpt-5-mini", 500)] };
+    expect(await ingestCopilotSessions(options)).toBe(2);
+    await ingestCopilotSessions(options);
+    const events = await repository.listModelEvents("2027-01-01T00:00:00.000Z");
+    expect(events.map((event) => [event.eventKey, event.runtimeId, event.providerId, event.modelId, event.route, event.accountKey,
+      event.tokensIn, event.tokensOut, event.tokensReasoning, event.tokensCacheRead, event.turnCount, event.costUsd]).sort()).toEqual([
+      ["copilot:60e2e3bc-0000-4000-8000-00000000000a:gpt-5-mini", "cli:copilot", "copilot", "gpt-5-mini", "DIRECT", "cli:copilot/copilot", 500, 80, 60, 1200, 2, null],
+      ["copilot:60e2e3bc-0000-4000-8000-00000000000a:gpt-6-luna", "cli:copilot", "copilot", "gpt-6-luna", "DIRECT", "cli:copilot/copilot", 3000, 80, 60, 1200, 2, null]
+    ]);
+  });
+
+  // CTX-001: Autohand on its own OpenRouter key; one event per session, no price (OpenRouter's auto route names no model).
+  it("counts Autohand sessions from the helper once per session, with no price", async () => {
+    const { repository, options } = await sources(null);
+    const session = (promptTokens: number) => ({ sessionId: "c55e7ab9-0000-4000-8000-00000000000a-1791685991950", provider: "openrouter",
+      model: "openrouter/auto", startedAt: "2027-02-01T10:00:00.000Z", endedAt: "2027-02-01T10:30:00.000Z", promptTokens, completionTokens: 90,
+      reasoningTokens: 0, cacheHitTokens: 0, requestCount: 3, costUsd: null });
+    let history: unknown = null;
+    options.readAutohandHistory = async () => history;
+    expect(await ingestAutohandSessions(options)).toBe(0);
+    history = { schema: 2, generatedAt: now.toISOString(), autohandSessions: [session(13000)] };
+    expect(await ingestAutohandSessions(options)).toBe(1);
+    history = { schema: 2, generatedAt: now.toISOString(), autohandSessions: [session(26000)] };
+    await ingestAutohandSessions(options);
+    const events = await repository.listModelEvents("2027-01-01T00:00:00.000Z");
+    expect(events.map((event) => [event.eventKey, event.runtimeId, event.providerId, event.modelId, event.route, event.accountKey,
+      event.tokensIn, event.tokensOut, event.tokensReasoning, event.turnCount, event.costUsd])).toEqual([
+      ["autohand:c55e7ab9-0000-4000-8000-00000000000a-1791685991950", "cli:autohand", "openrouter", "openrouter/auto", "DIRECT", "cli:autohand/openrouter", 26000, 90, null, 3, null]
+    ]);
+  });
+
+  it("imports Kimi native usage on the scheduled ingest and replaces growing totals without double counting", async () => {
+    const { repository, gateway, options } = await sources(null);
+    expect(await tokenUsageSourcesFor(() => gateway, false).readKimiHistory?.()).toBeNull();
+    let current = now;
+    let promptTokens = 130;
+    const readKimiHistory = vi.fn(async () => ({ schema: 2, kimiSessions: [{
+      sessionId: "session_11111111-0000-4000-8000-000000000001", provider: "kimi", model: "k3",
+      startedAt: "2027-02-01T10:00:00.000Z", endedAt: "2027-02-01T10:30:00.000Z",
+      promptTokens, completionTokens: 7, cacheHitTokens: 100, cacheCreationTokens: 20,
+      reasoningTokens: 0, requestCount: 1, costUsd: null
+    }] }));
+    const store = { listRooms: () => [], listPanes: () => [], listActivePaneCliSessions: () => [],
+      listActivePaneCliSessionsForRuntimes: () => [], listPaneCliSessions: () => [], getCliTaskRevisionByNativeRef: () => null } as unknown as SpaceStore;
+    const service = new SystemAnalyticsService({
+      codexHome: ownedRoot, stateRoot: ownedRoot, hermesHome: ownedRoot, repository, store,
+      liveSessions: async () => [], now: () => current, tokenUsage: { ...options, readKimiHistory }
+    });
+    try {
+      await service.ingestTokenSources();
+      await service.ingestTokenSources();
+      expect(readKimiHistory).toHaveBeenCalledTimes(1);
+      promptTokens = 260;
+      current = new Date(now.getTime() + 5 * 60_000);
+      await service.ingestTokenSources();
+      expect(readKimiHistory).toHaveBeenCalledTimes(2);
+      const events = await repository.listModelEvents("2027-01-01T00:00:00.000Z");
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        eventKey: "kimi:session_11111111-0000-4000-8000-000000000001:k3", runtimeId: "cli:kimi",
+        providerId: "kimi", modelId: "k3", route: "DIRECT", accountKey: "cli:kimi/kimi", coverage: "NATIVE",
+        tokensIn: 260, tokensOut: 7, tokensCacheRead: 100, tokensCacheWrite: 20, tokensReasoning: null, costUsd: null
+      });
+    } finally { service.dispose(); }
   });
 
   it("counts the Codex turns of owner-only rollouts once, from the helper's whole-file read", async () => {

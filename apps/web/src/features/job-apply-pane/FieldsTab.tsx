@@ -2,11 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import type { JobApplication, JobApplicationField } from "@space/contracts";
 import { api } from "../../api.js";
 import { Brain, Check, Pencil } from "../ui-theme/app-icons.js";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import { subscribeJobApplyLiveEvents } from "./live-events.js";
 
 const SOURCE_LABEL: Record<JobApplicationField["source"], string> = { PROFILE: "profile", CV: "CV", USER: "you", AGENT: "agent" };
 
 function FieldRow({ field, onEdited }: { field: JobApplicationField; onEdited(field: JobApplicationField): void }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(field.value ?? "");
   const [busy, setBusy] = useState(false);
@@ -19,9 +22,9 @@ function FieldRow({ field, onEdited }: { field: JobApplicationField; onEdited(fi
       const response = await api.editJobApplyField(field.id, draft || null);
       onEdited(response.field);
       setEditing(false);
-      setNote("Saved. The copilot remembers this answer.");
+      setNote(t("Saved. The copilot remembers this answer."));
     } catch (error) {
-      setNote(error instanceof Error ? error.message : "Save failed.");
+      setNote(error instanceof Error ? error.message : t("Save failed."));
     } finally {
       setBusy(false);
     }
@@ -32,9 +35,9 @@ function FieldRow({ field, onEdited }: { field: JobApplicationField; onEdited(fi
     setBusy(true);
     try {
       await api.rememberJobApplyMemory({ kind: "ANSWER", key: field.label, text: field.value, source: "USER" });
-      setNote("Added to memory.");
+      setNote(t("Added to memory."));
     } catch (error) {
-      setNote(error instanceof Error ? error.message : "Could not add to memory.");
+      setNote(error instanceof Error ? error.message : t("Could not add to memory."));
     } finally {
       setBusy(false);
     }
@@ -45,20 +48,20 @@ function FieldRow({ field, onEdited }: { field: JobApplicationField; onEdited(fi
       <div className="jc-fieldrow-head">
         <span className="jc-fieldrow-label">{field.label}</span>
         <span className="jc-tag">{field.fieldType}</span>
-        <span className="jc-muted">from {SOURCE_LABEL[field.source]}</span>
-        {field.verifiedAt ? <span className="jc-tag ok" title={field.verifiedAt}><Check aria-hidden="true" /> verified</span> : null}
+        <span className="jc-muted">{t("from {source}", { source: t(SOURCE_LABEL[field.source]) })}</span>
+        {field.verifiedAt ? <span className="jc-tag ok" title={field.verifiedAt}><Check aria-hidden="true" /> {t("verified")}</span> : null}
       </div>
       {editing ? (
         <form className="jc-fieldrow-edit" onSubmit={(event) => { event.preventDefault(); void save(); }}>
-          <input value={draft} aria-label={`Value of ${field.label}`} onChange={(event) => setDraft(event.target.value)} disabled={busy} autoFocus />
-          <button type="submit" className="jc-button primary" disabled={busy}>Save</button>
-          <button type="button" className="jc-button ghost" disabled={busy} onClick={() => { setEditing(false); setDraft(field.value ?? ""); }}>Cancel</button>
+          <input value={draft} aria-label={t("Value of {label}", { label: field.label })} onChange={(event) => setDraft(event.target.value)} disabled={busy} autoFocus />
+          <button type="submit" className="jc-button primary" disabled={busy}>{t("Save")}</button>
+          <button type="button" className="jc-button ghost" disabled={busy} onClick={() => { setEditing(false); setDraft(field.value ?? ""); }}>{t("Cancel")}</button>
         </form>
       ) : (
         <div className="jc-fieldrow-value">
-          <span className={field.value ? "" : "jc-muted"}>{field.value ?? "(empty)"}</span>
-          {field.fieldType !== "file" ? <button type="button" className="jc-icon-button" title="Edit value (saves as your answer)" aria-label={`Edit ${field.label}`} onClick={() => setEditing(true)}><Pencil aria-hidden="true" /></button> : null}
-          {field.fieldType !== "file" && field.value ? <button type="button" className="jc-icon-button" title="Add to memory as an answer" aria-label={`Remember ${field.label}`} disabled={busy} onClick={() => void remember()}><Brain aria-hidden="true" /></button> : null}
+          <span className={field.value ? "" : "jc-muted"}>{field.value ?? t("(empty)")}</span>
+          {field.fieldType !== "file" ? <button type="button" className="jc-icon-button" title={t("Edit value (saves as your answer)")} aria-label={t("Edit {label}", { label: field.label })} onClick={() => setEditing(true)}><Pencil aria-hidden="true" /></button> : null}
+          {field.fieldType !== "file" && field.value ? <button type="button" className="jc-icon-button" title={t("Add to memory as an answer")} aria-label={t("Remember {label}", { label: field.label })} disabled={busy} onClick={() => void remember()}><Brain aria-hidden="true" /></button> : null}
         </div>
       )}
       {note ? <p className="jc-message" role="status">{note}</p> : null}
@@ -67,6 +70,8 @@ function FieldRow({ field, onEdited }: { field: JobApplicationField; onEdited(fi
 }
 
 export function FieldsTab({ paneId, application }: { paneId: string; application: JobApplication | null }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [fields, setFields] = useState<JobApplicationField[]>([]);
   const [loading, setLoading] = useState(false);
   const applicationId = application?.id ?? null;
@@ -89,29 +94,29 @@ export function FieldsTab({ paneId, application }: { paneId: string; application
   const steps = useMemo(() => {
     const groups = new Map<number, { title: string; fields: JobApplicationField[] }>();
     for (const field of fields) {
-      const group = groups.get(field.stepIndex) ?? { title: field.stepTitle ?? `Step ${field.stepIndex + 1}`, fields: [] };
+      const group = groups.get(field.stepIndex) ?? { title: field.stepTitle ?? t("Step {number}", { number: field.stepIndex + 1 }), fields: [] };
       group.fields.push(field);
       groups.set(field.stepIndex, group);
     }
     return [...groups.entries()].sort(([left], [right]) => left - right);
-  }, [fields]);
+  }, [fields, language]);
 
   return (
     <div className="jc-fields" role="tabpanel" id="jc-panel-fields" aria-labelledby="jc-tab-fields">
       {!application ? (
         <div className="jc-empty">
-          <strong>Pick an application</strong>
-          <span>Select a row in the Queue or Activity tab to see every field the copilot filled, step by step. Edit a value to teach it the right answer.</span>
+          <strong>{t("Pick an application")}</strong>
+          <span>{t("Select a row in the Queue or Activity tab to see every field the copilot filled, step by step. Edit a value to teach it the right answer.")}</span>
         </div>
       ) : (
         <>
           <header className="jc-fields-head">
             <strong>{application.company}</strong>
             <span className="jc-muted">{application.role}</span>
-            <span className={`jc-pill status-${application.status.toLowerCase()}`}>{application.status.replace("_", " ").toLowerCase()}</span>
+            <span className={`jc-pill status-${application.status.toLowerCase()}`}>{t(application.status.replace("_", " ").toLowerCase())}</span>
           </header>
-          {loading && fields.length === 0 ? <p className="jc-muted jc-panel-loading" role="status">Loading fields…</p> : null}
-          {!loading && fields.length === 0 ? <div className="jc-empty"><strong>No fields recorded yet</strong><span>The copilot records every control it fills before it submits.</span></div> : null}
+          {loading && fields.length === 0 ? <p className="jc-muted jc-panel-loading" role="status">{t("Loading fields…")}</p> : null}
+          {!loading && fields.length === 0 ? <div className="jc-empty"><strong>{t("No fields recorded yet")}</strong><span>{t("The copilot records every control it fills before it submits.")}</span></div> : null}
           {steps.map(([index, step]) => (
             <section key={index} className="jc-step-group">
               <h4>{step.title}</h4>

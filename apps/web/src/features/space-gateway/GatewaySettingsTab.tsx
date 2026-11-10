@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import type { GatewayAccount, GatewayLanMode, GatewayRoutingStrategy, GatewaySettings, GatewaySettingsUpdateRequest, GatewayStatus, GatewayStreamTransport,
+import type { GatewayAccount, GatewayLanMode, GatewayProviderOrder, GatewayRoutingStrategy, GatewaySettings, GatewaySettingsUpdateRequest, GatewayStatus, GatewayStreamTransport,
   GatewayWindowChoice } from "@space/contracts";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { errorText, type SpaceGatewayClient } from "./gateway-client.js";
 import { accountName, planLabel, routingStrategyOptions } from "./space-gateway-model.js";
 import { AnthropicBillingSection } from "./GatewayAnthropicSection.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 type Message = { tone: "ok" | "error"; text: string } | null;
 
@@ -191,9 +192,30 @@ function LanSection({ settings, status, client, onSaved }: { settings: GatewaySe
           <label className="space-gateway-field">Allowed ranges<input value={sources} placeholder="192.0.2.0/24" onChange={(event) => setSources(event.target.value)} />
             <span>Comma-separated private IPv4 ranges.</span></label>
         </div>
-      ) : <p className="space-gateway-note">{mode === "ENV" ? "SPACE_GATEWAY_LAN_* in /opt/spaceapp/.env decide; a reload applies changes to that file." : "The LAN listener stays off; loopback clients keep working."}</p>}
+      ) : <p className="space-gateway-note">{mode === "ENV" ? `SPACE_GATEWAY_LAN_* in ${SPACE_INSTALL_ROOT}/.env decide; a reload applies changes to that file.` : "The LAN listener stays off; loopback clients keep working."}</p>}
       <SaveMessage message={message} />
       <button type="submit" className="space-gateway-button primary" disabled={saving}>Save and reload</button>
+    </form>
+  );
+}
+
+function ClaudeReserveSection({ settings, client, onSaved }: { settings: GatewaySettings; client: SpaceGatewayClient; onSaved: (settings: GatewaySettings) => void }) {
+  const [reserve, setReserve] = useState(String(settings.claudeReservePercent));
+  const { saving, message, setMessage, save } = useSettingsSaver(client, onSaved);
+  return (
+    <form className="gw-card" aria-label="Claude pool reserve" onSubmit={(event) => {
+      event.preventDefault();
+      const percent = Number(reserve);
+      if (!Number.isFinite(percent) || percent < 0 || percent > 100) { setMessage({ tone: "error", text: "The reserve must be between 0 and 100%." }); return; }
+      void save({ claudeReservePercent: percent });
+    }}>
+      <header><h3>Claude pool reserve</h3></header>
+      <label className="space-gateway-field">Nous Claude reserve (%)
+        <input type="number" min={0} max={100} step={1} value={reserve} onChange={(event) => setReserve(event.target.value)} />
+        <span>In Fill first mode, keeps this share of the last available Claude subscription account's 5-hour window for Nous's answers to you, only while the pool would run out before any account resets (0 turns the reserve off).</span>
+      </label>
+      <SaveMessage message={message} />
+      <button type="submit" className="space-gateway-button primary" disabled={saving}>Save reserve</button>
     </form>
   );
 }
@@ -204,6 +226,7 @@ export function GatewaySettingsTab({ settings, status, client, onSaved }: {
   return (
     <div className="space-gateway-panel">
       <DisplaySection settings={settings} client={client} onSaved={onSaved} />
+      <ClaudeReserveSection settings={settings} client={client} onSaved={onSaved} />
       <WarmupSection settings={settings} client={client} onSaved={onSaved} />
       <PoliciesSection settings={settings} client={client} onSaved={onSaved} />
       <LanSection settings={settings} status={status} client={client} onSaved={onSaved} />
@@ -255,17 +278,62 @@ function PlanPriorityEditor({ value, onChange }: { value: string[]; onChange: (n
   );
 }
 
+/** What each route of Nous's Space provider is: the pool and the runtime that drives it. */
+const providerRouteLabels: Record<GatewayProviderOrder[number]["route"], { name: string; detail: string }> = {
+  CLAUDE: { name: "Claude", detail: "Claude Max subscription accounts, run by Claude Code" },
+  CODEX: { name: "Codex", detail: "Codex subscription accounts, run by Codex" },
+  CLAUDE_OPENCODE: { name: "Claude via OpenCode", detail: "Claude API-key account (paid per token, within its daily allowance), run by OpenCode; never Claude Code" },
+  ANTIGRAVITY: { name: "Gemini Argon (Antigravity)", detail: "Gemini 4 Argon models on the Antigravity accounts" },
+  ANTIGRAVITY_FLASH: { name: "Gemini 3.8 Flash (Antigravity)", detail: "Gemini 3.8 Flash models on the Antigravity accounts" },
+  ANTIGRAVITY_CLAUDE: { name: "Claude (Antigravity)", detail: "Claude models on the Antigravity accounts (their Claude · GPT quota), run by Nous's Gemini runtime" },
+  BEDROCK: { name: "Claude on Amazon Bedrock (AWS credits)", detail: "Bedrock API key, Claude models on the AWS credit; a card is behind it, so the pool sends nothing until the credit is recorded and stops at 90% of it (Space Gateway clients only, not Nous)" },
+  VERTEX: { name: "Claude on Google Vertex AI (Google Cloud credits)", detail: "Service-account JSON, Claude models on the Google Cloud credit; a card is behind it, so the pool sends nothing until the credit is recorded and stops at 90% of it (Space Gateway clients only, not Nous)" }
+};
+
+function ProviderOrderEditor({ value, onChange }: { value: GatewayProviderOrder; onChange: (next: GatewayProviderOrder) => void }) {
+  const move = (index: number, delta: number) => {
+    const next = [...value];
+    const [item] = next.splice(index, 1);
+    next.splice(index + delta, 0, item!);
+    onChange(next);
+  };
+  return (
+    <div className="gw-priority" role="group" aria-label="Provider order">
+      <span className="gw-priority-title">Provider order (the Space provider)</span>
+      <span className="space-gateway-note">Nous (Space selected in Settings → Nous) and every client of /pools/space use this order. An auto model runs on the first provider that is on and has room (for a client, among those speaking its protocol); when it is out of quota or unavailable, the next one takes over with its matching model. A named model stays on its provider. Accounts inside each provider still follow the account routing above.</span>
+      <ol className="gw-priority-list">
+        {value.map((entry, index) => {
+          const label = providerRouteLabels[entry.route];
+          return (
+            <li key={entry.route}>
+              <span className="gw-priority-rank">{index + 1}</span>
+              <span className="gw-priority-name">{label.name}<small>{label.detail}</small></span>
+              <SpaceToggle compact checked={entry.enabled} label={entry.enabled ? "On" : "Off"} ariaLabel={`Use ${label.name}`}
+                onChange={(enabled) => onChange(value.map((item) => item.route === entry.route ? { ...item, enabled } : item))} />
+              <button type="button" className="space-gateway-button" aria-label={`Move ${label.name} up`} disabled={index === 0} onClick={() => move(index, -1)}>Up</button>
+              <button type="button" className="space-gateway-button" aria-label={`Move ${label.name} down`} disabled={index === value.length - 1} onClick={() => move(index, 1)}>Down</button>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
 export function GatewayRoutingTab({ settings, client, onSaved, onAddClaudeApiKey }: {
   settings: GatewaySettings; client: SpaceGatewayClient; onSaved: (settings: GatewaySettings) => void;
   /** Jumps to Accounts › Add account › Claude › API key. */
   onAddClaudeApiKey?: () => void;
 }) {
   const [strategy, setStrategy] = useState<GatewayRoutingStrategy>(settings.routingStrategy);
+  const [subscriptions, setSubscriptions] = useState<GatewaySettings["subscriptionRouting"]>(settings.subscriptionRouting);
   const [sticky, setSticky] = useState(settings.stickyThreadsEnabled);
   const [earlierReset, setEarlierReset] = useState(settings.preferEarlierReset);
   const [apiKeyFallback, setApiKeyFallback] = useState(settings.claudeApiKeyFallback);
   const [planPriority, setPlanPriority] = useState<string[]>(settings.planPriority);
+  const [providerOrder, setProviderOrder] = useState<GatewayProviderOrder>(settings.providerOrder);
   const [floor, setFloor] = useState(String(settings.exhaustionFloorPercent));
+  const [reserve, setReserve] = useState(String(settings.claudeReservePercent));
   const [threshold, setThreshold] = useState(String(settings.stickyReallocationBudgetThresholdPercent));
   const { saving, message, save } = useSettingsSaver(client, onSaved);
   const selected = routingStrategyOptions.find((option) => option.value === strategy);
@@ -274,10 +342,19 @@ export function GatewayRoutingTab({ settings, client, onSaved, onAddClaudeApiKey
     <form className="space-gateway-panel" onSubmit={(event) => {
       event.preventDefault();
       void save({
-        routingStrategy: strategy, stickyThreadsEnabled: sticky, preferEarlierReset: earlierReset, claudeApiKeyFallback: apiKeyFallback, planPriority,
-        exhaustionFloorPercent: Number(floor), stickyReallocationBudgetThresholdPercent: Number(threshold)
+        routingStrategy: strategy, subscriptionRouting: subscriptions, stickyThreadsEnabled: sticky, preferEarlierReset: earlierReset, claudeApiKeyFallback: apiKeyFallback, planPriority, providerOrder,
+        exhaustionFloorPercent: Number(floor), claudeReservePercent: Number(reserve), stickyReallocationBudgetThresholdPercent: Number(threshold)
       });
     }}>
+      <label className="space-gateway-field">Subscription accounts
+        <select value={subscriptions} onChange={(event) => setSubscriptions(event.target.value as GatewaySettings["subscriptionRouting"])}>
+          <option value="FILL_FIRST">Fill first</option>
+          <option value="WEEKLY_PACE">Weekly pace</option>
+        </select>
+        <span>{subscriptions === "FILL_FIRST"
+          ? `Claude Max and Codex: one account until about 93% of its 5 hours, then the next, so the resets come at different times. Fresh windows open with the week that would reset unused first. Only while the pool would run out before any account resets, no account goes past 95% of its week, the exhaustion floor holds and the last ${Number(reserve) || 0}% of the Claude account with most room is kept for Nous's answers to you; when a reset comes first, every account is spent to 100%.`
+          : "Claude Max and Codex: new work goes to the account furthest under its weekly pace."}</span>
+      </label>
       <label className="space-gateway-field">Routing strategy
         <select value={strategy} onChange={(event) => setStrategy(event.target.value as GatewayRoutingStrategy)}>
           {routingStrategyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -296,9 +373,13 @@ export function GatewayRoutingTab({ settings, client, onSaved, onAddClaudeApiKey
         </div>
       ) : null}
       <PlanPriorityEditor value={planPriority} onChange={setPlanPriority} />
+      <ProviderOrderEditor value={providerOrder} onChange={setProviderOrder} />
       <div className="space-gateway-field-row">
         <label className="space-gateway-field">Exhaustion floor (%)
           <input type="number" min={0} max={50} step={0.5} value={floor} onChange={(event) => setFloor(event.target.value)} />
+        </label>
+        <label className="space-gateway-field">Nous Claude reserve (%)
+          <input type="number" min={0} max={100} step={1} value={reserve} onChange={(event) => setReserve(event.target.value)} />
         </label>
         <label className="space-gateway-field">Sticky move threshold (%)
           <input type="number" min={0} max={100} step={1} value={threshold} onChange={(event) => setThreshold(event.target.value)} />

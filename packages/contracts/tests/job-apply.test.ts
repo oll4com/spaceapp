@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   canTransitionJobApplication, createPaneInputSchema, createRoomPanesRequestSchema, defaultJobApplyPaneMetadata,
-  jobApplicationSchema, jobApplyCandidateSchema, jobApplyPaneMetadataSchema, jobPostingFromUrl, paneSchema, resolveJobApplyPaneMetadata
+  jobApplicationSchema, jobApplyCandidateSchema, jobApplyMailOrganizeSchema, jobApplyPaneMetadataSchema, jobPostingFromUrl, paneSchema, resolveJobApplyPaneMetadata
 } from "../src/index.js";
 
 const basePane = {
@@ -83,5 +83,10 @@ describe("jobPostingFromUrl", () => {
     expect(jobPostingFromUrl("not a url")).toBeNull();
     expect(jobPostingFromUrl("javascript:alert(1)")).toBeNull();
     expect(jobPostingFromUrl("ftp://example.com/job")).toBeNull();
+  });
+
+  it("has no Other mail label: a session's OTHER means no Job Applications label (operator 3/11)", () => {
+    expect(jobApplyMailOrganizeSchema.parse({ messageIds: ["m1"], category: "OTHER" }).category).toBe("NONE");
+    expect(() => jobApplyMailOrganizeSchema.parse({ messageIds: ["m1"], category: "SPAM" })).toThrow();
   });
 });

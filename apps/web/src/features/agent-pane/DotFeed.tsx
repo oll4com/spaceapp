@@ -5,6 +5,10 @@ import { readDateTimeSettings, type DateTimeSettings } from "../date-time-settin
 import { ChatCopyButton, ChatMarkdown } from "./ChatMarkdown.js";
 import { TaskDetails } from "./TaskDetails.js";
 import { DotAvatar } from "./DotAvatar.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
+
+type Translate = (text: string, vars?: Record<string, string | number>) => string;
+const english: Translate = (text, vars) => uiText("en", text, vars);
 
 const HOUR = 3_600_000;
 function zone(settings: DateTimeSettings): string | undefined {
@@ -14,14 +18,14 @@ function dayKey(date: Date, timeZone: string | undefined): string {
   return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", ...(timeZone ? { timeZone } : {}) }).format(date);
 }
 /** "Today 8:06 PM", "Yesterday 9:14 AM", "Oct 7 1:37 PM", "Oct 7, 2025 1:37 PM" in the user's SpaceApp time zone and clock. */
-export function dotFeedSeparatorLabel(value: string, now = new Date(), settings: DateTimeSettings = readDateTimeSettings()): string {
+export function dotFeedSeparatorLabel(value: string, now = new Date(), settings: DateTimeSettings = readDateTimeSettings(), t: Translate = english): string {
   const date = new Date(value);
   const timeZone = zone(settings);
   const time = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", hour12: settings.timeFormat !== "24h",
     ...(timeZone ? { timeZone } : {}) }).format(date);
   const day = dayKey(date, timeZone);
-  if (day === dayKey(now, timeZone)) return `Today ${time}`;
-  if (day === dayKey(new Date(now.getTime() - 24 * HOUR), timeZone)) return `Yesterday ${time}`;
+  if (day === dayKey(now, timeZone)) return t("Today {time}", { time });
+  if (day === dayKey(new Date(now.getTime() - 24 * HOUR), timeZone)) return t("Yesterday {time}", { time });
   const sameYear = day.slice(0, 4) === dayKey(now, timeZone).slice(0, 4);
   const date_ = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }),
     ...(timeZone ? { timeZone } : {}) }).format(date);
@@ -38,13 +42,15 @@ const eventIcon = (item: DotFeedItem) => item.origin === "APPROVAL" ? (/^Decline
   : item.origin === "SCHEDULE" ? Bell : item.origin === "GOAL" ? Sparkles : item.origin === "DELEGATION" ? Users : Sparkles;
 
 function FeedEvent({ item }: { item: DotFeedItem }) {
+  const language = useUiLanguage();
+  const t: Translate = (text, vars) => uiText(language, text, vars);
   const [open, setOpen] = useState(false);
   const Icon = eventIcon(item);
   return <div className="dots-feed-event" data-origin={item.origin}>
     <Icon aria-hidden="true" />
     <span>{item.summary ?? item.content.slice(0, 200)}</span>
     {item.content.trim() !== (item.summary ?? "").trim() ? <button type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-      {open ? "Hide details" : "Details"}</button> : null}
+      {open ? t("Hide details") : t("Details")}</button> : null}
     {open ? <p className="dots-feed-event-details">{item.content}</p> : null}
   </div>;
 }
@@ -70,21 +76,23 @@ export function DotFeed({ dot, mood = "idle", motion = true, items, status, hasO
   running: DotFeedLiveRun | null;
   latestRun: AgentPaneTaskRun | null;
 }) {
+  const language = useUiLanguage();
+  const t: Translate = (text, vars) => uiText(language, text, vars);
   const [detailsFor, setDetailsFor] = useState<string | null>(null);
   const settings = readDateTimeSettings();
   const now = new Date();
-  return <main className="dots-feed" role="log" aria-live="polite" aria-label={`Conversation with ${dot.name}`}>
+  return <main className="dots-feed" role="log" aria-live="polite" aria-label={t("Conversation with {name}", { name: dot.name })}>
     {hasOlder ? <button type="button" className="dots-feed-older" disabled={loadingOlder} onClick={onLoadOlder}>
-      {loadingOlder ? "Loading earlier messages…" : "Show earlier messages"}</button> : null}
-    {status === "loading" && !items.length ? <p className="dots-feed-state" role="status"><Loader2 aria-hidden="true" />Loading conversation</p> : null}
-    {status === "unavailable" ? <p className="dots-feed-state" role="status">Earlier messages are unavailable.
-      <button type="button" onClick={onRetry}>Retry</button></p> : null}
-    {status === "ready" && !items.length && !running ? <section className="dots-feed-welcome" aria-label={`Start talking with ${dot.name}`}>
+      {loadingOlder ? t("Loading earlier messages…") : t("Show earlier messages")}</button> : null}
+    {status === "loading" && !items.length ? <p className="dots-feed-state" role="status"><Loader2 aria-hidden="true" />{t("Loading conversation")}</p> : null}
+    {status === "unavailable" ? <p className="dots-feed-state" role="status">{t("Earlier messages are unavailable.")}
+      <button type="button" onClick={onRetry}>{t("Retry")}</button></p> : null}
+    {status === "ready" && !items.length && !running ? <section className="dots-feed-welcome" aria-label={t("Start talking with {name}", { name: dot.name })}>
       <DotAvatar character={dot.character} mood={mood} size={104} motion={motion ? "on" : "off"} />
-      <h2>Hi, I'm {dot.name}</h2>
+      <h2>{t("Hi, I'm {name}", { name: dot.name })}</h2>
       <span className="dots-feed-archetype">{dotPersonalities[dot.character].archetype}</span>
       <p className="dots-feed-greeting">{dotPersonalities[dot.character].greeting}</p>
-      <p>Send me a message. I keep one conversation with you across all your rooms.</p>
+      <p>{t("Send me a message. I keep one conversation with you across all your rooms.")}</p>
     </section> : null}
     {items.map((item, index) => {
       const previous = items[index - 1];
@@ -92,39 +100,39 @@ export function DotFeed({ dot, mood = "idle", motion = true, items, status, hasO
       const newConversation = item.conversationStart && Boolean(previous) && previous!.sessionId !== item.sessionId;
       const title = new Date(item.createdAt).toLocaleString("en-US");
       return <div className="dots-feed-row" key={item.id} data-author={item.author}>
-        {separator ? <div className="dots-feed-separator" role="separator" aria-label={dotFeedSeparatorLabel(item.createdAt, now, settings)}>
-          <span>{dotFeedSeparatorLabel(item.createdAt, now, settings)}</span></div> : null}
-        {newConversation ? <div className="dots-feed-divider" role="separator" aria-label="New conversation"><span>New conversation</span></div> : null}
+        {separator ? <div className="dots-feed-separator" role="separator" aria-label={dotFeedSeparatorLabel(item.createdAt, now, settings, t)}>
+          <span>{dotFeedSeparatorLabel(item.createdAt, now, settings, t)}</span></div> : null}
+        {newConversation ? <div className="dots-feed-divider" role="separator" aria-label={t("New conversation")}><span>{t("New conversation")}</span></div> : null}
         {item.kind === "EVENT" ? <FeedEvent item={item} />
           : item.author === "USER" ? <article className="dots-bubble user" title={title}>
             {item.content ? <p>{item.content}</p> : null}
-            {item.attachments.length ? <ul className="dots-bubble-files" aria-label="Attached files">
+            {item.attachments.length ? <ul className="dots-bubble-files" aria-label={t("Attached files")}>
               {item.attachments.map((file, index) => <li key={`${file.name}:${index}`}><Paperclip aria-hidden="true" /><span>{file.name}</span></li>)}
             </ul> : null}
-            {item.origin === "VOICE" ? <span className="dots-bubble-tag"><Mic aria-hidden="true" />Voice</span>
-              : item.origin === "CHANNEL" ? <span className="dots-bubble-tag"><Slack aria-hidden="true" />From Slack or Teams</span> : null}
+            {item.origin === "VOICE" ? <span className="dots-bubble-tag"><Mic aria-hidden="true" />{t("Voice")}</span>
+              : item.origin === "CHANNEL" ? <span className="dots-bubble-tag"><Slack aria-hidden="true" />{t("From Slack or Teams")}</span> : null}
           </article>
           : <article className={`dots-bubble dot${item.status === "FAILED" ? " failed" : ""}${item.kind === "NOTICE" ? " notice" : ""}`} title={title}>
-            {item.status === "FAILED" ? <p className="dots-bubble-failed"><CircleAlert aria-hidden="true" />{item.content || "This task could not finish."}</p>
+            {item.status === "FAILED" ? <p className="dots-bubble-failed"><CircleAlert aria-hidden="true" />{item.content || t("This task could not finish.")}</p>
               // A notice may quote email: it is plain text, so nothing in it becomes a link; Space adds the only link.
               : item.kind === "NOTICE" ? <p className="dots-notice-text">{item.content}</p>
               : <ChatMarkdown content={item.content} />}
             {item.link ? <a className="dots-bubble-link" href={item.link.url} target="_blank" rel="noopener noreferrer">
               <ExternalLink aria-hidden="true" />{item.link.label}</a> : null}
             {item.status !== "FAILED" ? <div className="dots-bubble-actions">
-              <ChatCopyButton text={item.content} label="Copy" />
+              <ChatCopyButton text={item.content} label={t("Copy")} />
               {latestRun && item.runId === latestRun.runId ? <button type="button" data-task-details-run={latestRun.runId} aria-expanded={detailsFor === item.id}
-                onClick={() => setDetailsFor((value) => value === item.id ? null : item.id)}>{detailsFor === item.id ? "Hide details" : "Details"}</button> : null}
+                onClick={() => setDetailsFor((value) => value === item.id ? null : item.id)}>{detailsFor === item.id ? t("Hide details") : t("Details")}</button> : null}
             </div> : null}
             {detailsFor === item.id && latestRun ? <TaskDetails key={latestRun.runId} run={latestRun} /> : null}
           </article>}
       </div>;
     })}
-    {running ? <article className="dots-bubble dot working" role="status" aria-label={`${dot.name} is working`}>
+    {running ? <article className="dots-bubble dot working" role="status" aria-label={t("{name} is working", { name: dot.name })}>
       <DotAvatar character={dot.character} mood="working" size={26} motion={motion ? "on" : "off"} className="dots-working-avatar" />
       <span className="dots-typing" aria-hidden="true"><span /><span /><span /></span>
-      <span className="dots-working-label">{running.status === "QUEUED" ? `${dot.name} is about to start` : running.status === "INTERRUPTING"
-        ? `${dot.name} is stopping` : `${dot.name} is working`} · <time>{elapsed(running.elapsedSeconds)}</time></span>
+      <span className="dots-working-label">{running.status === "QUEUED" ? t("{name} is about to start", { name: dot.name }) : running.status === "INTERRUPTING"
+        ? t("{name} is stopping", { name: dot.name }) : t("{name} is working", { name: dot.name })} · <time>{elapsed(running.elapsedSeconds)}</time></span>
       {running.progress ? <p className="dots-working-progress">{running.progress}</p> : null}
     </article> : null}
   </main>;

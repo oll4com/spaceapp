@@ -3,6 +3,7 @@ import { X, Lock, Check } from "../ui-theme/app-icons.js";
 import { api } from "../../api.js";
 import type { FileItem } from "@space/contracts";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export interface FilePermissionsModalProps {
   entry: FileItem;
@@ -12,6 +13,8 @@ export interface FilePermissionsModalProps {
 }
 
 export function FilePermissionsModal({ entry, mode, onClose, onSuccess }: FilePermissionsModalProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   // Parse initial mode bits (e.g. 0755)
   const initialOctal = entry.octalPermissions.slice(-3);
   const initialMode = parseInt(initialOctal, 8);
@@ -64,7 +67,7 @@ export function FilePermissionsModal({ entry, mode, onClose, onSuccess }: FilePe
       onSuccess();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to change permissions");
+      setError(err instanceof Error ? err.message : t("Failed to change permissions"));
     } finally {
       setIsSaving(false);
     }
@@ -76,7 +79,7 @@ export function FilePermissionsModal({ entry, mode, onClose, onSuccess }: FilePe
         <div className="fm-modal-header">
           <div className="fm-modal-title">
             <Lock size={16} color="var(--modern-warning)" />
-            <span>File Permissions (chmod)</span>
+            <span>{t("File Permissions (chmod)")}</span>
           </div>
           <button className="fm-action-btn" onClick={onClose}>
             <X size={16} />
@@ -85,7 +88,7 @@ export function FilePermissionsModal({ entry, mode, onClose, onSuccess }: FilePe
 
         <div className="fm-modal-body">
           <div style={{ fontSize: "0.85rem", color: "var(--modern-muted)" }}>
-            Target: <strong style={{ color: "var(--modern-text)" }}>{entry.name}</strong>
+            {t("Target:")} <strong style={{ color: "var(--modern-text)" }}>{entry.name}</strong>
           </div>
 
           {error && (
@@ -98,30 +101,30 @@ export function FilePermissionsModal({ entry, mode, onClose, onSuccess }: FilePe
           <table className="fm-permissions-matrix" style={{ width: "100%", textAlign: "center", borderCollapse: "collapse", fontSize: "0.85rem" }}>
             <thead>
               <tr style={{ color: "var(--modern-muted)" }}>
-                <th style={{ textAlign: "left", padding: "6px" }}>Scope</th>
-                <th>Read (r)</th>
-                <th>Write (w)</th>
-                <th>Execute (x)</th>
+                <th style={{ textAlign: "left", padding: "6px" }}>{t("Scope")}</th>
+                <th>{t("Read (r)")}</th>
+                <th>{t("Write (w)")}</th>
+                <th>{t("Execute (x)")}</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td style={{ textAlign: "left", padding: "6px", fontWeight: 600 }}>Owner (User)</td>
-                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Owner Read" label="" checked={ownerR} onChange={setOwnerR} /></td>
-                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Owner Write" label="" checked={ownerW} onChange={setOwnerW} /></td>
-                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Owner Execute" label="" checked={ownerX} onChange={setOwnerX} /></td>
+                <td style={{ textAlign: "left", padding: "6px", fontWeight: 600 }}>{t("Owner (User)")}</td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel={t("Owner Read")} label="" checked={ownerR} onChange={setOwnerR} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel={t("Owner Write")} label="" checked={ownerW} onChange={setOwnerW} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel={t("Owner Execute")} label="" checked={ownerX} onChange={setOwnerX} /></td>
               </tr>
               <tr>
-                <td style={{ textAlign: "left", padding: "6px", fontWeight: 600 }}>Group</td>
-                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Group Read" label="" checked={groupR} onChange={setGroupR} /></td>
-                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Group Write" label="" checked={groupW} onChange={setGroupW} /></td>
-                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Group Execute" label="" checked={groupX} onChange={setGroupX} /></td>
+                <td style={{ textAlign: "left", padding: "6px", fontWeight: 600 }}>{t("Group")}</td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel={t("Group Read")} label="" checked={groupR} onChange={setGroupR} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel={t("Group Write")} label="" checked={groupW} onChange={setGroupW} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel={t("Group Execute")} label="" checked={groupX} onChange={setGroupX} /></td>
               </tr>
               <tr>
-                <td style={{ textAlign: "left", padding: "6px", fontWeight: 600 }}>Others</td>
-                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Others Read" label="" checked={otherR} onChange={setOtherR} /></td>
-                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Others Write" label="" checked={otherW} onChange={setOtherW} /></td>
-                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Others Execute" label="" checked={otherX} onChange={setOtherX} /></td>
+                <td style={{ textAlign: "left", padding: "6px", fontWeight: 600 }}>{t("Others")}</td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel={t("Others Read")} label="" checked={otherR} onChange={setOtherR} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel={t("Others Write")} label="" checked={otherW} onChange={setOtherW} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel={t("Others Execute")} label="" checked={otherX} onChange={setOtherX} /></td>
               </tr>
             </tbody>
           </table>
@@ -129,7 +132,7 @@ export function FilePermissionsModal({ entry, mode, onClose, onSuccess }: FilePe
           {/* Octal & Presets */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: "0.82rem", color: "var(--modern-muted)" }}>Octal:</span>
+              <span style={{ fontSize: "0.82rem", color: "var(--modern-muted)" }}>{t("Octal:")}</span>
               <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: "1.1rem", color: "var(--modern-accent)" }}>
                 {calculatedOctal}
               </span>
@@ -154,11 +157,11 @@ export function FilePermissionsModal({ entry, mode, onClose, onSuccess }: FilePe
 
         <div className="fm-modal-footer">
           <button className="fm-btn" onClick={onClose} disabled={isSaving}>
-            Cancel
+            {t("Cancel")}
           </button>
           <button className="fm-btn primary" onClick={handleSave} disabled={isSaving}>
             <Check size={14} />
-            <span>{isSaving ? "Applying..." : "Apply Permissions"}</span>
+            <span>{isSaving ? t("Applying...") : t("Apply Permissions")}</span>
           </button>
         </div>
       </div>

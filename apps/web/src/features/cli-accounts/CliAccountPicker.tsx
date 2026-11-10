@@ -2,11 +2,15 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as Reac
 import type { CliAccountProfile } from "@space/contracts";
 import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 import {
+  antigravityAccountLacksGroup,
+  antigravityGroupLabel,
   antigravityModelGroup,
+  antigravityQuotaGroups,
   cliAccountAvailability,
   cliAccountPlan,
   cliAccountPool,
-  cliAccountWeeklyForecast,
+  cliAccountForecasts,
+  cliAccountForecastTitle,
   type CliAccountAvailability,
   type CliAccountMenuRuntimeId,
 } from "./cli-account-availability.js";
@@ -78,7 +82,12 @@ function AccountPickerMenu({
   const label = `${providerLabel} account for ${paneTitle}`;
 
   const clock = open ? Date.now() : Math.floor(Date.now() / 60_000) * 60_000;
-  const modelGroup = runtimeId === "cli:gemini" ? antigravityModelGroup(modelId) : null;
+  // Antigravity: one tab per quota group Google reports (Gemini, Claude · GPT, Gemini 4 Argon, ...), the pane's model's group first.
+  const groupOptions = useMemo(() => (runtimeId === "cli:gemini" ? antigravityQuotaGroups(quota?.agy) : []), [quota, runtimeId]);
+  const [chosenGroup, setChosenGroup] = useState<string | null>(null);
+  const paneGroup = runtimeId === "cli:gemini" ? antigravityModelGroup(modelId, groupOptions) : null;
+  // A pane group Google does not report stays chosen, so the header says Google reported nothing for it (31/10).
+  const modelGroup = groupOptions.some((option) => option.id === chosenGroup) ? chosenGroup : paneGroup ?? groupOptions[0]?.id ?? null;
   const rows = useMemo(() => profiles.map((profile) => {
     const identity = identities?.find((candidate) => candidate.runtimeId === runtimeId && candidate.profileId === profile.profileId) ?? null;
     return {
@@ -91,14 +100,19 @@ function AccountPickerMenu({
   }), [balance, clock, identities, modelGroup, profiles, quota, runtimeId]);
   // Codex: the ChatGPT accounts Space Gateway picks from, listed for their quota; they cannot be chosen one by one.
   const pool = useMemo(() => cliAccountPool(runtimeId, quota, clock), [clock, quota, runtimeId]);
-  const forecast = useMemo(() => (open ? cliAccountWeeklyForecast(runtimeId, quota, clock, modelGroup) : null), [clock, modelGroup, open, quota, runtimeId]);
-  const activeRow = Math.max(0, rows.findIndex((row) => row.profile.profileId === selectedProfileId));
-  const active = rows[activeRow];
+  const forecasts = useMemo(() => (open ? cliAccountForecasts(runtimeId, quota, clock, modelGroup, balance) : []), [balance, clock, modelGroup, open, quota, runtimeId]);
+  // An account Google lists without the chosen group (a Free account has no Gemini 4 Argon) is left out of that group's view;
+  // a group no account reports hides no one.
+  const hiddenWithout = groupOptions.some((option) => option.id === modelGroup) ? modelGroup : null;
+  const shown = useMemo(() => rows.filter((row) => !antigravityAccountLacksGroup(quota, row.profile.profileId, hiddenWithout)), [hiddenWithout, quota, rows]);
+  const activeRow = shown.findIndex((row) => row.profile.profileId === selectedProfileId);
+  const active = rows.find((row) => row.profile.profileId === selectedProfileId) ?? rows[0];
   // The Auto entry, when offered, comes first in the menu; item refs and keyboard moves count it.
   const offset = auto ? 1 : 0;
-  const itemCount = rows.length + offset;
-  const activeIndex = auto?.active ? 0 : activeRow + offset;
-  const readyCount = rows.filter((row) => row.availability.tone === "ready" || row.availability.tone === "neutral").length;
+  const itemCount = shown.length + offset;
+  const activeIndex = auto?.active ? 0 : activeRow < 0 ? -1 : activeRow + offset;
+  const focusIndex = Math.max(0, activeIndex);
+  const readyCount = shown.filter((row) => row.availability.tone === "ready" || row.availability.tone === "neutral").length;
   const autoNext = auto && balance?.runtimeId === runtimeId ? rows.find((row) => row.profile.profileId === balance.next) ?? null : null;
 
   useEffect(() => {
@@ -127,15 +141,16 @@ function AccountPickerMenu({
 
   useEffect(() => {
     if (!open) return;
-    const frame = window.requestAnimationFrame(() => itemRefs.current[activeIndex]?.focus());
+    const frame = window.requestAnimationFrame(() => itemRefs.current[focusIndex]?.focus());
     return () => window.cancelAnimationFrame(frame);
     // Focus moves to the active account only when the menu opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // Each opening starts on the pane's model's group.
   useEffect(() => {
-    if (disabled) setOpen(false);
-  }, [disabled]);
+    if (!open) setChosenGroup(null);
+  }, [open]);
 
   function openMenu() {
     // Codex signs in through Space Gateway only, so it has no profile identities to fetch.
@@ -162,7 +177,10 @@ function AccountPickerMenu({
     if (restoreFocus) window.requestAnimationFrame(() => triggerRef.current?.focus());
   }
 
+  // While the pane starts or reattaches its CLI the menu stays open to read (stable 31/10: a phone's Codex menu shut itself
+  // as the pane attached); only the switch waits.
   function choose(profileId: string) {
+    if (disabled) return;
     closeMenu(true);
     if (profileId !== selectedProfileId) onSelect(profileId);
   }
@@ -174,8 +192,16 @@ function AccountPickerMenu({
       itemRefs.current[(index + itemCount) % itemCount]?.focus();
     };
     switch (event.key) {
-      case "ArrowDown": move(focusedIndex < 0 ? activeIndex : focusedIndex + 1); break;
-      case "ArrowUp": move(focusedIndex < 0 ? activeIndex : focusedIndex - 1); break;
+      case "ArrowDown": move(focusedIndex < 0 ? focusIndex : focusedIndex + 1); break;
+      case "ArrowUp": move(focusedIndex < 0 ? focusIndex : focusedIndex - 1); break;
+      case "ArrowLeft":
+      case "ArrowRight": {
+        if (groupOptions.length < 2) break;
+        event.preventDefault();
+        const at = groupOptions.findIndex((option) => option.id === modelGroup) + (event.key === "ArrowRight" ? 1 : -1);
+        setChosenGroup(groupOptions[(at + groupOptions.length) % groupOptions.length]!.id);
+        break;
+      }
       case "Home": move(0); break;
       case "End": move(itemCount - 1); break;
       case "Tab":
@@ -190,6 +216,7 @@ function AccountPickerMenu({
   const activeName = `${auto?.active ? "Auto, now " : ""}${active?.profile.displayName ?? "Select account"}`;
 
   function chooseAuto() {
+    if (disabled) return;
     closeMenu(true);
     if (!auto?.active) auto?.onSelect();
   }
@@ -232,22 +259,42 @@ function AccountPickerMenu({
             <span className="cli-account-menu-title">
               <strong>{providerLabel} account</strong>
               <small>
-                {pool ? "Space Gateway picks the account" : `${readyCount} of ${rows.length} available now`}
-                {modelGroup ? ` · ${modelGroup === "gemini" ? "Gemini" : "Claude · GPT"} quota` : ""}
+                {pool ? "Space Gateway picks the account" : `${readyCount} of ${shown.length} available now`}
+                {modelGroup ? ` · ${groupOptions.find((option) => option.id === modelGroup)?.label ?? antigravityGroupLabel(modelGroup)} quota` : ""}
               </small>
             </span>
-            {forecast ? (
+            {forecasts.map((forecast) => (
               <span
+                key={forecast.scope ?? "all"}
                 className="cli-account-menu-forecast"
+                data-known={forecast.percent !== null}
+                data-checking={forecast.checking === true}
                 style={{ color: forecast.color }}
-                title={`At this week's pace, ${Math.round(forecast.percent)}% of the weekly quota of ${forecast.accounts} subscription ${forecast.accounts === 1 ? "account" : "accounts"} is still free when the last of their weeks resets ${forecast.resetWhen}. API keys are not counted.`}
+                title={cliAccountForecastTitle(forecast)}
               >
-                <strong>{Math.round(forecast.percent)}%</strong>
-                <small>free {forecast.resetWhen}</small>
+                <strong>{forecast.checking ? "Checking…" : forecast.percent === null ? "Unknown" : `${Math.round(forecast.now ?? 0)}% now`}</strong>
+                <small>{forecast.scope ? `${forecast.scope} ` : ""}{forecast.percent === null ? "" : `${Math.round(forecast.percent)}% `}free {forecast.resetWhen}{forecast.credits ? ` · ${forecast.credits}` : ""}</small>
               </span>
-            ) : null}
+            ))}
           </div>
-          <div className="cli-account-menu-list" style={menuMaxHeight ? { maxHeight: `${menuMaxHeight - 82}px` } : undefined}>
+          {groupOptions.length > 1 ? (
+            <div className="cli-account-menu-groups" role="group" aria-label="Quota group">
+              {groupOptions.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={option.id === modelGroup}
+                  className="cli-account-menu-group"
+                  tabIndex={-1}
+                  onClick={() => setChosenGroup(option.id)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="cli-account-menu-list" style={menuMaxHeight ? { maxHeight: `${menuMaxHeight - (groupOptions.length > 1 ? 112 : 82)}px` } : undefined}>
             {auto ? (
               <button
                 ref={(element) => {
@@ -260,6 +307,7 @@ function AccountPickerMenu({
                 data-tone="neutral"
                 title="Space starts this pane on the account with the most room and moves it to another account when this one runs out"
                 tabIndex={auto.active ? 0 : -1}
+                aria-disabled={disabled || undefined}
                 onClick={chooseAuto}
               >
                 <span className="cli-account-auto-mark" aria-hidden="true">A</span>
@@ -278,7 +326,7 @@ function AccountPickerMenu({
                 </span>
               </button>
             ) : null}
-            {rows.map((row, rowIndex) => {
+            {shown.map((row, rowIndex) => {
               const index = rowIndex + offset;
               const isActive = index === activeIndex;
               const inUse = (Boolean(auto?.active) && rowIndex === activeRow)
@@ -297,6 +345,7 @@ function AccountPickerMenu({
                   style={accountColorStyle(row.availability)}
                   title={`${row.profile.displayName}${row.email ? ` · ${row.email}` : row.login ? ` · @${row.login}` : ""} · ${row.availability.description}`}
                   tabIndex={isActive ? 0 : -1}
+                  aria-disabled={disabled || undefined}
                   onClick={() => choose(row.profile.profileId)}
                 >
                   <CliAccountAvatar name={row.profile.displayName} availability={row.availability} active={isActive} />

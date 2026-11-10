@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ import { createMcpToolExecutionInputSchema } from "@space/contracts";
 import { InMemorySpaceStore, SpaceEventBus } from "@space/runtime";
 import { getApiConfig } from "../src/config.js";
 import { createMcpToolExecutor } from "../src/mcp-tool-executor.js";
+import { localArtifactFilePath, permanentlyDeleteLocalArtifact } from "../src/artifact-storage.js";
 import { recordAudit } from "../src/request-audit.js";
 
 const fixturePath = fileURLToPath(new URL("./fixtures/stdio-mcp-server.mjs", import.meta.url));
@@ -83,4 +84,25 @@ it("executes the approved fixture once and publishes only its redacted result", 
     expect.objectContaining({ action: "mcp.tool.execute", traceId: "req:mcp-domain",
       metadata: expect.objectContaining({ status: "EXECUTED", artifactId: artifact.id }) })
   ]));
+});
+
+// DATA-001: the row of an MCP result must resolve to the file the executor wrote (it did not: the 29/10 backup held 14
+// MCP_RESULT rows whose files were all present and the resolver refused their URI), so the API can serve it and a
+// permanent delete removes file and row together.
+it("resolves a stored MCP result to the file the executor wrote, and a permanent delete removes both", async () => {
+  const { app, store, root } = await fixture("approved");
+  const response = await app.inject({ method: "POST", url: "/execute", payload: {
+    toolId: "fixture:list_files", arguments: { path: "/fixture" }, approvalReason: "Fixture approval"
+  } });
+  const artifact = store.getArtifact(response.json().artifact.id);
+  const resolved = localArtifactFilePath({ artifactRoot: root, artifact });
+  expect(resolved).toBe(artifact.metadata.localPath);
+  await expect(access(resolved)).resolves.toBeUndefined();
+  await permanentlyDeleteLocalArtifact({ store, artifactRoot: root, artifact });
+  await expect(access(resolved)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(() => store.getArtifact(artifact.id)).toThrow();
+  // The URI cannot be bent out of its folder.
+  expect(() => localArtifactFilePath({ artifactRoot: root, artifact: { ...artifact, storageUri: "space-artifact://mcp-executions/..%2F..%2Fescape/result.json" } }))
+    .not.toThrow();
+  expect(localArtifactFilePath({ artifactRoot: root, artifact: { ...artifact, storageUri: "space-artifact://mcp-executions/..%2F..%2Fescape/result.json" } }).startsWith(`${root}/mcp-executions/`)).toBe(true);
 });

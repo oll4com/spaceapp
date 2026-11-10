@@ -55,11 +55,14 @@ test("active documentation routes host-root through the current launcher", async
     "docs/security-model.md"
   ]) {
     const content = await readFile(join(root, path), "utf8");
-    assert.match(
-      content,
-      /npx --yes run-spaceapp@latest install --access host-root/,
-      path
-    );
+    // The README is a short quick start since 1.2 (operator request 2026-10-29); Getting started carries host-root.
+    if (path !== "README.md") {
+      assert.match(
+        content,
+        /npx --yes run-spaceapp@latest install --access host-root/,
+        path
+      );
+    }
     assert.doesNotMatch(content, /run-spaceapp@personal/, path);
     assert.doesNotMatch(
       content,
@@ -182,7 +185,7 @@ test("Temporal dependencies use SDK releases with patched transitive packages", 
   );
   const workerRequire = createRequire(join(root, "apps", "worker", "package.json"));
   const cargoLock = await readFile(join(dirname(workerRequire.resolve("@temporalio/core-bridge/package.json")), "Cargo.lock"), "utf8");
-  const expectedVersion = "1.24.0";
+  const expectedVersion = "1.25.0";
 
   assert.equal(apiPackage.dependencies["@temporalio/client"], expectedVersion);
   for (const name of [
@@ -242,10 +245,31 @@ test("temporary vulnerability ignores are narrow, documented, and expiring", asy
   // An ignore that no longer matches is removed, not renewed (1.1.7, review INT5-C-F16): on 2026-10-19 Trivy 0.70.0 with
   // that day's database found only this rustls advisory in the 1.1.6 core, CLI and browser images and nothing in the source.
   // 1.1.9: the 2026-10-28 database added a second advisory on the same rustls in the Temporal bridge, and the 2026-10-29 one
-  // the zip crate of its ephemeral-server feature; both with the same expiry.
-  assert.deepEqual(activeEntries, ["GHSA-2mjx-qc3c-rqvc exp:2026-11-10", "GHSA-c8m5-c952-6cm4 exp:2026-11-10", "CVE-2026-115905 exp:2026-11-10"]);
+  // the zip crate of its ephemeral-server feature; both with the same expiry. 1.2.0: npm 11.21.1 bundles glob 13 and minimatch 10
+  // (DoS from attacker patterns, fixed only in their next majors); ignored until an npm 11 release bundles the fixes. Temporal
+  // 1.25.0 ships zip 9.0.5, so the zip ignore left (CORE-002); its rustls is still 0.23.36, so both rustls ignores
+  // were renewed until 2026-12-01 (Nous decision 2/11: still matching, Temporal reached without TLS).
+  assert.deepEqual(activeEntries, [
+    "GHSA-2mjx-qc3c-rqvc exp:2026-12-01", "GHSA-c8m5-c952-6cm4 exp:2026-12-01",
+    "CVE-2026-118773 exp:2026-12-01", "CVE-2026-118764 exp:2026-12-01",
+  ]);
+  assert.match(ignoreFile, /bundled inside\s+# npm 11\.21\.1/);
   assert.match(ignoreFile, /without TLS/i);
   assert.doesNotMatch(ignoreFile, /trustProxy/i);
+});
+
+test("secret-scan exceptions are exact reviewed findings, never paths or folders", async () => {
+  // Issue #211: the full-history scan (gitleaks detect, git log -p -U0 --full-history --all) flagged reviewed test fixtures, an
+  // RFC sample nonce, a public OAuth client id and a vendor's public PostHog ingestion key. Each is ignored by its own fingerprint,
+  // so a new secret anywhere, also in a test or docs path, still fails the scan.
+  const ignored = (await readFile(join(root, ".gitleaksignore"), "utf8"))
+    .split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+  assert.ok(ignored.length > 0);
+  for (const entry of ignored) assert.match(entry, /^[0-9a-f]{40}:[^:*?\[\]]+:[a-z0-9-]+:\d+$/, entry);
+  assert.equal(new Set(ignored).size, ignored.length);
+  const config = await readFile(join(root, ".gitleaks.toml"), "utf8");
+  assert.doesNotMatch(config, /^\s*paths\s*=/m, "no path allowlist");
+  assert.doesNotMatch(config, /^\s*commits\s*=/m, "no commit allowlist");
 });
 
 test("public policy files are present and point security reports to a private channel", async () => {
@@ -399,7 +423,8 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
       )
     );
   }
-  assert.match(readme, /run-spaceapp@latest owner rotate-setup-token/);
+  // The short README lists commands in a table under one `npx --yes run-spaceapp@latest <command>` line.
+  assert.match(readme, /owner rotate-setup-token/);
   assert.match(
     operations,
     /run-spaceapp@latest rollback[\s\S]*run-spaceapp@latest status/

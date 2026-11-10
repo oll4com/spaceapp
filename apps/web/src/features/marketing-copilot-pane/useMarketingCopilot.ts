@@ -3,6 +3,7 @@ import type { AgentRuntimeRegistry, BrowserHandoffRequest, MarketingCampaign, Ma
 import { api } from "../../api.js";
 import { usePanePolling } from "../../use-pane-polling.js";
 import { withRefreshTimeout } from "../copilot-kit/refresh-timeout.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { subscribeMarketingCopilotLiveEvents } from "./live-events.js";
 
 export interface MarketingCopilotData {
@@ -35,6 +36,10 @@ export function useMarketingCopilotData(pane: Pane, enabled: boolean): Marketing
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef<Promise<void> | null>(null);
+  // A ref, so a language change never rebuilds `refresh` (and restarts the polling that depends on it).
+  const language = useUiLanguage();
+  const languageRef = useRef(language);
+  languageRef.current = language;
 
   const refresh = useCallback(async () => {
     if (inFlight.current) return inFlight.current;
@@ -56,7 +61,7 @@ export function useMarketingCopilotData(pane: Pane, enabled: boolean): Marketing
         setHandoff(handoffResponse?.handoff ?? null);
         setError(null);
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "Marketing Copilot data could not be loaded.");
+        setError(caught instanceof Error ? caught.message : uiText(languageRef.current, "Marketing Copilot data could not be loaded."));
       } finally {
         setLoading(false);
         inFlight.current = null;

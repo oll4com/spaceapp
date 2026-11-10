@@ -14,9 +14,12 @@ export function candidateDigest(root=process.cwd()) {
 // - 1.1.9: operator decision 54b65a84 (2026-10-28), Windows only: OpenCode launched on Windows and reached Zen, which refused
 //   every free model with provider.quota "Free usage limit reached" for the lab's address at 08:01 UTC on 2026-10-28; the
 //   Linux and macOS first answers passed on the same candidate.
+// - 1.2.0: decision nous-20261106-report-25457 (2026-11-06), covered by the operator's RELEASE yes on the candidate, all three
+//   systems: Zen refused every free model (provider.quota, inkling-2-small-free provider.auth) from the lab's address on
+//   2026-11-09/10 (candidate c14); everything up to the answer ran and the Codex first agent passed on the same installs.
 // Every other version, platform and check stays as strict as before. (1.1.7's unused entry zen-refusal-1.1.7 was removed in
 // 1.1.8: every 1.1.7 first-agent check passed on a free Zen model.)
-const zenFirstAnswerExceptions=Object.freeze({'1.1.6':'efc30984','1.1.9':'54b65a84'});
+const zenFirstAnswerExceptions=Object.freeze({'1.1.6':'efc30984','1.1.9':'54b65a84','1.2.0':'nous-20261106-report-25457'});
 function zenExceptionApplies(evidence,version,platform){
   const decision=Object.hasOwn(zenFirstAnswerExceptions,version)?zenFirstAnswerExceptions[version]:null;
   return Boolean(decision)&&evidence?.launcherVersion===version&&Array.isArray(evidence?.knownExceptions)&&

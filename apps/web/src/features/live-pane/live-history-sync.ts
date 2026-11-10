@@ -49,7 +49,8 @@ export function createLiveHistorySync(deps: {
       try {
         const saved = JSON.parse(deps.storage?.getItem(key()) || "{}");
         if (typeof saved.sessionId === "string") sessionId = saved.sessionId;
-        for (const turn of Array.isArray(saved.pending) ? saved.pending.slice(-500) : []) {
+        // Every turn this device has not saved yet (until 31/10 the newest 500; older unsaved turns were lost).
+        for (const turn of Array.isArray(saved.pending) ? saved.pending : []) {
           if (typeof turn?.item?.id === "string" && typeof turn.item.roomId === "string" && typeof turn.item.text === "string" && Number.isInteger(turn.item.revision) && Number.isInteger(turn.epoch)) {
             pending.set(turn.item.id, turn); revisions.set(turn.item.id, turn.item.revision);
           }

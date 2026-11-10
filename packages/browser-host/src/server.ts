@@ -282,7 +282,8 @@ export function readBrowserHostBuildCommit(): string | null {
   if (configured) return configured;
   try {
     return execFileSync("git", ["-c", `safe.directory=${process.cwd()}`, "rev-parse", "HEAD"], {
-      cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]
+      // The host loads /opt/spaceapp/.env; git gets only what it needs, as the API's git children do (EXT-C-F8).
+      cwd: process.cwd(), env: { PATH: process.env.PATH, HOME: process.env.HOME }, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]
     }).trim();
   } catch {
     return null;

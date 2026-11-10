@@ -16,7 +16,7 @@ describe("Voice settings card", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(useVoiceInput).mockReturnValue({
-      settings: { ...defaultVoiceComposerSettings, opening: "Remember this", terminalTurnControl: false },
+      settings: { ...defaultVoiceComposerSettings, engine: "relay", opening: "Remember this", terminalTurnControl: false },
       serverSettings: { enabled: true, statusReason: "Ready", providerOptions: ["google", "openai"], languageOptions: ["auto", "el", "en"] },
       settingsLoading: false,
       settingsError: null,
@@ -36,6 +36,7 @@ describe("Voice settings card", () => {
     fireEvent.change(screen.getByRole("combobox", { name: /Voice provider/ }), { target: { value: "openai" } });
     expect(writeVoiceComposerSettings).toHaveBeenCalledExactlyOnceWith({
       ...defaultVoiceComposerSettings,
+      engine: "relay",
       provider: "openai",
       model: LIVE_AUDIO_PROVIDERS.openai.defaultModel,
       voice: LIVE_AUDIO_PROVIDERS.openai.defaultVoice,
@@ -48,8 +49,21 @@ describe("Voice settings card", () => {
     render(<VoiceSettingsCard />);
     fireEvent.change(screen.getByRole("combobox", { name: /Insert mode/ }), { target: { value: "replace" } });
     expect(writeVoiceComposerSettings).toHaveBeenCalledExactlyOnceWith({
-      ...defaultVoiceComposerSettings, insertMode: "replace", opening: "Remember this", terminalTurnControl: false
+      ...defaultVoiceComposerSettings, engine: "relay", insertMode: "replace", opening: "Remember this", terminalTurnControl: false
     });
+  });
+
+  it("defaults to the free browser engine and shows the paid provider rows only for the relay", () => {
+    vi.mocked(useVoiceInput).mockReturnValue({ ...useVoiceInput(), settings: { ...defaultVoiceComposerSettings } });
+    vi.stubGlobal("webkitSpeechRecognition", class {});
+    render(<VoiceSettingsCard />);
+    expect(screen.getByText("READY")).toBeTruthy();
+    expect(screen.getByText(/No Space key, no tokens/)).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: /Voice provider/ })).toBeNull();
+    expect(screen.getByRole("combobox", { name: /Language/ })).toBeTruthy();
+    fireEvent.change(screen.getByRole("combobox", { name: /Engine/ }), { target: { value: "relay" } });
+    expect(writeVoiceComposerSettings).toHaveBeenCalledExactlyOnceWith({ ...defaultVoiceComposerSettings, engine: "relay" });
+    vi.unstubAllGlobals();
   });
 
   it("leaves the CLI pane buttons and shortcuts to their own section", () => {

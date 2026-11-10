@@ -1,4 +1,5 @@
 import { WebSocket as WsClient, type RawData, type WebSocket } from "ws";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
  * Fish Audio Live provider (operator request 2026-10-22): Fish's realtime speech to text and Drama 3 text to speech
@@ -6,7 +7,7 @@ import { WebSocket as WsClient, type RawData, type WebSocket } from "ws";
  * binary frames are microphone PCM (16 kHz) in and Drama 3 PCM (24 kHz) out, text frames are small JSON events.
  * The key never leaves the server; provider texts are never copied into logs or close reasons.
  */
-export const FISH_AUDIO_KEY_FILE = "/opt/spaceapp/secrets/space-fish-audio.key";
+export const FISH_AUDIO_KEY_FILE = `${SPACE_INSTALL_ROOT}/secrets/space-fish-audio.key`;
 export const FISH_ASR_URL = "wss://api.fish.audio/v1/asr/realtime";
 export const FISH_TTS_URL = "wss://api.fish.audio/v1/tts/live";
 export const FISH_TTS_SAMPLE_RATE = 24000;

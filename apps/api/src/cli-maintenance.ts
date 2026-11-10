@@ -22,9 +22,10 @@ import {
   type SpaceStore
 } from "@space/runtime";
 import { childProcessEnv } from "./child-process-env.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const dispatcherCommand = "/usr/bin/sudo";
-const dispatcherExecutable = "/opt/spaceapp/bin/space-cli-maintenance-dispatcher";
+const dispatcherExecutable = `${SPACE_INSTALL_ROOT}/bin/space-cli-maintenance-dispatcher`;
 const activeStatuses = new Set(["QUEUED", "RUNNING"]);
 const cliOperationTypes = new Set([
   "CLI_MAINTENANCE_PLAN",
@@ -188,9 +189,9 @@ export function createCliMaintenanceDispatcherClient(
   };
 }
 
-const updateAllScript = "/opt/spaceapp/scripts/cli-maintenance-update-all.mjs";
+const updateAllScript = `${SPACE_INSTALL_ROOT}/scripts/cli-maintenance-update-all.mjs`;
 const updateAllControlExecutable = "/usr/bin/sudo";
-const updateAllControl = "/opt/spaceapp/bin/space-cli-update-all-control";
+const updateAllControl = `${SPACE_INSTALL_ROOT}/bin/space-cli-update-all-control`;
 
 export type CliUpdateAllExecutor = (args: string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
 export type CliUpdateAllControlExecutor = (input: CliUpdateAllRequest) => Promise<{ code: number | null; stdout: string; stderr: string }>;

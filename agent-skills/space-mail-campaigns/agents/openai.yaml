@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mail Campaigns"
+  short_description: "Build campaign e-mail templates, mailing lists with honest consent, contacts with their health and the do-not-mail list through space_mailcampaigns; the operator approves every campaign before it reaches a customer."
+  default_prompt: "Use $space-mail-campaigns: check space_mail_suppressions and the list's health before anything else, write templates with a plain-text part and declared {{variables}}, import contacts with space_mail_list_import, and never promise that a mail avoids spam."

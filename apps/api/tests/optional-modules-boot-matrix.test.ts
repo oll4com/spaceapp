@@ -17,6 +17,7 @@ const probes: Record<Exclude<OptionalModuleId, "channels">, { method: "GET" | "P
   video: { method: "GET", url: "/api/video/formats" },
   "security-copilot": { method: "GET", url: "/api/panes/pane%3Amatrix0001/security-copilot/state" },
   "monitoring-copilot": { method: "GET", url: "/api/panes/pane%3Amatrix0001/monitoring-copilot/state" },
+  "mail-campaigns": { method: "GET", url: "/api/mail-campaigns/templates" },
   telegram: { method: "GET", url: "/api/integrations/telegram" },
   waitlist: { method: "POST", url: "/api/public/waitlist" },
   "desktop-updates": { method: "GET", url: "/api/desktop/latest" }

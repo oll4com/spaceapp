@@ -16,8 +16,11 @@ import { RequestsTab } from "./RequestsTab.js";
 import { SetupTab } from "./SetupTab.js";
 import { StudioView } from "./StudioView.js";
 import { useDesignData } from "./useDesign.js";
+import { onPaneTarget } from "../notifications/pane-target.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import "../copilot-kit/copilot-pane.css";
 import "./design-pane.css";
+import { CopilotNotice } from "../copilot-kit/CopilotNotice.js";
 
 export interface DesignPaneProps {
   pane: Pane;
@@ -47,6 +50,8 @@ export function resolveActiveTab(tab: string | null | undefined, layout: "split"
  * with its usual props. Narrow panes stack: one surface at a time, the Studio as a tab, the tab strip at the bottom.
  */
 export function DesignPane({ pane, isVisible, terminal }: DesignPaneProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const data = useDesignData(pane, isVisible);
   const paneRef = useRef<HTMLDivElement | null>(null);
   const layout = useCopilotLayout(paneRef);
@@ -64,13 +69,10 @@ export function DesignPane({ pane, isVisible, terminal }: DesignPaneProps) {
   useEffect(() => { writeRailPreference(`space:design:rail:${pane.id}`, rail); }, [pane.id, rail]);
   // A notification click opens the request it points at.
   useEffect(() => {
-    const onOpen = (event: Event) => {
-      const detail = (event as CustomEvent<{ paneId?: string; target?: string }>).detail;
-      const id = detail?.paneId === pane.id ? /^request:(.+)$/.exec(detail.target ?? "")?.[1] : null;
+    return onPaneTarget(pane.id, (target) => {
+      const id = /^request:(.+)$/.exec(target)?.[1];
       if (id) setRail((current) => ({ ...current, collapsed: false, tab: "requests" }));
-    };
-    window.addEventListener("space:notification-open", onOpen);
-    return () => window.removeEventListener("space:notification-open", onOpen);
+    });
   }, [pane.id]);
   // Upload files goes to the designer's CLI: its terminal opens the file picker (in this click, so the browser allows it) and shows.
   const uploadFiles = useCallback(() => {
@@ -116,34 +118,34 @@ export function DesignPane({ pane, isVisible, terminal }: DesignPaneProps) {
   return (
     <div ref={paneRef} className="jc-pane dz-pane" data-pane-id={pane.id} data-layout={layout} data-rail={railOpen ? "open" : "collapsed"}
       style={{ "--jc-rail-width": `${rail.width}px` } as React.CSSProperties}>
-      <header className="jc-bar" aria-label="Design command bar" data-layout={layout}>
+      <header className="jc-bar" aria-label={t("Design command bar")} data-layout={layout}>
         <div className="jc-bar-row primary">
           <AgentChip kind={DESIGN_KIND} pane={pane} runtimeOptions={runtimeOptions} switching={agent.switching} onSwitchRuntime={(runtimeId) => void agent.switchAgent(runtimeId)} onSetDefault={() => void agent.setAsDefault()} />
           <div className={`jc-run-pill state-${paused ? "paused" : open.length ? "running" : "idle"}`} role="status" aria-live="polite">
-            <span className="jc-run-label">{paused ? "Paused" : open.length ? `${open.length} request${open.length === 1 ? "" : "s"}` : "No requests"} · {data.settings?.settings.requestAutonomy === "APPROVAL" ? "Needs my approval" : "Delivers automatically"}</span>
-            {needsYou ? <span className="jc-run-needs" title="Approvals or questions waiting for you">{needsYou} need{needsYou === 1 ? "s" : ""} you</span> : null}
+            <span className="jc-run-label">{paused ? t("Paused") : open.length ? t(open.length === 1 ? "{count} request" : "{count} requests", { count: open.length }) : t("No requests")} · {data.settings?.settings.requestAutonomy === "APPROVAL" ? t("Needs my approval") : t("Delivers automatically")}</span>
+            {needsYou ? <span className="jc-run-needs" title={t("Approvals or questions waiting for you")}>{t(needsYou === 1 ? "{count} needs you" : "{count} need you", { count: needsYou })}</span> : null}
           </div>
         </div>
         <div className="jc-bar-row secondary">
           <div className="jc-bar-toggles">
-            <SpaceToggle compact className="jc-toggle" label="Paused" checked={paused} onChange={(checked) => void togglePaused(checked)} />
+            <SpaceToggle compact className="jc-toggle" label={t("Paused")} checked={paused} onChange={(checked) => void togglePaused(checked)} />
             {layout === "split" ? (
-              <button type="button" className={`jc-icon-button${railOpen ? " selected" : ""}`} aria-pressed={railOpen} aria-label={railOpen ? "Collapse the design rail" : "Expand the design rail"} title={railOpen ? "Collapse rail" : "Expand rail"} onClick={toggleRail}>
+              <button type="button" className={`jc-icon-button${railOpen ? " selected" : ""}`} aria-pressed={railOpen} aria-label={railOpen ? t("Collapse the design rail") : t("Expand the design rail")} title={railOpen ? t("Collapse rail") : t("Expand rail")} onClick={toggleRail}>
                 <PanelRight aria-hidden="true" />
               </button>
             ) : null}
           </div>
         </div>
       </header>
-      {notice || data.error ? <div className="jc-notice" role="status">{notice ?? data.error}</div> : null}
+      <CopilotNotice text={notice || data.error} loaded={Boolean(data.settings)} />
       <div className="jc-body">
-        <section className="jc-main dz-main" aria-label="Studio" data-active={studioShown ? "true" : "false"} aria-hidden={studioShown ? undefined : "true"}>
+        <section className="jc-main dz-main" aria-label={t("Studio")} data-active={studioShown ? "true" : "false"} aria-hidden={studioShown ? undefined : "true"}>
           {data.settings ? <StudioView pane={pane} settings={data.settings.settings} assets={data.assets} brandKits={data.brandKits} request={openRequest}
-            onChanged={() => void data.refresh()} onClearRequest={() => setOpenRequest(null)} onUploadFiles={uploadFiles} /> : <p className="jc-muted jc-panel-loading" role="status">Loading the Studio…</p>}
+            onChanged={() => void data.refresh()} onClearRequest={() => setOpenRequest(null)} onUploadFiles={uploadFiles} /> : <p className="jc-muted jc-panel-loading" role="status">{t("Loading the Studio…")}</p>}
         </section>
-        <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label="Resize the design rail" aria-hidden={rail.collapsed ? "true" : undefined}
+        <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label={t("Resize the design rail")} aria-hidden={rail.collapsed ? "true" : undefined}
           onPointerDown={onResizeStart} onPointerMove={onResizeMove} onPointerUp={onResizeEnd} onPointerCancel={onResizeEnd} onDoubleClick={() => setRail((current) => ({ ...current, width: RAIL_DEFAULT_WIDTH }))} />
-        <CopilotRail tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
+        <CopilotRail firstRead={{ text: notice || data.error, loaded: Boolean(data.settings) }} tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
           {railOpen && activeTab === "requests" ? <RequestsTab paneId={pane.id} requests={data.requests} onOpen={openInStudio} onChanged={() => void data.refresh()} /> : null}
           {railOpen && activeTab === "library" ? <LibraryTab paneId={pane.id} assets={data.assets} brandKits={data.brandKits} onOpen={openAsset} onChanged={() => void data.refresh()} onUploadFiles={uploadFiles} /> : null}
           {railOpen && activeTab === "brand-kits" ? <BrandKitsTab pane={pane} brandKits={data.brandKits} onChanged={() => void data.refresh()} /> : null}

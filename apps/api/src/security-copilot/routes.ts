@@ -7,6 +7,7 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 import type { SecurityCopilotService } from "./service.js";
+import { assertMonitoringPerson } from "../monitoring-copilot/routes.js";
 
 export interface SecurityCopilotRouteDependencies {
   store: Pick<SpaceStore, "getPane">;
@@ -69,6 +70,9 @@ export function registerSecurityCopilotRoutes(app: FastifyInstance, service: Sec
     const { owner, pane } = await paneOf(request);
     const reviewId = param(request, "reviewId", securityEventIdSchema);
     const input = parseBody(securityReviewDecisionSchema, request.body ?? {});
+    // Approving needs a person, as on the Monitoring Copilot (Nous 2/11): proof, automation and broker sessions are refused; Nous decides
+    // through its own decision path (nous/wiring.ts), which this route does not touch.
+    if (input.approve) assertMonitoringPerson(request);
     const decided = await service.decideReview(owner, pane, reviewId, input);
     await deps.audit(request, "security_copilot.review.decide", reviewId, { paneId: pane.id, approve: input.approve });
     return decided;

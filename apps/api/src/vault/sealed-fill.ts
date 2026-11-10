@@ -1,6 +1,6 @@
 import {
-  canonicalVaultOrigin, decodeVaultBase32, generateVaultPassword, generateVaultTransportKey, openWithVaultPrivateKey, sealToVaultPublicKey,
-  vaultBase64url, vaultHostFillRequestSchema, vaultHostSignupRequestSchema, vaultTotp, wipeVaultBytes, type VaultHostFillResult, type VaultHostTarget,
+  canonicalVaultOrigin, decodeVaultBase32, generateVaultPassword, generateVaultTransportKey, openWithVaultPrivateKey, sealToVaultPublicKey, vaultPolicyConstraints,
+  vaultBase64url, vaultHostFillRequestSchema, vaultHostSignupRequestSchema, vaultTotp, wipeVaultBytes, type VaultGeneratePolicy, type VaultHostFillResult, type VaultHostTarget,
   type VaultTransportEnvelope, type VaultUseClaims
 } from "@space/contracts";
 
@@ -27,29 +27,50 @@ export interface SealedFillBroker {
   /** NEW_ACCOUNT under a sign-up grant: the broker generates the password, sealed to the inbox and to `replyPublicKey`. */
   signup(input: {
     ownerUserId: string; vaultId: string; certificate: unknown; origin: string; paneId: string; roles: Array<"NEW_PASSWORD" | "CONFIRM_PASSWORD">;
-    inboxPublicKey: string; replyPublicKey: string; field: { minLength: number | null; maxLength: number | null };
+    inboxPublicKey: string; replyPublicKey: string; field: { minLength: number | null; maxLength: number | null; symbols?: string; requireEachClass?: boolean };
   }): Promise<{ sealedPassword: VaultTransportEnvelope; sealedFields: VaultTransportEnvelope }>;
 }
 
 type Role = "USERNAME" | "PASSWORD" | "OTP" | "NEW_PASSWORD" | "CONFIRM_PASSWORD";
-type FieldAction = "probe" | "focus" | "check" | "clear" | "submit";
+
+/**
+ * The field the broker generates a sign-up password for, with the site's stated rules merged in (queue item 37). Symbols and
+ * classes go only when the policy names them: a broker from before its reinstall takes lengths only and refuses other keys.
+ */
+export function signupField(field: { minLength: number | null; maxLength: number | null }, policy?: VaultGeneratePolicy):
+  { minLength: number | null; maxLength: number | null; symbols?: string; requireEachClass?: boolean } {
+  if (!policy) return field;
+  const merged = vaultPolicyConstraints(field, policy);
+  return { minLength: merged.field.minLength ?? null, maxLength: merged.field.maxLength ?? null,
+    ...(policy.symbols !== undefined || policy.requireEachClass !== undefined ? { symbols: merged.base.symbols, requireEachClass: merged.base.requireEachClass } : {}) };
+}
+/** `present`: a probe that also finds a box the page keeps disabled or read-only for now. */
+type FieldAction = "probe" | "present" | "focus" | "check" | "clear" | "submit";
 
 /** One fixed script per action: the role, action and expected length are the only inputs, all chosen here. */
 export function vaultFieldScript(role: Role, action: FieldAction, expectLength = 0): string {
   return `(() => {
   const role = ${JSON.stringify(role)}, action = ${JSON.stringify(action)}, expectLength = ${Number(expectLength) | 0};
   const usable = (el) => { const box = el.getBoundingClientRect(); const style = getComputedStyle(el);
-    return box.width > 0 && box.height > 0 && style.visibility !== "hidden" && style.display !== "none" && !el.disabled && !el.readOnly; };
+    return box.width > 0 && box.height > 0 && style.visibility !== "hidden" && style.display !== "none" && (action === "present" || (!el.disabled && !el.readOnly)); };
   const pick = (selector) => Array.from(document.querySelectorAll(selector)).filter(usable);
   const named = (el, pattern) => pattern.test(String(el.name) + " " + String(el.id));
   const passwords = pick('input[type="password"]');
   const fresh = passwords.filter((el) => /\\bnew-password\\b/.test(el.autocomplete));
+  // A login secret a site keeps in a visible text field (timologio's SubscriptionKey): only with no password field, exactly one
+  // field named for a secret, never a username, mail, VAT or one-time-code field.
+  const secretText = () => { const found = pick('input[type="text"],input:not([type])').filter((candidate) => {
+    const names = String(candidate.name) + " " + String(candidate.id) + " " + String(candidate.getAttribute("autocomplete"));
+    return /subscription.?key|api.?key|secret|passcode/i.test(names) && !/user|mail|login|vat|otp|mfa|2fa|one.?time/i.test(names); });
+    return found.length === 1 ? found[0] : null; };
   let el = null;
   if (role === "USERNAME") el = pick('input[autocomplete~="username"],input[autocomplete~="email"],input[type="email"]')[0]
     || pick('input[type="text"],input:not([type])').find((candidate) => named(candidate, /user|email|login/i)) || null;
-  else if (role === "PASSWORD") el = passwords.find((candidate) => !/\\bnew-password\\b/.test(candidate.autocomplete)) || null;
+  else if (role === "PASSWORD") el = passwords.find((candidate) => !/\\bnew-password\\b/.test(candidate.autocomplete)) || (passwords.length ? null : secretText());
   else if (role === "NEW_PASSWORD") el = fresh[0] || passwords[0] || null;
-  else if (role === "CONFIRM_PASSWORD") el = (fresh.length > 1 ? fresh[1] : passwords[1]) || null;
+  else if (role === "CONFIRM_PASSWORD") { const first = fresh[0] || passwords[0];
+    // The retype field: the next password field after the new one in its form, never the new field itself.
+    el = (fresh.length > 1 ? fresh[1] : first && passwords.slice(passwords.indexOf(first) + 1).find((candidate) => candidate.form === first.form)) || null; }
   else if (role === "OTP") el = pick('input[autocomplete~="one-time-code"]')[0]
     || pick('input:not([type="password"])').find((candidate) => named(candidate, /otp|totp|2fa|mfa|verification|code/i)) || null;
   if (!el) return { found: false };
@@ -74,8 +95,8 @@ export async function readVaultTarget(page: SealedFillPage): Promise<VaultHostTa
   const frame = tree.frameTree?.frame;
   const origin = frame?.url ? canonicalVaultOrigin(frame.url)?.origin ?? null : null;
   if (!frame?.id || !origin) return { eligible: false, reason: "NO_WEB_ORIGIN", targetId: null, frameId: null, origin: null, document: null };
-  // freshDocument: this host takes the field in fill requests (the API sends it only to a host that says so).
-  return { eligible: true, reason: null, targetId: page.targetId, frameId: frame.id, origin, document: typeof frame.loaderId === "string" ? frame.loaderId.slice(0, 128) : null, freshDocument: true };
+  // freshDocument and generatePolicy: this host takes those fields in fill requests (the API sends them only to a host that says so).
+  return { eligible: true, reason: null, targetId: page.targetId, frameId: frame.id, origin, document: typeof frame.loaderId === "string" ? frame.loaderId.slice(0, 128) : null, freshDocument: true, generatePolicy: true };
 }
 
 async function isolatedWorld(page: SealedFillPage, frameId: string): Promise<number> {
@@ -92,13 +113,39 @@ async function field(page: SealedFillPage, contextId: number, role: Role, action
   return value && typeof value === "object" ? value as Record<string, unknown> : { found: false };
 }
 
-/** The answer's shape: `typed` once a value entered the page, `document` the top frame's document the fill ran in (null before the reload). */
-type Answer = (status: VaultHostFillResult["status"], reason: string | null, sealedGenerated?: VaultTransportEnvelope | null, typed?: boolean) => VaultHostFillResult;
-const answering = (document: () => string | null): Answer => (status, reason, sealedGenerated = null, typed = false) => ({ status, reason, sealedGenerated, typed, document: document() });
+/**
+ * A field ready to type into, or one the page keeps disabled or read-only for now: that one joins `late` and is typed after the
+ * others once the page enables it (Oracle 7/11: the confirm box opens only after the new password passes the site's rules).
+ */
+async function locate(page: SealedFillPage, contextId: number, role: Role, late: Set<Role>): Promise<Record<string, unknown> | null> {
+  const probe = await field(page, contextId, role, "probe");
+  if (probe.found === true) return probe;
+  const present = await field(page, contextId, role, "present");
+  if (present.found !== true) return null;
+  late.add(role);
+  return present;
+}
+
+/** A sign-up's or change's retype field gets the same password even when the call named only NEW_PASSWORD (SuccessFactors, 30/10). */
+async function withConfirm(page: SealedFillPage, contextId: number, roles: Role[], late: Set<Role>): Promise<Role[]> {
+  if (!roles.includes("NEW_PASSWORD") || roles.includes("CONFIRM_PASSWORD")) return roles;
+  return await locate(page, contextId, "CONFIRM_PASSWORD", late) ? [...roles, "CONFIRM_PASSWORD"] : roles;
+}
+
+/**
+ * The answer's shape: `typed` once a value entered the page, `document` the top frame's document the fill ran in (null before the
+ * reload), `fields` on a fill that typed: the fields filled and the ones still disabled.
+ */
+type Fields = NonNullable<VaultHostFillResult["fields"]>;
+type Answer = (status: VaultHostFillResult["status"], reason: string | null, sealedGenerated?: VaultTransportEnvelope | null, typed?: boolean, fields?: Fields) => VaultHostFillResult;
+const answering = (document: () => string | null): Answer => (status, reason, sealedGenerated = null, typed = false, fields) =>
+  ({ status, reason, sealedGenerated, typed, document: document(), ...(fields && { fields }) });
 
 /** How long the reload before a fill may take; a page that never settles (a beforeunload dialog, a dead server) stops the fill. */
 export const VAULT_FILL_RELOAD_TIMEOUT_MS = 15_000;
-export interface SealedFillOptions { reloadTimeoutMs?: number }
+/** How long a disabled field may take to open once the fields before it are typed; one still shut is named in the answer's `fields.disabled`. */
+export const VAULT_LATE_FIELD_WAIT_MS = 3_000;
+export interface SealedFillOptions { reloadTimeoutMs?: number; lateFieldWaitMs?: number }
 
 /**
  * A fresh document before any field is looked for (Vault review 2026-10-22): a script an agent left in the page before the fill
@@ -156,11 +203,13 @@ export async function runSealedFill(page: SealedFillPage, broker: SealedFillBrok
   // redoes the steps that showed it, with navigate, click, type and press only, and the next fill needs no reload.
   const contextId = await isolatedWorld(page, claims.frameId);
   const constraints = new Map<Role, Record<string, unknown>>();
+  const late = new Set<Role>();
   for (const role of roles) {
-    const probe = await field(page, contextId, role, "probe");
-    if (probe.found !== true) return result("BLOCKED", reloaded ? "FIELD_NOT_FOUND_AFTER_RELOAD" : "FIELD_NOT_FOUND");
+    const probe = await locate(page, contextId, role, late);
+    if (!probe) return result("BLOCKED", reloaded ? "FIELD_NOT_FOUND_AFTER_RELOAD" : "FIELD_NOT_FOUND");
     constraints.set(role, probe);
   }
+  const typedRoles = request.mode === "GENERATE" ? await withConfirm(page, contextId, roles, late) : roles;
 
   const reply = await generateVaultTransportKey();
   const scope = { ownerUserId: claims.ownerUserId, vaultId: claims.vaultId, keyVersion: 1 };
@@ -180,10 +229,12 @@ export async function runSealedFill(page: SealedFillPage, broker: SealedFillBrok
     } else if (request.mode === "GENERATE") {
       const target = constraints.get("NEW_PASSWORD") ?? constraints.get(roles[0]!)!;
       try {
-        generated = generateVaultPassword({ maxLength: target.maxLength as number | null, minLength: target.minLength as number | null,
-          pattern: target.pattern as string | null, passwordRules: target.passwordRules as string | null });
+        // Queue item 37: the site's stated rules narrow the field's own (stricter wins, never under 8, fail closed).
+        const merged = vaultPolicyConstraints({ maxLength: target.maxLength as number | null, minLength: target.minLength as number | null,
+          pattern: target.pattern as string | null, passwordRules: target.passwordRules as string | null }, request.policy);
+        generated = generateVaultPassword(merged.field, merged.base);
       } catch { return result("BLOCKED", "POLICY_UNSATISFIABLE"); }
-      for (const role of roles) values.set(role, generated);
+      for (const role of typedRoles) values.set(role, generated);
     } else {
       for (const role of roles) {
         const value = secrets[role];
@@ -199,24 +250,37 @@ export async function runSealedFill(page: SealedFillPage, broker: SealedFillBrok
 
   const sealedGenerated = generated && claims.generate
     ? await sealToVaultPublicKey(vaultBase64url.decode(claims.generate.inboxPublicKey), new TextEncoder().encode(generated), scope) : null;
-  return typeIn(page, contextId, roles, values, sameTarget, claims.submit, sealedGenerated, result);
+  return typeIn(page, contextId, typedRoles, values, sameTarget, claims.submit, sealedGenerated, result, late, options.lateFieldWaitMs ?? VAULT_LATE_FIELD_WAIT_MS);
 }
 
 /**
  * Types each value into its field through Input.insertText, re-checking the live page before each; clears what it typed on any
  * stop. The answer says `typed` from the first insert on, even when the stop came after it (the scrub is best effort and cannot
- * reach a field a page script moved the focus to), so the API keeps the fence.
+ * reach a field a page script moved the focus to), so the API keeps the fence. A late field is typed after the others once the
+ * page enables it; one still disabled is named and the form is not submitted, so no agent presses submit past an empty box.
  */
 async function typeIn(page: SealedFillPage, contextId: number, roles: Role[], values: Map<Role, string>, sameTarget: () => Promise<string>,
-  submit: boolean, sealedGenerated: VaultTransportEnvelope | null, result: Answer): Promise<VaultHostFillResult> {
+  submit: boolean, sealedGenerated: VaultTransportEnvelope | null, result: Answer, late: Set<Role>, lateWaitMs: number): Promise<VaultHostFillResult> {
   const filled: Role[] = [];
+  const disabled: Role[] = [];
   let typed = false;
+  // The blur is a person's Tab, for a site that checks the value on change rather than on input.
+  const opens = async (role: Role) => {
+    await page.cdp.send("Runtime.evaluate", { expression: "document.activeElement?.blur()", contextId, returnByValue: true }, page.sessionId).catch(() => undefined);
+    const deadline = Date.now() + lateWaitMs;
+    while ((await field(page, contextId, role, "probe")).found !== true) {
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return true;
+  };
   const scrub = async () => { for (const role of filled) await field(page, contextId, role, "clear").catch(() => undefined); };
   // A pane's Chrome has no focused window (Xvfb), where document.hasFocus() stays false; the fill emulates focus for its own duration.
   const emulateFocus = (enabled: boolean) => page.cdp.send("Emulation.setFocusEmulationEnabled", { enabled }, page.sessionId).catch(() => undefined);
   await emulateFocus(true);
   try {
-    for (const role of roles) {
+    for (const role of [...roles.filter((role) => !late.has(role)), ...roles.filter((role) => late.has(role))]) {
+      if (late.has(role) && !await opens(role)) { disabled.push(role); continue; }
       const live = await sameTarget();
       if (live !== "OK") { await scrub(); return result("ORIGIN_MISMATCH", live, null, typed); }
       const focus = await field(page, contextId, role, "focus");
@@ -227,13 +291,16 @@ async function typeIn(page: SealedFillPage, contextId: number, roles: Role[], va
       filled.push(role);
       if ((await field(page, contextId, role, "check", value.length)).filled !== true) { await scrub(); return result("BLOCKED", "FILL_FAILED", null, typed); }
     }
+    if (!filled.length) return result("BLOCKED", "FIELD_DISABLED", null, typed);
+    const fields = { filled, disabled };
+    if (disabled.length) return result("FILLED", "FIELD_DISABLED", sealedGenerated, typed, fields);
     if (submit) {
       const live = await sameTarget();
       if (live !== "OK") { await scrub(); return result("ORIGIN_MISMATCH", live, null, typed); }
-      const submitted = await field(page, contextId, roles[roles.length - 1]!, "submit");
-      return submitted.submitted === true ? result("SUBMITTED", null, sealedGenerated, typed) : result("FILLED", "NO_FORM", sealedGenerated, typed);
+      const submitted = await field(page, contextId, filled[filled.length - 1]!, "submit");
+      return submitted.submitted === true ? result("SUBMITTED", null, sealedGenerated, typed, fields) : result("FILLED", "NO_FORM", sealedGenerated, typed, fields);
     }
-    return result("FILLED", null, sealedGenerated, typed);
+    return result("FILLED", null, sealedGenerated, typed, fields);
   } catch {
     await scrub();
     return result("BLOCKED", "FILL_FAILED", null, typed);
@@ -273,11 +340,13 @@ export async function runSealedSignup(page: SealedFillPage, broker: SealedFillBr
   const roles: Role[] = request.roles;
   const contextId = await isolatedWorld(page, request.frameId);
   const constraints = new Map<Role, Record<string, unknown>>();
+  const late = new Set<Role>();
   for (const role of roles) {
-    const probe = await field(page, contextId, role, "probe");
-    if (probe.found !== true) return result("BLOCKED", reloaded ? "FIELD_NOT_FOUND_AFTER_RELOAD" : "FIELD_NOT_FOUND");
+    const probe = await locate(page, contextId, role, late);
+    if (!probe) return result("BLOCKED", reloaded ? "FIELD_NOT_FOUND_AFTER_RELOAD" : "FIELD_NOT_FOUND");
     constraints.set(role, probe);
   }
+  const typedRoles = await withConfirm(page, contextId, roles, late);
   const target = constraints.get("NEW_PASSWORD") ?? constraints.get(roles[0]!)!;
   const reply = await generateVaultTransportKey();
   const scope = { ownerUserId: request.ownerUserId, vaultId: request.vaultId, keyVersion: 1 };
@@ -286,7 +355,7 @@ export async function runSealedSignup(page: SealedFillPage, broker: SealedFillBr
   try {
     const sealed = await broker.signup({ ownerUserId: request.ownerUserId, vaultId: request.vaultId, certificate: request.certificate, origin: request.origin,
       paneId: request.paneId, roles: request.roles, inboxPublicKey: request.inboxPublicKey, replyPublicKey: vaultBase64url.encode(reply.publicKey),
-      field: { minLength: (target.minLength as number | null) ?? null, maxLength: (target.maxLength as number | null) ?? null } });
+      field: signupField({ minLength: (target.minLength as number | null) ?? null, maxLength: (target.maxLength as number | null) ?? null }, request.policy) });
     const opened = await openWithVaultPrivateKey(reply.privateKey, reply.publicKey, sealed.sealedFields, scope);
     const secrets = JSON.parse(new TextDecoder().decode(opened)) as Partial<Record<Role, string>>;
     wipeVaultBytes(opened);
@@ -294,6 +363,7 @@ export async function runSealedSignup(page: SealedFillPage, broker: SealedFillBr
       if (!secrets[role]) return result("BLOCKED", "BROKER_REFUSED");
       values.set(role, secrets[role]!);
     }
+    if (!values.has("CONFIRM_PASSWORD") && typedRoles.includes("CONFIRM_PASSWORD")) values.set("CONFIRM_PASSWORD", values.get("NEW_PASSWORD")!);
     sealedPassword = sealed.sealedPassword;
   } catch (error) {
     const reason = (error as { reason?: unknown } | null)?.reason;
@@ -301,5 +371,5 @@ export async function runSealedSignup(page: SealedFillPage, broker: SealedFillBr
   } finally {
     wipeVaultBytes(reply.privateKey);
   }
-  return typeIn(page, contextId, roles, values, sameTarget, request.submit, sealedPassword, result);
+  return typeIn(page, contextId, typedRoles, values, sameTarget, request.submit, sealedPassword, result, late, options.lateFieldWaitMs ?? VAULT_LATE_FIELD_WAIT_MS);
 }

@@ -17,6 +17,7 @@ import { cliRuntimeDescriptors, findCliRuntimeDescriptor, type CliRuntimeDescrip
 import { describeCliAdapter } from "./cli-run-lifecycle-adapters.js";
 import { createStaleWhileRevalidateCache } from "./stale-while-revalidate.js";
 import { readVerifiedFreeModel } from "./verified-free-model.js";
+import { SPACE_AGENT_HOME } from "@space/contracts";
 
 const execFileAsync = promisify(execFile);
 const credentialStatusTimeoutMs = 5_000;
@@ -58,7 +59,7 @@ function controlledCredentialEnvironment(
   environment: Readonly<Record<string, string>> = {}
 ): NodeJS.ProcessEnv {
   return {
-    HOME: process.env.HOME ?? "/var/lib/spaceapp-user",
+    HOME: process.env.HOME ?? SPACE_AGENT_HOME,
     LANG: "C.UTF-8",
     LC_ALL: "C.UTF-8",
     PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -210,7 +211,8 @@ async function detectCommand(commandPath: string, commandName: string): Promise<
   }
 }
 
-export type CliCredentialStatus = "READY" | "READY_QUOTA_EXHAUSTED";
+/** NO_PLAN: signed in, but the plan has no access to this CLI (ADAPTER-011). */
+export type CliCredentialStatus = "READY" | "READY_QUOTA_EXHAUSTED" | "NO_PLAN";
 export type CliCredentialStatusReader = (commandPath: string) => Promise<CliCredentialStatus | null>;
 
 /**
@@ -218,11 +220,12 @@ export type CliCredentialStatusReader = (commandPath: string) => Promise<CliCred
  * CLI itself, so verified credentials are re-probed at most every five
  * minutes (in the background, serving the last result meanwhile). Missing or
  * failed probes are retried sooner so a login made outside Space shows up
- * within a minute. Login completion and setup verification invalidate the
- * registry, which drops every cached status before the next discovery.
+ * within ten minutes (60 s spawned ~240 sudo probes an hour for four CLIs never
+ * signed in, API audit 4/11). Login completion and setup verification invalidate
+ * the registry, which drops every cached status before the next discovery.
  */
 export const CLI_CREDENTIAL_STATUS_FRESH_MS = 5 * 60_000;
-export const CLI_CREDENTIAL_STATUS_MISSING_FRESH_MS = 60_000;
+export const CLI_CREDENTIAL_STATUS_MISSING_FRESH_MS = 10 * 60_000;
 export const CLI_CREDENTIAL_STATUS_MAX_AGE_MS = 30 * 60_000;
 
 async function readCredentialStatus(commandPath: string): Promise<CliCredentialStatus | null> {
@@ -242,6 +245,7 @@ async function readCredentialStatus(commandPath: string): Promise<CliCredentialS
 export function parseCredentialStatus(stdout: string): CliCredentialStatus | null {
   if (stdout === "READY\n" || stdout === "READY\r\n") return "READY";
   if (stdout === "READY_QUOTA_EXHAUSTED\n" || stdout === "READY_QUOTA_EXHAUSTED\r\n") return "READY_QUOTA_EXHAUSTED";
+  if (stdout === "NO_PLAN\n" || stdout === "NO_PLAN\r\n") return "NO_PLAN";
   return null;
 }
 
@@ -342,7 +346,8 @@ async function cliRuntime(
     ? await readStatus(detectedCommandPath as string)
     : null;
   const dynamicCredentialStatus = observedCredentialStatus;
-  const credentialVerified = credentialsNotManagedBySpace || staticallyVerified || dynamicCredentialStatus !== null;
+  const noPlan = dynamicCredentialStatus === "NO_PLAN";
+  const credentialVerified = credentialsNotManagedBySpace || staticallyVerified || (dynamicCredentialStatus !== null && !noPlan);
   const adapterReason = !config.cliEnabled
     ? "SPACE_CLI_ENABLED=true is required before CLI runtimes can start."
     : !commandRoot
@@ -358,13 +363,17 @@ async function cliRuntime(
     ? "UNAVAILABLE"
     : credentialVerified
       ? "READY"
-      : definition.missingAuthState;
+      : noPlan
+        ? "UNAVAILABLE"
+        : definition.missingAuthState;
   const authReason = authState === "READY"
     ? dynamicCredentialStatus === "READY_QUOTA_EXHAUSTED"
       ? `${definition.agentName} credentials are valid, but the current billing-cycle quota is exhausted (no available tokens). The CLI remains available and usage will resume when the provider refreshes the quota.`
       : definition.credentialVerifiedReason
     : adapterStatus === "ENABLED"
-      ? definition.missingAuthReason
+      ? noPlan
+        ? `${definition.agentName} is signed in, but the ${definition.providerName} plan has no access to it. Upgrade the plan with the provider, then check it again in Setup; signing in again will not help.`
+        : definition.missingAuthReason
       : adapterReason;
   const status: AgentRuntime["status"] = adapterStatus === "ERROR"
     ? "ERROR"
@@ -423,6 +432,8 @@ export function createAgentRuntimeRegistryCache(
   read: () => Promise<AgentRuntimeRegistry>;
   readStaleWhileRefreshing: () => Promise<AgentRuntimeRegistry>;
   invalidate: () => void;
+  /** Drops both caches and reads again: a pane open about to refuse a runtime that is not ready (ADAPTER-014). */
+  readFresh: () => Promise<AgentRuntimeRegistry>;
 } {
   const ttlMs = options.ttlMs ?? 10_000;
   const now = options.now ?? Date.now;
@@ -446,7 +457,7 @@ export function createAgentRuntimeRegistryCache(
     return load;
   };
 
-  return {
+  const cache = {
     read,
     readStaleWhileRefreshing() {
       if (!cached) return read();
@@ -461,8 +472,13 @@ export function createAgentRuntimeRegistryCache(
       // can still use the last validated descriptors during that refresh.
       if (cached) cached.expiresAtMs = Number.NEGATIVE_INFINITY;
       inFlight = null;
+    },
+    readFresh() {
+      cache.invalidate();
+      return read();
     }
   };
+  return cache;
 }
 
 export function createCliCredentialStatusCache(

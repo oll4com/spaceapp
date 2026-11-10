@@ -1,17 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
-  defaultNotificationSettings, needsOperatorHands, needsYou, needsYouAsk, needsYouAskSchema, notificationAnswerInputSchema, notificationChannelEnabled, notificationRaiseInputSchema, notificationSettingsSchema, notificationStreamPayloadSchema,
+  NOTIFICATION_BODY_MORE,
+  defaultNotificationSettings, needsOperatorHands, needsYou, needsYouAsk, needsYouAskRisk, needsYouAskSchema, notificationAnswerInputSchema, notificationChannelEnabled, notificationRaiseInputSchema, notificationSettingsSchema, notificationStreamPayloadSchema,
   resolveNotificationSettings, spaceNotificationSchema, updateUserSettingsInputSchema, userSettingsSchema, type NotificationSource
 } from "../src/index.js";
 
 describe("Space notifications contracts", () => {
+  it("keeps a long card body's start and says the rest is in its source, instead of a silent cut (1/11, plan xCBrZwhCTzmC step 4)", () => {
+    const raise = (body?: string) => notificationRaiseInputSchema.parse({ ownerUserId: "user:a", source: "MAIL_COPILOT", kind: "NEEDS_USER", title: "t", ...(body === undefined ? {} : { body }) });
+    const long = raise("y".repeat(3000)).body;
+    expect(long).toHaveLength(2000);
+    expect(long.endsWith(NOTIFICATION_BODY_MORE)).toBe(true);
+    expect(raise("short").body).toBe("short");
+    expect(raise().body).toBe("");
+    const title = notificationRaiseInputSchema.parse({ ownerUserId: "user:a", source: "NOUS", kind: "MORNING_BATCH", title: "x".repeat(250) }).title;
+    expect(title).toHaveLength(200);
+    expect(title.endsWith("…")).toBe(true);
+  });
   // Needs you (operator request 2026-10-24): the one classifier of what brings the operator to a pane.
   it("names the notifications that need the operator at their pane: hands, questions, reviews and waiting CLI prompts, never INFO or without a pane", () => {
     const at = (source: NotificationSource, kind: string, severity: "INFO" | "ATTENTION" | "URGENT" = "ATTENTION", pane: string | null = "pane:1") =>
       needsYou({ source, kind, severity, paneId: pane, roomId: pane ? "room:1" : null });
     const yes: Array<[NotificationSource, string]> = [["AGENT", "NEEDS_YOU"], ["NOUS", "NEEDS_HANDS"], ["BROWSER_HANDOFF", "BROWSER_HANDOFF_REQUESTED"], ["JOB_COPILOT", "HANDOFF_REQUESTED"],
       ["JOB_COPILOT", "QUESTION"], ["JOB_COPILOT", "REVIEW_REQUESTED"], ["MAIL_COPILOT", "NEEDS_USER"], ["MARKETING_COPILOT", "RULE_PROPOSED"], ["MARKETING_COPILOT", "CAMPAIGN_PROPOSED"],
-      ["FREELANCE_COPILOT", "CLIENT_READY"], ["ROOM_AGENT", "WAITING"], ["ROOM_AGENT", "QUESTION"], ["ROOM_AGENT", "SIGN_IN"], ["ROOM_AGENT", "USAGE_LIMIT"], ["ROOM_AGENT", "STUCK"],
+      ["FREELANCE_COPILOT", "CLIENT_READY"], ["MAIL_COPILOT", "CAMPAIGN_REVIEW"], ["ROOM_AGENT", "WAITING"], ["ROOM_AGENT", "QUESTION"], ["ROOM_AGENT", "SIGN_IN"], ["ROOM_AGENT", "USAGE_LIMIT"], ["ROOM_AGENT", "STUCK"],
       ["ROOM_AGENT", "OVERLAP"], ["DESIGN", "DESIGN_APPROVAL"], ["VIDEO", "VIDEO_QUESTION"], ["APP_STUDIO", "APP_STUDIO_QUESTION"], ["SECURITY_COPILOT", "SECURITY_REVIEW"],
       ["MONITORING_COPILOT", "MONITORING_QUESTION"], ["MONITORING_COPILOT", "MONITORING_REVIEW"]];
     for (const [source, kind] of yes) expect(at(source, kind), `${source} ${kind}`).toBe(true);
@@ -63,5 +75,19 @@ describe("Space notifications contracts", () => {
     expect(needsYouAsk({ title: "Andy needs you", body: "", payload: {} }).question).toBe("Andy needs you");
     expect(notificationAnswerInputSchema.safeParse({}).success).toBe(false);
     expect(notificationAnswerInputSchema.parse({ option: "Work" })).toEqual({ option: "Work" });
+  });
+});
+
+describe("needsYouAskRisk (Nous Pro security review P1-2)", () => {
+  const record = (source: string, ask: Record<string, unknown> | undefined) => ({ source, title: "T", body: "B", payload: ask ? { ask } : {} }) as Parameters<typeof needsYouAskRisk>[0];
+  const ask = (kind: string, extra: Record<string, unknown> = {}) => ({ question: "Q?", answer: { kind }, ...extra });
+  it("takes the producer's risk, else NONE for acknowledgements, Nous, panes and copilot questions, and a decision's by its copilot", () => {
+    expect(needsYouAskRisk(record("MAIL_COPILOT", ask("COPILOT_DECISION", { risk: "NONE" })))).toBe("NONE");
+    for (const kind of ["ACK", "NOUS", "PANE", "COPILOT_QUESTION"]) expect(needsYouAskRisk(record("AGENT", ask(kind)))).toBe("NONE");
+    expect(needsYouAskRisk(record("AGENT", undefined))).toBe("NONE");
+    expect(needsYouAskRisk(record("MAIL_COPILOT", ask("COPILOT_DECISION")))).toBe("EXTERNAL");
+    expect(needsYouAskRisk(record("MAIL_COPILOT", ask("MAIL_FIX")))).toBe("EXTERNAL");
+    expect(needsYouAskRisk(record("SECURITY_COPILOT", ask("COPILOT_DECISION")))).toBe("DESTRUCTIVE");
+    expect(needsYouAskRisk(record("MONITORING_COPILOT", ask("COPILOT_DECISION")))).toBe("DESTRUCTIVE");
   });
 });

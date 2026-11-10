@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import { InMemoryControlRepository } from "@space/db";
-import { controlExecuteSchema, controlToolSchemas, type ControlWatch } from "@space/contracts";
+import { controlExecuteSchema } from "@space/contracts";
 import { createSpaceControl } from "../src/space-control.js";
 
 const actor = { id: "operator:one", role: "ADMIN" as const };

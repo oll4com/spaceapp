@@ -12,6 +12,7 @@ import type { SpaceApiConfig } from "./config.js";
 import { assertAgentPaneCompatible, getPaneById } from "./pane-guards.js";
 import { recordAudit } from "./request-audit.js";
 import { parseBody } from "./route-parsing.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 function buildAgentMcpObservation(result: McpToolExecutionResult) {
   return {
@@ -47,7 +48,7 @@ export function registerMcpRoutes(app: FastifyInstance, options: {
   capabilityUsagePath?: string;
 }) {
   const { config, store, cliRuntimeVisibility, routeOptions: defaultRouteRateLimitOptions, executeMcpToolWithPolicy } = options;
-  const capabilityUsagePath = options.capabilityUsagePath ?? "/opt/spaceapp/var/inventory/capability-usage.json";
+  const capabilityUsagePath = options.capabilityUsagePath ?? `${SPACE_INSTALL_ROOT}/var/inventory/capability-usage.json`;
   // The gateway above serves Native chats; CLI agents reach their backends through the MCP dispatcher.
   const dispatcherBackends = async () => {
     const usage = await readFile(capabilityUsagePath, "utf8").then((raw) => JSON.parse(raw) as { generatedAt?: unknown; backends?: unknown }).catch(() => null);

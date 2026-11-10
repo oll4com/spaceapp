@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, type KeyboardEvent, type UIEvent } from "react";
 import { Save, X, FileCode, Check, Eye, Code2 } from "../ui-theme/app-icons.js";
 import { api } from "../../api.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export interface FileEditorModalProps {
   filePath: string;
@@ -10,6 +11,8 @@ export interface FileEditorModalProps {
 }
 
 export function FileEditorModal({ filePath, mode, onClose, onSaved }: FileEditorModalProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [content, setContent] = useState<string>("");
   const [initialContent, setInitialContent] = useState<string>("");
   const [isLoading, setIsLoading] = useState(true);
@@ -32,14 +35,14 @@ export function FileEditorModal({ filePath, mode, onClose, onSaved }: FileEditor
       try {
         const res = await api.filesRead({ path: filePath, mode });
         if (res.isBinary) {
-          setError("Binary file cannot be edited as text.");
+          setError(t("Binary file cannot be edited as text."));
           setIsLoading(false);
           return;
         }
         setContent(res.content ?? "");
         setInitialContent(res.content ?? "");
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load file");
+        setError(err instanceof Error ? err.message : t("Failed to load file"));
       } finally {
         setIsLoading(false);
       }
@@ -77,7 +80,7 @@ export function FileEditorModal({ filePath, mode, onClose, onSaved }: FileEditor
       setTimeout(() => setSaveSuccess(false), 2000);
       onSaved?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save file");
+      setError(err instanceof Error ? err.message : t("Failed to save file"));
     } finally {
       setIsSaving(false);
     }
@@ -147,7 +150,7 @@ export function FileEditorModal({ filePath, mode, onClose, onSaved }: FileEditor
                   flexShrink: 0
                 }}
               >
-                Read-only
+                {t("Read-only")}
               </span>
             )}
             <span style={{ fontSize: "0.75rem", color: "var(--modern-faint)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={filePath}>
@@ -163,8 +166,8 @@ export function FileEditorModal({ filePath, mode, onClose, onSaved }: FileEditor
                   className={`fm-crumb-btn ${activeTab === "edit" ? "fm-crumb-active" : ""}`}
                   onClick={() => setActiveTab("edit")}
                   style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "4px 8px" }}
-                  title="Editor"
-                  aria-label="Editor"
+                  title={t("Editor")}
+                  aria-label={t("Editor")}
                 >
                   <Code2 size={16} />
                 </button>
@@ -173,8 +176,8 @@ export function FileEditorModal({ filePath, mode, onClose, onSaved }: FileEditor
                   className={`fm-crumb-btn ${activeTab === "preview" ? "fm-crumb-active" : ""}`}
                   onClick={() => setActiveTab("preview")}
                   style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "4px 8px" }}
-                  title="Preview"
-                  aria-label="Preview"
+                  title={t("Preview")}
+                  aria-label={t("Preview")}
                 >
                   <Eye size={16} />
                 </button>
@@ -187,8 +190,8 @@ export function FileEditorModal({ filePath, mode, onClose, onSaved }: FileEditor
                 className={`fm-btn ${isDirty ? "primary" : ""}`}
                 onClick={handleSave}
                 disabled={!isDirty || isSaving}
-                title={isSaving ? "Saving..." : saveSuccess ? "Saved!" : "Save (Ctrl+S)"}
-                aria-label="Save"
+                title={isSaving ? t("Saving...") : saveSuccess ? t("Saved!") : t("Save (Ctrl+S)")}
+                aria-label={t("Save")}
                 style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "0 10px", height: 28 }}
               >
                 {saveSuccess ? <Check size={16} color="#65d8a3" /> : <Save size={16} />}
@@ -199,8 +202,8 @@ export function FileEditorModal({ filePath, mode, onClose, onSaved }: FileEditor
               type="button"
               className="fm-action-btn"
               onClick={onClose}
-              title="Close (Esc)"
-              aria-label="Close"
+              title={t("Close (Esc)")}
+              aria-label={t("Close")}
               style={{ padding: "4px 6px", display: "flex", alignItems: "center", justifyContent: "center" }}
             >
               <X size={18} />
@@ -218,7 +221,7 @@ export function FileEditorModal({ filePath, mode, onClose, onSaved }: FileEditor
         <div style={{ display: "flex", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden", position: "relative" }}>
           {isLoading ? (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%", color: "var(--modern-muted)" }}>
-              Loading file...
+              {t("Loading file...")}
             </div>
           ) : activeTab === "preview" && isMarkdown ? (
             <div
@@ -272,7 +275,7 @@ export function FileEditorModal({ filePath, mode, onClose, onSaved }: FileEditor
                 onKeyUp={updateCursorPos}
                 onClick={updateCursorPos}
                 spellCheck={false}
-                placeholder={mode === "admin" ? "Empty file..." : "Empty file (read-only)"}
+                placeholder={mode === "admin" ? t("Empty file...") : t("Empty file (read-only)")}
               />
             </div>
           )}
@@ -281,13 +284,13 @@ export function FileEditorModal({ filePath, mode, onClose, onSaved }: FileEditor
         {/* Editor Status Bar */}
         <div className="fm-editor-status">
           <div style={{ display: "flex", gap: 14 }}>
-            <span>Ln {cursorPos.line}, Col {cursorPos.col}</span>
-            <span>{lineCount} lines</span>
-            <span>{content.length} characters</span>
+            <span>{t("Ln {line}, Col {col}", { line: cursorPos.line, col: cursorPos.col })}</span>
+            <span>{t("{count} lines", { count: lineCount })}</span>
+            <span>{t("{count} characters", { count: content.length })}</span>
           </div>
           <div style={{ display: "flex", gap: 14 }}>
             <span>UTF-8</span>
-            <span>Spaces: 2</span>
+            <span>{t("Spaces: 2")}</span>
             <span style={{ textTransform: "uppercase" }}>{fileName.split(".").pop() || "TEXT"}</span>
           </div>
         </div>

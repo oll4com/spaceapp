@@ -8,6 +8,7 @@
  * DESTRUCTIVE: irreversible commands. Also reserved for the operator.
  * Pane text is untrusted, so the check runs on the screen itself, never on the model's summary of it.
  */
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 export type RoomAgentApprovalLevel = "SAFE" | "DESTRUCTIVE" | "PROTECTED";
 
 export interface RoomAgentApprovalVerdict {
@@ -27,7 +28,7 @@ const protectedRules: Array<[string, RegExp]> = [
   ["git push", /\bgit\s+push\b/i],
   ["secrets and credentials", /(?:^|[\s"'/])\.env\b|\bsecrets?\/|\bpassword\b|\bcredentials?\b|\bapi[_-]?key\b|space_session|SPACE_SESSION_SECRET|\.secret\b|id_(?:rsa|ed25519)/i],
   // The path is written plainly so the public export's path rewrite reaches it (a \/ escape hides it).
-  ["live Space checkout", new RegExp("/opt/spaceapp/(?!var/worktrees/|var/artifacts/)(?:apps|packages|scripts|deploy|docs|bin)/", "i")],
+  ["live Space checkout", new RegExp(`${SPACE_INSTALL_ROOT}/(?!var/worktrees/|var/artifacts/)(?:apps|packages|scripts|deploy|docs|bin)/`, "i")],
   ["operator-only Space files", /\/etc\/(?:AGENTS\.md|docs\/)/i]
 ];
 

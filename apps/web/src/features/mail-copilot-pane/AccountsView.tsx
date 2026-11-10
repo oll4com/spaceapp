@@ -2,6 +2,7 @@ import { useState } from "react";
 import { mailCopilotConsentUrl, type ConnectorAccountSummary, type MailCopilotPaneMetadata } from "@space/contracts";
 import { api } from "../../api.js";
 import { writeClipboardText } from "../clipboard-dock/clipboard-events.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { Check, Copy, Mail, Plus } from "../ui-theme/app-icons.js";
 
 /** What Space may do with an account's Gmail, from the capabilities the operator granted. */
@@ -18,22 +19,24 @@ const ACCESS_TEXT = { full: "Full Gmail access", read: "Read-only", none: "No Gm
  * is signed in (another Chrome profile), since Google consents for the accounts signed in to the browser that opens it.
  */
 export function GmailConsentActions({ email, primary = false }: { email: string; primary?: boolean }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [status, setStatus] = useState<string | null>(null);
   async function copyLink() {
-    setStatus("Copying…");
+    setStatus(t("Copying…"));
     try {
       const { url } = await api.connectorConsentLink(mailCopilotConsentUrl(email));
       await writeClipboardText(url);
-      setStatus(`Copied. Open it within 10 minutes in a browser signed in to ${email}.`);
+      setStatus(t("Copied. Open it within 10 minutes in a browser signed in to {email}.", { email }));
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "The link could not be copied.");
+      setStatus(error instanceof Error ? error.message : t("The link could not be copied."));
     }
   }
   return (
     <div className="jc-actions mc-consent">
-      <a className={`jc-button${primary ? " primary" : ""}`} href={mailCopilotConsentUrl(email)}>Allow full Gmail access</a>
-      <button type="button" className="jc-button" title="Copy a one-use link for another browser or Chrome profile" onClick={() => void copyLink()}>
-        <Copy aria-hidden="true" /> Copy link
+      <a className={`jc-button${primary ? " primary" : ""}`} href={mailCopilotConsentUrl(email)}>{t("Allow full Gmail access")}</a>
+      <button type="button" className="jc-button" title={t("Copy a one-use link for another browser or Chrome profile")} onClick={() => void copyLink()}>
+        <Copy aria-hidden="true" /> {t("Copy link")}
       </button>
       {status ? <span className="jc-muted" role="status">{status}</span> : null}
     </div>
@@ -51,21 +54,23 @@ export function paneAccounts(settings: MailCopilotPaneMetadata | null, accounts:
  * its Gmail, and the consent link that upgrades it to full access (read, label, archive, trash, draft, send).
  */
 export function AccountsView({ settings, accounts, loading }: { settings: MailCopilotPaneMetadata | null; accounts: ConnectorAccountSummary[]; loading: boolean }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const used = paneAccounts(settings, accounts);
   return (
-    <section className="mc-accounts" aria-label="Mail accounts">
+    <section className="mc-accounts" aria-label={t("Mail accounts")}>
       <header className="mc-accounts-head">
         <Mail aria-hidden="true" />
         <div>
-          <strong>Accounts</strong>
-          <small>Mail Copilot works with the Google accounts allowed for Space. Full Gmail access lets it read, label, archive and reply; the mailbox opens here once an account has it.</small>
+          <strong>{t("Accounts")}</strong>
+          <small>{t("Mail Copilot works with the Google accounts allowed for Space. Full Gmail access lets it read, label, archive and reply; the mailbox opens here once an account has it.")}</small>
         </div>
       </header>
-      {loading && accounts.length === 0 ? <p className="jc-muted jc-panel-loading" role="status">Loading accounts…</p> : null}
+      {loading && accounts.length === 0 ? <p className="jc-muted jc-panel-loading" role="status">{t("Loading accounts…")}</p> : null}
       {!loading && accounts.length === 0 ? (
         <div className="jc-empty">
-          <strong>No Google account allowed yet</strong>
-          <span>Allow one Google account and Mail Copilot shows its mail here.</span>
+          <strong>{t("No Google account allowed yet")}</strong>
+          <span>{t("Allow one Google account and Mail Copilot shows its mail here.")}</span>
         </div>
       ) : null}
       <ul className="mc-account-list">
@@ -75,15 +80,15 @@ export function AccountsView({ settings, accounts, loading }: { settings: MailCo
           return (
             <li key={account.accountId} className="mc-account" data-access={access} data-in-pane={inPane ? "true" : "false"}>
               <span className="mc-account-email">{account.email}</span>
-              <span className={`jc-tag${access === "full" ? " accent" : ""}`}>{access === "full" ? <Check aria-hidden="true" /> : null} {ACCESS_TEXT[access]}</span>
-              {!inPane ? <span className="jc-muted">Not used by this pane</span> : null}
+              <span className={`jc-tag${access === "full" ? " accent" : ""}`}>{access === "full" ? <Check aria-hidden="true" /> : null} {t(ACCESS_TEXT[access])}</span>
+              {!inPane ? <span className="jc-muted">{t("Not used by this pane")}</span> : null}
               {access !== "full" ? <GmailConsentActions email={account.email} primary /> : null}
             </li>
           );
         })}
       </ul>
       <div className="jc-actions">
-        <a className="jc-button" href={mailCopilotConsentUrl()}><Plus aria-hidden="true" /> Allow another Google account</a>
+        <a className="jc-button" href={mailCopilotConsentUrl()}><Plus aria-hidden="true" /> {t("Allow another Google account")}</a>
       </div>
     </section>
   );

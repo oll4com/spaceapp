@@ -499,6 +499,7 @@ export const helpSections: HelpSection[] = [
       entry("mode-files", "Files pane symbol", modeIcons.FILES, "Pane badge", "Identifies an integrated file manager and directory browser pane.", ["INFORMATIONAL"]),
       entry("mode-demos", "Demo Projects pane symbol", modeIcons.DEMOS, "Pane badge", "Identifies an interactive demo projects showcase pane.", ["INFORMATIONAL"]),
       entry("mode-databases", "Databases pane symbol", modeIcons.DATABASES, "Pane badge", "Identifies a database browser and SQL editor pane.", ["INFORMATIONAL"]),
+      entry("mode-appointments", "Appointments pane symbol", modeIcons.APPOINTMENTS, "Pane badge", "Identifies the Appointments pane: your calls, interviews, webinars and deadlines, reminded before each.", ["INFORMATIONAL"]),
       entry("mode-t3code", "T3 Code pane symbol", modeIcons.T3CODE, "Pane badge", "Identifies a T3 Code coding-agent pane.", ["INFORMATIONAL"]),
       entry("mode-jobs", "Job Copilot pane symbol", modeIcons.JOB_APPLY, "Pane badge", "Identifies a Job Copilot pane that works through job applications.", ["INFORMATIONAL"]),
       entry("mode-mail", "Mail Copilot pane symbol", modeIcons.MAIL_COPILOT, "Pane badge", "Identifies a Mail Copilot pane that handles your Gmail accounts.", ["INFORMATIONAL"]),

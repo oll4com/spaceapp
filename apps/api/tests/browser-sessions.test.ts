@@ -12,6 +12,7 @@ import {
   BrowserCapacityGate,
   nextBrowserFrameDeadline,
   BrowserRequestGuard,
+  DEFAULT_BROWSER_DNS_TIMEOUT_MS,
   browserAgentNumberForPane,
   browserProfilePathFor,
   browserSessionNeedsNavigation,
@@ -136,7 +137,32 @@ describe("browser runtime network guard", () => {
       timeoutMs: 10
     });
     await expect(stalled.assertAllowed("https://stalled.example/"))
-      .rejects.toMatchObject({ errorCode: "BROWSER_TARGET_BLOCKED" });
+      .rejects.toMatchObject({ errorCode: "BROWSER_TARGET_DNS_FAILED" });
+  });
+
+  it("R33-2: waits past one resolver retry, asks DNS once more, and calls a DNS failure a DNS failure", async () => {
+    // 29/10 ngc.nvidia.com: the first answer took a 2 s resolver retry, past the old 1.5 s bound, and the page read "blocked".
+    let calls = 0;
+    const flaky = new BrowserRequestGuard("http://127.0.0.1:4911", {
+      resolver: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("ETIMEOUT");
+        return [{ address: "8.8.8.8" }];
+      }
+    });
+    await expect(flaky.assertAllowed("https://ngc.nvidia.com/")).resolves.toBe("https://ngc.nvidia.com/");
+    expect(calls).toBe(2);
+    expect(DEFAULT_BROWSER_DNS_TIMEOUT_MS).toBeGreaterThanOrEqual(4_500);
+
+    let failures = 0;
+    const down = new BrowserRequestGuard("http://127.0.0.1:4911", {
+      resolver: async () => { failures += 1; throw new Error("ETIMEOUT"); }
+    });
+    await expect(down.assertAllowed("https://down.example/")).rejects.toMatchObject({
+      errorCode: "BROWSER_TARGET_DNS_FAILED",
+      message: expect.stringContaining("reload")
+    });
+    expect(failures).toBe(2);
   });
 });
 
@@ -154,20 +180,41 @@ describe("browser session navigation restore", () => {
     })).toEqual({ activeUrl: "https://active.example/", backgroundUrls: ["https://two.example/"] });
   });
 
-  it("keeps the background tabs, but not the active page, when Chrome restarts during a navigation", () => {
-    // A navigation owns the active page, and one that never committed must not be
-    // reloaded; the other tabs are unrelated to it and must survive the restart.
+  it("restores the last committed page and the background tabs, never the navigation's target, when Chrome restarts during a navigation", () => {
+    // CORE-015: the active tab used to come back blank. Its listed URL may already be the target
+    // (Chrome lists a pending browser navigation's URL), so the committed currentUrl is restored.
+    const page = (pageId: string, url: string, isActive = false) =>
+      ({ pageId, kind: "PAGE" as const, url, title: null, isActive, openerPageId: null, canGoBack: false, canGoForward: false });
+    const pages = [
+      page("page:active", "https://crash.example/", true),
+      page("page:two", "https://two.example/"),
+      page("page:duplicate", "https://two.example/"),
+      page("page:same-as-committed", "https://active.example/"),
+      page("page:same-as-target", "https://crash.example/")
+    ];
     expect(browserSessionRestoreUrls({
       status: "NAVIGATING",
       currentUrl: "https://active.example/",
+      targetUrl: "https://crash.example/",
       activePageId: "page:active",
-      pages: [
-        { pageId: "page:active", kind: "PAGE", url: "https://active.example/", title: "Active", isActive: true, openerPageId: null, canGoBack: false, canGoForward: false },
-        { pageId: "page:two", kind: "PAGE", url: "https://two.example/", title: "Two", isActive: false, openerPageId: null, canGoBack: false, canGoForward: false },
-        { pageId: "page:duplicate", kind: "PAGE", url: "https://two.example/", title: "Two", isActive: false, openerPageId: null, canGoBack: false, canGoForward: false },
-        { pageId: "page:same-as-active", kind: "PAGE", url: "https://active.example/", title: "Active copy", isActive: false, openerPageId: null, canGoBack: false, canGoForward: false }
-      ]
-    })).toEqual({ activeUrl: null, backgroundUrls: ["https://two.example/"] });
+      pages
+    })).toEqual({ activeUrl: "https://active.example/", backgroundUrls: ["https://two.example/"] });
+    // The target committed before Chrome died: it is what may have crashed it, so the active tab stays empty.
+    expect(browserSessionRestoreUrls({
+      status: "NAVIGATING",
+      currentUrl: "https://crash.example/",
+      targetUrl: "https://crash.example/",
+      activePageId: "page:active",
+      pages
+    })).toEqual({ activeUrl: null, backgroundUrls: ["https://two.example/", "https://active.example/"] });
+    // A page with no committed web URL (a fresh tab) has nothing to restore.
+    expect(browserSessionRestoreUrls({
+      status: "NAVIGATING",
+      currentUrl: null,
+      targetUrl: "https://crash.example/",
+      activePageId: "page:active",
+      pages: [page("page:active", "https://crash.example/", true)]
+    })).toEqual({ activeUrl: null, backgroundUrls: [] });
   });
 
   it("requires navigation for restored active sessions that still have no current URL", () => {
@@ -1139,6 +1186,31 @@ describe("browser capture lifecycle controls", () => {
       statusReason: "Browser Host restarted; recording will resume with the next segment.",
       completedAt: null
     });
+  });
+
+  // DATA-001: the stopped host's capture queue was in its memory, so these two stayed QUEUED and RUNNING for good.
+  it("requeues a screenshot the stopped host never started and fails the one it was taking", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Screenshot recovery", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Browser", mode: "BROWSER" });
+    const session = store.createPaneBrowserSession({
+      sessionId: "browser_session:screenshot-recovery", paneId: pane.id, roomId: room.id, ownerAgentId: null, agentNumber: 1,
+      profileId: "profile:screenshot-recovery", profilePath: "/tmp/space-browser-screenshot-recovery", viewport: "desktop",
+      targetUrl: "https://example.com/", currentUrl: "https://example.com/", status: "READY", isActive: true
+    });
+    const screenshot = (jobId: string) => store.createBrowserCaptureJob({ jobId, sessionId: session.sessionId, paneId: pane.id, roomId: room.id,
+      requestedByType: "AGENT", requestedById: "agent:test", options: { kind: "SCREENSHOT", format: "PNG", target: "VIEWPORT", selector: null, quality: null } });
+    const queued = screenshot("browser_capture:screenshot-queued");
+    const taking = screenshot("browser_capture:screenshot-running");
+    store.updateBrowserCaptureJob(taking.jobId, { status: "RUNNING", progressPercent: 1 });
+    const done = screenshot("browser_capture:screenshot-done");
+    store.updateBrowserCaptureJob(done.jobId, { status: "COMPLETED", progressPercent: 100, completedAt: new Date().toISOString() });
+
+    await expect(recoverInterruptedBrowserCaptureJobs(store)).resolves.toEqual({ failedSegments: 0, requeuedJobs: [queued.jobId] });
+    expect(store.getBrowserCaptureJob(queued.jobId)).toMatchObject({ status: "QUEUED" });
+    expect(store.getBrowserCaptureJob(taking.jobId)).toMatchObject({ status: "FAILED", statusReason: "Browser Host restarted before the screenshot was taken." });
+    expect(store.getBrowserCaptureJob(taking.jobId)?.completedAt).toEqual(expect.any(String));
+    expect(store.getBrowserCaptureJob(done.jobId)).toMatchObject({ status: "COMPLETED" });
   });
 });
 

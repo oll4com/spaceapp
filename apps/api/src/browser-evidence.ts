@@ -12,6 +12,7 @@ import type {
 } from "@space/contracts";
 import { SpaceFeatureDisabledError, makeSpaceId, nowIso, redactArtifactMetadata, redactMemoryText } from "@space/runtime";
 import { childProcessEnv } from "./child-process-env.js";
+import { chromeSandboxCheck } from "./browser-sandbox.js";
 
 export interface BrowserEvidenceCaptureInput extends CreateBrowserEvidenceInput {
   targetUrl: string;
@@ -37,6 +38,8 @@ interface BrowserEvidenceCaptureConfig {
   chromePath: string;
   artifactRoot: string;
   timeoutMs: number;
+  /** The instance's own origin (SPACE_BROWSER_EVIDENCE_TARGET_ORIGIN): its https host is the one non-loopback target. */
+  targetOrigin: string;
 }
 
 interface ViewportSize {
@@ -128,7 +131,7 @@ function sanitizeHeaders(headers: unknown): Record<string, unknown> {
   );
 }
 
-function assertInternalEvidenceTarget(raw: string): string {
+function assertInternalEvidenceTarget(raw: string, instanceOrigin: string): string {
   const url = new URL(raw);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new SpaceFeatureDisabledError("BROWSER_TARGET_BLOCKED", "Browser evidence target must use http or https.", {
@@ -136,7 +139,7 @@ function assertInternalEvidenceTarget(raw: string): string {
     });
   }
   const isLoopbackHost = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
-  const isCanonicalSpaceHost = url.hostname === "spaceapp.example" && url.protocol === "https:";
+  const isCanonicalSpaceHost = url.protocol === "https:" && url.hostname === new URL(instanceOrigin).hostname;
   if (!isLoopbackHost && !isCanonicalSpaceHost) {
     throw new SpaceFeatureDisabledError(
       "BROWSER_TARGET_BLOCKED",
@@ -155,7 +158,7 @@ function assertInternalEvidenceTarget(raw: string): string {
 }
 
 export function buildBrowserEvidenceTargetUrl(origin: string): string {
-  return assertInternalEvidenceTarget(new URL("/", origin).toString());
+  return assertInternalEvidenceTarget(new URL("/", origin).toString(), origin);
 }
 
 class CdpClient {
@@ -340,7 +343,7 @@ export function createBrowserEvidenceCapture(config: BrowserEvidenceCaptureConfi
       throw new SpaceFeatureDisabledError("BROWSER_EVIDENCE_DISABLED", "Browser evidence smoke is disabled by configuration.");
     }
 
-    const targetUrl = assertInternalEvidenceTarget(input.targetUrl);
+    const targetUrl = assertInternalEvidenceTarget(input.targetUrl, config.targetOrigin);
     const viewport = viewportSizes[input.viewport];
     const captureId = makeSpaceId("browser_capture");
     const createdAt = nowIso();
@@ -350,7 +353,6 @@ export function createBrowserEvidenceCapture(config: BrowserEvidenceCaptureConfi
     const xdgCacheHome = join(browserHome, "cache");
     const xdgConfigHome = join(browserHome, "config");
     const xdgDataHome = join(browserHome, "data");
-    await mkdir(captureDir, { recursive: true, mode: 0o750 });
     await mkdir(xdgCacheHome, { recursive: true, mode: 0o750 });
     await mkdir(xdgConfigHome, { recursive: true, mode: 0o750 });
     await mkdir(xdgDataHome, { recursive: true, mode: 0o750 });
@@ -374,7 +376,7 @@ export function createBrowserEvidenceCapture(config: BrowserEvidenceCaptureConfi
         "--disable-sync",
         "--hide-scrollbars",
         "--mute-audio",
-        "--no-sandbox",
+        ...await chromeSandboxCheck(config.chromePath).args(),
         "--noerrdialogs",
         "about:blank"
       ],
@@ -448,6 +450,8 @@ export function createBrowserEvidenceCapture(config: BrowserEvidenceCaptureConfi
       off();
       await client.send("Target.closeTarget", { targetId: target.targetId });
 
+      // Made only once there is evidence to write: a capture that fails earlier leaves no empty folder.
+      await mkdir(captureDir, { recursive: true, mode: 0o750 });
       const commonMetadata = {
         roomId: input.roomId,
         paneId: input.paneId ?? null,

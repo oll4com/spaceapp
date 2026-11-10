@@ -5,6 +5,7 @@ import type {
   SystemTopologySnapshot,
   SystemTopologySubcomponent,
 } from "@space/contracts";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export interface SystemTopologyGeneratorOptions {
   getHealthSnapshot: () => Promise<SystemHealthSnapshot>;
@@ -170,10 +171,10 @@ export class SystemTopologyService {
         host: "public-host",
         metrics: getMetrics("storage"),
         subcomponents: [
-          { id: "storage-volume", name: "Space Persistent Volume", category: "Storage Volume", status: "active", description: "Dedicated storage mount allocated under /opt/spaceapp/var for runtime artifacts and logs", riskLevel: "Core Storage", protocol: "POSIX Filesystem" },
+          { id: "storage-volume", name: "Space Persistent Volume", category: "Storage Volume", status: "active", description: `Dedicated storage mount allocated under ${SPACE_INSTALL_ROOT}/var for runtime artifacts and logs`, riskLevel: "Core Storage", protocol: "POSIX Filesystem" },
           { id: "storage-artifacts", name: "Agent Files & Deliverables Depot", category: "Artifact Store", status: "active", description: "Publicly accessible workspace artifact repository powering Space Agent Files dock", riskLevel: "R0 - Low", protocol: "Local FS / HTTP" },
           { id: "storage-uploads", name: "CLI Uploads Staging Depot", category: "Upload Storage", status: "active", description: "Staging area for multimodal user images, videos, and CLI prompt attachments", riskLevel: "R0 - Low", protocol: "POSIX FS (/cli-uploads)" },
-          { id: "storage-publish-broker", name: "Space File Publisher", category: "Publishing Broker", status: "active", description: "Authoritative binary /opt/spaceapp/bin/space-publish-file for deliverable registration", riskLevel: "R0 - Low", protocol: "CLI Binary / Tool" },
+          { id: "storage-publish-broker", name: "Space File Publisher", category: "Publishing Broker", status: "active", description: `Authoritative binary ${SPACE_INSTALL_ROOT}/bin/space-publish-file for deliverable registration`, riskLevel: "R0 - Low", protocol: "CLI Binary / Tool" },
           { id: "storage-backups", name: "Encrypted Snapshot Archive", category: "Backup Vault", status: "active", description: "Daily encrypted database dumps and workspace state snapshots", riskLevel: "R1 - Guarded", protocol: "tar.zst / SHA-256" },
         ],
       },

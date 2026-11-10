@@ -3,6 +3,8 @@ import { SPACE_CLIPBOARD_NOTICE_EVENT } from "../clipboard-dock/clipboard-events
 import { readStoredSessionString, writeStoredSessionString } from "../../session-string-storage.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import { connectorResultMessage } from "../agent-pane/connector-result.js";
+import { settlePairAfterStepUp } from "../auth/mobile-pair-resume.js";
+import { openSettingsSection } from "../settings/settings-section-request.js";
 
 // Workspace-wide notices: the Live debug toast, room watchdog alerts, clipboard and
 // Clip Tool notices, the Google account link result and the storage warning.
@@ -95,13 +97,14 @@ export function useAppNotices(): AppNotices {
   const [accountNotice, setAccountNotice] = useState<string | null>(null);
   const [accountError, setAccountError] = useState<string | null>(null);
   useAutoDismiss(accountNotice, setAccountNotice);
-  useAutoDismiss(accountError, setAccountError);
+  // An error stays until closed: the Google step-up's refusal (what to turn on in Google's console) takes longer than 6 s to read.
 
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
       const googleLinked = params.get("googleLinked");
-      const googleLinkError = params.get("googleLinkError");
+      // A refused Google step-up (Settings > Account > Mobile app) comes back as mobileStepUpError: show its reason, as a link error.
+      const googleLinkError = params.get("googleLinkError") ?? params.get("mobileStepUpError");
       const connectorResult = connectorResultMessage(params.get("connector"), params.get("connectorFor"));
       if (connectorResult) {
         if (connectorResult.tone === "notice") setAccountNotice(connectorResult.text);
@@ -114,7 +117,17 @@ export function useAppNotices(): AppNotices {
         setAccountNotice("Google account linked. To save its browser sign-in, select it in a Browser or YouTube pane and choose “Sign in to selected account” once.");
         const nextUrl = window.location.pathname;
         window.history.replaceState({}, document.title, nextUrl);
+      } else if (params.get("mobileStepUp") === "ok") {
+        // The Google step-up reloaded the page: Pair a phone started it, so Settings > Account opens and Mobile app pairs (mobile-pair-resume).
+        if (settlePairAfterStepUp(true)) {
+          setAccountNotice("Confirmed it is you. Settings > Account > Mobile app shows your pairing code.");
+          window.setTimeout(() => openSettingsSection("account"), 0);
+        } else {
+          setAccountNotice("Confirmed it is you for 5 minutes. Press Pair a phone in Settings > Account > Mobile app.");
+        }
+        window.history.replaceState({}, document.title, window.location.pathname);
       } else if (googleLinkError) {
+        if (params.has("mobileStepUpError")) settlePairAfterStepUp(false);
         setAccountError(decodeURIComponent(googleLinkError));
         const nextUrl = window.location.pathname;
         window.history.replaceState({}, document.title, nextUrl);

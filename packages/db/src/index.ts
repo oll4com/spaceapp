@@ -114,6 +114,7 @@ export * from "./dot-delegations-repository.js";
 export * from "./auto-route-shadow-repository.js";
 export * from "./session-revocation-repository.js";
 export * from "./app-device-session-repository.js";
+export * from "./mobile-instance-key-repository.js";
 export * from "./dot-evals-repository.js";
 export * from "./channels-repository.js";
 export * from "./gateway-repository.js";
@@ -128,3 +129,10 @@ export {
 export * from "./vault-repository.js";
 export * from "./copilot-memory-search.js";
 export * from "./rail-decision-counts.js";
+
+export * from "./site-signins-repository.js";
+export * from "./mail-campaigns-repository.js";
+export * from "./nous-shared-memory-repository.js";
+export * from "./appointments-repository.js";
+export * from "./signatures-repository.js";
+export * from "./nous-programs-repository.js";

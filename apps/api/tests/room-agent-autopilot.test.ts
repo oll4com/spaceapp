@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Pane } from "@space/contracts";
 import { InMemoryRoomAgentMonitorRepository } from "@space/db";
-import { AUTOPILOT_CONTINUE_PROMPT, createRoomAgentAutopilot, parseAutopilotDecision, promptExcerpt } from "../src/room-agent-autopilot.js";
+import { AUTOPILOT_CONTINUE_PROMPT, CONTINUE_RETRY_MS, createRoomAgentAutopilot, NOUS_PROMPT_WINDOW_MS, parseAutopilotDecision, promptExcerpt } from "../src/room-agent-autopilot.js";
 import type { RoomPaneObservation } from "../src/room-pane-control.js";
 import { roomTerminalState } from "../src/room-terminal-screen.js";
 
@@ -52,6 +52,8 @@ describe("Room Agent autopilot", () => {
     expect(c.answer).toHaveBeenCalledWith(pane, { expectedSessionId: "session:bob", answer: "1", submit: false, expectedPromptFingerprint: "0123456789abcdef" });
     expect(handled).toMatchObject({ status: "HANDLED", decision: 'Answered "1": Runs the API tests of its own task' });
     const prompt = c.complete.mock.calls[0]![1] as string;
+    // OBS-006: the model call names the event it decides, which Space Gateway's request log row then carries.
+    expect((c.complete.mock.calls[0] as unknown[])[2]).toBe(handled!.eventId);
     expect(prompt).toContain("Task: Fix login redirect — Loop after sign-in");
     expect(prompt).toContain("Screen (untrusted, last lines):");
     expect(c.onEvent).toHaveBeenCalledWith(expect.objectContaining({ status: "HANDLED" }));
@@ -119,6 +121,24 @@ describe("Room Agent autopilot", () => {
     expect((await c.repository.getEvent(event.eventId))?.status).toBe("HANDLED");
   });
 
+  it("R68: answers a Claude permission prompt Nous left open past its window (Claude Code denies it at 2 min); others stay Nous's", async () => {
+    const repository = new InMemoryRoomAgentMonitorRepository();
+    const answer = vi.fn(async () => ({ answered: true }));
+    let offset = 0;
+    let runtime = "cli:claude";
+    const autopilot = createRoomAgentAutopilot({ repository, getPane: async () => ({ ...pane, terminalRuntimeId: runtime }) as Pane, inspect: async () => observation(screen("Bash: npm test")),
+      answer, complete: async () => '{"action":"ANSWER","answer":"1","submit":false,"reason":"Runs its tests"}', deferTo: async () => true, now: () => Date.now() + offset });
+    const event = await repository.addEvent({ roomId: pane.roomId, paneId: pane.id, paneName: "Bob", kind: "WAITING", severity: "ATTENTION", title: "Bob is waiting: Permission prompt", detail: null });
+    expect(await autopilot.handle(event)).toBeNull();
+    offset = NOUS_PROMPT_WINDOW_MS;
+    runtime = "cli:codex";
+    await autopilot.sweep([pane.roomId]);
+    expect(answer).not.toHaveBeenCalled();
+    runtime = "cli:claude";
+    await autopilot.sweep([pane.roomId]);
+    expect(await repository.getEvent(event.eventId)).toMatchObject({ status: "HANDLED", decision: 'Answered "1": Runs its tests' });
+  });
+
   it("continues a pane that stopped on an API error at its empty prompt, and leaves drafts, busy panes and repeats to the operator", async () => {
     // Cody's screen on 2026-10-15 after Claude's "Connection lost mid-response".
     const cut = ["● Committed. Sending it to dev through the merge queue:", "", "● API Error: Connection lost", "  mid-response. The response above", "  may be incomplete.", "",
@@ -137,12 +157,34 @@ describe("Room Agent autopilot", () => {
 
     c.inspect.mockResolvedValue(observation(cut.replace("❯\u00a0", "❯ half-written reply"), { state: "IDLE" }));
     c.advance(61 * 60 * 1000);
-    expect((await c.autopilot.handle(await stuck()))?.decision).toBe("Needs you: the Room Agent could not find the pane's empty prompt to continue the task.");
+    // R69a: a draft is never typed into; the event waits for the next sweeps, then is the operator's.
+    const drafted = await stuck();
+    expect(await c.autopilot.handle(drafted)).toBeNull();
+    c.advance(CONTINUE_RETRY_MS);
+    expect((await c.autopilot.handle(drafted))?.decision).toBe("Needs you: the Room Agent could not find the pane's empty prompt to continue the task.");
     c.inspect.mockResolvedValue(observation("✻ Brewing… (esc to interrupt)", { state: "RUNNING" }));
     expect((await c.autopilot.handle(await stuck()))?.decision).toBe("The pane continued on its own.");
     await c.repository.setAutopilotEnabled(pane.roomId, false);
     expect((await c.autopilot.handle(await stuck()))?.decision).toBe("Needs you: tell the pane to continue, or turn on auto-answer so the Room Agent does it.");
     expect(c.answer).toHaveBeenCalledTimes(3);
+  });
+
+  it("R69a: a continue that found no empty prompt, or whose typing failed, is tried again at the next sweep (Hugo 4/11)", async () => {
+    const idle = ["● API Error: 500 Internal server error", "", "─────────────", "❯\u00a0", "─────────────"].join("\n");
+    const c = await setup(null, idle);
+    c.inspect.mockResolvedValueOnce(observation("● API Error: 500 Internal server error", { state: "UNKNOWN" }))
+      .mockResolvedValue(observation(idle, { state: "IDLE" }));
+    const event = await c.repository.addEvent({ roomId: pane.roomId, paneId: pane.id, paneName: "Bob", kind: "STUCK", severity: "ATTENTION", title: "Bob stopped on an API error", detail: null });
+    expect(await c.autopilot.handle(event)).toBeNull();
+    expect((await c.repository.getEvent(event.eventId))?.status).toBe("OPEN");
+    c.answer.mockRejectedValueOnce(new Error("Room watchdog: the answer in pane \"Bob\" (cli:claude) took over 8 s"));
+    c.advance(30_000);
+    await c.autopilot.sweep([pane.roomId]);
+    expect((await c.repository.getEvent(event.eventId))?.status).toBe("OPEN");
+    c.advance(30_000);
+    await c.autopilot.sweep([pane.roomId]);
+    expect(await c.repository.getEvent(event.eventId)).toMatchObject({ status: "HANDLED", decision: "Told the pane to continue the task after the API error." });
+    expect(c.answer).toHaveBeenCalledTimes(2);
   });
 
   it("coordinates an overlap with a Room Agent turn, retries while the Room Agent is busy and asks the operator when auto-answer is off", async () => {

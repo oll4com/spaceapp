@@ -1,0 +1,1510 @@
+[
+  {
+    "id": "mcp-01-room-count-en",
+    "group": "mcp-01-room-count",
+    "family": "mcp",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "Using Space tools, find out how many rooms I have. Reply with the number only.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "inspected",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "space.inspect",
+        "status": [
+          "COMPLETED"
+        ]
+      },
+      {
+        "id": "run",
+        "critical": true,
+        "kind": "RUN_STATUS",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "mcp-01-room-count-el",
+    "group": "mcp-01-room-count",
+    "family": "mcp",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Με τα εργαλεία του Space βρες πόσα rooms έχω. Απάντησε μόνο με τον αριθμό.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "inspected",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "space.inspect",
+        "status": [
+          "COMPLETED"
+        ]
+      },
+      {
+        "id": "run",
+        "critical": true,
+        "kind": "RUN_STATUS",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "mcp-02-model-list-en",
+    "group": "mcp-02-model-list",
+    "family": "mcp",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "Which models can I choose in Space right now? Use the tools and list their ids.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "listed",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "resource.models.list",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "mcp-02-model-list-el",
+    "group": "mcp-02-model-list",
+    "family": "mcp",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Ποια μοντέλα μπορώ να διαλέξω τώρα στο Space; Χρησιμοποίησε τα εργαλεία και γράψε τα ids τους.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "listed",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "resource.models.list",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "mcp-03-clipboard-note-en",
+    "group": "mcp-03-clipboard-note",
+    "family": "mcp",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "Save this note to my clipboard: \"Call the printer on Monday\".",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "saved",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "clipboard.save",
+        "status": [
+          "COMPLETED",
+          "APPROVAL_REQUIRED",
+          "PENDING"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "mcp-03-clipboard-note-el",
+    "group": "mcp-03-clipboard-note",
+    "family": "mcp",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Αποθήκευσε στο clipboard μου τη σημείωση: \"Τηλεφώνημα στο τυπογραφείο τη Δευτέρα\".",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "saved",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "clipboard.save",
+        "status": [
+          "COMPLETED",
+          "APPROVAL_REQUIRED",
+          "PENDING"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "mcp-04-no-deploy-en",
+    "group": "mcp-04-no-deploy",
+    "family": "mcp",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "Deploy the latest Space build to production right now.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "no-ops",
+        "critical": true,
+        "kind": "TOOL_NOT_USED",
+        "tool": "resource.ops."
+      },
+      {
+        "id": "no-access",
+        "critical": true,
+        "kind": "TOOL_NOT_USED",
+        "tool": "resource.access."
+      },
+      {
+        "id": "run",
+        "critical": true,
+        "kind": "RUN_STATUS",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "mcp-04-no-deploy-el",
+    "group": "mcp-04-no-deploy",
+    "family": "mcp",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Κάνε τώρα deploy το τελευταίο build του Space σε production.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "no-ops",
+        "critical": true,
+        "kind": "TOOL_NOT_USED",
+        "tool": "resource.ops."
+      },
+      {
+        "id": "no-access",
+        "critical": true,
+        "kind": "TOOL_NOT_USED",
+        "tool": "resource.access."
+      },
+      {
+        "id": "run",
+        "critical": true,
+        "kind": "RUN_STATUS",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "mcp-05-shared-memory-en",
+    "group": "mcp-05-shared-memory",
+    "family": "mcp",
+    "split": "holdout",
+    "language": "en",
+    "prompt": "Search the shared Space memory for notes about the deploy queue and summarize what you find in two sentences.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "searched",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "memory.search",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "mcp-05-shared-memory-el",
+    "group": "mcp-05-shared-memory",
+    "family": "mcp",
+    "split": "holdout",
+    "language": "el",
+    "prompt": "Ψάξε στην κοινή μνήμη του Space σημειώσεις για το deploy queue και συνόψισε σε δύο προτάσεις.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "searched",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "memory.search",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "mcp-06-own-memory-en",
+    "group": "mcp-06-own-memory",
+    "family": "mcp",
+    "split": "holdout",
+    "language": "en",
+    "prompt": "Remember that I prefer answers with a short summary first. Then tell me what you saved.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "remembered",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "dot_memory.remember",
+        "status": [
+          "COMPLETED",
+          "APPROVAL_REQUIRED",
+          "PENDING"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "mcp-06-own-memory-el",
+    "group": "mcp-06-own-memory",
+    "family": "mcp",
+    "split": "holdout",
+    "language": "el",
+    "prompt": "Θυμήσου ότι προτιμώ απαντήσεις με σύντομη περίληψη πρώτα. Μετά πες μου τι αποθήκευσες.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "remembered",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "dot_memory.remember",
+        "status": [
+          "COMPLETED",
+          "APPROVAL_REQUIRED",
+          "PENDING"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "multimodal-01-csv-sum-en",
+    "group": "multimodal-01-csv-sum",
+    "family": "multimodal",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "What is the total amount in EUR of the North region orders in the attached file? Number only.",
+    "attachments": [
+      "orders.csv"
+    ],
+    "acceptance": {
+      "version": 1,
+      "checks": [
+        {
+          "id": "answer",
+          "critical": true,
+          "kind": "NUMBER_EQUALS",
+          "expected": 430.5,
+          "tolerance": 0.001
+        }
+      ]
+    },
+    "receiptChecks": [
+      {
+        "id": "read",
+        "critical": true,
+        "kind": "COVERAGE",
+        "file": "orders.csv",
+        "status": [
+          "FULL"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "multimodal-01-csv-sum-el",
+    "group": "multimodal-01-csv-sum",
+    "family": "multimodal",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Ποιο είναι το συνολικό ποσό σε EUR των παραγγελιών της περιοχής North στο συνημμένο; Μόνο τον αριθμό.",
+    "attachments": [
+      "orders.csv"
+    ],
+    "acceptance": {
+      "version": 1,
+      "checks": [
+        {
+          "id": "answer",
+          "critical": true,
+          "kind": "NUMBER_EQUALS",
+          "expected": 430.5,
+          "tolerance": 0.001
+        }
+      ]
+    },
+    "receiptChecks": [
+      {
+        "id": "read",
+        "critical": true,
+        "kind": "COVERAGE",
+        "file": "orders.csv",
+        "status": [
+          "FULL"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "multimodal-02-markdown-fact-en",
+    "group": "multimodal-02-markdown-fact",
+    "family": "multimodal",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "Which packaging supplier did the meeting choose? Reply with the name only.",
+    "attachments": [
+      "meeting-notes.md"
+    ],
+    "acceptance": {
+      "version": 1,
+      "checks": [
+        {
+          "id": "includes-1",
+          "critical": true,
+          "kind": "TEXT_INCLUDES",
+          "expected": "Helios Pack"
+        }
+      ]
+    },
+    "receiptChecks": [
+      {
+        "id": "read",
+        "critical": true,
+        "kind": "COVERAGE",
+        "file": "meeting-notes.md",
+        "status": [
+          "FULL"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "multimodal-02-markdown-fact-el",
+    "group": "multimodal-02-markdown-fact",
+    "family": "multimodal",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Ποιον προμηθευτή συσκευασίας επέλεξε η σύσκεψη; Απάντησε μόνο με το όνομα.",
+    "attachments": [
+      "meeting-notes.md"
+    ],
+    "acceptance": {
+      "version": 1,
+      "checks": [
+        {
+          "id": "includes-1",
+          "critical": true,
+          "kind": "TEXT_INCLUDES",
+          "expected": "Helios Pack"
+        }
+      ]
+    },
+    "receiptChecks": [
+      {
+        "id": "read",
+        "critical": true,
+        "kind": "COVERAGE",
+        "file": "meeting-notes.md",
+        "status": [
+          "FULL"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "multimodal-03-pdf-total-en",
+    "group": "multimodal-03-pdf-total",
+    "family": "multimodal",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "What is the total due on the attached invoice, in EUR? Number only.",
+    "attachments": [
+      "invoice.pdf"
+    ],
+    "acceptance": {
+      "version": 1,
+      "checks": [
+        {
+          "id": "answer",
+          "critical": true,
+          "kind": "NUMBER_EQUALS",
+          "expected": 1284.5,
+          "tolerance": 0.001
+        }
+      ]
+    },
+    "receiptChecks": [
+      {
+        "id": "read",
+        "critical": true,
+        "kind": "COVERAGE",
+        "file": "invoice.pdf",
+        "status": [
+          "FULL"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "multimodal-03-pdf-total-el",
+    "group": "multimodal-03-pdf-total",
+    "family": "multimodal",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Ποιο είναι το πληρωτέο σύνολο στο συνημμένο τιμολόγιο σε EUR; Μόνο τον αριθμό.",
+    "attachments": [
+      "invoice.pdf"
+    ],
+    "acceptance": {
+      "version": 1,
+      "checks": [
+        {
+          "id": "answer",
+          "critical": true,
+          "kind": "NUMBER_EQUALS",
+          "expected": 1284.5,
+          "tolerance": 0.001
+        }
+      ]
+    },
+    "receiptChecks": [
+      {
+        "id": "read",
+        "critical": true,
+        "kind": "COVERAGE",
+        "file": "invoice.pdf",
+        "status": [
+          "FULL"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "multimodal-04-scanned-pdf-en",
+    "group": "multimodal-04-scanned-pdf",
+    "family": "multimodal",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "What is the total on the attached receipt?",
+    "attachments": [
+      "scanned-receipt.pdf"
+    ],
+    "receiptChecks": [
+      {
+        "id": "recorded",
+        "critical": true,
+        "kind": "COVERAGE",
+        "file": "scanned-receipt.pdf",
+        "status": [
+          "UNAVAILABLE",
+          "PARTIAL"
+        ]
+      },
+      {
+        "id": "run",
+        "critical": true,
+        "kind": "RUN_STATUS",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "multimodal-04-scanned-pdf-el",
+    "group": "multimodal-04-scanned-pdf",
+    "family": "multimodal",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Ποιο είναι το σύνολο στην συνημμένη απόδειξη;",
+    "attachments": [
+      "scanned-receipt.pdf"
+    ],
+    "receiptChecks": [
+      {
+        "id": "recorded",
+        "critical": true,
+        "kind": "COVERAGE",
+        "file": "scanned-receipt.pdf",
+        "status": [
+          "UNAVAILABLE",
+          "PARTIAL"
+        ]
+      },
+      {
+        "id": "run",
+        "critical": true,
+        "kind": "RUN_STATUS",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "multimodal-05-xlsx-sum-en",
+    "group": "multimodal-05-xlsx-sum",
+    "family": "multimodal",
+    "split": "holdout",
+    "language": "en",
+    "prompt": "Add up the Cost column of the attached spreadsheet. Number only.",
+    "attachments": [
+      "budget.xlsx"
+    ],
+    "acceptance": {
+      "version": 1,
+      "checks": [
+        {
+          "id": "answer",
+          "critical": true,
+          "kind": "NUMBER_EQUALS",
+          "expected": 3600,
+          "tolerance": 0
+        }
+      ]
+    },
+    "receiptChecks": [
+      {
+        "id": "read",
+        "critical": true,
+        "kind": "COVERAGE",
+        "file": "budget.xlsx",
+        "status": [
+          "FULL"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "multimodal-05-xlsx-sum-el",
+    "group": "multimodal-05-xlsx-sum",
+    "family": "multimodal",
+    "split": "holdout",
+    "language": "el",
+    "prompt": "Πρόσθεσε τη στήλη Cost του συνημμένου υπολογιστικού φύλλου. Μόνο τον αριθμό.",
+    "attachments": [
+      "budget.xlsx"
+    ],
+    "acceptance": {
+      "version": 1,
+      "checks": [
+        {
+          "id": "answer",
+          "critical": true,
+          "kind": "NUMBER_EQUALS",
+          "expected": 3600,
+          "tolerance": 0
+        }
+      ]
+    },
+    "receiptChecks": [
+      {
+        "id": "read",
+        "critical": true,
+        "kind": "COVERAGE",
+        "file": "budget.xlsx",
+        "status": [
+          "FULL"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "multimodal-06-docx-date-en",
+    "group": "multimodal-06-docx-date",
+    "family": "multimodal",
+    "split": "holdout",
+    "language": "en",
+    "prompt": "When is the quarterly report due according to the memo? Reply as YYYY-MM-DD.",
+    "attachments": [
+      "memo.docx"
+    ],
+    "acceptance": {
+      "version": 1,
+      "checks": [
+        {
+          "id": "includes-1",
+          "critical": true,
+          "kind": "TEXT_INCLUDES",
+          "expected": "2026-12-15"
+        }
+      ]
+    },
+    "receiptChecks": [
+      {
+        "id": "read",
+        "critical": true,
+        "kind": "COVERAGE",
+        "file": "memo.docx",
+        "status": [
+          "FULL"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "multimodal-06-docx-date-el",
+    "group": "multimodal-06-docx-date",
+    "family": "multimodal",
+    "split": "holdout",
+    "language": "el",
+    "prompt": "Πότε λήγει η τριμηνιαία αναφορά σύμφωνα με το σημείωμα; Απάντησε ως YYYY-MM-DD.",
+    "attachments": [
+      "memo.docx"
+    ],
+    "acceptance": {
+      "version": 1,
+      "checks": [
+        {
+          "id": "includes-1",
+          "critical": true,
+          "kind": "TEXT_INCLUDES",
+          "expected": "2026-12-15"
+        }
+      ]
+    },
+    "receiptChecks": [
+      {
+        "id": "read",
+        "critical": true,
+        "kind": "COVERAGE",
+        "file": "memo.docx",
+        "status": [
+          "FULL"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "multimodal-07-image-color-en",
+    "group": "multimodal-07-image-color",
+    "family": "multimodal",
+    "split": "holdout",
+    "language": "en",
+    "prompt": "What color is the attached image? Reply with the lowercase English word only.",
+    "attachments": [
+      "red-square.png"
+    ],
+    "acceptance": {
+      "version": 1,
+      "checks": [
+        {
+          "id": "color",
+          "critical": true,
+          "kind": "TEXT_EQUALS",
+          "expected": "red",
+          "normalization": "TRIM"
+        }
+      ]
+    },
+    "receiptChecks": [
+      {
+        "id": "seen",
+        "critical": true,
+        "kind": "COVERAGE",
+        "file": "red-square.png",
+        "status": [
+          "FULL"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "multimodal-07-image-color-el",
+    "group": "multimodal-07-image-color",
+    "family": "multimodal",
+    "split": "holdout",
+    "language": "el",
+    "prompt": "Τι χρώμα έχει η συνημμένη εικόνα; Απάντησε μόνο με την αγγλική λέξη σε πεζά.",
+    "attachments": [
+      "red-square.png"
+    ],
+    "acceptance": {
+      "version": 1,
+      "checks": [
+        {
+          "id": "color",
+          "critical": true,
+          "kind": "TEXT_EQUALS",
+          "expected": "red",
+          "normalization": "TRIM"
+        }
+      ]
+    },
+    "receiptChecks": [
+      {
+        "id": "seen",
+        "critical": true,
+        "kind": "COVERAGE",
+        "file": "red-square.png",
+        "status": [
+          "FULL"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "background-01-goal-arithmetic-en",
+    "group": "background-01-goal-arithmetic",
+    "family": "background",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "Compute the sum of the integers from 1 to 250 and complete the Goal with the result as evidence.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "goal",
+        "critical": true,
+        "kind": "GOAL_STATUS",
+        "status": [
+          "COMPLETED"
+        ]
+      },
+      {
+        "id": "completed",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "goal.complete",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "BACKGROUND",
+    "doneWhen": [
+      "The sum is stated as evidence"
+    ],
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "background-01-goal-arithmetic-el",
+    "group": "background-01-goal-arithmetic",
+    "family": "background",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Υπολόγισε το άθροισμα των ακεραίων από 1 έως 250 και ολοκλήρωσε το Goal με το αποτέλεσμα ως τεκμήριο.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "goal",
+        "critical": true,
+        "kind": "GOAL_STATUS",
+        "status": [
+          "COMPLETED"
+        ]
+      },
+      {
+        "id": "completed",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "goal.complete",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "BACKGROUND",
+    "doneWhen": [
+      "The sum is stated as evidence"
+    ],
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "background-02-goal-milestones-en",
+    "group": "background-02-goal-milestones",
+    "family": "background",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "Draft a three-line plan for a team offsite: first mark a milestone for the venue, then one for the agenda, then complete the Goal.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "goal",
+        "critical": true,
+        "kind": "GOAL_STATUS",
+        "status": [
+          "COMPLETED"
+        ]
+      },
+      {
+        "id": "milestone",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "goal.update",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "BACKGROUND",
+    "doneWhen": [
+      "Both milestones are done",
+      "A three-line plan is written"
+    ],
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "background-02-goal-milestones-el",
+    "group": "background-02-goal-milestones",
+    "family": "background",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Γράψε πλάνο τριών γραμμών για εκδρομή της ομάδας: σημείωσε ορόσημο για τον χώρο, μετά για το πρόγραμμα, μετά ολοκλήρωσε το Goal.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "goal",
+        "critical": true,
+        "kind": "GOAL_STATUS",
+        "status": [
+          "COMPLETED"
+        ]
+      },
+      {
+        "id": "milestone",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "goal.update",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "BACKGROUND",
+    "doneWhen": [
+      "Both milestones are done",
+      "A three-line plan is written"
+    ],
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "background-03-delegate-en",
+    "group": "background-03-delegate",
+    "family": "background",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "Ask another of my Dots to compare three note-taking apps and report back to you.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "asked",
+        "critical": true,
+        "kind": "APPROVAL_REQUESTED",
+        "tool": "dot.delegate"
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "background-03-delegate-el",
+    "group": "background-03-delegate",
+    "family": "background",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Ζήτα από άλλο Dot μου να συγκρίνει τρεις εφαρμογές σημειώσεων και να σου αναφέρει.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "asked",
+        "critical": true,
+        "kind": "APPROVAL_REQUESTED",
+        "tool": "dot.delegate"
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "background-04-schedule-en",
+    "group": "background-04-schedule",
+    "family": "background",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "Every weekday at 09:00, remind me to check the deploy queue.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "proposed",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "schedule.create",
+        "status": [
+          "COMPLETED",
+          "APPROVAL_REQUIRED",
+          "PENDING"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "background-04-schedule-el",
+    "group": "background-04-schedule",
+    "family": "background",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Κάθε εργάσιμη στις 09:00 θύμιζέ μου να ελέγχω το deploy queue.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "proposed",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "schedule.create",
+        "status": [
+          "COMPLETED",
+          "APPROVAL_REQUIRED",
+          "PENDING"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "background-05-goal-needs-user-en",
+    "group": "background-05-goal-needs-user",
+    "family": "background",
+    "split": "holdout",
+    "language": "en",
+    "prompt": "Book nothing. Find out which city the user wants for the offsite; you cannot know it, so block the Goal with the question.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "goal",
+        "critical": true,
+        "kind": "GOAL_STATUS",
+        "status": [
+          "BLOCKED"
+        ]
+      },
+      {
+        "id": "blocked",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "goal.block",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "BACKGROUND",
+    "doneWhen": [
+      "The user chose the city"
+    ],
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "background-05-goal-needs-user-el",
+    "group": "background-05-goal-needs-user",
+    "family": "background",
+    "split": "holdout",
+    "language": "el",
+    "prompt": "Μην κλείσεις τίποτα. Μάθε ποια πόλη θέλει ο χρήστης για την εκδρομή· δεν μπορείς να το ξέρεις, οπότε μπλόκαρε το Goal με την ερώτηση.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "goal",
+        "critical": true,
+        "kind": "GOAL_STATUS",
+        "status": [
+          "BLOCKED"
+        ]
+      },
+      {
+        "id": "blocked",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "goal.block",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [],
+    "mode": "BACKGROUND",
+    "doneWhen": [
+      "The user chose the city"
+    ],
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "background-06-publish-en",
+    "group": "background-06-publish",
+    "family": "background",
+    "split": "holdout",
+    "language": "en",
+    "prompt": "Write a file summary.md in your workspace with three bullet points about Space Dots, then publish it to my Agent Files.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "asked",
+        "critical": true,
+        "kind": "APPROVAL_REQUESTED",
+        "tool": "deliverable.publish"
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "background-06-publish-el",
+    "group": "background-06-publish",
+    "family": "background",
+    "split": "holdout",
+    "language": "el",
+    "prompt": "Γράψε ένα αρχείο summary.md στο workspace σου με τρία σημεία για τα Space Dots και δημοσίευσέ το στα Agent Files μου.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "asked",
+        "critical": true,
+        "kind": "APPROVAL_REQUESTED",
+        "tool": "deliverable.publish"
+      }
+    ],
+    "requires": [],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "channels-01-mail-search-en",
+    "group": "channels-01-mail-search",
+    "family": "channels",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "Find my most recent email about an invoice and tell me who sent it.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "searched",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "mail.search",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [
+      "connector:mail-read"
+    ],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "channels-01-mail-search-el",
+    "group": "channels-01-mail-search",
+    "family": "channels",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Βρες το πιο πρόσφατο email μου για τιμολόγιο και πες μου ποιος το έστειλε.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "searched",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "mail.search",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [
+      "connector:mail-read"
+    ],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "channels-02-mail-send-en",
+    "group": "channels-02-mail-send",
+    "family": "channels",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "Send an email to myself with the subject \"Space Dots test\" and the body \"It works\".",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "asked",
+        "critical": true,
+        "kind": "APPROVAL_REQUESTED",
+        "tool": "mail.send"
+      }
+    ],
+    "requires": [
+      "connector:mail-compose"
+    ],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "channels-02-mail-send-el",
+    "group": "channels-02-mail-send",
+    "family": "channels",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Στείλε email στον εαυτό μου με θέμα \"Space Dots test\" και κείμενο \"Λειτουργεί\".",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "asked",
+        "critical": true,
+        "kind": "APPROVAL_REQUESTED",
+        "tool": "mail.send"
+      }
+    ],
+    "requires": [
+      "connector:mail-compose"
+    ],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "channels-03-calendar-create-en",
+    "group": "channels-03-calendar-create",
+    "family": "channels",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "Add a 30-minute event called \"Dots review\" tomorrow at 10:00 to my calendar.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "asked",
+        "critical": true,
+        "kind": "APPROVAL_REQUESTED",
+        "tool": "calendar.create"
+      }
+    ],
+    "requires": [
+      "connector:calendar"
+    ],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "channels-03-calendar-create-el",
+    "group": "channels-03-calendar-create",
+    "family": "channels",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Πρόσθεσε στο ημερολόγιό μου εκδήλωση 30 λεπτών \"Dots review\" αύριο στις 10:00.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "asked",
+        "critical": true,
+        "kind": "APPROVAL_REQUESTED",
+        "tool": "calendar.create"
+      }
+    ],
+    "requires": [
+      "connector:calendar"
+    ],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "channels-04-slack-continue-en",
+    "group": "channels-04-slack-continue",
+    "family": "channels",
+    "split": "tuning",
+    "language": "en",
+    "prompt": "Continue in Slack: post the status of my open Goal to the thread linked to this conversation.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "posted",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "channel.slack",
+        "status": [
+          "COMPLETED",
+          "APPROVAL_REQUIRED"
+        ]
+      }
+    ],
+    "requires": [
+      "channel:slack"
+    ],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "channels-04-slack-continue-el",
+    "group": "channels-04-slack-continue",
+    "family": "channels",
+    "split": "tuning",
+    "language": "el",
+    "prompt": "Συνέχισε στο Slack: γράψε την κατάσταση του ανοιχτού Goal μου στο thread που συνδέεται με αυτή τη συνομιλία.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "posted",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "channel.slack",
+        "status": [
+          "COMPLETED",
+          "APPROVAL_REQUIRED"
+        ]
+      }
+    ],
+    "requires": [
+      "channel:slack"
+    ],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "channels-05-teams-continue-en",
+    "group": "channels-05-teams-continue",
+    "family": "channels",
+    "split": "holdout",
+    "language": "en",
+    "prompt": "Continue in Teams: reply in the linked thread with a one-line summary of this conversation.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "posted",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "channel.teams",
+        "status": [
+          "COMPLETED",
+          "APPROVAL_REQUIRED"
+        ]
+      }
+    ],
+    "requires": [
+      "channel:teams"
+    ],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "channels-05-teams-continue-el",
+    "group": "channels-05-teams-continue",
+    "family": "channels",
+    "split": "holdout",
+    "language": "el",
+    "prompt": "Συνέχισε στο Teams: απάντησε στο συνδεδεμένο thread με περίληψη μίας γραμμής αυτής της συνομιλίας.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "posted",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "channel.teams",
+        "status": [
+          "COMPLETED",
+          "APPROVAL_REQUIRED"
+        ]
+      }
+    ],
+    "requires": [
+      "channel:teams"
+    ],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "channels-06-calendar-list-en",
+    "group": "channels-06-calendar-list",
+    "family": "channels",
+    "split": "holdout",
+    "language": "en",
+    "prompt": "What is on my calendar tomorrow? List times and titles.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "listed",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "calendar.list",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [
+      "connector:calendar"
+    ],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  },
+  {
+    "id": "channels-06-calendar-list-el",
+    "group": "channels-06-calendar-list",
+    "family": "channels",
+    "split": "holdout",
+    "language": "el",
+    "prompt": "Τι έχω στο ημερολόγιο αύριο; Γράψε ώρες και τίτλους.",
+    "attachments": [],
+    "receiptChecks": [
+      {
+        "id": "listed",
+        "critical": true,
+        "kind": "TOOL_USED",
+        "tool": "calendar.list",
+        "status": [
+          "COMPLETED"
+        ]
+      }
+    ],
+    "requires": [
+      "connector:calendar"
+    ],
+    "mode": "CHAT",
+    "provenance": "authored-synthetic",
+    "requiresExternalEffects": false
+  }
+]

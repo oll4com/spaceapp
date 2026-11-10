@@ -47,4 +47,13 @@ describe("when \"calm\" in Nous's tools", () => {
     expect(f.roomTool).toHaveBeenCalledWith("space_control", { tool: "space_execute", arguments: { actions: [expect.objectContaining(layout)] } }, expect.anything());
     expect(outcome.result).toContain("The server is OVERLOADED: held for Andy (1 waiting)");
   });
+
+  it("R84: holds a space_execute prompt Space Control refused because the pane was not at its prompt, instead of failing", async () => {
+    const f = fixture("CALM");
+    f.roomTool.mockResolvedValueOnce({ ok: false, display: "failed", result: JSON.stringify({ results: [{ index: 0, paneId: "pane:andy0001", status: "FAILED",
+      error: "The pane is not confirmed ready for input: its composer holds text; nothing was typed." }] }) });
+    const outcome = await f.tools.execute("space_execute", { room: "Dino", actions: [{ kind: "pane", operation: "prompt", target: { paneIds: ["pane:andy0001"] }, text: "Step 6.", when: "AFTER_TURN" }] }, ctx);
+    expect(outcome).toMatchObject({ ok: false, refused: true, display: "Held until the pane is ready", result: expect.stringContaining("held for Andy (1 waiting)") });
+    expect(await f.dispatch.summary(ctx.owner)).toContain("Dino/Andy 1");
+  });
 });

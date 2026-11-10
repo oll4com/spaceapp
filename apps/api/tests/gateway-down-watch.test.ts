@@ -27,6 +27,17 @@ describe("Space Gateway down watch", () => {
     expect(resolved).toEqual(["user:operator gateway:down", "user:admin-2 gateway:down"]);
   });
 
+  it("closes the card an earlier version left on a self-hosted install (1.2.0 lab vm219 2/11: Nous relayed it with a sudo command)", async () => {
+    const resolved: string[] = [];
+    const watch = createGatewayDownWatch({
+      probe: async () => false, admins: async () => ["user:operator"], raise: async () => {},
+      resolve: async (owner, key) => { resolved.push(`${owner} ${key}`); }, log: { warn() {} }
+    });
+    await watch.clearStale();
+    expect(resolved).toEqual(["user:operator gateway:down"]);
+    expect(instanceBackgroundJobEnabled({ SPACE_INSTANCE: "stable", SPACE_PUBLIC_DISTRIBUTION: "true" } as never, "gateway-down-notify")).toBe(false);
+  });
+
   it("runs on stable only: dev shares stable's gateway and would announce it twice", () => {
     expect(instanceBackgroundJobEnabled({ SPACE_INSTANCE: "stable" } as never, "gateway-down-notify")).toBe(true);
     expect(instanceBackgroundJobEnabled({ SPACE_INSTANCE: "dev" } as never, "gateway-down-notify")).toBe(false);

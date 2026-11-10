@@ -104,7 +104,11 @@ export function verifyCliBrowserBridgeToken(
   }
 }
 
-export function cliBrowserBridgeApiBaseUrl(config: Pick<SpaceApiConfig, "host" | "port" | "browserEvidenceTargetOrigin">): string {
+export function cliBrowserBridgeApiBaseUrl(
+  config: Pick<SpaceApiConfig, "host" | "port" | "browserEvidenceTargetOrigin"> & Partial<Pick<SpaceApiConfig, "cliApiBaseUrl">>
+): string {
+  // A public install's panes run in the CLI container and reach this API at SPACE_CLI_API_BASE_URL (http://spaceapp-core:4911).
+  if (config.cliApiBaseUrl) return config.cliApiBaseUrl.replace(/\/+$/, "");
   if (config.browserEvidenceTargetOrigin) {
     return config.browserEvidenceTargetOrigin.replace(/\/+$/, "");
   }

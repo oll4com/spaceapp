@@ -1,13 +1,12 @@
-import { execFile } from "./safe-child-process.js";
 import { constants } from "node:fs";
 import { open, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import { promisify } from "node:util";
 import { IncrementalRolloutReader, type RolloutReducer } from "./codex-rollout-reader.js";
 import { codexStateDbMissing, findCodexRolloutByThreadId } from "./codex-sessions.js";
 import { codexTaskTimelineReducer, type NativeTaskExecution } from "./room-task-telemetry.js";
+import { roomComposerEmpty, roomTerminalState } from "./room-terminal-screen.js";
+import { readSqliteRows } from "./sqlite-read.js";
 
-const execFileAsync = promisify(execFile);
 const currentTurnTailBytes = 2 * 1024 * 1024;
 const currentTurnRolloutPathCache = new Map<string, string>();
 const currentTurnRolloutPathCacheMax = 256;
@@ -47,7 +46,16 @@ export interface CodexCliTurnActivity {
   status: "PENDING" | "RUNNING" | "COMPLETED" | "ABORTED";
   turnId: string | null;
   lastActivityAtMs?: number;
+  /** The COMPLETED turn ended on a transient server error (CODEX_TRANSIENT_ERRORS), not an answer. */
+  apiError?: true;
 }
+
+/**
+ * Codex ends a turn its model or connection broke like a finished one (task_complete with an error). These transient ones are an
+ * API error the Room Agent continues after, like Claude's server_error (R9-7, 28/10: "Selected model is at capacity" twice in
+ * Alex/Finn, codex_error_info server_overloaded). Policy, usage-limit, sign-in and context errors are not.
+ */
+const CODEX_TRANSIENT_ERRORS = new Set(["server_overloaded", "internal_server_error", "response_stream_disconnected", "response_stream_connection_failed", "http_connection_failed"]);
 
 export interface CodexCliPlanState {
   status: "READY" | "PAUSED_BY_ROOM_AGENT" | "RUNNING" | "COMPLETED";
@@ -424,6 +432,7 @@ export function inspectCurrentCodexCliTurnActivity(content: string): CodexCliTur
   let turnId: string | null = null;
   let status: CodexCliTurnActivity["status"] = "PENDING";
   let goalStatus: string | null = null;
+  let apiError = false;
 
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -442,6 +451,7 @@ export function inspectCurrentCodexCliTurnActivity(content: string): CodexCliTur
       if (candidate) {
         turnId = candidate;
         status = "RUNNING";
+        apiError = false;
       }
       continue;
     }
@@ -456,7 +466,11 @@ export function inspectCurrentCodexCliTurnActivity(content: string): CodexCliTur
     if (eventType === "task_started" || eventType === "user_message") {
       if (eventTurnId) turnId = eventTurnId;
       if (turnId) status = "RUNNING";
+      apiError = false;
       continue;
+    }
+    if (eventType === "task_complete" || eventType === "turn_aborted") {
+      apiError = eventType === "task_complete" && CODEX_TRANSIENT_ERRORS.has(stringField(asRecord(payload?.error), "codex_error_info") ?? "");
     }
     if ((eventType === "task_complete" || eventType === "turn_aborted") && turnId && (!eventTurnId || eventTurnId === turnId)) {
       status = eventType === "turn_aborted" ? "ABORTED" : "COMPLETED";
@@ -467,7 +481,7 @@ export function inspectCurrentCodexCliTurnActivity(content: string): CodexCliTur
   }
 
   if (goalStatus === "active" && turnId) status = "RUNNING";
-  return { status, turnId };
+  return { status, turnId, ...(status === "COMPLETED" && apiError ? { apiError: true as const } : {}) };
 }
 
 async function collectRecentRolloutFiles(root: string, sinceMs: number, depth = 0): Promise<Array<{ path: string; mtimeMs: number }>> {
@@ -572,11 +586,8 @@ async function resolveDiagnosticRollout(options: {
   const request = (async () => {
     let path: string | null = null;
     try {
-      const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json",
-        join(options.codexHome, "state_5.sqlite"),
-        `SELECT rollout_path FROM threads WHERE id = ${sqliteQuote(options.threadId)} LIMIT 2`
-      ], { timeout: 1_500, maxBuffer: 64 * 1024 });
-      const rows = JSON.parse(stdout) as Array<{ rollout_path?: unknown }>;
+      const rows = readSqliteRows<{ rollout_path?: unknown }>(join(options.codexHome, "state_5.sqlite"),
+        `SELECT rollout_path FROM threads WHERE id = ${sqliteQuote(options.threadId)} LIMIT 2`);
       if (rows.length === 1 && typeof rows[0]?.rollout_path === "string") {
         path = await matchingRolloutPath(options.codexHome, rows[0].rollout_path, options.threadId, true);
       }
@@ -703,6 +714,37 @@ function rolloutResult<T>(key: string, size: number, mtimeMs: number): T | undef
   return cached && cached.size === size && cached.mtimeMs === mtimeMs ? cached.value as T : undefined;
 }
 
+/**
+ * R16-5 (29/10: Alex/Dana's Codex lost its app-server link at 14:04 BKK; its native turn stayed RUNNING until a restart at 16:49, so the world
+ * said "working 30 min", held texts and the 16:19 task never typed while the screen showed "Conversation interrupted" at an idle composer): a
+ * turn the rollout still shows running is over (ABORTED) once the app-server reports no active turn, or the screen shows that notice at an
+ * empty composer, for 2 minutes in a row; listeners hear it once per turn (one AUTO report). New rollout activity starts a new count.
+ */
+export const CODEX_STALE_TURN_MS = 120_000;
+const staleSince = new Map<string, number>();
+const staleEnded = new Set<string>();
+const staleListeners = new Set<(event: { paneId: string; threadId: string }) => void>();
+export function onCodexTurnInterrupted(listener: (event: { paneId: string; threadId: string }) => void): () => void {
+  staleListeners.add(listener);
+  return () => { staleListeners.delete(listener); };
+}
+export function codexStaleTurnActivity(paneId: string, threadId: string | null, activity: CodexCliTurnActivity, serverActive: boolean | null, screen: string | null,
+  now = Date.now()): CodexCliTurnActivity {
+  if (activity.status !== "RUNNING" || !threadId) return activity;
+  const key = `${threadId}:${activity.turnId ?? ""}:${activity.lastActivityAtMs ?? ""}`;
+  if (staleEnded.has(key)) return { ...activity, status: "ABORTED" };
+  const stale = Boolean(screen) && roomTerminalState(screen!) !== "RUNNING" && (serverActive === false || (/Conversation interrupted/i.test(screen!) && roomComposerEmpty(screen!)));
+  if (!stale) { staleSince.delete(key); return activity; }
+  const since = staleSince.get(key) ?? now;
+  staleSince.set(key, since);
+  if (now - since < CODEX_STALE_TURN_MS) return activity;
+  staleSince.delete(key);
+  staleEnded.add(key);
+  if (staleEnded.size > 500) staleEnded.delete(staleEnded.values().next().value!);
+  for (const listener of staleListeners) { try { listener({ paneId, threadId }); } catch { /* never changes the answer */ } }
+  return { ...activity, status: "ABORTED" };
+}
+
 export async function findCurrentCodexCliTurnActivity(
   options: FindCurrentCodexCliTurnActivityOptions
 ): Promise<CodexCliTurnActivity> {
@@ -712,11 +754,7 @@ export async function findCurrentCodexCliTurnActivity(
   if (!rolloutPath) {
     const sql = `SELECT rollout_path FROM threads WHERE id = ${sqliteQuote(options.threadId)} LIMIT 2`;
     try {
-      const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json", stateDbPath, sql], {
-        timeout: 1_500,
-        maxBuffer: 64 * 1024
-      });
-      const rows = JSON.parse(String(stdout || "[]")) as Array<{ rollout_path?: unknown }>;
+      const rows = readSqliteRows<{ rollout_path?: unknown }>(stateDbPath, sql);
       if (rows.length !== 1 || typeof rows[0]?.rollout_path !== "string") return { status: "PENDING", turnId: null };
       rolloutPath = resolve(rows[0].rollout_path);
       currentTurnRolloutPathCache.set(cacheKey, rolloutPath);
@@ -768,11 +806,7 @@ export async function findCodexCliPlanState(
   if (!rolloutPath) {
     const sql = `SELECT rollout_path FROM threads WHERE id = ${sqliteQuote(options.threadId)} LIMIT 2`;
     try {
-      const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json", stateDbPath, sql], {
-        timeout: 1_500,
-        maxBuffer: 64 * 1024
-      });
-      const rows = JSON.parse(String(stdout || "[]")) as Array<{ rollout_path?: unknown }>;
+      const rows = readSqliteRows<{ rollout_path?: unknown }>(stateDbPath, sql);
       if (rows.length !== 1 || typeof rows[0]?.rollout_path !== "string") return null;
       rolloutPath = resolve(rows[0].rollout_path);
       currentTurnRolloutPathCache.set(cacheKey, rolloutPath);

@@ -17,6 +17,7 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
   const [pushAvailable, setPushAvailable] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [leadText, setLeadText] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,6 +41,14 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
     && save({ ...settings, perSource: { ...settings.perSource, [source]: { ...settings.perSource[source], [key]: checked } } });
   const current = settings ?? defaultNotificationSettings;
   const quiet = (patch: Partial<NotificationSettings["quietHours"]>) => settings && save({ ...settings, quietHours: { ...settings.quietHours, ...patch } });
+  const reminders = (patch: Partial<NotificationSettings["appointmentReminders"]>) => settings && save({ ...settings, appointmentReminders: { ...settings.appointmentReminders, ...patch } });
+  const leads = current.appointmentReminders.leadMinutes;
+  function saveLeads(text: string) {
+    const parsed = parseLeadTimes(text);
+    if (!parsed) return setError("Write lead times like 1d, 3h, 30m (up to 30 days each).");
+    setLeadText(null);
+    reminders({ leadMinutes: parsed });
+  }
 
   return (
     <section className="agent-settings-card settings-flat-card suppress-notifications-settings-card" aria-label="Notification settings" aria-busy={!settings}>
@@ -83,6 +92,18 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
             onChange={(event) => { if (/^\d{2}:\d{2}$/.test(event.target.value)) quiet({ end: event.target.value }); }} /></label>
         </div>
       ) : null}
+      <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-appointments" label="Appointment reminders"
+        detail={current.appointmentReminders.enabled
+          ? `Before every appointment: ${leads.length ? leads.map(leadLabel).join(", ") : "no lead times set"}. A reminder that falls in your quiet hours comes 5 minutes before they start, never dropped.`
+          : "Off: appointments are not reminded."}
+        checked={current.appointmentReminders.enabled} disabled={!settings} onChange={(checked) => reminders({ enabled: checked })} />
+      {current.appointmentReminders.enabled ? (
+        <div className="settings-flat-row notification-quiet-hours">
+          <label>Remind me before <input name="appointment-reminder-leads" value={leadText ?? leads.map(leadLabel).join(", ")} disabled={!settings}
+            onChange={(event) => setLeadText(event.target.value)} onBlur={(event) => { if (leadText !== null) saveLeads(event.target.value); }}
+            onKeyDown={(event) => { if (event.key === "Enter") saveLeads(event.currentTarget.value); }} /></label>
+        </div>
+      ) : null}
       <details className="settings-flat-row notification-source-settings">
         <summary>Per source</summary>
         {NOTIFICATION_SOURCES.map((source) => (
@@ -105,4 +126,16 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
       {error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null}
     </section>
   );
+}
+
+/** "1d", "3h", "30m" for a lead time in minutes. */
+export const leadLabel = (minutes: number) => (minutes % 1440 === 0 ? `${minutes / 1440}d` : minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`);
+/** "1d, 3h, 1h" (or bare minutes) as minutes, longest first; null when a part does not read or passes 30 days. An empty list is none. */
+export function parseLeadTimes(text: string): number[] | null {
+  const parts = text.split(/[,\s]+/).filter(Boolean);
+  const minutes = parts.map((part) => {
+    const match = /^(\d+)(d|h|m|min)?$/i.exec(part);
+    return match ? Number(match[1]) * ({ d: 1440, h: 60 }[match[2]?.toLowerCase() as "d" | "h"] ?? 1) : Number.NaN;
+  });
+  return minutes.every((value) => Number.isInteger(value) && value >= 1 && value <= 43_200) ? [...new Set(minutes)].sort((a, b) => b - a) : null;
 }

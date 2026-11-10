@@ -99,9 +99,12 @@ async function listFreeModels(isolated,directory,executeNative,deadline,attempts
   // --standalone everywhere: without it OpenCode 2 starts its per-user background service.
   for(let attempt=1;;attempt++){
     listed=await executeNative(['api','GET','/api/model','--standalone'],isolated,directory,timeout);
-    const transient=listed.code===124||/\bHTTP 503\b|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|fetch failed|socket hang up/i.test(listed.stderr??'');
-    if(listed.code===0||!transient||attempt===attempts||deadline-Date.now()<3000+timeout)break;
-    await delay(3000);
+    // A read that succeeds with no free model is transient too: right after a fresh install the catalog listed none, and a
+    // minute later it did (Windows lab, 2026-10-21 and 2026-10-28); 15 s apart, inside the same budget.
+    const empty=listed.code===0&&parseCatalog(listed.stdout).length===0;
+    const transient=empty||listed.code===124||/\bHTTP 503\b|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|fetch failed|socket hang up/i.test(listed.stderr??'');
+    if((listed.code===0&&!empty)||!transient||attempt===attempts||deadline-Date.now()<(empty?15000:3000)+timeout)break;
+    await delay(empty?15000:3000);
   }
   return listed.code===0?parseCatalog(listed.stdout):null;
 }

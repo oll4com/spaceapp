@@ -47,7 +47,7 @@ export function registerMonitoringCopilotAgentRoutes(app: FastifyInstance, servi
   // ---- alerts, targets, queries
   handle("get", "alerts", async ({ owner }, request) => {
     const query = parseQuery(z.object({ all: z.enum(["true", "false"]).optional(), severity: monitoringSeveritySchema.optional(),
-      limit: z.coerce.number().int().min(1).max(300).optional() }).strict(), request.query);
+      limit: z.coerce.number().int().min(1).optional() }).strict(), request.query);
     return { alerts: await service.alerts(owner, { firing: query.all !== "true", severity: query.severity ? [query.severity] : undefined, limit: query.limit }) };
   });
   handle("get", "targets", async ({ owner, pane }, request) => {
@@ -78,7 +78,7 @@ export function registerMonitoringCopilotAgentRoutes(app: FastifyInstance, servi
     return { action };
   });
   handle("get", "actions", async ({ owner }, request) => {
-    const query = parseQuery(z.object({ target: z.string().max(63).optional(), limit: z.coerce.number().int().min(1).max(200).optional() }).strict(), request.query);
+    const query = parseQuery(z.object({ target: z.string().max(63).optional(), limit: z.coerce.number().int().min(1).optional() }).strict(), request.query);
     return { actions: await service.actions(owner, query) };
   });
 
@@ -96,12 +96,12 @@ export function registerMonitoringCopilotAgentRoutes(app: FastifyInstance, servi
   });
   handle("post", "events/:id/wait", async ({ owner, pane }, request) => service.waitForAnswer(owner, pane, id(request, monitoringEventIdSchema),
     parseBody(z.object({ waitMs: z.number().int().min(0).max(50_000).default(30_000) }).strict(), request.body ?? {}).waitMs));
-  handle("post", "note", async ({ owner, pane }, request) => ({ event: await service.note(owner, pane, parseBody(z.object({ message: text(2000) }).strict(), request.body ?? {}).message) }));
+  handle("post", "note", async ({ owner, pane }, request) => ({ event: await service.note(owner, pane, parseBody(z.object({ message: z.string().trim().min(1) }).strict(), request.body ?? {}).message) }));
 
   // ---- memory
   handle("post", "memory/recall", async ({ owner }, request) => {
     const query = parseBody(z.object({ query: z.string().max(300).optional(), target: z.string().max(200).optional(), kinds: z.array(monitoringMemoryKindSchema).max(7).optional(),
-      limit: z.number().int().min(1).max(50).optional() }).strict(), request.body ?? {});
+      limit: z.number().int().min(1).optional() }).strict(), request.body ?? {});
     return { memories: await service.recall(owner, query) };
   });
   handle("post", "memory", async ({ owner }, request) => ({ memory: await service.remember(owner, parseBody(monitoringMemoryCreateSchema, request.body ?? {}), "AGENT") }));

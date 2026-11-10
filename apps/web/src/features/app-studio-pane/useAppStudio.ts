@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRuntimeRegistry, AppStudioEvent, AppStudioPaneMetadata, AppStudioPreview, AppStudioRunStatus, Pane } from "@space/contracts";
 import { api } from "../../api.js";
 import { usePanePolling } from "../../use-pane-polling.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { subscribeAppStudioLiveEvents } from "./live-events.js";
 
 export interface AppStudioRun { status: AppStudioRunStatus; paused: boolean; openQuestions: number; pendingBriefs: number }
@@ -26,6 +27,9 @@ export function useAppStudioData(pane: Pane, enabled: boolean): AppStudioData {
   const [events, setEvents] = useState<AppStudioEvent[]>([]);
   const [runtimes, setRuntimes] = useState<AgentRuntimeRegistry | null>(() => api.cliRuntimesSnapshot());
   const [error, setError] = useState<string | null>(null);
+  const language = useUiLanguage();
+  const languageRef = useRef(language);
+  languageRef.current = language; // read at error time, so a language change never refetches
   const inFlight = useRef<Promise<void> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -39,7 +43,7 @@ export function useAppStudioData(pane: Pane, enabled: boolean): AppStudioData {
         setEvents(state.events);
         setError(null);
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "App Studio could not be loaded.");
+        setError(caught instanceof Error ? caught.message : uiText(languageRef.current, "App Studio could not be loaded."));
       } finally {
         inFlight.current = null;
       }

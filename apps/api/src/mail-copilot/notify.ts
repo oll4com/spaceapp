@@ -1,5 +1,6 @@
 import { makeNeedsYouAsk, resolveMailCopilotPaneMetadata, type MailCopilotEvent, type NeedsYouAsk, type Pane } from "@space/contracts";
 import type { NotificationService } from "../notifications/service.js";
+import { withCheckedBlock } from "../nous/pane-notices.js";
 
 const NEEDS_YOU = new Set(["QUESTION", "REVIEW_REQUESTED", "NEEDS_USER", "RULE_PROPOSED"]);
 const RESOLVES = new Set(["ANSWERED", "REVIEW_DECIDED", "RULE_DECIDED"]);
@@ -42,26 +43,35 @@ export async function notifyMailCopilotEvent(event: MailCopilotEvent, input: { r
     // The operator's own click needs no notice; the copilot taking a mail on its own, and every fix, do.
     if (event.type === "FIX_REQUESTED" && event.payload.by !== "rule") return;
     await notifications.raise({ ownerUserId: owner, roomId, paneId: pane.id, source: "MAIL_COPILOT", kind: event.type, severity: "INFO",
-      title: event.type === "FIXED" ? `Mail Copilot fixed a mail (${pane.title})` : `Mail Copilot took a mail to fix (${pane.title})`, body: event.message.slice(0, 2000),
+      title: event.type === "FIXED" ? `Mail Copilot fixed a mail (${pane.title})` : `Mail Copilot took a mail to fix (${pane.title})`, body: event.message,
       link: { roomId, paneId: pane.id, target: event.threadId && event.accountEmail ? `thread:${event.accountEmail}:${event.threadId}` : `event:${event.id}` },
       dedupeKey: `mail-copilot:${event.type}:${event.id}`, payload: { eventId: event.id }, telegram });
     return;
   }
   if (RULE_NEWS.has(event.type)) {
     await notifications.raise({ ownerUserId: owner, roomId, paneId: pane.id, source: "MAIL_COPILOT", kind: event.type, severity: "INFO",
-      title: `Mail Copilot ${event.type === "RULE_LEARNED" ? "learned a rule" : "retired a rule"} (${pane.title})`, body: event.message.slice(0, 2000),
+      title: `Mail Copilot ${event.type === "RULE_LEARNED" ? "learned a rule" : "retired a rule"} (${pane.title})`, body: event.message,
       link: { roomId, paneId: pane.id, target: `event:${event.id}` }, dedupeKey: `mail-copilot:${event.type}:${key}`, payload: { eventId: event.id }, telegram });
     return;
   }
   await notifications.raise({ ownerUserId: owner, roomId, paneId: pane.id, source: "MAIL_COPILOT", kind: event.type, severity: "ATTENTION",
-    title: `Mail Copilot needs you (${pane.title})`, body: event.message.slice(0, 2000),
+    title: `Mail Copilot needs you (${pane.title})`, body: event.type === "NEEDS_USER" ? withCheckedBlock(event.message, mailChecked(event, pane), 2_000) : event.message,
     link: { roomId, paneId: pane.id, target: event.threadId && event.accountEmail ? `thread:${event.accountEmail}:${event.threadId}` : `event:${event.id}` },
     dedupeKey: mailCopilotNoticeKey(key), payload: { eventId: event.id, ask: mailAsk(event) }, telegram });
 }
 
+/** Goal ee5a573e: what the copilot read before it handed a mail to the operator (its card's "Checked first:", counted by the daily REVIEW). */
+function mailChecked(event: MailCopilotEvent, pane: Pane): string[] {
+  const memories = Array.isArray(event.payload.memoryIds) ? event.payload.memoryIds.length : 0;
+  return [event.threadId ? `Thread: ${event.accountEmail ?? "the mailbox"} ${event.threadId}, read by ${pane.title}` : `Mailbox: ${event.accountEmail ?? "the account"}, read by ${pane.title}`,
+    `Labels and rules: none of ${pane.title}'s rules settles this mail alone`,
+    ...(memories ? [`Copilot memory: ${memories} entr${memories === 1 ? "y" : "ies"} used`] : [])];
+}
+
 /** Needs you as questions (plan clipboard:5AQvaoSR-IZa): what the card asks and where the operator's answer goes. */
 function mailAsk(event: MailCopilotEvent): NeedsYouAsk {
-  const decide = (item: "REVIEW" | "RULE", itemId: unknown) => makeNeedsYouAsk(event.message, { kind: "COPILOT_DECISION", copilot: "MAIL", item, itemId: String(itemId) }, ["Approve", "Decline"]);
+  const decide = (item: "REVIEW" | "RULE", itemId: unknown) => makeNeedsYouAsk(event.message, { kind: "COPILOT_DECISION", copilot: "MAIL", item, itemId: String(itemId) }, ["Approve", "Decline"],
+    event.payload.vouched ? "Approve" : null);
   if (event.type === "QUESTION") {
     return makeNeedsYouAsk(event.message, { kind: "COPILOT_QUESTION", copilot: "MAIL", questionId: String(event.payload.questionId) },
       Array.isArray(event.payload.options) ? event.payload.options.map(String) : []);

@@ -46,6 +46,8 @@ export class DatabasesService {
     return getInternalDbPool();
   }
 
+  // Admin comes only from the session's role; `mode` (query or x-space-mode) only lets an admin write the internal database
+  // (1.1.9 review S1: a USER's ?mode=admin opened it read-write).
   private isUserAdmin(user?: UserContext | null): boolean {
     const role = user?.role?.toUpperCase();
     return role === "ADMIN" || role === "OPERATOR";
@@ -93,10 +95,10 @@ export class DatabasesService {
     projectPath?: string | null,
     mode?: "user" | "admin"
   ): Promise<DatabaseConnection[]> {
-    const isAdmin = this.isUserAdmin(user) || mode === "admin";
+    const isAdmin = this.isUserAdmin(user);
     const connections: DatabaseConnection[] = [];
 
-    // Always include internal DB if admin or in admin mode
+    // The internal database is listed only to an admin
     if (isAdmin) {
       connections.push(this.getInternalConnection(mode));
     }
@@ -154,7 +156,7 @@ export class DatabasesService {
 
   async getConnection(id: string, user?: UserContext | null, mode?: "user" | "admin"): Promise<DatabaseConnection> {
     if (id === "spaceapp-internal") {
-      const isAdmin = this.isUserAdmin(user) || mode === "admin";
+      const isAdmin = this.isUserAdmin(user);
       if (!isAdmin) {
         throw new Error("Admin privileges required to access internal database.");
       }
@@ -166,7 +168,7 @@ export class DatabasesService {
       throw new Error(`Connection not found: ${id}`);
     }
     const row = res.rows[0];
-    const isAdmin = this.isUserAdmin(user) || mode === "admin";
+    const isAdmin = this.isUserAdmin(user);
     if (!isAdmin && row.owner_user_id !== user?.id) {
       throw new Error("Access denied to this database connection.");
     }

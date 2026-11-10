@@ -50,7 +50,8 @@ async function wired(options: { autonomous?: boolean } = {}) {
 }
 
 const promote = (roomId: string, paneId: string, text = VERIFIED_PROMOTE) =>
-  ({ category: "RELEASE", title: `Promote: ${text}`, body: "Dev is verified.", recommendation: "Promote.", action: { type: "PANE_TEXT", roomId, paneId, text, mode: "PROMPT" } });
+  ({ category: "RELEASE", title: `Promote: ${text}`, body: "Dev is verified.", recommendation: "Promote. Πρόβλεψη: ναι (80%)", action: { type: "PANE_TEXT", roomId, paneId, text, mode: "PROMPT" },
+    checked: ["The dev queue: live:verify:dev passed"] });
 const start = { op: "start", reason: "Going to sleep", mandate: "Keep the plans moving", grant: ["FULL"] };
 
 describe("Nous Away mode: start and end", () => {
@@ -64,6 +65,10 @@ describe("Nous Away mode: start and end", () => {
     }
     expect(await tools.execute("space_nous_away", start, { ...ctx, turn: { reason: "OPERATOR", operatorMessage: { ...operatorMessage, person: false } } })).toMatchObject({ refused: true });
     expect(await tools.execute("space_nous_away", start, ctx)).toMatchObject({ refused: true });
+    // The phone rule (Nous Pro security review P1-3): from a paired phone Away starts, but never with a grant.
+    expect(await tools.execute("space_nous_away", { ...start, grant: ["PROMOTE"] }, { ...ctx, turn: { reason: "OPERATOR", operatorMessage: { ...operatorMessage, mobile: true } } }))
+      .toMatchObject({ refused: true });
+    expect(run).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
     // Status is harmless from any turn; FULL becomes every grant category.
     expect((await tools.execute("space_nous_away", { op: "status" }, { ...ctx, turn: { reason: "INBOX", operatorMessage: null } })).ok).toBe(true);
@@ -120,15 +125,15 @@ describe("Nous Away mode: the grant", () => {
         ["GitHub release", { ...promote(f.room.id, f.andy.id, "gh release create v1.1.6"), title: "GitHub release" }],
         ["promote without verification", { ...promote(f.room.id, f.andy.id, "space-queue promote --wait"), title: "Promote unverified" }],
         ["promote with a hotfix", { ...promote(f.room.id, f.andy.id, `${VERIFIED_PROMOTE} && space-queue submit --target stable --hotfix`), title: "Promote with hotfix" }],
-        ["delete", { category: "DESTRUCTIVE", title: "Delete the old room", body: "", recommendation: "Delete.", action: { type: "SPACE_CONTROL", roomId: f.room.id, actions: [{ kind: "room", operation: "delete" }] } }],
-        ["payment", { category: "EXTERNAL", title: "Pay the invoice", body: "", recommendation: "Pay.", action: { type: "PANE_TEXT", roomId: f.room.id, paneId: f.andy.id, text: "pay the invoice with the card", mode: "PROMPT" } }],
-        ["third-party send", { category: "EXTERNAL", title: "Send the proposal", body: "", recommendation: "Send.", action: { type: "PANE_TEXT", roomId: f.room.id, paneId: f.andy.id, text: "send the proposal email to the client", mode: "PROMPT" } }],
-        ["Warm code", { category: "DIRECTION", title: "Approve the Warm change", body: "", recommendation: "Approve.", checked: ["AGENTS.md: Warm changes need the operator's approval"], action: { type: "PANE_TEXT", roomId: f.room.id, paneId: f.andy.id, text: "approve the Warm cache change", mode: "PROMPT" } }],
+        ["delete", { category: "DESTRUCTIVE", title: "Delete the old room", body: "", recommendation: "Delete. Πρόβλεψη: ναι (80%)", action: { type: "SPACE_CONTROL", roomId: f.room.id, actions: [{ kind: "resource", operation: "files.delete", id: "artifact:oldroom1" }] } }],
+        ["payment", { category: "EXTERNAL", title: "Pay the invoice", body: "", recommendation: "Pay. Πρόβλεψη: ναι (80%)", action: { type: "PANE_TEXT", roomId: f.room.id, paneId: f.andy.id, text: "pay the invoice with the card", mode: "PROMPT" } }],
+        ["third-party send", { category: "EXTERNAL", title: "Send the proposal", body: "", recommendation: "Send. Πρόβλεψη: ναι (80%)", action: { type: "PANE_TEXT", roomId: f.room.id, paneId: f.andy.id, text: "send the proposal email to the client", mode: "PROMPT" } }],
+        ["Warm code", { category: "DIRECTION", title: "Approve the Warm change", body: "", recommendation: "Approve. Πρόβλεψη: ναι (80%)", checked: ["AGENTS.md: Warm changes need the operator's approval"], action: { type: "PANE_TEXT", roomId: f.room.id, paneId: f.andy.id, text: "approve the Warm cache change", mode: "PROMPT" } }],
         ["pane-host restart", { ...promote(f.room.id, f.andy.id, "sudo systemctl restart codex-pane-host.service"), title: "Restart the pane host" }]
       ];
       const results = await f.say("Going to sleep, I give you full control until morning",
-        [["space_nous_away", start], ["space_ask_operator", promote(f.room.id, f.andy.id)], ...never.map(([, args]) => ["space_ask_operator", args] as [string, Record<string, unknown>]),
-          ["space_ask_operator", { category: "DESTRUCTIVE", title: "Data loss risk on the backup", body: "", recommendation: "Stop the job.", urgent: true, checked: ["backup log: the job deletes old snapshots"] }]]);
+        [["space_nous_away", start], ["space_ask_operator", promote(f.room.id, f.andy.id)], ...never.map(([, args]) => ["space_ask_operator", { checked: ["The pane's reports"], ...args }] as [string, Record<string, unknown>]),
+          ["space_ask_operator", { category: "DESTRUCTIVE", title: "Data loss risk on the backup", body: "", recommendation: "Stop the job. Πρόβλεψη: ναι (80%)", urgent: true, checked: ["backup log: the job deletes old snapshots"] }]]);
       const [, approved, ...asked] = results;
       expect(approved).toMatchObject({ ok: true, display: expect.stringMatching(/^Approved by the away grant/) });
       expect(f.execute).toHaveBeenCalledWith("send_to_pane", { panes: [f.andy.id], text: VERIFIED_PROMOTE }, expect.anything());

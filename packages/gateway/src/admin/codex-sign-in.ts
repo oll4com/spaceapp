@@ -39,7 +39,7 @@ export interface CodexSignInOptions {
   otherProviders?: Partial<Record<GatewayProvider, ProviderAccountActions>>;
 }
 
-function sameToken(presented: string | null, expected: string | null): boolean {
+export function sameToken(presented: string | null, expected: string | null): boolean {
   if (!presented || !expected) return false;
   const a = Buffer.from(presented);
   const b = Buffer.from(expected);

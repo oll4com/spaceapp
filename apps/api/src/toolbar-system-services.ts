@@ -9,6 +9,7 @@ import {
   type HostMemoryDetails
 } from "@space/contracts";
 import type { MemoryReclaimResponse } from "@space/contracts";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const execFileAsync = promisify(execFile);
 const kib = 1024;
@@ -25,7 +26,7 @@ export type KernelCacheReclaimResult = MemoryReclaimResponse["kernelCache"];
 
 export const MEMORY_RECLAIM_COMMAND = {
   command: "/usr/bin/sudo",
-  args: ["-n", "/opt/spaceapp/bin/space-memory-reclaim"] as const
+  args: ["-n", `${SPACE_INSTALL_ROOT}/bin/space-memory-reclaim`] as const
 };
 
 const kernelCacheReclaimResultSchema = z.object({

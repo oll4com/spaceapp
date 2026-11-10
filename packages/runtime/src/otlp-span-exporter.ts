@@ -20,7 +20,7 @@ export interface ServerSpan {
   endTimeUnixNano: bigint;
   attributes: Readonly<Record<string, string | number>>;
   error: boolean;
-  /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
+  /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1), the API's worker calls CLIENT (3). */
   kind?: number;
 }
 

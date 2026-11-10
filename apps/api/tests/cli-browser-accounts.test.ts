@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
+import { createCsrfToken, signSession } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
 import type { BrowserSessionManager } from "../src/browser-sessions.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
@@ -75,6 +76,66 @@ describe("CLI browser bridge Google account selection", () => {
     expect(listed.json().profiles).toEqual(expect.arrayContaining([expect.objectContaining({ profileId: account.id })]));
     expect((await fixture(admin.id, undefined, "MARKETING_COPILOT").command({ type: "LIST_ACCOUNTS" })).statusCode).toBe(409);
   });
+
+  it("keeps a pane's network route and restarts its running browser on it (operator 31/10, plan clipboard:iLvBs5eOMZjF)", async () => {
+    const { room, browserPane, cli, command } = fixture(admin.id);
+    const agent = { holderType: "AGENT", holderId: `cli:${cli.sessionId}` };
+    // No browser runs yet: the route is kept for the pane's next start.
+    const kept = await command({ type: "SET_ROUTE", route: "greece" });
+    expect(kept.statusCode, kept.body).toBe(200);
+    expect(kept.json()).toMatchObject({ route: "greece", restarted: false });
+    expect(store.getPaneBrowserRoute(browserPane.id)).toBe("greece");
+    // A running browser restarts on the route, on the page it showed.
+    store.createPaneBrowserSession({ sessionId: "browser_session:route", paneId: browserPane.id, roomId: room.id, ownerAgentId: "agent:1", agentNumber: 1,
+      profileId: `profile:${browserPane.id}`, profilePath: `/tmp/${browserPane.id}`, viewport: "desktop", targetUrl: "https://learn.nvidia.com/",
+      currentUrl: "https://learn.nvidia.com/courses", title: "NVIDIA", status: "READY", isActive: true });
+    const restarted = await command({ type: "SET_ROUTE", route: "direct" });
+    expect(restarted.json()).toMatchObject({ route: "direct", restarted: true });
+    expect(stop).toHaveBeenLastCalledWith(browserPane.id, expect.any(String), agent);
+    expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ targetUrl: "https://learn.nvidia.com/courses", ownerAgentId: agent.holderId }), agent);
+    expect((await command({ type: "SET_ROUTE", route: "moon" })).statusCode).toBe(422);
+    // A Freelance Copilot's route is its Setup route; another user's room is refused.
+    const freelance = fixture(admin.id, undefined, "FREELANCE_COPILOT");
+    expect((await freelance.command({ type: "SET_ROUTE", route: "nord" })).json()).toMatchObject({ route: "nord" });
+    expect(store.getPane(freelance.browserPane.id).freelanceCopilotMetadata?.settings.browserEgress).toBe("nord");
+    expect(store.getPaneBrowserRoute(freelance.browserPane.id)).toBeNull();
+    expect((await fixture(member.id).command({ type: "SET_ROUTE", route: "greece" })).statusCode).toBe(403);
+
+    // The pane's toolbar reads and sets the same route (ADMIN only).
+    const session = (role: "ADMIN" | "USER") => {
+      const user = role === "ADMIN" ? admin : member;
+      const signed = signSession({ id: user.id, email: user.email, role }, "test-cli-browser-accounts-secret");
+      return { cookie: `space_session=${signed}`, "x-space-csrf-token": createCsrfToken(signed, "test-cli-browser-accounts-secret")! };
+    };
+    const url = `/api/panes/${browserPane.id}/browser/route`;
+    expect((await app.inject({ method: "GET", url, headers: session("ADMIN") })).json()).toEqual({ route: "direct", routes: ["direct", "greece", "thailand", "mullvad", "nord"] });
+    const put = await app.inject({ method: "PUT", url, headers: session("ADMIN"), payload: { route: "thailand" } });
+    expect(put.json()).toMatchObject({ route: "thailand", restarted: true });
+    expect(store.getPaneBrowserRoute(browserPane.id)).toBe("thailand");
+    const own = fixture(member.id).browserPane;
+    expect((await app.inject({ method: "GET", url: `/api/panes/${own.id}/browser/route`, headers: session("USER") })).statusCode).toBe(403);
+  });
+
+  it("offers a self-hosted install only this server's route: the VPN routes do not exist there", async () => {
+    const manager = { startOrRestore: start, stopPane: stop, adoptPaneGoogleProfile: adopt, closeAll: async () => {},
+      status: () => ({ enabled: true, statusReason: "Test", defaultUrl: "about:blank", checkedAt: new Date().toISOString() }) };
+    const publicApp = await createApp({ store, browserSessionManager: manager as unknown as BrowserSessionManager,
+      config: { ...config, ...getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "true", SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true", SPACE_INTERNAL_API_TOKEN: "test-internal-token",
+        SPACE_ARTIFACT_ROOT: `${root}/browser-evidence`, SPACE_BROWSER_SESSIONS_PROFILE_ROOT: `${root}/profiles` }), publicDistribution: true },
+      auth: { sessionSecret: "test-cli-browser-accounts-secret", devLogin: false, secureCookies: false } });
+    try {
+      const { browserPane } = fixture(admin.id);
+      const signed = signSession({ id: admin.id, email: admin.email, role: "ADMIN" }, "test-cli-browser-accounts-secret");
+      const headers = { cookie: `space_session=${signed}`, "x-space-csrf-token": createCsrfToken(signed, "test-cli-browser-accounts-secret")! };
+      const url = `/api/panes/${browserPane.id}/browser/route`;
+      expect((await publicApp.inject({ method: "GET", url, headers })).json()).toEqual({ route: "direct", routes: ["direct"] });
+      const refused = await publicApp.inject({ method: "PUT", url, headers, payload: { route: "greece" } });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().message ?? refused.body).toMatch(/no VPN routes/);
+      expect(store.getPaneBrowserRoute(browserPane.id)).toBeNull();
+      expect((await publicApp.inject({ method: "PUT", url, headers, payload: { route: "direct" } })).statusCode).toBe(200);
+    } finally { await publicApp.close(); }
+  }, 30_000);
 
   it("requires a room owned by an ADMIN and offers no real accounts in proof rooms", async () => {
     expect((await fixture(member.id).command({ type: "LIST_ACCOUNTS" })).statusCode).toBe(403);

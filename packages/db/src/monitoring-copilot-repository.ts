@@ -11,15 +11,15 @@ const newId = (prefix: string) => `${prefix}:${randomBytes(9).toString("base64ur
 /** What the watcher knows about one firing alert. */
 export type MonitoringAlertRecord = Pick<MonitoringAlert, "ownerUserId" | "fingerprint" | "alertname" | "severity" | "source" | "instance" | "job" | "labels"
   | "summary" | "description" | "startsAt">;
-export interface MonitoringAlertFilter { state?: MonitoringAlert["state"]; severity?: MonitoringAlert["severity"][]; limit: number }
+export interface MonitoringAlertFilter { state?: MonitoringAlert["state"]; severity?: MonitoringAlert["severity"][]; limit?: number }
 export type MonitoringMemoryCreateRecord = Omit<MonitoringMemory, "id" | "uses" | "lastUsedAt" | "createdAt" | "updatedAt">;
 export type MonitoringMemoryPatch = Partial<Pick<MonitoringMemory, "text" | "tags" | "pinned">>;
-export interface MonitoringMemoryQuery { query?: string | null; kinds?: MonitoringMemory["kind"][]; target?: string | null; limit: number }
+export interface MonitoringMemoryQuery { query?: string | null; kinds?: MonitoringMemory["kind"][]; target?: string | null; limit?: number }
 export type MonitoringEventCreateRecord = Omit<MonitoringEvent, "id" | "createdAt" | "updatedAt">;
-export interface MonitoringEventFilter { types?: MonitoringEventType[]; status?: MonitoringEventStatus[]; limit: number }
+export interface MonitoringEventFilter { types?: MonitoringEventType[]; status?: MonitoringEventStatus[]; /** No limit: every matching event (a brief watch must see every waiting brief, operator 31/10). */ limit?: number }
 export type MonitoringActionCreateRecord = Omit<MonitoringAction, "id" | "startedAt" | "finishedAt" | "verification" | "reviewEventId"> & { reviewEventId?: string | null };
 export type MonitoringActionPatch = Partial<Pick<MonitoringAction, "status" | "verification" | "reviewEventId" | "finishedAt">>;
-export interface MonitoringActionFilter { target?: string; status?: MonitoringActionStatus[]; since?: string; limit: number }
+export interface MonitoringActionFilter { target?: string; status?: MonitoringActionStatus[]; since?: string; limit?: number }
 
 export interface MonitoringCopilotRepository {
   /** Refreshes the firing row of this fingerprint, or starts a new episode; `created` says which. */
@@ -252,7 +252,7 @@ export class PostgresMonitoringCopilotRepository implements MonitoringCopilotRep
     return this.many(`SELECT ${ALERT_COLUMNS} FROM monitoring_copilot_alerts WHERE owner_user_id=$1 AND ($2::text IS NULL OR state=$2)
         AND ($3::text[] IS NULL OR severity = ANY($3::text[]))
       ORDER BY (state='RESOLVED'), ${SEVERITY_SQL}, last_seen_at DESC, id LIMIT $4`,
-    [owner, filter.state ?? null, filter.severity?.length ? filter.severity : null, filter.limit], alertRow);
+    [owner, filter.state ?? null, filter.severity?.length ? filter.severity : null, filter.limit ?? null], alertRow);
   }
   async pruneResolved(before: string) {
     return ((await this.pool.query("DELETE FROM monitoring_copilot_alerts WHERE state = 'RESOLVED' AND ends_at < $1", [before])) as { rowCount?: number | null }).rowCount ?? 0;
@@ -274,7 +274,7 @@ export class PostgresMonitoringCopilotRepository implements MonitoringCopilotRep
   listActions(owner: string, filter: MonitoringActionFilter) {
     return this.many(`SELECT ${ACTION_COLUMNS} FROM monitoring_copilot_actions WHERE owner_user_id=$1 AND ($2::text IS NULL OR target=$2)
       AND ($3::text[] IS NULL OR status = ANY($3::text[])) AND ($4::timestamptz IS NULL OR started_at >= $4) ORDER BY started_at DESC, id DESC LIMIT $5`,
-    [owner, filter.target ?? null, filter.status?.length ? filter.status : null, filter.since ?? null, filter.limit], actionRow);
+    [owner, filter.target ?? null, filter.status?.length ? filter.status : null, filter.since ?? null, filter.limit ?? null], actionRow);
   }
 
   listMemory(owner: string, query: MonitoringMemoryQuery) {
@@ -282,7 +282,7 @@ export class PostgresMonitoringCopilotRepository implements MonitoringCopilotRep
     return this.many(`SELECT ${MEMORY_COLUMNS} FROM monitoring_copilot_memory WHERE owner_user_id=$1 AND ($3::text[] IS NULL OR kind = ANY($3::text[]))
         AND ($4::text IS NULL OR target IS NULL OR target=$4) AND ($2::text IS NULL OR search @@ websearch_to_tsquery('simple', $2))
       ORDER BY pinned DESC, CASE WHEN $2::text IS NULL THEN 0 ELSE ts_rank(search, websearch_to_tsquery('simple', $2)) END DESC, uses DESC, updated_at DESC LIMIT $5`,
-    [owner, text, query.kinds?.length ? query.kinds : null, query.target ?? null, query.limit], memoryRow);
+    [owner, text, query.kinds?.length ? query.kinds : null, query.target ?? null, query.limit ?? null], memoryRow);
   }
   async upsertMemory(input: MonitoringMemoryCreateRecord) {
     return (await this.one(`INSERT INTO monitoring_copilot_memory(id, owner_user_id, kind, key, text, target, tags, source, pinned) VALUES ($1,$2,$3,$4,$5,$6,$7::text[],$8,$9)
@@ -310,7 +310,7 @@ export class PostgresMonitoringCopilotRepository implements MonitoringCopilotRep
   listEvents(owner: string, paneId: string, filter: MonitoringEventFilter) {
     return this.many(`SELECT ${EVENT_COLUMNS} FROM monitoring_copilot_events WHERE owner_user_id=$1 AND pane_id=$2
         AND ($3::text[] IS NULL OR type = ANY($3::text[])) AND ($4::text[] IS NULL OR status = ANY($4::text[])) ORDER BY created_at DESC, id DESC LIMIT $5`,
-    [owner, paneId, filter.types?.length ? filter.types : null, filter.status?.length ? filter.status : null, filter.limit], eventRow);
+    [owner, paneId, filter.types?.length ? filter.types : null, filter.status?.length ? filter.status : null, filter.limit ?? null], eventRow);
   }
   updateEvent(owner: string, id: string, patch: { status: MonitoringEventStatus; payload?: Record<string, unknown> }, fromStatus: MonitoringEventStatus[]) {
     return this.one(`UPDATE monitoring_copilot_events SET status=$3, payload = payload || $4::jsonb, updated_at=now()

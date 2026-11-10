@@ -10,6 +10,7 @@ import { profileCompleteness } from "../src/features/job-apply-pane/SetupWizard.
 import { StartOver } from "../src/features/job-apply-pane/StartOver.js";
 import { handoffPostingFor, todayCounts } from "../src/features/job-apply-pane/useJobApply.js";
 import { SpaceToggle } from "../src/features/ui-controls/SpaceToggle.js";
+import { resetNousReviewing } from "../src/features/copilot-kit/nous-reviewing.js";
 
 const apiMock = vi.hoisted(() => ({
   jobApplyProfile: vi.fn(),
@@ -54,8 +55,8 @@ const apiMock = vi.hoisted(() => ({
   decideJobApplyReview: vi.fn(),
   discoverJobApplyPostings: vi.fn(),
   addJobApplyQueue: vi.fn(),
-  agentFilePreviewUrl: (id: string) => `/api/artifacts/${id}/preview`,
-  agentFileDownloadUrl: (id: string) => `/api/artifacts/${id}/download`
+  artifactFileUrl: (id: string) => `/api/artifacts/${id}/file`,
+  nousApprovals: vi.fn(async () => ({ nousReviewing: false }))
 }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
 const eventsMock = vi.hoisted(() => ({ dispatchBrowserPaneActionEvent: vi.fn(), BROWSER_PANE_ACCOUNT_SELECTED_EVENT: "space:browser-pane-account-selected",
@@ -153,8 +154,28 @@ describe("JobCopilotPane", () => {
     apiMock.startJobApplyRun.mockResolvedValue({ ...idleRun, status: "RUNNING", kickoffSent: true, run: { id: "jobrun:r00002", ownerUserId: "user:1", paneId: pane.id, status: "RUNNING", counters: { taken: 0, submitted: 0, verified: 0, failed: 0, needsUser: 0 }, currentApplicationId: null, kickoffSentAt: now, startedAt: now, pausedAt: null, stoppedAt: null, lastActivityAt: now, createdAt: now, updatedAt: now } });
     apiMock.pauseJobApplyRun.mockResolvedValue({ ...idleRun, status: "PAUSED" });
     apiMock.answerJobApplyQuestion.mockResolvedValue({ memory: { id: "jobmem:m00001" } });
+    apiMock.nousApprovals.mockResolvedValue({ nousReviewing: false });
+    resetNousReviewing();
   });
   afterEach(() => cleanup());
+
+  it("shows a review Nous decides under May send read only and counts it nowhere; with the allowance off it is the operator's (operator 2/11 15:08 BKK)", async () => {
+    const review = { kind: "REVIEW", id: "jobrev:r00001", applicationId: "jobapp:a00002", message: "Review before submit", payload: { fields: [{ label: "Notice period", value: "1 month" }] }, createdAt: now };
+    apiMock.jobApplyRun.mockResolvedValue({ ...idleRun, status: "RUNNING", current: applications[1], pending: [review] });
+    apiMock.nousApprovals.mockResolvedValue({ nousReviewing: true });
+    renderPane();
+    const card = within(await screen.findByRole("region", { name: "Nous reviewing" }));
+    expect((card.getByLabelText("Notice period") as HTMLInputElement).readOnly).toBe(true);
+    expect(card.queryByRole("button", { name: "Approve and submit" })).toBeNull();
+    expect(screen.queryByText("1 needs you")).toBeNull();
+    cleanup();
+    resetNousReviewing();
+    apiMock.nousApprovals.mockResolvedValue({ nousReviewing: false });
+    renderPane();
+    const operator = within(await screen.findByRole("region", { name: "Review before submit" }));
+    expect(operator.getByRole("button", { name: "Approve and submit" })).toBeTruthy();
+    expect(await screen.findByText("1 needs you")).toBeTruthy();
+  });
 
   it("counts today's applications by status and prefers Claude Code when ready", () => {
     expect(todayCounts(applications)).toEqual({ applied: 1, verified: 1, failed: 0, needsUser: 1, queued: 1, deferred: 0, nextFreeAt: null });
@@ -269,31 +290,12 @@ describe("JobCopilotPane", () => {
     expect(apiMock.updatePane).not.toHaveBeenCalled();
   });
 
-  it("shows a strip above the browser when the agent asks for a handoff and hands control back", async () => {
-    apiMock.browserHandoff.mockResolvedValue({ handoff: handoffRequest });
-    renderPane();
-    await waitFor(() => expect(screen.getByRole("status", { name: "The copilot needs you" }).textContent).toContain("CAPTCHA on the Globex Ashby form"));
-    expect(screen.getByRole("status", { name: "The copilot needs you" }).textContent).toContain("Globex · Platform Engineer");
-    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
-    expect(eventsMock.dispatchBrowserPaneActionEvent).toHaveBeenCalledWith({ paneId: pane.id, action: "handoff", roomId: pane.roomId });
-    apiMock.browserHandoff.mockResolvedValue({ handoff: { ...handoffRequest, status: "ACCEPTED", acceptedAt: now } });
-    cleanup();
-    renderPane();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Return to agent" })).toBeTruthy());
-    fireEvent.click(screen.getByRole("button", { name: "Return to agent" }));
-    expect(eventsMock.dispatchBrowserPaneActionEvent).toHaveBeenCalledWith({ paneId: pane.id, action: "release", roomId: pane.roomId });
-  });
-
-  it("offers Return to agent while the operator still holds the browser after the handoff ended", async () => {
-    renderPane();
-    expect(screen.queryByRole("button", { name: "Return to agent" })).toBeNull();
-    act(() => { window.dispatchEvent(new CustomEvent("space:browser-pane-control", { detail: { paneId: pane.id, held: true } })); });
-    const giveBack = await screen.findByRole("button", { name: "Return to agent" });
-    expect(giveBack.closest(".jc-handoff-strip")?.textContent).toContain("You hold the browser.");
-    fireEvent.click(screen.getByRole("button", { name: "Return to agent" }));
-    expect(eventsMock.dispatchBrowserPaneActionEvent).toHaveBeenCalledWith({ paneId: pane.id, action: "release", roomId: pane.roomId });
-    act(() => { window.dispatchEvent(new CustomEvent("space:browser-pane-control", { detail: { paneId: pane.id, held: false } })); });
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Return to agent" })).toBeNull());
+  it.each(["REQUESTED", "ACCEPTED"] as const)("keeps a %s handoff on the control icon without a strip", async (status) => {
+    apiMock.browserHandoff.mockResolvedValue({ handoff: { ...handoffRequest, status } });
+    const { container } = renderPane();
+    await waitFor(() => expect(container.querySelector("[data-handoff]")?.getAttribute("data-handoff")).toBe(status.toLowerCase()));
+    expect(container.querySelector(".jc-handoff-strip")).toBeNull();
+    expect(screen.getByTestId("browser")).toBeTruthy();
   });
 
   it("keeps a postal address in Setup → Profile and saves it with the profile", async () => {
@@ -335,7 +337,7 @@ describe("JobCopilotPane", () => {
     renderPane();
     await waitFor(() => expect(apiMock.browserHandoff).toHaveBeenCalled());
     await act(async () => { await Promise.resolve(); });
-    expect(screen.queryByRole("status", { name: "The copilot needs you" })).toBeNull();
+    expect(document.querySelector(".jc-pane")?.getAttribute("data-handoff")).toBeNull();
   });
 
   it("drops a request the moment it expires, even while the server still reports it as REQUESTED", async () => {
@@ -343,10 +345,10 @@ describe("JobCopilotPane", () => {
     try {
       apiMock.browserHandoff.mockResolvedValue({ handoff: { ...handoffRequest, expiresAt: new Date(Date.now() + 3_000).toISOString() } });
       const { container } = renderPane();
-      await waitFor(() => expect(screen.getByRole("status", { name: "The copilot needs you" })).toBeTruthy());
+      await waitFor(() => expect(document.querySelector(".jc-pane")?.getAttribute("data-handoff")).toBe("requested"));
       expect(container.querySelector("[data-handoff]")?.getAttribute("data-handoff")).toBe("requested");
       await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
-      expect(screen.queryByRole("status", { name: "The copilot needs you" })).toBeNull();
+      expect(document.querySelector(".jc-pane")?.getAttribute("data-handoff")).toBeNull();
       expect(container.querySelector("[data-handoff]")).toBeNull();
     } finally {
       vi.useRealTimers();
@@ -358,13 +360,13 @@ describe("JobCopilotPane", () => {
     try {
       apiMock.browserHandoff.mockResolvedValue({ handoff: handoffRequest });
       renderPane();
-      await waitFor(() => expect(screen.getByRole("status", { name: "The copilot needs you" })).toBeTruthy());
+      await waitFor(() => expect(document.querySelector(".jc-pane")?.getAttribute("data-handoff")).toBe("requested"));
       // One request never answers; later the handoff is gone.
       apiMock.jobApplyRun.mockReturnValueOnce(new Promise(() => undefined));
       apiMock.browserHandoff.mockRejectedValue(new Error("not found"));
       await act(async () => { await vi.advanceTimersByTimeAsync(9_000); });
       await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-      await waitFor(() => expect(screen.queryByRole("status", { name: "The copilot needs you" })).toBeNull());
+      await waitFor(() => expect(document.querySelector(".jc-pane")?.getAttribute("data-handoff")).toBeNull());
     } finally {
       vi.useRealTimers();
     }
@@ -458,7 +460,13 @@ describe("JobCopilotPane", () => {
     await waitFor(() => expect(screen.getByText("Run started: 2 queued")).toBeTruthy());
     expect(screen.getByText("Filled 4 fields on Application")).toBeTruthy();
     const shot = screen.getByAltText(/Screenshot: Verified Acme/) as HTMLImageElement;
-    expect(shot.getAttribute("src")).toBe("/api/artifacts/artifact:shot0001/preview");
+    expect(shot.getAttribute("src")).toBe("/api/artifacts/artifact:shot0001/file");
+    // The thumbnail opens the screenshot inside the app (a link opened a bare desktop window); Escape closes it.
+    fireEvent.click(screen.getByRole("button", { name: "Open screenshot" }));
+    const viewer = screen.getByRole("dialog", { name: "Screenshot" });
+    expect(viewer.querySelector("img")?.getAttribute("src")).toBe("/api/artifacts/artifact:shot0001/file");
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Screenshot" })).toBeNull();
     expect(screen.getByText("Idle")).toBeTruthy();
     const start = screen.getByRole("button", { name: /^Start$/ });
     expect((start as HTMLButtonElement).disabled).toBe(false);
@@ -487,6 +495,19 @@ describe("JobCopilotPane", () => {
     expect(screen.getByTitle("Questions or reviews waiting for you").textContent).toContain("1 needs you");
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "80k" })); });
     await waitFor(() => expect(apiMock.answerJobApplyQuestion).toHaveBeenCalledWith("jobapp:a00002", { questionId: "jobq:q00001", answer: "80k" }));
+  });
+
+  it("opens an existing question from a notification when the saved rail shows another tab", async () => {
+    window.localStorage.setItem(`space:job-copilot:rail:${pane.id}`, JSON.stringify({ width: 520, collapsed: true, tab: "terminal" }));
+    apiMock.jobApplyRun.mockResolvedValue({ ...idleRun, pending: [
+      { kind: "QUESTION", id: "jobq:q00001", applicationId: "jobapp:a00002", message: "Visa sponsorship?", payload: { question: "Visa sponsorship?" }, createdAt: now }
+    ] });
+    renderPane();
+    await waitFor(() => expect(apiMock.jobApplyRun).toHaveBeenCalled());
+    act(() => window.dispatchEvent(new CustomEvent("space:notification-open", { detail: { paneId: pane.id, target: "jobq:q00001" } })));
+    await waitFor(() => expect(screen.getByRole("tab", { name: /Activity/ }).getAttribute("aria-selected")).toBe("true"));
+    expect(screen.getByLabelText("Answer")).toBeTruthy();
+    expect(screen.getByTestId("terminal")).toBeTruthy();
   });
 
   it("lists recorded fields of the selected application and saves an edit as the operator's answer", async () => {

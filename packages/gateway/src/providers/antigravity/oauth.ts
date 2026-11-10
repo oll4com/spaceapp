@@ -31,7 +31,7 @@ function idTokenClaims(idToken: string | null): Json {
   try { return obj(JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))) ?? {}; } catch { return {}; }
 }
 
-/** The CLI's `antigravity-oauth-token` file: `{ token: { access_token, refresh_token, expiry }, id_token }`. */
+/** The CLI's `antigravity-oauth-token` file: `{ token: { access_token, refresh_token, expiry }, id_token | id_token_email }`. */
 export function parseAntigravityTokenFile(text: string): AntigravityTokens {
   let data: Json | null;
   try { data = obj(JSON.parse(text)); } catch { throw new AntigravityAuthError("invalid_token_file", "This is not an Antigravity sign-in file."); }
@@ -41,11 +41,12 @@ export function parseAntigravityTokenFile(text: string): AntigravityTokens {
   const expiry = str(token?.expiry);
   const expiresAtMs = expiry ? Date.parse(expiry) : Number.NaN;
   const claims = idTokenClaims(str(data?.id_token));
+  const email = [claims.email, data?.id_token_email].find((value): value is string => typeof value === "string" && value.includes("@"))?.trim() ?? null;
   return {
     accessToken: str(token?.access_token),
     refreshToken,
     expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : null,
-    email: typeof claims.email === "string" && claims.email.includes("@") ? claims.email : null,
+    email,
     subject: str(claims.sub)
   };
 }

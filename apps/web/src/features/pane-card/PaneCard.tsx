@@ -41,6 +41,7 @@ import { modernPanePrimaryActionCapacity, modernPanePrimaryActionCount } from ".
 import { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";
 import { WorktreeBadge } from "../worktrees/WorktreeBadge.js";
 import { modeIcons } from "./pane-mode-icons.js";
+import { paneModuleOff, PaneModuleOffNotice } from "../pane-visibility/pane-module.js";
 import { cliTurnInterruptKey, paneCategoryColors, type CliRuntimeSettingsResponse, type CliVpnRoutingStatus, type CodexEnvironment, type Event as SpaceEvent, type MemoryEntry, type Pane, type PaneCategoryColor, type PaneCliSessionResponse, type Turn } from "@space/contracts";
 import { lazy, memo, type ComponentProps, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
@@ -95,6 +96,10 @@ export const LazyLivePane = lazy(() =>
 
 export const LazyDemosPane = lazy(() =>
   import("../demos-pane/DemosPane.js").then((module) => ({ default: module.DemosPane }))
+);
+
+const LazyAppointmentsPane = lazy(() =>
+  import("../appointments/AppointmentsPane.js").then((module) => ({ default: module.AppointmentsPane }))
 );
 
 export const LazyFilesPane = lazy(() =>
@@ -1741,7 +1746,7 @@ export const PaneCard = memo(function PaneCard({
       }
     ];
   }
-  if (pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO" || pane.mode === "VIDEO" || pane.mode === "SECURITY_COPILOT" || pane.mode === "MONITORING_COPILOT") {
+  if (pane.mode === "DEMOS" || pane.mode === "APPOINTMENTS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO" || pane.mode === "VIDEO" || pane.mode === "SECURITY_COPILOT" || pane.mode === "MONITORING_COPILOT") {
     rawPaneActions = [
       ...(!isTerminalLoginSession ? [{
         id: "add",
@@ -1866,7 +1871,7 @@ export const PaneCard = memo(function PaneCard({
     hiddenStorageKey: paneToolbarStorageKeys.hidden,
     orderStorageKey: paneToolbarStorageKeys.order,
     nonPersistentActionIds: pane.mode === "CHAT" ? ["chat-target"] : [],
-    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL" || pane.mode === "BROWSER" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "YOUTUBE" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO" || pane.mode === "VIDEO" || pane.mode === "SECURITY_COPILOT" || pane.mode === "MONITORING_COPILOT",
+    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL" || pane.mode === "BROWSER" || pane.mode === "DEMOS" || pane.mode === "APPOINTMENTS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "YOUTUBE" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO" || pane.mode === "VIDEO" || pane.mode === "SECURITY_COPILOT" || pane.mode === "MONITORING_COPILOT",
     closeOverflowOnDragStart: shellMode === "mobile"
   });
   const modernPrimaryActionLimit = modernPanePrimaryActionCount(shellMode);
@@ -1874,7 +1879,7 @@ export const PaneCard = memo(function PaneCard({
   const paneToolbarPrimaryActionCount = uiTheme !== "classic" || pane.mode === "YOUTUBE"
     ? Math.min(modernPrimaryActionLimit, modernPrimaryActionCapacity ?? modernPrimaryActionLimit)
     : paneToolbarMenuActions.length;
-  const paneToolbarRenderedActions = usesCompactPaneActions || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO" || pane.mode === "VIDEO" || pane.mode === "SECURITY_COPILOT" || pane.mode === "MONITORING_COPILOT"
+  const paneToolbarRenderedActions = usesCompactPaneActions || pane.mode === "DEMOS" || pane.mode === "APPOINTMENTS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO" || pane.mode === "VIDEO" || pane.mode === "SECURITY_COPILOT" || pane.mode === "MONITORING_COPILOT"
     ? []
     : (uiTheme !== "classic" || pane.mode === "YOUTUBE"
         ? paneToolbarMenuActions.slice(0, paneToolbarPrimaryActionCount)
@@ -2552,7 +2557,7 @@ export const PaneCard = memo(function PaneCard({
                     paneToolbar.setIsOverflowOpen(false);
                     action.onClick();
                   }}
-                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO" || pane.mode === "VIDEO" || pane.mode === "SECURITY_COPILOT" || pane.mode === "MONITORING_COPILOT"}
+                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "APPOINTMENTS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO" || pane.mode === "VIDEO" || pane.mode === "SECURITY_COPILOT" || pane.mode === "MONITORING_COPILOT"}
                   popupId={paneActionsPopupId}
                   triggerRef={paneOverflowTriggerRef}
                 />
@@ -2744,6 +2749,12 @@ export const PaneCard = memo(function PaneCard({
           <RecoverableSurface fallback={browserPaneLoadingFallback}>
             <LazyDemosPane pane={pane} uiTheme={uiTheme} isVisible={isVisibleInShell} />
           </RecoverableSurface>
+        ) : pane.mode === "APPOINTMENTS" ? (
+          <RecoverableSurface fallback={browserPaneLoadingFallback}>
+            <LazyAppointmentsPane pane={pane} />
+          </RecoverableSurface>
+        ) : paneModuleOff(pane.mode) ? (
+          <PaneModuleOffNotice mode={pane.mode} />
         ) : pane.mode === "JOB_APPLY" ? (
           <RecoverableSurface fallback={browserPaneLoadingFallback} resetKey={pane.id}>
             <LazyJobApplyPane

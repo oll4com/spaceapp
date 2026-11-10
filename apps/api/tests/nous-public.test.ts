@@ -1,11 +1,13 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { InMemoryNousRepository } from "@space/db";
 import { createNousService } from "../src/nous/service.js";
 import { computeNousTokens } from "../src/nous/tokens.js";
-import { NOUS_CONNECT_CLAUDE, NOUS_UPDATE_CLI, nousTurnBackend } from "../src/nous/wiring.js";
+import { NOUS_CONNECT_CLAUDE, NOUS_UPDATE_CLI, nousFilesRoots, nousTurnBackend } from "../src/nous/wiring.js";
+import { createNousFiles, NOUS_FILES_ROOT } from "../src/nous/files.js";
 import { createNousTools, nousToolDefinitions } from "../src/nous/tools.js";
 import { nousLowSpendSettingsSchema, nousSettingsSchema, withNousPublicDefaults } from "@space/contracts";
 
@@ -100,7 +102,9 @@ describe("where Nous's turns run (plan clipboard:1NF6u6gcCwtj, operator decision
 
   it("hides what a self-hosted install has no service for, and its Low-spend mode reads unknown, never CRITICAL", async () => {
     const names = (publicInstall: boolean) => nousToolDefinitions({ copilots: true, publicInstall }).map((tool) => tool.name);
-    const hidden = ["space_git", "space_queue_status", "space_release", "space_ops_gateway", "space_vault_fill", "space_vault_list", "space_vault_save"];
+    // Web search needs Space Gateway's key; the Research Council's members need Space Gateway or stable's worker (export check 28/10).
+    const hidden = ["space_git", "space_queue_status", "space_release", "space_ops_gateway", "space_vault_fill", "space_vault_list", "space_vault_save",
+      "space_web_search", "space_council_models", "space_council_start", "space_council_runs", "space_council_run", "space_council_answer", "space_council_approve", "space_council_clipboard_plan"];
     expect(names(false)).toEqual(expect.arrayContaining(hidden));
     expect(names(true).filter((name) => hidden.includes(name))).toEqual([]);
     expect(names(true)).toEqual(expect.arrayContaining(["space_world", "space_goals", "space_vault_key_list", "space_db_query"]));
@@ -114,6 +118,22 @@ describe("where Nous's turns run (plan clipboard:1NF6u6gcCwtj, operator decision
     expect(computeNousTokens({ accounts: [], settings, now: Date.now() }).mode).toBe("CRITICAL");
   });
 
+  it("reads the panes' shared workspace on a single-user self-hosted install, never another user's with accounts on (export check 28/10)", async () => {
+    const config = { instance: "stable", publicDistribution: true, cliWorkspaceRoot: "/workspaces" };
+    expect(nousFilesRoots(config, "/var/lib/spaceapp/artifacts")).toEqual({ root: "/workspaces", ownRoot: "/workspaces/nous" });
+    expect(nousFilesRoots({ ...config, multiUserEnabled: true }, "/var/lib/spaceapp/artifacts")).toEqual({ root: null, ownRoot: "/var/lib/spaceapp/nous-workspace" });
+    expect(nousFilesRoots({ ...config, publicDistribution: false }, "/opt/spaceapp/var/artifacts")).toEqual({ root: null, ownRoot: "/opt/spaceapp/var/nous-workspace" });
+    // The path the tool descriptions name stands for that root, and what Nous writes is in the panes' volume.
+    const workspaces = await mkdtemp(join(tmpdir(), "nous-public-ws-"));
+    await mkdir(join(workspaces, "andy"));
+    await writeFile(join(workspaces, "andy", "hello.txt"), "hello from the pane\n");
+    const files = createNousFiles({ root: workspaces, ownRoot: join(workspaces, "nous"), artifactRoot: join(workspaces, "artifacts"), rooms: async () => [],
+      listArtifacts: async () => [], getArtifact: async () => { throw new Error("none"); } });
+    expect(await files.read(owner, { path: `${NOUS_FILES_ROOT}/andy/hello.txt` })).toContain("hello from the pane");
+    await files.write({ path: `${NOUS_FILES_ROOT}/nous/briefs/andy.md`, text: "Brief", mode: "write" });
+    expect(await files.read(owner, { path: "nous/briefs/andy.md" })).toContain("Brief");
+  });
+
   it("starts lean on a self-hosted install and keeps what the owner chose", () => {
     const lean = nousSettingsSchema.parse(withNousPublicDefaults({}));
     expect(lean).toMatchObject({ enabled: false, maxTurnsPerHour: 6, shell: false, paneBoard: { enabled: false }, standingOrders: { closeFinishedPanes: false, dailyReview: false },
@@ -121,6 +141,14 @@ describe("where Nous's turns run (plan clipboard:1NF6u6gcCwtj, operator decision
     expect(Object.values(lean.models)).toEqual([...Array(6)].map((_, index) => ({ model: "claude-sonnet-5-5", effort: index < 2 ? "medium" : "low" })));
     const chosen = nousSettingsSchema.parse(withNousPublicDefaults({ shell: true, models: { operator: { model: "claude-opus-5-5", effort: "high" } }, goals: { loop: false } }));
     expect(chosen).toMatchObject({ shell: true, maxTurnsPerHour: 6, goals: { loop: false, gapSeconds: 900 }, models: { operator: { model: "claude-opus-5-5", effort: "high" }, goal: { model: "claude-sonnet-5-5", effort: "low" } } });
+  });
+
+  it("hides the maintainer's business tabs on a self-hosted install until the owner turns one on", () => {
+    expect(nousSettingsSchema.parse(withNousPublicDefaults({})).dockTabs).toEqual({ startup: false, funding: false, crypto: false });
+    const own = nousSettingsSchema.parse(withNousPublicDefaults({ dockTabs: { crypto: true, load: false } })).dockTabs;
+    expect(own).toEqual({ startup: false, funding: false, crypto: true, load: false });
+    // This server keeps its stored settings as they are: no public defaults, every tab on unless switched off.
+    expect(nousSettingsSchema.parse({}).dockTabs).toBeUndefined();
   });
 
   it("turns on only once Claude Code is connected (the one switch)", async () => {

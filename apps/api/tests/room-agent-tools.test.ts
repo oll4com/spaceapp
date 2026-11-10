@@ -97,6 +97,12 @@ describe("Room Agent tools", () => {
     expect(self.ok).toBe(false);
   });
 
+  it("names the pane's current CLI session on a screen read (R9-5 part 2)", async () => {
+    // Operator 28/10 14:57 BKK: Nous found cli_session:jZWVEEDhWt3y's pane only with a database query.
+    const c = fixture();
+    expect((await c.tools.execute("read_pane", { pane: "Bob" }, c.ctx)).result).toMatch(/^Bob \(TERMINAL cli:codex; cli_session:bob; state /);
+  });
+
   it("waits for a just-opened CLI's prompt before setting its model, and tells how to answer a pane that is not on a question", async () => {
     const c = fixture();
     const base = await c.deps.inspectPane(c.bob as never);

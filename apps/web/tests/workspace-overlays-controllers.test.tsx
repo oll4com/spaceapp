@@ -98,6 +98,43 @@ describe("useAppNotices", () => {
     window.history.replaceState({}, "", "/?googleLinkError=Access%20denied");
     const second = renderHook(() => useAppNotices());
     expect(second.result.current.accountError).toBe("Access denied");
+    cleanup();
+    // Stable 7/11: a Google step-up refused for AUTH_TIME_MISSING redirected here and the reason was never shown.
+    window.history.replaceState({}, "", "/?mobileStepUpError=Google%20did%20not%20say%20when%20you%20signed%20in");
+    expect(renderHook(() => useAppNotices()).result.current.accountError).toBe("Google did not say when you signed in");
+    expect(window.location.search).toBe("");
+  });
+
+  it("keeps the Google step-up's long refusal until closed and says to press Pair a phone after a confirmed one", () => {
+    vi.useFakeTimers();
+    window.history.replaceState({}, "", "/?mobileStepUpError=Google%20did%20not%20say%20when%20you%20signed%20in");
+    const { result } = renderHook(() => useAppNotices());
+    act(() => { vi.advanceTimersByTime(60_000); });
+    expect(result.current.accountError).not.toBeNull();
+    cleanup();
+    window.history.replaceState({}, "", "/?mobileStepUp=ok");
+    expect(renderHook(() => useAppNotices()).result.current.accountNotice).toContain("Press Pair a phone");
+  });
+
+  it("a Google step-up that Pair a phone started opens Settings > Account to pair (7/11: no hidden step after Google)", () => {
+    vi.useFakeTimers();
+    const opened = vi.fn();
+    window.addEventListener("space:open-settings-section", opened);
+    try {
+      window.sessionStorage.setItem("space:mobile-pair-after-step-up", JSON.stringify({ at: Date.now() }));
+      window.history.replaceState({}, "", "/?mobileStepUp=ok");
+      const { result } = renderHook(() => useAppNotices());
+      expect(result.current.accountNotice).toContain("shows your pairing code");
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(opened).toHaveBeenCalledTimes(1);
+      expect((opened.mock.calls[0]![0] as CustomEvent).detail).toMatchObject({ key: "account" });
+      expect(JSON.parse(window.sessionStorage.getItem("space:mobile-pair-after-step-up")!)).toMatchObject({ confirmed: expect.any(Number) });
+      cleanup();
+      // A refused step-up drops the mark.
+      window.history.replaceState({}, "", "/?mobileStepUpError=No");
+      renderHook(() => useAppNotices());
+      expect(window.sessionStorage.getItem("space:mobile-pair-after-step-up")).toBeNull();
+    } finally { window.removeEventListener("space:open-settings-section", opened); window.sessionStorage.clear(); }
   });
 
   it("collects watchdog alerts once per id and dismisses them", () => {

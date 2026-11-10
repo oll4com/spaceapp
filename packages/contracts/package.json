@@ -13,19 +13,31 @@
     "./tool-routing": {
       "types": "./dist/tool-routing.d.ts",
       "import": "./dist/tool-routing.js"
+    },
+    "./sentry": {
+      "types": "./dist/sentry.d.ts",
+      "import": "./dist/sentry.js"
+    },
+    "./sentry-node": {
+      "types": "./dist/sentry-node.d.ts",
+      "import": "./dist/sentry-node.js"
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node ../../scripts/space-sentry-release.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
+    "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",
-    "zod": "^4.6.7"
+    "@noble/hashes": "^2.4.0",
+    "tldts": "^7.4.4",
+    "zod": "^4.6.7",
+    "@sentry/node": "11.10.0"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.12"
   },
   "license": "MIT"

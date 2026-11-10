@@ -187,8 +187,8 @@ describe("hostile or broken input", () => {
       decide: async () => ({ items: [] }) });
     await f.service.tick();
     const seen = f.decide.mock.calls[0]![0].candidates;
-    expect(seen).toHaveLength(20);
-    // 15 mails and 5 events reach the model; all 15 mails were seen, so the cursor moves to the newest.
+    expect(seen).toHaveLength(25);
+    // Every new mail and event reaches the model (no count since 31/10); all 15 mails were seen, so the cursor moves to the newest.
     expect(f.saved()?.cursors["mail:acct:1"]).toBe(messages[0]!.receivedAt);
   });
 });

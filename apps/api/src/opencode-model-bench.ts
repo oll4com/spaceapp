@@ -1,4 +1,4 @@
-import { execFile, spawn } from "./safe-child-process.js";
+import { execFile } from "./safe-child-process.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import type { SystemAnalyticsModel } from "@space/contracts";
 import { opencodeBenchResponseSchema } from "@space/contracts";
 import type { SystemAnalyticsRepository } from "@space/db";
 import { childProcessEnv } from "./child-process-env.js";
+import { SPACE_AGENT_HOME } from "@space/contracts";
 
 const execFileAsync = promisify(execFile);
 const opencodeBin = "/usr/local/bin/opencode";
@@ -82,7 +83,7 @@ async function runOpenCode2Models(provider: string): Promise<OpencodeVerboseMode
   try {
     const { stdout } = await execFileAsync(opencodeBin, ["api", "GET", "/api/model", "--standalone"], {
       timeout: probeTimeoutMs, maxBuffer, cwd: scratch,
-      env: { ...childProcessEnv(), HOME: scratch, XDG_CONFIG_HOME: "/var/lib/spaceapp-user/.config", XDG_DATA_HOME: join(scratch, "data"),
+      env: { ...childProcessEnv(), HOME: scratch, XDG_CONFIG_HOME: `${SPACE_AGENT_HOME}/.config`, XDG_DATA_HOME: join(scratch, "data"),
         XDG_STATE_HOME: join(scratch, "state"), XDG_CACHE_HOME: join(scratch, "cache"), TMPDIR: scratch }
     });
     return openCode2Models(String(stdout), provider);
@@ -101,7 +102,7 @@ async function runOpencodeVerbose(provider: string): Promise<OpencodeVerboseMode
 async function probeProviderLatency(baseUrl: string, tokenPath: string | null): Promise<{ ok: boolean; latencyMs: number | null }> {
   const started = Date.now();
   try {
-    let headers: Record<string, string> = { accept: "application/json" };
+    const headers: Record<string, string> = { accept: "application/json" };
     if (tokenPath) {
       try {
         const token = (await readFile(tokenPath, "utf8")).trim();
@@ -134,8 +135,8 @@ async function probeChatHttp(providerId: string, modelId: string, prompt: string
     ? "https://openrouter.ai/api/v1"
     : (isGo ? "https://opencode.ai/zen/go/v1" : "https://opencode.ai/zen/v1");
   const tokenPath = isOpenRouter
-    ? "/var/lib/spaceapp-user/.config/opencode/openrouter.token"
-    : (isGo ? "/var/lib/spaceapp-user/.config/opencode/opencode-go.token" : null);
+    ? `${SPACE_AGENT_HOME}/.config/opencode/openrouter.token`
+    : (isGo ? `${SPACE_AGENT_HOME}/.config/opencode/opencode-go.token` : null);
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (tokenPath) {
     try {
@@ -340,8 +341,8 @@ export class OpencodeModelBenchService {
     // probe latencies for endpoints
     const [zenProbe, zenGoProbe, openrouterProbe] = await Promise.all([
       this.probeLatency("https://opencode.ai/zen/v1", null),
-      this.probeLatency("https://opencode.ai/zen/go/v1", "/var/lib/spaceapp-user/.config/opencode/opencode-go.token"),
-      this.probeLatency("https://openrouter.ai/api/v1", "/var/lib/spaceapp-user/.config/opencode/openrouter.token")
+      this.probeLatency("https://opencode.ai/zen/go/v1", `${SPACE_AGENT_HOME}/.config/opencode/opencode-go.token`),
+      this.probeLatency("https://openrouter.ai/api/v1", `${SPACE_AGENT_HOME}/.config/opencode/openrouter.token`)
     ]);
 
     const isFreeOpenRouter = (m: OpencodeVerboseModel) => {
@@ -691,8 +692,8 @@ export class OpencodeModelBenchService {
   private buildNotices(items: any[], zenProbe: { ok: boolean; latencyMs: number | null }, zenGoProbe: { ok: boolean; latencyMs: number | null }, openrouterProbe: { ok: boolean; latencyMs: number | null }): string[] {
     const notices: string[] = [];
     if (!zenProbe.ok) notices.push("Zen (opencode) endpoint probe failed — network DEGRADED for free models. TTFT/tok/s history used as fallback.");
-    if (!zenGoProbe.ok) notices.push("Zen Go endpoint probe failed or token missing — opencode-go models DEGRADED. Check /var/lib/spaceapp-user/.config/opencode/opencode-go.token.");
-    if (!openrouterProbe.ok) notices.push("OpenRouter endpoint probe failed or token missing — openrouter models DEGRADED. Check /var/lib/spaceapp-user/.config/opencode/openrouter.token.");
+    if (!zenGoProbe.ok) notices.push(`Zen Go endpoint probe failed or token missing — opencode-go models DEGRADED. Check ${SPACE_AGENT_HOME}/.config/opencode/opencode-go.token.`);
+    if (!openrouterProbe.ok) notices.push(`OpenRouter endpoint probe failed or token missing — openrouter models DEGRADED. Check ${SPACE_AGENT_HOME}/.config/opencode/openrouter.token.`);
     if (items.every((i) => i.avgTtftMs === null)) notices.push("No TTFT/tok/s history for this range — speed scores are indicative (baseline). Select 7d/30d for richer signal.");
     const liveFails = items.filter((i: any) => i._liveProbe && !i._liveProbe.ok);
     if (liveFails.length > 0) {

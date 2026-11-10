@@ -19,6 +19,7 @@ import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import type { SpaceConfigBundle, ImportConfigResult, ImportConfigMode } from "@space/contracts";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { useDockConfirm } from "../dock-kit/DockKit.js";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import "./configuration-migration.css";
 
 const cliAuthReasons: Record<string, string> = {
@@ -36,6 +37,8 @@ const rotationWarning = "Using the same login on two installations can sign one 
 const minPassphraseLength = 12;
 
 export function ConfigurationMigrationCard({ canManageInstallation = false }: { canManageInstallation?: boolean }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportNote, setExportNote] = useState<string | null>(null);
@@ -68,8 +71,8 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
 
   const exportsSecrets = canManageInstallation && (includeApiKeys || includeCredentials);
   const passphraseProblem = !exportsSecrets ? null
-    : exportPassphrase.length < minPassphraseLength ? `Enter a passphrase of at least ${minPassphraseLength} characters.`
-      : exportPassphrase !== exportPassphraseConfirm ? "The two passphrases do not match." : null;
+    : exportPassphrase.length < minPassphraseLength ? t("Enter a passphrase of at least {min} characters.", { min: minPassphraseLength })
+      : exportPassphrase !== exportPassphraseConfirm ? t("The two passphrases do not match.") : null;
 
   const toggleIncludeCredentials = (next: boolean) => {
     setIncludeCredentials(next);
@@ -77,7 +80,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
     void Promise.resolve().then(() => api.configurationCliLogins()).then(({ items }) => {
       setCliLogins(items);
       setExportRuntimes(items.filter((login) => login.exportable && login.loggedIn).map((login) => login.runtimeId));
-    }, (err: unknown) => setExportError(err instanceof Error ? err.message : "Could not read the CLI logins."));
+    }, (err: unknown) => setExportError(err instanceof Error ? err.message : t("Could not read the CLI logins.")));
   };
 
   const handleExport = async () => {
@@ -110,11 +113,11 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
       URL.revokeObjectURL(url);
       const included = bundle.sections?.cliAuth?.runtimes ?? [];
       const missing = includeCredentials ? exportRuntimes.filter((runtimeId) => !included.includes(runtimeId)) : [];
-      if (missing.length) setExportNote(`No login file was found for ${missing.join(", ")}; those CLIs need a sign-in on the new computer.`);
+      if (missing.length) setExportNote(t("No login file was found for {names}; those CLIs need a sign-in on the new computer.", { names: missing.join(", ") }));
       setExportPassphrase("");
       setExportPassphraseConfirm("");
     } catch (err: unknown) {
-      setExportError(err instanceof Error ? err.message : "Failed to export configuration.");
+      setExportError(err instanceof Error ? err.message : t("Failed to export configuration."));
     } finally {
       setIsExporting(false);
     }
@@ -138,12 +141,12 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
       try {
         parsedJson = JSON.parse(text);
       } catch {
-        throw new Error("Selected file is not valid JSON.");
+        throw new Error(t("Selected file is not valid JSON."));
       }
 
       const inspectRes = await api.inspectConfiguration(parsedJson);
       if (!inspectRes.valid) {
-        throw new Error("This file is not a SpaceApp backup.");
+        throw new Error(t("This file is not a SpaceApp backup."));
       }
 
       setInspection(inspectRes);
@@ -151,7 +154,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
       setProjectFolder("");
       setRawBundle(parsedJson as SpaceConfigBundle);
     } catch (err: unknown) {
-      setImportError(err instanceof Error ? err.message : "Failed to parse configuration file.");
+      setImportError(err instanceof Error ? err.message : t("Failed to parse configuration file."));
     } finally {
       setIsInspecting(false);
     }
@@ -160,7 +163,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
   const handleImport = async () => {
     if (!canManageInstallation || !rawBundle) return;
     const confirmReplace = importMode === "replace";
-    if (confirmReplace && !await confirm({ title: "Replace everything?", message: "Your current rooms, panes, links, clipboard items, plans and tasks will be deleted, then the backup is set up. This cannot be undone.", confirmLabel: "Replace everything" })) return;
+    if (confirmReplace && !await confirm({ title: t("Replace everything?"), message: t("Your current rooms, panes, links, clipboard items, plans and tasks will be deleted, then the backup is set up. This cannot be undone."), confirmLabel: t("Replace everything") })) return;
     setIsImporting(true);
     setImportError(null);
     try {
@@ -178,7 +181,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
       setImportPassphrase("");
       setImportResult(res);
     } catch (err: unknown) {
-      setImportError(err instanceof Error ? err.message : "Failed to import configuration.");
+      setImportError(err instanceof Error ? err.message : t("Failed to import configuration."));
     } finally {
       setIsImporting(false);
     }
@@ -189,32 +192,32 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
   };
 
   return (
-    <div className="config-migration-card" aria-label="Configuration backup and migration">
+    <div className="config-migration-card" aria-label={t("Configuration backup and migration")}>
       {/* Export Section */}
       <div className="config-migration-section">
         <div className="config-migration-section-header">
           <div className="config-migration-section-title">
             <Download size={18} aria-hidden="true" />
-            <span>Save a backup</span>
+            <span>{t("Save a backup")}</span>
           </div>
         </div>
         <p className="config-migration-desc">
-          Download one file with your rooms, panes, preferences, bookmarks, plans and CLI defaults.
+          {t("Download one file with your rooms, panes, preferences, bookmarks, plans and CLI defaults.")}
         </p>
 
         {canManageInstallation ? <div className="config-migration-options-group">
           <SpaceToggle
             className="config-migration-toggle-row"
             name="export-include-api-keys"
-            ariaLabel="Include Provider API Keys"
+            ariaLabel={t("Include Provider API Keys")}
             label={
               <span className="config-migration-toggle-title">
                 <Key size={14} color="#f59e0b" />
-                <span>Include Provider API Keys</span>
-                <span className="config-migration-badge sensitive">Sensitive</span>
+                <span>{t("Include Provider API Keys")}</span>
+                <span className="config-migration-badge sensitive">{t("Sensitive")}</span>
               </span>
             }
-            detail="Adds your AI service keys (OpenAI, Anthropic, DeepSeek and others) to the file. Keep the file private."
+            detail={t("Adds your AI service keys (OpenAI, Anthropic, DeepSeek and others) to the file. Keep the file private.")}
             checked={includeApiKeys}
             disabled={isExporting}
             onChange={setIncludeApiKeys}
@@ -223,22 +226,22 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
           <SpaceToggle
             className="config-migration-toggle-row"
             name="export-include-credentials"
-            ariaLabel="Include CLI logins"
+            ariaLabel={t("Include CLI logins")}
             label={
               <span className="config-migration-toggle-title">
                 <Lock size={14} color="#f59e0b" />
-                <span>Include CLI logins</span>
-                <span className="config-migration-badge sensitive">Sensitive</span>
+                <span>{t("Include CLI logins")}</span>
+                <span className="config-migration-badge sensitive">{t("Sensitive")}</span>
               </span>
             }
-            detail="Adds the sign-ins of the AI coding tools you pick below, so they start signed in on the other computer."
+            detail={t("Adds the sign-ins of the AI coding tools you pick below, so they start signed in on the other computer.")}
             checked={includeCredentials}
             disabled={isExporting}
             onChange={toggleIncludeCredentials}
           />
 
           {includeCredentials && cliLogins ? (
-            <fieldset className="config-migration-check-list" aria-label="CLI logins to export">
+            <fieldset className="config-migration-check-list" aria-label={t("CLI logins to export")}>
               {cliLogins.map((login) => {
                 const available = login.exportable && login.loggedIn;
                 return (
@@ -247,7 +250,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
                     compact
                     className="config-migration-check-row"
                     label={login.displayName}
-                    detail={!login.exportable ? "not exportable" : login.loggedIn ? "signed in" : "not signed in"}
+                    detail={!login.exportable ? t("not exportable") : login.loggedIn ? t("signed in") : t("not signed in")}
                     checked={available && exportRuntimes.includes(login.runtimeId)}
                     disabled={!available || isExporting}
                     onChange={(checked) => setExportRuntimes((current) => checked
@@ -262,21 +265,21 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
           {exportsSecrets ? (
             <div className="config-migration-fields">
               <label className="config-migration-field">
-                <span>Passphrase (at least {minPassphraseLength} characters)</span>
+                <span>{t("Passphrase (at least {min} characters)", { min: minPassphraseLength })}</span>
                 <input type="password" autoComplete="new-password" value={exportPassphrase} disabled={isExporting}
                   onChange={(event) => setExportPassphrase(event.target.value)} />
               </label>
               <label className="config-migration-field">
-                <span>Confirm passphrase</span>
+                <span>{t("Confirm passphrase")}</span>
                 <input type="password" autoComplete="new-password" value={exportPassphraseConfirm} disabled={isExporting}
                   onChange={(event) => setExportPassphraseConfirm(event.target.value)} />
               </label>
               <p className="config-migration-alert warn">
-                The keys and logins are encrypted with this passphrase. Anyone who has the file and the passphrase can use your accounts.
+                {t("The keys and logins are encrypted with this passphrase. Anyone who has the file and the passphrase can use your accounts.")}
               </p>
             </div>
           ) : null}
-        </div> : <p className="config-migration-desc">Import and secret exports require ADMIN or OPERATOR access.</p>}
+        </div> : <p className="config-migration-desc">{t("Import and secret exports require ADMIN or OPERATOR access.")}</p>}
 
         {exportError ? (
           <div className="config-migration-alert bad" role="alert">
@@ -294,7 +297,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
             disabled={isExporting}
           >
             {isExporting ? <RefreshCw size={16} className="spin" /> : <Download size={16} />}
-            <span>{isExporting ? "Exporting..." : "Download backup file"}</span>
+            <span>{isExporting ? t("Exporting...") : t("Download backup file")}</span>
           </button>
         </div>
       </div>
@@ -304,11 +307,11 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
         <div className="config-migration-section-header">
           <div className="config-migration-section-title">
             <Upload size={18} aria-hidden="true" />
-            <span>Restore from a backup</span>
+            <span>{t("Restore from a backup")}</span>
           </div>
         </div>
         <p className="config-migration-desc">
-          Load a backup file saved here or on another Space.
+          {t("Load a backup file saved here or on another Space.")}
         </p>
 
         {/* Mode Selector */}
@@ -323,8 +326,8 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
               disabled={isImporting}
             />
             <div className="config-migration-mode-info">
-              <strong>Replace everything</strong>
-              <small>Deletes your current rooms, panes, links, clipboard and tasks, then sets everything up exactly as in the backup. You confirm before anything is deleted.</small>
+              <strong>{t("Replace everything")}</strong>
+              <small>{t("Deletes your current rooms, panes, links, clipboard and tasks, then sets everything up exactly as in the backup. You confirm before anything is deleted.")}</small>
             </div>
           </label>
 
@@ -338,8 +341,8 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
               disabled={isImporting}
             />
             <div className="config-migration-mode-info">
-              <strong>Merge with what I have</strong>
-              <small>Keeps your current rooms, panes and bookmarks and adds the ones from the backup.</small>
+              <strong>{t("Merge with what I have")}</strong>
+              <small>{t("Keeps your current rooms, panes and bookmarks and adds the ones from the backup.")}</small>
             </div>
           </label>
         </div>
@@ -372,15 +375,15 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
         >
           <FileJson size={32} color="var(--text-muted, #888)" />
           <div>
-            <strong>{selectedFileName ? selectedFileName : "Choose a backup file (.json or .spaceapp)"}</strong>
-            <p className="config-migration-desc">Click to browse, or drop the file here.</p>
+            <strong>{selectedFileName ? selectedFileName : t("Choose a backup file (.json or .spaceapp)")}</strong>
+            <p className="config-migration-desc">{t("Click to browse, or drop the file here.")}</p>
           </div>
         </div>
 
         {isInspecting ? (
           <div className="config-migration-meta">
             <RefreshCw size={14} className="spin" />
-            <span>Checking the backup file…</span>
+            <span>{t("Checking the backup file…")}</span>
           </div>
         ) : null}
 
@@ -395,66 +398,66 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
         {inspection && !importResult ? (
           <div className="config-migration-preview">
             <div className="config-migration-meta">
-              <span>Source: <strong>{inspection.source.instance}</strong></span>
-              <span>Exported: <strong>{new Date(inspection.exportedAt).toLocaleString()}</strong></span>
-              <span>Version: <strong>{inspection.version}</strong></span>
+              <span>{t("Source:")} <strong>{inspection.source.instance}</strong></span>
+              <span>{t("Exported:")} <strong>{new Date(inspection.exportedAt).toLocaleString()}</strong></span>
+              <span>{t("Version:")} <strong>{inspection.version}</strong></span>
             </div>
 
             <div className="config-migration-stats-grid">
               <div className="config-migration-stat-badge">
                 <Layers size={16} color="#60a5fa" />
                 <span className="stat-count">{inspection.summary.roomsCount}</span>
-                <span className="stat-label">Rooms</span>
+                <span className="stat-label">{t("Rooms")}</span>
               </div>
               <div className="config-migration-stat-badge">
                 <span className="stat-count">{inspection.summary.panesCount}</span>
-                <span className="stat-label">Panes</span>
+                <span className="stat-label">{t("Panes")}</span>
               </div>
               <div className="config-migration-stat-badge">
                 <Bookmark size={16} color="#34d399" />
                 <span className="stat-count">{inspection.summary.userLinksCount}</span>
-                <span className="stat-label">Bookmarks</span>
+                <span className="stat-label">{t("Bookmarks")}</span>
               </div>
               <div className="config-migration-stat-badge">
                 <ClipboardList size={16} color="#fbbf24" />
                 <span className="stat-count">{inspection.summary.clipboardItemsCount}</span>
-                <span className="stat-label">Plans / Notes</span>
+                <span className="stat-label">{t("Plans / Notes")}</span>
               </div>
               <div className="config-migration-stat-badge">
                 <SlidersHorizontal size={16} color="#a78bfa" />
                 <span className="stat-count">{inspection.summary.cliRuntimeSettingsCount}</span>
-                <span className="stat-label">CLI Runtimes</span>
+                <span className="stat-label">{t("CLI Runtimes")}</span>
               </div>
               <div className="config-migration-stat-badge">
                 <Server size={16} color="#f472b6" />
                 <span className="stat-count">{inspection.summary.providersCount}</span>
-                <span className="stat-label">Providers</span>
+                <span className="stat-label">{t("Providers")}</span>
               </div>
               {(inspection.summary.apiKeysCount ?? 0) > 0 ? (
                 <div className="config-migration-stat-badge">
                   <Key size={16} color="#f59e0b" />
                   <span className="stat-count">{inspection.summary.apiKeysCount}</span>
-                  <span className="stat-label">API Keys</span>
+                  <span className="stat-label">{t("API Keys")}</span>
                 </div>
               ) : null}
               {(inspection.summary.credentialsCount ?? 0) > 0 ? (
                 <div className="config-migration-stat-badge">
                   <Lock size={16} color="#f59e0b" />
                   <span className="stat-count">{inspection.summary.credentialsCount}</span>
-                  <span className="stat-label">Credentials</span>
+                  <span className="stat-label">{t("Credentials")}</span>
                 </div>
               ) : null}
             </div>
 
             {inspection.warnings?.length ? (
-              <ul className="config-migration-list warn" aria-label="Checks for this computer">
+              <ul className="config-migration-list warn" aria-label={t("Checks for this computer")}>
                 {inspection.warnings.map((warning) => <li key={warning}>{warning}</li>)}
               </ul>
             ) : null}
 
             {inspection.missingProjectRoots?.length ? (
               <label className="config-migration-field">
-                <span>Project folder on this computer for {inspection.missingProjectRoots[0]} (optional)</span>
+                <span>{t("Project folder on this computer for {folder} (optional)", { folder: inspection.missingProjectRoots[0] ?? "" })}</span>
                 <input type="text" placeholder="/home/you/Projects/space" value={projectFolder} disabled={isImporting}
                   onChange={(event) => setProjectFolder(event.target.value)} />
               </label>
@@ -462,7 +465,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
 
             {inspection.secrets?.plaintextApiKeys ? (
               <p className="config-migration-alert warn">
-                This older backup stores API keys unencrypted. Delete it after the import and consider replacing those keys.
+                {t("This older backup stores API keys unencrypted. Delete it after the import and consider replacing those keys.")}
               </p>
             ) : null}
 
@@ -470,7 +473,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
               <div className="config-migration-options-group">
                 {inspection.secrets?.encrypted ? (
                   <label className="config-migration-field">
-                    <span>Backup passphrase</span>
+                    <span>{t("Backup passphrase")}</span>
                     <input type="password" autoComplete="off" value={importPassphrase} disabled={isImporting}
                       onChange={(event) => setImportPassphrase(event.target.value)} />
                   </label>
@@ -479,14 +482,14 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
                   <SpaceToggle
                     className="config-migration-toggle-row"
                     name="import-api-keys"
-                    ariaLabel={`Import Provider API Keys (${inspection.summary.apiKeysCount} found)`}
+                    ariaLabel={t("Import Provider API Keys ({count} found)", { count: inspection.summary.apiKeysCount ?? 0 })}
                     label={
                       <span className="config-migration-toggle-title">
                         <Key size={14} color="#f59e0b" />
-                        <span>Import Provider API Keys ({inspection.summary.apiKeysCount} found)</span>
+                        <span>{t("Import Provider API Keys ({count} found)", { count: inspection.summary.apiKeysCount ?? 0 })}</span>
                       </span>
                     }
-                    detail="Restores the AI service keys saved in the backup."
+                    detail={t("Restores the AI service keys saved in the backup.")}
                     checked={importApiKeys}
                     disabled={isImporting}
                     onChange={setImportApiKeys}
@@ -498,20 +501,20 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
                     <SpaceToggle
                       className="config-migration-toggle-row"
                       name="import-credentials"
-                      ariaLabel={`Import CLI logins (${inspection.secrets.cliAuthRuntimes.length} found)`}
+                      ariaLabel={t("Import CLI logins ({count} found)", { count: inspection.secrets.cliAuthRuntimes.length })}
                       label={
                         <span className="config-migration-toggle-title">
                           <Lock size={14} color="#f59e0b" />
-                          <span>Import CLI logins ({inspection.secrets.cliAuthRuntimes.length} found)</span>
+                          <span>{t("Import CLI logins ({count} found)", { count: inspection.secrets.cliAuthRuntimes.length })}</span>
                         </span>
                       }
-                      detail={rotationWarning}
+                      detail={t(rotationWarning)}
                       checked={importCredentials}
                       disabled={isImporting}
                       onChange={setImportCredentials}
                     />
                     {importCredentials ? (
-                      <fieldset className="config-migration-check-list" aria-label="CLI logins to import">
+                      <fieldset className="config-migration-check-list" aria-label={t("CLI logins to import")}>
                         {inspection.secrets.cliAuthRuntimes.map((runtimeId) => (
                           <SpaceToggle key={runtimeId} compact className="config-migration-check-row"
                             label={runtimeId.replace(/^cli:/, "")} checked={importRuntimes.includes(runtimeId)} disabled={isImporting}
@@ -520,11 +523,11 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
                               : current.filter((id) => id !== runtimeId))} />
                         ))}
                         <label className="config-migration-field">
-                          <span>When this computer already has a login</span>
+                          <span>{t("When this computer already has a login")}</span>
                           <select value={cliAuthConflict} disabled={isImporting}
                             onChange={(event) => setCliAuthConflict(event.target.value as typeof cliAuthConflict)}>
-                            <option value="backup-and-replace">Keep a backup copy and replace it</option>
-                            <option value="skip-if-logged-in">Keep the login already here</option>
+                            <option value="backup-and-replace">{t("Keep a backup copy and replace it")}</option>
+                            <option value="skip-if-logged-in">{t("Keep the login already here")}</option>
                           </select>
                         </label>
                       </fieldset>
@@ -542,7 +545,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
                 disabled={isImporting}
               >
                 {isImporting ? <RefreshCw size={16} className="spin" /> : <Upload size={16} />}
-                <span>{isImporting ? "Applying Configuration..." : `Apply & Import (${importMode.toUpperCase()})`}</span>
+                <span>{isImporting ? t("Applying Configuration...") : importMode === "replace" ? t("Apply & Import (REPLACE)") : t("Apply & Import (MERGE)")}</span>
               </button>
             </div>
           </div>
@@ -553,62 +556,65 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
           <div className="config-migration-preview">
             <div className="config-migration-alert good">
               <CheckCircle2 size={18} />
-              <span><strong>Configuration successfully imported!</strong></span>
+              <span><strong>{t("Configuration successfully imported!")}</strong></span>
             </div>
             <div className="config-migration-stats-grid">
               <div className="config-migration-stat-badge">
                 <span className="stat-count">{importResult.stats.roomsImported}</span>
-                <span className="stat-label">Rooms Imported</span>
+                <span className="stat-label">{t("Rooms Imported")}</span>
               </div>
               <div className="config-migration-stat-badge">
                 <span className="stat-count">{importResult.stats.panesImported}</span>
-                <span className="stat-label">Panes Imported</span>
+                <span className="stat-label">{t("Panes Imported")}</span>
               </div>
               <div className="config-migration-stat-badge">
                 <span className="stat-count">{importResult.stats.linksImported}</span>
-                <span className="stat-label">Links Imported</span>
+                <span className="stat-label">{t("Links Imported")}</span>
               </div>
               <div className="config-migration-stat-badge">
                 <span className="stat-count">{importResult.stats.clipboardImported}</span>
-                <span className="stat-label">Plans Imported</span>
+                <span className="stat-label">{t("Plans Imported")}</span>
               </div>
               {importResult.stats.apiKeysImported ? (
                 <div className="config-migration-stat-badge">
                   <Key size={16} color="#f59e0b" />
                   <span className="stat-count">{importResult.stats.apiKeysImported}</span>
-                  <span className="stat-label">API Keys</span>
+                  <span className="stat-label">{t("API Keys")}</span>
                 </div>
               ) : null}
               {importResult.stats.credentialsImported ? (
                 <div className="config-migration-stat-badge">
                   <Lock size={16} color="#f59e0b" />
                   <span className="stat-count">{importResult.stats.credentialsImported}</span>
-                  <span className="stat-label">CLI logins</span>
+                  <span className="stat-label">{t("CLI logins")}</span>
                 </div>
               ) : null}
             </div>
 
             {importResult.cliAuth?.length ? (
-              <ul className="config-migration-list" aria-label="CLI logins">
+              <ul className="config-migration-list" aria-label={t("CLI logins")}>
                 {importResult.cliAuth.map((entry) => (
                   <li key={entry.runtimeId}>
                     <strong>{entry.runtimeId.replace(/^cli:/, "")}</strong>{": "}
                     {entry.result === "imported"
-                      ? entry.detect === "logged-in" ? "signed in" : "login restored; if it still asks you to sign in, use Create → CLI tools"
-                      : `${entry.result === "failed" ? "not imported" : "skipped"} (${cliAuthReasons[entry.reason ?? ""] ?? entry.reason ?? "unknown reason"})`}
+                      ? entry.detect === "logged-in" ? t("signed in") : t("login restored; if it still asks you to sign in, use Create → CLI tools")
+                      : t("{outcome} ({reason})", {
+                        outcome: t(entry.result === "failed" ? "not imported" : "skipped"),
+                        reason: cliAuthReasons[entry.reason ?? ""] ? t(cliAuthReasons[entry.reason ?? ""]!) : entry.reason ?? t("unknown reason")
+                      })}
                   </li>
                 ))}
               </ul>
             ) : null}
 
             {importResult.warnings.length ? (
-              <ul className="config-migration-list warn" aria-label="Import notes">
+              <ul className="config-migration-list warn" aria-label={t("Import notes")}>
                 {importResult.warnings.map((warning) => <li key={warning}>{warning}</li>)}
               </ul>
             ) : null}
 
             {rawBundle?.encrypted || inspection?.secrets?.plaintextApiKeys ? (
-              <p className="config-migration-desc">The import is done: delete the backup file from this computer, since it holds your keys and logins.</p>
+              <p className="config-migration-desc">{t("The import is done: delete the backup file from this computer, since it holds your keys and logins.")}</p>
             ) : null}
 
             <div className="config-migration-actions">
@@ -618,7 +624,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
                 onClick={handleReload}
               >
                 <RefreshCw size={16} />
-                <span>Reload SpaceApp to Apply Changes</span>
+                <span>{t("Reload SpaceApp to Apply Changes")}</span>
               </button>
             </div>
           </div>

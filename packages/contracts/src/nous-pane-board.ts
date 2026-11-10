@@ -6,6 +6,7 @@ import { z } from "zod";
  * only for panes whose data changed, with a cheap Claude model as one headless Claude Code run per batch (no tools).
  */
 export const NOUS_PANE_BOARD_MODELS = ["claude-haiku-5-5", "claude-sonnet-5-5"] as const;
+/** The board's one-line layout (the operator's design); the pane's own reports keep the whole text. */
 export const NOUS_PANE_BOARD_LINE_MAX = 200;
 export const NOUS_PANE_BOARD_DETAIL_MAX = 400;
 export const NOUS_PANE_BOARD_ANSWER_MAX = 2_000;

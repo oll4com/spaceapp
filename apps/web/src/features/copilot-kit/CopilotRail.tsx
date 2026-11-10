@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 import type { Activity } from "../ui-theme/app-icons.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
+import { useCalmUpstreamError } from "./CopilotNotice.js";
 
 export interface CopilotRailTabDefinition<TTab extends string = string> {
   id: TTab;
@@ -14,33 +16,39 @@ export interface CopilotRailTabDefinition<TTab extends string = string> {
  * The copilot rail: a tab strip (icons only when collapsed) and one panel per tab. Panels are
  * rendered by the parent so the terminal element stays mounted while another tab is active.
  * In the stacked layout the strip sits at the bottom of the pane and the main surface is a tab too.
+ * `firstRead` (the pane's notice text and whether its data loaded): while the first read failed in a restart, the tab panels are
+ * hidden (the strip says Loading…) instead of showing empty states; the terminal stays (nous_msg:1be51d08).
  */
-export function CopilotRail<TTab extends string>({ tabs, active, collapsed, layout = "split", onSelect, children }: {
+export function CopilotRail<TTab extends string>({ tabs, active, collapsed, layout = "split", onSelect, firstRead, children }: {
   tabs: CopilotRailTabDefinition<TTab>[];
   active: TTab;
   collapsed: boolean;
   layout?: "split" | "stacked";
   onSelect(tab: TTab): void;
+  firstRead?: { text: string | null | undefined; loaded: boolean };
   children: ReactNode;
 }) {
+  const language = useUiLanguage();
+  const pending = useCalmUpstreamError(firstRead?.text) && firstRead?.loaded === false;
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const stacked = layout === "stacked";
   return (
-    <aside className="jc-rail" data-collapsed={!stacked && collapsed ? "true" : undefined} data-layout={layout} aria-label="Copilot rail">
+    <aside className="jc-rail" data-collapsed={!stacked && collapsed ? "true" : undefined} data-layout={layout} aria-label={t("Copilot rail")}>
       <nav className="jc-rail-tabs" role="tablist" aria-orientation={!stacked && collapsed ? "vertical" : "horizontal"}>
         {tabs.filter((tab) => tab.available).map((tab) => {
           const Icon = tab.icon;
           const selected = tab.id === active;
           return (
             <button key={tab.id} type="button" role="tab" id={`jc-tab-${tab.id}`} aria-selected={selected} aria-controls={`jc-panel-${tab.id}`}
-              className={`jc-rail-tab${selected ? " selected" : ""}`} title={tab.label} onClick={() => onSelect(tab.id)}>
+              className={`jc-rail-tab${selected ? " selected" : ""}`} title={t(tab.label)} onClick={() => onSelect(tab.id)}>
               <Icon aria-hidden="true" />
-              <span className="jc-rail-tab-label">{tab.label}</span>
-              {tab.badge ? <span className="jc-rail-badge" aria-label={`${tab.badge} items`}>{tab.badge}</span> : null}
+              <span className="jc-rail-tab-label">{t(tab.label)}</span>
+              {tab.badge ? <span className="jc-rail-badge" aria-label={t("{count} items", { count: tab.badge })}>{tab.badge}</span> : null}
             </button>
           );
         })}
       </nav>
-      <div className="jc-rail-body">{children}</div>
+      <div className="jc-rail-body" data-first-read={pending ? "pending" : undefined}>{children}</div>
     </aside>
   );
 }

@@ -40,7 +40,8 @@ export class SourceControlService {
       validateConfiguration: (root, remote) => this.validateNetworkConfiguration(root, remote),
       environment: (binding, connection) => this.networkEnvironment(binding, connection) });
   }
-  get defaultGiteaUrl() { return this.options.defaultGiteaUrl || "https://example.invalid"; }
+  // No built-in server: SPACE_GITEA_URL names it (stable: deploy/space-api.service), else the operator enters one (EXT-C-F18).
+  get defaultGiteaUrl() { return this.options.defaultGiteaUrl || ""; }
   private initialize() { return this.initialization ??= this.options.credentials.initialize().catch(error => { this.initialization = null; throw error; }); }
   private publicConnection<P extends RepositoryProviderId>(record: PersonalGitConnectionRecord & { provider: P }): PersonalGitConnection<P> {
     // Explicit projection: stored secrets and future internal fields must never reach API responses.

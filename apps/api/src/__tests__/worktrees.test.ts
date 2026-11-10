@@ -67,6 +67,8 @@ describe("WorktreeService", () => {
     const found = list.find((item) => item.worktreePath === wt.worktreePath);
     expect(found).toBeDefined();
     expect(found?.branch).toBe("feat/isolated-agent-task");
+    // Ahead/behind main come from one for-each-ref run for every branch.
+    expect(found).toMatchObject({ aheadCount: 1, behindCount: 0, isDirty: false });
 
     // Merge the worktree back into main
     const mergeResult = await service.mergeWorktree(wt.worktreePath, {

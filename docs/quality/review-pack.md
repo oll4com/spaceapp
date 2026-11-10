@@ -87,4 +87,4 @@ node scripts/temporal-replay-check.mjs --limit 50   # read-only replay of live T
 generated from `review-findings.json` (`resolution` field) by `scripts/quality-known-limitations.mjs`
 and `npm run test:architecture` fails when it differs from the register. That check covers only
 `KNOWN_LIMITATIONS.md`: this pack and the README are kept in line by hand. Reviews so far, with model, commit and rating, are recorded in `verification-results.json`
-(`current.independentReview`), including the 2026-10-14 reviews of the v1.1.4 snapshot (`snapshotReviews`).
+(`current.independentReview`), including the 2026-10-14 reviews of the v1.1.4 snapshot, and the 2026-11-02 in-app runs and the 2026-11-03 vendor chat-site reviews of the v1.1.9 snapshot (`snapshotReviews`, one entry per method).

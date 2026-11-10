@@ -5,11 +5,12 @@ import type {
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { errorText, type SpaceGatewayClient } from "./gateway-client.js";
 import { gatewayLogsCsvUrl } from "./gateway-log-query.js";
+import { rangeFits, useHistoryPeriodDays } from "../history-period/use-history-period.js";
 import { accountName, formatCostPrecise, formatDateTime, formatMs, formatTokens, planLabel, providerLabel } from "./space-gateway-model.js";
 
 const ranges = [
   { id: "1h", label: "Last hour", ms: 3_600_000 }, { id: "24h", label: "Last 24 hours", ms: 86_400_000 },
-  { id: "7d", label: "Last 7 days", ms: 7 * 86_400_000 }, { id: "30d", label: "Last 30 days", ms: 30 * 86_400_000 }, { id: "all", label: "All kept logs", ms: 0 }
+  { id: "7d", label: "Last 7 days", ms: 7 * 86_400_000 }, { id: "30d", label: "Last 30 days", ms: 30 * 86_400_000 }, { id: "all", label: "All in your history period", ms: 0 }
 ] as const;
 type RangeId = (typeof ranges)[number]["id"];
 
@@ -85,6 +86,7 @@ function LogDetail({ log, names, timeFormat, onClose }: {
 
 export function GatewayLogsTab({ client, settings }: { client: SpaceGatewayClient; settings: GatewaySettings | null }) {
   const [range, setRange] = useState<RangeId>("24h");
+  const historyDays = useHistoryPeriodDays();
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Record<FilterKey, string[]>>({ statuses: [], providers: [], models: [], accountIds: [], apiKeyIds: [], clients: [] });
@@ -153,7 +155,7 @@ export function GatewayLogsTab({ client, settings }: { client: SpaceGatewayClien
           onChange={(event) => setSearch(event.target.value)} />
         <button type="submit" className="space-gateway-button">Search</button>
         <select className="gw-select" aria-label="Time range" value={range} onChange={(event) => { setRange(event.target.value as RangeId); setRangeStart(Date.now()); }}>
-          {ranges.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+          {ranges.filter((item) => rangeFits(item.id, historyDays)).map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
         </select>
         <button type="button" className="space-gateway-button" disabled={loading} onClick={() => setRangeStart(Date.now())}>Refresh</button>
         <a className="space-gateway-button" href={gatewayLogsCsvUrl(filter)} download>Export CSV</a>

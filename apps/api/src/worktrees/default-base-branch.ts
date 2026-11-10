@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
-const spaceRepository = "/opt/spaceapp";
-const queueDefaultTargetFile = "/opt/spaceapp/var/merge-queue/default-target";
+const spaceRepository = SPACE_INSTALL_ROOT;
+const queueDefaultTargetFile = `${SPACE_INSTALL_ROOT}/var/merge-queue/default-target`;
 
 /**
  * New worktrees of the Space repository start from the branch the merge queue

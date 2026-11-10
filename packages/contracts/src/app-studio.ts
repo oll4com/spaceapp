@@ -10,12 +10,12 @@ export const APP_STUDIO_PANE_MODE = "APP_STUDIO" as const;
 export const APP_STUDIO_PLATFORMS = ["ANDROID", "IOS"] as const;
 export type AppStudioPlatform = (typeof APP_STUDIO_PLATFORMS)[number];
 /** What the screen's camera takes away: drawn by the pane's device frame. */
-export type AppStudioCutout = "PUNCH_HOLE" | "NOTCH" | "ISLAND";
+export type AppStudioCutout = "PUNCH_HOLE" | "NOTCH" | "ISLAND" | "NONE";
 export interface AppStudioDevice {
   id: string;
   platform: AppStudioPlatform;
   label: string;
-  /** CSS pixels, portrait. */
+  /** CSS pixels as the device is held (a tablet has a portrait and a landscape preset). */
   width: number;
   height: number;
   /** CSS pixels the system bars and the cutout cover (env(safe-area-inset-*)). */
@@ -25,7 +25,8 @@ export interface AppStudioDevice {
 
 /**
  * The most-used current phone viewports (StatCounter mobile worldwide, Sept 2026; DeviceAtlas, May 2026); operator request
- * 2026-10-19: about ten, covering most phones, no old ones (414x896, the 2018-19 iPhone XR/11, is left out).
+ * 2026-10-19: about ten, covering most phones, no old ones (414x896, the 2018-19 iPhone XR/11, is left out). Operator 9/11
+ * (nous_msg:5b21060a76184915b789b10f): plus the Galaxy Tab S10 FE+, portrait and landscape, so one app is checked in both views.
  */
 export const APP_STUDIO_DEVICES: readonly AppStudioDevice[] = [
   { id: "android-360x800", platform: "ANDROID", label: "Galaxy A series", width: 360, height: 800, safeArea: { top: 32, bottom: 24 }, cutout: "PUNCH_HOLE" },
@@ -37,18 +38,25 @@ export const APP_STUDIO_DEVICES: readonly AppStudioDevice[] = [
   { id: "iphone-393x852", platform: "IOS", label: "iPhone 15 / 16", width: 393, height: 852, safeArea: { top: 59, bottom: 34 }, cutout: "ISLAND" },
   { id: "iphone-402x874", platform: "IOS", label: "iPhone 17 / 16 Pro", width: 402, height: 874, safeArea: { top: 62, bottom: 34 }, cutout: "ISLAND" },
   { id: "iphone-430x932", platform: "IOS", label: "iPhone Plus / Pro Max", width: 430, height: 932, safeArea: { top: 59, bottom: 34 }, cutout: "ISLAND" },
-  { id: "iphone-440x956", platform: "IOS", label: "iPhone 17 Pro Max", width: 440, height: 956, safeArea: { top: 62, bottom: 34 }, cutout: "ISLAND" }
+  { id: "iphone-440x956", platform: "IOS", label: "iPhone 17 Pro Max", width: 440, height: 956, safeArea: { top: 62, bottom: 34 }, cutout: "ISLAND" },
+  // Galaxy Tab S10 FE+ (SM-X620): 13.1" 2880x1800 (samsung.com, GSMArena) at density 320 (xhdpi, DPR 2), the density Samsung ships on its
+  // S9/S10 tablets (1440px.com measured: S9 1600x2560 -> 800x1280, S10+ 1752x2800 -> 876x1400, S10 Ultra 1848x2960 -> 924x1480) -> 900x1440 dp.
+  // shortcut: not measured on a real S10 FE+ (no published measurement; One UI's screen zoom changes it), measure window.innerWidth on one when at hand.
+  // Safe areas: the 24 dp status bar and One UI's default 48 dp three-button bar, which stays at the bottom in landscape too.
+  { id: "android-900x1440", platform: "ANDROID", label: "Galaxy Tab S10 FE+", width: 900, height: 1440, safeArea: { top: 24, bottom: 48 }, cutout: "NONE" },
+  { id: "android-1440x900", platform: "ANDROID", label: "Galaxy Tab S10 FE+", width: 1440, height: 900, safeArea: { top: 24, bottom: 48 }, cutout: "NONE" }
 ];
 export const APP_STUDIO_DEFAULT_DEVICE_IDS = ["android-412x915", "iphone-402x874"] as const;
 /** Format only (the presets may grow without a migration); `appStudioDevice` says whether one exists. */
-export const appStudioDeviceIdSchema = z.string().regex(/^(android|iphone)-\d{3}x\d{3}$/);
+export const appStudioDeviceIdSchema = z.string().regex(/^(android|iphone)-\d{3,4}x\d{3,4}$/);
 export function appStudioDevice(id: string): AppStudioDevice | null {
   return APP_STUDIO_DEVICES.find((device) => device.id === id) ?? null;
 }
 /** A route inside the app, e.g. "/" or "/settings". */
-/** A screen of the app: its path, an optional query string (a state such as ?state=locked) and #2-#5 for the screens below the first one. */
-export const appStudioRouteSchema = z.string().trim().min(1).max(200).regex(/^\/[A-Za-z0-9/_\-.[\]()]*(\?[A-Za-z0-9_\-.=&%,~+:]*)?(#[2-5])?$/)
+/** A screen of the app: its path, an optional query string (a state such as ?state=locked) and #2-#20 for the screens below the first one (a pane keeps APP_STUDIO_MAX_ROUTES screens, the operator's design). */
+export const appStudioRouteSchema = z.string().trim().min(1).max(200).regex(/^\/[A-Za-z0-9/_\-.[\]()]*(\?[A-Za-z0-9_\-.=&%,~+:]*)?(#([2-9]|1[0-9]|20))?$/)
   .refine((route) => !route.split(/[?#]/)[0]!.split("/").includes(".."), "A route never leaves the app.");
+/** The operator's design (AGENTS.md "App Studio Pane"): a pane keeps its newest 20 screens; older previews expire a day later. */
 export const APP_STUDIO_MAX_ROUTES = 20;
 
 // ---- pane metadata ------------------------------------------------------------------------------
@@ -109,7 +117,7 @@ export const appStudioEventSchema = z.object({
   type: appStudioEventTypeSchema,
   /** BRIEF: PENDING → TAKEN → DONE | FAILED; QUESTION: OPEN → ANSWERED; null for the timeline. */
   status: appStudioEventStatusSchema.nullable(),
-  message: z.string().min(1).max(APP_STUDIO_TEXT_MAX),
+  message: z.string().min(1),
   /** QUESTION: options, answer, answeredBy; BRIEF: requester, result; PREVIEW: devices, route. */
   payload: z.record(z.string(), z.unknown()),
   createdAt: isoDateTime,

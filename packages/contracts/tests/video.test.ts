@@ -53,7 +53,7 @@ describe("Video pane contracts", () => {
     const request = videoRequestCreateSchema.parse({ brief: "A 30-second highlight reel", sources: [{ artifactId: "artifact:abc12345" }], formatIds: ["youtube-short"], options: { technique: "silence", narration: { text: "Hello", language: "el" } } });
     expect(request).toMatchObject({ sources: [{ artifactId: "artifact:abc12345" }], formatIds: ["youtube-short"], options: { technique: "silence", narration: { text: "Hello", language: "el" } } });
     expect(videoRequestCreateSchema.parse({ brief: "x" })).toMatchObject({ sources: [], formatIds: [], options: {} });
-    expect(videoRequestCreateSchema.safeParse({ brief: "x", formatIds: Array(9).fill("x") }).success).toBe(false);
+    expect(videoRequestCreateSchema.safeParse({ brief: "x", formatIds: Array(9).fill("x") }).success).toBe(true); // no count since 31/10
   });
 
   it("checks a timeline: clips in order, bounded layers, defaults for every layer", () => {
@@ -67,8 +67,10 @@ describe("Video pane contracts", () => {
       { ...timeline, transition: "explode" }, { ...timeline, overlays: [{ artifactId: "artifact:ov123456", fromSec: 3, toSec: 1 }] }, { ...timeline, version: 2 }]) {
       expect(videoTimelineSchema.safeParse(bad).success, JSON.stringify(bad).slice(0, 80)).toBe(false);
     }
-    expect(VIDEO_TTS_LANGUAGES.el).toEqual(["chatterbox"]);
-    expect(VIDEO_TTS_LANGUAGES.en).toContain("kokoro");
+    expect(VIDEO_TTS_LANGUAGES.el).toEqual(["murf", "chatterbox", "cartesia", "livekit"]);
+    expect(VIDEO_TTS_LANGUAGES.en).toEqual(["kokoro", "chatterbox", "murf", "cartesia", "fish", "livekit"]);
+    expect(VIDEO_TTS_LANGUAGES.sw).toEqual(["chatterbox"]);
+    expect(videoTimelineSchema.parse({ ...timeline, narration: { segments: [{ atSec: 0, text: "Καλώς ήρθατε" }], language: "el", engine: "murf", voice: "el-GR-stavros" } }).narration).toMatchObject({ engine: "murf", voice: "el-GR-stavros" });
   });
 
   it("keeps every asset described and attributed, with the timeline an output came from", () => {

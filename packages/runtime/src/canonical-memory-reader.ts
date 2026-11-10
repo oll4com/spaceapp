@@ -222,7 +222,7 @@ export function createCanonicalMemoryReader(paths: CanonicalSpaceMemoryPaths, op
     projection = { records: all, entries };
     }
     const entries = projection.entries.filter(r => !query.scope || r.scope === query.scope).filter(r => !query.roomId || r.roomId === query.roomId);
-    const { searchMemoryDocuments, memoryExcerpt } = await import("@space/memory-graph");
+    const { searchMemoryDocuments } = await import("@space/memory-graph");
     let selected = query.q ? searchMemoryDocuments(entries, query.q) : entries;
     if (!query.q || query.sortBy) {
       const key = query.sortBy === "title" || query.sortBy === "provenance" || query.sortBy === "scope" ? query.sortBy : "createdAt";
@@ -232,7 +232,7 @@ export function createCanonicalMemoryReader(paths: CanonicalSpaceMemoryPaths, op
     const unique = new Map<string, MemoryEntry>();
     for (const entry of selected) {
       if (!unique.has(entry.id)) unique.set(entry.id, memoryEntrySchema.parse({ ...entry,
-        body: query.q ? memoryExcerpt(entry.body, query.q, 10000) : entry.body.slice(0, 10000) }));
+        body: entry.body }));
     }
     return [...unique.values()];
   };

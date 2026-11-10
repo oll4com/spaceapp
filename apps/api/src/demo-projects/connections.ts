@@ -29,6 +29,9 @@ import {
 
 const oauthAttemptTtlMs = 10 * 60_000;
 
+/** An OAuth state minted for SpaceApp Android (R12); never in base64url, so no random state ends with it. */
+export const DEMO_OAUTH_APP_STATE_SUFFIX = ".spaceapp";
+
 export class DemoConnectionError extends Error {
   constructor(readonly code: string, message: string, readonly statusCode = 400) {
     super(message);
@@ -229,6 +232,8 @@ export class DemoConnectionsService {
     provider: DemoConnectionProvider;
     sessionToken: string;
     publicOrigin: string;
+    /** SpaceApp Android started it (R12): the state carries that, so the system browser's callback sends it back to the app. */
+    returnToApp?: boolean;
   }): Promise<{ authorizationUrl: string; expiresAt: string; redirectUri: string }> {
     if (!input.sessionToken) throw new DemoConnectionError("DEMO_OAUTH_SESSION_REQUIRED", "A browser session is required.", 401);
     const record = await this.options.repository.getConnection(input.ownerUserId, input.provider);
@@ -240,7 +245,8 @@ export class DemoConnectionsService {
       );
     }
     const credentials = await this.readCredentials(input.ownerUserId, input.provider);
-    const state = randomBytes(32).toString("base64url");
+    // The suffix is under the stored hash, so a completed consent's mark is authentic.
+    const state = randomBytes(32).toString("base64url") + (input.returnToApp ? DEMO_OAUTH_APP_STATE_SUFFIX : "");
     const verifier = randomBytes(48).toString("base64url");
     const verifierRef = newId("demo-verifier");
     const createdAt = this.now();

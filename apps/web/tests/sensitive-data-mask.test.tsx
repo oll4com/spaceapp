@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   SensitiveDataMask,
   hasSensitiveText,
+  instanceDomain,
   normalizeText
 } from "../src/features/sensitive-data/SensitiveDataMask.js";
 
@@ -27,10 +28,20 @@ describe("sensitive data mask helpers", () => {
     expect(hasSensitiveText("pve.internal")).toBe(true);
     expect(hasSensitiveText("https://nas.local:8443/path")).toBe(true);
     expect(hasSensitiveText("www.server.home.arpa")).toBe(true);
-    // Bare-domain forms: the public export rewrites every oll4.com subdomain, which would change these inputs.
-    expect(hasSensitiveText("https://oll4.com/")).toBe(true);
-    expect(hasSensitiveText("https://oll4.com/path")).toBe(true);
-    expect(hasSensitiveText("oll4.com")).toBe(true);
+  });
+
+  it("EXP-001: masks the instance's own domain, read from its host, and names no maintainer domain in code", () => {
+    expect(hasSensitiveText("https://corp-example.net/", "corp-example.net")).toBe(true);
+    expect(hasSensitiveText("https://space.corp-example.net:4911/path", "corp-example.net")).toBe(true);
+    expect(hasSensitiveText("www.corp-example.net", "corp-example.net")).toBe(true);
+    expect(hasSensitiveText("corp-example.net", "corp-example.net")).toBe(true);
+    expect(hasSensitiveText("notcorp-example.net", "corp-example.net")).toBe(false);
+    expect(hasSensitiveText("corp-example.net", null)).toBe(false);
+    expect(instanceDomain("space.corp-example.net")).toBe("corp-example.net");
+    expect(instanceDomain("localhost")).toBeNull();
+    expect(instanceDomain("10.0.0.5")).toBeNull();
+    const source = readFileSync(resolve(__dirname, "../src/features/sensitive-data/SensitiveDataMask.tsx"), "utf8");
+    expect(source).not.toMatch(/\\?\.com\b/);
   });
 
   it("leaves public IPs, external domains, and plain numbers unmasked", () => {

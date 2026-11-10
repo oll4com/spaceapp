@@ -4,6 +4,7 @@ import { InMemorySpaceStore } from "@space/runtime";
 import { InMemoryRoomAgentMonitorRepository } from "@space/db";
 import { createApp } from "../src/app.js";
 import { completeRoomAgentPrompt, type RoomAgentWorkflowCoordinator } from "../src/room-agent.js";
+import { GATEWAY_CLAUDE_MODEL } from "../src/room-agent-model-resolver.js";
 import type { RoomAgentChatBody, RoomAgentChatModel } from "../src/room-agent-chat.js";
 
 /** A conversation model that answers every turn with one sentence and keeps the requests it saw. */
@@ -732,6 +733,21 @@ describe("Room Agent API", () => {
     expect(store.listSpaceAgentMessages(sessionId)).toHaveLength(2);
   });
 
+  it("puts every waiting event in the turn's prompt, however many newer ones came after it (1/11, plan xCBrZwhCTzmC: newest 15 only)", async () => {
+    const monitorRepository = new InMemoryRoomAgentMonitorRepository();
+    const { app, cookie, csrfToken, room, chatModel } = await setup({ monitorRepository });
+    await monitorRepository.addEvent({ roomId: room.id, paneId: null, paneName: "Bob", kind: "WAITING", severity: "ATTENTION",
+      title: "Bob is waiting: Permission prompt", detail: "Fix login redirect" });
+    // A FINISHED notice stays OPEN and waits for nothing (stable 1/11: 873 in one room): only the 15 newest events carry it.
+    await monitorRepository.addEvent({ roomId: room.id, paneId: null, paneName: "Zed", kind: "FINISHED", severity: "INFO", title: "Zed finished long ago", detail: "" });
+    for (let n = 0; n < 16; n += 1) await monitorRepository.addEvent({ roomId: room.id, paneId: null, paneName: "Ann", kind: "FINISHED", severity: "INFO",
+      title: `Ann finished step ${n}`, detail: "" });
+    expect((await sendRoomAgentMessage(app, cookie, csrfToken, room.id, "What waits in this room?", "room-agent-waits-0001")).statusCode).toBe(202);
+    await waitForAnswer(app, cookie, room.id);
+    expect(chatModel.bodies[0]?.messages[0]?.content).toMatch(/WAITING OPEN: Bob is waiting: Permission prompt/);
+    expect(chatModel.bodies[0]?.messages[0]?.content).not.toContain("Zed finished long ago");
+  });
+
   it("shows the room monitor feed, lets the operator switch the monitor and dismiss events", async () => {
     const monitorRepository = new InMemoryRoomAgentMonitorRepository();
     const { app, cookie, csrfToken, room, chatModel } = await setup({ monitorRepository });
@@ -793,7 +809,7 @@ describe("Room Agent API", () => {
       .toEqual([noPane.eventId]);
   });
 
-  it("returns only the newest 500 room-agent messages", async () => {
+  it("returns every room-agent message since the last clear (until 31/10 the newest 500)", async () => {
     const { app, cookie, room, store } = await setup();
     const initial = await app.inject({ method: "GET", url: `/api/rooms/${room.id}/room-agent`, headers: { cookie } });
     const sessionId = initial.json().sessionId as string;
@@ -804,8 +820,8 @@ describe("Room Agent API", () => {
     const response = await app.inject({ method: "GET", url: `/api/rooms/${room.id}/room-agent`, headers: { cookie } });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().messages).toHaveLength(500);
-    expect(response.json().messages[0].content).toBe("message-001");
+    expect(response.json().messages).toHaveLength(501);
+    expect(response.json().messages[0].content).toBe("message-000");
     expect(response.json().messages.at(-1).content).toBe("message-500");
   });
 });
@@ -819,6 +835,33 @@ describe("completeRoomAgentPrompt", () => {
       modelSelection: { providerId: null, modelId: "gpt-5.6-sol", reasoningEffort: null, providerName: null, modelName: "gpt-5.6-sol", tier: "CODEX" },
       timeoutMs: 45_000 })).toBe('{"action":"ESCALATE"}');
     expect(timeout).toHaveBeenCalledWith(45_000);
+  });
+
+  it("names the caller's id to the gateway as x-request-id (OBS-006)", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] })));
+    vi.stubGlobal("fetch", fetchMock);
+    const modelSelection = { providerId: null, modelId: "gpt-5.6-sol", reasoningEffort: null, providerName: null, modelName: "gpt-5.6-sol", tier: "CODEX" } as const;
+    for (const traceId of ["room_agent_event:2c7e0d4e-0f0a-4b8e-9d55-2f5c3c1a9b10", undefined]) {
+      expect(await completeRoomAgentPrompt({ systemPrompt: "s", content: "c", codexLbBaseUrl: "http://127.0.0.1:9", codexLbKeyFile: "/nonexistent/key",
+        modelSelection, timeoutMs: 1_000, traceId })).toBe("ok");
+    }
+    expect(fetchMock.mock.calls.map((call) => ((call as unknown as [string, RequestInit])[1].headers as Record<string, string>)["x-request-id"]))
+      .toEqual(["room_agent_event:2c7e0d4e-0f0a-4b8e-9d55-2f5c3c1a9b10", undefined]);
+  });
+
+  it("asks Claude through the gateway before OpenCode when the Codex pool refuses (Codex weeks spent, 5/11)", async () => {
+    const fetchMock = vi.fn(async (url: string) => url.endsWith("/v1/chat/completions")
+      ? new Response(JSON.stringify({ error: { code: "usage_limit_reached" } }), { status: 429 })
+      : new Response(JSON.stringify({ content: [{ type: "text", text: ' {"action":"ANSWER"} ' }] })));
+    vi.stubGlobal("fetch", fetchMock);
+    const runOpenCode = vi.fn(async () => "never");
+    expect(await completeRoomAgentPrompt({ systemPrompt: "s", content: "c", codexLbBaseUrl: "http://127.0.0.1:9/v1", codexLbKeyFile: "/nonexistent/key", runOpenCode,
+      modelSelection: { providerId: null, modelId: "gpt-5.6-sol", reasoningEffort: null, providerName: null, modelName: "gpt-5.6-sol", tier: "CODEX" },
+      timeoutMs: 1_000 })).toBe('{"action":"ANSWER"}');
+    const [url, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:9/v1/messages");
+    expect(JSON.parse(init.body as string)).toMatchObject({ model: GATEWAY_CLAUDE_MODEL, system: "s", messages: [{ role: "user", content: "c" }] });
+    expect(runOpenCode).not.toHaveBeenCalled();
   });
 
   it("asks the injected OpenCode (the CLI container's on public installs) for the OPENCODE tier", async () => {

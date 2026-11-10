@@ -15,6 +15,7 @@ import {
 } from "../ui-theme/app-icons.js";
 import type { FileItem } from "@space/contracts";
 import { api } from "../../api.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 function VirtualCodeViewer({ content }: { content: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -326,6 +327,8 @@ function SimpleMarkdownRenderer({ content }: { content: string }) {
 }
 
 export function FilePreviewModal({ entry, mode, onClose, onDownload, onEdit }: FilePreviewModalProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [zoom, setZoom] = useState(1);
   const [textContent, setTextContent] = useState<string | null>(null);
   const [isLoadingText, setIsLoadingText] = useState(false);
@@ -365,13 +368,13 @@ export function FilePreviewModal({ entry, mode, onClose, onDownload, onEdit }: F
     api.filesRead({ path: entry.path, mode })
       .then((res) => {
         if (res.isBinary) {
-          setTextError("Binary file cannot be displayed as text preview.");
+          setTextError(t("Binary file cannot be displayed as text preview."));
         } else {
           setTextContent(res.content ?? "");
         }
       })
       .catch((err) => {
-        setTextError(err instanceof Error ? err.message : "Failed to load file preview");
+        setTextError(err instanceof Error ? err.message : t("Failed to load file preview"));
       })
       .finally(() => {
         setIsLoadingText(false);
@@ -435,8 +438,8 @@ export function FilePreviewModal({ entry, mode, onClose, onDownload, onEdit }: F
                   className={`fm-crumb-btn ${!isRawView ? "fm-crumb-active" : ""}`}
                   onClick={() => setIsRawView(false)}
                   style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "4px 8px" }}
-                  title="Formatted Markdown Preview"
-                  aria-label="Formatted Preview"
+                  title={t("Formatted Markdown Preview")}
+                  aria-label={t("Formatted Preview")}
                 >
                   <Eye size={15} />
                 </button>
@@ -445,8 +448,8 @@ export function FilePreviewModal({ entry, mode, onClose, onDownload, onEdit }: F
                   className={`fm-crumb-btn ${isRawView ? "fm-crumb-active" : ""}`}
                   onClick={() => setIsRawView(true)}
                   style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "4px 8px" }}
-                  title="Raw Code Preview"
-                  aria-label="Raw Code Preview"
+                  title={t("Raw Code Preview")}
+                  aria-label={t("Raw Code Preview")}
                 >
                   <Code2 size={15} />
                 </button>
@@ -460,8 +463,8 @@ export function FilePreviewModal({ entry, mode, onClose, onDownload, onEdit }: F
                   type="button"
                   className="fm-action-btn"
                   onClick={handleCopy}
-                  title="Copy file content"
-                  aria-label="Copy"
+                  title={t("Copy file content")}
+                  aria-label={t("Copy")}
                   style={{ padding: "4px 6px", display: "flex", alignItems: "center", justifyContent: "center" }}
                 >
                   {copied ? <Check size={15} color="#65d8a3" /> : <Copy size={15} />}
@@ -474,8 +477,8 @@ export function FilePreviewModal({ entry, mode, onClose, onDownload, onEdit }: F
                       onClose();
                       onEdit(entry);
                     }}
-                    title="Open in Code Editor"
-                    aria-label="Edit"
+                    title={t("Open in Code Editor")}
+                    aria-label={t("Edit")}
                     style={{ padding: "0 10px", height: 28, display: "flex", alignItems: "center", justifyContent: "center" }}
                   >
                     <Pencil size={15} />
@@ -491,8 +494,8 @@ export function FilePreviewModal({ entry, mode, onClose, onDownload, onEdit }: F
                   type="button"
                   className="fm-action-btn"
                   onClick={() => setZoom((z) => Math.min(z + 0.25, 3))}
-                  title="Zoom In"
-                  aria-label="Zoom In"
+                  title={t("Zoom In")}
+                  aria-label={t("Zoom In")}
                   style={{ padding: "4px 6px" }}
                 >
                   <ZoomIn size={15} />
@@ -501,8 +504,8 @@ export function FilePreviewModal({ entry, mode, onClose, onDownload, onEdit }: F
                   type="button"
                   className="fm-action-btn"
                   onClick={() => setZoom((z) => Math.max(z - 0.25, 0.5))}
-                  title="Zoom Out"
-                  aria-label="Zoom Out"
+                  title={t("Zoom Out")}
+                  aria-label={t("Zoom Out")}
                   style={{ padding: "4px 6px" }}
                 >
                   <ZoomOut size={15} />
@@ -511,8 +514,8 @@ export function FilePreviewModal({ entry, mode, onClose, onDownload, onEdit }: F
                   type="button"
                   className="fm-action-btn"
                   onClick={() => setZoom(1)}
-                  title="Reset Zoom"
-                  aria-label="Reset Zoom"
+                  title={t("Reset Zoom")}
+                  aria-label={t("Reset Zoom")}
                   style={{ padding: "4px 6px" }}
                 >
                   <RotateCcw size={15} />
@@ -524,8 +527,8 @@ export function FilePreviewModal({ entry, mode, onClose, onDownload, onEdit }: F
               type="button"
               className="fm-btn"
               onClick={onDownload}
-              title="Download file"
-              aria-label="Download"
+              title={t("Download file")}
+              aria-label={t("Download")}
               style={{ padding: "0 10px", height: 28, display: "flex", alignItems: "center", justifyContent: "center" }}
             >
               <Download size={15} />
@@ -535,8 +538,8 @@ export function FilePreviewModal({ entry, mode, onClose, onDownload, onEdit }: F
               type="button"
               className="fm-action-btn"
               onClick={onClose}
-              title="Close (Esc)"
-              aria-label="Close"
+              title={t("Close (Esc)")}
+              aria-label={t("Close")}
               style={{ padding: "4px 6px", display: "flex", alignItems: "center", justifyContent: "center" }}
             >
               <X size={18} />
@@ -593,14 +596,14 @@ export function FilePreviewModal({ entry, mode, onClose, onDownload, onEdit }: F
             <div style={{ display: "flex", flex: 1, width: "100%", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
               {isLoadingText ? (
                 <div style={{ display: "flex", flex: 1, alignItems: "center", justifyContent: "center", color: "var(--modern-muted)" }}>
-                  Loading preview...
+                  {t("Loading preview...")}
                 </div>
               ) : textError ? (
                 <div style={{ display: "flex", flex: 1, flexDirection: "column", alignItems: "center", justifyContent: "center", color: "var(--modern-danger)", gap: 8 }}>
                   <p>{textError}</p>
                   <button className="fm-btn primary" onClick={onDownload}>
                     <Download size={14} />
-                    <span>Download File</span>
+                    <span>{t("Download File")}</span>
                   </button>
                 </div>
               ) : isMarkdown && !isRawView && textContent !== null ? (
@@ -613,10 +616,10 @@ export function FilePreviewModal({ entry, mode, onClose, onDownload, onEdit }: F
             </div>
           ) : (
             <div style={{ display: "flex", flex: 1, flexDirection: "column", alignItems: "center", justifyContent: "center", color: "var(--modern-muted)", textAlign: "center", padding: 24 }}>
-              <p>Preview not available for this file type ({mime || ext}).</p>
+              <p>{t("Preview not available for this file type ({type}).", { type: mime || ext })}</p>
               <button className="fm-btn primary" onClick={onDownload} style={{ marginTop: 12 }}>
                 <Download size={14} />
-                <span>Download File</span>
+                <span>{t("Download File")}</span>
               </button>
             </div>
           )}

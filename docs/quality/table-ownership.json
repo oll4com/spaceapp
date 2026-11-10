@@ -1,0 +1,349 @@
+{
+  "schemaVersion": 1,
+  "about": "Every PostgreSQL table created by packages/db/migrations belongs to exactly one domain. The first matching rule wins. scripts/tests/table-ownership.test.mjs fails when a migration adds a table no rule names, or a rule matches nothing. Recovery rules per domain: docs/quality/state-ownership.md; record classes (durable or log): scripts/tests/record-retention.test.mjs. Each domain also names how it recovers (recovery); the test checks the kinds and that every named row exists in state-ownership.md. A domain may list tables whose recovery differs from the domain's kind (tables); the test checks each exists in the domain.",
+  "domains": {
+    "workspace": "Rooms, panes, layout, clipboard, tasks, events, outbox and room artifacts",
+    "cli-sessions": "CLI sessions, logical CLI tasks and runtimes, Codex App Server turn state, CLI maintenance",
+    "browser": "Pane browser sessions, control leases, handoffs, capture jobs and the Dots browser",
+    "agent-runs": "Space agent sessions and runs, Room Agent, managed plans, approvals, workflows, turns, swarm and tool routing state",
+    "memory": "Space Memory records, graph, embeddings, consolidation and commands",
+    "dots": "Dots, Live conversations, goals, schedules, deliverables, tools and the shared chat",
+    "nous": "Nous messages, notes, decisions, goals, follow-ups, plans, turns, pane board and Away",
+    "copilots": "Job, Mail, Marketing, Freelance, Security and Monitoring Copilots, App Studio, Design and Video panes",
+    "gateway": "Space Gateway accounts, keys, limits, logs, usage and pricing, providers, models, MCP and skills",
+    "streaming": "Streaming bot, chat, moderation, overlay, OAuth and platform state",
+    "vault": "Vault items, delegations, audit, nonces and protected state (server-blind ciphertext and metadata)",
+    "notifications": "Space notifications, push, Telegram and the Slack/Teams channels",
+    "identity": "Users, invites, sessions, device sessions and paired devices with the mobile channel's keys, linked accounts, connectors, settings and the audit trail",
+    "operations": "Admin operations, diagnostics, analytics, health, Space Control, setup, imports, releases, reviews, source control, demo and test fixtures"
+  },
+  "rules": [
+    {
+      "domain": "cli-sessions",
+      "pattern": "^(pane_cli_|cli_|codex_cli_|codex_app_)"
+    },
+    {
+      "domain": "browser",
+      "pattern": "^(pane_browser_|browser_|dot_browser_)"
+    },
+    {
+      "domain": "agent-runs",
+      "pattern": "^(space_agent_|agent_|room_agent_|managed_plan_|approvals$|swarm_|turns$|workflows$|tool_routing|pane_agent_)"
+    },
+    {
+      "domain": "memory",
+      "pattern": "^(memory_|import_candidates$)"
+    },
+    {
+      "domain": "nous",
+      "pattern": "^nous_"
+    },
+    {
+      "domain": "dots",
+      "pattern": "^(dot_|live_|space_dots|shared_chat)"
+    },
+    {
+      "domain": "copilots",
+      "pattern": "^(job_apply|job_application|site_sign_ins$|mail_copilot_|mail_campaign|marketing_copilot_|freelance_copilot_|security_copilot_|monitoring_copilot_|app_studio_|design_|video_)"
+    },
+    {
+      "domain": "gateway",
+      "pattern": "^(space_gateway_|models$|providers$|provider_|mcp_|skills$)"
+    },
+    {
+      "domain": "streaming",
+      "pattern": "^streaming_"
+    },
+    {
+      "domain": "vault",
+      "pattern": "^vault"
+    },
+    {
+      "domain": "notifications",
+      "pattern": "^(space_notifications|space_push_|telegram_|channel_)"
+    },
+    {
+      "domain": "identity",
+      "pattern": "^(users$|user_|session_revocations$|app_device_|mobile_|google_accounts$|connector_accounts$|space_owner|audit_)"
+    },
+    {
+      "domain": "workspace",
+      "pattern": "^(rooms$|panes$|room_|pane_|clipboard_items$|task_items$|task_runs$|appointments$|owner_signatures$|saved_signatures$|signature_requests$|task_title_|events$|activity_log|outbox_events$|event_relay|artifacts$)"
+    },
+    {
+      "domain": "operations",
+      "pattern": "^(admin_operation|app_diagnostics_|system_|space_control|space_setup|space_first_|public_waitlist|release_previews|review_|source_control|repository_publish|project_repository|personal_git|database_connections|demo_|council_runs|space_first)"
+    }
+  ],
+  "recoveryKinds": {
+    "database": "PostgreSQL is the only copy",
+    "reconcile-with-host": "Rows are intent; a host, workflow engine or provider holds live state and must be reconciled after a restore",
+    "rebuild-from-source": "Rows are derived or reconciled from files that are the source",
+    "ciphertext-only": "Server-blind ciphertext; cannot be repaired server-side",
+    "disposable": "Diagnostic or probe results, in-flight attempts, caches and logs pruned on a schedule; dropping them loses no data and the next check or attempt recreates them",
+    "single-use-ledger": "Rows that record a credential, code or invite as used or revoked; a restore older than the row makes it usable again until it expires",
+    "history": "Logs and histories pruned by age or a keep-newest count on purpose; a restore returns the backup's window, and what retention had already removed was never kept"
+  },
+  "recovery": {
+    "workspace": {
+      "kind": "database",
+      "rule": "PostgreSQL is the only copy of these records; a restore returns them as of the backup (RPO and restore evidence: restore-and-migrations.md).",
+      "alsoSee": [
+        "Rooms, panes, tasks, sessions, events and artifact metadata",
+        "Agent file bytes",
+        "Upload staging"
+      ],
+      "tables": {
+        "pane_reports": {
+          "kind": "history",
+          "why": "Pane progress reports; the repository deletes rows older than 14 days (pane-reports-repository.ts)."
+        },
+        "task_title_attempts": {
+          "kind": "disposable",
+          "why": "Rate counter of title-generation attempts: rows older than a day are deleted (task-title-repository.ts) and only the last hour and minute are counted, so losing them only resets the throttle."
+        }
+      }
+    },
+    "cli-sessions": {
+      "kind": "reconcile-with-host",
+      "rule": "The rows record intent and status; the CLI host and the provider hold the live process and conversation. After a restore, reconcile status with the host and resume only through a recorded native identity.",
+      "alsoSee": [
+        "CLI process and terminal buffers",
+        "Provider conversation/context"
+      ],
+      "tables": {
+        "codex_app_server_handshake_checks": {
+          "kind": "disposable",
+          "why": "Smoke-check history: the weekly cleanup (scripts/space-db-cleanup.mjs) deletes everything older than 7 days and keeps the newest row, which the UI shows as the latest result; the next check recreates it."
+        },
+        "codex_app_server_turn_smoke_checks": {
+          "kind": "disposable",
+          "why": "Smoke-check history: the weekly cleanup (scripts/space-db-cleanup.mjs) deletes everything older than 7 days and keeps the newest row, which the UI shows as the latest result; the next check recreates it."
+        },
+        "cli_maintenance_events": {
+          "kind": "disposable",
+          "why": "CLI maintenance event log: the weekly cleanup deletes all rows older than 7 days (scripts/space-db-cleanup.mjs); the maintenance run records in admin_operation_runs stay."
+        },
+        "pane_cli_transcript_chunks": {
+          "kind": "history",
+          "why": "Terminal output cache: every append keeps the newest 200 chunks of its session (PANE_CLI_TRANSCRIPT_CHUNK_CAP, space-store.ts) and the API's database retention sweep deletes the chunks of sessions EXITED for 7 days (retention-sweeps.ts, on unless SPACE_ENABLE_DB_SWEEP is false). A restore returns the backup's window; resume goes through the recorded native identity, never this copy."
+        }
+      }
+    },
+    "browser": {
+      "kind": "reconcile-with-host",
+      "rule": "The rows record sessions, leases and handoffs; the Browser Host holds the process and profile. After a restore the next request restarts Chrome from the recorded URL and tabs; subscriptions are disposable.",
+      "alsoSee": [
+        "Browser process and subscriptions"
+      ]
+    },
+    "agent-runs": {
+      "kind": "reconcile-with-host",
+      "rule": "The rows record runs and missions; the workflow engine (its own databases in the same cluster) and the providers hold execution. After a restore the API sweep ends RUNNING runs whose workflow is gone as an unknown outcome (failure-matrix.md).",
+      "alsoSee": [
+        "Rooms, panes, tasks, sessions, events and artifact metadata"
+      ],
+      "tables": {
+        "room_agent_events": {
+          "kind": "history",
+          "why": "Room Agent monitor events; deleted after 30 days (room-agent-monitor-repository.ts). Unlike the rest of its domain they are not run state: runs and missions are in other tables."
+        }
+      }
+    },
+    "memory": {
+      "kind": "database",
+      "rule": "Memory records, the graph's change-set journal and the consolidation and import review state exist only in PostgreSQL; a restore returns them as of the backup. The canonical memory files are a separate source (see the rows named here); only the tables listed under tables are derived or disposable.",
+      "alsoSee": [
+        "Canonical memory source",
+        "Memory embeddings and retrieval cache"
+      ],
+      "tables": {
+        "memory_graph_embeddings": {
+          "kind": "rebuild-from-source",
+          "why": "Vectors made from canonical memory records; rebuilt from them after a restore. Rows for deleted records are never deleted, search only filters them out (restore-and-migrations.md, memory gaps)."
+        },
+        "memory_embedding_smoke_checks": {
+          "kind": "disposable",
+          "why": "Embedding provider probe results (a provider counts as working after a pass within a day); the next smoke recreates them and indexing waits for it."
+        }
+      }
+    },
+    "vault": {
+      "kind": "ciphertext-only",
+      "rule": "PostgreSQL holds ciphertext, public keys and metadata only; nothing server-side can read or repair an item. A restore returns the ciphertext as of the backup; the operator unlocks again and the dock re-delegates.",
+      "alsoSee": [
+        "Vault items"
+      ],
+      "tables": {
+        "vault_nonces": {
+          "kind": "single-use-ledger",
+          "why": "Challenge, fill and request nonces with consumed_at and expires_at (replay protection). A restore older than a consumption forgets it; the nonces are short-lived, so the window is bounded by their expiry."
+        }
+      }
+    },
+    "dots": {
+      "kind": "database",
+      "rule": "PostgreSQL is the only copy of these records; a restore returns them as of the backup (RPO and restore evidence: restore-and-migrations.md).",
+      "alsoSee": []
+    },
+    "nous": {
+      "kind": "database",
+      "rule": "PostgreSQL is the only copy of these records; a restore returns them as of the backup (RPO and restore evidence: restore-and-migrations.md).",
+      "alsoSee": [],
+      "tables": {
+        "nous_goal_events": {
+          "kind": "history",
+          "why": "A goal's log; deleted after 30 days (nous-goals-repository.ts). The goal itself is a durable record in nous_goals."
+        },
+        "nous_load_samples": {
+          "kind": "history",
+          "why": "Minute load samples; deleted after 30 days, once an hour (nous-repository.ts). Their hour and day sums in nous_load_rollups stay."
+        },
+        "nous_decision_ledger": {
+          "kind": "history",
+          "why": "Decision ledger rows; deleted after 180 days on each new entry (nous-repository.ts)."
+        },
+        "nous_pane_summaries": {
+          "kind": "history",
+          "why": "Pane-board lines; superseded ones are deleted after 14 days with the newest per pane kept (nous-pane-summaries-repository.ts); the next board pass writes them again."
+        },
+        "nous_file_shares": {
+          "kind": "disposable",
+          "why": "A pointer that shows one Agent File in the Nous app for a while (72 h by default, apps/api/src/nous/shared-files.ts); shares past expires_at are deleted on the next share and never listed, and removing one never touches the Agent File. A restore older than a removal shows that share again until it expires; Nous shares a file again when it needs to."
+        }
+      }
+    },
+    "copilots": {
+      "kind": "database",
+      "rule": "PostgreSQL is the only copy of these records; a restore returns them as of the backup (RPO and restore evidence: restore-and-migrations.md).",
+      "alsoSee": [
+        "Site sign-in recipes"
+      ],
+      "tables": {
+        "mail_copilot_sync": {
+          "kind": "reconcile-with-host",
+          "why": "Each Gmail account's history cursor (history_id): every sync reads Gmail's history from it and stores Gmail's newer id (syncAccount, apps/api/src/mail-copilot/service.ts). After a restore the cursor is older, so the next sync reads again what came after the backup; a message whose MAIL_RECEIVED event survived is skipped. A cursor Gmail no longer keeps (about a week) answers 404 and restarts from now with a SYNC_RESET event after reading the inbox mail dated since the last sync (inboxSince), so the gap gets its items and notices once."
+        }
+      }
+    },
+    "gateway": {
+      "kind": "database",
+      "rule": "PostgreSQL is the only copy of these records; a restore returns them as of the backup (RPO and restore evidence: restore-and-migrations.md).",
+      "alsoSee": [],
+      "tables": {
+        "space_gateway_sticky_bindings": {
+          "kind": "disposable",
+          "why": "Affinity cache: which account owns a conversation, thread or prompt cache, keyed by hash; rows carry expires_at and the gateway prunes expired ones as routine (gateway-repository.ts). It records an affinity, not an account or a conversation."
+        },
+        "provider_validation_checks": {
+          "kind": "disposable",
+          "why": "Smoke-check history: the weekly cleanup (scripts/space-db-cleanup.mjs) deletes everything older than 7 days and keeps the newest row, which the UI shows as the latest result; the next check recreates it."
+        },
+        "mcp_discovery_smoke_checks": {
+          "kind": "disposable",
+          "why": "Smoke-check history: the weekly cleanup (scripts/space-db-cleanup.mjs) deletes everything older than 7 days and keeps the newest row, which the UI shows as the latest result; the next check recreates it."
+        },
+        "space_gateway_anthropic_usage": {
+          "kind": "reconcile-with-host",
+          "why": "Anthropic's cost and usage report: every sync (5 minutes, packages/gateway/src/admin/anthropic-admin.ts, only with a saved Admin API key) replaces the last 31 days in one transaction (replaceAnthropicUsage) and sets the Claude API keys' daily COST_USD values from it. After a restore the next sync rewrites that window from Anthropic; older days are the backup's only copy."
+        },
+        "models": {
+          "kind": "reconcile-with-host",
+          "why": "A provider's model list, replaced in full whenever that provider's validation passes (POST /api/providers/:id/validate, replaceProviderModels in space-store.ts); no field is edited by hand. After a restore, validating the provider again rewrites it from the provider."
+        },
+        "space_gateway_usage_windows": {
+          "kind": "reconcile-with-host",
+          "why": "Each account's latest quota windows (used percent, reset time): rewritten from the provider's usage reads and response headers (saveUsageWindows from the Codex, Claude and Antigravity usage pollers and AccountPool.recordUsage). After a restore routing sees the backup's percentages until the next poll or request of that account rewrites them; the readings themselves are kept in space_gateway_usage_history."
+        },
+        "mcp_servers": {
+          "kind": "reconcile-with-host",
+          "why": "Derived metadata from the configured enabled MCP servers, never hand-edited tools or approval history. A successful discovery reads every tools/list page, then recordMcpDiscoveryCatalog serializes writers and atomically upserts the complete snapshot and removes obsolete catalog rows. Failed or incomplete discovery keeps the last complete snapshot. After a restore, run the gated discovery smoke to reconcile; until then the backup catalog remains visible."
+        },
+        "mcp_tools": {
+          "kind": "reconcile-with-host",
+          "why": "Derived metadata from the configured enabled MCP servers, never hand-edited tools or approval history. A successful discovery reads every tools/list page, then recordMcpDiscoveryCatalog serializes writers and atomically upserts the complete snapshot and removes obsolete catalog rows. Failed or incomplete discovery keeps the last complete snapshot. After a restore, run the gated discovery smoke to reconcile; until then the backup catalog remains visible."
+        }
+      }
+    },
+    "streaming": {
+      "kind": "database",
+      "rule": "PostgreSQL is the only copy of these records; a restore returns them as of the backup (RPO and restore evidence: restore-and-migrations.md).",
+      "alsoSee": [],
+      "tables": {
+        "streaming_oauth_attempts": {
+          "kind": "disposable",
+          "why": "In-flight provider sign-ins: a row lives at most 10 minutes (CHECK on expires_at) and the repository deletes it once expired or consumed; losing one only means starting that sign-in again."
+        },
+        "streaming_bot_activity": {
+          "kind": "history",
+          "why": "The bot's activity log, pruned to the newest 500 rows (streaming-bot-repository.ts pruneActivity); its only other reader is the replies-per-minute guardrail over the last minute (streaming-bot-service.ts), which a restore at most resets."
+        }
+      }
+    },
+    "notifications": {
+      "kind": "database",
+      "rule": "PostgreSQL is the only copy of these records; a restore returns them as of the backup (RPO and restore evidence: restore-and-migrations.md).",
+      "alsoSee": [],
+      "tables": {
+        "telegram_pairing_sessions": {
+          "kind": "single-use-ledger",
+          "why": "Pairing codes (hash only) with a status PENDING, CONFIRMED, EXPIRED or CANCELLED and a 10 minute lifetime by default; a confirmed code cannot be replayed. A restore older than the confirmation shows it PENDING again until it expires; a disconnect deletes all rows and reads their secret_version to remove the sealed bot secrets (telegram-persistence.ts), so a restore also needs the integration row and the sealed secrets to agree."
+        },
+        "channel_events": {
+          "kind": "history",
+          "why": "Inbound Slack and Teams channel events; deleted after 48 hours (channels-repository.ts)."
+        }
+      }
+    },
+    "identity": {
+      "kind": "database",
+      "rule": "PostgreSQL is the only copy of these records; a restore returns them as of the backup (RPO and restore evidence: restore-and-migrations.md).",
+      "alsoSee": [],
+      "tables": {
+        "session_revocations": {
+          "kind": "single-use-ledger",
+          "why": "Hashes of signed sessions revoked before they expired (SEC-011). A restore older than a revocation makes that session valid again until its own expiry: re-revoke what was revoked after the backup."
+        },
+        "user_invites": {
+          "kind": "single-use-ledger",
+          "why": "One-time invites with accepted_at, expiry and revocation. A restore older than an acceptance or revocation makes the invite usable again: void invites issued, used or revoked after the backup."
+        },
+        "app_device_sessions": {
+          "kind": "single-use-ledger",
+          "why": "Mobile device sessions and paired phones: revoked_at decides whether a paired phone connects (mobile/channel.ts checks the row at connect and every 10 s); rows go 30 days after they ended. A restore older than a revocation lets that phone connect again until it expires: revoke it again under Settings > Devices. A restore older than a pairing makes that phone pair again."
+        }
+      }
+    },
+    "operations": {
+      "kind": "database",
+      "rule": "PostgreSQL is the only copy of these records; a restore returns them as of the backup (RPO and restore evidence: restore-and-migrations.md).",
+      "alsoSee": [],
+      "tables": {
+        "demo_oauth_attempts": {
+          "kind": "disposable",
+          "why": "In-flight demo provider sign-ins: each row expires after oauthAttemptTtlMs, the API deletes expired rows (and their stored verifier) whenever it starts a new attempt (demo-projects/connections.ts), and the weekly cleanup leaves them to it; losing one only means starting that sign-in again."
+        },
+        "system_health_metric_buckets": {
+          "kind": "history",
+          "why": "Tiered metric buckets: the repository keeps 10 s buckets for 2 hours, 60 s buckets for 48 hours and 900 s buckets for 31 days and rolls finer into coarser ones; a restore returns the backup's window. (system-health-repository.ts sweep)"
+        },
+        "system_analytics_resource_buckets": {
+          "kind": "history",
+          "why": "Tiered metric buckets: the repository keeps 10 s buckets for 2 hours, 60 s buckets for 48 hours and 900 s buckets for 31 days and rolls finer into coarser ones; a restore returns the backup's window. (system-analytics-repository.ts rollup)"
+        },
+        "admin_operation_runs": {
+          "kind": "reconcile-with-host",
+          "why": "A CLI maintenance run is QUEUED or RUNNING only while a root runner holds /run/lock/space-cli-maintenance.lock (maintenance-lock.mjs). After a killed runner, the 45 min timer stop, a host restart or a restore, the daily repair (cli-maintenance-scheduler.mjs) takes that lock and fails the CLI maintenance rows still QUEUED or RUNNING with code MAINTENANCE_INTERRUPTED before it starts (failInterruptedCliMaintenanceRuns); SPACE_RELEASE runs keep the domain's rule."
+        },
+        "space_setup_connection_check_runs": {
+          "kind": "reconcile-with-host",
+          "why": "A Setup connection check is RUNNING only while the API process that admitted it runs it (SetupConnectionCheckRunManager's in-memory running map). After an API restart, a deploy, a store error inside the run or a restore, the next check admission or progress replay finishes each RUNNING row that process does not run: its unfinished connections get the failed-check result (Provider failed, CHECK_EXECUTION_FAILED) and the run is COMPLETED (finishOrphanedRun, setup-connection-check-runs.ts)."
+        },
+        "demo_operations": {
+          "kind": "reconcile-with-host",
+          "why": "A Demo Projects Salesforce and Google Sheets sync: Salesforce and the sheet hold what was written. A row is RUNNING only inside a batch of the API that claimed it, so the API's first batch after a restart, a deploy or a restore fails every RUNNING row as DEMO_OPERATION_INTERRUPTED (FAILED, or PARTIAL when a step was done) with no automatic retry, and the pane's Retry resumes it after a check (failInterruptedOperations, demo-projects/operations.ts)."
+        }
+      }
+    }
+  }
+}

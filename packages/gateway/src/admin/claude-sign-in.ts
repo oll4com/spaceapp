@@ -103,7 +103,7 @@ export function claudeAccountActions(options: { repository: GatewayRepository; p
   return {
     async test(account) {
       const startedAt = now();
-      const credentials = await options.pool.credentials(account);
+      const credentials = await options.pool.credentials(account, { allowFreePlan: true });
       if (isClaudeApiKeyAccount(account)) {
         // The free model list: a working key answers 200, a revoked one 401, exhausted credits still 200.
         const check = await checkClaudeApiKey(credentials.accessToken, options.fetchImpl, options.upstreamBaseUrl);
@@ -113,6 +113,7 @@ export function claudeAccountActions(options: { repository: GatewayRepository; p
       }
       try {
         const profile = await fetchClaudeProfile(credentials.accessToken, options.fetchImpl);
+        await options.pool.recordPlanType(account, profile.planType);
         await options.pool.markSuccess(account.id);
         return { ok: true, model: null, status: 200, latencyMs: now() - startedAt, error: null, planType: profile.planType };
       } catch (error) {

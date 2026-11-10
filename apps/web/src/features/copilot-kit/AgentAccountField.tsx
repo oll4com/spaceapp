@@ -4,6 +4,7 @@ import { api } from "../../api.js";
 import { cliAccountProfileForPane } from "../cli-accounts/cli-account-default.js";
 import { hasCliAccountProfiles, readLastCliAccountProfileId } from "../cli-accounts/cli-account-memory.js";
 import { peekSharedQuotaMetrics, subscribeSharedQuota } from "../desktop-widgets/shared-quota-cache.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 /**
  * The accounts a CLI offers a copilot pane: account profiles (Claude Code, Gemini, Copilot, Cursor, Kimi, with the
@@ -69,15 +70,17 @@ export function AgentAccountField({ runtimeId, runtimeLabel, accounts, value, di
   className?: string;
   onChange(profileId: string): void;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const profiles = useMemo(() => accounts?.kind === "profiles" ? orderedAccountProfiles(accounts.list) : [], [accounts]);
   if (!accountChoiceShown(accounts) || !accounts) return null;
   if (accounts.kind === "codex-gateway") {
     return (
       <div className={`jc-field jc-account-field ${className}`.trim()}>
-        <span>{runtimeLabel} account</span>
+        <span>{t("{agent} account", { agent: runtimeLabel })}</span>
         <p className="jc-account-fixed" role="note">
-          <strong>Space Gateway (pooled)</strong>
-          <small>{accounts.accounts ? `Every ${runtimeLabel} pane uses the gateway's ${accounts.accounts} ChatGPT account${accounts.accounts === 1 ? "" : "s"}.` : `Every ${runtimeLabel} pane uses the gateway's ChatGPT accounts.`}</small>
+          <strong>{t("Space Gateway (pooled)")}</strong>
+          <small>{accounts.accounts ? t(accounts.accounts === 1 ? "Every {agent} pane uses the gateway's {count} ChatGPT account." : "Every {agent} pane uses the gateway's {count} ChatGPT accounts.", { agent: runtimeLabel, count: accounts.accounts }) : t("Every {agent} pane uses the gateway's ChatGPT accounts.", { agent: runtimeLabel })}</small>
         </p>
       </div>
     );
@@ -87,11 +90,11 @@ export function AgentAccountField({ runtimeId, runtimeLabel, accounts, value, di
   const selected = value && ids.includes(value) ? value : defaultAccountProfileId(runtimeId, accounts) ?? ids[0] ?? "";
   return (
     <label className={`jc-field jc-account-field ${className}`.trim()}>
-      <span>{runtimeLabel} account</span>
+      <span>{t("{agent} account", { agent: runtimeLabel })}</span>
       <select value={selected} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
         {profiles.map((profile) => (
           <option key={profile.profileId} value={profile.profileId}>
-            {profile.displayName}{gateway?.profileId === profile.profileId && !gateway.ready ? " (not ready)" : ""}
+            {profile.displayName}{gateway?.profileId === profile.profileId && !gateway.ready ? ` (${t("not ready")})` : ""}
           </option>
         ))}
       </select>

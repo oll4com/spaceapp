@@ -159,6 +159,7 @@ interface ResolvedIdentity {
   room: Room;
 }
 
+/** Technical: a Dot's model context share for one tool result; a longer one names its size and how to read the rest. */
 const maxResultCharacters = 60_000;
 export const DOT_PROACTIVE_REASON = "This is proactive work you proposed, so it is read-only. Report what you found and ask the user before changing anything.";
 
@@ -192,7 +193,8 @@ export async function dotGatewayCatalog(deps: Pick<DotToolGatewayDeps, "catalogC
 function bounded(value: unknown): unknown {
   const text = JSON.stringify(value ?? null);
   if (text.length <= maxResultCharacters) return value;
-  return { truncated: true, preview: redactMemoryText(text.slice(0, maxResultCharacters)) };
+  return { truncated: true, totalCharacters: text.length, preview: redactMemoryText(text.slice(0, maxResultCharacters)),
+    rest: `The first ${maxResultCharacters} of ${text.length} characters; call the tool again with a narrower filter or its page/offset argument for the rest.` };
 }
 function blocked(toolId: string, statusReason: string): DotGatewayResult { return { status: "BLOCKED", statusReason, toolId }; }
 

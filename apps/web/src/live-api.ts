@@ -1,5 +1,10 @@
 import type { ManagedPlanExecution, StartPlanExecutionRequest, PlanExecutionControlRequest, PlanStageOverrideRequest } from "@space/contracts";
-import type { AppDeviceSession } from "@space/contracts";
+import type { AppDeviceSession, Appointment, AppointmentInput, AppointmentList, AppointmentUpdate } from "@space/contracts";
+import type { SavedSignature, SignatureField, SignaturePlacement, SignatureRequest, SignerDetails } from "@space/contracts";
+/** Settings > Mobile app (Nous Pro 1b, apps/api/src/mobile/routes.ts). */
+export interface MobileInstanceStatus { configured: boolean; fingerprint?: string; createdAt?: string; retiring?: Array<{ fingerprint: string; until: string }> }
+export interface MobilePairingOffer { offerId: string; qr: string; fingerprint: string; scopes: string[]; expiresAt: string }
+import type { FreelanceEgressRoute } from "@space/contracts";
 import type { ClientErrorReport } from "./client-error-reporter.js";
 import type { LiveHistorySnapshot, PersistedLiveTurn } from "./features/live-pane/live-history-sync.js";
 import type { SetupVoiceProvider } from "./features/setup-connections/SetupVoiceConnection.js";
@@ -9,8 +14,8 @@ import type { DesignAsset, DesignBrandKit, DesignBrandKitInput, DesignEvent, Des
 import type { AppStudioEvent, AppStudioPaneMetadata, AppStudioPreview, AppStudioRunStatus } from "@space/contracts";
 import type { SecurityCopilotPaneMetadata, SecurityEvent, SecurityMemory } from "@space/contracts";
 import type { SecurityCopilotState, SecurityFindingView, SecurityRunView } from "./features/security-copilot-pane/types.js";
-import type { MonitoringCopilotPaneMetadata, MonitoringEvent, MonitoringMemory } from "@space/contracts";
-import type { MonitoringCopilotState, MonitoringRunView, MonitoringTargetView } from "./features/monitoring-copilot-pane/types.js";
+import type { MonitoringChartWindow, MonitoringCopilotPaneMetadata, MonitoringEvent, MonitoringMemory } from "@space/contracts";
+import type { MonitoringCharts, MonitoringCopilotState, MonitoringRunView, MonitoringTargetView } from "./features/monitoring-copilot-pane/types.js";
 import type { VideoAsset, VideoAssetKind, VideoEvent, VideoJob, VideoPaneMetadata, VideoRequest, VideoRequestCreateInput, VideoRequestStatus, VideoView } from "@space/contracts";
 import type { SetupClientRuntimeFeatureId, SetupClientRuntimeChallenge, SetupClientRuntimeObservation } from "@space/contracts";
 import type { MaintenancePlanRequest, MaintenanceApplyRequest, MaintenanceAutopilotStatus, MaintenanceAutopilotScheduleUpdate } from "@space/contracts";
@@ -67,6 +72,12 @@ export interface GoogleAccountSummary {
   browserCheckedAt?: string | null;
   browserConnectedAt?: string | null;
 }
+/** An Agent File Nous shared to the operator for a while (plan clipboard:RQSrp1EczBbV); the Nous app reads the same rows. */
+/** GET /api/admin/server-ops (Nous Settings → Operations, nous_msg:5249d11d); times are ISO. */
+export interface ServerOpsUnit { state: "idle" | "running" | "unknown"; result: "success" | "failed" | null; startedAt: string | null; finishedAt: string | null }
+export type ServerOpsService = "browser-host" | "pane-hosts";
+export interface ServerOpsStatus { managedHere: boolean; queueActive: boolean; cleanDisk: ServerOpsUnit; deployRemotes: ServerOpsUnit & { lines: string[] }; services: Array<{ id: ServerOpsService; state: string }> }
+export interface NousSharedFile { shareId: string; artifactId: string; name: string; folder: string | null; mime: string; size: number; note: string | null; sharedAt: string; expiresAt: string }
 export type GoogleBrowserStatus = "NOT_CONNECTED" | "CONNECTED" | "REAUTHENTICATION_REQUIRED" | "UNKNOWN";
 export interface GoogleBrowserCheckSummary {
   status: GoogleBrowserStatus;
@@ -174,12 +185,16 @@ import type {
   MailCopilotFixRequest,
   MailFixRequestView,
   MailRuleDecision,
+  MailCampaign, MailCampaignCheck, MailCampaignPreview, MailCampaignPreviewMail, MailCampaignSend, MailCampaignStats, MailContact, MailList, MailListHealth, MailSender, MailSuppression,
+  MailTemplate, MailTemplateVersion,
   MailRuleProposal,
   MailCopilotView,
   MailCopilotViewInput,
   MailLabel,
   MailThread,
   MailThreadAction,
+  MailThreadLabel,
+  MailThreadLabels,
   MailThreadsPage,
   JobApplyProfile,
   JobApplyResetResult,
@@ -203,6 +218,17 @@ import type {
   NousDecision,
   NousDecisionAnswerInput,
   NousMessage,
+  NousOperatorRequest,
+  NousRequestStatus,
+  TaskRunListResponse,
+  TaskRunStatus,
+  NousLoad,
+  NousLoadRange,
+  TokenUsageBreakdown,
+  TokenUsagePeriod,
+  NousScore,
+  NousScoreHistory,
+  NousScoreRange,
   NousAttachment,
   NousOverview,
   NousPaneBoard,
@@ -213,8 +239,16 @@ import type {
   NousGoal,
   NousGoalEditInput,
   NousGoalsView,
+  NousGoalHistoryKind,
+  NousProgram,
+  NousProgramPage,
+  NousJobReport,
+  NousCryptoReport,
+  NousMarketingReport,
+  NousGoalHistoryPage,
   NousStandingApproval,
   NousSettings,
+  NousProviderOption,
   NousState,
   ListSharedChatMessagesQuery,
   AuditChainEntry,
@@ -318,6 +352,8 @@ import type {
   GatewayClaudeApiKeyUse,
   GatewayAnthropicAdminStatus,
   GatewayAnthropicBillingReport,
+  GatewayPoolModels,
+  GatewayFreeLedger,
   CodexUsageAccountList,
   AntigravityUsageAccountList,
   ClaudeUsageAccountList,
@@ -488,9 +524,11 @@ import type {
   FileDiskUsageResponse,
   DiskStats
 } from "@space/contracts";
+/** Which signature goes on each spot: a saved one's id or "drawn" (the `png` drawn now, kept under `label` when `remember`). */
+type SignatureChoice = { png?: string; remember?: boolean; label?: string; signatureId?: string; spotSignatures?: string[] };
 import { SpaceApiError } from "./runtime/SpaceRuntime.js";
 import { reportCoreApiFailure, reportCoreApiSuccess } from "./core-api-state.js";
-import { consumeAuthBootstrap } from "./auth-bootstrap-cache.js";
+import { consumeAuthBootstrap, noteSignedInUser } from "./auth-bootstrap-cache.js";
 import { noteServerModules } from "./features/pane-visibility/server-modules.js";
 import {
   CLI_RUNTIME_VISIBILITY_EVENT,
@@ -498,6 +536,7 @@ import {
 } from "./cli-runtime-visibility-events.js";
 
 import { gatewayLogFilterParams } from "./features/space-gateway/gateway-log-query.js";
+import { clientHeader } from "./client-context.js";
 
 export { SpaceApiError } from "./runtime/SpaceRuntime.js";
 
@@ -983,6 +1022,9 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   }
   if (isUnsafeRequest(url, init)) {
     headers[csrfHeaderName] = csrfToken ?? (await fetchCsrfToken());
+    // Where the operator writes from (plan clipboard:4TXfIZzj8ITW): it only describes, the server decides from the session and UA first.
+    const client = clientHeader();
+    if (client) headers["X-Space-Client"] = client;
   }
 
   const requestStartedAt = Date.now();
@@ -1377,13 +1419,13 @@ export const api = {
   harnessHealth: () => singleFlightRequest("harness-health", () => request<HarnessHealth>("/api/harness/healthz")),
   harnessUrl: "/api/harness/",
   eventStreamUrl,
-  me: () => Promise.resolve(consumeAuthBootstrap() ?? request<AuthMe>("/api/auth/me")).then(noteServerModules),
+  me: () => Promise.resolve(consumeAuthBootstrap() ?? request<AuthMe>("/api/auth/me")).then(noteServerModules).then(noteSignedInUser),
   setupStatus: () => request<SetupStatus>("/api/setup/status"),
   claimSetup: (input: SetupClaimInput) =>
     request<SetupClaimResponse>("/api/setup/claim", {
       method: "POST",
       body: JSON.stringify(input)
-    }).then(noteServerModules),
+    }).then(noteServerModules).then(noteSignedInUser),
   setupOverview: () => request<SetupOverview>("/api/setup/overview"),
   askSetupAssistant: (question: string, signal?: AbortSignal) => request<{ available: boolean; modelId: string | null; message: string }>("/api/setup/assistant", { method: "POST", body: JSON.stringify({ question }), signal }),
   beginSetupCaptureCheck: (draftRevision: number) => request<{ checkId: string; colors: string[] }>("/api/setup/capture/checks", { method: "POST", body: JSON.stringify({ draftRevision }) }),
@@ -1455,7 +1497,7 @@ export const api = {
     return request<AuthMe>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password })
-    }).then(noteServerModules);
+    }).then(noteServerModules).then(noteSignedInUser);
   },
   logout: async () => {
     const result = await request<{ ok: true }>("/api/auth/logout", { method: "POST" });
@@ -1468,7 +1510,7 @@ export const api = {
     return request<AuthMe>("/api/auth/google/credential", {
       method: "POST",
       body: JSON.stringify({ credential })
-    }).then(noteServerModules);
+    }).then(noteServerModules).then(noteSignedInUser);
   },
   configureGoogleOAuth: (input: { clientId: string; clientSecret: string }) =>
     request<{ ok: true; googleAuthEnabled: boolean }>("/api/auth/google/configure", {
@@ -1486,6 +1528,13 @@ export const api = {
   removeGoogleAccount: (id: string) => request<{ ok: true }>(`/api/auth/google/accounts/${encodeURIComponent(id)}`, { method: "DELETE" }),
   listAppDevices: () => request<{ devices: AppDeviceSession[] }>("/api/auth/devices"),
   revokeAppDevice: (id: string) => request<{ device: AppDeviceSession }>(`/api/auth/devices/${encodeURIComponent(id)}/revoke`, { method: "POST", body: JSON.stringify({}) }),
+  allowAppDevice: (id: string) => request<{ device: AppDeviceSession }>(`/api/auth/devices/${encodeURIComponent(id)}/allow`, { method: "POST", body: JSON.stringify({}) }),
+  mobileInstance: () => request<MobileInstanceStatus>("/api/mobile/instance"),
+  stepUpWithPassword: (password: string) => request<{ steppedUp: true; until: string }>("/api/auth/step-up/password", { method: "POST", body: JSON.stringify({ password }) }),
+  setUpMobileInstance: () => request<MobileInstanceStatus>("/api/mobile/instance", { method: "POST", body: JSON.stringify({}) }),
+  rotateMobileInstance: (compromised: boolean) => request<MobileInstanceStatus>("/api/mobile/rotate", { method: "POST", body: JSON.stringify({ compromised }) }),
+  createMobilePairing: () => request<MobilePairingOffer>("/api/mobile/pairing", { method: "POST", body: JSON.stringify({}) }),
+  cancelMobilePairing: (offerId: string) => request<{ cancelled: boolean }>(`/api/mobile/pairing/${encodeURIComponent(offerId)}`, { method: "DELETE" }),
   checkGoogleAccountBrowser: (id: string) => request<{ account: GoogleAccountSummary; check: GoogleBrowserCheckSummary }>(`/api/auth/google/accounts/${encodeURIComponent(id)}/browser-check`, {
     method: "POST", body: JSON.stringify({})
   }),
@@ -1520,7 +1569,7 @@ export const api = {
     return request<AuthMe>("/api/auth/invites/accept", {
       method: "POST",
       body: JSON.stringify({ token, password })
-    }).then(noteServerModules);
+    }).then(noteServerModules).then(noteSignedInUser);
   },
   clipboardItems: (query: { q?: string; source?: ClipboardSource; includeCompleted?: boolean; paneId?: string; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
@@ -1630,6 +1679,8 @@ export const api = {
   vaultSetInbox: (body: { publicKey: string; privateKeyEnvelope: VaultSymmetricEnvelope; epoch: number; operatorSignature: string }) =>
     request<{ inbox: true }>("/api/space-vault/inbox", { method: "PUT", body: JSON.stringify(body) }),
   vaultPending: () => request<{ pending: VaultPendingSecret[] }>("/api/space-vault/pending"),
+  /** The waiting rows without their sealed values, for the dock's list (shown locked or unlocked). */
+  vaultPendingRows: () => request<{ pending: VaultPendingSecret[] }>("/api/space-vault/pending?sealed=0"),
   vaultDeletePending: (id: string) => request<{ deleted: true }>(`/api/space-vault/pending/${encodeURIComponent(id)}`, { method: "DELETE" }),
   /** Off revokes: the answer then carries the new generation and epoch. */
   vaultSetAgentAccess: (enabled: boolean) => request<{ agentAccess: boolean; generation?: number; epoch?: number }>("/api/space-vault/agent-access", { method: "PUT", body: JSON.stringify({ enabled }) }),
@@ -1655,8 +1706,50 @@ export const api = {
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
     }),
   deleteCouncilRun: (id: string) => request<void>(`/api/council/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  nousProviders: () => request<{ providers: NousProviderOption[] }>("/api/nous/providers"),
   nous: () => request<{ state: NousState }>("/api/nous"),
-  nousMessages: () => request<{ messages: NousMessage[]; waiting?: string[]; attachments?: Record<string, NousAttachment[]> }>("/api/nous/messages"),
+  nousSharedMemory: () => request<{ entries: SharedMemoryEntry[]; policy: SharedMemoryPolicy }>("/api/nous/shared-memory"),
+  createNousSharedMemory: (input: SharedMemoryContent) => request<{ entry: SharedMemoryEntry }>("/api/nous/shared-memory", { method: "POST", body: JSON.stringify(input) }),
+  updateNousSharedMemory: (id: string, input: Partial<SharedMemoryContent> & { revision: number; status?: SharedMemoryEntry["status"] }) =>
+    request<{ entry: SharedMemoryEntry }>(`/api/nous/shared-memory/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteNousSharedMemory: (id: string, revision: number) => request<{ deleted: boolean }>(`/api/nous/shared-memory/${encodeURIComponent(id)}`, { method: "DELETE", body: JSON.stringify({ revision }) }),
+  updateNousSharedMemoryPolicy: (input: Partial<Pick<SharedMemoryPolicy, "autoApprove" | "dailyUpgrade">>) => request<{ policy: SharedMemoryPolicy }>("/api/nous/shared-memory/policy", { method: "PATCH", body: JSON.stringify(input) }),
+  /** The latest page since the last Clear, or a page further back (`before` a message id; `cleared` the newest rows Clear hid). */
+  nousMessages: (page: { before?: string; cleared?: boolean } = {}) => request<{ messages: NousMessage[]; hasMore?: boolean; clearedAt?: string | null; waiting?: string[]; attachments?: Record<string, NousAttachment[]> }>(
+    `/api/nous/messages${page.before ? `?before=${encodeURIComponent(page.before)}` : page.cleared ? "?cleared=1" : ""}`),
+  /** The Requests tab: every operator message, newest first, with how it ended; `before` a message id pages further back, `status` filters; `q` keeps those holding any of its words; `counts` cover every message `q` keeps. */
+  nousRequests: (before?: string, status?: NousRequestStatus, limit?: number, q?: string) => {
+    const query = new URLSearchParams({ ...(before ? { before } : {}), ...(status ? { status } : {}), ...(limit ? { limit: String(limit) } : {}), ...(q ? { q } : {}) }).toString();
+    return request<{ requests: NousOperatorRequest[]; hasMore: boolean; counts: Record<NousRequestStatus, number> }>(`/api/nous/requests${query ? `?${query}` : ""}`);
+  },
+  /** Signature from the phone (plan clipboard:2qSLIT_csvPm): the owner's saved signatures and phone, agents' requests, signing a PDF of Agent Files. */
+  signatures: () => request<{ signatures: SavedSignature[] }>("/api/signatures"),
+  savedSignatureImageUrl: (id: string) => `/api/signatures/${encodeURIComponent(id)}/image`,
+  saveSignature: (body: { png: string; label?: string; isDefault?: boolean }) =>
+    request<{ signature: SavedSignature }>("/api/signatures", { method: "POST", body: JSON.stringify(body) }),
+  updateSignature: (id: string, body: { label?: string; isDefault?: true }) =>
+    request<{ signature: SavedSignature }>(`/api/signatures/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteSavedSignature: (id: string) => request<{ deleted: boolean }>(`/api/signatures/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  signatureDetails: () => request<{ details: SignerDetails }>("/api/signature/details"),
+  saveSignatureDetails: (details: SignerDetails) => request<{ details: SignerDetails }>("/api/signature/details", { method: "PUT", body: JSON.stringify(details) }),
+  signatureRequests: (status?: SignatureRequest["status"]) =>
+    request<{ requests: Array<SignatureRequest & { document: { filename: string; folder: string | null } | null }> }>(`/api/signature-requests${status ? `?status=${status}` : ""}`),
+  signSignatureRequest: (id: string, body: SignatureChoice & { fieldValues?: string[] }) =>
+    request<{ request: SignatureRequest; artifact: Artifact }>(`/api/signature-requests/${encodeURIComponent(id)}/sign`, { method: "POST", body: JSON.stringify(body) }),
+  cancelSignatureRequest: (id: string) => request<{ request: SignatureRequest }>(`/api/signature-requests/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" }),
+  signAgentFile: (artifactId: string, body: SignatureChoice & { placements: SignaturePlacement[]; fields?: SignatureField[]; fieldValues?: string[] }) =>
+    request<{ artifact: Artifact }>(`/api/artifacts/${encodeURIComponent(artifactId)}/sign`, { method: "POST", body: JSON.stringify(body) }),
+  /** The operator's appointments (2/11): upcoming soonest first, past newest first, with their working zone and their Appointments pane. */
+  appointments: (when: "upcoming" | "past" | "all" = "upcoming") => request<AppointmentList>(`/api/appointments?when=${when}`),
+  addAppointment: (input: AppointmentInput) => request<Appointment>("/api/appointments", { method: "POST", body: JSON.stringify(input) }),
+  updateAppointment: (id: string, patch: AppointmentUpdate) => request<Appointment>(`/api/appointments/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  /** Task runs (ADMIN, plan clipboard:GA__W4qBxSPR): every run of the scheduled tasks, newest first; `before` a run id pages back; `counts` cover the chosen task's runs. */
+  taskRuns: (query: { before?: string; status?: TaskRunStatus; taskId?: string } = {}) => {
+    const search = new URLSearchParams(Object.entries(query).filter((entry): entry is [string, string] => Boolean(entry[1]))).toString();
+    return request<TaskRunListResponse>(`/api/tasks/runs${search ? `?${search}` : ""}`);
+  },
+  /** Every operator message, oldest first: "Go to my last message" walks them past the loaded page. */
+  nousOperatorIndex: () => request<{ messages: Array<{ id: string; createdAt: string }> }>("/api/nous/messages/operator-index"),
   sendNousMessage: (content: string, attachmentIds: string[] = []) => request<{ message: NousMessage; attachments?: NousAttachment[] }>("/api/nous/messages",
     { method: "POST", body: JSON.stringify(attachmentIds.length ? { content, attachmentIds } : { content }) }),
   uploadNousAttachments: (files: File[]) => {
@@ -1665,8 +1758,7 @@ export const api = {
     return request<{ attachments: NousAttachment[] }>("/api/nous/attachments", { method: "POST", body: form });
   },
   deleteNousAttachment: (id: string) => request<{ removed: boolean }>(`/api/nous/attachments/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  nousAttachmentUrl: (id: string, mode?: "preview" | "download") =>
-    `/api/nous/attachments/${encodeURIComponent(id)}${mode === "preview" ? "?preview=1" : mode === "download" ? "?download=1" : ""}`,
+  nousAttachmentUrl: (id: string, mode?: "preview" | "download" | "text") => `/api/nous/attachments/${encodeURIComponent(id)}${mode ? `?${mode}=1` : ""}`,
   clearNousMessages: () => request<{ cleared: number }>("/api/nous/messages", { method: "DELETE" }),
   stopNous: () => request<{ stopped: boolean }>("/api/nous/stop", { method: "POST" }),
   updateNousSettings: (input: Partial<NousSettings>) => request<{ settings: NousSettings }>("/api/nous/settings", { method: "PATCH", body: JSON.stringify(input) }),
@@ -1674,6 +1766,7 @@ export const api = {
   setNousAway: (input: { away: boolean; grant?: NousAwayGrant[] }) => request<{ away: NousAway | null }>("/api/nous/away", { method: "POST", body: JSON.stringify(input) }),
   nousOverview: () => request<{ overview: NousOverview }>("/api/nous/overview"),
   nousDecisions: () => request<{ decisions: NousDecision[] }>("/api/nous/decisions"),
+  nousEarlierDecisions: (before: string) => request<{ decisions: NousDecision[]; hasMore: boolean }>(`/api/nous/decisions?${new URLSearchParams({ before })}`),
   /** Nous's pane board (plan clipboard:Y9cgKVHFaHrr): every open pane by room with its live line, items and reply box. */
   nousPaneBoard: () => request<{ board: NousPaneBoard }>("/api/nous/pane-board"),
   refreshNousPaneBoard: (paneId?: string) => request<{ started: boolean }>("/api/nous/pane-board/refresh", { method: "POST", body: JSON.stringify(paneId ? { paneId } : {}) }),
@@ -1692,7 +1785,27 @@ export const api = {
   createNousGoal: (text: string) => request<{ goal: NousGoal }>("/api/nous/goals", { method: "POST", body: JSON.stringify({ text }) }),
   updateNousGoal: (id: string, input: NousGoalEditInput) => request<{ goal: NousGoal }>(`/api/nous/goals/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
   reorderNousGoals: (ids: string[]) => request<{ goals: NousGoal[] }>("/api/nous/goals/reorder", { method: "POST", body: JSON.stringify({ ids }) }),
+  /** A goal's work history (plan clipboard:jNDx8l-vMEl9), newest first; `before` is the oldest `at` held. */
+  nousGoalHistory: (id: string, query: { before?: string; kind?: NousGoalHistoryKind }) =>
+    request<NousGoalHistoryPage>(`/api/nous/goals/${encodeURIComponent(id)}/history?${new URLSearchParams(Object.entries(query).filter((entry): entry is [string, string] => Boolean(entry[1])))}`),
   deleteNousGoal: (id: string) => request<{ removed: boolean }>(`/api/nous/goals/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  /** The Load tab (plan clipboard:f4SH36t3fJ6c): the share of the server and token capacity in use, its series over the range and its averages. */
+  nousLoad: (range: NousLoadRange) => request<NousLoad>(`/api/nous/load?range=${range}`),
+  nousTokenUsage: (period: TokenUsagePeriod) => request<TokenUsageBreakdown>(`/api/nous/token-usage?period=${period}`),
+  nousScore: () => request<NousScore>("/api/nous/score"),
+  nousScoreHistory: (range: NousScoreRange) => request<NousScoreHistory>(`/api/nous/score/history?range=${range}`),
+  nousSharedFiles: () => request<NousSharedFile[]>("/api/nous/shared-files"),
+  /** Startup programs (plan clipboard:17yLAnH5ZpyF): the page's programs. */
+  nousPrograms: (page: NousProgramPage) => request<{ programs: NousProgram[] }>(`/api/nous/programs?page=${page}`),
+  /** Job applications and Crypto (operator 3/11 22:33 BKK): every application with its company's mails; the crypto team's final table. */
+  nousJobReport: () => request<{ report: NousJobReport }>("/api/nous/job-report", { cache: "no-store" }),
+  nousCryptoReport: () => request<{ report: NousCryptoReport }>("/api/nous/crypto-report", { cache: "no-store" }),
+  /** Marketing (operator 5/11 10:42 BKK): every post, platform and stats source with their scores. */
+  nousMarketingReport: () => request<{ report: NousMarketingReport }>("/api/nous/marketing-report", { cache: "no-store" }),
+  /** Operator 2/11 15:08 BKK: Nous is on with "May send", so the copilots' reviews and Mail campaigns are Nous's (panes show "Nous reviewing"). */
+  nousApprovals: () => request<{ nousReviewing: boolean }>("/api/nous/approvals"),
+  /** Removes only the share; the Agent File stays. */
+  removeNousSharedFile: (shareId: string) => request<{ removed: boolean }>(`/api/nous/shared-files/${encodeURIComponent(shareId)}`, { method: "DELETE" }),
   taskItems: (query: { q?: string; status?: TaskStatus; source?: TaskSource; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
@@ -1784,7 +1897,7 @@ export const api = {
         name,
         initialPaneCount,
         reason: reason?.trim() || undefined,
-        projectPath: projectPath ?? "/opt/spaceapp"
+        projectPath: projectPath ?? SPACE_INSTALL_ROOT
       })
     }),
   reorderRooms: (roomIds: string[]) =>
@@ -1807,8 +1920,9 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(input)
     }),
-  deleteRoom: (roomId: string) =>
-    request<{ ok: true; roomId: string }>(`/api/rooms/${encodeURIComponent(roomId)}`, {
+  /** `force`: the operator's own close of a room whose Marketing Copilot still has posts scheduled (close-or-confirm.ts). */
+  deleteRoom: (roomId: string, force = false) =>
+    request<{ ok: true; roomId: string }>(`/api/rooms/${encodeURIComponent(roomId)}${force ? "?force=true" : ""}`, {
       method: "DELETE"
     }),
   roomAgentHistory: (roomId: string) =>
@@ -1858,16 +1972,21 @@ export const api = {
     }),
   roomAgentPending: () => request<{ rooms: Record<string, number>; latest: RoomAgentEvent[]; roomNames?: Record<string, string> }>("/api/room-agent/pending"),
   // Space notifications: what waits for the user, the newest records, read / acknowledge, and a test.
+  /** nous_msg:8e7e6c25: a workspace path's Agent File (the one with its content, or filed now). */
+  workspaceAgentFile: (path: string) => request<{ artifact: Artifact }>("/api/nous/files/agent-file", { method: "POST", body: JSON.stringify({ path }) }),
   notificationsPending: () => request<import("@space/contracts").NotificationsPending>("/api/notifications/pending", { cache: "no-store" }),
-  notifications: (query: { status?: "OPEN" | "ALL" | "NEEDS_YOU"; source?: string; limit?: number; before?: string } = {}) =>
+  notifications: (query: { status?: "OPEN" | "ALL" | "NEEDS_YOU"; source?: string; kind?: string; limit?: number; before?: string } = {}) =>
     request<{ notifications: import("@space/contracts").SpaceNotification[] }>(`/api/notifications?${new URLSearchParams({ ...(query.status ? { status: query.status } : {}),
-      ...(query.source ? { source: query.source } : {}), ...(query.limit ? { limit: String(query.limit) } : {}), ...(query.before ? { before: query.before } : {}) })}`, { cache: "no-store" }),
+      ...(query.source ? { source: query.source } : {}), ...(query.kind ? { kind: query.kind } : {}), ...(query.limit ? { limit: String(query.limit) } : {}), ...(query.before ? { before: query.before } : {}) })}`, { cache: "no-store" }),
   notification: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}`, { cache: "no-store" }),
   markNotificationRead: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),
   ackNotification: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}/ack`, { method: "POST" }),
   /** Needs you as questions (plan clipboard:5AQvaoSR-IZa): the operator's answer from the card goes where the record's ask says. */
   answerNotification: (id: string, input: import("@space/contracts").NotificationAnswerInput) => request<import("@space/contracts").NotificationAnswerResult>(`/api/notifications/${encodeURIComponent(id)}/answer`,
     { method: "POST", body: JSON.stringify(input) }),
+  /** Operator 9/11 13:31 BKK: where Go now lands, found again on the server against the live browsers (the card is rebound to it). */
+  needsYouPlace: (id: string) => request<{ page: boolean; place: import("@space/contracts").NeedsYouBrowserPage | null; url: string | null }>(
+    `/api/notifications/${encodeURIComponent(id)}/place`, { method: "POST" }),
   readAllNotifications: () => request<{ read: number }>("/api/notifications/read-all", { method: "POST" }),
   testNotification: () => request<{ notification: import("@space/contracts").SpaceNotification }>("/api/notifications/test", { method: "POST" }),
   // The Android app's FCM token while "Push notifications on this device" is on; `available` says whether the server can push.
@@ -2025,6 +2144,8 @@ export const api = {
   removeGatewayAnthropicAdminKey: () => request<{ removed: boolean }>("/api/admin/gateway/anthropic-admin", { method: "DELETE" }),
   syncGatewayAnthropicBilling: () => request<GatewayAnthropicAdminStatus>("/api/admin/gateway/anthropic-admin/sync", { method: "POST", body: JSON.stringify({}) }),
   gatewayAnthropicBilling: (days: number) => request<GatewayAnthropicBillingReport>(`/api/admin/gateway/anthropic-billing?days=${days}`),
+  gatewayPoolModels: () => request<GatewayPoolModels>("/api/admin/gateway/pool-models"),
+  gatewayFreeLedger: () => request<GatewayFreeLedger>("/api/admin/gateway/free-ledger"),
   gatewayAccounts: () => request<GatewayAccountList>("/api/admin/gateway/accounts"),
   setGatewayAccountPaused: (accountId: string, paused: boolean) =>
     request<GatewayAccount>(`/api/admin/gateway/accounts/${encodeURIComponent(accountId)}`, { method: "PATCH", body: JSON.stringify({ paused }) }),
@@ -2081,7 +2202,7 @@ export const api = {
     "/api/admin/gateway/antigravity/profiles"),
   importGatewayAntigravityProfile: (profileId: string) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
     "/api/admin/gateway/antigravity/import", { method: "POST", body: JSON.stringify({ profileId }) }),
-  addGatewayOpenAiApiKey: (input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE" | "GOOGLE_AI"; apiKey?: string; useSpaceKey?: boolean; label?: string }) =>
+  addGatewayOpenAiApiKey: (input: { provider?: import("@space/contracts").GatewayApiKeyProvider; apiKey?: string; useSpaceKey?: boolean; label?: string }) =>
     request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
       "/api/admin/gateway/api-key/add", { method: "POST", body: JSON.stringify({ provider: "OPENAI_API", ...input }) }),
   importGatewayCodexAuthJson: (authJson: string) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
@@ -2331,8 +2452,9 @@ export const api = {
     }),
   paneCapabilities: (paneId: string) =>
     request<PaneCapabilityMatrix>(`/api/panes/${encodeURIComponent(paneId)}/capabilities`),
-  closePane: (paneId: string) =>
-    request<Pane>(`/api/panes/${encodeURIComponent(paneId)}`, {
+  /** `force`: the operator's own close of a Marketing Copilot pane with posts still scheduled (close-or-confirm.ts). */
+  closePane: (paneId: string, force = false) =>
+    request<Pane>(`/api/panes/${encodeURIComponent(paneId)}${force ? "?force=true" : ""}`, {
       method: "DELETE"
     }),
   agentSession: (paneId: string) => request<AgentPaneSession>(`/api/panes/${encodeURIComponent(paneId)}/agent-session`),
@@ -2671,9 +2793,13 @@ export const api = {
     return result;
   },
   appDiagnosticsStatus: () => request<AppDiagnosticsStatus>("/api/app-diagnostics"),
+  deployQueueTicket: (id: string) => request<{ ticket: import("@space/contracts").DeployQueueTicket }>(`/api/admin/deploy-queue/tickets/${encodeURIComponent(id)}`, { cache: "no-store" }),
   deployQueue: () => request<DeployQueueReport>("/api/admin/deploy-queue", { cache: "no-store" }),
   releases: () => request<ReleasesReport>("/api/admin/releases", { cache: "no-store" }),
   promoteRelease: () => request<ReleaseActionResponse>("/api/admin/releases/promote", { method: "POST" }),
+  serverOps: () => request<ServerOpsStatus>("/api/admin/server-ops", { cache: "no-store" }),
+  runServerOp: (op: "clean-disk" | "deploy-remotes" | "clean-worktrees" | "restart", service?: ServerOpsService) =>
+    request<{ status: string; message: string }>(`/api/admin/server-ops/${op}`, { method: "POST", body: JSON.stringify(service ? { service } : {}) }),
   approveHotfix: (ticketId: string) =>
     request<ReleaseActionResponse>(`/api/admin/releases/hotfixes/${encodeURIComponent(ticketId)}/approve`, { method: "POST" }),
   updateAppDiagnosticsStatus: (isEnabled: boolean) =>
@@ -3091,6 +3217,10 @@ export const api = {
     }
     return `${protocol}//${window.location.host}/api/panes/${encodeURIComponent(paneId)}/vnc/stream?${params.toString()}`;
   },
+  /** The pane browser's network route (plan clipboard:iLvBs5eOMZjF); PUT restarts a running browser on it. */
+  browserRoute: (paneId: string) => request<{ route: FreelanceEgressRoute; routes?: FreelanceEgressRoute[] }>(`/api/panes/${encodeURIComponent(paneId)}/browser/route`),
+  setBrowserRoute: (paneId: string, route: FreelanceEgressRoute) => request<{ route: FreelanceEgressRoute; restarted: boolean }>(
+    `/api/panes/${encodeURIComponent(paneId)}/browser/route`, { method: "PUT", body: JSON.stringify({ route }) }),
   browserPages: (paneId: string) =>
     request<BrowserPageListPayload>(`/api/panes/${encodeURIComponent(paneId)}/browser/pages`),
   createBrowserPage: (paneId: string, input: CreateBrowserPageInput = { activate: true }) =>
@@ -3102,6 +3232,9 @@ export const api = {
     request<BrowserPageListPayload>(`/api/panes/${encodeURIComponent(paneId)}/browser/pages/${encodeURIComponent(pageId)}/activate`, {
       method: "POST"
     }),
+  /** Scrolls what waits for the operator on that tab (a reCAPTCHA, a code, an empty required field, Submit) into view. */
+  revealBrowserNeed: (paneId: string, pageId: string) =>
+    request<{ revealed: string | null }>(`/api/panes/${encodeURIComponent(paneId)}/browser/pages/${encodeURIComponent(pageId)}/reveal`, { method: "POST" }),
   closeBrowserPage: (paneId: string, pageId: string) =>
     request<BrowserPageListPayload>(`/api/panes/${encodeURIComponent(paneId)}/browser/pages/${encodeURIComponent(pageId)}/close`, {
       method: "POST"
@@ -4008,7 +4141,7 @@ export const api = {
     request<{ reset: JobApplyResetResult }>("/api/job-apply/reset", { method: "POST", body: JSON.stringify({ confirm: "RESET", expectedCampaignStartedAt }) }),
   jobApplyStats: (tz: string) => request<{ stats: JobApplyStats }>(`/api/job-apply/stats?tz=${encodeURIComponent(tz)}`, { cache: "no-store" }),
   jobApplications: (status?: JobApplicationStatus) =>
-    request<{ applications: JobApplication[] }>(`/api/job-apply/applications?limit=1000${status ? `&status=${encodeURIComponent(status)}` : ""}`, { cache: "no-store" }),
+    request<{ applications: JobApplication[] }>(`/api/job-apply/applications${status ? `?status=${encodeURIComponent(status)}` : ""}`, { cache: "no-store" }),
   createJobApplication: (input: JobApplicationCreate) =>
     request<{ application: JobApplication; created: boolean }>("/api/job-apply/applications", { method: "POST", body: JSON.stringify(input) }),
   updateJobApplication: (id: string, input: JobApplicationUpdate) =>
@@ -4150,6 +4283,7 @@ export const api = {
   // Monitoring Copilot pane: everything the pane shows in one read, the collector's targets, settings, briefs, answers, memory, the run and "Check now".
   monitoringCopilotState: (paneId: string) => request<MonitoringCopilotState>(`/api/panes/${encodeURIComponent(paneId)}/monitoring-copilot/state`, { cache: "no-store" }),
   monitoringCopilotTargets: (paneId: string) => request<{ targets: MonitoringTargetView[] }>(`/api/panes/${encodeURIComponent(paneId)}/monitoring-copilot/targets`, { cache: "no-store" }),
+  monitoringCopilotCharts: (paneId: string, window: MonitoringChartWindow) => request<MonitoringCharts>(`/api/panes/${encodeURIComponent(paneId)}/monitoring-copilot/charts?window=${window}`, { cache: "no-store" }),
   updateMonitoringCopilotSettings: (paneId: string, metadata: MonitoringCopilotPaneMetadata) =>
     request<{ metadata: MonitoringCopilotPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/monitoring-copilot/settings`, { method: "PUT", body: JSON.stringify(metadata) }),
   createMonitoringCopilotBrief: (paneId: string, text: string) =>
@@ -4263,7 +4397,9 @@ export const api = {
   mailThread: (paneId: string | undefined, account: string, threadId: string, images = false) =>
     request<{ thread: MailThread }>(`/api/mail-copilot/threads/${encodeURIComponent(threadId)}?${new URLSearchParams({ account, images: images ? "1" : "0", ...(paneId ? { paneId } : {}) })}`, { cache: "no-store" }),
   modifyMailThread: (paneId: string | undefined, threadId: string, input: MailThreadAction) =>
-    request<{ ok: true }>(`/api/mail-copilot/threads/${encodeURIComponent(threadId)}/modify`, { method: "POST", body: JSON.stringify({ ...input, ...(paneId ? { paneId } : {}) }) }),
+    request<{ ok: true; labels?: MailThreadLabel[] }>(`/api/mail-copilot/threads/${encodeURIComponent(threadId)}/modify`, { method: "POST", body: JSON.stringify({ ...input, ...(paneId ? { paneId } : {}) }) }),
+  mailThreadLabels: (paneId: string | undefined, account: string, threadId: string) =>
+    request<MailThreadLabels>(`/api/mail-copilot/threads/${encodeURIComponent(threadId)}/labels?${new URLSearchParams({ account, ...(paneId ? { paneId } : {}) })}`, { cache: "no-store" }),
   sendMail: (paneId: string | undefined, input: MailComposeInput) =>
     request<{ messageId: string; threadId: string }>("/api/mail-copilot/messages/send", { method: "POST", body: JSON.stringify({ ...input, ...(paneId ? { paneId } : {}) }) }),
   saveMailDraft: (paneId: string | undefined, input: MailComposeInput) =>
@@ -4294,6 +4430,25 @@ export const api = {
     request<{ rules: MailRule[] }>(`/api/mail-copilot/rules${query.status?.length ? `?status=${query.status.join(",")}` : ""}`, { cache: "no-store" }),
   createMailRule: (input: MailRuleProposal) => request<{ rule: MailRule }>("/api/mail-copilot/rules", { method: "POST", body: JSON.stringify(input) }),
   decideMailRule: (id: string, input: MailRuleDecision) => request<{ rule: MailRule }>(`/api/mail-copilot/rules/${encodeURIComponent(id)}/decide`, { method: "POST", body: JSON.stringify(input) }),
+  // Mail Campaigns (plan clipboard:IJ2ovfLg1Lbw): what the Mail Copilot pane's Campaigns tab reads and decides.
+  mailCampaigns: () => request<{ campaigns: MailCampaign[] }>("/api/mail-campaigns/campaigns", { cache: "no-store" }),
+  mailCampaign: (id: string) => request<{ campaign: MailCampaign; stats: MailCampaignStats; recent: MailCampaignSend[] }>(`/api/mail-campaigns/campaigns/${encodeURIComponent(id)}`, { cache: "no-store" }),
+  mailCampaignPreview: (id: string, query: { q?: string; offset?: number; limit?: number } = {}) =>
+    request<MailCampaignPreview>(`/api/mail-campaigns/campaigns/${encodeURIComponent(id)}/preview?${new URLSearchParams(Object.fromEntries(Object.entries(query).filter(([, value]) => value !== undefined && value !== "").map(([key, value]) => [key, String(value)])))}`, { cache: "no-store" }),
+  mailCampaignPreviewMail: (id: string, contactId: string) => request<MailCampaignPreviewMail>(`/api/mail-campaigns/campaigns/${encodeURIComponent(id)}/preview/${encodeURIComponent(contactId)}`, { cache: "no-store" }),
+  mailCampaignChecks: (id: string) => request<{ fingerprint: string; current: MailCampaignCheck[]; older: MailCampaignCheck[] }>(`/api/mail-campaigns/campaigns/${encodeURIComponent(id)}/lab`, { cache: "no-store" }),
+  decideMailCampaign: (id: string, input: { decision: "approve" | "decline"; fingerprint?: string; note?: string }) =>
+    request<{ display: string; campaign: MailCampaign }>(`/api/mail-campaigns/campaigns/${encodeURIComponent(id)}/decide`, { method: "POST", body: JSON.stringify(input) }),
+  mailCampaignControl: (id: string, action: "pause" | "resume" | "stop") => request<{ campaign: MailCampaign }>(`/api/mail-campaigns/campaigns/${encodeURIComponent(id)}/${action}`, { method: "POST", body: "{}" }),
+  mailCampaignTemplates: () => request<{ templates: Array<MailTemplate & { subject: string; fingerprint: string | null }> }>("/api/mail-campaigns/templates", { cache: "no-store" }),
+  mailCampaignTemplate: (id: string) => request<{ template: MailTemplate; version: MailTemplateVersion; versions: Array<{ version: number; fingerprint: string; createdAt: string }> }>(`/api/mail-campaigns/templates/${encodeURIComponent(id)}`, { cache: "no-store" }),
+  mailCampaignLists: () => request<{ lists: Array<MailList & { health: MailListHealth }> }>("/api/mail-campaigns/lists", { cache: "no-store" }),
+  mailCampaignListContacts: (id: string, query: { q?: string; health?: string; offset?: number } = {}) =>
+    request<{ contacts: MailContact[] }>(`/api/mail-campaigns/lists/${encodeURIComponent(id)}/contacts?${new URLSearchParams(Object.fromEntries(Object.entries({ limit: "100", ...query }).filter(([, value]) => value !== undefined && value !== "").map(([key, value]) => [key, String(value)])))}`, { cache: "no-store" }),
+  mailCampaignSuppressions: (q?: string) => request<{ suppressions: MailSuppression[] }>(`/api/mail-campaigns/suppressions${q ? `?${new URLSearchParams({ q })}` : ""}`, { cache: "no-store" }),
+  mailCampaignSenders: () => request<{ senders: MailSender[] }>("/api/mail-campaigns/senders", { cache: "no-store" }),
+  setMailSenderWarmup: (id: string, stage: number) => request<{ sender: MailSender }>(`/api/mail-campaigns/senders/${encodeURIComponent(id)}/warmup`, { method: "POST", body: JSON.stringify({ stage }) }),
+  setMailSenderBulk: (id: string, bulk: boolean) => request<{ sender: MailSender }>(`/api/mail-campaigns/senders/${encodeURIComponent(id)}/bulk`, { method: "POST", body: JSON.stringify({ bulk }) }),
   forgetMailMemory: (id: string) => request<{ forgotten: boolean }>(`/api/mail-copilot/memory/${encodeURIComponent(id)}`, { method: "DELETE" }),
   mailHabits: (paneId: string) => request<{ habits: MailHabitSender[] }>(`/api/mail-copilot/habits?${new URLSearchParams({ paneId })}`, { cache: "no-store" }),
   forgetMailHabits: (paneId: string, account: string, sender: string) =>
@@ -4549,3 +4704,5 @@ export const api = {
       body: JSON.stringify({ fromPaneId: paneId, ...input })
     })
 };
+import type { SharedMemoryContent, SharedMemoryEntry, SharedMemoryPolicy } from "@space/contracts";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";

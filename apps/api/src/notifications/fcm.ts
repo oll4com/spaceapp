@@ -13,24 +13,30 @@ const TOKEN_URI = "https://oauth2.googleapis.com/token";
 const SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
 const base64url = (value: string) => Buffer.from(value).toString("base64url");
 
-export function createFcmSender(account: FcmServiceAccount, options: { fetch?: typeof fetch; now?: () => number } = {}): FcmSender {
+/** A Google service account's OAuth2 access token for `scope` (JWT bearer grant), cached; `reset` drops it after a 401. Play Integrity uses it too. */
+export function createGoogleAccessToken(account: Pick<FcmServiceAccount, "client_email" | "private_key">, scope: string, options: { fetch?: typeof fetch; now?: () => number } = {}) {
   const fetchImpl = options.fetch ?? fetch;
   const now = options.now ?? Date.now;
   let cached: { token: string; expiresAt: number } | null = null;
-
-  async function accessToken(): Promise<string> {
+  const accessToken = async (): Promise<string> => {
     if (cached && cached.expiresAt > now()) return cached.token;
     const iat = Math.floor(now() / 1000);
-    const unsigned = `${base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }))}.${base64url(JSON.stringify({ iss: account.client_email, scope: SCOPE, aud: TOKEN_URI, iat, exp: iat + 3600 }))}`;
+    const unsigned = `${base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }))}.${base64url(JSON.stringify({ iss: account.client_email, scope, aud: TOKEN_URI, iat, exp: iat + 3600 }))}`;
     const signature = createSign("RSA-SHA256").update(unsigned).sign(account.private_key).toString("base64url");
     const response = await fetchImpl(TOKEN_URI, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: `${unsigned}.${signature}` }).toString(), signal: AbortSignal.timeout(10_000) });
     const body = await response.json().catch(() => ({})) as { access_token?: string; expires_in?: number };
-    if (!response.ok || !body.access_token) throw new Error(`FCM access token request failed (HTTP ${response.status}).`);
+    if (!response.ok || !body.access_token) throw new Error(`Google access token request failed (HTTP ${response.status}).`);
     // Google issues one-hour tokens: kept for 55 minutes.
     cached = { token: body.access_token, expiresAt: now() + Math.min(body.expires_in ?? 3600, 3600) * 1000 - 300_000 };
     return cached.token;
-  }
+  };
+  return Object.assign(accessToken, { reset: () => { cached = null; } });
+}
+
+export function createFcmSender(account: FcmServiceAccount, options: { fetch?: typeof fetch; now?: () => number } = {}): FcmSender {
+  const fetchImpl = options.fetch ?? fetch;
+  const accessToken = createGoogleAccessToken(account, SCOPE, options);
 
   return {
     async send(token, data) {
@@ -39,7 +45,7 @@ export function createFcmSender(account: FcmServiceAccount, options: { fetch?: t
         // Data only and high priority: the app's messaging service shows it, also with the app closed.
         body: JSON.stringify({ message: { token, data, android: { priority: "HIGH", ttl: "86400s" } } }), signal: AbortSignal.timeout(10_000) });
       if (response.ok) return "SENT";
-      if (response.status === 401) cached = null;
+      if (response.status === 401) accessToken.reset();
       const error = (await response.json().catch(() => ({})) as { error?: { status?: string; details?: Array<{ errorCode?: string }> } }).error;
       const code = error?.details?.find((detail) => detail.errorCode)?.errorCode ?? error?.status;
       return code === "UNREGISTERED" || code === "INVALID_ARGUMENT" ? "INVALID_TOKEN" : "FAILED";

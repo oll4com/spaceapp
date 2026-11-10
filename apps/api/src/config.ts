@@ -15,7 +15,11 @@ import {
   type VoiceTranscriptionModel,
   type VoiceModelVoice,
   type VncPreset,
-  vncPresetSchema
+  vncPresetSchema,
+  monitoringCollectorDefaults,
+  monitoringCollectorUrlAllowed,
+  parseMonitoringCollectorNetwork,
+  type MonitoringCollectorConfig
 } from "@space/contracts";
 import { resolveCanonicalSpaceMemoryPaths } from "@space/runtime";
 import {
@@ -26,6 +30,7 @@ import {
 } from "./cli-runtime-descriptors.js";
 import { parseLiveModelPolicy, type LiveModelPolicy } from "./live-model-policy.js";
 import { validateT3ApiEnv } from "./t3-env.js";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export interface SpaceApiConfig {
   t3CodeEnabled: boolean;
@@ -116,6 +121,10 @@ export interface SpaceApiConfig {
   designGatewayKeyFile: string;
   /** The monitoring collector's scrape token for GET /api/metrics/scrape (root-provisioned; missing: the scrape is refused). */
   metricsTokenFile: string;
+  /** The Monitoring Copilot's collector network and the host its empty addresses read as; unset (public installs): any private address, none set. */
+  monitoringCollector: MonitoringCollectorConfig;
+  /** The physical host's PromQL matchers in the collector (SPACE_LOAD_HOST_SELECTOR); null: no hypervisor, this machine's swap. */
+  loadHostSelector: string | null;
   /** The Video pane's engine files (one folder per pane; never /tmp) and its pinned tools (venv, models, auto-editor). */
   videoWorkRoot: string;
   videoToolsDir: string;
@@ -140,6 +149,8 @@ export interface SpaceApiConfig {
   googleVoiceKeyFile: string | null;
   /** Firebase service account key (JSON) for FCM pushes to the Android app; null keeps push off (dev). */
   fcmServiceAccountFile: string | null;
+  /** Service account key (JSON) of the Cloud project linked to the Play Console app, for Play Integrity verdicts at pairing and decide; null: not checked. */
+  playIntegrityServiceAccountFile: string | null;
   googleVoiceApiKey: string | null;
   googleVoiceBaseUrl: string;
   awsVoiceKeyFile: string | null;
@@ -163,6 +174,11 @@ export interface SpaceApiConfig {
   browserEvidenceTargetOrigin: string;
   /** Where a CLI container reaches this API (SPACE_CLI_API_BASE_URL, public compose: http://spaceapp-core:4911); null: the local one. */
   cliApiBaseUrl: string | null;
+  /** Nous Pro phase 2b: the SpaceApp relay for phones behind NAT (SPACE_MOBILE_RELAY_URL, wss) and the push service that wakes them (SPACE_MOBILE_PUSH_URL, https); null: off. */
+  mobileRelayUrl: string | null;
+  mobilePushUrl: string | null;
+  /** The store-review demo instance's "Try the demo" (SPACE_MOBILE_DEMO=1): only on a public install, so stable and dev never run it. */
+  mobileDemo: boolean;
   browserEvidenceTimeoutMs: number;
   appDiagnosticsRoot: string;
   maintenanceAutopilotStateFile: string;
@@ -289,8 +305,44 @@ function parseCliApiBaseUrl(raw: string | undefined): string | null {
   return url.origin;
 }
 
+/** The relay and push services: a secure origin; the plain scheme only on loopback (a local test service). */
+function parseMobileServiceUrl(raw: string | undefined, name: string, secure: string, plain: string): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  const url = URL.canParse(value) ? new URL(value) : null;
+  const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(url?.hostname ?? "");
+  if (!url || (url.protocol !== secure && !(url.protocol === plain && loopback)) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error(`${name} must be a ${secure}// origin.`);
+  }
+  return url.origin;
+}
+
+/**
+ * SPACE_LOAD_HOST_SELECTOR: the physical host in the collector as label=value pairs (stable, deploy/space-api.service:
+ * job=proxmox_host,instance=192.0.2.1:9100), returned as PromQL matchers; unset: the install has no hypervisor and reads its own swap
+ * (server-load.ts). scripts/space-load-gate.mjs parses it the same way (space-load-gate-thresholds.test.ts).
+ */
+export function parseLoadHostSelector(raw: string | undefined): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  const pairs = value.split(",").map((pair) => /^([A-Za-z_][A-Za-z0-9_]{0,63})=([A-Za-z0-9_.:-]{1,128})$/.exec(pair.trim()));
+  if (pairs.some((match) => !match || match[1] === "__name__")) throw new Error("SPACE_LOAD_HOST_SELECTOR must be label=value pairs such as job=proxmox_host,instance=192.0.2.1:9100.");
+  return pairs.map((match) => `${match![1]}="${match![2]}"`).join(",");
+}
+
+/** MON-001: the installation's collector, from its own configuration (stable: deploy/space-api.service), never from code. */
+function parseMonitoringCollector(rawNetwork: string | undefined, rawHost: string | undefined): MonitoringCollectorConfig {
+  const network = rawNetwork?.trim() || null, host = rawHost?.trim() || null;
+  if (network && !parseMonitoringCollectorNetwork(network)) throw new Error("SPACE_MONITORING_COLLECTOR_NETWORK must be an IPv4 network such as 192.168.1.0/24.");
+  const defaults = host ? monitoringCollectorDefaults(host) : null;
+  if (defaults && !Object.values(defaults).every((url) => monitoringCollectorUrlAllowed(url, network))) {
+    throw new Error("SPACE_MONITORING_COLLECTOR_HOST must be a private IPv4 address inside SPACE_MONITORING_COLLECTOR_NETWORK.");
+  }
+  return { network, defaults };
+}
+
 export const optionalModuleIds = [
-  "games", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "design", "app-studio", "video", "security-copilot", "monitoring-copilot", "channels", "telegram", "waitlist", "desktop-updates"
+  "games", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "design", "app-studio", "video", "security-copilot", "monitoring-copilot", "mail-campaigns", "channels", "telegram", "waitlist", "desktop-updates"
 ] as const;
 export type OptionalModuleId = (typeof optionalModuleIds)[number];
 
@@ -308,7 +360,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
   const valid = validateT3ApiEnv(env);
   const runtimeStore = valid.SPACE_RUNTIME_STORE;
   const mcpConfig = parseMcpServerConfigs(env.SPACE_MCP_SERVERS_JSON);
-  const artifactRoot = env.SPACE_ARTIFACT_ROOT || "/opt/spaceapp/var/artifacts";
+  const artifactRoot = env.SPACE_ARTIFACT_ROOT || `${SPACE_INSTALL_ROOT}/var/artifacts`;
   const spaceMemoryPaths = resolveCanonicalSpaceMemoryPaths(env);
   return {
     t3CodeEnabled: valid.SPACE_T3CODE_ENABLED !== "false",
@@ -317,7 +369,8 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     t3CodeHealthTimeoutMs: valid.SPACE_T3CODE_HEALTH_TIMEOUT_MS,
     instance: valid.SPACE_INSTANCE,
     instanceJobs: Object.fromEntries(instanceBackgroundJobs.map((job) => [job, instanceBackgroundJobEnabled(
-      { SPACE_INSTANCE: valid.SPACE_INSTANCE, SPACE_INSTANCE_ENABLED_JOBS: env.SPACE_INSTANCE_ENABLED_JOBS }, job)])) as Record<InstanceBackgroundJob, boolean>,
+      { SPACE_INSTANCE: valid.SPACE_INSTANCE, SPACE_INSTANCE_ENABLED_JOBS: env.SPACE_INSTANCE_ENABLED_JOBS,
+        SPACE_PUBLIC_DISTRIBUTION: env.SPACE_PUBLIC_DISTRIBUTION }, job)])) as Record<InstanceBackgroundJob, boolean>,
     host: valid.SPACE_API_HOST,
     port: valid.SPACE_API_PORT,
     version: apiPackageVersion,
@@ -345,12 +398,12 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     codexLbKeyName: env.SPACE_GATEWAY_KEY_NAME || env.SPACE_CODEX_LB_KEY_NAME || null,
     gatewayUrl: parseGatewayUrl(env.SPACE_GATEWAY_URL),
     codexAppServerEnabled: env.SPACE_CODEX_APP_SERVER_ENABLED === "true",
-    codexAppServerCommand: env.SPACE_CODEX_APP_SERVER_COMMAND || "/opt/spaceapp/bin/codex-vscode-parity",
+    codexAppServerCommand: env.SPACE_CODEX_APP_SERVER_COMMAND || `${SPACE_INSTALL_ROOT}/bin/codex-vscode-parity`,
     codexAppServerTransport: env.SPACE_CODEX_APP_SERVER_TRANSPORT || "stdio",
     codexAppServerSocketPath: env.SPACE_CODEX_APP_SERVER_SOCKET || null,
     codexAppServerWebsocketUrl: env.SPACE_CODEX_APP_SERVER_WEBSOCKET_URL || null,
     codexAppServerSchemaDir: env.SPACE_CODEX_APP_SERVER_SCHEMA_DIR || null,
-    codexAppServerHome: env.SPACE_CODEX_APP_SERVER_HOME || "/var/lib/spaceapp-user/.codex",
+    codexAppServerHome: env.SPACE_CODEX_APP_SERVER_HOME || `${SPACE_AGENT_HOME}/.codex`,
     modelPriceCatalogPath: env.SPACE_MODEL_PRICE_CATALOG || null,
     codexAppServerKeyFile: env.SPACE_CODEX_APP_SERVER_KEY_FILE || null,
     codexAppServerKeyEnv: env.SPACE_CODEX_APP_SERVER_KEY_ENV || "OPENAI_API_KEY",
@@ -370,7 +423,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     cliCodexDefaultReasoningEffort: env.SPACE_CLI_CODEX_DEFAULT_REASONING_EFFORT || null,
     cliRuntimeCommands: configuredCliRuntimeCommands(env),
     cliVpnEnabled: valid.SPACE_CLI_VPN_ENABLED === "true",
-    cliVpnLauncherPath: env.SPACE_CLI_VPN_LAUNCHER || "/opt/spaceapp/bin/space-cli-vpn-launcher",
+    cliVpnLauncherPath: env.SPACE_CLI_VPN_LAUNCHER || `${SPACE_INSTALL_ROOT}/bin/space-cli-vpn-launcher`,
     cliCredentialSmoke: configuredCliCredentialSmoke(env),
     cliLoginBootstrap: configuredCliLoginBootstrap(env),
     cliMaintenanceRepairEnabled: valid.SPACE_CLI_MAINTENANCE_REPAIR_ENABLED === "true",
@@ -398,20 +451,22 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     memoryEmbeddingDimensions: Math.min(parsePositiveInt(env.SPACE_MEMORY_EMBEDDING_DIMENSIONS, 1536), 4096),
     memoryEmbeddingBaseUrl: env.SPACE_MEMORY_EMBEDDING_BASE_URL || "https://api.openai.com/v1",
     memoryEmbeddingKeyFile: env.SPACE_MEMORY_EMBEDDING_KEY_FILE || null,
-    designGatewayKeyFile: env.SPACE_DESIGN_GATEWAY_KEY_FILE || "/opt/spaceapp/secrets/space-design.key",
-    metricsTokenFile: env.SPACE_METRICS_TOKEN_FILE || "/opt/spaceapp/secrets/space-metrics.token",
-    // Next to the artifact root (stable /opt/spaceapp/var/video, dev /opt/spaceapp-dev/var/video): the dev API may write only under its own var.
+    designGatewayKeyFile: env.SPACE_DESIGN_GATEWAY_KEY_FILE || `${SPACE_INSTALL_ROOT}/secrets/space-design.key`,
+    metricsTokenFile: env.SPACE_METRICS_TOKEN_FILE || `${SPACE_INSTALL_ROOT}/secrets/space-metrics.token`,
+    monitoringCollector: parseMonitoringCollector(env.SPACE_MONITORING_COLLECTOR_NETWORK, env.SPACE_MONITORING_COLLECTOR_HOST),
+    loadHostSelector: parseLoadHostSelector(env.SPACE_LOAD_HOST_SELECTOR),
+    // Next to the artifact root (stable <install root>/var/video, dev <install root>-dev/var/video): the dev API may write only under its own var.
     videoWorkRoot: env.SPACE_VIDEO_WORK_ROOT || join(dirname(artifactRoot), "video"),
-    videoToolsDir: env.SPACE_VIDEO_TOOLS_DIR || "/opt/spaceapp/var/models/video",
+    videoToolsDir: env.SPACE_VIDEO_TOOLS_DIR || `${SPACE_INSTALL_ROOT}/var/models/video`,
     videoSourceMaxBytes: Number.parseInt(env.SPACE_VIDEO_SOURCE_MAX_BYTES || "", 10) || 480 * 1024 * 1024,
     // Dev never reads stable's key: it has its own under its var directory.
-    connectorKeyFile: env.SPACE_CONNECTOR_KEY_FILE || (env.SPACE_INSTANCE === "dev" ? "/opt/spaceapp-dev/var/connector/space-connector.key" : "/opt/spaceapp/secrets/space-connector.key"),
+    connectorKeyFile: env.SPACE_CONNECTOR_KEY_FILE || (env.SPACE_INSTANCE === "dev" ? `${SPACE_INSTALL_ROOT}-dev/var/connector/space-connector.key` : `${SPACE_INSTALL_ROOT}/secrets/space-connector.key`),
     memoryEmbeddingKeyName: env.SPACE_MEMORY_EMBEDDING_KEY_NAME || null,
     memoryEmbeddingTimeoutMs: Math.min(parsePositiveInt(env.SPACE_MEMORY_EMBEDDING_TIMEOUT_MS, 10000), 30000),
     memoryGraphEnabled: env.SPACE_MEMORY_GRAPH_ENABLED === "true",
     memoryMaintenanceEnabled: env.SPACE_MEMORY_MAINTENANCE_ENABLED === "true",
     memoryMutationsEnabled: env.SPACE_MEMORY_MUTATIONS_ENABLED === "true",
-    memoryGraphRoot: env.SPACE_MEMORY_GRAPH_ROOT || "/opt/spaceapp/var/memory-graph",
+    memoryGraphRoot: env.SPACE_MEMORY_GRAPH_ROOT || `${SPACE_INSTALL_ROOT}/var/memory-graph`,
     voiceTranscriptionEnabled: env.SPACE_VOICE_TRANSCRIPTION_ENABLED === "true",
     voiceTranscriptionBaseUrl: env.SPACE_VOICE_TRANSCRIPTION_BASE_URL || "https://api.openai.com/v1",
     voiceTranscriptionKeyFile: env.SPACE_VOICE_TRANSCRIPTION_KEY_FILE || null,
@@ -422,6 +477,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     voiceTranscriptionMaxDurationMs: Math.min(parsePositiveInt(env.SPACE_VOICE_TRANSCRIPTION_MAX_DURATION_MS, 60000), 5 * 60 * 1000),
     googleVoiceKeyFile: env.SPACE_GOOGLE_VOICE_KEY_FILE || env.SPACE_GEMINI_VOICE_KEY_FILE || null,
     fcmServiceAccountFile: env.SPACE_FCM_SERVICE_ACCOUNT_FILE || null,
+    playIntegrityServiceAccountFile: env.SPACE_PLAY_INTEGRITY_SERVICE_ACCOUNT_FILE || null,
     googleVoiceApiKey: env.GEMINI_API_KEY || env.GOOGLE_API_KEY || null,
     googleVoiceBaseUrl: env.SPACE_GOOGLE_VOICE_BASE_URL || "https://generativelanguage.googleapis.com",
     awsVoiceKeyFile: env.SPACE_AWS_VOICE_KEY_FILE || null,
@@ -438,17 +494,20 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     spaceMemoryIndexPath: spaceMemoryPaths.indexPath,
     spaceMemoryMonthlyPath: spaceMemoryPaths.monthlyPath,
     spaceMemoryLockPath: spaceMemoryPaths.lockPath,
-    codexGoalsDbPath: env.SPACE_CODEX_GOALS_DB_PATH || "/var/lib/spaceapp-user/.codex/goals_1.sqlite",
+    codexGoalsDbPath: env.SPACE_CODEX_GOALS_DB_PATH || `${SPACE_AGENT_HOME}/.codex/goals_1.sqlite`,
     browserEvidenceEnabled: env.SPACE_BROWSER_EVIDENCE_ENABLED !== "false",
     browserEvidenceChromePath: env.SPACE_BROWSER_CHROME_PATH || "/usr/bin/google-chrome",
     browserEvidenceArtifactRoot: artifactRoot,
     browserEvidenceTargetOrigin: env.SPACE_BROWSER_EVIDENCE_TARGET_ORIGIN || "http://127.0.0.1:4911",
     cliApiBaseUrl: parseCliApiBaseUrl(env.SPACE_CLI_API_BASE_URL),
+    mobileRelayUrl: parseMobileServiceUrl(env.SPACE_MOBILE_RELAY_URL, "SPACE_MOBILE_RELAY_URL", "wss:", "ws:"),
+    mobilePushUrl: parseMobileServiceUrl(env.SPACE_MOBILE_PUSH_URL, "SPACE_MOBILE_PUSH_URL", "https:", "http:"),
+    mobileDemo: env.SPACE_MOBILE_DEMO === "1" && env.SPACE_PUBLIC_DISTRIBUTION === "true",
     browserEvidenceTimeoutMs: Number.parseInt(env.SPACE_BROWSER_EVIDENCE_TIMEOUT_MS ?? "20000", 10),
-    appDiagnosticsRoot: env.SPACE_APP_DIAGNOSTICS_ROOT || "/opt/spaceapp/var/app-diagnostics",
-    maintenanceAutopilotStateFile: env.SPACE_MAINTENANCE_AUTOPILOT_STATE_FILE || "/opt/spaceapp/var/maintenance-autopilot/state.json",
+    appDiagnosticsRoot: env.SPACE_APP_DIAGNOSTICS_ROOT || `${SPACE_INSTALL_ROOT}/var/app-diagnostics`,
+    maintenanceAutopilotStateFile: env.SPACE_MAINTENANCE_AUTOPILOT_STATE_FILE || `${SPACE_INSTALL_ROOT}/var/maintenance-autopilot/state.json`,
     cliAccountBalancerStateFile: env.SPACE_CLI_ACCOUNT_BALANCER_STATE_FILE
-      || join(dirname(dirname(env.SPACE_MAINTENANCE_AUTOPILOT_STATE_FILE || "/opt/spaceapp/var/maintenance-autopilot/state.json")), "cli-account-balancer", "state.json"),
+      || join(dirname(dirname(env.SPACE_MAINTENANCE_AUTOPILOT_STATE_FILE || `${SPACE_INSTALL_ROOT}/var/maintenance-autopilot/state.json`)), "cli-account-balancer", "state.json"),
     browserSessionsEnabled: env.SPACE_BROWSER_SESSIONS_ENABLED === "true",
     browserSessionsChromePath: env.SPACE_BROWSER_SESSIONS_CHROME_PATH || env.SPACE_BROWSER_CHROME_PATH || "/usr/bin/google-chrome",
     browserSessionsXvfbPath: env.SPACE_BROWSER_SESSIONS_XVFB_PATH || "/usr/bin/Xvfb",
@@ -473,15 +532,15 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     agentTokenSecret: env.SPACE_AGENT_TOKEN_SECRET || null,
     gatewayAdminToken: env.SPACE_GATEWAY_ADMIN_TOKEN || null,
     apiRateLimitMax: Math.min(parsePositiveInt(env.SPACE_API_RATE_LIMIT_MAX, 3000), 20000),
-    telegramSecretRoot: env.SPACE_TELEGRAM_SECRET_ROOT || "/opt/spaceapp/secrets/telegram",
-    streamingSecretRoot: env.SPACE_STREAMING_SECRET_ROOT || "/opt/spaceapp/var/streaming-secrets",
+    telegramSecretRoot: env.SPACE_TELEGRAM_SECRET_ROOT || `${SPACE_INSTALL_ROOT}/secrets/telegram`,
+    streamingSecretRoot: env.SPACE_STREAMING_SECRET_ROOT || `${SPACE_INSTALL_ROOT}/var/streaming-secrets`,
     streamingYoutubeDailyQuotaBudget: Math.min(parsePositiveInt(env.SPACE_STREAMING_YOUTUBE_DAILY_QUOTA_BUDGET, 8000), 10000),
     demoProjectsEnabled: valid.SPACE_DEMO_PROJECTS_ENABLED !== "false",
-    demoProjectsRoot: valid.SPACE_DEMO_PROJECTS_ROOT ?? "/opt/spaceapp/demos",
-    projectsRoot: valid.SPACE_PROJECTS_ROOT ?? "/opt/spaceapp/projects",
+    demoProjectsRoot: valid.SPACE_DEMO_PROJECTS_ROOT ?? `${SPACE_INSTALL_ROOT}/demos`,
+    projectsRoot: valid.SPACE_PROJECTS_ROOT ?? `${SPACE_INSTALL_ROOT}/projects`,
     filesHostModeEnabled: valid.SPACE_FILES_HOST_MODE !== "disabled",
-    installRoot: valid.SPACE_INSTALL_ROOT ?? "/opt/spaceapp",
-    demoProjectsVarRoot: valid.SPACE_DEMO_PROJECTS_VAR_ROOT ?? "/opt/spaceapp/var/demo-projects",
+    installRoot: valid.SPACE_INSTALL_ROOT ?? SPACE_INSTALL_ROOT,
+    demoProjectsVarRoot: valid.SPACE_DEMO_PROJECTS_VAR_ROOT ?? `${SPACE_INSTALL_ROOT}/var/demo-projects`,
     demoProjectsPortStart: Math.min(valid.SPACE_DEMO_PROJECTS_PORT_START ?? 4930, 65000),
     demoProjectsPortEnd: Math.min(valid.SPACE_DEMO_PROJECTS_PORT_END ?? 4999, 65500),
     demoProjectsHealthTimeoutMs: Math.min(valid.SPACE_DEMO_PROJECTS_HEALTH_TIMEOUT_MS ?? 15000, 60000),
@@ -491,7 +550,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
       env.SPACE_AGENT_TOOLS_WRITER === "disabled" ||
       env.SPACE_AGENT_TOOLS_WRITER === "none"
         ? null
-        : (env.SPACE_AGENT_TOOLS_WRITER || (existsSync("/opt/spaceapp/bin/space-agent-tools-writer") ? "/opt/spaceapp/bin/space-agent-tools-writer" : null)),
+        : (env.SPACE_AGENT_TOOLS_WRITER || (existsSync(`${SPACE_INSTALL_ROOT}/bin/space-agent-tools-writer`) ? `${SPACE_INSTALL_ROOT}/bin/space-agent-tools-writer` : null)),
     roomAgentMonitorEnabled: env.SPACE_ROOM_AGENT_MONITOR_ENABLED !== "false",
     roomAgentAutopilotEnabled: env.SPACE_ROOM_AGENT_AUTOPILOT_ENABLED !== "false",
     roomPaneCommandsEnabled: env.SPACE_ROOM_PANE_COMMANDS_ENABLED === "true",

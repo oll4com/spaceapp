@@ -1,0 +1,16 @@
+.nous-shared-memory { min-width: 0; padding: 1rem; border-top: 1px solid var(--room-border, currentColor); }
+.nous-shared-memory-heading { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
+.nous-shared-memory h3, .nous-shared-memory h4 { margin: 0; }
+.nous-shared-memory p { line-height: 1.5; overflow-wrap: anywhere; }
+.nous-shared-memory small { color: var(--room-muted); overflow-wrap: anywhere; }
+.nous-shared-memory-entries { display: grid; gap: .75rem; margin-top: 1rem; }
+.nous-shared-memory article, .nous-shared-memory-editor { min-width: 0; border: 1px solid var(--room-border); border-radius: .65rem; padding: 1rem; }
+.nous-shared-memory-body { white-space: pre-wrap; }
+.nous-shared-memory-state { font-size: .75rem; letter-spacing: .03em; }
+.nous-shared-memory-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
+.nous-shared-memory .dock-kit-button { min-height: 44px; }
+.nous-shared-memory-editor { display: grid; gap: .75rem; margin-top: 1rem; }
+.nous-shared-memory-editor label { display: grid; gap: .35rem; }
+.nous-shared-memory-editor input, .nous-shared-memory-editor textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: .65rem; font: inherit; color: var(--room-text); background: var(--room-panel); border: 1px solid var(--room-border); border-radius: .4rem; }
+.nous-shared-memory-editor textarea { resize: vertical; }
+.nous-shared-memory [role="alert"] { color: var(--room-danger, var(--room-text)); }

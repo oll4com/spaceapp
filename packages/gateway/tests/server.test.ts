@@ -65,6 +65,23 @@ describe("gateway config", () => {
 });
 
 describe("gateway server", () => {
+  it("logs only the validated API id and method, including failed authentication (OBS-006)", async () => {
+    const apiLog: unknown[] = [];
+    const server = createGatewayServer({ repository: new InMemoryGatewayRepository(), version: "test", credentialKeyPresent: () => false,
+      requestLog: (record) => apiLog.push(record) });
+    try {
+      for (const supplied of ["req:cli-test", "x".repeat(120), "x".repeat(121), "invalid id", undefined]) {
+        const response = await server.app.inject({ method: "POST", url: "/v1/responses?token=PRIVATE_QUERY",
+          headers: { "request-id": "unvalidated-id", ...(supplied ? { "x-request-id": supplied } : {}) }, payload: { input: "PRIVATE_PROMPT" } });
+        expect(response.statusCode).toBe(401);
+        const id = response.headers["x-request-id"];
+        if (supplied && supplied.length <= 120 && !supplied.includes(" ")) expect(id).toBe(supplied);
+        else expect(id).toMatch(/^req_[0-9a-f]{32}$/);
+        expect(apiLog.at(-1)).toEqual({ event: "gateway.request", reqId: id, method: "POST" });
+      }
+      expect(JSON.stringify(apiLog)).not.toMatch(/PRIVATE_|invalid id|unvalidated-id|token|input/);
+    } finally { await server.app.close(); }
+  });
   it("serves health, readiness and non-sensitive status", async () => {
     const { server } = await setup();
     expect((await server.app.inject({ url: "/health" })).json()).toEqual({ status: "ok" });
@@ -123,4 +140,20 @@ describe("gateway server", () => {
       await server.app.close();
     }
   });
+});
+
+
+it("gives concurrent requests independent trace spans and rejects malformed parents", async () => {
+  const { server } = await setup();
+  try {
+    const [first, second, malformed] = await Promise.all([
+      server.app.inject({ url: "/health", headers: { traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01" } }),
+      server.app.inject({ url: "/health" }),
+      server.app.inject({ url: "/health", headers: { traceparent: "private token" } })
+    ]);
+    expect(first.headers.traceparent).toMatch(/^00-0123456789abcdef0123456789abcdef-[a-f0-9]{16}-00$/);
+    expect(second.headers.traceparent).toMatch(/^00-[a-f0-9]{32}-[a-f0-9]{16}-00$/);
+    expect(first.headers.traceparent).not.toBe(second.headers.traceparent);
+    expect(malformed.headers.traceparent).not.toContain("private token");
+  } finally { await server.app.close(); }
 });

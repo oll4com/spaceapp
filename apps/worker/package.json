@@ -19,14 +19,15 @@
     "@space/memory-graph": "0.2.5",
     "@space/opencode-control": "0.2.5",
     "@space/streaming": "0.2.5",
-    "@temporalio/activity": "1.24.0",
-    "@temporalio/client": "1.24.0",
-    "@temporalio/worker": "1.24.0",
-    "@temporalio/workflow": "1.24.0",
+    "@temporalio/activity": "1.25.0",
+    "@temporalio/client": "1.25.0",
+    "@temporalio/worker": "1.25.0",
+    "@temporalio/workflow": "1.25.0",
     "undici": "8.12.3"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
+    "@temporalio/testing": "1.25.0",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.12"
   },
   "license": "MIT"

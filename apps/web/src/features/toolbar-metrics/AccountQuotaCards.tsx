@@ -30,6 +30,10 @@ export interface AccountQuotaEntry {
   /** Extra lines under the hint or the rows (the Claude API key's Anthropic bill). */
   notes?: string[];
   rows: AccountQuotaRow[];
+  /** A card without rows (Space Gateway's pool): the weeks its "free at reset" figure counts. */
+  atReset?: QuotaWindows[];
+  /** Why a card without rows has no "free at reset" figure. */
+  atResetWhy?: string;
   // Remaining share of the tightest window, used to list the roomiest accounts first.
   capacity: number;
   action?: ReactNode;
@@ -107,7 +111,7 @@ function QuotaCell({ label, remaining, resetAt, threshold, clock, settings }: {
   settings?: DateTimeSettings;
 }) {
   const tone = cellTone(remaining, threshold);
-  const percent = remaining == null ? "—" : `${Math.round(remaining)}%`;
+  const percent = remaining == null ? "—" : `${Math.round(remaining)}% left`;
   const until = formatUntil(resetAt, clock, settings);
   const note = remaining == null
     ? "No data"
@@ -135,10 +139,16 @@ function QuotaCell({ label, remaining, resetAt, threshold, clock, settings }: {
   );
 }
 
-export function AccountQuotaCard({ entry, clock, settings }: {
+/** Renders the "At reset" line for the weeks given, or "unknown (why)"; the page passes desktop-widgets/QuotaAtReset. */
+export type AtResetRender = (weeks: QuotaWindows[], why: string) => ReactNode;
+
+const lowerFirst = (text: string) => `${text[0]?.toLowerCase() ?? ""}${text.slice(1)}`;
+
+export function AccountQuotaCard({ entry, clock, settings, atReset }: {
   entry: AccountQuotaEntry;
   clock: number;
   settings?: DateTimeSettings;
+  atReset?: AtResetRender;
 }) {
   const state: AccountAvailability = entry.availability.state;
   const pill = state === "offline" ? entry.offlineLabel ?? "Offline" : availabilityLabel(entry.availability, clock, settings);
@@ -178,8 +188,13 @@ export function AccountQuotaCard({ entry, clock, settings }: {
               settings={settings}
             />
           </div>
+          {atReset?.([row.quota], "no current weekly figure")}
         </div>
       )) : entry.hint ? <span className="toolbar-metric-dim">{entry.hint}</span> : null}
+      {entry.rows.length ? null : atReset?.(
+        entry.atReset ?? [],
+        entry.atResetWhy ?? (state === "offline" ? lowerFirst(entry.offlineLabel ?? "offline") : "no current weekly figure"),
+      )}
       {entry.notes?.map((note) => <span key={note} className="account-quota-note">{note}</span>)}
     </li>
   );
@@ -199,7 +214,7 @@ export function countApiProviders(accounts: ApiProviderAccount[]): AvailabilityC
 const usd = (value: string | null | undefined) => (value && /^-?\$/.test(value) ? value : null);
 
 /** API providers in the Accounts & quotas card look: the balance up front, a meter when the provider reports its credit share. */
-export function ApiProviderCard({ account }: { account: ApiProviderAccount }) {
+export function ApiProviderCard({ account, atReset }: { account: ApiProviderAccount; atReset?: AtResetRender }) {
   const { state, pill } = apiProviderStates[account.status];
   // Providers without a balance (the Claude API) report this month's spend as usage.
   const balance = usd(account.balance);
@@ -220,9 +235,11 @@ export function ApiProviderCard({ account }: { account: ApiProviderAccount }) {
         </div>
       ) : null}
       {remaining != null ? (
-        <QuotaCell label={`Left of ${limit}`} remaining={remaining} resetAt={null} threshold={ACCOUNT_LOW_CREDIT_PERCENT} clock={0} />
+        <QuotaCell label={`Of ${limit}`} remaining={remaining} resetAt={null} threshold={ACCOUNT_LOW_CREDIT_PERCENT} clock={0} />
       ) : null}
       {facts.length ? <div className="api-provider-facts">{facts.map((fact) => <span key={fact}>{fact}</span>)}</div> : null}
+      {/* Make's monthly reset date is already one of its facts. */}
+      {account.providerId === "make" ? null : atReset?.([], account.status === "UNCONFIGURED" ? "not set up" : account.status === "ERROR" ? "the balance could not be read" : "paid per token, the provider reports no reset")}
     </li>
   );
 }

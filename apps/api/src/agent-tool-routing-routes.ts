@@ -14,6 +14,7 @@ import {
   discoverRoutingProfiles, effectiveRouting, projectRoutingState, routingStateWithLegacy, saveProjectedRouting,
   serializeRoutingUpdate
 } from "./tool-routing.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
  * ADMIN tool-routing policy and agent tool assignment domain. Launching agent tool
@@ -29,7 +30,7 @@ export function registerAgentToolRoutingRoutes(app: FastifyInstance, options: {
   capabilityUsagePath?: string;
 }) {
   const { store, agentToolsOptions, recordAudit, routeOptions: defaultRouteRateLimitOptions } = options;
-  const capabilityUsagePath = options.capabilityUsagePath ?? "/opt/spaceapp/var/inventory/capability-usage.json";
+  const capabilityUsagePath = options.capabilityUsagePath ?? `${SPACE_INSTALL_ROOT}/var/inventory/capability-usage.json`;
   const routingQuery = z.object({ runtimeId: z.string().min(1).max(160), modelId: z.string().min(1).max(160) }).strict();
 
   app.get("/api/model-capabilities", defaultRouteRateLimitOptions, async (request, reply) => {

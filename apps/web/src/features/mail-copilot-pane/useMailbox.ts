@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MailAccountSummary, MailLabel, MailThread, MailThreadSummary, MailThreadsPage } from "@space/contracts";
 import { api } from "../../api.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { subscribeMailCopilotLiveEvents } from "./live-events.js";
 
 export interface MailboxSelection { account: "all" | string; labelId: string; query: string }
@@ -26,7 +27,8 @@ export interface MailboxState {
   showOnlyThread(thread: Pick<MailThreadSummary, "account" | "threadId">): Promise<void>;
   /** Replaces one thread row after an action (read, star, …) without a reload. */
   patchThread(threadId: string, update: Partial<MailThreadSummary>): void;
-  removeThread(threadId: string): void;
+  /** Drops a conversation from the list; `keepOpen` leaves it open in the reader (a move shows where it went). */
+  removeThread(threadId: string, keepOpen?: boolean): void;
 }
 
 const LIVE_REFRESH_DEBOUNCE_MS = 600;
@@ -46,6 +48,9 @@ export function useMailbox(paneId: string, enabled: boolean, initial: Partial<Ma
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadingThread, setLoadingThread] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const language = useUiLanguage();
+  const languageRef = useRef(language);
+  languageRef.current = language; // read at error time, so a language change never refetches
   const generation = useRef(0);
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
@@ -70,7 +75,7 @@ export function useMailbox(paneId: string, enabled: boolean, initial: Partial<Ma
       setError(null);
     } catch (caught) {
       if (current !== generation.current) return;
-      setError(caught instanceof Error ? caught.message : "The mailbox could not be loaded.");
+      setError(caught instanceof Error ? caught.message : uiText(languageRef.current, "The mailbox could not be loaded."));
     } finally {
       if (current === generation.current) setLoading(false);
     }
@@ -86,7 +91,7 @@ export function useMailbox(paneId: string, enabled: boolean, initial: Partial<Ma
       setThreads((current) => [...current, ...page.threads.filter((entry) => !current.some((row) => row.threadId === entry.threadId && row.account === entry.account))]);
       setNextPageToken(page.nextPageToken);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "More mail could not be loaded.");
+      setError(caught instanceof Error ? caught.message : uiText(languageRef.current, "More mail could not be loaded."));
     } finally {
       setLoadingMore(false);
     }
@@ -102,7 +107,7 @@ export function useMailbox(paneId: string, enabled: boolean, initial: Partial<Ma
       setError(null);
       return response.thread;
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The conversation could not be loaded.");
+      setError(caught instanceof Error ? caught.message : uiText(languageRef.current, "The conversation could not be loaded."));
       return null;
     } finally {
       setLoadingThread(false);
@@ -146,8 +151,9 @@ export function useMailbox(paneId: string, enabled: boolean, initial: Partial<Ma
   const patchThread = useCallback((threadId: string, update: Partial<MailThreadSummary>) => {
     setThreads((current) => current.map((row) => row.threadId === threadId ? { ...row, ...update } : row));
   }, []);
-  const removeThread = useCallback((threadId: string) => {
+  const removeThread = useCallback((threadId: string, keepOpen = false) => {
     setThreads((current) => current.filter((row) => row.threadId !== threadId));
+    if (keepOpen) return;
     setSelectedThreadId((current) => current === threadId ? null : current);
     setThread((current) => current?.threadId === threadId ? null : current);
   }, []);

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { DemoVariantFile, DemoVariantFileContent } from "@space/contracts";
 import { api } from "../../api.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 interface CodeTabProps {
   projectId: string;
@@ -17,6 +18,8 @@ const groups: Array<{ key: DemoVariantFile["group"]; label: string }> = [
 ];
 
 export function CodeTab({ projectId, variantId, initialFile, onNotice }: CodeTabProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [files, setFiles] = useState<DemoVariantFile[]>([]);
   const [workspacePath, setWorkspacePath] = useState("");
   const [selected, setSelected] = useState<string | null>(initialFile ?? null);
@@ -80,29 +83,28 @@ export function CodeTab({ projectId, variantId, initialFile, onNotice }: CodeTab
   return (
     <div className="demos-card" style={{ minHeight: 0 }}>
       <div className="demos-row spread">
-        <h3>Variant source</h3>
+        <h3>{t("Variant source")}</h3>
         <div className="demos-row" style={{ gap: 8 }}>
           {files.length > 0 ? (
             <span className="demos-pill" style={{ background: "rgba(99, 102, 241, 0.15)", color: "#a5b4fc", borderColor: "rgba(99, 102, 241, 0.3)" }}>
-              {totalLines.toLocaleString()} lines · {files.length} files
+              {t("{lines} lines · {files} files", { lines: totalLines.toLocaleString(), files: files.length })}
             </span>
           ) : null}
-          <span className="demos-muted">{workspacePath ? `template: ${workspacePath}` : ""}</span>
+          <span className="demos-muted">{workspacePath ? t("template: {path}", { path: workspacePath }) : ""}</span>
         </div>
       </div>
       <p className="demos-muted">
-        Each variant is a separate implementation. Opening the folder in the Space file manager or your editor keeps the same
-        files you see here.
+        {t("Each variant is a separate implementation. Opening the folder in the Space file manager or your editor keeps the same files you see here.")}
       </p>
       <div className="demos-code">
         <div className="demos-files">
-          {loading ? <p className="demos-muted">Loading sources…</p> : null}
+          {loading ? <p className="demos-muted">{t("Loading sources…")}</p> : null}
           {groups.map((group) => {
             const groupFiles = files.filter((file) => file.group === group.key);
             if (groupFiles.length === 0) return null;
             return (
               <div key={group.key}>
-                <div className="demos-file-group">{group.label}</div>
+                <div className="demos-file-group">{t(group.label)}</div>
                 {groupFiles.map((file) => (
                   <button
                     key={file.path}
@@ -125,7 +127,7 @@ export function CodeTab({ projectId, variantId, initialFile, onNotice }: CodeTab
           })}
         </div>
         <div className="demos-source">
-          {content ? `${content.path}\n\n${content.content}${content.truncated ? "\n… truncated" : ""}` : "Select a file to preview it."}
+          {content ? `${content.path}\n\n${content.content}${content.truncated ? `\n${t("… truncated")}` : ""}` : t("Select a file to preview it.")}
         </div>
       </div>
     </div>

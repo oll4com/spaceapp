@@ -1,11 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import { eventSchema, type MonitoringEvent, type Pane } from "@space/contracts";
+import { sentryToken, sentryUnresolvedIssues } from "../sentry-api.js";
+import { eventSchema, nousSettingsSchema, type MonitoringCollectorConfig, type MonitoringEvent, type Pane } from "@space/contracts";
 import { InMemoryMonitoringCopilotRepository, PostgresMonitoringCopilotRepository, type MonitoringCopilotRepository } from "@space/db";
 import { makeSpaceId, SpaceConflictError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
 import { submitCliPrompt } from "../cli-prompt-submit.js";
 import type { CliTerminalManager } from "../cli-terminal.js";
 import { atEmptyPrompt } from "../room-agent-autopilot.js";
 import type { RoomPaneObservation } from "../room-pane-control.js";
+import type { CopilotReopenDeps } from "../copilot-pane-reopen.js";
 import type { NotificationService } from "../notifications/service.js";
 import { createMonitoringCollector, type MonitoringCollector } from "./collector.js";
 import { registerMonitoringCopilotRoutes, type MonitoringCopilotRouteDependencies } from "./routes.js";
@@ -22,14 +24,19 @@ export interface MonitoringCopilotWiring extends Omit<MonitoringCopilotRouteDepe
   /** Tests pass an in-memory repository and a fake collector; otherwise Postgres when a database is configured and the HTTP collector. */
   repository?: MonitoringCopilotRepository;
   collector?: MonitoringCollector;
+  /** MON-001: config.monitoringCollector. */
+  collectorConfig?: MonitoringCollectorConfig;
   terminal: Pick<CliTerminalManager, "runSerializedTerminalMutation" | "sendInput" | "observeRoomScreenUndimmed">;
-  notifications: Pick<NotificationService, "raise" | "resolve">;
+  notifications: Pick<NotificationService, "raise" | "resolve" | "unresolvedBySource">;
   /** Instance job monitoring-copilot-watch (stable only; dev on SPACE_INSTANCE_ENABLED_JOBS or the pane's "Check now"). */
   watch: boolean;
   /** Tests replace the CLI kickoff. */
   kickoff?: (pane: Pane) => Promise<void>;
   /** The pane's terminal as the Room Agent reads it: a kickoff is typed only at an empty prompt. */
   inspect?(pane: Pane): Promise<RoomPaneObservation>;
+  /** Reopens a closed pane as its owner (task-schedules' path): with none open, the watch reopens the newest closed one when work waits. */
+  reopen?(pane: Pane, owner: string): Promise<unknown>;
+  notice?: CopilotReopenDeps["notice"];
   log: { warn(details: unknown, message: string): void; info?(details: unknown, message: string): void; debug?(details: unknown, message: string): void };
 }
 
@@ -63,7 +70,10 @@ export function registerMonitoringCopilot(app: FastifyInstance, deps: Monitoring
     });
   });
   const service = createMonitoringCopilotService({
-    repository, store, notifications: deps.notifications, collector: deps.collector ?? createMonitoringCollector(),
+    sentry: { issues: async () => { const token = sentryToken("SPACE_SENTRY_READ_TOKEN_FILE"); return token ? sentryUnresolvedIssues(token) : null; } },
+    repository, store, notifications: deps.notifications, collector: deps.collector ?? createMonitoringCollector({ network: deps.collectorConfig?.network }), collectorConfig: deps.collectorConfig,
+    askOwnHosts: async (owner) => nousSettingsSchema.parse((await store.getUserSettings(owner)).nous ?? {}).askOwnHostChanges,
+    ...(deps.reopen ? { reopen: { reopen: (owner: string, pane: Pane) => deps.reopen!(pane, owner), ...(deps.notice ? { notice: deps.notice } : {}) } } : {}),
     kickoff: { ready: async (pane) => deps.kickoff !== undefined || (Boolean(await activeSession(pane))
       && (!deps.inspect || atEmptyPrompt(await deps.inspect(pane).catch(() => ({ state: "UNKNOWN" }) as unknown as RoomPaneObservation)))), send },
     onEvent: (event: MonitoringEvent) => {
@@ -83,7 +93,7 @@ export function registerMonitoringCopilot(app: FastifyInstance, deps: Monitoring
     const pass = () => {
       if (running) return;
       running = true;
-      void service.watch().then((result) => { if (result.fired || result.resolved || result.guardian) deps.log.info?.(result, "Monitoring Copilot watch pass"); })
+      void service.watch().then((result) => { if (result.fired || result.resolved || result.guardian || result.reopened) deps.log.info?.(result, "Monitoring Copilot watch pass"); })
         .catch((error: unknown) => deps.log.warn({ err: error }, "Monitoring Copilot watch pass failed")).finally(() => { running = false; });
     };
     const first = setTimeout(pass, FIRST_WATCH_MS);

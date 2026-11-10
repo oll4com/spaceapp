@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { cliToggleRuntimeIdSchema, idSchema } from "./schemas.js";
+import { noRepeatedValues } from "./array-rules.js";
 
 export const maintenancePlanRequestSchema = z.object({ scope: z.enum(["enabled", "all"]).default("enabled") }).strict();
 export const maintenanceApplyRequestSchema = z.object({
-  selectedActionIds: z.array(cliToggleRuntimeIdSchema).min(1).max(11).refine(ids => new Set(ids).size === ids.length),
+  selectedActionIds: z.array(cliToggleRuntimeIdSchema).min(1).max(11).refine(...noRepeatedValues()),
   idempotencyKey: z.string().uuid(),
   confirmation: z.literal("APPLY MAINTENANCE")
 }).strict();

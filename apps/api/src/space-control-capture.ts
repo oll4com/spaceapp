@@ -16,6 +16,7 @@ export type ControlCaptureParams = {
   paneId?: string; crop?: string; dock?: string; settings?: string; health?: string;
   video?: { steps: Array<{ dock?: string; settings?: string; health?: string; dwellMs: number }> };
   fitTerminals?: boolean;
+  language?: "en" | "el";
 };
 
 type CaptureActor = { id: string; dotId?: string };
@@ -144,7 +145,7 @@ export function createControlScreenshotCapture(options: ControlScreenshotCapture
         instance: options.instance, cookieName: options.cookieName, cookieValue, room: roomId, pane: params.paneId, crop: params.crop,
         dock: params.dock, settings: params.settings, health: params.health, viewport, format: params.format ?? "jpeg", quality: params.quality,
         maxWidth: params.maxWidth, maxHeight: params.maxHeight, video: params.video, outDir: params.video ? directory : undefined,
-        fitTerminals: params.fitTerminals || undefined
+        fitTerminals: params.fitTerminals || undefined, language: params.language
       }), timeoutMs, params.fitTerminals ? async (panes) => (terminalFits = await options.fitTerminals!(actor, roomId, panes)).length : undefined);
       const report = JSON.parse(stdout) as CaptureReport;
       const fitted = params.fitTerminals ? { terminalsFitted: report.terminalsFitted ?? 0, terminalFits } : {};

@@ -10,7 +10,8 @@ import {
   type ConnectorAccountSummary,
   type ConnectorCapability,
   type ConnectorProvider,
-  type ConnectorsStatus
+  type ConnectorsStatus,
+  appWebViewIdSchema, appWebViewOf, appWebViewReturnUrl
 } from "@space/contracts";
 import { redactMemoryText } from "@space/runtime";
 import type { ConnectorAccountRecord, ConnectorAccountsRepository } from "@space/db";
@@ -39,7 +40,7 @@ export class ConnectorError extends Error {
 export interface ConnectorCrypto { seal(plain: string, context: string): string; open(sealed: string, context: string): string }
 
 /** The record and purpose a sealed value belongs to: `<purpose>|<owner>|<record parts>`. */
-export const connectorSealContext = (purpose: "connector-refresh" | "connector-access" | "freelance-mailbox" | "job-apply-mailbox" | "vault-handoff-key", owner: string, ...record: string[]) =>
+export const connectorSealContext = (purpose: "connector-refresh" | "connector-access" | "freelance-mailbox" | "job-apply-mailbox" | "vault-handoff-key" | "mobile-instance-key", owner: string, ...record: string[]) =>
   [purpose, owner, ...record].join("|");
 
 /** The dedicated connector key file (hardening plan step 9): null when it is missing or shorter than 32 characters. */
@@ -210,8 +211,15 @@ export function createGoogleConnector(input: { clientId: string; clientSecret?: 
     },
     async searchMail(token, query, limit) {
       // Without a query: the newest messages in the inbox (Gmail lists newest first).
-      const list = await json(await fetchImpl(`${gmail}/messages?q=${encodeURIComponent(query || "in:inbox")}&maxResults=${limit}`, authed(token)), "Gmail search");
-      const ids = ((list.messages as Array<{ id: string }> | undefined) ?? []).slice(0, limit).map((item) => item.id);
+      // Every page Gmail has up to `limit` (one page holds at most 500; until 31/10 one page and at most 25).
+      const ids: string[] = [];
+      for (let pageToken: string | null = null, first = true; (first || pageToken) && ids.length < limit; first = false) {
+        const list = await json(await fetchImpl(`${gmail}/messages?q=${encodeURIComponent(query || "in:inbox")}&maxResults=${Math.min(500, limit - ids.length)}`
+          + (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""), authed(token)), "Gmail search");
+        ids.push(...((list.messages as Array<{ id: string }> | undefined) ?? []).map((item) => item.id));
+        pageToken = typeof list.nextPageToken === "string" ? list.nextPageToken : null;
+      }
+      ids.splice(limit);
       return Promise.all(ids.map(async (id) => {
         const message = await json(await fetchImpl(`${gmail}/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
           authed(token)), "Gmail message lookup");
@@ -243,12 +251,19 @@ export function createGoogleConnector(input: { clientId: string; clientSecret?: 
       return { id: String(sent.id ?? "") };
     },
     async listEvents(token, from, to, limit) {
-      const params = new URLSearchParams({ timeMin: from, timeMax: to, singleEvents: "true", orderBy: "startTime", maxResults: String(limit) });
-      const list = await json(await fetchImpl(`${calendar}/events?${params}`, authed(token)), "Google Calendar list");
-      return ((list.items as Array<Record<string, unknown>> | undefined) ?? []).map((event) => ({ eventId: event.id, title: bounded(event.summary as string, 300),
+      // Every page up to `limit` (Google's page holds at most 2,500).
+      const items: Array<Record<string, unknown>> = [];
+      for (let pageToken: string | null = null, first = true; (first || pageToken) && items.length < limit; first = false) {
+        const params = new URLSearchParams({ timeMin: from, timeMax: to, singleEvents: "true", orderBy: "startTime", maxResults: String(Math.min(2500, limit - items.length)),
+          ...(pageToken ? { pageToken } : {}) });
+        const list = await json(await fetchImpl(`${calendar}/events?${params}`, authed(token)), "Google Calendar list");
+        items.push(...((list.items as Array<Record<string, unknown>> | undefined) ?? []));
+        pageToken = typeof list.nextPageToken === "string" ? list.nextPageToken : null;
+      }
+      return items.slice(0, limit).map((event) => ({ eventId: event.id, title: bounded(event.summary as string, 300),
         start: (event.start as { dateTime?: string; date?: string } | undefined)?.dateTime ?? (event.start as { date?: string } | undefined)?.date ?? null,
         end: (event.end as { dateTime?: string; date?: string } | undefined)?.dateTime ?? (event.end as { date?: string } | undefined)?.date ?? null,
-        location: bounded(event.location as string, 300), attendees: ((event.attendees as Array<{ email?: string }> | undefined) ?? []).map((item) => item.email).filter(Boolean).slice(0, 50) }));
+        location: bounded(event.location as string, 300), attendees: ((event.attendees as Array<{ email?: string }> | undefined) ?? []).map((item) => item.email).filter(Boolean) }));
     },
     async createEvent(token, event) {
       const created = await json(await fetchImpl(`${calendar}/events?sendUpdates=all`, authed(token, { method: "POST", headers: { "content-type": "application/json" },
@@ -269,6 +284,16 @@ export function createMicrosoftConnector(input: { clientId: string; clientSecret
     ...capabilities.map((capability) => microsoftConnectorScopes[capability])];
   const authed = (token: string, init: RequestInit = {}) => ({ ...init, headers: { ...(init.headers as Record<string, string> | undefined), authorization: `Bearer ${token}`,
     accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
+  /** Every Graph page (@odata.nextLink) up to `limit` rows (until 31/10 one page). */
+  async function graphPages(url: string, token: string, limit: number, what: string, headers?: Record<string, string>): Promise<Array<Record<string, unknown>>> {
+    const rows: Array<Record<string, unknown>> = [];
+    for (let next: string | null = url; next && rows.length < limit;) {
+      const page = await json(await fetchImpl(next, authed(token, headers ? { headers } : {})), what);
+      rows.push(...((page.value as Array<Record<string, unknown>> | undefined) ?? []));
+      next = typeof page["@odata.nextLink"] === "string" && page["@odata.nextLink"].startsWith(`${graph}/`) ? page["@odata.nextLink"] : null;
+    }
+    return rows.slice(0, limit);
+  }
   async function tokenRequest(body: URLSearchParams) {
     body.set("client_id", input.clientId);
     body.set("client_secret", input.clientSecret);
@@ -303,12 +328,12 @@ export function createMicrosoftConnector(input: { clientId: string; clientSecret
     async searchMail(token, query, limit) {
       const select = "$select=id,conversationId,from,subject,receivedDateTime,bodyPreview";
       // Without a query: the newest messages in the inbox. Graph cannot order $search results, so the two differ.
-      const list = query
-        ? await json(await fetchImpl(`${graph}/messages?$search=${encodeURIComponent(`"${query.replace(/"/g, "")}"`)}&$top=${limit}&${select}`,
-          authed(token, { headers: { ConsistencyLevel: "eventual" } })), "Outlook search")
-        : await json(await fetchImpl(`${graph}/mailFolders/inbox/messages?$orderby=${encodeURIComponent("receivedDateTime desc")}&$top=${limit}&${select}`,
-          authed(token)), "Outlook inbox");
-      return ((list.value as Array<Record<string, unknown>> | undefined) ?? []).map((message) => ({ messageId: message.id, threadId: message.conversationId ?? null,
+      const top = Math.min(limit, 250);
+      const messages = await graphPages(query
+        ? `${graph}/messages?$search=${encodeURIComponent(`"${query.replace(/"/g, "")}"`)}&$top=${top}&${select}`
+        : `${graph}/mailFolders/inbox/messages?$orderby=${encodeURIComponent("receivedDateTime desc")}&$top=${top}&${select}`,
+      token, limit, query ? "Outlook search" : "Outlook inbox", query ? { ConsistencyLevel: "eventual" } : undefined);
+      return messages.map((message) => ({ messageId: message.id, threadId: message.conversationId ?? null,
         from: bounded((message.from as { emailAddress?: { address?: string } } | undefined)?.emailAddress?.address, 300), subject: bounded(message.subject as string, 300),
         date: message.receivedDateTime ?? null, receivedAt: message.receivedDateTime ?? null, snippet: bounded(message.bodyPreview as string, 500) }));
     },
@@ -332,12 +357,12 @@ export function createMicrosoftConnector(input: { clientId: string; clientSecret
       return { id: "" };
     },
     async listEvents(token, from, to, limit) {
-      const list = await json(await fetchImpl(`${graph}/calendarView?startDateTime=${encodeURIComponent(from)}&endDateTime=${encodeURIComponent(to)}&$top=${limit}&$orderby=start/dateTime`,
-        authed(token)), "Outlook calendar list");
-      return ((list.value as Array<Record<string, unknown>> | undefined) ?? []).map((event) => ({ eventId: event.id, title: bounded(event.subject as string, 300),
+      const events = await graphPages(`${graph}/calendarView?startDateTime=${encodeURIComponent(from)}&endDateTime=${encodeURIComponent(to)}&$top=${Math.min(limit, 250)}&$orderby=start/dateTime`,
+        token, limit, "Outlook calendar list");
+      return events.map((event) => ({ eventId: event.id, title: bounded(event.subject as string, 300),
         start: (event.start as { dateTime?: string } | undefined)?.dateTime ?? null, end: (event.end as { dateTime?: string } | undefined)?.dateTime ?? null,
         location: bounded((event.location as { displayName?: string } | undefined)?.displayName, 300),
-        attendees: ((event.attendees as Array<{ emailAddress?: { address?: string } }> | undefined) ?? []).map((item) => item.emailAddress?.address).filter(Boolean).slice(0, 50) }));
+        attendees: ((event.attendees as Array<{ emailAddress?: { address?: string } }> | undefined) ?? []).map((item) => item.emailAddress?.address).filter(Boolean) }));
     },
     async createEvent(token, event) {
       const zone = event.timeZone ?? "UTC";
@@ -449,7 +474,7 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
       const base = { account: account.email, provider: account.provider };
       switch (toolId) {
         case "mail.search": {
-          const input = z.object({ query: z.string().trim().max(300).default(""), limit: z.number().int().min(1).max(25).default(10), account: z.string().optional() }).strict().parse(args);
+          const input = z.object({ query: z.string().trim().max(300).default(""), limit: z.number().int().min(1).default(10), account: z.string().optional() }).strict().parse(args);
           return { status: "COMPLETED", result: { ...base, untrusted, messages: await api.searchMail(token, input.query, input.limit) } };
         }
         case "mail.read": {
@@ -464,7 +489,7 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
           return { status: "COMPLETED", result: { ...base, [toolId === "mail.draft" ? "draftId" : "messageId"]: done.id, to: input.to } };
         }
         case "calendar.list": {
-          const input = z.object({ from: isoTime.optional(), to: isoTime.optional(), limit: z.number().int().min(1).max(50).default(20), account: z.string().optional() }).strict().parse(args);
+          const input = z.object({ from: isoTime.optional(), to: isoTime.optional(), limit: z.number().int().min(1).default(20), account: z.string().optional() }).strict().parse(args);
           const from = input.from ? new Date(input.from).toISOString() : new Date(now()).toISOString();
           const to = input.to ? new Date(input.to).toISOString() : new Date(Date.parse(from) + 7 * 86_400_000).toISOString();
           return { status: "COMPLETED", result: { ...base, untrusted, from, to, events: await api.listEvents(token, from, to, input.limit) } };
@@ -573,8 +598,10 @@ export function registerConnectorRoutes(app: FastifyInstance, service: Connector
       }
       const verifier = randomBytes(32).toString("base64url");
       const expiresAt = Date.now() + 600_000;
+      const webView = appWebViewOf(request.headers["user-agent"]);
       const state = options.state.sign(Buffer.from(JSON.stringify({ nonce: randomBytes(16).toString("hex"), expiresAt,
         purpose: "connector", provider: kind, capabilities: chosen, userId: request.user!.id, sessionHash: options.state.sessionHash(request), ...(source ? { source } : {}),
+        ...(webView && !link ? { webView } : {}),
         codeChallenge: createHash("sha256").update(verifier).digest("base64url") })).toString("base64url"));
       const url = api.authorizeUrl({ redirectUri: options.state.redirectUri(request, kind), state,
         codeChallenge: createHash("sha256").update(verifier).digest("base64url"), capabilities: chosen, ...(loginHint ? { loginHint } : {}) });
@@ -590,6 +617,7 @@ export function registerConnectorRoutes(app: FastifyInstance, service: Connector
     } catch (error) { return failure(reply, error); }
   });
   /** Microsoft returns here; Google returns to the shared sign-in callback, which hands connector states to `completeConnectorCallback`. */
+  // shortcut: session-guarded, so SpaceApp Android's hand-back (R8) never reaches it; make it session-less like Google's once Microsoft is registered.
   app.get("/api/connectors/microsoft/callback", options.routeOptions, async (request, reply) => completeConnectorCallback(request, reply, service, options));
 }
 
@@ -602,7 +630,7 @@ const connectorLinks = new Map<string, { owner: string; verifier: string; email:
 /** Where a connector flow started, when not a Dot: the return notice names that place. */
 const connectorSourceSchema = z.enum(["job-copilot", "mail-copilot"]);
 export const connectorStateSchema = z.object({ purpose: z.literal("connector"), provider: z.enum(["GOOGLE", "MICROSOFT"]), userId: z.string().min(1),
-  sessionHash: z.string().min(1), codeChallenge: z.string().min(43), expiresAt: z.number(), source: connectorSourceSchema.optional() });
+  sessionHash: z.string().min(1), codeChallenge: z.string().min(43), expiresAt: z.number(), source: connectorSourceSchema.optional(), webView: appWebViewIdSchema.optional() });
 /** Finishes a connector OAuth flow: the same interactive user and browser session that started it. */
 export async function completeConnectorCallback(request: FastifyRequest, reply: FastifyReply, service: ConnectorService | null, options: {
   authenticatedOwner: (request: FastifyRequest) => Promise<string>;
@@ -632,6 +660,8 @@ export async function completeConnectorCallback(request: FastifyRequest, reply: 
       return answer(error instanceof ConnectorError ? error.message : "Space could not finish the connection. Copy a new link and try again.");
     }
   }
+  // SpaceApp Android: the consent ended in the phone's browser, without the WebView's cookies; the app's WebView finishes it with them.
+  if (!savedState && transaction?.webView && transaction.expiresAt > Date.now()) return reply.redirect(appWebViewReturnUrl(transaction.webView, request.url));
   if (!service || !query.state || query.state !== savedState || !transaction || transaction.expiresAt <= Date.now()) return done("expired");
   if (query.error) return done("cancelled");
   const verifier = options.state.verify(pkce);

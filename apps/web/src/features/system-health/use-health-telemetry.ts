@@ -157,7 +157,7 @@ export function useHealthTelemetry(
               unit: "MILLISECONDS",
               value,
               sampledAt: at,
-              detail: "Browser to Space HTTP round trip",
+              detail: "Browser to Space round trip: /healthz request sent to first response byte",
             },
           ]);
         },
@@ -219,7 +219,7 @@ export function useHealthTelemetry(
       unit: "MILLISECONDS",
       value: rtt.value,
       sampledAt: rtt.at,
-      detail: "Browser–Space HTTP round trip, including transport overhead",
+      detail: "Browser to Space round trip: /healthz request sent to first response byte",
     });
   const remaining =
     environment?.lbUsage?.activeAccountsRemainingPercent ??

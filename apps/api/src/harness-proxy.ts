@@ -1,7 +1,8 @@
 import http from "node:http";
 import zlib from "node:zlib";
 import { harnessSharedEventsBootstrap } from "./harness-shared-events.js";
-import { createHash, randomUUID } from "node:crypto";
+import { redactRequestUrlForLog } from "./request-logging.js";
+import { randomUUID } from "node:crypto";
 import type { Duplex } from "node:stream";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { SpaceApiConfig } from "./config.js";
@@ -1089,7 +1090,7 @@ function proxyHarnessUpgrade(
   });
 
   upstream.once("error", (err) => {
-    app.log.error({ err, path: request.url }, "harness ws upstream error");
+    app.log.error({ err, path: redactRequestUrlForLog(request.url ?? "") }, "harness ws upstream error");
     clientSocket.destroy();
   });
   upstream.once("timeout", () => {

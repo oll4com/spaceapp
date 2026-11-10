@@ -939,6 +939,8 @@ export function shouldRequestTerminalControl(input: {
   documentHasFocus: boolean;
   realInteraction?: boolean;
   readOnly?: boolean;
+  /** The pane holds DOM focus, or its xterm grid differs from the last grid sent on this socket (a fresh socket's first one too). */
+  automatic: boolean;
 }): boolean {
   if (input.readOnly || !input.isVisible || input.isMinimized) {
     return false;
@@ -946,7 +948,8 @@ export function shouldRequestTerminalControl(input: {
   if (input.realInteraction === true) {
     return true;
   }
-  return input.documentVisibility === "visible" && input.documentHasFocus;
+  // A room switch shows every pane of the room; only the focused one, or one whose PTY lacks its grid, takes the lease (plan NtzEOzE3Ew00 step 21).
+  return input.automatic && input.documentVisibility === "visible" && input.documentHasFocus;
 }
 
 function isRecoverableCliSession(session: PaneCliSessionResponse["session"] | null | undefined): boolean {
@@ -2316,6 +2319,25 @@ export const TerminalPane = memo(function TerminalPane({
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const xtermHostRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // PERF-001 C-2 (Nous-approved Warm change, 2026-10-27): one hidden file input element per pane, so a re-render
+  // (a room switch flips isVisible on every pane of both rooms) never makes React 19 rewrite its name and type.
+  const uploadFilesRef = useRef(uploadFiles);
+  uploadFilesRef.current = uploadFiles;
+  const fileInput = useMemo(() => (
+    <input
+      ref={fileInputRef}
+      type="file"
+      name={`cli-files-${pane.id}`}
+      multiple
+      accept="*/*"
+      hidden
+      onChange={(event) => {
+        const files = event.currentTarget.files ? Array.from(event.currentTarget.files) : [];
+        event.currentTarget.value = "";
+        if (files.length) void uploadFilesRef.current(files, "USER_UPLOAD");
+      }}
+    />
+  ), [pane.id]);
   const uploadPreviewDialogRef = useRef<HTMLDivElement | null>(null);
   const uploadPreviewCloseRef = useRef<HTMLButtonElement | null>(null);
   const uploadPreviewReturnFocusRef = useRef<HTMLButtonElement | null>(null);
@@ -2520,12 +2542,14 @@ export const TerminalPane = memo(function TerminalPane({
       screenWorkingMs: terminalScreenWorkingMs
     });
   }, [isPaneWorking, terminalScreenWorkingMs, onWorkingStateChange]);
+  // A free lease is taken on use: unfocused panes no longer hold it after a room switch, and their input queues until the grant.
+  const terminalControlUsable = terminalControlState === "CONTROLLER" || terminalControlState === "AVAILABLE";
   const turnControlState = isTurnRunning
     ? "running"
     : terminalPromptDraft.trim() &&
         isFloatingTurnControlSession &&
         terminalStatus === "attached" &&
-        terminalControlState === "CONTROLLER"
+        terminalControlUsable
       ? "ready"
       : "idle";
   const canSendTurn = turnControlState === "ready";
@@ -2548,7 +2572,7 @@ export const TerminalPane = memo(function TerminalPane({
     !pane.isMinimized &&
     !observerOnly &&
     terminalStatus === "attached" &&
-    terminalControlState === "CONTROLLER" &&
+    terminalControlUsable &&
     !isTurnRunning &&
     !hideFloatingControls;
   const voiceDisabled =
@@ -2621,8 +2645,19 @@ export const TerminalPane = memo(function TerminalPane({
       documentVisibility: typeof document === "undefined" ? "hidden" : document.visibilityState,
       documentHasFocus: typeof document !== "undefined" && document.hasFocus(),
       realInteraction,
-      readOnly: readOnly ?? sessionResponseRef.current?.websocket?.proofScope === "READ_ONLY"
+      readOnly: readOnly ?? sessionResponseRef.current?.websocket?.proofScope === "READ_ONLY",
+      automatic: terminalPaneHoldsFocus() || terminalGridUnsent()
     });
+  }
+
+  function terminalPaneHoldsFocus(): boolean {
+    return typeof document !== "undefined" && Boolean(xtermHostRef.current?.closest("[data-space-pane-id]")?.contains(document.activeElement));
+  }
+
+  function terminalGridUnsent(): boolean {
+    const terminal = terminalRef.current;
+    const sent = lastSentResizeRef.current;
+    return !terminal || !sent || sent.socket !== socketRef.current || sent.cols !== terminal.cols || sent.rows !== terminal.rows;
   }
 
   function clearTerminalControlHeartbeat() {
@@ -4889,6 +4924,7 @@ export const TerminalPane = memo(function TerminalPane({
             terminal?.scrollToBottom();
             syncTerminalViewportEvidence(terminalHost, terminal);
           }
+          if (type === "focusin") ensureTerminalControl();
         };
         target.addEventListener(type, listener, { capture: true });
         terminalIntentTargets.push({ target, type, listener });
@@ -4990,6 +5026,8 @@ export const TerminalPane = memo(function TerminalPane({
         });
         resizeDisposable = activeTerminal.onResize(({ cols, rows }) => {
           geometryCoordinator.handleTerminalResize(cols, rows);
+          // A grid the PTY has not got takes the free lease, so its resize reaches the CLI.
+          ensureTerminalControl();
         });
       };
       if (!bufferedSocket) {
@@ -6441,7 +6479,7 @@ export const TerminalPane = memo(function TerminalPane({
   }, [isVisible, pane.id, pane.isMinimized]);
 
   useEffect(() => {
-    ensureTerminalControl(true);
+    ensureTerminalControl();
     const coordinator = terminalGeometryCoordinatorRef.current;
     if (coordinator && isVisible) {
       coordinator.requestRefit({ reason: "LAYOUT_EFFECT" });
@@ -8786,21 +8824,7 @@ export const TerminalPane = memo(function TerminalPane({
       }}
       onDragLeave={() => setDragActive(false)}
     >
-      {supportsCliFileUploads ? (
-        <input
-          ref={fileInputRef}
-          type="file"
-          name={`cli-files-${pane.id}`}
-          multiple
-          accept="*/*"
-          hidden
-          onChange={(event) => {
-            const files = event.currentTarget.files ? Array.from(event.currentTarget.files) : [];
-            event.currentTarget.value = "";
-            if (files.length) void uploadFiles(files, "USER_UPLOAD");
-          }}
-        />
-      ) : null}
+      {supportsCliFileUploads ? fileInput : null}
 
       {error ? (
         <div className="terminal-alert bad">
@@ -9229,7 +9253,7 @@ export const TerminalPane = memo(function TerminalPane({
               {voiceInput.settings.terminalPlansButton ? (
                 <CliPlansMenu pane={cliPlansMenuPane} disabled={shortcutPending} canSend={terminalStatus === "attached"} active={isVisible && !pane.isMinimized} onSelectPlan={handleSelectOpenPlan} onInsertPlan={handleInsertOpenPlan} draftWillBeCleared={planSendClearsDraft}
                   managedExecution={managedPlan.execution} managedSettings={modelSettings} managedError={managedPlan.error} managedPending={managedPlan.pending}
-                  canControlManaged={terminalControlState === "CONTROLLER"} onManagedOverride={managedPlan.override} onManagedControl={managedPlan.control} onManagedRefresh={managedPlan.refresh} />
+                  canControlManaged={terminalControlUsable} onManagedOverride={managedPlan.override} onManagedControl={managedPlan.control} onManagedRefresh={managedPlan.refresh} />
               ) : null}
               {voiceInput.settings.terminalVoiceButton ? (
                 <VoiceInputButton label={pane.title.replace(/^Terminal\b/i, "CLI")} active={voiceOwned && voiceInput.status === "recording"} disabled={voiceDisabled} onClick={toggleTerminalVoiceCapture} onPrewarm={voiceInput.prewarm} />
@@ -9244,11 +9268,11 @@ export const TerminalPane = memo(function TerminalPane({
                     settings={modelSettings}
                     selectionScope={hasManagedPlan && managedPlan.execution ? JSON.stringify([pane.id, modelSettings.sessionId, managedPlan.execution.id, managedPlan.execution.snapshot.stages[managedPlan.execution.activeStageIndex]?.id]) : undefined}
                     showLabel
-                    disabled={terminalStatus !== "attached" || terminalControlState !== "CONTROLLER" ||
+                    disabled={terminalStatus !== "attached" || !terminalControlUsable ||
                       (!hasManagedPlan && modelSettings.controlMode === "NATIVE" && (isTurnRunning || Boolean(terminalPromptDraft.trim())))}
                     disabledReason={terminalStatus !== "attached"
                       ? "Available once the CLI is attached."
-                      : terminalControlState !== "CONTROLLER"
+                      : !terminalControlUsable
                         ? "Another window controls this CLI."
                         : !hasManagedPlan && modelSettings.controlMode === "NATIVE" && isTurnRunning
                           ? "Available when the current turn finishes."

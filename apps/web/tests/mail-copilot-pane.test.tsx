@@ -8,6 +8,7 @@ import { gmailAccessLabel, paneAccounts } from "../src/features/mail-copilot-pan
 import { CopilotLaunchDialog } from "../src/features/copilot-kit/CopilotLaunchDialog.js";
 import { JOB_COPILOT_KIND, MAIL_COPILOT_KIND, copilotKindForMode } from "../src/features/copilot-kit/copilot-kind.js";
 import { copilotLaunchDecision, copilotRuntimeOptions, defaultCopilotRuntimeId } from "../src/features/copilot-kit/copilot-runtimes.js";
+import { resetNousReviewing } from "../src/features/copilot-kit/nous-reviewing.js";
 
 const apiMock = vi.hoisted(() => ({
   mailCopilotSettings: vi.fn(),
@@ -48,7 +49,8 @@ const apiMock = vi.hoisted(() => ({
   mailActions: vi.fn(async (): Promise<{ actions: unknown[] }> => ({ actions: [] })),
   mailFixRequests: vi.fn(async (): Promise<{ requests: unknown[] }> => ({ requests: [] })),
   forgetMailHabits: vi.fn(async () => ({ forgotten: 3, retired: 1 })),
-  mailAttachmentUrl: () => "/attachment"
+  mailAttachmentUrl: () => "/attachment",
+  nousApprovals: vi.fn(async () => ({ nousReviewing: false }))
 }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
 const clipboardWrite = vi.hoisted(() => vi.fn(async (_text: string) => undefined));
@@ -224,8 +226,23 @@ describe("MailCopilotPane rail", () => {
     apiMock.decideMailReview.mockResolvedValue({ decision: "edit", sent: { messageId: "sent-1", threadId: "t1" } });
     apiMock.pauseMailCopilotRun.mockResolvedValue({ run: { ...run, status: "PAUSED" }, status: "PAUSED", pending: [review], backlog: 1 });
     apiMock.forgetMailMemory.mockResolvedValue({ forgotten: true });
+    apiMock.nousApprovals.mockResolvedValue({ nousReviewing: false });
+    resetNousReviewing();
   });
   afterEach(() => cleanup());
+
+  it("shows a review Nous decides under May send read only, with no needs-you count or Approve (operator 2/11 15:08 BKK)", async () => {
+    apiMock.nousApprovals.mockResolvedValue({ nousReviewing: true });
+    render(<MailCopilotPane pane={pane} isVisible terminal={<div data-testid="terminal">xterm</div>} />);
+    const card = within(await screen.findByRole("region", { name: "Nous reviewing" }));
+    expect(card.getByText("Hi Anna, attached again.")).toBeTruthy();
+    expect(card.getByRole("button", { name: "Show this mail" })).toBeTruthy();
+    expect(card.queryByRole("button", { name: "Approve and send" })).toBeNull();
+    expect(card.queryByRole("button", { name: "Reject" })).toBeNull();
+    expect(card.queryByRole("textbox", { name: "Reply text" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Review a reply" })).toBeNull();
+    expect(screen.queryByText("1 needs you")).toBeNull();
+  });
 
   it("shows each mail sent to the AI with the request, the copilot's questions, the answers and the result", async () => {
     apiMock.mailFixRequests.mockResolvedValue({ requests: [

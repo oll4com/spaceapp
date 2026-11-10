@@ -772,16 +772,30 @@ export function CliPlansMenu({
   // A pane keeps showing the plan it finished until another plan is attached,
   // instead of falling back to the global open-plan count.
   const paneId = pane?.id ?? null;
-  const needsCompletedPanePlan = active && plansLoaded && Boolean(paneId) && !managedExecution && !activePlan;
+  const needsCompletedPanePlan = plansLoaded && Boolean(paneId) && !managedExecution && !activePlan;
+  // PERF-001 C-3 (Nous-approved Warm change, 2026-10-28): every reveal reloads the shared open plans as a new array, so the
+  // completed-plan read is keyed on what the open plans are, not on the array, and a hidden menu keeps its last answer.
+  const openPlansSignature = useMemo(
+    () => plans.map((plan) => `${plan.id}:${plan.paneId ?? ""}:${plan.executionStatus}:${plan.isCompleted}:${plan.progressPercentage}`).join("|"),
+    [plans]
+  );
+  const completedPlanReadKeyRef = useRef<string | null>(null);
   useEffect(() => {
+    if (!active) return;
     if (!needsCompletedPanePlan || !paneId || typeof api?.clipboardItems !== "function") {
+      completedPlanReadKeyRef.current = null;
       setCompletedPanePlan(null);
       return;
     }
+    const key = `${paneId}#${openPlansSignature}`;
+    if (completedPlanReadKeyRef.current === key) return;
+    completedPlanReadKeyRef.current = key;
     let cancelled = false;
+    let settled = false;
     void api
       .clipboardItems({ source: "PLAN", includeCompleted: true, paneId, page: 1, pageSize: 1 })
       .then((response) => {
+        settled = true;
         if (cancelled) return;
         const latest = (response?.data ?? []).find((item) => item.paneId === paneId) ?? null;
         setCompletedPanePlan(
@@ -789,12 +803,16 @@ export function CliPlansMenu({
         );
       })
       .catch(() => {
+        settled = true;
+        if (completedPlanReadKeyRef.current === key) completedPlanReadKeyRef.current = null;
         if (!cancelled) setCompletedPanePlan(null);
       });
     return () => {
       cancelled = true;
+      // An answer that never arrived is read again next time.
+      if (!settled && completedPlanReadKeyRef.current === key) completedPlanReadKeyRef.current = null;
     };
-  }, [needsCompletedPanePlan, paneId, plans]);
+  }, [active, needsCompletedPanePlan, paneId, openPlansSignature]);
 
   const displayPlan = activePlan ?? completedPanePlan;
   const isDisplayPlanCompleted = !activePlan && Boolean(completedPanePlan);

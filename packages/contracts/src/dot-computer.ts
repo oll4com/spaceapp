@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { dotIdSchema } from "./dots.js";
+import { SPACE_INSTALL_ROOT } from "./host-paths.js";
 
 /**
  * Space Dots Stage 4: each Dot's own computer.
@@ -9,7 +10,7 @@ import { dotIdSchema } from "./dots.js";
  * it needs a browser. The Computer view shows both, the Dot's live work across
  * rooms, and stops it.
  */
-export const DOT_WORKSPACE_ROOT = "/opt/spaceapp/var/dots/workspaces";
+export const DOT_WORKSPACE_ROOT = `${SPACE_INSTALL_ROOT}/var/dots/workspaces`;
 
 /** The Dot's private workspace. Dot ids are unique per user, so the id alone scopes it. */
 export function dotWorkspacePath(dotId: string, root = DOT_WORKSPACE_ROOT): string {

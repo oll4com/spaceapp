@@ -1,4 +1,5 @@
 import { BrowserHostClient } from "@space/browser-host";
+import { withBrowserHostErrorText } from "./browser-host-errors.js";
 import { createBrowserHostProxy, type BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
 import type { SpaceApiConfig } from "./config.js";
 
@@ -15,9 +16,10 @@ export function withHostBoundBrowserInput(
   if (config.browserHostTransport !== "unix") return manager;
   const input = createBrowserHostProxy({ config, client });
   const closeAll = manager.closeAll.bind(manager);
-  return {
+  // Round 9 item 4: an answer the host failed itself names its code instead of "unavailable" (browser-host-errors.ts).
+  return withBrowserHostErrorText({
     ...manager,
     dispatchInput: input.dispatchInput,
     async closeAll() { await closeAll(); await input.closeAll(); }
-  };
+  });
 }

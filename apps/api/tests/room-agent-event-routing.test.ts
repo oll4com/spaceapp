@@ -10,18 +10,26 @@ const event = (patch: Partial<RoomAgentEvent> = {}): RoomAgentEvent => ({
   title: "Bob is waiting", detail: "Approve the deploy?", status: "OPEN", decision: null, createdAt: at, updatedAt: at, ...patch
 });
 
-function setup(nous: { active: boolean }) {
-  const raise = vi.fn(async () => ({}) as never);
+function setup(nous: { active: boolean }, stored: RoomAgentEvent[] = []) {
+  const raise = vi.fn<(input: { dedupeKey?: string | null }) => Promise<never>>(async () => ({}) as never);
   const resolve = vi.fn(async () => true as never);
+  // Every raise is a record, whatever the operator did with it since (the sweep's "raised already").
+  const list = vi.fn(async (_owner: string, query: { dedupeKey?: string }) => raise.mock.calls.filter(([input]) => input.dedupeKey === query.dedupeKey) as never);
   const enqueueTelegramNotice = vi.fn(async () => undefined);
+  const updateEvent = vi.fn(async (eventId: string, patch: Partial<RoomAgentEvent>) => {
+    const index = stored.findIndex((item) => item.eventId === eventId);
+    return index < 0 ? null : (stored[index] = { ...stored[index]!, ...patch });
+  });
   const routing = createRoomAgentEventRouting({
     roomOwner: async () => "user:operator",
     // false also when the Nous job does not run on this instance or its model is paused: Nous's own active() covers both.
     nousActive: async () => nous.active,
-    notifications: { raise, resolve }, telegram: { enqueueTelegramNotice }, log: { warn: vi.fn() }
+    notifications: { raise, resolve, list }, telegram: { enqueueTelegramNotice }, log: { warn: vi.fn() },
+    events: { listEvents: async () => stored.filter((item) => item.status === "OPEN" || item.status === "ESCALATED"), updateEvent: updateEvent as never }
   });
-  return { routing, raise, resolve, enqueueTelegramNotice };
+  return { routing, raise, resolve, enqueueTelegramNotice, updateEvent };
 }
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
 const settle = () => new Promise((done) => setTimeout(done, 0));
 
 describe("Room Agent monitor events while Nous works on the owner's behalf (plan clipboard:xEQOrVRQgeAn)", () => {
@@ -36,13 +44,46 @@ describe("Room Agent monitor events while Nous works on the owner's behalf (plan
     expect(await routing.sentToNous("room:nous000001")).toBe(false);
   });
 
-  it("on: a CLI's question for the operator (kind QUESTION) still reaches them at once, like a sign-in (operator decision 2026-10-24)", async () => {
-    const { routing, raise } = setup({ active: true });
-    await routing.route(event({ kind: "QUESTION", title: "Bob has a question for you" }));
+  it("on: a CLI's question goes to Nous first and reaches the operator only after 10 minutes unanswered (goal ee5a573e)", async () => {
+    const question = event({ kind: "QUESTION", title: "Bob has a question for you", status: "ESCALATED", decision: "Needs you: Answer its question in the pane.", createdAt: minutesAgo(1) });
+    const stored = [question];
+    const { routing, raise, enqueueTelegramNotice, updateEvent } = setup({ active: true }, stored);
+    await routing.route(question);
+    await routing.sweep(["room:nous000001"]);
+    await settle();
+    expect(raise).not.toHaveBeenCalled();
+    expect(enqueueTelegramNotice).not.toHaveBeenCalled();
+    const meta = (createdAt: string) => ({ kind: "SYSTEM", createdAt, meta: { type: "MONITOR_EVENT", status: "ESCALATED", severity: "ATTENTION", eventKind: "QUESTION" } });
+    expect(hasWaitingEvents({ messages: [meta(question.createdAt)] } as unknown as RoomAgentSession)).toBe(true);
+    expect(await handsCountsIn(new Set(["room:nous000001"]), async () => stored)).toEqual({ "room:nous000001": 0 });
+
+    // Still waiting after the hold: one card and one Telegram notice saying Nous did not answer it; later sweeps add nothing.
+    stored[0] = { ...question, createdAt: minutesAgo(11) };
+    await routing.sweep(["room:nous000001"]);
+    await settle();
+    await routing.sweep(["room:nous000001"]);
+    await settle();
+    expect(updateEvent).toHaveBeenCalledTimes(1);
+    expect(raise).toHaveBeenCalledTimes(1);
+    expect(raise.mock.calls[0]![0]).toMatchObject({ source: "ROOM_AGENT", kind: "QUESTION", severity: "ATTENTION", paneId: "pane:nous000001",
+      dedupeKey: "room-agent-event:room_agent_event:ev000001", body: expect.stringContaining("Nous did not answer it within 10 minutes") });
+    expect(enqueueTelegramNotice).toHaveBeenCalledTimes(1);
+    expect(hasWaitingEvents({ messages: [meta(stored[0]!.createdAt)] } as unknown as RoomAgentSession)).toBe(false);
+    expect(await handsCountsIn(new Set(["room:nous000001"]), async () => stored)).toEqual({ "room:nous000001": 1 });
+    expect(withoutNousRooms({ "room:nous000001": 1 }, stored, new Set(["room:nous000001"]))).toMatchObject({ latest: [stored[0]] });
+  });
+
+  it("off: a CLI's question reaches the operator at once, and the sweep after the hold does not raise it again", async () => {
+    const question = event({ kind: "QUESTION", title: "Bob has a question for you", createdAt: minutesAgo(1) });
+    const stored = [question];
+    const { routing, raise } = setup({ active: false }, stored);
+    await routing.route(question);
     await settle();
     expect(raise).toHaveBeenCalledTimes(1);
-    expect(raise.mock.calls[0]![0]).toMatchObject({ source: "ROOM_AGENT", kind: "QUESTION", severity: "ATTENTION", paneId: "pane:nous000001" });
-    expect(hasWaitingEvents({ messages: [{ kind: "SYSTEM", meta: { type: "MONITOR_EVENT", status: "OPEN", eventKind: "QUESTION" } }] } as unknown as RoomAgentSession)).toBe(false);
+    stored[0] = { ...question, createdAt: minutesAgo(11) };
+    await routing.sweep(["room:nous000001"]);
+    await settle();
+    expect(raise).toHaveBeenCalledTimes(1);
   });
 
   it("on: every event is Nous's alone, no notification row and no Telegram, the feed marks it sent to Nous", async () => {

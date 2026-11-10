@@ -1,5 +1,6 @@
 import { cliToggleRuntimeIds, type Pane, type PaneCliSession } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // Shared chat dispatch rules (group conversation):
 //  - Every OPERATOR message wakes every CLI runtime that has an eligible pane
@@ -97,7 +98,7 @@ export function buildSharedChatDispatchPrompt(content: string, label: string, ru
       content.slice(0, 600),
       "",
       "Reply to them in the Shared Chat by running from the shell:",
-      `/opt/spaceapp/scripts/space-chat-post.sh --label ${JSON.stringify(label)} --runtime ${JSON.stringify(runtimeId)} --text 'your reply in English'`,
+      `${SPACE_INSTALL_ROOT}/scripts/space-chat-post.sh --label ${JSON.stringify(label)} --runtime ${JSON.stringify(runtimeId)} --text 'your reply in English'`,
       "Do not start any other tasks for this message. If it does not concern you at all, do not reply."
     ].join("\n")
   );

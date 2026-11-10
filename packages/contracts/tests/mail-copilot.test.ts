@@ -1,10 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
+  eventSchema, mailCopilotEventInputSchema, jobApplyMemoryQuerySchema, mailCopilotMemoryQuerySchema, marketingMemoryQuerySchema,
   connectorCapabilities, createPaneInputSchema, defaultMailCopilotPaneMetadata, mailCopilotConsentUrl, mailCopilotPaneMetadataSchema, mailRuleConditionSchema,
   mailRuleMatches, resolveMailCopilotPaneMetadata, roomPaneBatchItemSchema, userSettingsSchema
 } from "../src/index.js";
 
 describe("Mail Copilot contracts", () => {
+  it("keeps a copilot's event message whole; the shared stream carries a 1,000-character preview of it (1/11, until then 1,000 a message)", () => {
+    const message = "x".repeat(3000);
+    expect(mailCopilotEventInputSchema.parse({ type: "NOTE", message }).message).toBe(message);
+    const streamed = eventSchema.parse({ id: "event:stream-preview-1", roomId: null, paneId: null, turnId: null, traceId: "trace:stream-preview-1", type: "MAIL_COPILOT_UPDATED", message, createdAt: "2026-11-01T00:00:00.000Z" });
+    expect(streamed.message).toHaveLength(1000);
+    expect(streamed.message.endsWith("…")).toBe(true);
+  });
+  it("recalls every matching copilot memory unless the agent asks for fewer (until 1/11 Job 20, Mail and Marketing 50, at most 200)", () => {
+    for (const schema of [jobApplyMemoryQuerySchema, mailCopilotMemoryQuerySchema, marketingMemoryQuerySchema]) {
+      expect(schema.parse({}).limit).toBeUndefined();
+      expect(schema.parse({ limit: 500 }).limit).toBe(500);
+    }
+  });
   it("reads unconfigured panes as Assist defaults and keeps the view (the CLI account lives in the session, never the row)", () => {
     const metadata = defaultMailCopilotPaneMetadata();
     expect(metadata).toEqual({ version: 1, settings: {

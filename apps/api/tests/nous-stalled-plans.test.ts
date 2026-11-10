@@ -73,9 +73,40 @@ describe("stalled plans", () => {
     expect(renderStandingPlansPrompt(items)).not.toContain("Alpha");
   });
 
+  it("a wait recorded on the whole plan hides no step that can run: with its pane not working it stalls like any plan (operator 1/11 23:05 BKK)", async () => {
+    // 1/11: 13 of 31 open plans had a DATE or SERVER wait recorded on the whole plan, idle or no panes, and runnable steps; none ever stalled.
+    const steps = (...statuses: string[]) => statuses.map((status, index) => ({ id: `step-${index + 1}`, order: index + 1, title: `Step ${index + 1}`, status, progress: 0 })) as never;
+    const date = { kind: "DATE", what: "the drill night", until: "2026-11-03T02:00:00.000Z" };
+    const hold = "waits on a date: the drill night (until 2026-11-03 02:00)";
+    const samples = [{ sample: sample([[pane("pane:andy0001", "Andy"), "idle", at("08:00")], [pane("pane:bob00001", "Bob"), "working", at("09:55")]]) }];
+    const items = await nousPlanActivity({ owner: "user:operator", now: new Date(at("10:00")), marks: new InMemoryNousPlanMarksRepository(), samples,
+      held: (planId) => planId === "clipboard:d" ? "waits on another plan: Alpha" : hold, plans: [
+        plan("clipboard:a", "Alpha", 40, "pane:andy0001", at("02:00"), { waitsOn: date, steps: steps("COMPLETED", "BLOCKED", "PENDING") } as never),
+        plan("clipboard:b", "Beta", 40, "pane:bob00001", at("02:00"), { waitsOn: date, steps: steps("PENDING") } as never),
+        plan("clipboard:c", "Gamma", 40, null, at("02:00"), { waitsOn: date, steps: steps("COMPLETED", "BLOCKED") } as never),
+        plan("clipboard:d", "Delta", 40, null, at("02:00"), { steps: steps("PENDING") } as never)
+      ] });
+    // Operator 3/11 23:11 BKK: a dependency hides no runnable step either (Delta); a hard server hold keeps every held plan out.
+    expect(items.map((item) => [item.title, item.stalled, item.reason, item.openStep])).toEqual([
+      ["Alpha", true, "unchanged 8 h", "3. Step 3 (PENDING)"], ["Beta", false, null, "1. Step 1 (PENDING)"], ["Gamma", false, null, null], ["Delta", true, "unchanged 8 h", "1. Step 1 (PENDING)"]
+    ]);
+    const paused = await nousPlanActivity({ owner: "user:operator", now: new Date(at("10:00")), marks: new InMemoryNousPlanMarksRepository(), samples, hardHold: true,
+      held: () => hold, plans: [plan("clipboard:a", "Alpha", 40, "pane:andy0001", at("02:00"), { steps: steps("PENDING") } as never)] });
+    expect(paused[0]).toMatchObject({ stalled: false, hold });
+    expect(items[0]!.nextStep).toBe("3. Step 3 (PENDING)");
+    expect(renderStandingPlansPrompt(items)).toContain(`next: 3. Step 3 (PENDING) · pane Andy idle since 2026-10-17 08:00 UTC · STALLED: unchanged 8 h · its plan ${hold}: that wait covers only the steps it names`);
+  });
+
   it("never calls a plan stalled when its room could not be read", async () => {
     const items = await nousPlanActivity({ owner: "user:operator", now: new Date(at("10:00")), marks: new InMemoryNousPlanMarksRepository(),
       samples: [{ sample: null }], plans: [plan("clipboard:a", "Alpha", 40, "pane:andy0001")] });
     expect(items[0]).toMatchObject({ pane: null, stalled: false, reason: null });
+  });
+
+  it("another room that could not be read leaves a plan whose pane closed stalled (operator 3/11 23:11 BKK)", async () => {
+    const items = await nousPlanActivity({ owner: "user:operator", now: new Date(at("10:00")), marks: new InMemoryNousPlanMarksRepository(),
+      samples: [{ room: { id: "room:main0001" }, sample: sample([]) }, { room: { id: "room:other001" }, sample: null }], plans: [
+        plan("clipboard:a", "Alpha", 40, "pane:gone0001", at("09:30"), { roomId: "room:main0001" }), plan("clipboard:b", "Beta", 40, "pane:bob00001", at("09:30"), { roomId: "room:other001" })] });
+    expect(items.map((item) => [item.title, item.stalled, item.reason])).toEqual([["Alpha", true, "no open pane"], ["Beta", false, null]]);
   });
 });

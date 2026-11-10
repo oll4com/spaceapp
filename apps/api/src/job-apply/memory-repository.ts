@@ -77,11 +77,11 @@ export class InMemoryJobApplyRepository implements JobApplyRepository {
     this.profiles.set(owner, { ...this.profiles.get(owner)!, campaignStartedAt: startedAt });
     return startedAt;
   }
-  async listApplications(owner: string, filter: { status?: string; limit: number }) {
+  async listApplications(owner: string, filter: { status?: string; limit?: number }) {
     return [...this.applications.values()]
       .filter((row) => row.ownerUserId === owner && (!filter.status || row.status === filter.status))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.createdAt.localeCompare(left.createdAt))
-      .slice(0, filter.limit)
+      .slice(0, filter.limit ?? undefined)
       .map((row) => structuredClone(row));
   }
   async getApplication(owner: string, id: string) {
@@ -259,7 +259,7 @@ export class InMemoryJobApplyRepository implements JobApplyRepository {
         && (!filter.since || event.createdAt > filter.since))
       .reverse()
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .slice(0, filter.limit)
+      .slice(0, filter.limit ?? undefined)
       .map((event) => structuredClone(event));
   }
 

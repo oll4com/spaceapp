@@ -1,3 +1,4 @@
+import { siteSigninFor } from "../site-signins.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
@@ -25,7 +26,7 @@ import {
   jobApplySiteSchema,
   resolveJobApplyPaneMetadata
 } from "@space/contracts";
-import { SpaceConflictError, type SpaceStore } from "@space/runtime";
+import { SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import type { JobApplyService } from "./service.js";
 import { salaryResearchRequestSchema } from "./salary.js";
 import { settleEndedOperatorLease } from "../browser-control-activity.js";
@@ -37,7 +38,7 @@ export const cliJobApplyPathPrefix = "/api/cli/job-apply/";
 
 export interface CliBridgeClaims { roomId: string; paneId: string; cliSessionId: string }
 export interface JobApplyAgentRouteDependencies {
-  store: Pick<SpaceStore, "getRoom" | "getPane" | "getActivePaneBrowserSession" | "getActiveBrowserControlLease" | "getActiveBrowserHandoffRequest"
+  store: Pick<SpaceStore, "getRoom" | "getPane" | "getArtifact" | "getActivePaneBrowserSession" | "getActiveBrowserControlLease" | "getActiveBrowserHandoffRequest"
     | "getBrowserControlLease" | "updateBrowserControlLease" | "updateBrowserHandoffRequest">;
   routeOptions: Record<string, unknown>;
   requireBridge(request: FastifyRequest, reply: FastifyReply): Promise<{ claims: CliBridgeClaims } | null>;
@@ -66,18 +67,18 @@ const recentQuerySchema = z.object({
   fromContains: z.string().trim().min(1).max(200).optional(),
   subjectContains: z.string().trim().min(1).max(200).optional(),
   since: z.string().datetime({ offset: true }).optional(),
-  limit: z.coerce.number().int().min(1).max(20).default(10)
+  limit: z.coerce.number().int().min(1).default(10)
 }).strict();
 // `account` names one of the Google accounts allowed for Space; without it a search spans them all and the
 // other tools use the copilot's chosen account.
 const googleAccountField = { account: z.string().trim().toLowerCase().email().max(320).optional() };
-const mailSearchSchema = z.object({ query: z.string().trim().max(300).default(""), limit: z.number().int().min(1).max(25).default(10), ...googleAccountField }).strict();
+const mailSearchSchema = z.object({ query: z.string().trim().max(300).default(""), limit: z.number().int().min(1).default(10), ...googleAccountField }).strict();
 const mailReadSchema = z.object({ messageId: z.string().trim().min(1).max(300), ...googleAccountField }).strict();
 const mailDraftSchema = z.object({
   to: z.array(z.string().trim().email().max(320)).min(1).max(20), subject: z.string().max(300), body: z.string().max(20_000), ...googleAccountField
 }).strict();
 const isoTimeSchema = z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), "Use an ISO 8601 time.");
-const calendarListSchema = z.object({ from: isoTimeSchema.optional(), to: isoTimeSchema.optional(), limit: z.number().int().min(1).max(50).default(20), ...googleAccountField }).strict();
+const calendarListSchema = z.object({ from: isoTimeSchema.optional(), to: isoTimeSchema.optional(), limit: z.number().int().min(1).default(20), ...googleAccountField }).strict();
 // Events go to the operator's own calendar only: no attendees, so Google sends no invitation.
 const calendarCreateSchema = z.object({
   title: z.string().trim().min(1).max(300), start: isoTimeSchema, end: isoTimeSchema, timeZone: z.string().max(80).optional(),
@@ -87,7 +88,7 @@ const paneQuerySchema = z.object({ paneId: z.string().regex(/^pane:[A-Za-z0-9_-]
 const memoryParamsSchema = z.object({ id: z.string().regex(/^jobmem:[A-Za-z0-9_-]{6,80}$/) }).strict();
 const artifactIdSchema = z.string().regex(/^artifact:[A-Za-z0-9_-]{6,80}$/);
 const profileBootstrapSchema = z.object({ candidate: jobApplyCandidateSchema }).strict();
-const profileFilesSchema = z.object({ cvArtifactId: artifactIdSchema.optional(), coverLetterArtifactId: artifactIdSchema.optional() }).strict()
+const profileFilesSchema = z.object({ cvArtifactId: artifactIdSchema.optional(), coverLetterArtifactId: artifactIdSchema.optional(), replace: z.boolean().optional() }).strict()
   .refine((value) => value.cvArtifactId !== undefined || value.coverLetterArtifactId !== undefined, "Name the CV or the cover letter artifact.");
 
 export function registerJobApplyAgentRoutes(app: FastifyInstance, service: JobApplyService, deps: JobApplyAgentRouteDependencies): void {
@@ -155,13 +156,30 @@ export function registerJobApplyAgentRoutes(app: FastifyInstance, service: JobAp
     const input = parseBody(profileFilesSchema, request.body ?? {});
     const ownerId = await owner(bridge.claims);
     const current = await service.getProfile(ownerId);
-    if (input.cvArtifactId && current.cvArtifactId) throw new SpaceConflictError("A CV is already set; replace it in the pane's Setup.");
-    if (input.coverLetterArtifactId && current.coverLetterArtifactId) throw new SpaceConflictError("A cover letter is already set; replace it in the pane's Setup.");
+    // Operator rule 04bdf65c (31/10): a credential he earns goes on the CV at once, so `replace` swaps the CV like Setup's Replace.
+    if (input.cvArtifactId && current.cvArtifactId && !input.replace) throw new SpaceConflictError("A CV is already set; pass replace: true to replace it.");
+    if (input.coverLetterArtifactId && current.coverLetterArtifactId && !input.replace) throw new SpaceConflictError("A cover letter is already set; pass replace: true to replace it.");
+    if (input.cvArtifactId) {
+      // The CV's text reaches the agent: never from another owner's room. A missing artifact stays importCv's 404.
+      let roomOwner: string | null | undefined;
+      try {
+        const roomId = (await deps.store.getArtifact(input.cvArtifactId)).roomId;
+        if (roomId) roomOwner = await Promise.resolve().then(() => deps.store.getRoom(roomId)).then((room) => room.ownerUserId, () => null);
+      } catch { /* importCv answers a missing artifact */ }
+      if (roomOwner !== undefined && roomOwner !== ownerId) throw new SpaceNotFoundError(`Artifact ${input.cvArtifactId} was not found in your rooms.`);
+    }
     let coverage: string | null = null;
     if (input.cvArtifactId) coverage = (await service.importCv(ownerId, input.cvArtifactId)).coverage;
     if (input.coverLetterArtifactId) await service.updateProfile(ownerId, { coverLetterArtifactId: input.coverLetterArtifactId });
     const profile = await service.getProfile(ownerId);
-    await deps.audit(request, "job_apply.agent.profile_files", ownerId, { cvArtifactId: input.cvArtifactId ?? null, coverLetterArtifactId: input.coverLetterArtifactId ?? null, coverage });
+    const replaced = { cv: input.cvArtifactId && current.cvArtifactId !== input.cvArtifactId ? current.cvArtifactId : null,
+      coverLetter: input.coverLetterArtifactId && current.coverLetterArtifactId !== input.coverLetterArtifactId ? current.coverLetterArtifactId : null };
+    if (replaced.cv || replaced.coverLetter) {
+      const lines = [replaced.cv && `CV ${replaced.cv} → ${input.cvArtifactId}`, replaced.coverLetter && `cover letter ${replaced.coverLetter} → ${input.coverLetterArtifactId}`].filter(Boolean);
+      await service.logEvent(ownerId, { paneId: bridge.claims.paneId, type: "NOTE", message: `Replaced ${lines.join("; ")}`, payload: { replacedCvArtifactId: replaced.cv, replacedCoverLetterArtifactId: replaced.coverLetter } });
+    }
+    await deps.audit(request, "job_apply.agent.profile_files", ownerId, { cvArtifactId: input.cvArtifactId ?? null, coverLetterArtifactId: input.coverLetterArtifactId ?? null, coverage,
+      replacedCvArtifactId: replaced.cv, replacedCoverLetterArtifactId: replaced.coverLetter });
     return { cvArtifactId: profile.cvArtifactId, cvTextChars: profile.cvTextChars, coverage, coverLetterArtifactId: profile.coverLetterArtifactId };
   });
 
@@ -279,7 +297,9 @@ export function registerJobApplyAgentRoutes(app: FastifyInstance, service: JobAp
     if (!bridge) return undefined;
     const input = parseBody(jobApplyNextRequestSchema, request.body ?? {});
     const settings = await paneSettings(bridge.claims.paneId);
-    return service.nextJob(await owner(bridge.claims), bridge.claims.paneId, { waitMs: input.waitMs, metadata: settings });
+    const ownerId = await owner(bridge.claims);
+    const next = await service.nextJob(ownerId, bridge.claims.paneId, { waitMs: input.waitMs, metadata: settings });
+    return {...next, signin: await siteSigninFor(deps.store, ownerId, next.application?.url)};
   });
 
   app.post(route("job/report"), routeOptions, async (request, reply) => {

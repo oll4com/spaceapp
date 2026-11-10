@@ -40,14 +40,15 @@ function fixture(sessionOverrides: Partial<PaneCliSession> = {}, userOverrides: 
         authority.tabLineageId !== current.tabLineageId || authority.pageClientId !== current.pageClientId || current.userId !== request.user?.id)
       throw new CliTerminalControlRequiredError();
   });
-  const paneOwner = vi.fn(async () => null as string | null);
+  const observeOnly = vi.fn(async () => false);
+  const screen = { text: "❯ " };
   registerCliLocalComposerRoutes(app, { store, repository, routeOptions: { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
-    cliTerminalManager: { sendInput, runSerializedTerminalMutation: async (_session, work) => work() },
-    assertRoomAccess: async roomId => store.getRoom(roomId), paneOwner,
+    cliTerminalManager: { sendInput, runSerializedTerminalMutation: async (_session, work) => work(), observeRoomScreen: async () => ({ text: screen.text, revision: 1 }) },
+    assertRoomAccess: async roomId => store.getRoom(roomId), observeOnly,
     assertPaneCliRuntimeEnabled: async () => undefined, assertCliHttpMutationControl, wait });
   const url = `/api/panes/${pane.id}/cli/local-composer/submissions`;
   const input = () => ({ submissionId: randomUUID(), expectedSessionId: session.sessionId, text: "hello\nworld" });
-  return { app, store, repository, session, pane, lease, headers, sendInput, wait, paneOwner, assertCliHttpMutationControl, url, input };
+  return { app, store, repository, session, pane, lease, headers, sendInput, wait, observeOnly, assertCliHttpMutationControl, url, input, screen };
 }
 
 describe("local composer route authority", () => {
@@ -123,19 +124,63 @@ describe("local composer route authority", () => {
       if (change === "session") f.store.updatePaneCliSession(f.session.sessionId, { isActive: false });
       if (change === "generation") f.store.updatePaneCliTerminalGeometry(f.session.sessionId, { generationId: "process:two", cols: 80, rows: 24 });
       if (change === "lease") f.store.updatePaneCliTerminalControlLease(f.lease.leaseId, { expectedStatus: "ACTIVE", status: "REVOKED" });
-      if (change === "owner") f.paneOwner.mockResolvedValue("user:bob");
+      if (change === "owner") f.observeOnly.mockResolvedValue(true);
     });
     const response = await f.app.inject({ method: "POST", url: f.url, headers: f.headers, payload: f.input() });
     expect(response.json().status).toBe("UNCERTAIN");
     expect(f.sendInput).toHaveBeenCalledTimes(1);
   });
 
-  it("requires pane ownership for both submission and receipt lookup, including administrators", async () => {
+  it("refuses a user the terminal lets only watch, for both submission and receipt lookup", async () => {
     const f = fixture();
-    f.paneOwner.mockResolvedValue("user:bob");
+    f.observeOnly.mockResolvedValue(true);
     const draft = f.input();
     expect((await f.app.inject({ method: "POST", url: f.url, headers: f.headers, payload: draft })).statusCode).toBe(404);
     expect((await f.app.inject({ url: `${f.url}/${draft.submissionId}` })).statusCode).toBe(404);
     expect(f.sendInput).not.toHaveBeenCalled();
+  });
+});
+
+describe("pane keys from SpaceApp Android (plan clipboard:1cZ-YxU8zS2O N1)", () => {
+  const press = (f: ReturnType<typeof fixture>, keys: string[], expectedSessionId = f.session.sessionId) =>
+    f.app.inject({ method: "POST", url: `/api/panes/${f.pane.id}/cli/keys`, payload: { expectedSessionId, keys } });
+
+  it("presses named keys one write at a time without a lease, and audits their names", async () => {
+    const f = fixture();
+    f.store.updatePaneCliTerminalControlLease(f.lease.leaseId, { expectedStatus: "ACTIVE", status: "RELEASED" });
+    const audit = vi.spyOn(f.store, "recordAuditEvent");
+    const response = await press(f, ["DOWN", "ENTER", "ESCAPE", "CTRL_C", "3"]);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(f.sendInput.mock.calls.map(call => (call as unknown[])[1])).toEqual(["\u001b[B", "\r", "\u001b", "\u0003", "3"]);
+    expect(f.wait).toHaveBeenCalledTimes(4);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: "pane.cli.keys", metadata: expect.objectContaining({ keys: ["DOWN", "ENTER", "ESCAPE", "CTRL_C", "3"] }) }));
+  });
+
+  it("refuses an answer key on a protected or destructive prompt, never Esc or Ctrl+C", async () => {
+    const f = fixture();
+    f.screen.text = "Bash command\n  space-queue promote\n❯ 1. Yes\n  2. No";
+    for (const keys of [["ENTER"], ["1"], ["y"]]) expect((await press(f, keys)).statusCode).toBe(409);
+    f.screen.text = "Bash command\n  rm -rf build\n❯ 1. Yes";
+    expect((await press(f, ["DOWN", "ENTER"])).json().error).toMatch(/destructive.*recursive delete/);
+    expect(f.sendInput).not.toHaveBeenCalled();
+    expect((await press(f, ["ESCAPE", "CTRL_C", "n"])).statusCode).toBe(200);
+  });
+
+  it.each([
+    [{ brokerScope: "UI_PROOF" }, ["ESCAPE"], 403], [{ proofScope: "READ_ONLY" }, ["ESCAPE"], 403], [{ mobile: { device: "d", person: true } }, ["ESCAPE"], 403],
+    [{}, ["x"], 422], [{}, ["\u0003"], 422], [{}, [], 422], [{}, Array(9).fill("UP"), 422]
+  ])("refuses %j %j", async (user, keys, status) => {
+    const f = fixture({}, user);
+    expect((await press(f, keys)).statusCode).toBe(status);
+    expect(f.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("refuses another session, an exited CLI and a pane the caller does not own", async () => {
+    const stale = fixture();
+    expect((await press(stale, ["ESCAPE"], "cli_session:old")).statusCode).toBe(409);
+    expect((await press(fixture({ status: "EXITED" }), ["ESCAPE"])).statusCode).toBe(409);
+    const other = fixture();
+    other.observeOnly.mockResolvedValue(true);
+    expect((await press(other, ["ESCAPE"])).statusCode).toBe(404);
   });
 });

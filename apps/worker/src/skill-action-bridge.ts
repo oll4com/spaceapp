@@ -165,7 +165,7 @@ export async function executeSkillActionBridge(input: {
       const matches = skills
         .filter((skill) => (action.status ? skill.status === action.status : action.includeDisabled || skill.status === "VERIFIED"))
         .filter((skill) => skillMatchesQuery(skill, action.q));
-      const selected = matches.slice(0, action.pageSize);
+      const selected = matches.slice((action.page - 1) * action.pageSize, action.page * action.pageSize);
       results.push({
         request,
         status: "EXECUTED",

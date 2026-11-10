@@ -428,7 +428,9 @@ describe("Room Agent conversation dock", () => {
     const composer = await screen.findByRole("textbox", { name: "Message Room Agent" });
     fireEvent.change(composer, { target: { value: "Finish this room safely." } });
     fireEvent.click(screen.getByRole("button", { name: "Send to Room Agent" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("Space API request failed before a response.");
+    // A send lost on the way reads as Space reconnecting (nous_msg:1be51d08); the text stays in the composer for the retry.
+    expect(await screen.findByText("SpaceApp is updating… reconnecting")).toBeTruthy();
+    expect(composer).toHaveProperty("value", "Finish this room safely.");
     fireEvent.click(screen.getByRole("button", { name: "Send to Room Agent" }));
     await waitFor(() => expect(bodies).toHaveLength(2));
     expect(bodies[1]).toEqual(bodies[0]);

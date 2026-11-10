@@ -164,6 +164,8 @@
 
 .cli-account-menu-head {
   display: flex;
+  /* Two model groups' figures (Antigravity) move under the title when the menu is narrow. */
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.55rem;
   padding: 0.6rem 0.75rem 0.5rem;
@@ -204,6 +206,10 @@
   white-space: nowrap;
 }
 
+.cli-account-menu-forecast + .cli-account-menu-forecast {
+  margin-left: 0.4rem;
+}
+
 .cli-account-menu-forecast strong {
   font-size: 0.82rem;
   font-weight: 700;
@@ -212,6 +218,41 @@
 .cli-account-menu-forecast small {
   color: var(--cli-account-muted);
   font-size: 0.6rem;
+}
+
+/* Antigravity's quota groups, one tab each, as Google reports them. */
+.cli-account-menu-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--cli-account-track);
+}
+
+.cli-account-menu-group {
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--cli-account-track);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--cli-account-muted);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.cli-account-menu-group:hover {
+  background: var(--cli-account-hover);
+}
+
+.cli-account-menu-group:focus-visible {
+  outline: 2px solid var(--cli-account-accent);
+  outline-offset: 1px;
+}
+
+.cli-account-menu-group[aria-checked="true"] {
+  border-color: color-mix(in srgb, var(--cli-account-accent) 45%, transparent);
+  background: var(--cli-account-active);
+  color: var(--cli-account-text);
 }
 
 .cli-account-menu-list {

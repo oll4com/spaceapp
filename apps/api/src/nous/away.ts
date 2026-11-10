@@ -14,7 +14,6 @@ import { classifyNousOutgoing } from "./guardrails.js";
  * out), and the grant lets Nous decide the granted categories itself. On return Nous briefs from the log.
  */
 
-export const NOUS_AWAY_LOG_LIMIT = 200;
 export const NOUS_AWAY_GRANTS: readonly NousAwayGrant[] = nousAwayGrantSchema.options;
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
 const oneLine = (text: string, max: number) => clip(text.replace(/\s+/g, " ").trim(), max);
@@ -45,7 +44,8 @@ export const nousAwayArgsSchema = z.object({
 export type NousAwayArgs = z.infer<typeof nousAwayArgsSchema>;
 
 /** The operator's chat message this turn answers, and whether a person (not a proof or automation session) sent it. */
-export interface NousAwayTurn { reason: string; operatorMessage: { id: string; content: string; person: boolean } | null }
+/** `replyTo`: the operator messages an operator turn answers, oldest first (space_nous_outcome binds each request to one). */
+export interface NousAwayTurn { reason: string; operatorMessage: { id: string; content: string; person: boolean; mobile?: boolean } | null; replyTo?: string[] }
 
 export interface NousAwayDeps {
   repository: NousAwayRepository;
@@ -64,7 +64,7 @@ export function createNousAway(deps: NousAwayDeps) {
   async function finish(session: NousAwaySession, reason: NousAwayEndReason): Promise<{ session: NousAwaySession; log: NousAwayLogEntry[] } | null> {
     const ended = await deps.repository.end(session.ownerUserId, session.id, reason, at());
     if (!ended) return null;
-    const log = await deps.repository.listLog(session.id, NOUS_AWAY_LOG_LIMIT);
+    const log = await deps.repository.listLog(session.id);
     const held = log.filter((entry) => entry.source === "HELD_ALERT");
     if (held.length) {
       await deps.notifications.raise({ ownerUserId: ended.ownerUserId, roomId: null, paneId: null, source: "NOUS", kind: "AWAY_SUMMARY", severity: "ATTENTION",
@@ -149,13 +149,13 @@ export function createNousAway(deps: NousAwayDeps) {
       return ended;
     },
 
-    listLog: (session: NousAwaySession) => deps.repository.listLog(session.id, NOUS_AWAY_LOG_LIMIT),
+    listLog: (session: NousAwaySession) => deps.repository.listLog(session.id),
 
     /** space_nous_away, after the tool checked that the operator's own message started this turn (start and end). */
     async run(owner: string, args: NousAwayArgs, turn: NousAwayTurn): Promise<string> {
       if (args.op === "status") {
         const session = await current(owner);
-        return session ? `${renderAwayContext(session)}\nLogged so far: ${(await deps.repository.listLog(session.id, NOUS_AWAY_LOG_LIMIT)).length} lines.` : "The operator is here: Away mode is off.";
+        return session ? `${renderAwayContext(session)}\nLogged so far: ${(await deps.repository.listLog(session.id)).length} lines.` : "The operator is here: Away mode is off.";
       }
       if (args.op === "end") {
         const ended = await end(owner, "NOUS");

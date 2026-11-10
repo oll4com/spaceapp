@@ -15,6 +15,8 @@ const MODEL_POPOVER_BOUNDARY_INSET_PX = 8;
 import { reasoningEffortLabel, reasoningEffortBadge, reasoningEffortColor } from "./reasoning-effort.js";
 export { reasoningEffortLabel, reasoningEffortBadge, reasoningEffortColor };
 import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
+import { modelProviderAvailability } from "../cli-accounts/cli-account-availability.js";
+import { fetchSharedQuotaMetrics, peekSharedQuotaMetrics, subscribeSharedQuota } from "../desktop-widgets/shared-quota-cache.js";
 
 // "DeepSeek V4 Flash (free)" -> "DeepSeek V4 Flash"; "opencode/deepseek-v4" -> "deepseek-v4".
 export function shortModelName(name: string): string {
@@ -91,6 +93,15 @@ export function CodexModelPicker({
   const keyboardModelBrowseRef = useRef(false);
   const pendingKeyboardModelRef = useRef<string | null>(null);
   const pendingKeyboardModelTimerRef = useRef<number | null>(null);
+  // What each provider has left (the Codex pool, API balances); read only while the menu is open.
+  const [quota, setQuota] = useState(peekSharedQuotaMetrics);
+  useEffect(() => {
+    if (!open) return undefined;
+    setQuota(peekSharedQuotaMetrics());
+    void fetchSharedQuotaMetrics().catch(() => undefined);
+    return subscribeSharedQuota(setQuota);
+  }, [open]);
+  const providerRoom = (providerId: string) => modelProviderAvailability(providerId, quota, Math.floor(Date.now() / 60_000) * 60_000);
   const hasProviders = providers.length > 1;
   const currentSettings = settings.current;
   const currentProviderId = providers.find((provider) => provider.isCurrent)?.providerId ?? null;
@@ -540,8 +551,11 @@ export function CodexModelPicker({
                   <select className="terminal-quick-model-select" aria-label="Provider"
                     value={quickGroup?.key ?? ""} disabled={disabled}
                     onChange={event => setQuickProviderKey(event.target.value)}>
-                    {providerGroups.map(group => <option key={group.key} value={group.key}
-                      disabled={!group.models.length}>{group.label}{!group.models.length ? ` — ${group.provider.statusReason ?? "No models available"}` : ""}</option>)}
+                    {providerGroups.map(group => {
+                      const room = providerRoom(group.key === group.provider.providerId ? group.key : group.key.slice(group.provider.providerId.length + 1));
+                      return <option key={group.key} value={group.key} title={room?.description}
+                        disabled={!group.models.length}>{group.label}{room ? ` · ${room.label}` : ""}{!group.models.length ? ` — ${group.provider.statusReason ?? "No models available"}` : ""}</option>;
+                    })}
                   </select>
                 </label>
               ) : null}
@@ -656,6 +670,7 @@ export function CodexModelPicker({
               <div className="terminal-model-options" role="radiogroup" aria-label="Model provider">
                 {providers.map((provider) => {
                   const selected = provider.providerId === (activeProvider?.providerId ?? currentProviderId);
+                  const room = providerRoom(provider.providerId);
                   return (
                     <button
                       key={provider.providerId}
@@ -664,11 +679,12 @@ export function CodexModelPicker({
                       aria-checked={selected}
                       className={selected ? "is-selected" : ""}
                       disabled={disabled || switching || provider.isInactive === true || provider.models.length === 0}
-                      title={provider.statusReason ?? undefined}
+                      title={provider.statusReason ?? room?.description}
                       onClick={() => selectProvider(provider.providerId)}
                     >
                       <span className="terminal-model-provider-label">
                         <span>{provider.providerName}{provider.isInactive ? " · unavailable" : ""}</span>
+                        {room ? <small className="terminal-model-provider-room" style={{ color: room.color }}>{room.label}</small> : null}
                         {(provider.isInactive || provider.models.length === 0) && provider.statusReason ? (
                           <small className="terminal-model-provider-reason">{provider.statusReason}</small>
                         ) : null}

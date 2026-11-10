@@ -61,11 +61,11 @@ import {
   ShieldCheck,
   Terminal,
   Gauge as Wallet,
-  Sparkles,
   X,
   type LucideIcon,
 } from "../ui-theme/app-icons.js";
-import { computeQuotaAggregates } from "../desktop-widgets/quota-aggregates.js";
+import { computeQuotaAggregates, type QuotaBreakdownItem } from "../desktop-widgets/quota-aggregates.js";
+import { lowQuotaText } from "../desktop-widgets/quota-low.js";
 import {
   ToolbarMetrics,
   formatBytes,
@@ -86,6 +86,7 @@ import {
   healthThresholdStorageKey,
   openSystemHealth,
   readHealthThresholds,
+  resourceView,
   serviceTone,
   thresholdDefinitions,
   toneLabels,
@@ -100,7 +101,9 @@ import {
 } from "./use-health-telemetry.js";
 import { RecoverableSurface } from "../SurfaceErrorBoundary.js";
 const SystemTopologyMap = lazy(() => import("./SystemTopologyMap.js").then(module => ({ default: module.SystemTopologyMap })));
+import { rangeFits, useHistoryPeriodDays } from "../history-period/use-history-period.js";
 import "./system-health.css";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const TokenUsageWorkspace = lazy(() => import("../system-analytics/SystemAnalyticsWorkspace.js").then(module => ({ default: module.SystemAnalyticsWorkspace })));
 
@@ -244,6 +247,49 @@ function summaryMetrics(t: HealthTelemetry): SummaryMetric[] {
     },
   );
   return items;
+}
+// One AI quota tile: the subscription pool with the least room left, every pool in its tooltip, per provider and never an account count (operator 6/11); API budgets stay in the AI
+// section, never on the rail (operator 3/11 nous_msg:7c5ae4e4).
+function quotaTileOf(telemetry: HealthTelemetry) {
+  const aggregates = computeQuotaAggregates(telemetry.accounts, telemetry.antigravityAccounts, null, telemetry.claudeAccounts);
+  const lb = telemetry.environment?.lbUsage;
+  const at = (iso: number) => formatAppTime(iso, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  const nextReset = (items: QuotaBreakdownItem[], key: "fiveHourResetAt" | "weeklyResetAt") => {
+    const next = Math.min(...items.map((item) => Date.parse(item[key] ?? "")).filter((t) => t > telemetry.clock));
+    return Number.isFinite(next) ? ` (resets ${at(next)})` : "";
+  };
+  const pools = [
+    { tag: "CLAUDE", label: "Claude Max", metric: aggregates.claudeMax, list: telemetry.claudeAccounts, off: false, fallback: null },
+    { tag: "CODEX", label: "Codex", metric: aggregates.codex, list: telemetry.accounts, off: telemetry.environment?.isCodexEnabled === false,
+      fallback: lb?.activeAccountsRemainingPercent ?? lb?.allAccountsRemainingPercent ?? null },
+    { tag: "AGY", label: "Antigravity", metric: aggregates.antigravityCombined, list: telemetry.antigravityAccounts, off: false, fallback: null },
+  // Only pools this installation has: a provider with no account, or switched off, is left out (plan clipboard:sJpyQIBFGszW).
+  ].filter(({ list, off }) => !off && Boolean(list?.data?.length)).map(({ metric, list, fallback, ...pool }) => {
+    const percent = metric.percent5h ?? metric.percentWeekly ?? fallback;
+    const window = metric.percent5h != null ? "5h" : "weekly";
+    const accounts = metric.accounts;
+    const reason = list?.error ? `source failed: ${list.error}` : list?.isStale ? "source is stale"
+      : !list ? "not loaded yet" : !accounts.length ? "no accounts" : "no account reports a quota";
+    const share = (value: number | null, items: QuotaBreakdownItem[], key: "fiveHourResetAt" | "weeklyResetAt") =>
+      value == null ? "—" : `${Math.round(value)}%${nextReset(items, key)}`;
+    const line = percent == null
+      ? `${pool.label}: No data (${reason})`
+      : metric.percent5h == null && metric.percentWeekly == null
+        ? `${pool.label}: ${Math.round(percent)}% weekly (Space Gateway pool)`
+        : `${pool.label}: 5h ${share(metric.percent5h, accounts.filter((a) => a.fiveHourPercent != null), "fiveHourResetAt")} · week ${share(metric.percentWeekly, accounts.filter((a) => a.weeklyPercent != null), "weeklyResetAt")}`;
+    return { ...pool, percent, window, line };
+  });
+  const known = pools.filter((pool) => pool.percent != null);
+  const pick = known.reduce<(typeof pools)[number] | null>((low, pool) => !low || pool.percent! < low.percent! ? pool : low, null);
+  const percent = pick?.percent == null ? null : Math.round(pick.percent);
+  return {
+    pick,
+    pools,
+    value: percent == null ? "No data" : `${percent}%`,
+    tone: (percent == null ? "unavailable" : percent <= 5 ? "critical" : percent <= 20 ? "warning" : "healthy") as HealthTone,
+    summary: pick ? `${pick.label} ${percent}% (${pick.window}), the least of ${known.length} provider${known.length === 1 ? "" : "s"}` : "No data",
+    lines: pools.map((pool) => pool.line),
+  };
 }
 function summaryDestination(id: string): {
   section: HealthSection;
@@ -1075,7 +1121,7 @@ function HealthDetailAnalysis({
       <div className="health-analysis-section">
         <div className="health-analysis-grid">
           <div className="health-analysis-stat"><small>Space disk</small><strong>{formatHealthValue(diskAppMetric?.value, "PERCENT")}</strong></div>
-          <div className="health-analysis-stat"><small>Mount</small><strong>/opt/spaceapp</strong></div>
+          <div className="health-analysis-stat"><small>Mount</small><strong>{SPACE_INSTALL_ROOT}</strong></div>
           <div className="health-analysis-stat"><small>Total</small><strong>{diskAppMetric?.total ? formatBytes(diskAppMetric.total) : "—"}</strong></div>
           <div className="health-analysis-stat"><small>Used</small><strong>{diskAppMetric?.value != null && diskAppMetric.total ? formatBytes(diskAppMetric.total * (diskAppMetric.value / 100)) : "—"}</strong></div>
         </div>
@@ -1366,6 +1412,7 @@ function HealthWindow({
   useDialogFocus(ref, onClose);
   const [maximized, setMaximized] = useState(false);
   const [range, setRange] = useState<SystemHealthRange>("1m");
+  const historyDays = useHistoryPeriodDays();
   const [retained, setRetained] = useState<SystemHealthHistory | null>(null);
   const [historyError, setHistoryError] = useState(false);
   useEffect(() => {
@@ -1409,6 +1456,7 @@ function HealthWindow({
     id === "network-telemetry";
 
   const summary = summaryMetrics(telemetry);
+  const quota = useMemo(() => quotaTileOf(telemetry), [telemetry]);
   const services = telemetry.snapshot?.services ?? [];
   const signals = telemetry.metrics.filter(
     (m) =>
@@ -1567,10 +1615,8 @@ function HealthWindow({
           {section !== "overview" && <nav className="resources-detail-navigation" aria-label="Resource details">
             <button type="button" onClick={() => onSection("overview")}>← Back</button>
             <select className="resources-detail-select" aria-label="Resource view" value={section} onChange={e => onSection(e.target.value as HealthSection)}>
-              <optgroup label="AI usage"><option value="ai">Accounts & quotas</option><option value="usage">Token usage</option><option value="models">Models</option><option value="provider">Provider routing</option></optgroup>
-              <optgroup label="Sessions"><option value="sessions">CLI sessions</option></optgroup>
-              <optgroup label="System"><option value="performance">Performance</option><option value="processes">Processes</option><option value="topology">Topology</option><option value="services">Service readiness</option><option value="analytics">Analytics & benchmarks</option></optgroup>
-              <optgroup label="Connection"><option value="connection">Connection & API</option><option value="alerts">Alerts & thresholds</option></optgroup>
+              <optgroup label="AI usage"><option value="ai">Accounts & quotas</option><option value="analytics">Token usage & analytics</option><option value="sessions">CLI sessions</option></optgroup>
+              <optgroup label="System"><option value="performance">Performance & latency</option><option value="processes">Processes</option><option value="services">Service readiness</option><option value="topology">Topology</option><option value="alerts">Alerts & thresholds</option></optgroup>
             </select>
           </nav>}
           <main className="health-main">
@@ -1582,10 +1628,10 @@ function HealthWindow({
             )}
             {section === "overview" && <div className="resources-summary">
               {[
-                { label: "AI usage", section: "ai", icon: Wallet, value: summary.find(m => m.id === "accounts")?.value ?? "—", detail: "Routing capacity · accounts, quotas & tokens" },
-                { label: "Sessions", section: "sessions", icon: Terminal, value: summary.find(m => m.id === "cli")?.value ?? "—", detail: "Running CLI sessions" },
-                { label: "System", section: "performance", icon: Cpu, value: `CPU ${summary.find(m => m.id === "cpu")?.value ?? "—"} · RAM ${summary.find(m => m.id === "memory")?.value ?? "—"}`, detail: "Performance, storage & services" },
-                { label: "Connection", section: "connection", icon: Network, value: summary.find(m => m.id === "rtt")?.value ?? "—", detail: "Latency & API traffic" }
+                // Only when this installation has an AI account (plan clipboard:sJpyQIBFGszW).
+                ...(quota.pools.length ? [{ label: "Accounts & quotas", section: "ai", icon: Wallet, value: quota.pick ? `${quota.pick.tag} ${quota.value}` : quota.value, detail: quota.summary }] : []),
+                { label: "CLI sessions", section: "sessions", icon: Terminal, value: summary.find(m => m.id === "cli")?.value ?? "—", detail: "Running CLI sessions" },
+                { label: "System", section: "performance", icon: Cpu, value: `CPU ${summary.find(m => m.id === "cpu")?.value ?? "—"} · RAM ${summary.find(m => m.id === "memory")?.value ?? "—"}`, detail: `Latency ${summary.find(m => m.id === "rtt")?.value ?? "—"} · processes & services` },
               ].map(item => <button type="button" className="resources-summary-row" key={item.section} onClick={() => onSection(item.section as HealthSection)}>
                 <span className="resources-summary-icon"><item.icon aria-hidden="true" /></span>
                 <span className="resources-summary-info"><strong>{item.label}</strong><small>{item.detail}</small></span>
@@ -1595,21 +1641,8 @@ function HealthWindow({
                 {issues.length ? `${issues.length} alerts need attention` : unavailable.length ? "Some measurements are unavailable" : "Alerts & thresholds"}
               </button>
             </div>}
-            {section === "connection" && <section className="health-panel">
-              <h2>Connection & API</h2>
-              <div className="health-detail-facts">
-                <div><small>Round-trip latency</small><strong>{summary.find(m => m.id === "rtt")?.value ?? "—"}</strong></div>
-                <div><small>Requests · 5 minutes</small><strong>{telemetry.snapshot?.requests.requestCount ?? "—"}</strong></div>
-                <div><small>HTTP 5xx errors</small><strong>{telemetry.snapshot?.requests.errorCount ?? "—"}</strong></div>
-                <div><small>API p95</small><strong>{formatHealthValue(telemetry.snapshot?.requests.p95Ms, "MILLISECONDS")}</strong></div>
-              </div>
-              <div className="health-detail-actions">
-                <button type="button" onClick={() => { onSelect("rtt"); onSection("performance"); }}>Latency history</button>
-                <button type="button" onClick={() => onSection("services")}>Connection status</button>
-              </div>
-            </section>}
-            {["ai", "sessions", "provider", "models"].includes(section) && <ToolbarMetrics
-              presentation="embedded" allowChanges={allowChanges} sharedTelemetry={telemetry} initialPanel={section === "ai" ? "accounts" : section === "sessions" ? "cli" : section === "provider" ? "provider" : "models"}
+            {(section === "ai" || section === "sessions") && <ToolbarMetrics
+              presentation="embedded" allowChanges={allowChanges} sharedTelemetry={telemetry} initialPanel={section === "ai" ? "accounts" : "cli"}
               environment={telemetry.environment} onReopenPane={onReopenPane} onReopenAllDetached={onReopenAllDetached} onCloseSession={onCloseSession}
               onOpenAnalytics={tab => { onSelect(tab); onSection("analytics"); }}
             />}
@@ -1681,7 +1714,7 @@ function HealthWindow({
                         className="health-range-controls"
                         aria-label="History range"
                       >
-                        {(Object.keys(rangeLabels) as SystemHealthRange[]).map(
+                        {(Object.keys(rangeLabels) as SystemHealthRange[]).filter((r) => rangeFits(r, historyDays)).map(
                           (r) => {
                             const isUnsupported =
                               metric.id === "rtt" &&
@@ -1807,11 +1840,6 @@ function HealthWindow({
                 </div>
               </div>
             )}
-            {section === "usage" && (
-              <Suspense fallback={<p role="status">Loading token usage…</p>}>
-                <TokenUsageWorkspace shellMode="desktop" initialTab="models" modelsOnly onClose={onClose} />
-              </Suspense>
-            )}
             {section === "alerts" && (
               <div className="health-stack">
                 <section className="health-panel">
@@ -1903,7 +1931,7 @@ export function SystemHealth({
     readHealthThresholds(storage, userId),
   );
   const [open, setOpen] = useState<"health" | "resources" | null>(embedded ? "health" : null);
-  const [section, setSection] = useState<HealthSection>(initialSection);
+  const [section, setSection] = useState<HealthSection>(resourceView(initialSection));
   const [selected, setSelected] = useState("cpu");
   const [expanded, setExpanded] = useState(false);
   const [visibilityMenu, setVisibilityMenu] = useState<RailVisibilityMenuState>(null);
@@ -1995,8 +2023,8 @@ export function SystemHealth({
         }>
       ).detail;
       setOpen("health");
-      setSection(detail?.resources && detail.metric ? (detail.metric === "cli" ? "sessions" : ["accounts", "codex-reset"].includes(detail.metric) ? "ai" : detail.metric === "rtt" ? "connection" : "performance") : detail?.section ?? "overview");
-      setSelected(detail?.metric ?? "cpu");
+      setSection(detail?.resources && detail.metric ? (detail.metric === "cli" ? "sessions" : ["accounts", "codex-reset"].includes(detail.metric) ? "ai" : "performance") : resourceView(detail?.section ?? "overview"));
+      setSelected(detail?.metric ?? (detail?.section === "connection" ? "rtt" : detail?.section === "models" || detail?.section === "usage" ? "models" : "cpu"));
       setExpanded(false);
     };
     window.addEventListener("space:system-health", listener);
@@ -2100,114 +2128,17 @@ export function SystemHealth({
     return true;
   });
 
-  const accountProviders = useMemo<Array<{
-    id: string;
-    tag: string;
-    label: string;
-    value: string;
-    tone: HealthTone;
-    detail: string;
-    icon: LucideIcon;
-  }>>(() => {
-    const list: Array<{
-      id: string;
-      tag: string;
-      label: string;
-      value: string;
-      tone: HealthTone;
-      detail: string;
-      icon: LucideIcon;
-    }> = [];
+  const quotaTile = useMemo(() => quotaTileOf(telemetry), [telemetry]);
+  const showAgentsTile = Boolean(!readOnly && onOpenAgentsDashboard && upperRailVisibility.isVisible("agents-dashboard"));
+  // The quota tile only when this installation has an AI account: a fresh install showed "No data" there for nothing.
+  const railMetrics = summary.filter((m) => m.id !== "accounts" || quotaTile.pools.length > 0);
 
-    const aggregates = computeQuotaAggregates(
-      telemetry.accounts,
-      telemetry.antigravityAccounts,
-      telemetry.apiProviderAccounts
-    );
-
-    // 1. Codex
-    const isCodexEnabled = telemetry.environment?.isCodexEnabled !== false;
-    if (!isCodexEnabled) {
-      list.push({
-        id: "codex",
-        tag: "CODEX",
-        label: "Codex",
-        value: "OFF",
-        tone: "disabled",
-        detail: "Codex is disabled in Settings",
-        icon: Wallet,
-      });
-    } else {
-      const activeLbPct = telemetry.environment?.lbUsage?.activeAccountsRemainingPercent;
-      const allLbPct = telemetry.environment?.lbUsage?.allAccountsRemainingPercent;
-      const computedPct = aggregates.codex.percent5h ?? aggregates.codex.percentWeekly;
-      const rawVal = activeLbPct ?? computedPct ?? allLbPct ?? null;
-      const codexVal = rawVal === null ? null : Math.round(rawVal);
-      const codexTone: HealthTone =
-        codexVal === null ? "unavailable" : codexVal <= 5 ? "critical" : codexVal <= 20 ? "warning" : "healthy";
-      const activeCount = aggregates.codex.activeAccounts;
-      const totalCount = aggregates.codex.totalAccounts;
-      list.push({
-        id: "codex",
-        tag: "CODEX",
-        label: "Codex",
-        value: codexVal === null ? "Unavailable" : `${codexVal}%`,
-        tone: codexTone,
-        detail: codexVal === null ? "No current Codex quota report" : `Codex active capacity: ${codexVal}% · ${activeCount}/${totalCount} accounts active`,
-        icon: Wallet,
-      });
-    }
-
-    // 2. Antigravity (AGY)
-    const hasAgyAccounts =
-      aggregates.antigravityCombined.totalAccounts > 0 ||
-      Boolean(telemetry.antigravityAccounts?.data && telemetry.antigravityAccounts.data.length > 0);
-    if (hasAgyAccounts) {
-      const agy5h = aggregates.antigravityCombined.percent5h === null ? null : Math.round(aggregates.antigravityCombined.percent5h);
-      const agyWk = aggregates.antigravityCombined.percentWeekly === null ? null : Math.round(aggregates.antigravityCombined.percentWeekly);
-      const agyVal = agy5h;
-      const agyTone: HealthTone =
-        agyVal === null ? "unavailable" : agyVal <= 5 ? "critical" : agyVal <= 20 ? "warning" : "healthy";
-      list.push({
-        id: "antigravity",
-        tag: "AGY",
-        label: "Antigravity",
-        value: agyVal === null ? "Unavailable" : `${agyVal}%`,
-        tone: agyTone,
-        detail: `Antigravity capacity: ${agy5h === null ? "Unavailable" : `${agy5h}%`} (5h) · ${agyWk === null ? "Unavailable" : `${agyWk}%`} (weekly) · ${aggregates.antigravityCombined.activeAccounts}/${aggregates.antigravityCombined.totalAccounts} accounts active`,
-        icon: Sparkles,
-      });
-    }
-
-    // 3. API Providers
-    if (aggregates.apiProviders.totalProviders > 0) {
-      const { connectedProviders, totalBalanceUsd, totalProviders } = aggregates.apiProviders;
-      const balanceStr = totalBalanceUsd > 0 ? `$${totalBalanceUsd.toFixed(totalBalanceUsd >= 10 ? 0 : 2)}` : `${connectedProviders}/${totalProviders}`;
-      const apiTone: HealthTone =
-        connectedProviders === 0 ? "critical" : aggregates.apiProviders.exhaustedProviders > 0 ? "warning" : "healthy";
-      list.push({
-        id: "api",
-        tag: "API",
-        label: "API Providers",
-        value: balanceStr,
-        tone: apiTone,
-        detail: `API Providers: ${connectedProviders}/${totalProviders} connected · Balance: $${totalBalanceUsd.toFixed(2)}`,
-        icon: Layers,
-      });
-    }
-
-    return list;
-  }, [telemetry.accounts, telemetry.antigravityAccounts, telemetry.apiProviderAccounts, telemetry.environment]);
-
-  const [accountRotationIndex, setAccountRotationIndex] = useState(0);
-
-  useEffect(() => {
-    if (accountProviders.length <= 1) return;
-    const interval = setInterval(() => {
-      setAccountRotationIndex((prev) => (prev + 1) % accountProviders.length);
-    }, 20_000);
-    return () => clearInterval(interval);
-  }, [accountProviders.length]);
+  // Any subscription window under 5% turns the quota icon red, whichever provider the rail shows (operator 2026-10-31); API budgets never do (2/11).
+  const quotaLow = lowQuotaText({
+    codex: telemetry.accounts,
+    agy: telemetry.antigravityAccounts,
+    claude: telemetry.claudeAccounts,
+  }, telemetry.clock);
 
     const resourceWindow = <div className="health-theme-root" {...theme}>
               <HealthWindow
@@ -2251,7 +2182,7 @@ export function SystemHealth({
           {minimizedBarToggle && upperRailVisibility.isVisible("minimized-bar")
             ? minimizedBarToggle
             : null}
-          {indicatorsVisible ? (
+          {indicatorsVisible && (railMetrics.length || showAgentsTile) ? (
             <>
               <button
                 className="health-rail-expander"
@@ -2267,7 +2198,7 @@ export function SystemHealth({
                 <Activity aria-hidden="true" />
               </button>
               <div className="health-rail-items" ref={healthRailItemsRef}>
-            {!readOnly && onOpenAgentsDashboard && upperRailVisibility.isVisible("agents-dashboard") ? (() => {
+            {showAgentsTile ? (() => {
               const border = getAgentsIndicatorBorder(agentsLiveSummary);
               const borderClass = border === "run" ? "has-run" : border === "waiting-only" ? "has-waiting-only" : border === "done-only" ? "has-done-only" : "is-idle";
               const total = agentsLiveSummary?.loaded ? agentsLiveSummary.total : null;
@@ -2336,26 +2267,20 @@ export function SystemHealth({
                 </button>
               );
             })() : null}
-            {summary.map((m) => {
-              const isAccounts = m.id === "accounts";
-              const currentProvider =
-                isAccounts && accountProviders.length > 0
-                  ? accountProviders[accountRotationIndex % accountProviders.length]
-                  : null;
-              const Icon = currentProvider ? currentProvider.icon : m.icon;
-              const value = currentProvider
-                ? currentProvider.value
-                : m.tone === "unavailable"
-                  ? "—"
-                  : m.value;
-              const tone: HealthTone = currentProvider ? currentProvider.tone : m.tone;
+            {railMetrics.map((m) => {
+              const quota = m.id === "accounts" ? quotaTile : null;
+              const Icon = m.icon;
+              const value = quota ? quota.value : m.tone === "unavailable" ? "—" : m.value;
+              const low = quota ? quotaLow : null;
+              const tone: HealthTone = low ? "critical" : quota ? quota.tone : m.tone;
               const toneText = toneLabels[tone] ?? tone;
-              const title = currentProvider
-                ? `Account remaining (${currentProvider.label}): ${currentProvider.value} · ${toneText}\n${currentProvider.detail}\nRotates every 20s across all providers (${(accountRotationIndex % accountProviders.length) + 1}/${accountProviders.length})`
+              const lowLine = low ? `Quota low: ${low}\n` : "";
+              const title = quota
+                ? `${lowLine}AI quota left: ${quota.summary}\n${quota.lines.join("\n")}\nClick for the AI section`
                 : `${m.label}: ${m.value} · ${toneLabels[m.tone]}\n${m.detail}${m.at ? `\nUpdated ${formatAppTime(m.at)}` : ""}`;
-              const ariaLabel = currentProvider
-                ? `Account remaining: ${currentProvider.label} ${currentProvider.value}, ${toneText}`
-                : `${m.label}: ${m.value}, ${toneLabels[m.tone]}`;
+              const ariaLabel = (quota
+                ? `AI quota left: ${quota.summary}, ${toneText}`
+                : `${m.label}: ${m.value}, ${toneLabels[m.tone]}`) + (low ? `. Quota low: ${low}` : "");
               const level = value.endsWith("%") ? Math.min(100, Math.max(0, Number.parseFloat(value))) : Number.NaN;
 
               return (
@@ -2363,20 +2288,20 @@ export function SystemHealth({
                   type="button"
                   key={m.id}
                   data-rail-id={m.id}
-                  className={`health-indicator is-${tone}${readOnly ? " is-read-only" : ""}`}
+                  className={`health-indicator is-${tone}${low ? " is-quota-low" : ""}${readOnly ? " is-read-only" : ""}`}
                   aria-label={ariaLabel}
                   title={title}
                   onClick={readOnly ? undefined : () => {
                     setSelected(m.id);
-                    setSection(m.id === "cli" ? "sessions" : ["accounts", "codex-reset"].includes(m.id) ? "ai" : m.id === "rtt" ? "connection" : "performance");
+                    setSection(m.id === "cli" ? "sessions" : ["accounts", "codex-reset"].includes(m.id) ? "ai" : "performance");
                     setOpen("health");
                   }}
                 >
                   <Icon aria-hidden="true" />
-                  {currentProvider ? (
-                    <span className="health-indicator-provider-tag">{currentProvider.tag}</span>
+                  {quota ? (
+                    <span className="health-indicator-provider-tag">{quota.pick?.tag ?? "AI"}</span>
                   ) : null}
-                  <strong>{m.tone === "unavailable" && !currentProvider ? "—" : value}</strong>
+                  <strong className={quota && !quota.pick ? "is-text" : undefined}>{m.tone === "unavailable" && !quota ? "—" : value}</strong>
                   {Number.isFinite(level) ? (
                     <span className="health-indicator-gauge" aria-hidden="true">
                       <span style={{ width: `${level}%` }} />

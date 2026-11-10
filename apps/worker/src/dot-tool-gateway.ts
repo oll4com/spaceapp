@@ -23,6 +23,7 @@ import { executeMemoryActionBridge } from "./memory-action-bridge.js";
 import type { CanonicalMemoryBridge } from "@space/runtime";
 import { executeSkillActionBridge } from "./skill-action-bridge.js";
 import { executeTaskActionBridge } from "./task-action-bridge.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
  * Native tool calls for gateway-enabled Dot threads (Space Dots Stage 3).
@@ -67,7 +68,7 @@ export function nativeChatThreadConfig(dispatcherPath: string | null = existsSyn
   options: { writableRoots?: readonly string[]; proactive?: boolean; codexConfigToml?: string } = {}): Record<string, unknown> {
   const dispatcherOverrides = (key: string) => ({
     // A complete definition: valid whether or not the user's Codex config declares the dispatcher.
-    [`mcp_servers.${key}.command`]: "/usr/bin/node",
+    [`mcp_servers.${key}.command`]: process.execPath,
     [`mcp_servers.${key}.args`]: [dispatcherPath],
     [`mcp_servers.${key}.env.SPACE_AGENT_RUNTIME_ID`]: DOT_NATIVE_RUNTIME_ID,
     // Proactive work may discover servers and skills, but not call installed MCP tools.
@@ -100,7 +101,7 @@ const dispatcherReadTools = [
   "list_mcp_servers", "mcp_server_info", "list_skills", "get_skill"
 ] as const;
 export const DOT_PROACTIVE_BLOCK_REASON = "This is proactive work you proposed, so it is read-only. Report what you found and ask the user before changing anything.";
-const defaultDispatcherPath = "/opt/spaceapp/bin/space-mcp-dispatcher.mjs";
+const defaultDispatcherPath = `${SPACE_INSTALL_ROOT}/bin/space-mcp-dispatcher.mjs`;
 
 interface GatewayOutcome { status: Exclude<DotToolInvocationStatus, "RUNNING">; statusReason: string | null; result?: unknown }
 export interface DotToolCallContext {

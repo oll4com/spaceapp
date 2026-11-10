@@ -2,9 +2,11 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import Fastify from "fastify";
 import { InMemorySpaceStore } from "@space/runtime";
 import { BROWSER_CONTROL_IDLE_RELEASE_MS, countsAsOperatorInput, createBrowserControlActivity, releaseBrowserControlLease, settleEndedOperatorLease, sweepIdleOperatorLeases } from "../src/browser-control-activity.js";
 import { registerVaultFenceHooks } from "../src/vault/fence-hooks.js";
+import { registerSiteSignins } from "../src/site-signins.js";
 
 describe("browser control activity", () => {
   it("measures idle time from the last input, the lease start or the API start, whichever is latest", () => {
@@ -62,10 +64,10 @@ describe("browser control activity", () => {
 });
 
 describe("browser control idle release (operator 2026-10-15, 60 s since 2026-10-24: back to the agent after the idle limit)", () => {
-  async function setup() {
+  async function setup(reason = "CAPTCHA: solve it") {
     const store = new InMemorySpaceStore();
     store.upsertUser({ id: "user:operator", email: "operator@example.test", role: "ADMIN" });
-    const room = store.createRoom({ name: "Idle release", initialPaneCount: 0 });
+    const room = store.createRoom({ name: "Idle release", initialPaneCount: 0 }, undefined, "user:operator");
     const pane = store.createPane({ roomId: room.id, title: "Job Copilot", mode: "BROWSER" });
     const sessionId = `browser_session:${pane.id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
     store.createPaneBrowserSession({
@@ -75,7 +77,7 @@ describe("browser control idle release (operator 2026-10-15, 60 s since 2026-10-
     });
     const handoff = store.createBrowserHandoffRequest({
       sessionId, paneId: pane.id, roomId: room.id, requestedByType: "AGENT", requestedById: "cli:cli_session:test",
-      reason: "CAPTCHA: solve it", ttlSeconds: 1800
+      reason, ttlSeconds: 1800
     });
     const lease = store.createBrowserControlLease({
       leaseId: "browser_lease:handoff", sessionId, paneId: pane.id, roomId: room.id, holderType: "OPERATOR",
@@ -151,6 +153,52 @@ describe("browser control idle release (operator 2026-10-15, 60 s since 2026-10-
       expect(third.store.getBrowserControlLease(third.lease.leaseId)?.status).toBe("ACTIVE");
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("sweeps a present handoff at the three-minute real-input cap even without another heartbeat", async () => {
+    const start = Date.parse("2026-10-29T08:00:00.000Z");
+    vi.useFakeTimers({ toFake: ["Date"], now: start });
+    try {
+      const { store, handoff, lease, browserSessionManager } = await setup();
+      const activity = createBrowserControlActivity();
+      activity.watch(lease);
+      const deps = { store, browserSessionManager, activity } as never;
+      for (const seconds of [30, 60, 90, 120, 150, 179]) {
+        vi.setSystemTime(start + seconds * 1000);
+        store.updateBrowserControlLease(lease.leaseId, { ttlSeconds: 60 });
+        activity.notePresence(lease.leaseId);
+      }
+      expect(activity.inputIdleMs(lease)).toBe(179_000);
+      expect(await sweepIdleOperatorLeases(deps)).toBe(0);
+      vi.setSystemTime(start + 180_000);
+      expect(await sweepIdleOperatorLeases(deps)).toBe(1);
+      expect(store.getBrowserControlLease(lease.leaseId)?.status).toBe("RELEASED");
+      expect(store.getBrowserHandoffRequest(handoff.handoffRequestId)?.status).toBe("COMPLETED");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fences a cancelled accepted handoff before release without recording sign-in success", async () => {
+    const { store, pane, handoff, lease } = await setup("LOGIN: [site:example.test] sign in");
+    const app = Fastify();
+    const signins = registerSiteSignins(app, store);
+    const record = vi.spyOn(signins, "record");
+    const steps: string[] = [];
+    registerVaultFenceHooks(store, { fenceHandoff: async () => { steps.push("fence"); }, fencedTargets: async () => [] });
+    try {
+      await releaseBrowserControlLease({ store, activity: createBrowserControlActivity(), browserSessionManager: {
+        releaseControl: async () => {
+          steps.push("release");
+          return store.updateBrowserControlLease(lease.leaseId, { status: "RELEASED" });
+        }
+      } } as never, { pane, lease, handoffStatus: "CANCELLED", auditAction: "pane.browser.control.agent_cancel" });
+      expect(steps).toEqual(["fence", "release"]);
+      expect(store.getBrowserHandoffRequest(handoff.handoffRequestId)?.status).toBe("CANCELLED");
+      expect(record).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
     }
   });
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -8,10 +8,13 @@ import { executeCommand, RESTORE_UNCHANGED_EXIT, run } from "../src/cli.mjs";
 import { ensureDockerAvailable } from "../src/prerequisites.mjs";
 import {
   addWorkspace,
+  commitInstallation,
   composeProjectName,
   initializeInstallation,
+  loadConfig,
   saveConfig,
-  writeCredential
+  writeCredential,
+  writeRuntimeFiles
 } from "../src/index.mjs";
 
 const launcherManifest = JSON.parse(
@@ -784,6 +787,40 @@ test("container secrets are world-readable so non-root container users can mount
   if (process.platform !== "win32") {
     assert.equal(repaired.mode & 0o777, 0o644);
   }
+});
+
+test("the pane bridge secret is random per install, 0600, kept across runs and rotated only by deleting it (1.2.0)", async () => {
+  const roots = [await mkdtemp(join(tmpdir(), "spaceapp-agent-secret-a-")), await mkdtemp(join(tmpdir(), "spaceapp-agent-secret-b-"))];
+  for (const root of roots) await initializeInstallation(root, {version: "0.1.0", profile: "light"});
+  const path = root => join(root, "secrets", "agent-token-secret");
+  const first = await readFile(path(roots[0]), "utf8");
+  assert.match(first, /^[A-Za-z0-9_-]{64}$/);
+  assert.notEqual(await readFile(path(roots[1]), "utf8"), first);
+  if (process.platform !== "win32") assert.equal((await stat(path(roots[0]))).mode & 0o777, 0o600);
+  await chmod(path(roots[0]), 0o644);
+  await initializeInstallation(roots[0], {version: "0.1.0", profile: "light"});
+  assert.equal(await readFile(path(roots[0]), "utf8"), first);
+  if (process.platform !== "win32") assert.equal((await stat(path(roots[0]))).mode & 0o777, 0o600);
+  await rm(path(roots[0]));
+  await initializeInstallation(roots[0], {version: "0.1.0", profile: "light"});
+  assert.notEqual(await readFile(path(roots[0]), "utf8"), first);
+});
+
+test("update and repair make the pane bridge secret a 1.1.x install lacks, and keep an existing one (1.2.0)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-agent-secret-update-"));
+  await initializeInstallation(root, {version: "0.1.0", profile: "light"});
+  const path = join(root, "secrets", "agent-token-secret");
+  const config = await loadConfig(root);
+  await rm(path);
+  await commitInstallation(root, config); // update (performUpdate)
+  const made = await readFile(path, "utf8");
+  assert.match(made, /^[A-Za-z0-9_-]{64}$/);
+  if (process.platform !== "win32") assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await writeRuntimeFiles(root, config); // repair (repairRuntime)
+  assert.equal(await readFile(path, "utf8"), made);
+  await rm(path);
+  await writeRuntimeFiles(root, config); // rotation: delete, then repair
+  assert.notEqual(await readFile(path, "utf8"), made);
 });
 
 test("an existing host-root installation is rejected on non-Linux hosts before Docker preparation", async () => {

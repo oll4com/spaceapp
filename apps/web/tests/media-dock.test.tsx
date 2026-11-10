@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Artifact, Room } from "@space/contracts";
-import { MediaDock, clearMediaRoomCache } from "../src/features/media-dock/MediaDock.js";
+import { MediaDock, clearMediaRoomCache, mediaEntries } from "../src/features/media-dock/MediaDock.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 import { SPACE_ARTIFACT_MIME } from "../src/features/artifacts/artifact-drag.js";
@@ -41,7 +41,7 @@ function artifact(input: Partial<Artifact> & Pick<Artifact, "id" | "kind" | "mim
     paneId: null,
     turnId: null,
     workflowId: null,
-    sha256: "a".repeat(64),
+    sha256: input.id.padEnd(64, "0"),
     byteSize: 2048,
     metadata: {},
     expiresAt: null,
@@ -166,6 +166,11 @@ describe("MediaDock", () => {
     expect(requests.filter((request) => request.method === "GET").map((request) => request.url)).toEqual([mediaListUrl]);
   });
 
+  it("shows the same bytes saved twice (a clipboard snip, then its paste into a pane) once, the newest copy", () => {
+    const pasted = { ...pastedImage(), id: "artifact:pasted-copy", createdAt: "2026-07-07T00:01:00.000Z" };
+    expect(mediaEntries([pastedImage(), pasted, uploadedNote()]).map((entry) => entry.artifact.id)).toEqual(["artifact:file", "artifact:pasted-copy"]);
+  });
+
   it("keeps titles stable when newer media arrive", async () => {
     stubMediaFetch((method, url) => (method === "GET" && url === mediaListUrl ? okJson(paginated([uploadedNote()])) : undefined));
     render(<MediaDock activeRoom={room} />);
@@ -175,7 +180,7 @@ describe("MediaDock", () => {
       window.dispatchEvent(new CustomEvent("space:artifacts-updated", {
         detail: {
           roomId: room.id,
-          artifacts: [artifact({ ...uploadedNote(), id: "artifact:newer", metadata: { source: "USER_UPLOAD", originalFilename: "newer.txt" }, createdAt: "2026-07-08T00:00:00.000Z" })]
+          artifacts: [artifact({ ...uploadedNote(), id: "artifact:newer", sha256: "b".repeat(64), metadata: { source: "USER_UPLOAD", originalFilename: "newer.txt" }, createdAt: "2026-07-08T00:00:00.000Z" })]
         }
       }));
     });

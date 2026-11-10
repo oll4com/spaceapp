@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import type { JobApplyStats, Pane } from "@space/contracts";
+import type { JobApplyStats, Pane, UiLanguage } from "@space/contracts";
 import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import { BookmarkPlus, Check, ChevronDown, PanelRight, Pause, Play, RefreshCw, Square, Terminal } from "../ui-theme/app-icons.js";
 import { paneModelLabel, type JobCopilotRuntimeOption } from "./agent-runtimes.js";
 import type { JobApplyTodayCounts } from "./useJobApply.js";
@@ -50,14 +51,24 @@ function ProgressRing({ progress, state }: { progress: { done: number; total: nu
 const RUN_LABEL: Record<JobCopilotRunState, string> = { IDLE: "Idle", RUNNING: "Running", PAUSED: "Paused", STOPPED: "Stopped" };
 
 /** "2026-10-13" → "Oct 13", read as a local calendar day. */
-export function shortDay(day: string): string {
-  return new Date(`${day}T00:00:00`).toLocaleDateString("en", { month: "short", day: "numeric" });
+export function shortDay(day: string, language: UiLanguage = "en"): string {
+  return new Date(`${day}T00:00:00`).toLocaleDateString(language === "el" ? "el" : "en", { month: "short", day: "numeric" });
+}
+
+type Translate = (text: string, vars?: Record<string, string | number>) => string;
+
+/** A counter with its number in bold: the words are the translation of `text` (it holds a `{count}` slot), so a language puts the number where it belongs. */
+export function Counted({ text, count, t }: { text: string; count: number; t: Translate }) {
+  const [before = "", after = ""] = t(text, { count: "\u0000" }).split("\u0000");
+  return <>{before}<strong>{count}</strong>{after}</>;
 }
 
 /** Agent chip with runtime picker, run state, the counters since the first day and the compact toggles. */
 export function CommandBar({ pane, runtimeOptions, counts, stats = null, runState, progress, paused, railOpen, layout = "split", switching, needsYou, runBusy, onRun, onSwitchRuntime, onNewSession, onSetDefault, onTogglePaused, onToggleRail }: CommandBarProps) {
+  const language = useUiLanguage();
+  const t: Translate = (text, vars) => uiText(language, text, vars);
   const shown = stats?.totals ?? counts;
-  const scope = stats?.firstDay ? `since ${shortDay(stats.firstDay)}` : "today";
+  const since = stats?.firstDay ? shortDay(stats.firstDay, language) : null;
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const runtimeId = pane.terminalRuntimeId ?? null;
@@ -75,19 +86,19 @@ export function CommandBar({ pane, runtimeOptions, counts, stats = null, runStat
   }, [menuOpen]);
 
   return (
-    <header className="jc-bar" aria-label="Job Copilot command bar" data-layout={layout}>
+    <header className="jc-bar" aria-label={t("Job Copilot command bar")} data-layout={layout}>
       <div className="jc-bar-row primary">
       <div className="jc-agent" ref={menuRef}>
-        <button type="button" className="jc-agent-chip" aria-haspopup="menu" aria-expanded={menuOpen} aria-label={`Copilot agent: ${current?.runtime.displayName ?? runtimeId ?? "none"}`}
+        <button type="button" className="jc-agent-chip" aria-haspopup="menu" aria-expanded={menuOpen} aria-label={t("Copilot agent: {agent}", { agent: current?.runtime.displayName ?? runtimeId ?? t("none") })}
           disabled={switching} onClick={() => setMenuOpen((open) => !open)}>
           {presentation ? <img src={presentation.iconSrc} alt="" aria-hidden="true" /> : <Terminal aria-hidden="true" />}
-          <span className="jc-agent-name">{switching ? "Switching…" : current?.runtime.displayName ?? presentation?.displayName ?? "Choose an agent"}</span>
+          <span className="jc-agent-name">{switching ? t("Switching…") : current?.runtime.displayName ?? presentation?.displayName ?? t("Choose an agent")}</span>
           {model ? <span className="jc-agent-model">{model}</span> : null}
           <ChevronDown aria-hidden="true" />
         </button>
         {menuOpen ? (
-          <div className="jc-menu" role="menu" aria-label="Switch copilot agent">
-            <p className="jc-menu-hint">Switching restarts this pane's CLI session.</p>
+          <div className="jc-menu" role="menu" aria-label={t("Switch copilot agent")}>
+            <p className="jc-menu-hint">{t("Switching restarts this pane's CLI session.")}</p>
             {runtimeOptions.map(({ runtime, ready, recommended }) => {
               const option = cliRuntimePresentation(runtime.id);
               const active = runtime.id === runtimeId;
@@ -98,7 +109,7 @@ export function CommandBar({ pane, runtimeOptions, counts, stats = null, runStat
                   {option ? <img src={option.iconSrc} alt="" aria-hidden="true" /> : <Terminal aria-hidden="true" />}
                   <span className="jc-menu-item-copy">
                     <strong>{runtime.displayName}</strong>
-                    <small>{ready ? (recommended ? "Recommended" : "Ready") : runtime.statusReason}</small>
+                    <small>{ready ? (recommended ? t("Recommended") : t("Ready")) : runtime.statusReason}</small>
                   </span>
                   {active ? <Check aria-hidden="true" /> : null}
                 </button>
@@ -109,8 +120,8 @@ export function CommandBar({ pane, runtimeOptions, counts, stats = null, runStat
                 onClick={() => { setMenuOpen(false); onNewSession(); }}>
                 <RefreshCw aria-hidden="true" />
                 <span className="jc-menu-item-copy">
-                  <strong>Start a new session</strong>
-                  <small>The copilot starts a fresh conversation; this one stays in the task history.</small>
+                  <strong>{t("Start a new session")}</strong>
+                  <small>{t("The copilot starts a fresh conversation; this one stays in the task history.")}</small>
                 </span>
               </button>
             ) : null}
@@ -118,8 +129,8 @@ export function CommandBar({ pane, runtimeOptions, counts, stats = null, runStat
               onClick={() => { setMenuOpen(false); onSetDefault(); }}>
               <BookmarkPlus aria-hidden="true" />
               <span className="jc-menu-item-copy">
-                <strong>Set as default for new Job Copilot panes</strong>
-                <small>New panes open with this agent and account without asking.</small>
+                <strong>{t("Set as default for new Job Copilot panes")}</strong>
+                <small>{t("New panes open with this agent and account without asking.")}</small>
               </span>
             </button>
           </div>
@@ -128,44 +139,47 @@ export function CommandBar({ pane, runtimeOptions, counts, stats = null, runStat
 
       <div className={`jc-run-pill state-${runState.toLowerCase()}`} role="status" aria-live="polite">
         <ProgressRing progress={progress} state={runState} />
-        <span className="jc-run-label">{RUN_LABEL[runState]}{progress ? ` ${progress.done}/${progress.total}` : ""}</span>
-        <span className="jc-run-queue" title="Queued postings">{counts.queued} queued</span>
-        {counts.deferred ? <span className="jc-run-queue" title={`Waiting for an employer limit; the next one is free on ${counts.nextFreeAt?.slice(0, 10)}`}>{counts.deferred} deferred</span> : null}
-        {needsYou ? <span className="jc-run-needs" title="Questions or reviews waiting for you">{needsYou} need{needsYou === 1 ? "s" : ""} you</span> : null}
+        <span className="jc-run-label">{t(RUN_LABEL[runState])}{progress ? ` ${progress.done}/${progress.total}` : ""}</span>
+        <span className="jc-run-queue" title={t("Queued postings")}>{t("{count} queued", { count: counts.queued })}</span>
+        {counts.deferred ? <span className="jc-run-queue" title={t("Waiting for an employer limit; the next one is free on {date}", { date: counts.nextFreeAt?.slice(0, 10) ?? "" })}>{t("{count} deferred", { count: counts.deferred })}</span> : null}
+        {needsYou ? <span className="jc-run-needs" title={t("Questions or reviews waiting for you")}>{needsYou === 1 ? t("1 needs you") : t("{count} need you", { count: needsYou })}</span> : null}
       </div>
       </div>
       <div className="jc-bar-row secondary">
-      <div className="jc-run-controls" role="group" aria-label="Run controls">
+      <div className="jc-run-controls" role="group" aria-label={t("Run controls")}>
         {runState === "RUNNING" ? (
-          <button type="button" className="jc-button" disabled={runBusy} onClick={() => onRun("pause")} title="Pause after the current application"><Pause aria-hidden="true" /> Pause</button>
+          <button type="button" className="jc-button" disabled={runBusy} onClick={() => onRun("pause")} title={t("Pause after the current application")}><Pause aria-hidden="true" /> {t("Pause")}</button>
         ) : (
           <button type="button" className="jc-button primary" disabled={runBusy} onClick={() => onRun("start")}
-            title={runState === "PAUSED" ? "Resume the run" : counts.queued > 0 ? "Start working through the queue"
-              : `Find new postings, queue them and apply${counts.deferred ? ` (every queued posting waits for an employer limit; the next one is free on ${counts.nextFreeAt?.slice(0, 10)})` : ""}`}>
-            <Play aria-hidden="true" /> {runState === "PAUSED" ? "Resume" : "Start"}
+            title={runState === "PAUSED" ? t("Resume the run") : counts.queued > 0 ? t("Start working through the queue")
+              : counts.deferred ? t("Find new postings, queue them and apply (every queued posting waits for an employer limit; the next one is free on {date})", { date: counts.nextFreeAt?.slice(0, 10) ?? "" })
+                : t("Find new postings, queue them and apply")}>
+            <Play aria-hidden="true" /> {runState === "PAUSED" ? t("Resume") : t("Start")}
           </button>
         )}
         {runState === "RUNNING" || runState === "PAUSED" ? (
-          <button type="button" className="jc-button ghost danger" disabled={runBusy} onClick={() => onRun("stop")} title="Stop the run; the current application keeps its state"><Square aria-hidden="true" /> Stop</button>
+          <button type="button" className="jc-button ghost danger" disabled={runBusy} onClick={() => onRun("stop")} title={t("Stop the run; the current application keeps its state")}><Square aria-hidden="true" /> {t("Stop")}</button>
         ) : null}
       </div>
 
-      <div className="jc-counters" aria-label={scope === "today" ? "Today" : `Since ${scope.slice(6)}`}
-        title={stats ? `Today: ${stats.today.applied} applied, ${stats.today.verified} verified${stats.today.failed ? `, ${stats.today.failed} failed` : ""}` : undefined}>
-        <span className="jc-counter" title={`Submitted ${scope}`}><strong>{shown.applied}</strong> applied</span>
-        <span className="jc-counter ok" title={`Verified with evidence ${scope}`}><strong>{shown.verified}</strong> verified</span>
-        {shown.failed ? <span className="jc-counter bad" title={`Failed ${scope}`}><strong>{shown.failed}</strong> failed</span> : null}
-        {shown.needsUser ? <span className="jc-counter warn" title="Waiting for you"><strong>{shown.needsUser}</strong> need you</span> : null}
+      <div className="jc-counters" aria-label={since ? t("Since {day}", { day: since }) : t("Today")}
+        title={stats ? (stats.today.failed
+          ? t("Today: {applied} applied, {verified} verified, {failed} failed", { applied: stats.today.applied, verified: stats.today.verified, failed: stats.today.failed })
+          : t("Today: {applied} applied, {verified} verified", { applied: stats.today.applied, verified: stats.today.verified })) : undefined}>
+        <span className="jc-counter" title={since ? t("Submitted since {day}", { day: since }) : t("Submitted today")}><Counted t={t} text="{count} applied" count={shown.applied} /></span>
+        <span className="jc-counter ok" title={since ? t("Verified with evidence since {day}", { day: since }) : t("Verified with evidence today")}><Counted t={t} text="{count} verified" count={shown.verified} /></span>
+        {shown.failed ? <span className="jc-counter bad" title={since ? t("Failed since {day}", { day: since }) : t("Failed today")}><Counted t={t} text="{count} failed" count={shown.failed} /></span> : null}
+        {shown.needsUser ? <span className="jc-counter warn" title={t("Waiting for you")}><Counted t={t} text="{count} need you" count={shown.needsUser} /></span> : null}
       </div>
 
       <div className="jc-bar-toggles">
         {layout === "stacked" ? (
-          <SpaceToggle compact className="jc-toggle" label={<Pause aria-hidden="true" />} ariaLabel="Paused" title="Paused: the copilot opens no new posting" checked={paused} onChange={onTogglePaused} />
+          <SpaceToggle compact className="jc-toggle" label={<Pause aria-hidden="true" />} ariaLabel={t("Paused")} title={t("Paused: the copilot opens no new posting")} checked={paused} onChange={onTogglePaused} />
         ) : (
-          <SpaceToggle compact className="jc-toggle" label="Paused" checked={paused} onChange={onTogglePaused} />
+          <SpaceToggle compact className="jc-toggle" label={t("Paused")} checked={paused} onChange={onTogglePaused} />
         )}
         {layout === "split" ? (
-          <button type="button" className={`jc-icon-button${railOpen ? " selected" : ""}`} aria-pressed={railOpen} aria-label={railOpen ? "Collapse the copilot rail" : "Expand the copilot rail"} title={railOpen ? "Collapse rail" : "Expand rail"} onClick={onToggleRail}>
+          <button type="button" className={`jc-icon-button${railOpen ? " selected" : ""}`} aria-pressed={railOpen} aria-label={railOpen ? t("Collapse the copilot rail") : t("Expand the copilot rail")} title={railOpen ? t("Collapse rail") : t("Expand rail")} onClick={onToggleRail}>
             <PanelRight aria-hidden="true" />
           </button>
         ) : null}

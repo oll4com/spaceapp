@@ -121,7 +121,8 @@ export interface JobApplyMemoryQuery {
   /** Exact normalized keys (answer bank hits for a form's labels). */
   keys?: string[];
   pinnedOnly?: boolean;
-  limit: number;
+  /** No limit: every match, best first. */
+  limit?: number;
 }
 
 export interface JobApplicationFieldRecord {
@@ -179,7 +180,8 @@ export interface JobApplyEventFilter {
   paneId?: string;
   types?: string[];
   since?: string;
-  limit: number;
+  /** No limit: every matching event. */
+  limit?: number;
 }
 
 export interface JobApplyRunRecord {
@@ -220,7 +222,7 @@ export interface JobApplyRepository {
   /** Owners whose Job Copilot works with a Google account (mail triage runs for them). */
   listGoogleProfileOwners(): Promise<string[]>;
   upsertProfile(owner: string, patch: JobApplyProfilePatch): Promise<JobApplyProfileRecord>;
-  listApplications(owner: string, filter: { status?: string; limit: number }): Promise<JobApplicationRecord[]>;
+  listApplications(owner: string, filter: { status?: string; /** No limit: every application. */ limit?: number }): Promise<JobApplicationRecord[]>;
   getApplication(owner: string, id: string): Promise<JobApplicationRecord | null>;
   getApplicationByUrl(owner: string, url: string): Promise<JobApplicationRecord | null>;
   createApplication(input: JobApplicationCreateRecord): Promise<JobApplicationRecord>;
@@ -366,10 +368,10 @@ export class PostgresJobApplyRepository implements JobApplyRepository {
       has("mailboxPasswordEncrypted"), has("mailboxVerifiedAt"), patch.googleEmail ?? null, has("googleEmail")])).rows[0]!;
     return profileRecord(row);
   }
-  async listApplications(owner: string, filter: { status?: string; limit: number }) {
+  async listApplications(owner: string, filter: { status?: string; /** No limit: every application. */ limit?: number }) {
     const rows = filter.status
-      ? (await this.pool.query<Record<string, unknown>>(`SELECT ${applicationColumns} FROM job_applications WHERE owner_user_id=$1 AND status=$2 ORDER BY updated_at DESC LIMIT $3`, [owner, filter.status, filter.limit])).rows
-      : (await this.pool.query<Record<string, unknown>>(`SELECT ${applicationColumns} FROM job_applications WHERE owner_user_id=$1 ORDER BY updated_at DESC LIMIT $2`, [owner, filter.limit])).rows;
+      ? (await this.pool.query<Record<string, unknown>>(`SELECT ${applicationColumns} FROM job_applications WHERE owner_user_id=$1 AND status=$2 ORDER BY updated_at DESC LIMIT $3`, [owner, filter.status, filter.limit ?? null])).rows
+      : (await this.pool.query<Record<string, unknown>>(`SELECT ${applicationColumns} FROM job_applications WHERE owner_user_id=$1 ORDER BY updated_at DESC LIMIT $2`, [owner, filter.limit ?? null])).rows;
     return rows.map(applicationRecord);
   }
   async getApplication(owner: string, id: string) {
@@ -469,7 +471,7 @@ export class PostgresJobApplyRepository implements JobApplyRepository {
         AND (NOT $7::boolean OR pinned)
         AND (($2::text IS NULL AND $3::text[] IS NULL) OR ($2::text IS NOT NULL AND search @@ websearch_to_tsquery('simple', $2)) OR ($3::text[] IS NOT NULL AND key = ANY($3::text[])))
       ORDER BY key_hit DESC, pinned DESC, rank DESC, (site IS NOT NULL) DESC, (company IS NOT NULL) DESC, uses DESC, updated_at DESC
-      LIMIT $8`, [owner, text, keys, kinds, query.site ?? null, query.company ?? null, query.pinnedOnly === true, query.limit])).rows;
+      LIMIT $8`, [owner, text, keys, kinds, query.site ?? null, query.company ?? null, query.pinnedOnly === true, query.limit ?? null])).rows;
     // rank and key_hit only order the rows; a memory carrying them fails the strict memory schema.
     return rows.map(({ rank: _rank, key_hit: _keyHit, ...row }) => memoryRecord(row));
   }
@@ -569,7 +571,7 @@ export class PostgresJobApplyRepository implements JobApplyRepository {
     const rows = (await this.pool.query<Record<string, unknown>>(`SELECT ${eventColumns} FROM job_apply_events
       WHERE owner_user_id=$1 AND ($2::text IS NULL OR application_id=$2) AND ($3::text IS NULL OR run_id=$3) AND ($4::text IS NULL OR pane_id=$4)
         AND ($5::timestamptz IS NULL OR date_trunc('milliseconds', created_at) > $5) AND ($7::text[] IS NULL OR type = ANY($7))
-      ORDER BY created_at DESC, id DESC LIMIT $6`, [owner, filter.applicationId ?? null, filter.runId ?? null, filter.paneId ?? null, filter.since ?? null, filter.limit, filter.types?.length ? filter.types : null])).rows;
+      ORDER BY created_at DESC, id DESC LIMIT $6`, [owner, filter.applicationId ?? null, filter.runId ?? null, filter.paneId ?? null, filter.since ?? null, filter.limit ?? null, filter.types?.length ? filter.types : null])).rows;
     return rows.map(eventRecord);
   }
 

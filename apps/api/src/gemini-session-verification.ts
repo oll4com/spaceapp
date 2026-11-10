@@ -7,6 +7,7 @@ import {
   writeGeminiPaneConversation
 } from "./gemini-native-session.js";
 import type { Pane, PaneCliSession } from "@space/contracts";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export interface GeminiVerificationEvidence {
   processFound: boolean;
@@ -283,8 +284,8 @@ export async function readPaneStateRecord(cleanPaneId: string): Promise<{
   pid?: number;
 } | null> {
   for (const filename of [
-    `/opt/spaceapp/var/gemini-pane-conversations/pane-${cleanPaneId}.json`,
-    `/opt/spaceapp/var/gemini-pane-conversations/pane-pane:${cleanPaneId}.json`
+    `${SPACE_INSTALL_ROOT}/var/gemini-pane-conversations/pane-${cleanPaneId}.json`,
+    `${SPACE_INSTALL_ROOT}/var/gemini-pane-conversations/pane-pane:${cleanPaneId}.json`
   ]) {
     try {
       const raw = await readFile(filename, "utf8");
@@ -399,8 +400,8 @@ export async function verifyGeminiPaneSession(options: {
   if (procInfo && !procInfo.accountProfile && session?.accountProfileId) {
     procInfo.accountProfile = session.accountProfileId;
     procInfo.home = session.accountProfileId === "main"
-      ? "/var/lib/spaceapp-user/.codex/space-gemini/home"
-      : `/var/lib/spaceapp-user/.codex/space-gemini/profiles/${session.accountProfileId}/home`;
+      ? `${SPACE_AGENT_HOME}/.codex/space-gemini/home`
+      : `${SPACE_AGENT_HOME}/.codex/space-gemini/profiles/${session.accountProfileId}/home`;
   }
 
   if (procInfo && !procInfo.logFile && procInfo.home) {
@@ -482,7 +483,7 @@ export async function verifyGeminiPaneSession(options: {
   }
 
   let effectiveModelId: string | null = null;
-  let liveModelLabel: string | null = logModelLabel;
+  const liveModelLabel: string | null = logModelLabel;
   let modelVerificationStatus: "VERIFIED" | "UNVERIFIED" | "UNKNOWN" = "UNKNOWN";
   let modelSource: GeminiVerificationEvidence["modelSource"] = "unknown";
 

@@ -7,6 +7,7 @@ import {
   AgentFileLinkLayer,
   AgentFileLinkStore,
   AgentFileMentions,
+  FileMentionText,
   findAgentFileNames,
   indexAgentFiles,
   lineAgentFiles
@@ -153,5 +154,35 @@ describe("Agent Files links in CLI output", () => {
     fireEvent.keyDown(screen.getByRole("button", { name: "Close Agent File preview" }), { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(outerKeys).not.toHaveBeenCalled();
+  });
+
+  it("opens Agent File ids and workspace paths from chat and plain text, filing a path on the click (nous_msg:8e7e6c25)", async () => {
+    const axis = agentFile("artifact:eunVA-x5EHIv", "20261104-axis-global-logic-test.md");
+    const wim = agentFile("artifact:JZccRnN6BZ5K", "20261104-wim-mcarthur.md");
+    vi.spyOn(liveRuntime.api, "artifacts").mockResolvedValue({ data: [emails, axis], pagination: { page: 1, pageSize: 100, totalItems: 2, totalPages: 1 } });
+    const filed = vi.spyOn(liveRuntime.api, "workspaceAgentFile").mockResolvedValue({ artifact: wim });
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, text: async () => "# Prep" })));
+    const notes = "Προετοιμασία: nous/job/interview-prep/20261104-wim-mcarthur.md, earlier artifact:eunVA-x5EHIv.";
+    render(<AgentFileMentions><p data-testid="notes"><FileMentionText text={notes} /></p><ChatMarkdown content={`Prep in \`nous/job/interview-prep/20261104-wim-mcarthur.md\``} /></AgentFileMentions>);
+
+    const path = screen.getAllByRole("link", { name: "nous/job/interview-prep/20261104-wim-mcarthur.md" });
+    expect(path).toHaveLength(2);
+    expect(path[0]!.getAttribute("href")).toBe("/api/nous/files/agent-file?path=nous%2Fjob%2Finterview-prep%2F20261104-wim-mcarthur.md");
+    expect(screen.getByTestId("notes").textContent).toContain("Προετοιμασία: ");
+    fireEvent.click(path[1]!);
+    expect(await screen.findByRole("dialog", { name: "Preview 20261104-wim-mcarthur.md" })).toBeTruthy();
+    expect(filed).toHaveBeenCalledWith("nous/job/interview-prep/20261104-wim-mcarthur.md");
+    fireEvent.keyDown(screen.getByRole("button", { name: "Close Agent File preview" }), { key: "Escape" });
+
+    fireEvent.click(screen.getByRole("link", { name: "artifact:eunVA-x5EHIv" }));
+    expect(await screen.findByRole("dialog", { name: "Preview 20261104-axis-global-logic-test.md" })).toBeTruthy();
+    expect(filed).toHaveBeenCalledTimes(1);
+  });
+
+  it("names why a file could not be opened", async () => {
+    vi.spyOn(liveRuntime.api, "workspaceAgentFile").mockRejectedValue(new Error("No file or folder nous/x.md under the agent workspace."));
+    render(<AgentFileMentions><FileMentionText text="See nous/x.md" /></AgentFileMentions>);
+    fireEvent.click(screen.getByRole("link", { name: "nous/x.md" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("No file or folder nous/x.md");
   });
 });

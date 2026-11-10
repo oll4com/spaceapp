@@ -72,12 +72,9 @@ function safeSessionStorage(): Storage | null {
   }
 }
 
-function readLifecycleDebugEventsInternal(): LifecycleDebugEvent[] {
-  const storage = safeSessionStorage();
-  if (!storage) return [];
+function parseLifecycleDebugEvents(raw: string | null): LifecycleDebugEvent[] {
+  if (!raw) return [];
   try {
-    const raw = storage.getItem(LIFECYCLE_DEBUG_STORAGE_KEY);
-    if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((value): value is LifecycleDebugEvent => {
@@ -90,11 +87,35 @@ function readLifecycleDebugEventsInternal(): LifecycleDebugEvent[] {
   }
 }
 
-function writeLifecycleDebugEventsInternal(events: LifecycleDebugEvent[]) {
+// PERF-001 C-3 (Nous-approved Warm change, 2026-10-28): the events live in memory and reach sessionStorage once per task.
+// A room switch records 32 pane visibility changes, and each one used to re-read, re-parse and rewrite the whole list.
+let cachedEvents: { storage: Storage; raw: string | null; events: LifecycleDebugEvent[] } | null = null;
+let flushQueued = false;
+
+function readLifecycleDebugEventsInternal(): LifecycleDebugEvent[] {
   const storage = safeSessionStorage();
-  if (!storage) return;
+  if (!storage) return [];
+  // Records not written yet are newer than storage; otherwise storage wins (another writer, a cleared tab).
+  if (flushQueued && cachedEvents?.storage === storage) return cachedEvents.events;
+  let raw: string | null;
   try {
-    storage.setItem(LIFECYCLE_DEBUG_STORAGE_KEY, JSON.stringify(events.slice(-LIFECYCLE_DEBUG_MAX_EVENTS)));
+    raw = storage.getItem(LIFECYCLE_DEBUG_STORAGE_KEY);
+  } catch {
+    return [];
+  }
+  if (cachedEvents?.storage !== storage || cachedEvents.raw !== raw) {
+    cachedEvents = { storage, raw, events: parseLifecycleDebugEvents(raw) };
+  }
+  return cachedEvents.events;
+}
+
+function flushLifecycleDebugEvents() {
+  flushQueued = false;
+  if (!cachedEvents) return;
+  try {
+    const raw = JSON.stringify(cachedEvents.events);
+    cachedEvents.storage.setItem(LIFECYCLE_DEBUG_STORAGE_KEY, raw);
+    cachedEvents.raw = raw;
   } catch {
     // Best effort only.
   }
@@ -211,14 +232,21 @@ export function recordLifecycleDebugEvent(input: RecordLifecycleDebugEventInput)
     shellMode: input.shellMode ?? null,
     ...(input.roomSwitch ? { roomSwitch: input.roomSwitch } : {})
   };
-  const events = [...readLifecycleDebugEventsInternal(), nextEvent];
-  writeLifecycleDebugEventsInternal(events);
+  readLifecycleDebugEventsInternal();
+  if (cachedEvents && cachedEvents.storage === safeSessionStorage()) {
+    cachedEvents.events = [...cachedEvents.events, nextEvent].slice(-LIFECYCLE_DEBUG_MAX_EVENTS);
+    if (!flushQueued) {
+      flushQueued = true;
+      queueMicrotask(flushLifecycleDebugEvents);
+    }
+  }
   if (input.notify !== false) window.dispatchEvent(new CustomEvent(LIFECYCLE_DEBUG_UPDATED_EVENT));
 }
 
 export function clearLifecycleDebugEvents() {
   const storage = safeSessionStorage();
   if (!storage || typeof window === "undefined") return;
+  cachedEvents = null;
   try {
     storage.removeItem(LIFECYCLE_DEBUG_STORAGE_KEY);
   } catch {
@@ -228,7 +256,7 @@ export function clearLifecycleDebugEvents() {
 }
 
 export function readLifecycleDebugSnapshot(): LifecycleDebugSnapshot {
-  const events = readLifecycleDebugEventsInternal();
+  const events = [...readLifecycleDebugEventsInternal()];
   return {
     events,
     pageLoadCount: countEvents(events, "app_boot"),

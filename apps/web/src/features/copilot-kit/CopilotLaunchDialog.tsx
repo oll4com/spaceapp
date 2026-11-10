@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRuntimeRegistry, CopilotLaunchSettings } from "@space/contracts";
 import { api } from "../../api.js";
 import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { Bot, Check, Terminal, X } from "../ui-theme/app-icons.js";
 import { defaultAccountProfileId, useCopilotAccounts } from "./AgentAccountField.js";
 import type { CopilotKind } from "./copilot-kind.js";
@@ -25,6 +26,10 @@ export function CopilotLaunchDialog({ kind, preselect = null, notice = null, onC
   onClose(): void;
   onCreate(choice: CopilotLaunchChoice): Promise<void>;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
+  const languageRef = useRef(language);
+  languageRef.current = language; // read at error time, so a language change never refetches
   const [registry, setRegistry] = useState<AgentRuntimeRegistry | null>(() => api.cliRuntimesSnapshot());
   const [runtimeId, setRuntimeId] = useState<string | null>(null);
   const [remember, setRemember] = useState(() => !preselect?.askOnLaunch);
@@ -41,7 +46,7 @@ export function CopilotLaunchDialog({ kind, preselect = null, notice = null, onC
   useEffect(() => {
     let cancelled = false;
     api.cliRuntimes().then((next) => { if (!cancelled) setRegistry(next); }).catch((caught: unknown) => {
-      if (!cancelled && !registry) setError(caught instanceof Error ? caught.message : "CLI runtimes could not be loaded.");
+      if (!cancelled && !registry) setError(caught instanceof Error ? caught.message : uiText(languageRef.current, "CLI runtimes could not be loaded."));
     });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -64,25 +69,25 @@ export function CopilotLaunchDialog({ kind, preselect = null, notice = null, onC
       await saveCopilotLaunch(kind, { runtimeId: id, accountProfileId, askOnLaunch: !remember }).catch(() => undefined);
       await onCreate({ terminalRuntimeId: id, accountProfileId });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : `The ${kind.label} pane could not be created.`);
+      setError(caught instanceof Error ? caught.message : t("The {kind} pane could not be created.", { kind: kind.label }));
       setPending(false);
     }
   }
 
   return (
     <div className="attachment-modal jc-launch-modal" onClick={onClose}>
-      <section className="attachment-modal-body jc-launch" role="dialog" aria-modal="true" aria-label={`New ${kind.label}`} onClick={(event) => event.stopPropagation()}>
-        <button type="button" className="terminal-upload-modal-close jc-launch-close" aria-label="Close" onClick={onClose}><X aria-hidden="true" /></button>
+      <section className="attachment-modal-body jc-launch" role="dialog" aria-modal="true" aria-label={t("New {kind}", { kind: kind.label })} onClick={(event) => event.stopPropagation()}>
+        <button type="button" className="terminal-upload-modal-close jc-launch-close" aria-label={t("Close")} onClick={onClose}><X aria-hidden="true" /></button>
         <header className="jc-launch-head">
           <span className="jc-launch-eyebrow"><Bot aria-hidden="true" /> {kind.label}</span>
-          <strong>{kind.launchHeading}</strong>
-          <small>{kind.launchDescription}</small>
+          <strong>{t(kind.launchHeading)}</strong>
+          <small>{t(kind.launchDescription)}</small>
         </header>
         {notice ? <p className="jc-launch-state warn" role="status">{notice}</p> : null}
         {options.length === 0 ? (
-          <p className="jc-launch-state" role="status">{error ?? "Loading CLI runtimes…"}</p>
+          <p className="jc-launch-state" role="status">{error ?? t("Loading CLI runtimes…")}</p>
         ) : (
-          <div className="jc-launch-options" role="radiogroup" aria-label="Copilot agent">
+          <div className="jc-launch-options" role="radiogroup" aria-label={t("Copilot agent")}>
             {options.map(({ runtime, ready, recommended }) => {
               const presentation = cliRuntimePresentation(runtime.id);
               const active = runtime.id === selectedId;
@@ -92,9 +97,9 @@ export function CopilotLaunchDialog({ kind, preselect = null, notice = null, onC
                   {presentation ? <img src={presentation.iconSrc} alt="" aria-hidden="true" /> : <Terminal aria-hidden="true" />}
                   <span className="jc-launch-option-copy">
                     <strong>{runtime.displayName}</strong>
-                    <small>{ready ? (recommended ? kind.recommendedReason : "Ready") : runtime.statusReason}</small>
+                    <small>{ready ? (recommended ? t(kind.recommendedReason) : t("Ready")) : runtime.statusReason}</small>
                   </span>
-                  {recommended && ready ? <span className="jc-tag accent">Recommended</span> : null}
+                  {recommended && ready ? <span className="jc-tag accent">{t("Recommended")}</span> : null}
                   {active ? <Check className="jc-launch-check" aria-hidden="true" /> : null}
                 </button>
               );
@@ -102,12 +107,12 @@ export function CopilotLaunchDialog({ kind, preselect = null, notice = null, onC
           </div>
         )}
         {error && options.length > 0 ? <p className="jc-launch-state error" role="alert">{error}</p> : null}
-        <SpaceToggle className="jc-launch-remember" label="Remember as my default" checked={remember} disabled={pending} onChange={setRemember}
-          detail={remember ? `New ${kind.label} panes open with this agent without asking. Change it in ${kind.settingsPlace}.` : `The next ${kind.label} pane asks again.`} />
+        <SpaceToggle className="jc-launch-remember" label={t("Remember as my default")} checked={remember} disabled={pending} onChange={setRemember}
+          detail={remember ? t("New {kind} panes open with this agent without asking. Change it in {place}.", { kind: kind.label, place: t(kind.settingsPlace) }) : t("The next {kind} pane asks again.", { kind: kind.label })} />
         <footer className="jc-launch-actions">
-          <button type="button" className="jc-button" onClick={onClose} disabled={pending}>Cancel</button>
+          <button type="button" className="jc-button" onClick={onClose} disabled={pending}>{t("Cancel")}</button>
           <button type="button" className="jc-button primary" onClick={() => void create()} disabled={!selected?.ready || !accounts || pending}>
-            {pending ? "Opening…" : `Open with ${selectedLabel}`}
+            {pending ? t("Opening…") : t("Open with {agent}", { agent: selectedLabel })}
           </button>
         </footer>
       </section>

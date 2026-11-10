@@ -15,6 +15,7 @@ import {
 import { roomThemes, type RoomTheme } from "../room-theme/RoomThemeMenu.js";
 import { MAX_WORKSPACE_TEXT_SIZE, MIN_WORKSPACE_TEXT_SIZE } from "../workspace-text-size-picker/WorkspaceTextSizePicker.js";
 import { saveUserSettingDebounced } from "./user-settings-manager.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // Server-synced workspace preferences. Each one keeps a browser-local copy
 // (read on first render) and, for a signed-in account, a write-through copy in
@@ -41,9 +42,9 @@ const PROJECT_PRESETS_STORAGE_KEY = "space:project_presets";
 export type ProjectPreset = { label: string; path: string };
 
 const DEFAULT_PROJECT_PRESETS: ProjectPreset[] = [
-  { label: "space", path: "/opt/spaceapp" },
-  { label: "space1", path: "/opt/spaceapp/projects/space1" },
-  { label: "space2", path: "/opt/spaceapp/projects/space2" }
+  { label: "space", path: SPACE_INSTALL_ROOT },
+  { label: "space1", path: `${SPACE_INSTALL_ROOT}/projects/space1` },
+  { label: "space2", path: `${SPACE_INSTALL_ROOT}/projects/space2` }
 ];
 
 function touchDeviceTextSize(): boolean {

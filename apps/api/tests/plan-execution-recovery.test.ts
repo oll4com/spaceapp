@@ -94,7 +94,7 @@ it('restart with active interrupt intent never invents closed evidence or resend
  const f=await fixture();await f.tick();await f.override('model-c');await f.restart();await f.tick();expect(f.interrupts).toEqual(['turn-1']);f.closeTurn();await f.tick();expect((await f.read())!.status).toBe('BLOCKED');expect(f.sends).toHaveLength(1);expect((await f.read())!.attempts[0]!.actualSelection).toBeNull();
 });
 it('model-rejected native failure keeps checkpoint and retries only the closed attempt',async()=>{
- const f=await fixture();await f.tick();f.closeTurn('failed');Object.assign(f.thread.turns[0]!,{retryableFailure:{retryAfterMs:45000}});await f.tick();let e=(await f.read())!;
+ const f=await fixture();await f.tick();f.closeTurn('failed');Object.assign(f.thread.turns[0]!,{retryableFailure:{retryAfterMs:45000}});await f.tick();const e=(await f.read())!;
  expect(e.status).toBe('WAITING_FOR_MODEL');expect(e.pendingCommand).toBeNull();expect(e.attempts[0]).toMatchObject({status:'FAILED',actualSelection:{turnId:'turn-1'}});expect(Date.parse(e.nextRetryAt!)-Date.now()).toBeGreaterThan(43000);
  await f.tick();expect(f.sends).toHaveLength(1);await f.store.planExecutions.update(e.ownerUserId,e.id,e.revision,{nextRetryAt:new Date(0).toISOString()});await f.tick();expect(f.sends).toHaveLength(2);
 });

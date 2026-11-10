@@ -8,7 +8,8 @@ import { createApp } from "../src/app.js";
 import { getApiConfig } from "../src/config.js";
 import { buildMime, parseParticipants, parsePayload } from "../src/mail-copilot/gmail-mime.js";
 import { sanitizeMailHtml } from "../src/mail-copilot/html-sanitizer.js";
-import type { MailCopilotGoogleAccess } from "../src/mail-copilot/service.js";
+import { createMailCopilotService, type MailCopilotGoogleAccess } from "../src/mail-copilot/service.js";
+import { InMemoryMailCopilotRepository } from "@space/db";
 
 vi.setConfig({ testTimeout: 30_000 });
 const temporaryRoots: string[] = [];
@@ -21,7 +22,7 @@ const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64url");
 interface FakeMessage { id: string; threadId: string; from: string; to?: string; subject: string; minutesAgo: number; labelIds: string[]; plain?: string; html?: string; attachment?: { id: string; filename: string; mimeType: string; data: string; cid?: string } }
 
 /** One Gmail account's API: threads, labels, modify, trash, send, drafts, attachments; records every write. */
-function fakeGmail(token: string, inbox: FakeMessage[]) {
+function fakeGmail(token: string, inbox: FakeMessage[], userLabels: Array<{ id: string; name: string }> = []) {
   const messages = new Map(inbox.map((message) => [message.id, { ...message, labelIds: [...message.labelIds] }]));
   const writes: Array<{ path: string; body: unknown }> = [];
   const headers = (message: FakeMessage) => [
@@ -47,7 +48,7 @@ function fakeGmail(token: string, inbox: FakeMessage[]) {
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : null;
     if (init?.method === "POST") writes.push({ path, body });
     if (path === "/profile") return Response.json({ emailAddress: "me@gmail.com", historyId: "100" });
-    if (path === "/labels") return Response.json({ labels: [{ id: "INBOX", name: "INBOX", type: "system" }, { id: "STARRED", name: "STARRED", type: "system" }, { id: "Label_7", name: "Clients", type: "user" }] });
+    if (path === "/labels") return Response.json({ labels: [{ id: "INBOX", name: "INBOX", type: "system" }, { id: "STARRED", name: "STARRED", type: "system" }, { id: "Label_7", name: "Clients", type: "user" }, ...userLabels.map((label) => ({ ...label, type: "user" }))] });
     if (path === "/labels/INBOX") return Response.json({ id: "INBOX", threadsUnread: [...messages.values()].filter((message) => message.labelIds.includes("INBOX") && message.labelIds.includes("UNREAD")).length });
     if (path === "/labels/Label_7") return Response.json({ id: "Label_7", threadsUnread: 0 });
     if (path === "/threads") {
@@ -230,6 +231,43 @@ describe("mail copilot mailbox", () => {
     await app.close();
   });
 
+  it("keeps one Job Applications label on a thread: a label or move to one takes the others off (operator 3/11, Kraken under Other and Rejections)", async () => {
+    const me = fakeGmail("token-me", [{ id: "m1", threadId: "t1", from: "Kraken <no-reply@kraken.com>", subject: "An update on your application", minutesAgo: 1, labelIds: ["INBOX", "Label_9"], plain: "We've decided not to move ahead." }],
+      [{ id: "Label_8", name: "Job Applications/Rejections" }, { id: "Label_9", name: "Job Applications/Other" }, { id: "Label_10", name: "Job Applications/Confirmations" }]);
+    const { app, pane, headers } = await fixture(googleAccess([{ email: "me@gmail.com", capabilities: full, token: "token-me" }]), me.fetchImpl);
+    const modify = (payload: Record<string, unknown>) => app.inject({ method: "POST", url: "/api/mail-copilot/threads/t1/modify", headers, payload: { paneId: pane.id, account: "me@gmail.com", ...payload } });
+    expect((await modify({ action: "move", labelIds: ["Label_8"] })).statusCode).toBe(200);
+    expect(me.writes.at(-1)).toEqual({ path: "/threads/t1/modify", body: { addLabelIds: ["Label_8"], removeLabelIds: ["INBOX", "Label_9", "Label_10"] } });
+    expect(me.messages.get("m1")!.labelIds).toEqual(["Label_8"]);
+    // Another label beside it stays; a second Job Applications label replaces the first.
+    expect((await modify({ action: "label", labelIds: ["Label_7", "Label_10"] })).statusCode).toBe(200);
+    expect(me.messages.get("m1")!.labelIds).toEqual(["Label_7", "Label_10"]);
+    await app.close();
+  });
+
+  it("answers a thread's labels after a move or a removal and records when each label went on and came off (operator 3/11)", async () => {
+    const me = fakeGmail("token-me", [{ id: "m1", threadId: "t1", from: "Kraken <no-reply@kraken.com>", subject: "Your application", minutesAgo: 1, labelIds: ["INBOX", "Label_9"], plain: "Thanks." }],
+      [{ id: "Label_1", name: "Clients" }, { id: "Label_8", name: "Job Applications/Rejections" }, { id: "Label_9", name: "Job Applications/Other" }, { id: "Label_10", name: "Job Applications/Confirmations" }]);
+    const { app, pane, headers } = await fixture(googleAccess([{ email: "me@gmail.com", capabilities: full, token: "token-me" }]), me.fetchImpl);
+    const modify = (payload: Record<string, unknown>) => app.inject({ method: "POST", url: "/api/mail-copilot/threads/t1/modify", headers, payload: { paneId: pane.id, account: "me@gmail.com", ...payload } });
+    const moved = await modify({ action: "move", labelIds: ["Label_8"] });
+    expect(moved.json()).toEqual({ ok: true, labels: [{ id: "Label_8", name: "Job Applications/Rejections" }] });
+    expect((await modify({ action: "label", labelIds: ["Label_1"] })).json().labels.map((label: { name: string }) => label.name)).toEqual(["Clients", "Job Applications/Rejections"]);
+    // Taken off right after it went on: still recorded, never taken back out of the log as an undo.
+    expect((await modify({ action: "unlabel", labelIds: ["Label_1"] })).json()).toEqual({ ok: true, labels: [{ id: "Label_8", name: "Job Applications/Rejections" }] });
+    const answer = (await app.inject({ method: "GET", url: `/api/mail-copilot/threads/t1/labels?paneId=${encodeURIComponent(pane.id)}&account=me@gmail.com`, headers })).json() as { labels: unknown[]; history: Array<{ action: string; labelNames: string[]; actor: string; source: string }> };
+    expect(answer.labels).toEqual([{ id: "Label_8", name: "Job Applications/Rejections" }]);
+    // The one-label rule took Other off with the move (the thread had it), not Confirmations (it never had it).
+    expect(answer.history.map((row) => [row.action, row.labelNames.join(","), row.actor, row.source]).sort()).toEqual([
+      ["LABEL", "Clients", "OPERATOR", "PANE"], ["MOVE", "Job Applications/Rejections", "OPERATOR", "PANE"],
+      ["UNLABEL", "Clients", "OPERATOR", "PANE"], ["UNLABEL", "Job Applications/Other", "OPERATOR", "PANE"]
+    ]);
+    // The list rows carry the same labels by name.
+    const rows = (await app.inject({ method: "GET", url: `/api/mail-copilot/threads?paneId=${encodeURIComponent(pane.id)}&account=me@gmail.com&labelId=Label_8`, headers })).json();
+    expect(JSON.stringify(rows)).toContain('"labels":[{"id":"Label_8","name":"Job Applications/Rejections"}]');
+    await app.close();
+  });
+
   it("sends replies with threading headers, forwards and new mail from the account, and saves drafts", async () => {
     const me = fakeGmail("token-me", [{ id: "m1", threadId: "t1", from: "Anna <anna@acme.com>", subject: "Invoice", minutesAgo: 30, labelIds: ["INBOX"], plain: "Please find the invoice." },
       { id: "m2", threadId: "t2", from: "Piotr <piotr@acme.com>", to: "pending@team.com, LAB@team.com", subject: "PRs", minutesAgo: 20, labelIds: ["INBOX"], plain: "Status?" }]);
@@ -282,5 +320,134 @@ describe("mail copilot mailbox", () => {
     const sanitized = sanitizeMailHtml('<p onclick="x()">Hi</p><a href="javascript:alert(1)">bad</a><img src="cid:abc">', { loadImages: true, cidUrl: () => null });
     expect(sanitized.html).toBe("<p>Hi</p><a target=\"_blank\" rel=\"noopener noreferrer nofollow\">bad</a><img alt=\"\" />");
     expect(sanitized.blockedImages).toBe(false);
+  });
+});
+
+describe("mail copilot attachments", () => {
+  it("R25-2: an attachment id from an earlier read is found by its file name when Gmail issued a new one, read by this fetch's id", async () => {
+    // Like Gmail, every full fetch names the attachment with a new id; any id issued so far reads its bytes.
+    const issued: string[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname.replace("/gmail/v1/users/me", "");
+      if (path === "/messages/m1") {
+        issued.push(`att-${issued.length + 1}`);
+        return Response.json({ id: "m1", threadId: "t1", labelIds: ["INBOX"], internalDate: "0", payload: { mimeType: "multipart/mixed", headers: [], parts: [
+          { mimeType: "application/pdf", filename: "statement.pdf", body: { attachmentId: issued.at(-1), size: 8 } },
+          { mimeType: "application/pdf", filename: "terms.pdf", body: { attachmentId: `terms-${issued.length}`, size: 5 } }] } });
+      }
+      const bytes = /^\/messages\/m1\/attachments\/(.+)$/.exec(path);
+      if (bytes && issued.includes(bytes[1]!)) return Response.json({ data: Buffer.from("%PDF-1.4").toString("base64url") });
+      return Response.json({ error: { message: "Requested entity was not found." } }, { status: 404 });
+    }) as unknown as typeof fetch;
+    const service = createMailCopilotService({ google: () => googleAccess([{ email: "me@gmail.com", capabilities: full, token: "token-me" }]), gmailFetch: fetchImpl,
+      repository: new InMemoryMailCopilotRepository() });
+    const file = await service.attachment("user:owner", null, "me@gmail.com", "m1", "att-stale", "statement.pdf");
+    expect(file).toMatchObject({ filename: "statement.pdf", mimeType: "application/pdf" });
+    expect(file.data.toString()).toBe("%PDF-1.4");
+    // Without a name, or a name that is not there, a stale id stays not found.
+    await expect(service.attachment("user:owner", null, "me@gmail.com", "m1", "att-stale")).rejects.toThrow("Attachment was not found.");
+    await expect(service.attachment("user:owner", null, "me@gmail.com", "m1", "att-stale", "other.pdf")).rejects.toThrow("Attachment was not found.");
+  });
+
+  it("threadSend (Nous Score, no Gmail read): our logged reply since the ask is SENT, a mailer-daemon mail after it BOUNCED, an older reply nothing", async () => {
+    let clock = "2026-11-05T10:00:00.000Z";
+    const repository = new InMemoryMailCopilotRepository(() => clock);
+    const gmailFetch = vi.fn();
+    const service = createMailCopilotService({ google: () => googleAccess([]), gmailFetch: gmailFetch as unknown as typeof fetch, repository });
+    const owner = "user:owner";
+    const reply = (threadId: string) => repository.recordAction({ ownerUserId: owner, accountEmail: "me@gmail.com", threadId, messageId: `m-${threadId}`, action: "REPLY", labelIds: [],
+      fromAddress: "them@x.com", fromDomain: "x.com", subject: "Re: offer", subjectKey: "offer", actor: "AGENT", source: "PANE", ruleId: null });
+    await reply("t1");
+    await reply("t2");
+    clock = "2026-11-05T10:05:00.000Z";
+    await repository.createEvent({ ownerUserId: owner, paneId: null, runId: null, accountEmail: "me@gmail.com", threadId: "t2", messageId: "bounce", type: "MAIL_RECEIVED", status: null,
+      message: "New mail: Delivery Status Notification (Failure)", payload: { from: { name: "Mail Delivery Subsystem", address: "MAILER-DAEMON@googlemail.com" } } });
+    const ask = "2026-11-05T09:00:00.000Z";
+    expect(await service.threadSend(owner, "Me@Gmail.com", "t1", ask)).toBe("SENT");
+    expect(await service.threadSend(owner, "me@gmail.com", "t2", ask)).toBe("BOUNCED");
+    expect(await service.threadSend(owner, "me@gmail.com", "t1", "2026-11-05T11:00:00.000Z")).toBeNull();
+    expect(await service.threadSend(owner, "me@gmail.com", "t3", ask)).toBeNull();
+    expect(gmailFetch).not.toHaveBeenCalled();
+  });
+
+  it("sentTo (goal 84ba917a): our send to the recipients in ANY thread since the approval, SENT unless a bounce came after it", async () => {
+    let clock = "2026-11-05T10:00:00.000Z";
+    const repository = new InMemoryMailCopilotRepository(() => clock);
+    const service = createMailCopilotService({ google: () => googleAccess([]), gmailFetch: vi.fn() as unknown as typeof fetch, repository });
+    const owner = "user:owner";
+    const event = (threadId: string, type: string, payload: Record<string, unknown>) => repository.createEvent({ ownerUserId: owner, paneId: null, runId: null,
+      accountEmail: "me@gmail.com", threadId, messageId: `m-${threadId}-${type}`, type: type as never, status: null, message: type, payload });
+    await event("t-new", "SENT", { to: ["B2B@Vodafone.gr"], cc: [] });
+    await repository.recordAction({ ownerUserId: owner, accountEmail: "me@gmail.com", threadId: "t-gmail", messageId: "m-gmail", action: "REPLY", labelIds: [],
+      fromAddress: "them@x.com", fromDomain: "x.com", subject: "Re: offer", subjectKey: "offer", actor: "AGENT", source: "PANE", ruleId: null });
+    clock = "2026-11-05T10:05:00.000Z";
+    await event("t-gmail", "MAIL_RECEIVED", { from: { address: "postmaster@x.com" } });
+    const approved = "2026-11-05T09:00:00.000Z";
+    expect(await service.sentTo(owner, null, ["b2b@vodafone.gr"], approved)).toMatchObject({ state: "SENT", threadId: "t-new" });
+    expect(await service.sentTo(owner, "me@gmail.com", ["them@x.com"], approved)).toMatchObject({ state: "BOUNCED", threadId: "t-gmail" });
+    expect(await service.sentTo(owner, null, ["b2b@vodafone.gr"], "2026-11-05T11:00:00.000Z")).toBeNull();
+    expect(await service.sentTo(owner, "other@gmail.com", ["b2b@vodafone.gr"], approved)).toBeNull();
+  });
+
+  it("sentTo, the 6/11 audit's cases: the recipient's domain counts, a shared provider's does not, a bounce counts only for an address we sent to", async () => {
+    let clock = "2026-11-03T13:00:00.000Z";
+    const repository = new InMemoryMailCopilotRepository(() => clock);
+    const service = createMailCopilotService({ google: () => googleAccess([]), gmailFetch: vi.fn() as unknown as typeof fetch, repository });
+    const owner = "user:owner";
+    const event = (threadId: string, type: string, payload: Record<string, unknown>) => repository.createEvent({ ownerUserId: owner, paneId: null, runId: null,
+      accountEmail: "info@example.invalid", threadId, messageId: `m-${threadId}-${type}`, type: type as never, status: null, message: type, payload });
+    // Decisions 087b9f06/171a186a: thread 1a17b65672b48124 to six Hetzner addresses; only tco@ (an internal forward, not in To) bounced.
+    await event("1a17b65672b48124", "SENT", { to: ["legal@hetzner.com", "info@hetzner.com"], cc: ["billing@hetzner.com"] });
+    // Decision 2b23e984: the resend went in a NEW thread, not the auto-reply thread the decision named.
+    await event("1a19b3efd04092b7", "SENT", { to: ["myhome@vodafone.gr"] });
+    await event("t-gmail", "SENT", { to: ["someone@gmail.com"] });
+    clock = "2026-11-03T13:01:00.000Z";
+    await event("1a17b65672b48124", "MAIL_RECEIVED", { from: { address: "mailer-daemon@googlemail.com" },
+      snippet: "Address not found Your message wasn't delivered to tco@hetzner.com because the address couldn't be found." });
+    const asked = "2026-11-02T00:00:00.000Z";
+    expect(await service.sentTo(owner, null, ["complaint@hetzner.com"], asked)).toMatchObject({ state: "SENT", threadId: "1a17b65672b48124" });
+    expect(await service.sentTo(owner, null, ["myhome@vodafone.gr"], asked)).toMatchObject({ state: "SENT", threadId: "1a19b3efd04092b7" });
+    expect(await service.sentTo(owner, null, ["other@gmail.com"], asked)).toBeNull();
+    expect(await service.sentTo(owner, null, ["tco@hetzner.com"], asked)).toMatchObject({ state: "BOUNCED" });
+  });
+
+  it("sentTo (Score 6/11, Runware/FUTO/OVH): the Bcc copy of an SMTP send from the owner's alias or domain is our send; a stranger's mail to them is not", async () => {
+    const clock = "2026-11-04T07:00:10.000Z";
+    const repository = new InMemoryMailCopilotRepository(() => clock);
+    const gmail = fakeGmail("token-me", []);
+    const service = createMailCopilotService({ google: () => googleAccess([{ email: "me@gmail.com", capabilities: full, token: "token-me" }]), gmailFetch: gmail.fetchImpl, repository });
+    const owner = "user:owner";
+    const copy = (threadId: string, from: string, to: string[], receivedAt = clock) => repository.createEvent({ ownerUserId: owner, paneId: null, runId: null, accountEmail: "me@gmail.com", threadId,
+      messageId: `m-${threadId}`, type: "MAIL_RECEIVED", status: "PENDING", message: "New mail", payload: { from: { name: "", address: from }, to, receivedAt } });
+    // Lab@team.com is a send-as alias of me@gmail.com; crew@team.com shares its domain; the sales mail and the gmail.com one are someone else's.
+    await copy("t-alias", "lab@team.com", ["support@runware.example"]);
+    await copy("t-domain", "crew@team.com", ["grantapps@futo.example"]);
+    await copy("t-stranger", "sales@vendor.example", ["startups@e2b.example"]);
+    await copy("t-shared", "friend@gmail.com", ["startup-program@ovh.example"]);
+    // Sent before the approval, synced after it.
+    await copy("t-late", "lab@team.com", ["sales@latitude.example"], "2026-11-04T06:00:00.000Z");
+    const approved = "2026-11-04T06:45:00.000Z";
+    expect(await service.sentTo(owner, null, ["support@runware.example"], approved)).toMatchObject({ state: "SENT", account: "me@gmail.com", threadId: "t-alias" });
+    expect(await service.sentTo(owner, null, ["grantapps@futo.example"], approved)).toMatchObject({ state: "SENT", threadId: "t-domain" });
+    expect(await service.sentTo(owner, null, ["startups@e2b.example"], approved)).toBeNull();
+    expect(await service.sentTo(owner, null, ["startup-program@ovh.example"], approved)).toBeNull();
+    expect(await service.sentTo(owner, null, ["sales@latitude.example"], approved)).toBeNull();
+    // Before the approval it is no send for it.
+    expect(await service.sentTo(owner, null, ["support@runware.example"], "2026-11-04T08:00:00.000Z")).toBeNull();
+  });
+
+  it("R25-2b: a later message's id reads that message's thread; an id Gmail has neither as thread nor message stays Gmail's not found", async () => {
+    // Like Gmail: a thread opens only by its first message's id (t1); m2 is the thread's second message.
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname.replace("/gmail/v1/users/me", "");
+      if (path === "/threads/t1") return Response.json({ id: "t1", messages: [{ id: "t1", threadId: "t1", labelIds: ["INBOX"], internalDate: "0",
+        payload: { mimeType: "text/plain", headers: [{ name: "Subject", value: "Case update" }], body: { data: b64("Hello") } } }] });
+      if (path === "/messages/m2") return Response.json({ id: "m2", threadId: "t1" });
+      return Response.json({ error: { message: "Requested entity was not found." } }, { status: 404 });
+    }) as unknown as typeof fetch;
+    const service = createMailCopilotService({ google: () => googleAccess([{ email: "me@gmail.com", capabilities: full, token: "token-me" }]), gmailFetch: fetchImpl,
+      repository: new InMemoryMailCopilotRepository() });
+    expect(await service.thread("user:owner", null, "me@gmail.com", "m2")).toMatchObject({ threadId: "t1", subject: "Case update" });
+    await expect(service.thread("user:owner", null, "me@gmail.com", "x9")).rejects.toThrow("me@gmail.com: Gmail no longer has that message or thread.");
   });
 });

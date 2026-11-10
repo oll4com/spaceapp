@@ -197,7 +197,8 @@ describe("Chat catalog provider grouping and refresh", () => {
     fireEvent.click(screen.getByRole("button", { name: /change model/i }));
     expect(within(screen.getByRole("combobox", { name: "Model" })).getAllByRole("option")).toHaveLength(6);
     for (const name of ["OpenCode Zen", "OpenCode Go", "OmniRoute", "DeepSeek", "Antigravity", "Kimi"]) {
-      expect(within(screen.getByRole("combobox", { name: "Provider" })).getByRole("option", { name })).toBeTruthy();
+      // A provider Space reads a balance for also names what it has left ("DeepSeek · $4.20 left").
+      expect(within(screen.getByRole("combobox", { name: "Provider" })).getByRole("option", { name: new RegExp(`^${name}( · |$)`) })).toBeTruthy();
     }
     fireEvent.change(screen.getByRole("combobox", { name: "Provider" }), { target: { value: "opencode:opencode-go" } });
     expect(screen.queryByRole("option", { name: "Nemotron" })).toBeNull();

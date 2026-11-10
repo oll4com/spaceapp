@@ -9,7 +9,7 @@ describe("Space Autopilot Orchestrator", () => {
 
   it("runs full inspect -> decide -> dryRun preflight -> execute -> verify loop without external LLM", async () => {
     let inspectCount = 0;
-    let executeCalls: any[] = [];
+    const executeCalls: any[] = [];
     let taskJudged = false;
 
     const mockSpaceControl = {

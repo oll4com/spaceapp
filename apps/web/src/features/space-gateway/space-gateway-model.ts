@@ -41,7 +41,11 @@ export const trafficClassOptions: { value: GatewayTrafficClass; label: string }[
 
 const providerLabels: Record<GatewayProvider, string> = {
   CODEX: "Codex", CLAUDE: "Claude", ANTIGRAVITY: "Antigravity", COPILOT: "Copilot", OPENAI_API: "OpenAI API",
-  ANTHROPIC_API: "Anthropic API", DEEPSEEK: "DeepSeek", OPENROUTER: "OpenRouter", GOOGLE_AI: "Google AI", KIMI: "Kimi", QWEN: "Qwen"
+  ANTHROPIC_API: "Anthropic API", DEEPSEEK: "DeepSeek", OPENROUTER: "OpenRouter", GOOGLE_AI: "Google AI", KIMI: "Kimi", QWEN: "Qwen",
+  GROQ: "Groq", NVIDIA: "NVIDIA", CLOUDFLARE_AI: "Cloudflare Workers AI", ADAPTION: "Adaption Labs", AMD_TOKEN_LAB: "AMD Token Lab",
+  INCEPTION: "Inception Labs", JINA: "Jina AI", MIXEDBREAD: "Mixedbread", AGENTROUTER: "AgentRouter", FREEAI: "Free.ai", AZURE_OPENAI: "Azure OpenAI",
+  ZAI: "Z.AI", SILICONFLOW: "SiliconFlow", OVH: "OVHcloud AI Endpoints", MISTRAL: "Mistral",
+  BEDROCK: "Claude on Bedrock", VERTEX: "Claude on Vertex AI", MAKE: "Make AI"
 };
 
 export function providerLabel(provider: string): string {

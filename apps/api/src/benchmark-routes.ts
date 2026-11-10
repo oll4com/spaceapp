@@ -7,6 +7,7 @@ import {
   resolveNativeOpenCodeRuntime,
 } from "./task-title-opencode.js";
 import { createDecisionsService } from "./decisions-service.js";
+import { gatewayRequestIdHeader } from "./gateway-request-id.js";
 import {
   AgentArena,
   ARENA_HEIGHT,
@@ -27,6 +28,7 @@ import { BASELINE_MODEL_ID, CLAUDE_BENCHMARK_MODELS, CODEX_LB_BASE_URL, PROVIDER
 import { ArenaBenchmarkRunner, ArenaRunError, isArenaModelId, type ArenaContestantInput } from "./asteroids-arena/runner.js";
 import { createArenaFileStore, isArenaRunId, leaderboardView, type ArenaStore } from "./asteroids-arena/store.js";
 import { loadOpenRouterBenchmarkModels, requestOpenRouterDoctrine } from "./openrouter-benchmark-models.js";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
  * Benchmark API.
@@ -41,17 +43,17 @@ import { loadOpenRouterBenchmarkModels, requestOpenRouterDoctrine } from "./open
  *
  * Data source: directory of JSON files produced by
  * `space-model-benchmark.sh --publish` (leaderboard.json + <runId>.json).
- * Default location is /opt/spaceapp/var/space-model-benchmark; override with
+ * Default location is <install root>/var/space-model-benchmark; override with
  * SPACE_BENCHMARK_RESULTS_DIR. The routes are guarded by the global /api/*
  * authentication hook, so they only serve authenticated users.
  */
 
-const DEFAULT_RESULTS_DIR = "/opt/spaceapp/var/space-model-benchmark";
+const DEFAULT_RESULTS_DIR = `${SPACE_INSTALL_ROOT}/var/space-model-benchmark`;
 const MAX_RUN_FILES = 50;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const RUN_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
-const GEMINI_MODELS_FILE = "/opt/spaceapp/var/gemini-models.last-good.json";
-const CODEX_MODELS_CACHE_FILE = "/var/lib/spaceapp-user/.codex/models_cache.json";
+const GEMINI_MODELS_FILE = `${SPACE_INSTALL_ROOT}/var/gemini-models.last-good.json`;
+const CODEX_MODELS_CACHE_FILE = `${SPACE_AGENT_HOME}/.codex/models_cache.json`;
 const GITHUB_AUTO_MODEL = { id: "github/auto", displayName: "GitHub CLI · Auto", providerId: "github", status: "VERIFIED" };
 const JEV_MODEL = { id: "openrouter/typesafe/jev-1.13", displayName: "TypeSafe Jev 1.13", providerId: "openrouter", status: "VERIFIED" };
 
@@ -87,12 +89,12 @@ async function loadAntigravityModels(): Promise<Array<{ id: string; displayName:
 
 export { CODEX_LB_BASE_URL, codexAuthHeaders, getCodexApiKey };
 
-async function loadCodexModels(): Promise<Array<{ id: string; displayName: string; providerId: string; status: string }>> {
+async function loadCodexModels(traceId?: string): Promise<Array<{ id: string; displayName: string; providerId: string; status: string }>> {
   // 1. Try the live Codex catalog in Space Gateway
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch(`${CODEX_LB_BASE_URL}/v1/models`, { signal: controller.signal, headers: await codexAuthHeaders() });
+    const res = await fetch(`${CODEX_LB_BASE_URL}/v1/models`, { signal: controller.signal, headers: { ...await codexAuthHeaders(), ...gatewayRequestIdHeader(traceId) } });
     clearTimeout(timer);
     if (res.ok) {
       const data = (await res.json()) as any;
@@ -239,7 +241,7 @@ function doctrineFromModelJson(
   };
 }
 
-export async function fetchModelTactics(modelId: string, situation?: unknown): Promise<TacticalDoctrine> {
+export async function fetchModelTactics(modelId: string, situation?: unknown, traceId?: string): Promise<TacticalDoctrine> {
   const start = Date.now();
   const seed = modelSeed(modelId);
   const fallbackTactic: TacticalDoctrine = {
@@ -299,6 +301,7 @@ export async function fetchModelTactics(modelId: string, situation?: unknown): P
             headers: {
               Authorization: `Bearer ${apiKey}`,
               "Content-Type": "application/json",
+              ...gatewayRequestIdHeader(traceId),
             },
             signal: controller.signal,
             body: JSON.stringify({
@@ -692,7 +695,7 @@ export function arenaProtocolDescription() {
 }
 
 /** Every model the arena can fly, grouped by provider (also used by the headless runner). */
-export async function loadArenaModelCatalog(): Promise<{ available: boolean; models: BenchmarkModel[]; providers: Array<{ id: string; path: string }> }> {
+export async function loadArenaModelCatalog(traceId?: string): Promise<{ available: boolean; models: BenchmarkModel[]; providers: Array<{ id: string; path: string }> }> {
   let opencodeModels: BenchmarkModel[] = [];
   try {
     const command = await resolveNativeOpenCodeRuntime();
@@ -713,7 +716,7 @@ export async function loadArenaModelCatalog(): Promise<{ available: boolean; mod
     }
   } catch {}
   const [codexModels, antigravityModels, openRouterModels] = await Promise.all([
-    loadCodexModels(),
+    loadCodexModels(traceId),
     loadAntigravityModels(),
     loadOpenRouterBenchmarkModels().catch(() => []),
   ]);
@@ -748,7 +751,7 @@ export function registerBenchmarkRoutes(
 ): void {
   const arenaStore = arena.store ?? createArenaFileStore();
   const arenaRunner = arena.runner ?? new ArenaBenchmarkRunner({ store: arenaStore, ...(arena.claudeProfile ? { claudeProfile: arena.claudeProfile } : {}) });
-  app.get("/api/asteroids/benchmark/models", rateLimitOptions, async () => loadArenaModelCatalog());
+  app.get("/api/asteroids/benchmark/models", rateLimitOptions, async (request) => loadArenaModelCatalog(request.requestIdForSpace));
 
   app.get("/api/asteroids/benchmark/protocol", rateLimitOptions, async () => arenaProtocolDescription());
 
@@ -782,7 +785,7 @@ export function registerBenchmarkRoutes(
       const rounds = typeof body.rounds === "number" ? body.rounds : 3;
       const claudeAccount = typeof body.claudeAccount === "string" && body.claudeAccount.trim() ? body.claudeAccount.trim() : undefined;
       try {
-        const run = arenaRunner.start({ mode, contestants, rounds, ...(claudeAccount ? { claudeAccount } : {}), origin: "ui" });
+        const run = arenaRunner.start({ mode, contestants, rounds, ...(claudeAccount ? { claudeAccount } : {}), origin: "ui", traceId: request.requestIdForSpace });
         return reply.code(202).send({ run });
       } catch (error) {
         if (error instanceof ArenaRunError) {
@@ -836,7 +839,7 @@ export function registerBenchmarkRoutes(
           TACTICS_BATCH_LIMIT
         );
         const results = await mapWithDeadline(ids, TACTICS_BATCH_CONCURRENCY, Date.now() + TACTICS_BATCH_DEADLINE_MS, (id) =>
-          fetchModelTactics(id, situation)
+          fetchModelTactics(id, situation, request.requestIdForSpace)
         );
         const doctrines: Record<string, TacticalDoctrine> = {};
         results.forEach((doctrine, index) => {
@@ -848,7 +851,7 @@ export function registerBenchmarkRoutes(
       if (!modelId || typeof modelId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(modelId)) {
         return reply.code(400).send({ error: { code: "INVALID_MODEL_ID", message: "Valid modelId or models array is required." } });
       }
-      const tactics = await fetchModelTactics(modelId, situation);
+      const tactics = await fetchModelTactics(modelId, situation, request.requestIdForSpace);
       return { modelId, tactics };
     }
   );

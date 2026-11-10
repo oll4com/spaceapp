@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, rm, writeFile, mkdir, chmod, stat, readdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -35,6 +35,8 @@ describe("Filesystem Service & Security", () => {
 
   beforeEach(async () => {
     tempWorkspace = await mkdtemp(path.join(os.tmpdir(), "space-fs-test-"));
+    // The credential guard (EXT-G-2) reads HOME; a CLI's TMPDIR can sit inside the real ~/.codex.
+    vi.stubEnv("HOME", path.join(tempWorkspace, "home"));
     // Setup test directory tree
     await mkdir(path.join(tempWorkspace, "subdir"), { recursive: true });
     await writeFile(path.join(tempWorkspace, "hello.txt"), "Hello, Spaceapp!", "utf-8");
@@ -42,6 +44,7 @@ describe("Filesystem Service & Security", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await rm(tempWorkspace, { recursive: true, force: true });
   });
 

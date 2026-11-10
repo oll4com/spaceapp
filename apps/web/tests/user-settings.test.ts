@@ -136,6 +136,22 @@ describe("User settings client persistence & server sync", () => {
     });
   });
 
+  it("tries a failed settings write again, so a reload never brings back the server's old copy", async () => {
+    vi.useFakeTimers();
+    try {
+      mockUpdateUserSettings.mockRejectedValueOnce(new Error("connection cut"));
+      writeVoiceComposerSettings({ ...defaultVoiceComposerSettings, terminalHiddenShortcuts: ["clear"] });
+      expect(mockUpdateUserSettings).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(mockUpdateUserSettings).toHaveBeenCalledTimes(2);
+      expect(mockUpdateUserSettings).toHaveBeenLastCalledWith({ voice: expect.objectContaining({ terminalHiddenShortcuts: ["clear"] }) });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(mockUpdateUserSettings).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("applies server voice composer settings to local cache and dispatches event", () => {
     const listener = vi.fn();
     window.addEventListener(VOICE_SETTINGS_UPDATED_EVENT, listener);

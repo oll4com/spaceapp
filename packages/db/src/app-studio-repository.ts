@@ -8,7 +8,7 @@ import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 const newId = () => `asevt:${randomBytes(9).toString("base64url")}`;
 
 export type AppStudioEventCreateRecord = Omit<AppStudioEvent, "id" | "createdAt" | "updatedAt">;
-export interface AppStudioEventFilter { types?: AppStudioEventType[]; status?: AppStudioEventStatus[]; limit: number }
+export interface AppStudioEventFilter { types?: AppStudioEventType[]; status?: AppStudioEventStatus[]; /** No limit: every matching event (a brief watch must see every waiting brief, operator 31/10). */ limit?: number }
 export type AppStudioPreviewRecord = Omit<AppStudioPreview, "capturedAt"> & { ownerUserId: string };
 
 export interface AppStudioRepository {

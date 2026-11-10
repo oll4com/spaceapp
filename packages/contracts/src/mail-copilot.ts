@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { atLeastOneField } from "./update-rules.js";
 
 // Mail Copilot pane: a native Gmail client over the operator's Google connector accounts and a CLI
 // agent session that sees the same mailboxes. Pane metadata holds pane-level settings and the operator's
@@ -106,7 +107,7 @@ export const mailRuleConditionSchema = z.object({
   /** Case-insensitive regular expression tested against the subject. */
   subjectPattern: z.string().min(1).max(300).optional(),
   hasAttachment: z.boolean().optional()
-}).strict().refine((condition) => Object.keys(condition).length > 0, "A rule needs at least one condition.");
+}).strict().refine(...atLeastOneField("A rule needs at least one condition."));
 export type MailRuleCondition = z.infer<typeof mailRuleConditionSchema>;
 
 export const MAIL_RULE_ACTION_TYPES = ["REPLY", "ARCHIVE", "LABEL", "MOVE", "STAR", "TRASH", "MARK_READ", "FIX"] as const;
@@ -246,6 +247,10 @@ export type MailLabel = z.infer<typeof mailLabelSchema>;
 export const mailParticipantSchema = z.object({ name: z.string().max(300), address: z.string().max(320) }).strict();
 export type MailParticipant = z.infer<typeof mailParticipantSchema>;
 
+/** A user label a thread carries: Gmail's id on that account and the label's name. */
+export const mailThreadLabelSchema = z.object({ id: z.string().min(1).max(200), name: z.string().max(300) }).strict();
+export type MailThreadLabel = z.infer<typeof mailThreadLabelSchema>;
+
 export const mailThreadSummarySchema = z.object({
   account: emailSchema,
   threadId: z.string().min(1).max(200),
@@ -259,7 +264,9 @@ export const mailThreadSummarySchema = z.object({
   starred: z.boolean(),
   hasAttachment: z.boolean(),
   messageCount: z.number().int().min(1),
-  labelIds: z.array(z.string()).max(50)
+  labelIds: z.array(z.string()),
+  /** The thread's own (user) labels by name, for the list's chips. */
+  labels: z.array(mailThreadLabelSchema).optional()
 }).strict();
 export type MailThreadSummary = z.infer<typeof mailThreadSummarySchema>;
 
@@ -297,24 +304,26 @@ export const mailMessageSchema = z.object({
   messageId: z.string().min(1).max(200),
   threadId: z.string().min(1).max(200),
   from: mailParticipantSchema,
-  to: z.array(mailParticipantSchema).max(100),
-  cc: z.array(mailParticipantSchema).max(100),
-  replyTo: z.array(mailParticipantSchema).max(20),
+  // Every recipient, label, attachment and the whole text (until 31/10 100 recipients, 20 reply-to, 50 labels, 100 attachments,
+  // 200,000 characters, 20,000 of References); the subject and Message-ID keep a mail header line's 1,000 (RFC 5322: 998).
+  to: z.array(mailParticipantSchema),
+  cc: z.array(mailParticipantSchema),
+  replyTo: z.array(mailParticipantSchema),
   subject: z.string().max(1000),
   receivedAt: z.string().datetime({ offset: true }).nullable(),
   /** RFC 2822 Message-ID header, for threading replies. */
   rfcMessageId: z.string().max(1000).nullable(),
-  references: z.string().max(20_000).nullable(),
-  labelIds: z.array(z.string()).max(50),
+  references: z.string().nullable(),
+  labelIds: z.array(z.string()),
   unread: z.boolean(),
   starred: z.boolean(),
   /** Plain text (the text/plain part, or the HTML as text); what the agent reads. */
-  text: z.string().max(200_000),
-  /** Sanitized HTML for the reader, null when the message has no HTML part. */
+  text: z.string(),
+  /** Sanitized HTML for the reader, null when the message has no HTML part (2,000,000: what the reader renders; the text is whole). */
   html: z.string().max(2_000_000).nullable(),
   /** The sanitized HTML references remote images that were not loaded. */
   blockedImages: z.boolean(),
-  attachments: z.array(mailAttachmentSchema).max(100)
+  attachments: z.array(mailAttachmentSchema)
 }).strict();
 export type MailMessage = z.infer<typeof mailMessageSchema>;
 
@@ -322,7 +331,7 @@ export const mailThreadSchema = z.object({
   account: emailSchema,
   threadId: z.string().min(1).max(200),
   subject: z.string().max(1000),
-  messages: z.array(mailMessageSchema).max(200)
+  messages: z.array(mailMessageSchema)
 }).strict();
 export type MailThread = z.infer<typeof mailThreadSchema>;
 
@@ -344,7 +353,7 @@ export const mailThreadActionSchema = z.object({
   account: emailSchema,
   action: z.enum(["archive", "unarchive", "trash", "untrash", "star", "unstar", "read", "unread", "label", "unlabel", "move"]),
   /** label / unlabel / move: the Gmail label ids (or a label's name, resolved per account). */
-  labelIds: z.array(z.string().min(1).max(200)).max(10).optional()
+  labelIds: z.array(z.string().min(1).max(200)).optional()
 }).strict();
 export type MailThreadAction = z.infer<typeof mailThreadActionSchema>;
 
@@ -384,7 +393,7 @@ export const mailActionRecordSchema = z.object({
   threadId: z.string().min(1).max(200),
   messageId: z.string().max(200).nullable(),
   action: mailOperatorActionSchema,
-  labelIds: z.array(z.string().min(1).max(200)).max(20),
+  labelIds: z.array(z.string().min(1).max(200)),
   /** The correspondent: who sent the mail acted on (for a reply, whom it answers). */
   fromAddress: z.string().max(320).nullable(),
   fromDomain: z.string().max(200).nullable(),
@@ -420,6 +429,8 @@ export interface MailFixRequestView {
 }
 /** One row of the action log as the pane shows it, with the account's label names. */
 export type MailActionLogEntry = MailActionRecord & { labelNames: string[] };
+/** An open thread's labels now and every recorded add or removal (MOVE, LABEL, UNLABEL), newest first. */
+export interface MailThreadLabels { labels: MailThreadLabel[]; history: MailActionLogEntry[] }
 /** How the operator handled one kind of mail on one account: per action (and labels) how often, and when last. */
 export interface MailHabitLevel {
   level: "sender" | "subject" | "domain";
@@ -532,7 +543,8 @@ export const mailCopilotMemoryQuerySchema = z.object({
   contactEmail: z.string().trim().toLowerCase().max(320).optional(),
   domain: z.string().trim().toLowerCase().max(200).optional(),
   pinnedOnly: z.boolean().optional(),
-  limit: z.number().int().min(1).max(200).default(50)
+  // Every match when omitted (until 1/11 the best 50, at most 200).
+  limit: z.number().int().min(1).optional()
 }).strict();
 export type MailCopilotMemoryQuery = z.infer<typeof mailCopilotMemoryQuerySchema>;
 
@@ -550,7 +562,7 @@ export const mailCopilotEventSchema = z.object({
   messageId: z.string().max(200).nullable(),
   type: mailCopilotEventTypeSchema,
   status: mailCopilotItemStatusSchema.nullable(),
-  message: z.string().trim().min(1).max(1000),
+  message: z.string().trim().min(1),
   payload: z.record(z.string(), z.unknown()).default({}),
   createdAt: isoDateTime
 }).strict();
@@ -558,7 +570,7 @@ export type MailCopilotEvent = z.infer<typeof mailCopilotEventSchema>;
 
 export const mailCopilotEventInputSchema = z.object({
   type: mailCopilotEventTypeSchema.default("NOTE"),
-  message: z.string().trim().min(1).max(1000),
+  message: z.string().trim().min(1),
   accountEmail: z.string().trim().toLowerCase().email().max(320).nullable().optional(),
   threadId: z.string().trim().min(1).max(200).nullable().optional(),
   messageId: z.string().trim().min(1).max(200).nullable().optional(),
@@ -626,7 +638,7 @@ export const mailCopilotPendingItemSchema = z.object({
   eventId: mailEventIdSchema,
   accountEmail: z.string().max(320).nullable(),
   threadId: z.string().max(200).nullable(),
-  message: z.string().max(1000),
+  message: z.string(),
   payload: z.record(z.string(), z.unknown()),
   createdAt: isoDateTime
 }).strict();
@@ -635,7 +647,7 @@ export type MailCopilotPendingItem = z.infer<typeof mailCopilotPendingItemSchema
 export const mailCopilotRunViewSchema = z.object({
   run: mailCopilotRunSchema.nullable(),
   status: mailCopilotRunStatusSchema,
-  pending: z.array(mailCopilotPendingItemSchema).max(100),
+  pending: z.array(mailCopilotPendingItemSchema),
   /** Work items still waiting for the agent (not yet taken). */
   backlog: z.number().int().min(0)
 }).strict();
@@ -648,14 +660,16 @@ export const mailCopilotReportRequestSchema = z.object({
   eventId: mailEventIdSchema,
   outcome: mailCopilotReportOutcomeSchema,
   summary: z.string().trim().min(1).max(1000),
-  memoryIds: z.array(mailMemoryIdSchema).max(20).default([])
+  memoryIds: z.array(mailMemoryIdSchema).default([])
 }).strict();
 
 export const mailCopilotQuestionAskSchema = z.object({
   question: z.string().trim().min(1).max(1000),
   options: z.array(z.string().trim().min(1).max(200)).max(12).optional(),
   accountEmail: z.string().trim().toLowerCase().email().max(320).optional(),
-  threadId: z.string().trim().min(1).max(200).optional()
+  threadId: z.string().trim().min(1).max(200).optional(),
+  /** R13-5: ask even though the copilot's memory showed hits (memoryHits came back first). */
+  afterMemory: z.boolean().optional()
 }).strict();
 export const mailCopilotQuestionWaitSchema = z.object({ questionId: z.string().regex(/^mailq:[A-Za-z0-9_-]{6,80}$/), waitMs: z.number().int().min(0).max(120_000).default(60_000) }).strict();
 export const mailCopilotQuestionAnswerSchema = z.object({ questionId: z.string().regex(/^mailq:[A-Za-z0-9_-]{6,80}$/), answer: z.string().trim().min(1).max(4000) }).strict();
@@ -665,7 +679,11 @@ export const mailCopilotReviewRequestSchema = z.object({
   draft: mailComposeInputSchema,
   summary: z.string().trim().min(1).max(1000),
   /** Why the agent answers this way (what it recalled), shown with the draft. */
-  reasoning: z.string().max(2000).optional()
+  reasoning: z.string().max(2000).optional(),
+  /** nous_msg:8f84e7e6: the operator's own message to Nous (under 48 hours old) ordering this reply; a memory that forbids it no longer blocks the review. */
+  operatorOrder: z.string().regex(/^nous_msg:[A-Za-z0-9_-]{6,80}$/).optional(),
+  /** The Gmail message (of the same account) whose attachments go out with the reply, such as the thread's draft holding a CV. */
+  attachmentsFrom: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/).optional()
 }).strict();
 export const mailCopilotReviewWaitSchema = z.object({ reviewId: z.string().regex(/^mailrev:[A-Za-z0-9_-]{6,80}$/), waitMs: z.number().int().min(0).max(120_000).default(60_000) }).strict();
 export const MAIL_COPILOT_REVIEW_DECISIONS = ["approve", "edit", "reject"] as const;

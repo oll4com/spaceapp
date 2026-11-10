@@ -1,9 +1,12 @@
-import { createContext, lazy, Suspense, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { lazy, Suspense, useContext, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { IBufferLine, IDecoration, ITerminalAddon, Terminal } from "@xterm/xterm";
-import { isAgentFileArtifact, type Artifact } from "@space/contracts";
+import { findFileMentions, isAgentFileArtifact, type Artifact, type FileMention } from "@space/contracts";
+import { api } from "../../api.js";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import { AgentFiles } from "../ui-theme/app-icons.js";
 import { agentFileName, fetchAllAgentFiles } from "../agent-files/agent-files-api.js";
+import { AgentFileMentionContext, type AgentFileMentionLinks, type MarkdownNode } from "./agent-file-mention-context.js";
 import "./agent-file-links.css";
 
 // Agent Files names in CLI output (and in ChatMarkdown inside AgentFileMentions) become links with an icon; a click opens the
@@ -249,12 +252,23 @@ const subscribeIndex = (listener: () => void) => {
   return () => { indexListeners.delete(listener); };
 };
 
-type MarkdownNode = { type: string; value?: string; url?: string; children?: MarkdownNode[] };
 const agentFileHref = (artifact: Artifact) => `/api/artifacts/${encodeURIComponent(artifact.id)}/download`;
+// nous_msg:8e7e6c25: an `artifact:<id>` or a workspace path in a text links to its Agent File; a path is filed in Agent Files on the click.
+const ARTIFACT_HREF = /^\/api\/artifacts\/([^/?#]+)\/download$/;
+export const WORKSPACE_FILE_HREF = "/api/nous/files/agent-file?path=";
+export const fileMentionHref = (mention: FileMention) => mention.kind === "artifact"
+  ? `/api/artifacts/${encodeURIComponent(mention.text)}/download` : `${WORKSPACE_FILE_HREF}${encodeURIComponent(mention.text)}`;
+
+/** Names and file mentions of one text, in order; a name inside a mention (the path's own file name) is the mention's. */
+function textLinks(text: string, index: AgentFileIndex): Array<{ start: number; end: number; href: string; label: string }> {
+  const mentions = findFileMentions(text).map((mention) => ({ start: mention.start, end: mention.end, href: fileMentionHref(mention), label: mention.text }));
+  const names = findAgentFileNames(text, index).filter((hit) => !mentions.some((mention) => hit.start < mention.end && hit.end > mention.start))
+    .map((hit) => ({ start: hit.start, end: hit.end, href: agentFileHref(hit.artifact), label: hit.name }));
+  return [...mentions, ...names].sort((left, right) => left.start - right.start);
+}
 
 /** A remark plugin: names in text and inline code become links to their file's download, which ChatMarkdown opens as the preview. */
 function remarkAgentFileLinks(index: AgentFileIndex) {
-  const link = (artifact: Artifact, child: MarkdownNode): MarkdownNode => ({ type: "link", url: agentFileHref(artifact), children: [child] });
   const visit = (node: MarkdownNode) => {
     if (!node.children || node.type === "link" || node.type === "linkReference") return;
     node.children = node.children.flatMap((child) => {
@@ -263,15 +277,15 @@ function remarkAgentFileLinks(index: AgentFileIndex) {
         return [child];
       }
       const text = child.value ?? "";
-      const hits = findAgentFileNames(text, index);
-      if (child.type === "inlineCode") return hits.length === 1 ? [link(hits[0]!.artifact, child)] : [child];
+      const hits = textLinks(text, index);
+      if (child.type === "inlineCode") return hits.length === 1 ? [{ type: "link", url: hits[0]!.href, children: [child] }] : [child];
       if (!hits.length) return [child];
       const parts: MarkdownNode[] = [];
       let at = 0;
       for (const hit of hits) {
         if (hit.start < at) continue;
         if (hit.start > at) parts.push({ type: "text", value: text.slice(at, hit.start) });
-        parts.push(link(hit.artifact, { type: "text", value: hit.name }));
+        parts.push({ type: "link", url: hit.href, children: [{ type: "text", value: hit.label }] });
         at = hit.end;
       }
       if (at < text.length) parts.push({ type: "text", value: text.slice(at) });
@@ -281,25 +295,38 @@ function remarkAgentFileLinks(index: AgentFileIndex) {
   return () => (tree: MarkdownNode) => visit(tree);
 }
 
-export interface AgentFileMentionLinks {
-  remark: () => (tree: MarkdownNode) => void;
-  artifact(href: string): Artifact | undefined;
-  open(artifact: Artifact): void;
-}
-
-export const AgentFileMentionContext = createContext<AgentFileMentionLinks | null>(null);
+export { AgentFileMentionContext, type AgentFileMentionLinks };
 
 /** ChatMarkdown inside links the Agent Files names it shows; the preview opens here, so inside a modal dialog it opens on top. */
 export function AgentFileMentions({ children }: { children: ReactNode }) {
   const index = useSyncExternalStore(subscribeIndex, currentAgentFileIndex);
   const [open, setOpen] = useState<Artifact | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
   const links = useMemo<AgentFileMentionLinks>(() => {
     const byHref = new Map([...index.values()].flat().map(({ artifact }) => [agentFileHref(artifact), artifact]));
-    return { remark: remarkAgentFileLinks(index), artifact: (href) => byHref.get(href), open: setOpen };
+    const resolve = async (href: string): Promise<Artifact | null> => {
+      const id = href.match(ARTIFACT_HREF)?.[1];
+      if (id) return (await fetchAllAgentFiles()).find((artifact) => artifact.id === decodeURIComponent(id)) ?? null;
+      return (await api.workspaceAgentFile(decodeURIComponent(href.slice(WORKSPACE_FILE_HREF.length)))).artifact;
+    };
+    const openHref = (href: string) => {
+      const known = byHref.get(href);
+      if (known) { setOpen(known); return true; }
+      if (!ARTIFACT_HREF.test(href) && !href.startsWith(WORKSPACE_FILE_HREF)) return false;
+      setProblem(null);
+      void resolve(href).then((artifact) => {
+        if (artifact) setOpen(artifact);
+        // Not an Agent File (a room's Media item): its download in a new tab.
+        else if (ARTIFACT_HREF.test(href)) window.open(href, "_blank", "noopener");
+      }, (error: unknown) => setProblem(error instanceof Error ? error.message : "The file could not be opened."));
+      return true;
+    };
+    return { remark: remarkAgentFileLinks(index), artifact: (href) => byHref.get(href), open: setOpen, openHref };
   }, [index]);
   return (
     <AgentFileMentionContext.Provider value={links}>
       {children}
+      {problem ? <p className="agent-file-mention-problem" role="alert" onClick={() => setProblem(null)}>{problem}</p> : null}
       {open ? (
         <div
           onKeyDown={(event) => {
@@ -318,4 +345,22 @@ export function AgentFileMentions({ children }: { children: ReactNode }) {
       ) : null}
     </AgentFileMentionContext.Provider>
   );
+}
+
+/** Plain text (appointment notes, notification bodies, Done summaries) with its file mentions as links to the Agent Files preview. */
+export function FileMentionText({ text }: { text: string }) {
+  const links = useContext(AgentFileMentionContext);
+  const language = useUiLanguage();
+  const mentions = links ? findFileMentions(text) : [];
+  if (!mentions.length) return <>{text}</>;
+  const parts: ReactNode[] = [];
+  let at = 0;
+  for (const mention of mentions) {
+    const href = fileMentionHref(mention);
+    parts.push(text.slice(at, mention.start), <a key={mention.start} href={href} className="file-mention-link" title={uiText(language, "Open the Agent Files preview")}
+      onClick={(event) => { event.preventDefault(); event.stopPropagation(); links!.openHref(href); }}>{mention.text}<AgentFiles aria-hidden="true" /></a>);
+    at = mention.end;
+  }
+  parts.push(text.slice(at));
+  return <>{parts}</>;
 }

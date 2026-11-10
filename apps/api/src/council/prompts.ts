@@ -1,7 +1,7 @@
 import type { CouncilAnswer, CouncilEvidence, CouncilModel, CouncilPlan, CouncilPosition, CouncilQaRound, CouncilRankingEntry, CouncilReview } from "@space/contracts";
 import { anonymizeModelText, clip, consensusLine, councilTopEntries } from "./ranking.js";
 
-/** Claude and Gemini run as one-shot CLI turns that refuse prompts above 12,000 characters. */
+/** Technical: Claude and Gemini run as one-shot CLI turns that refuse prompts above 12,000 characters; every clip below is a share of it. */
 export const COUNCIL_PROMPT_LIMIT = 11_800;
 
 /** The fixed head always fits; the tail (the largest data block) is cut to what is left. */

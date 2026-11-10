@@ -19,6 +19,8 @@ import { AnimatedNumber } from "../ui-controls/AnimatedNumber.js";
 import type { CreateTaskItemRequest, TaskItem, TaskScheduleInput, TaskSource } from "@space/contracts";
 import { nextDotScheduleRun, taskObjectiveMaxCharacters, taskTitleMaxCharacters, zonedWallTimeToUtc } from "@space/contracts";
 import { api } from "../../api.js";
+import { fetchEveryPage } from "../../paged.js";
+import { dayLabel, monthDays, shiftDay, shiftMonth } from "./calendar-days.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import {
   SPACE_TASK_ITEM_MIME,
@@ -86,23 +88,6 @@ function dayKey(ms: number, timeZone: string): string {
   let format = dayFormats.get(timeZone);
   if (!format) dayFormats.set(timeZone, format = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }));
   return format.format(ms);
-}
-function shiftDay(day: string, by: number): string {
-  const [year, month, date] = day.split("-").map(Number) as [number, number, number];
-  return new Date(Date.UTC(year, month - 1, date + by)).toISOString().slice(0, 10);
-}
-function shiftMonth(month: string, by: number): string {
-  const [year, monthNumber] = month.split("-").map(Number) as [number, number];
-  return new Date(Date.UTC(year, monthNumber - 1 + by, 1)).toISOString().slice(0, 7);
-}
-/** The 6 weeks the month view shows, Monday first. */
-function monthDays(month: string): string[] {
-  const lead = (new Date(`${month}-01T00:00:00Z`).getUTCDay() + 6) % 7;
-  return Array.from({ length: 42 }, (_, index) => shiftDay(`${month}-01`, index - lead));
-}
-/** A calendar day (YYYY-MM-DD) as words; the key is already in the dock's zone, so it is read as UTC. */
-function dayLabel(day: string, options: Intl.DateTimeFormatOptions): string {
-  return new Intl.DateTimeFormat("en-US", { ...options, timeZone: "UTC" }).format(new Date(`${day}T00:00:00Z`));
 }
 /** When the task is next due; a one-time task that already ran keeps its time. */
 function dueAt(item: TaskItem): number | null {
@@ -204,13 +189,13 @@ export function TaskDock({ canInsert, activePaneLabel, activeCliPaneId = null, o
 
   const loadItems = useCallback(async () => {
     try {
-      const payload = await api.taskItems({ ...(search.trim() ? { q: search.trim() } : {}), ...(owner !== "ALL" ? { source: owner } : {}), page: 1, pageSize: 100 });
+      const payload = await fetchEveryPage((page) => api.taskItems({ ...(search.trim() ? { q: search.trim() } : {}), ...(owner !== "ALL" ? { source: owner } : {}), page, pageSize: 100 }));
       setItems(payload.data);
-      setTotalItems(payload.pagination.totalItems);
+      setTotalItems(payload.totalItems);
       setLoadError(null);
       if (!search.trim() && owner === "ALL") {
         cachedTaskItems = payload.data;
-        cachedTaskTotal = payload.pagination.totalItems;
+        cachedTaskTotal = payload.totalItems;
       }
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Tasks could not be loaded.");

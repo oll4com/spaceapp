@@ -116,6 +116,15 @@ describe("snip-guard utility", () => {
     document.body.removeChild(outsideDiv);
   });
 
+  it("keeps menus open when the update banner's dismiss is tapped (phone, 1/11)", () => {
+    const banner = document.createElement("div");
+    banner.className = "space-app-update";
+    banner.innerHTML = '<button type="button" class="space-app-update-dismiss" aria-label="Dismiss">×</button>';
+    document.body.appendChild(banner);
+    expect(shouldPreserveForSnipTool({ target: banner.querySelector("button") })).toBe(true);
+    banner.remove();
+  });
+
   it("prevents CliPlansMenu from closing when snip tool is clicked or active", async () => {
     vi.stubGlobal("PointerEvent", MouseEvent);
 

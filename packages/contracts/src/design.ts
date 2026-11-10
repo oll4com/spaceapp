@@ -206,7 +206,6 @@ export const designColorPresetSchema = z.object({
   name: z.string().trim().min(1).max(40), background: hexColor, primary: hexColor, accent: hexColor, text: hexColor
 }).strict();
 export type DesignColorPreset = z.infer<typeof designColorPresetSchema>;
-export const DESIGN_COLOR_PRESETS_MAX = 30;
 export const DESIGN_COLOR_PRESETS: readonly DesignColorPreset[] = Object.freeze([
   { name: "SpaceApp night", background: "#0A0E24", primary: "#67D9F5", accent: "#93E9FA", text: "#FFFFFF" },
   { name: "Paper", background: "#F7F5F0", primary: "#1F4FD8", accent: "#E4572E", text: "#1A1A1A" },
@@ -293,7 +292,7 @@ export const designRequestStatusSchema = z.enum(DESIGN_REQUEST_STATUSES);
 export type DesignRequestStatus = z.infer<typeof designRequestStatusSchema>;
 export const DESIGN_REQUEST_OPEN_STATUSES: readonly DesignRequestStatus[] = ["QUEUED", "TAKEN", "IN_PROGRESS", "NEEDS_APPROVAL"];
 export const DESIGN_BRIEF_MAX = 4000;
-export const DESIGN_REQUEST_MAX_FORMATS = 8;
+/** Technical: the image models take at most 3 reference images a generation. */
 export const DESIGN_REQUEST_MAX_REFERENCES = 3;
 
 /** A template's fields (headline, subline, cta, colors, ...): limited here, each value validated by the renderer. */
@@ -307,7 +306,8 @@ export const designRequestSchema = z.object({
   designPaneId: paneIdSchema.nullable(),
   requester: designRequesterSchema,
   brief: z.string().min(1).max(DESIGN_BRIEF_MAX),
-  formatIds: z.array(designFormatRefSchema).min(1).max(DESIGN_REQUEST_MAX_FORMATS),
+  // Any number of formats and results a request (until 31/10 8 and 32).
+  formatIds: z.array(designFormatRefSchema).min(1),
   engine: designEngineSchema.nullable(),
   brandKitId: designBrandKitIdSchema.nullable(),
   referenceArtifactIds: z.array(artifactIdSchema).max(DESIGN_REQUEST_MAX_REFERENCES),
@@ -316,12 +316,12 @@ export const designRequestSchema = z.object({
   templateId: designTemplateIdSchema.nullable().optional(),
   params: designTemplateParamsSchema.nullable().optional(),
   status: designRequestStatusSchema,
-  resultAssetIds: z.array(designAssetIdSchema).max(32),
+  resultAssetIds: z.array(designAssetIdSchema),
   /** The Design agent's open question to the operator, and the answer. */
   question: z.string().max(2000).nullable(),
   answer: z.string().max(2000).nullable(),
   /** The delivery note or the failure reason. */
-  message: z.string().max(2000).nullable(),
+  message: z.string().nullable(),
   takenAt: isoDateTime.nullable(),
   deliveredAt: isoDateTime.nullable(),
   createdAt: isoDateTime,
@@ -332,7 +332,7 @@ export type DesignRequest = z.infer<typeof designRequestSchema>;
 /** What a requester sends; formats default to the Design pane's default format. */
 export const designRequestCreateSchema = z.object({
   brief: z.string().trim().min(1).max(DESIGN_BRIEF_MAX),
-  formatIds: z.array(designFormatRefSchema).max(DESIGN_REQUEST_MAX_FORMATS).default([]),
+  formatIds: z.array(designFormatRefSchema).default([]),
   engine: designEngineSchema.optional(),
   brandKitId: designBrandKitIdSchema.optional(),
   referenceArtifactIds: z.array(artifactIdSchema).max(DESIGN_REQUEST_MAX_REFERENCES).default([]),
@@ -397,7 +397,7 @@ export const designEventSchema = z.object({
   requestId: designRequestIdSchema.nullable(),
   assetId: designAssetIdSchema.nullable(),
   type: designEventTypeSchema,
-  message: z.string().max(2000),
+  message: z.string(),
   payload: z.record(z.string(), z.unknown()),
   createdAt: isoDateTime
 }).strict();

@@ -1,8 +1,11 @@
+import Fastify from "fastify";
+import { registerSpaceControlRoutes } from "../src/space-control-routes.js";
 import { describe,it,expect,vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import { InMemoryControlRepository } from "@space/db";
 import { controlExecuteSchema } from "@space/contracts";
 import { createSpaceControl } from "../src/space-control.js";
+import { CliTaskNotResumableError } from "../src/unified-cli-task-registry.js";
 const actor={id:"operator:one",role:"ADMIN" as const};
 function fixture(){
  const store=new InMemorySpaceStore(),repository=new InMemoryControlRepository();
@@ -17,6 +20,93 @@ function fixture(){
  return {store,repository,controller,send,options,service,room,panes,execute};
 }
 describe("Space control",()=>{
+ it("passes the original HTTP request separately from the unchanged command idempotency id",async()=>{
+  const c=fixture(), app=Fastify();
+  app.addHook("onRequest",async request=>{request.user={id:actor.id,role:"ADMIN",email:"test@example.invalid"} as never;request.requestIdForSpace="req:http-original";});
+  registerSpaceControlRoutes(app,c.service);
+  try {
+   const payload={roomId:c.room.id,requestId:"command:distinct",actions:[{kind:"pane",operation:"prompt",target:{paneIds:[c.panes[0]!.id]},text:"Fixed prompt",when:"NOW"}]};
+   const response=await app.inject({method:"POST",url:"/api/control/v1/commands",payload});
+   expect(response.statusCode).toBe(200);
+   expect(response.json()).toMatchObject({requestId:"command:distinct",status:"COMPLETED",command:{requestId:"command:distinct"}});
+   expect(c.send).toHaveBeenCalledWith(expect.objectContaining({id:c.panes[0]!.id}),"Fixed prompt","command:distinct","req:http-original");
+   await app.inject({method:"POST",url:"/api/control/v1/commands",payload});
+   expect(c.send).toHaveBeenCalledOnce();
+  } finally {await app.close();}
+ });
+ it("OBS-006: a space_execute through the MCP endpoint passes its HTTP request id too",async()=>{
+  const c=fixture(), app=Fastify();
+  app.addHook("onRequest",async request=>{request.user={id:actor.id,role:"ADMIN",email:"test@example.invalid"} as never;request.requestIdForSpace="req:http-mcp";});
+  registerSpaceControlRoutes(app,c.service);
+  try {
+   const command={roomId:c.room.id,requestId:"command:mcp",actions:[{kind:"pane",operation:"prompt",target:{paneIds:[c.panes[0]!.id]},text:"From an agent",when:"NOW"}]};
+   const response=await app.inject({method:"POST",url:"/api/control/v1/mcp",payload:{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"space_execute",arguments:command}}});
+   expect(response.statusCode).toBe(200);
+   expect(response.json().error).toBeUndefined();
+   expect(c.send).toHaveBeenCalledWith(expect.objectContaining({id:c.panes[0]!.id}),"From an agent","command:mcp","req:http-mcp");
+  } finally {await app.close();}
+ });
+
+ it("OBS-006: a caller with no HTTP request (Space Autopilot, the Room Agent, Scheduled Tasks) names its command's own request id",async()=>{
+  const c=fixture();
+  await c.execute([{kind:"pane",operation:"prompt",target:{paneIds:[c.panes[0]!.id]},text:"From Autopilot",when:"NOW"}],"autopilot_cycle1");
+  expect(c.send).toHaveBeenCalledWith(expect.objectContaining({id:c.panes[0]!.id}),"From Autopilot","autopilot_cycle1","autopilot_cycle1");
+ });
+
+ it("a prompt waiting for its CLI holds its pane's lock, not the room's: the operator's control of another pane goes on (R9-10)",async()=>{
+  // 28/10: a Space Control prompt held room Bruno 30 s while its CLI took the text, and the operator's attach of Bob was aborted.
+  const c=fixture();let taken!:()=>void;
+  c.send.mockImplementation(async()=>{await new Promise<void>(resolve=>{taken=resolve;});return {submitted:true};});
+  const prompting=c.execute([{kind:"pane",operation:"prompt",target:{paneIds:[c.panes[0]!.id]},text:"space-queue promote",when:"NOW"}],"request:prompt");
+  await vi.waitFor(()=>expect(c.send).toHaveBeenCalledOnce());
+  const control=vi.fn(async()=>"attached");
+  expect(await c.service.withOperatorMutation(c.panes[1]!,control)).toBe("attached");
+  // A second prompt to the same pane waits for the first: the pane's lock still orders its own prompts.
+  const again=c.execute([{kind:"pane",operation:"prompt",target:{paneIds:[c.panes[0]!.id]},text:"status",when:"NOW"}],"request:again");
+  await new Promise(resolve=>setTimeout(resolve,50));
+  expect(c.send).toHaveBeenCalledOnce();
+  taken();await prompting;
+  await vi.waitFor(()=>expect(c.send).toHaveBeenCalledTimes(2));
+  taken();await again;
+ });
+ it("the pane's watch tick goes on while a prompt to that pane waits for its CLI (R9-10, Alex/Emma 28/10 08:47 UTC)",async()=>{
+  // Stable, before R9-10: Nous's prompt into busy Emma held room Alex 30 s and the watch tick of Emma's earlier prompt timed out (URGENT).
+  const c=fixture(),pane=c.panes[0]!;
+  await c.execute([{kind:"pane",operation:"prompt",target:{paneIds:[pane.id]},text:"First task"}]);
+  let taken!:()=>void;
+  c.send.mockImplementation(async()=>{await new Promise<void>(resolve=>{taken=resolve;});return {submitted:true};});
+  const prompting=c.execute([{kind:"pane",operation:"prompt",target:{paneIds:[pane.id]},text:"Second task",when:"NOW"}],"request:held");
+  await vi.waitFor(()=>expect(c.send).toHaveBeenCalledTimes(2));
+  await c.service.tick();
+  expect((await c.service.watches(actor,c.room.id,"list",{}) as any[]).some(w=>w.status==="RUNNING")).toBe(true);
+  taken();await prompting;
+ });
+ it("a watch tick reads its pane before the room lock within a bound, and a slow pane stops no other watch (2/11 02:30 UTC)",async()=>{
+  // Stable 2/11 02:30-02:55 UTC: watch ticks of busy Bruno/Leo, Alex/Hugo and Alex/Andy held their rooms 30 s each inside the pane
+  // read (API event loop at 98 %), and each timeout ended the tick for every room.
+  const c=fixture(),[slow,other,free]=c.panes as [any,any,any];
+  await c.execute([{kind:"pane",operation:"prompt",target:{paneIds:[slow.id]},text:"Slow task"}],"request:slow");
+  await c.execute([{kind:"pane",operation:"prompt",target:{paneIds:[other.id]},text:"Other task"}],"request:other");
+  const base=await c.controller.inspect(other);
+  let release!:(value:unknown)=>void;
+  const hung=new Promise(resolve=>{release=resolve;});
+  const running=(pane:any)=>({...base,paneId:pane.id,state:"RUNNING",tasks:[{taskId:`turn:${pane.title}`,title:pane.title,status:"RUNNING",timing:{source:"NATIVE",startedAt:new Date().toISOString(),completedAt:null,durationMs:null,observedAt:new Date().toISOString()},modelsUsed:[]}]});
+  c.controller.inspect.mockImplementation(async(p:any)=>p.id===slow.id?hung as any:running(p));
+  c.controller.inspect.mockClear();
+  const service=createSpaceControl({...c.options,observeBudgetMs:50});
+  const started=Date.now();
+  await service.tick();
+  expect(Date.now()-started).toBeLessThan(5_000);
+  expect(await service.withOperatorMutation(free,async()=>"attached")).toBe("attached");
+  const bound=async(pane:any)=>((await service.watches(actor,c.room.id,"list",{})) as any[]).find(w=>w.paneId===pane.id)?.targetTaskRef;
+  expect(await bound(other)).toBe(`turn:${other.title}`);
+  expect(await bound(slow)).toBeNull();
+  // The next tick shares the read still running instead of stacking another on the busy pane.
+  await service.tick();
+  expect(c.controller.inspect.mock.calls.filter(([p])=>(p as any).id===slow.id)).toHaveLength(1);
+  release(running(slow));
+  await vi.waitFor(async()=>{await service.tick();expect(await bound(slow)).toBe(`turn:${slow.title}`);});
+ });
  it("persists the exact watched native turn before another turn starts and notifies once",async()=>{
   const c=fixture(),pane=c.panes[0]!;
   await c.execute([{kind:"pane",operation:"prompt",target:{paneIds:[pane.id]},text:"First task"}]);
@@ -52,6 +142,60 @@ describe("Space control",()=>{
   expect(scheduleId).toMatch(/^control_schedule:/);
   const read=await c.execute([{kind:"watch",operation:"status",id:scheduleId}],"read-one");
   expect(read.results[0]).toMatchObject({status:"COMPLETED",evidence:{result:{id:scheduleId,status:"SCHEDULED"}}});
+ });
+ it("an omp stop whose first Escape ended only a pty:true command interrupts once more and confirms the turn's end (step 9, 3/11)",async()=>{
+  const c=fixture(),pane=c.panes[0]!;
+  const base={...await c.controller.inspect(pane),runtimeId:"cli:omp"};
+  // omp's session says the turn goes on until the second interrupt.
+  c.controller.inspect.mockImplementation(async()=>({...base,state:c.controller.interrupt.mock.calls.length<2?"RUNNING":"IDLE"}) as never);
+  const stopped=await c.service.execute(actor,controlExecuteSchema.parse({roomId:c.room.id,requestId:"stop-omp",actions:[{kind:"pane",operation:"stop",target:{paneIds:[pane.id]},when:"NOW"}]}),true);
+  expect(c.controller.interrupt).toHaveBeenCalledTimes(2);
+  expect(stopped.results[0]).toMatchObject({status:"COMPLETED",detail:"Native execution stopped successfully."});
+  // A turn that goes on after both is never reported stopped.
+  c.controller.interrupt.mockClear();c.controller.inspect.mockResolvedValue({...base,state:"RUNNING"} as never);
+  const going=await c.service.execute(actor,controlExecuteSchema.parse({roomId:c.room.id,requestId:"stop-omp-2",actions:[{kind:"pane",operation:"stop",target:{paneIds:[pane.id]},when:"NOW"}]}),true);
+  expect(c.controller.interrupt).toHaveBeenCalledTimes(2);
+  expect(going.results[0]).toMatchObject({status:"UNKNOWN"});
+ },20_000);
+ it("R65-1: an after-turn model switch waits for a draft to clear before applying",async()=>{
+  const c=fixture(),pane=c.panes[0]!;
+  const base=await c.controller.inspect(pane);
+  let state="RUNNING",notReady:string|null="its composer holds text";
+  c.controller.inspect.mockImplementation(async()=>({...base,state}) as never);
+  const service=createSpaceControl({...c.options,promptNotReady:async()=>notReady,resolveActor:async()=>actor});
+  const sent=await service.execute(actor,controlExecuteSchema.parse({roomId:c.room.id,requestId:"after-turn-model",actions:[
+   {kind:"configure",target:{paneIds:[pane.id]},modelId:"gpt-6-astra",when:"AFTER_TURN"}]}),true);
+  expect(sent.results[0]).toMatchObject({status:"PENDING"});
+  state="IDLE";
+  await service.tick();await service.tick();await service.tick();await service.tick();
+  expect(c.controller.configure).not.toHaveBeenCalled();
+  notReady=null;await service.tick();
+  expect(c.controller.configure).toHaveBeenCalledOnce();
+  expect(c.controller.configure.mock.calls[0]![1]).toMatchObject({modelId:"gpt-6-astra"});
+ });
+ it("an after-turn prompt waits for the pane's next empty prompt while its CLI still works, never typed now (31/10 Alex/Max)",async()=>{
+  const c=fixture(),pane=c.panes[0]!;
+  let notReady:string|null="its CLI is working";
+  const promptNotReady=vi.fn(async()=>notReady);
+  const service=createSpaceControl({...c.options,promptNotReady,resolveActor:async()=>actor});
+  // The pane reads IDLE (Claude's own status) while its screen still shows the spinner.
+  const sent=await service.execute(actor,controlExecuteSchema.parse({roomId:c.room.id,requestId:"after-turn",actions:[{kind:"pane",operation:"prompt",target:{paneIds:[pane.id]},text:"Next step",when:"AFTER_TURN"}]}),true,"req:http-deferred");
+  expect(sent.results[0]).toMatchObject({status:"PENDING",detail:"Prompt scheduled for the pane's next empty prompt (its CLI is working)."});
+  await service.tick();notReady="its composer holds text";await service.tick();
+  expect(c.send).not.toHaveBeenCalled();
+  notReady=null;await service.tick();
+  expect(c.send).toHaveBeenCalledOnce();
+  expect(c.send.mock.calls[0]![1]).toBe("Next step");
+  // OBS-006: the prompt sent when the schedule fires still names the HTTP request that deferred it.
+  expect(c.send.mock.calls[0]![3]).toBe("req:http-deferred");
+  // A request moved to a new pane takes its after-turn text with it: the schedule's id cancels it (operator 31/10 «το πολύ 3 λεπτά»).
+  notReady="its CLI is working";
+  const moved=await service.execute(actor,controlExecuteSchema.parse({roomId:c.room.id,requestId:"after-turn-2",actions:[{kind:"pane",operation:"prompt",target:{paneIds:[pane.id]},text:"Moved step",when:"AFTER_TURN"}]}));
+  const scheduleId=(moved.results[0]!.evidence as {scheduleId:string}).scheduleId;
+  const cancelled=await service.execute(actor,controlExecuteSchema.parse({roomId:c.room.id,requestId:"cancel-2",actions:[{kind:"watch",operation:"cancel",id:scheduleId}]}));
+  expect(cancelled.results[0]).toMatchObject({status:"COMPLETED",evidence:{result:{id:scheduleId,status:"CANCELLED"}}});
+  notReady=null;await service.tick();
+  expect(c.send).toHaveBeenCalledOnce();
  });
  it("persists voice completion only after matching client read-back and never repeats on retry",async()=>{
   const c=fixture();
@@ -143,9 +287,12 @@ describe("Space control",()=>{
   const c=fixture();const completed=await c.execute([{kind:"room",operation:"rename",name:"Saved"}]);
   const record=(await c.repository.get("operation",actor.id,completed.id))!;
   await c.repository.write({...record,value:{...completed,status:"RUNNING",results:[],nextIndex:0}},record.version);
+  const done=await c.execute([{kind:"room",operation:"rename",name:"Kept"}],"kept");
+  const doneVersion=(await c.repository.get("operation",actor.id,done.id))!.version;
   const restarted=createSpaceControl(c.options);await restarted.start();
-  const list=await restarted.operations(actor,c.room.id) as any[];expect(list[0].status).toBe("UNKNOWN");
-  expect(c.store.getRoom(c.room.id).name).toBe("Saved");await restarted.close();
+  const list=await restarted.operations(actor,c.room.id) as any[];expect(list.find(o=>o.id===completed.id).status).toBe("UNKNOWN");
+  expect((await c.repository.get("operation",actor.id,done.id))!.version).toBe(doneVersion);
+  expect(c.store.getRoom(c.room.id).name).toBe("Kept");await restarted.close();
  });
  it("defers unsupported CLI adapters without sending input",async()=>{
   const c=fixture();c.store.updatePane(c.panes[0]!.id,{terminalRuntimeId:"cli:unsupported"});
@@ -219,8 +366,11 @@ describe("Space control",()=>{
   const command=controlExecuteSchema.parse({roomId:c.room.id,requestId:"once",actions:[{kind:"pane",operation:"continue",target:{paneIds:[c.panes[0]!.id]}}]});
   const scheduled=await service.schedules(actor,c.room.id,"create",undefined,new Date(Date.now()+1000).toISOString(),command) as any;
   const saved=(await c.repository.get("schedule",actor.id,scheduled.id))!;
-  await c.repository.write({...saved,value:{...scheduled,dueAt:new Date(Date.now()-100).toISOString()}},saved.version);
+  const dueAt=new Date(Date.now()-100).toISOString();
+  await c.repository.write({...saved,value:{...scheduled,dueAt}},saved.version);
   await Promise.all([service.tick(),other.tick()]);expect(c.send).toHaveBeenCalledOnce();
+  // OBS-006: an AT_TIME schedule starts from no request; the send it fires names a server-minted id for the schedule and its due time.
+  expect(c.send.mock.calls[0]![3]).toBe(`sched-${scheduled.id}-${dueAt}`);
   expect((await service.schedules(actor,c.room.id,"list") as any[])[0].status).toBe("COMPLETED");
  });
  it("refreshes native readiness after start instead of reusing the pre-start observation",async()=>{
@@ -229,6 +379,36 @@ describe("Space control",()=>{
   c.controller.inspect.mockImplementation(async(p:any,freshness?:{fresh?:boolean})=>({paneId:p.id,title:p.title,runtimeId:"cli:gemini",sessionId:"session:one",state:started&&freshness?.fresh?"IDLE":"UNKNOWN",nativeTaskRef:null,modelId:null,nativeMode:null,checkedAt:new Date().toISOString(),tasks:[]}) as any);
   const result=await c.execute([{kind:"pane",operation:"start",target:{paneIds:[c.panes[0]!.id]}}]);
   expect(result.status).toBe("COMPLETED");expect(c.controller.start).toHaveBeenCalledOnce();
+ });
+ it("a start after the CLI exited is a new session, not an unconfirmed resume; a resume still needs the prior native task (EXT-G-6)",async()=>{
+  // 2/11 dev: a Gemini pane's start after /quit answered UNKNOWN "The original native task has not been confirmed after resume."
+  const c=fixture(),pane=c.panes[0]!;
+  c.store.createPaneCliSession({paneId:pane.id,roomId:c.room.id,runtimeId:"cli:codex",providerId:"codex",agentId:"codex",modelId:"test",reasoningEffort:"low",launchMode:"FRESH",cwd:"/tmp",codexThreadId:"05644479-4762-4a1e-a376-f7f8569dd788",status:"EXITED"});
+  let started=false;
+  c.controller.start.mockImplementation(async()=>{started=true;return {};});
+  c.controller.inspect.mockImplementation(async(p:any)=>({paneId:p.id,title:p.title,runtimeId:"cli:codex",sessionId:"session:one",state:started?"IDLE":"EXITED",nativeTaskRef:started?"native:new":null,modelId:null,nativeMode:null,checkedAt:new Date().toISOString(),tasks:[]}) as any);
+  expect((await c.execute([{kind:"pane",operation:"start",target:{paneIds:[pane.id]}}],"request:start")).status).toBe("COMPLETED");
+  const resumed=await c.execute([{kind:"pane",operation:"resume",target:{paneIds:[pane.id]}}],"request:resume");
+  expect(resumed.status).toBe("UNKNOWN");expect(JSON.stringify(resumed)).toContain("original native task has not been confirmed");
+ });
+ it("restart and reopen of a CLI that never ran a command start a fresh session; resume still fails (SpaceApp Android, 2/11)",async()=>{
+  // 2/11 Bruno/Iris: the phone's Restart of a Codex pane quit by Ctrl+C before any command failed "… has no resumable transcript".
+  const c=fixture(),pane=c.panes[0]!;
+  c.store.createPaneCliSession({paneId:pane.id,roomId:c.room.id,runtimeId:"cli:codex",providerId:"codex",agentId:"codex",modelId:"test",reasoningEffort:"low",launchMode:"FRESH",cwd:"/tmp",codexThreadId:"05644479-4762-4a1e-a376-f7f8569dd788",status:"EXITED"});
+  c.controller.resume.mockRejectedValue(new CliTaskNotResumableError("Space CLI task cli_task:one has no resumable transcript."));
+  c.controller.inspect.mockImplementation(async(p:any)=>({paneId:p.id,title:p.title,runtimeId:"cli:codex",sessionId:"session:two",state:"IDLE",nativeTaskRef:"native:new",modelId:null,nativeMode:null,checkedAt:new Date().toISOString(),tasks:[]}) as any);
+  const restarted=await c.execute([{kind:"pane",operation:"restart",target:{paneIds:[pane.id]}}],"request:restart");
+  expect(restarted.status).toBe("COMPLETED");expect(restarted.results[0]!.detail).toContain("a fresh CLI session started");
+  expect(c.controller.start).toHaveBeenCalledOnce();
+  c.store.updatePane(pane.id,{isClosed:true,status:"CLOSED"});
+  expect((await c.execute([{kind:"pane",operation:"reopen",target:{paneIds:[pane.id],state:"CLOSED"}}],"request:reopen")).status).toBe("COMPLETED");
+  expect(c.controller.start).toHaveBeenCalledTimes(2);
+  const resumed=await c.execute([{kind:"pane",operation:"resume",target:{paneIds:[pane.id]}}],"request:resume");
+  expect(resumed.status).toBe("FAILED");expect(JSON.stringify(resumed)).toContain("no resumable transcript");
+  // Any other resume failure is still the answer, never a silent fresh start.
+  c.controller.resume.mockRejectedValue(new Error("Room Agent can resume only tasks belonging to this room."));
+  const other=await c.execute([{kind:"pane",operation:"restart",target:{paneIds:[pane.id]}}],"request:other");
+  expect(other.status).toBe("FAILED");expect(c.controller.start).toHaveBeenCalledTimes(2);
  });
  it("reopens Chat without submitting a continuation prompt",async()=>{
   const c=fixture();c.store.updatePane(c.panes[0]!.id,{mode:"CHAT",isClosed:true,status:"CLOSED"});
@@ -545,6 +725,26 @@ describe("Space control",()=>{
   expect(content[0].paneId).toBe(openPane.id);
   expect(content[0].closed).toBe(false);
   expect(content[0].text).toContain("Five tiny words");
+ });
+ it("inspect CONTENT reads a copilot pane's CLI like a terminal, and still refuses a pane without a CLI (SpaceApp Android, 31/10)", async () => {
+  const c = fixture();
+  const mail = c.store.createPane({ roomId: c.room.id, title: "Emma", mode: "MAIL_COPILOT" } as never);
+  const web = c.store.createPane({ roomId: c.room.id, title: "Web", mode: "BROWSER" } as never);
+  c.controller.inspect.mockImplementation(async (p: any) => ({ paneId: p.id, title: p.title, state: "IDLE", text: "Inbox: 3 new", checkedAt: new Date().toISOString(), tasks: [] }));
+  const [copilot] = await c.service.inspect(actor, { roomId: c.room.id, paneId: mail.id, section: "CONTENT", offset: 0, limit: 1 }) as any[];
+  expect(copilot).toMatchObject({ paneId: mail.id, text: "Inbox: 3 new" });
+  expect(copilot.supported).toBeUndefined();
+  const [browser] = await c.service.inspect(actor, { roomId: c.room.id, paneId: web.id, section: "CONTENT", offset: 0, limit: 1 }) as any[];
+  expect(browser).toMatchObject({ paneId: web.id, supported: false, reason: "Native content adapter is unavailable for this pane type." });
+ });
+ it("inspect CONTENT asks the pane for its colour runs only when styled (SpaceApp Android R9)", async () => {
+  const c = fixture(), pane = c.panes[0]!;
+  await c.service.inspect(actor, { roomId: c.room.id, paneId: pane.id, section: "CONTENT", offset: 0, limit: 1 });
+  expect(c.controller.inspect).toHaveBeenLastCalledWith(expect.objectContaining({ id: pane.id }));
+  await c.service.inspect(actor, { roomId: c.room.id, paneId: pane.id, section: "CONTENT", offset: 0, limit: 1, styled: true });
+  expect(c.controller.inspect).toHaveBeenLastCalledWith(expect.objectContaining({ id: pane.id }), { styled: true });
+  await c.service.inspect(actor, { roomId: c.room.id, paneId: pane.id, section: "MODELS", offset: 0, limit: 1, styled: true });
+  expect(c.controller.inspect).toHaveBeenLastCalledWith(expect.objectContaining({ id: pane.id }));
  });
  it("space_test_mcp_tools counts the room's open panes from the STATE answer",async()=>{
   const c=fixture();c.store.updatePane(c.panes[0]!.id,{isClosed:true,status:"CLOSED"});

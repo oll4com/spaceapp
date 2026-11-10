@@ -9,13 +9,16 @@ import { copilotRuntimeOptions } from "../copilot-kit/copilot-runtimes.js";
 import { RAIL_DEFAULT_WIDTH, RAIL_MAX_WIDTH, RAIL_MIN_WIDTH, readRailPreference, writeRailPreference, type RailPreference } from "../copilot-kit/rail-preference.js";
 import { useCopilotAgent } from "../copilot-kit/useCopilotAgent.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { Activity, PanelRight, Settings, TabletSmartphone, Terminal } from "../ui-theme/app-icons.js";
 import { ActivityTab } from "./ActivityTab.js";
 import { PreviewView } from "./PreviewView.js";
 import { SetupTab } from "./SetupTab.js";
 import { useAppStudioData } from "./useAppStudio.js";
+import { onPaneTarget } from "../notifications/pane-target.js";
 import "../copilot-kit/copilot-pane.css";
 import "./app-studio-pane.css";
+import { CopilotNotice } from "../copilot-kit/CopilotNotice.js";
 
 export interface AppStudioPaneProps {
   pane: Pane;
@@ -44,6 +47,8 @@ export function resolveActiveTab(tab: string | null | undefined, layout: "split"
  * mounted whichever tab is active; PaneCard renders it with its usual props. Narrow panes stack: one surface at a time.
  */
 export function AppStudioPane({ pane, isVisible, terminal }: AppStudioPaneProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const data = useAppStudioData(pane, isVisible);
   const paneRef = useRef<HTMLDivElement | null>(null);
   const layout = useCopilotLayout(paneRef);
@@ -59,12 +64,9 @@ export function AppStudioPane({ pane, isVisible, terminal }: AppStudioPaneProps)
   useEffect(() => { writeRailPreference(`space:app-studio:rail:${pane.id}`, rail); }, [pane.id, rail]);
   // A notification click (a question, a finished brief) opens Activity.
   useEffect(() => {
-    const onOpen = (event: Event) => {
-      const detail = (event as CustomEvent<{ paneId?: string; target?: string }>).detail;
-      if (detail?.paneId === pane.id && /^(question|brief):/.test(detail.target ?? "")) setRail((current) => ({ ...current, collapsed: false, tab: "activity" }));
-    };
-    window.addEventListener("space:notification-open", onOpen);
-    return () => window.removeEventListener("space:notification-open", onOpen);
+    return onPaneTarget(pane.id, (target) => {
+      if (/^(question|brief):/.test(target)) setRail((current) => ({ ...current, collapsed: false, tab: "activity" }));
+    });
   }, [pane.id]);
 
   const togglePaused = useCallback(async (checked: boolean) => {
@@ -94,39 +96,39 @@ export function AppStudioPane({ pane, isVisible, terminal }: AppStudioPaneProps)
   const activeTab = resolveActiveTab(rail.tab, layout);
   const railOpen = layout === "stacked" || !rail.collapsed;
   const previewShown = layout === "split" || activeTab === "preview" || rail.collapsed;
-  const runLabel = paused ? "Paused" : run?.status === "PAUSED" ? "Run paused" : run?.status === "STOPPED" ? "Run stopped"
-    : run?.pendingBriefs ? `${run.pendingBriefs} brief${run.pendingBriefs === 1 ? "" : "s"}` : "No briefs";
+  const runLabel = paused ? t("Paused") : run?.status === "PAUSED" ? t("Run paused") : run?.status === "STOPPED" ? t("Run stopped")
+    : run?.pendingBriefs ? t(run.pendingBriefs === 1 ? "{count} brief" : "{count} briefs", { count: run.pendingBriefs }) : t("No briefs");
 
   return (
     <div ref={paneRef} className="jc-pane as-pane" data-pane-id={pane.id} data-layout={layout} data-rail={railOpen ? "open" : "collapsed"}
       style={{ "--jc-rail-width": `${rail.width}px` } as React.CSSProperties}>
-      <header className="jc-bar" aria-label="App Studio command bar" data-layout={layout}>
+      <header className="jc-bar" aria-label={t("App Studio command bar")} data-layout={layout}>
         <div className="jc-bar-row primary">
           <AgentChip kind={APP_STUDIO_KIND} pane={pane} runtimeOptions={runtimeOptions} switching={agent.switching} onSwitchRuntime={(runtimeId) => void agent.switchAgent(runtimeId)} onSetDefault={() => void agent.setAsDefault()} />
           <div className={`jc-run-pill state-${paused || run?.status === "PAUSED" || run?.status === "STOPPED" ? "paused" : run?.pendingBriefs ? "running" : "idle"}`} role="status" aria-live="polite">
             <span className="jc-run-label">{runLabel}</span>
-            {run?.openQuestions ? <span className="jc-run-needs" title="Questions waiting for you">{run.openQuestions} need{run.openQuestions === 1 ? "s" : ""} you</span> : null}
+            {run?.openQuestions ? <span className="jc-run-needs" title={t("Questions waiting for you")}>{t(run.openQuestions === 1 ? "{count} needs you" : "{count} need you", { count: run.openQuestions })}</span> : null}
           </div>
         </div>
         <div className="jc-bar-row secondary">
           <div className="jc-bar-toggles">
-            <SpaceToggle compact className="jc-toggle" label="Paused" checked={paused} onChange={(checked) => void togglePaused(checked)} />
+            <SpaceToggle compact className="jc-toggle" label={t("Paused")} checked={paused} onChange={(checked) => void togglePaused(checked)} />
             {layout === "split" ? (
-              <button type="button" className={`jc-icon-button${railOpen ? " selected" : ""}`} aria-pressed={railOpen} aria-label={railOpen ? "Collapse the App Studio rail" : "Expand the App Studio rail"} title={railOpen ? "Collapse rail" : "Expand rail"} onClick={toggleRail}>
+              <button type="button" className={`jc-icon-button${railOpen ? " selected" : ""}`} aria-pressed={railOpen} aria-label={railOpen ? t("Collapse the App Studio rail") : t("Expand the App Studio rail")} title={railOpen ? t("Collapse rail") : t("Expand rail")} onClick={toggleRail}>
                 <PanelRight aria-hidden="true" />
               </button>
             ) : null}
           </div>
         </div>
       </header>
-      {notice || data.error ? <div className="jc-notice" role="status">{notice ?? data.error}</div> : null}
+      <CopilotNotice text={notice || data.error} loaded={Boolean(data.settings)} />
       <div className="jc-body">
-        <section className="jc-main as-main" aria-label="Preview" data-active={previewShown ? "true" : "false"} aria-hidden={previewShown ? undefined : "true"}>
+        <section className="jc-main as-main" aria-label={t("Preview")} data-active={previewShown ? "true" : "false"} aria-hidden={previewShown ? undefined : "true"}>
           <PreviewView previews={data.previews} />
         </section>
-        <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label="Resize the App Studio rail" aria-hidden={rail.collapsed ? "true" : undefined}
+        <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label={t("Resize the App Studio rail")} aria-hidden={rail.collapsed ? "true" : undefined}
           onPointerDown={onResizeStart} onPointerMove={onResizeMove} onPointerUp={onResizeEnd} onPointerCancel={onResizeEnd} onDoubleClick={() => setRail((current) => ({ ...current, width: RAIL_DEFAULT_WIDTH }))} />
-        <CopilotRail tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
+        <CopilotRail firstRead={{ text: notice || data.error, loaded: Boolean(data.settings) }} tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
           {railOpen && activeTab === "activity" ? <ActivityTab paneId={pane.id} events={data.events} onChanged={() => void data.refresh()} /> : null}
           {railOpen && activeTab === "setup" && data.settings ? (
             <SetupTab pane={pane} settings={data.settings} runtimeOptions={runtimeOptions} switching={agent.switching} accountRevision={agent.accountRevision}

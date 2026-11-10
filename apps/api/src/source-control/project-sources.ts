@@ -62,7 +62,7 @@ export class ProjectSourceOpener {
   private async populate(owner: string, input: OpenProjectInput, target: { path: string; created: boolean }, remote: RemoteSource | null, restricted: boolean): Promise<OpenProjectResult> {
     const source = input.source;
     // The folder is new or empty and reserved for this request. Git runs directly in it, so an enclosing
-    // repository (for example /opt/spaceapp around /opt/spaceapp/projects) is never discovered or modified.
+    // repository (for example <install root> around <install root>/projects) is never discovered or modified.
     if (source.kind === "new") {
       if (basename(target.path) !== source.name) throw new GitControlError("INVALID_DESTINATION", "The folder name must match the project name.");
       await runGit(target.path, ["init", "-b", "main"]);

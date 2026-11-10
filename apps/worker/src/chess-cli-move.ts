@@ -1,7 +1,13 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { chmod, mkdir, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { dirname } from "node:path";
+import { parseTraceparent } from "@space/contracts";
+import type { SpanExporter } from "@space/runtime";
+import { activityCorrelation } from "./activity-observability.js";
+import { workerLog } from "./worker-log.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
  * Chess benchmark moves from SpaceApp CLI runtimes: the same isolated agent-chat turn Chat panes
@@ -23,10 +29,10 @@ export interface ChessCliMoveInput {
   timeoutMs: number;
 }
 
-export const CHESS_MOVE_SOCKET = "/opt/spaceapp/var/chess-benchmark/worker.sock";
+export const CHESS_MOVE_SOCKET = `${SPACE_INSTALL_ROOT}/var/chess-benchmark/worker.sock`;
 /** Empty directory the CLIs start in; the operator account can read it but not write to it. */
-export const CHESS_CLI_WORKSPACE = "/opt/spaceapp/var/chess-benchmark/workspace";
-const BROKER = "/opt/spaceapp/bin/space-cli-vpn-broker";
+export const CHESS_CLI_WORKSPACE = `${SPACE_INSTALL_ROOT}/var/chess-benchmark/workspace`;
+const BROKER = `${SPACE_INSTALL_ROOT}/bin/space-cli-vpn-broker`;
 const PATH_ENV = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_BODY_BYTES = 32 * 1024;
@@ -160,10 +166,15 @@ export interface WorkerSocketRoute {
 
 /** POST /move {runtimeId, model, effort, claudeProfile, prompt, timeoutMs} -> 200 {text} | 400/502 {error}; plus `routes`. */
 export async function startChessMoveServer(socketPath = CHESS_MOVE_SOCKET, run: MoveRunner = runChessCliMove,
-  routes: Record<string, WorkerSocketRoute> = {}): Promise<Server> {
+  routes: Record<string, WorkerSocketRoute> = {}, spans: SpanExporter | null = null): Promise<Server> {
   await mkdir(dirname(socketPath), { recursive: true, mode: 0o755 });
   await rm(socketPath, { force: true });
   const server = createServer((request, response) => {
+    // OBS-006: the caller's x-request-id names this request in its log line and answer. Trust boundary: only an id shaped like
+    // Space's own (req:…, trace:…, council_run:…, 8-64 of [A-Za-z0-9:_-]) is kept, anything else gets the worker's own.
+    const header = request.headers["x-request-id"];
+    const requestId = typeof header === "string" && /^[A-Za-z0-9:_-]{8,64}$/.test(header) ? header : `req_${randomBytes(12).toString("hex")}`;
+    response.setHeader("x-request-id", requestId);
     const reply = (status: number, payload: unknown) => {
       if (response.writableEnded || response.destroyed) return;
       response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(payload));
@@ -183,6 +194,25 @@ export async function startChessMoveServer(socketPath = CHESS_MOVE_SOCKET, run: 
       }
     });
     request.on("end", () => {
+      // OBS-006 (2026-11-02): one line per request with the caller's ids (traceId, turnId, traceparent in the body), the way activities log;
+      // until then a failed Nous turn or move left nothing in journalctl -u space-worker.
+      const started = Date.now();
+      const parsed = (() => { try { return JSON.parse(body) as unknown; } catch { return undefined; } })();
+      const correlation = activityCorrelation([parsed]);
+      // One span per request (OTLP export on): under the caller's traceparent, else as its own trace, which the log line then names.
+      const parent = parseTraceparent((parsed as { traceparent?: unknown } | undefined)?.traceparent);
+      if (spans && !correlation.w3cTraceId) correlation.w3cTraceId = randomBytes(16).toString("hex");
+      const logged = (status: "COMPLETED" | "FAILED" | "INVALID" | "ABORTED") => {
+        const routeName = (request.url ?? "").slice(1);
+        const durationMs = Date.now() - started;
+        workerLog(status === "COMPLETED" ? "info" : "warn", "worker.socket_request", { route: routeName, status, durationMs, requestId, ...correlation });
+        spans?.record({
+          traceId: correlation.w3cTraceId!, spanId: randomBytes(8).toString("hex"), parentSpanId: parent?.parentId ?? null,
+          name: `worker.socket ${routeName}`, startTimeUnixNano: BigInt(started) * 1_000_000n, endTimeUnixNano: BigInt(started + durationMs) * 1_000_000n,
+          attributes: { "space.route": routeName, "space.outcome": status, ...(correlation.traceId ? { "space.trace_id": correlation.traceId } : {}) },
+          error: status === "FAILED", kind: 2
+        });
+      };
       if (route) {
         const controller = new AbortController();
         response.on("close", () => { if (!response.writableFinished) controller.abort(); });
@@ -194,8 +224,9 @@ export async function startChessMoveServer(socketPath = CHESS_MOVE_SOCKET, run: 
         };
         const end = (payload: unknown) => { if (!response.writableEnded && !response.destroyed) response.end(`${JSON.stringify(payload)}\n`); };
         Promise.resolve().then(() => route.handle(JSON.parse(body), controller.signal, emit)).then(
-          (result) => streaming ? end({ result }) : reply(200, result),
+          (result) => { logged("COMPLETED"); return streaming ? end({ result }) : reply(200, result); },
           (error: unknown) => {
+            logged(controller.signal.aborted ? "ABORTED" : route.isInputError(error) || error instanceof SyntaxError ? "INVALID" : "FAILED");
             const payload = { error: error instanceof Error ? error.message.slice(0, 300) : "The request failed." };
             if (streaming) end(payload);
             else reply(route.isInputError(error) || error instanceof SyntaxError ? 400 : 502, payload);
@@ -207,6 +238,7 @@ export async function startChessMoveServer(socketPath = CHESS_MOVE_SOCKET, run: 
       try {
         input = validateChessCliMoveInput(JSON.parse(body));
       } catch (error) {
+        logged("INVALID");
         reply(400, { error: error instanceof ChessMoveInputError ? error.message : "Invalid move request." });
         return;
       }
@@ -216,8 +248,8 @@ export async function startChessMoveServer(socketPath = CHESS_MOVE_SOCKET, run: 
         if (!response.writableFinished) controller.abort();
       });
       run(input, controller.signal).then(
-        (text) => reply(200, { text }),
-        (error: unknown) => reply(502, { error: error instanceof Error ? error.message.slice(0, 180) : "The move failed." })
+        (text) => { logged("COMPLETED"); reply(200, { text }); },
+        (error: unknown) => { logged(controller.signal.aborted ? "ABORTED" : "FAILED"); reply(502, { error: error instanceof Error ? error.message.slice(0, 180) : "The move failed." }); }
       );
     });
   });

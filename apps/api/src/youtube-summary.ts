@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { YOUTUBE_SUMMARY_MODELS } from "@space/contracts";
 import { SpaceConflictError, SpaceFeatureDisabledError } from "@space/runtime";
+import { gatewayRequestIdHeader } from "./gateway-request-id.js";
 import { createVideoEngine, type VideoEngineRun } from "./video/engine.js";
 
 export type YouTubeTextKind = "summary" | "transcript";
@@ -61,7 +62,7 @@ export async function youtubeCaptions(options: { workRoot: string; toolsDir: str
  * every video on 2026-10-21, so it only listens to videos without captions.
  */
 export async function youtubeVideoText(options: { gatewayUrl: string; keyFile: string | null; model?: string; videoId: string; kind: YouTubeTextKind;
-  fetchImpl?: typeof fetch; captions?: (videoId: string) => Promise<string | null> }): Promise<{ text: string; model: string }> {
+  fetchImpl?: typeof fetch; captions?: (videoId: string) => Promise<string | null>; traceId?: string | null }): Promise<{ text: string; model: string }> {
   if (options.kind === "transcript" && options.captions) {
     const text = await options.captions(options.videoId).catch(() => null);
     if (text) return { text, model: "YouTube captions" };
@@ -73,7 +74,7 @@ export async function youtubeVideoText(options: { gatewayUrl: string; keyFile: s
   try {
     response = await (options.fetchImpl ?? fetch)(`${options.gatewayUrl}/gemini/v1/generate`, {
       method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", ...gatewayRequestIdHeader(options.traceId) },
       body: JSON.stringify({ model, prompt: PROMPTS[options.kind], videoUrl: `https://www.youtube.com/watch?v=${options.videoId}` }),
       signal: AbortSignal.timeout(280_000)
     });

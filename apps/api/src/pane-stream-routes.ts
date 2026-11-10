@@ -1,5 +1,5 @@
 import { countsAsOperatorInput, createBrowserControlActivity } from "./browser-control-activity.js";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type {} from "./request-context.js";
 import type {} from "@fastify/websocket";
 import type { FastifyInstance, RouteShorthandOptions } from "fastify";
@@ -13,8 +13,10 @@ import { SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, type
 import { operatorBrowserActor } from "./browser-actors.js";
 import { BrowserControlHeldError } from "./browser-errors.js";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
+import { audibleMessagePaneIds, createBrowserAudioMute, pulseBrowserAudioMuteDeps } from "./browser-audio-mute.js";
 import { createBrowserLiveSender } from "./browser-live-sender.js";
 import { createBrowserStreamHostWatch, type BrowserStreamHostEnd } from "./browser-stream-host-watch.js";
+import { activeTabProfilePath } from "./cli-browser-cdp.js";
 import type { SpaceApiConfig } from "./config.js";
 import { assertBrowserPaneCompatible, getPaneById } from "./pane-guards.js";
 import { recordAudit } from "./request-audit.js";
@@ -136,6 +138,16 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
   const hostWatch = readHostHealth
     ? createBrowserStreamHostWatch({ health: readHostHealth, intervalMs: config.browserStreamHostWatchMs })
     : null;
+  // Only the panes a Space tab plays are heard: every other Chrome is muted at the source (browser-audio-mute.ts).
+  const audioMute = config.browserSessionsEnabled && config.browserSessionsAudioEnabled && process.env.VITEST !== "true"
+    ? createBrowserAudioMute(pulseBrowserAudioMuteDeps(config.browserSessionsPulseServer, async (paneIds) => (await Promise.all(paneIds.map(async (id) => {
+      const session = await Promise.resolve().then(() => store.getActivePaneBrowserSession(id)).catch(() => null);
+      if (!session) return [];
+      const active = await activeTabProfilePath(config.browserSessionsProfileRoot, { id: session.paneId, roomId: session.roomId }, session);
+      return [session.profilePath, active].map((path) => resolve(config.browserSessionsProfileRoot, path));
+    }))).flat()))
+    : null;
+  if (audioMute) app.addHook("onClose", async () => audioMute.stop());
   app.get("/api/panes/:id/browser/frames", defaultWebsocketRateLimitOptions, (socket, request) => {
     void (async () => {
       const params = parseQuery(idParamSchema, request.params);
@@ -210,7 +222,9 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
         throw new SpaceFeatureDisabledError("BROWSER_STREAM_UNAVAILABLE", "Realtime browser streaming is unavailable on this runtime.");
       }
       const sender = createBrowserLiveSender(socket, query.frameAck === "1");
-      socket.once("close", () => sender.stop());
+      // A browser the operator has on screen is in use (browser-reaper.ts closes only unused ones).
+      const unview = controlActivity.view(pane.id);
+      socket.once("close", () => { sender.stop(); unview(); });
       const stream = await startFrameStream(session.sessionId, query.mode, (frame) => {
         sender.present(frame.data, frame.metadata.viewportDimensions as { width: number; height: number } | undefined);
       }, { focused: true });
@@ -268,6 +282,7 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
         inputQueue = inputQueue.then(async () => {
           const startedAt = Date.now();
           try {
+            if (countsAsOperatorInput(message.input)) controlActivity.noteUse(pane.id);
             if ("leaseId" in message.input && typeof message.input.leaseId === "string" && countsAsOperatorInput(message.input)) controlActivity.noteInput(message.input.leaseId);
             await dispatchInput(
               pane,
@@ -349,6 +364,7 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
       if (!browserSessionManager.acceptAudioTicket(pane.id, session.sessionId, query.token)) {
         throw new SpaceFeatureDisabledError("BROWSER_AUDIO_TOKEN_INVALID", "Browser audio token is invalid or expired.");
       }
+      const ownerUserId = (await store.getRoom(pane.roomId)).ownerUserId;
       const startAudioStream = browserSessionManager.startAudioStream?.bind(browserSessionManager);
       if (!startAudioStream) {
         throw new SpaceFeatureDisabledError("BROWSER_AUDIO_UNAVAILABLE", "Browser audio streaming is unavailable on this runtime.");
@@ -363,6 +379,16 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
         await stream.stop();
         return;
       }
+      const audible = audioMute?.hold([pane.id]);
+      socket.on("message", (raw: Buffer) => {
+        const paneIds = audible ? audibleMessagePaneIds(String(raw)) : null;
+        if (!paneIds) return;
+        // Only the socket owner's own panes: another user's Chrome never becomes audible through this socket.
+        void Promise.all(paneIds.map(async (id) => {
+          const other = await getPaneById(store, id).catch(() => null);
+          return other && (await Promise.resolve().then(() => store.getRoom(other.roomId)).catch(() => null))?.ownerUserId === ownerUserId ? id : null;
+        })).then((ids) => audible?.update([pane.id, ...ids.filter((id): id is string => id !== null)]));
+      });
       sendBrowserStreamMessage(socket, {
         type: "audioReady",
         paneId: pane.id,
@@ -377,6 +403,7 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
         if (stopped) return;
         stopped = true;
         unwatch?.();
+        audible?.release();
         void stream.stop().catch(() => undefined);
       };
       // The watch never calls back synchronously, so `unwatch` is set before `stop` can run.

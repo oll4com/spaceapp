@@ -1159,6 +1159,11 @@
   font-size: 11px;
   line-height: 13px;
 }
+/* "No data" fits the 44px cell. */
+.health-indicator:has(.health-indicator-provider-tag) > strong.is-text {
+  font-size: 9px;
+  letter-spacing: 0;
+}
 .health-indicator > .health-dot {
   position: absolute;
   right: 5px;
@@ -1202,6 +1207,10 @@
 }
 .health-indicator.is-warning > strong,
 .health-indicator.is-critical > strong {
+  color: var(--health-tone);
+}
+/* Any account or API budget under 5%: the quota icon itself turns red (operator 2026-10-31). */
+.health-indicator.is-quota-low > svg {
   color: var(--health-tone);
 }
 .health-indicator.is-read-only {
@@ -1519,32 +1528,6 @@ body:has(.health-resources) .health-indicator-rail {
   }
   .health-indicator-rail {
     width: var(--rail-width, 50px);
-  }
-  .health-rail-expander {
-    display: inline-grid;
-    place-items: center;
-    width: var(--toolbar-control-size, 44px);
-    height: var(--toolbar-control-size, 44px);
-    min-width: var(--toolbar-control-size, 44px);
-    min-height: var(--toolbar-control-size, 44px);
-    max-width: var(--toolbar-control-size, 44px);
-    max-height: var(--toolbar-control-size, 44px);
-    box-sizing: border-box;
-    border: 1px solid var(--health-border);
-    border-radius: 8px;
-    background: var(--health-surface);
-    color: var(--health-text);
-    margin-bottom: 6px;
-  }
-  .health-rail-expander svg {
-    width: var(--toolbar-icon-size, 20px);
-    height: var(--toolbar-icon-size, 20px);
-  }
-  .health-rail-items {
-    display: none;
-  }
-  .health-indicator-rail.is-expanded .health-rail-items {
-    display: flex;
   }
   .health-indicator {
     width: var(--toolbar-control-size, 44px);
@@ -3434,7 +3417,7 @@ body:has(.health-resources) .room-toolbar-collapsed { visibility: hidden; }
   overflow-y: auto;
 }
 
-@media (max-width: 767px), (pointer: coarse) {
+@media (max-width: 767px) {
   :is(body, .space-shell, html):has(:focus:is(input, textarea, [contenteditable="true"], .xterm-helper-textarea)) .health-indicator-rail .health-rail-expander {
     display: inline-grid !important;
   }

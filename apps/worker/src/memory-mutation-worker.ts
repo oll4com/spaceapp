@@ -5,6 +5,7 @@ import { MEMORY_MUTATION_TASK_QUEUE, memoryMutationsEnabled, memoryMutationWorke
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
 import { otlpSpanExporterFromEnv } from "@space/runtime";
 import { createActivityObservabilityInterceptors } from "./activity-observability.js";
+import { resolveWorkerMetricsListen, startWorkerMetricsServer } from "./worker-metrics.js";
 import { reloadWhenServicesCommitChanges } from "./deployed-code-reload.js";
 
 const service = "space-memory-mutation-worker";
@@ -26,6 +27,9 @@ if (!memoryMutationsEnabled(process.env)) {
     interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
   });
   console.log(JSON.stringify({ service, status: "running", address, namespace, taskQueue: MEMORY_MUTATION_TASK_QUEUE }));
+  // Its activity counters on their own loopback endpoint, like the main worker's (OBS-007); a bind failure never stops the worker.
+  const metricsListen = resolveWorkerMetricsListen(process.env, "SPACE_MEMORY_MUTATION_METRICS_PORT");
+  if (metricsListen) console.log(JSON.stringify({ service, metricsEndpoint: (await startWorkerMetricsServer(metricsListen)) ? "LISTENING" : "UNAVAILABLE", port: metricsListen.port }));
   const stopReloadWatch = reloadWhenServicesCommitChanges(worker, { log: (message) => console.log(JSON.stringify({ service, status: "reloading", message })) });
   try {
     await worker.run();

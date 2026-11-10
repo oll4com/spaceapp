@@ -57,7 +57,8 @@ async function setup(upstream: (call: { url: string; token: string; body: Record
       settings: () => repository.getSettings(), fetchImpl, now: () => nowMs, codeAssistBaseUrl: "https://code-assist.test", codexBaseUrl: "https://codex.test",
       settleKeyUsage: async (_keyId, usage) => { settled.push(usage); } }) });
   const generate = (payload: Record<string, unknown>) => server.app.inject({ method: "POST", url: "/images/v1/generate", headers: { authorization: `Bearer ${plainKey}` }, payload });
-  const text = (payload: Record<string, unknown>) => server.app.inject({ method: "POST", url: "/gemini/v1/generate", headers: { authorization: `Bearer ${plainKey}` }, payload });
+  const text = (payload: Record<string, unknown>, headers: Record<string, string> = {}) =>
+    server.app.inject({ method: "POST", url: "/gemini/v1/generate", headers: { authorization: `Bearer ${plainKey}`, ...headers }, payload });
   return { repository, logs, calls, generate, text, refresh, settled };
 }
 
@@ -193,6 +194,17 @@ describe("Gemini text route", () => {
     expect(response.statusCode).toBe(422);
     expect(response.json().error.message).toContain("SAFETY");
     expect(empty.calls).toHaveLength(1);
+  });
+
+  it("keeps a Space caller's x-request-id as its log id and answer header, else makes its own (EXT-G-5, OBS-006's rule)", async () => {
+    const { text, logs, repository } = await setup(() => answer([{ text: "ok" }]));
+    const traced = await text({ model: "gemini-3.8-flash-medium", prompt: "x" }, { "x-request-id": "req:abc123def456" });
+    expect(traced.headers["x-request-id"]).toBe("req:abc123def456");
+    await text({ model: "gemini-3.8-flash-medium", prompt: "x" }, { "x-request-id": "has space" });
+    await logs.flush();
+    const ids = (await repository.listRequestLogs({ limit: 5 })).map((log) => log.requestId);
+    expect(ids).toContain("req:abc123def456");
+    expect(ids.filter((id) => id !== "req:abc123def456")).toEqual([expect.stringMatching(/^req_[0-9a-f]{32}$/)]);
   });
 
   it("refuses image and non-Gemini models, other video URLs and models outside the key's allowlist", async () => {

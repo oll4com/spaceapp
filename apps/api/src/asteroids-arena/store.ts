@@ -2,8 +2,9 @@ import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from 
 import { join } from "node:path";
 import { ARENA_PROTOCOL_VERSION, type ArenaMode, type ScoreBreakdown } from "./sim.js";
 import type { ArenaProviderId } from "./providers.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
-export const DEFAULT_ARENA_RESULTS_DIR = "/opt/spaceapp/var/asteroids-benchmark";
+export const DEFAULT_ARENA_RESULTS_DIR = `${SPACE_INSTALL_ROOT}/var/asteroids-benchmark`;
 const MAX_RUN_FILES = 40;
 const RUN_ID_PATTERN = /^arena-[a-z0-9-]{6,80}$/;
 

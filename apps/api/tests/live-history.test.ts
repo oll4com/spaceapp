@@ -42,4 +42,8 @@ describe("durable Live history", () => {
     const { repository } = fixture(); await repository.importLegacy("owner:a", "room:a", imported); await repository.clear("owner:a", "room:a");
     await repository.importLegacy("owner:a", "room:a", imported); expect((await repository.read("owner:a")).items).toEqual([]);
   });
+  it("imports every verified legacy turn, past the old newest 200 (31/10)", () => {
+    const rows = Array.from({ length: 250 }, (_, index) => ({ ...turn(`t${index}`), ownerId: "owner:a" }));
+    expect(verifiedLegacyVoiceTurns("owner:a", "room:a", rows.map(item => JSON.stringify(item)).join("\n"))).toHaveLength(250);
+  });
 });

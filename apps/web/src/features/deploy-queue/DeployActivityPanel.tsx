@@ -6,7 +6,6 @@ import { elapsed, relative, statusLabel, statusTone, submitterView, type DeployQ
 import "./deploy-activity.css";
 
 const POLL_MS = 5_000;
-const RECENT_LIMIT = 5;
 const STEPS = [
   { phase: "INTEGRATING", label: "Merge" },
   { phase: "VERIFYING", label: "Build" },
@@ -168,7 +167,8 @@ export function DeployActivityPanel({ client = api, active = true, refreshKey = 
   const byId = new Map((report?.active ?? []).map(ticket => [ticket.id, ticket]));
   const running = current ? current.ticketIds.map(id => byId.get(id)).filter((ticket): ticket is DeployQueueTicket => Boolean(ticket)) : [];
   const waiting = (report?.active ?? []).filter(ticket => !inCurrent.has(ticket.id));
-  const recent = (report?.recent ?? []).filter(ticket => ticket.status !== "CANCELLED").slice(0, RECENT_LIMIT);
+  // Every recent ticket the queue reports (until 31/10 the newest 5).
+  const recent = (report?.recent ?? []).filter(ticket => ticket.status !== "CANCELLED");
   // While open, the running batch shows its own clock; the header repeats it only when folded.
   const headerMeta = current ? (open ? null : elapsed(current.batchStartedAt, now)) : waiting.length ? `${waiting.length} waiting` : recent[0] ? `last ${relative(recent[0].updatedAt, now)}` : null;
 

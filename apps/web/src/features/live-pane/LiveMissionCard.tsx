@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { readLiveMission, runLiveMissionAction, type LiveMissionSnapshot } from "./live-missions.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 const pollMs = { active: 3000, idle: 10000 };
 const isActive = (snapshot: LiveMissionSnapshot | null) => Boolean(snapshot && ["QUEUED", "RUNNING", "PAUSED"].includes(snapshot.mission.status));
 
 export function LiveMissionCard({ roomId, className = "" }: { roomId?: string; className?: string }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [view, setView] = useState<{ roomId?: string; snapshot: LiveMissionSnapshot | null; error: string | null; loaded: boolean }>({ snapshot: null, error: null, loaded: false });
   const [goal, setGoal] = useState("");
   const [busy, setBusy] = useState(false);
@@ -71,50 +74,50 @@ export function LiveMissionCard({ roomId, className = "" }: { roomId?: string; c
     }
   };
 
-  if (!roomId || roomId === "global") return <section className={`live-mission-card ${className}`}>Select a room to use durable missions.</section>;
+  if (!roomId || roomId === "global") return <section className={`live-mission-card ${className}`}>{t("Select a room to use durable missions.")}</section>;
   const status = snapshot?.mission.status === "COMPLETED" && !snapshot.completionVerified ? "NEEDS VERIFICATION" : snapshot?.mission.status;
   const disabled = busy || !current.loaded || Boolean(current.error);
   return (
-    <section className={`live-mission-card ${className}`} aria-label="Durable mission">
+    <section className={`live-mission-card ${className}`} aria-label={t("Durable mission")}>
       <div className="live-mission-card-header">
-        <strong>Mission &amp; TODO</strong>
-        <span>{status ?? (current.loaded ? "No mission" : "Loading…")}</span>
-        <button type="button" disabled={busy} onClick={() => { setActionError(null); setRefresh(value => value + 1); }}>Refresh mission</button>
+        <strong>{t("Mission & TODO")}</strong>
+        <span>{status ? t(status) : (current.loaded ? t("No mission") : t("Loading…"))}</span>
+        <button type="button" disabled={busy} onClick={() => { setActionError(null); setRefresh(value => value + 1); }}>{t("Refresh mission")}</button>
       </div>
-      <p>Progress is stored on the server and remains available after voice disconnects.</p>
-      {current.error && <p role="alert">{current.error} Displayed progress may be stale.</p>}
-      {actionError?.roomId === roomId && <p role="alert">{actionError.message}</p>}
+      <p>{t("Progress is stored on the server and remains available after voice disconnects.")}</p>
+      {current.error && <p role="alert">{t(current.error)} {t("Displayed progress may be stale.")}</p>}
+      {actionError?.roomId === roomId && <p role="alert">{t(actionError.message)}</p>}
       {snapshot && <>
-        <h4>{snapshot.objective ?? "Room Agent mission"}</h4>
+        <h4>{snapshot.objective ?? t("Room Agent mission")}</h4>
         <p>{snapshot.mission.statusReason}</p>
         {snapshot.steps.length > 0 && <>
-          <p>Recorded steps: {snapshot.stepCount}</p>
+          <p>{t("Recorded steps: {count}", { count: snapshot.stepCount })}</p>
           <ol>{snapshot.steps.map(step => <li key={step.stepId}>
-            <strong>{step.label}</strong> — {step.status}
+            <strong>{step.label}</strong> — {t(step.status)}
             <div>{step.verificationSummary}</div>
           </li>)}</ol>
-          {snapshot.stepsTruncated && <p>Showing the latest {snapshot.steps.length} recorded steps.</p>}
+          {snapshot.stepsTruncated && <p>{t("Showing the latest {count} recorded steps.", { count: snapshot.steps.length })}</p>}
         </>}
         <details open={snapshot.steps.length === 0}>
-          <summary>Recorded actions: {snapshot.actionCount}</summary>
-          {snapshot.actions.length === 0 ? <p>No execution receipts have been recorded yet.</p> : <ol>
+          <summary>{t("Recorded actions: {count}", { count: snapshot.actionCount })}</summary>
+          {snapshot.actions.length === 0 ? <p>{t("No execution receipts have been recorded yet.")}</p> : <ol>
             {snapshot.actions.map(action => <li key={action.actionId}>
-              <strong>{action.actionType}</strong> — {action.status}
+              <strong>{action.actionType}</strong> — {t(action.status)}
               <div>{action.statusReason}</div>
-              {action.controlOperationId && <small>Operation: {action.controlOperationId}</small>}
+              {action.controlOperationId && <small>{t("Operation: {id}", { id: action.controlOperationId })}</small>}
             </li>)}
           </ol>}
-          {snapshot.actionsTruncated && <p>Showing the latest {snapshot.actions.length} actions.</p>}
+          {snapshot.actionsTruncated && <p>{t("Showing the latest {count} actions.", { count: snapshot.actions.length })}</p>}
         </details>
         {active && <div className="live-mission-controls">
-          {["RUNNING", "QUEUED"].includes(snapshot.mission.status) && <button type="button" disabled={disabled} onClick={() => { void act("pause"); }}>Pause mission</button>}
-          {snapshot.mission.status === "PAUSED" && <button type="button" disabled={disabled} onClick={() => { void act("resume"); }}>Resume mission</button>}
-          <button type="button" disabled={disabled} onClick={() => { void act("cancel"); }}>Stop mission</button>
+          {["RUNNING", "QUEUED"].includes(snapshot.mission.status) && <button type="button" disabled={disabled} onClick={() => { void act("pause"); }}>{t("Pause mission")}</button>}
+          {snapshot.mission.status === "PAUSED" && <button type="button" disabled={disabled} onClick={() => { void act("resume"); }}>{t("Resume mission")}</button>}
+          <button type="button" disabled={disabled} onClick={() => { void act("cancel"); }}>{t("Stop mission")}</button>
         </div>}
       </>}
       {!active && <form onSubmit={event => { event.preventDefault(); void act("start"); }}>
-        <label>Mission goal<textarea value={goal} maxLength={4000} disabled={busy} onChange={event => setGoal(event.target.value)} /></label>
-        <button type="submit" disabled={disabled || !goal.trim()}>Start mission</button>
+        <label>{t("Mission goal")}<textarea value={goal} maxLength={4000} disabled={busy} onChange={event => setGoal(event.target.value)} /></label>
+        <button type="submit" disabled={disabled || !goal.trim()}>{t("Start mission")}</button>
       </form>}
     </section>
   );

@@ -93,6 +93,16 @@ class FakePgClient implements PgClientLike {
     if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK" || sql === "SELECT pg_advisory_xact_lock(hashtext('rooms_order_lock'))" || sql === "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))") {
       return { rows: [], rowCount: null };
     }
+    if (sql.startsWith("DELETE FROM mcp_tools WHERE NOT")) {
+      const ids = values[0] as string[];
+      this.mcpToolRows = this.mcpToolRows.filter(row => ids.includes((row as { id: string }).id));
+      return { rows: [], rowCount: null };
+    }
+    if (sql.startsWith("DELETE FROM mcp_servers WHERE NOT")) {
+      const ids = values[0] as string[];
+      this.mcpServerRows = this.mcpServerRows.filter(row => ids.includes((row as { id: string }).id));
+      return { rows: [], rowCount: null };
+    }
     if (sql.includes("JOIN room_agent_missions") && sql.includes("r.signaled_at IS NULL")) {
       const limit = Number(values[0] ?? 20);
       const rows = this.roomAgentRequestRows
@@ -562,6 +572,16 @@ class FakePgClient implements PgClientLike {
         if (current.roomId !== roomId || current.isClosed === true) return row;
         updated += 1;
         return { ...current, columnSpan: 1, isMaximized: false, updatedAt: values[1] };
+      });
+      return { rows: [], rowCount: updated };
+    }
+    if (sql.startsWith("UPDATE panes SET is_maximized = false WHERE room_id = $1 AND id <> $2")) {
+      let updated = 0;
+      this.paneRows = this.paneRows.map((row) => {
+        const current = row as Record<string, unknown>;
+        if (current.roomId !== values[0] || current.id === values[1] || current.isMaximized !== true) return row;
+        updated += 1;
+        return { ...current, isMaximized: false };
       });
       return { rows: [], rowCount: updated };
     }
@@ -3544,7 +3564,7 @@ describe("PostgresSpaceStore", () => {
         collaborationMode: "default"
       })
     ).resolves.toMatchObject({ permissionMode: "full_access", collaborationMode: "default" });
-    expect(JSON.stringify({ session, run })).not.toMatch(new RegExp("10\\.100\\.0\\.216|api[_-]?key|sec" + "ret|pass" + "word|tok" + "en", "i"));
+    expect(JSON.stringify({ session, run })).not.toMatch(new RegExp("192\\.0\\.2\\.216|api[_-]?key|sec" + "ret|pass" + "word|tok" + "en", "i"));
   });
 
   it("creates, tails, and updates terminal CLI sessions with parameterized SQL", async () => {

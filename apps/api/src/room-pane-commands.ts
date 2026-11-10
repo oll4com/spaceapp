@@ -32,17 +32,18 @@ export interface RoomPaneCatalogEntry {
 }
 export function createRoomPaneCommands(options: {
   store: SpaceStore;
-  discover(): Promise<AgentRuntimeRegistry>;
+  /** `fresh`: the cache dropped, read once before an open is refused for a runtime that is not ready. */
+  discover(fresh?: boolean): Promise<AgentRuntimeRegistry>;
   enabledRuntimeIds(): Promise<string[]>;
   harnessAvailable(): Promise<boolean>;
   checkGeminiQuota?(): Promise<{ allowed: boolean; reason?: string }>;
   worktreeService?: WorktreeService;
 }) {
-  async function catalog(opts?: { needGemini?: boolean; needHarness?: boolean }): Promise<RoomPaneCatalogEntry[]> {
+  async function catalog(opts?: { needGemini?: boolean; needHarness?: boolean; fresh?: boolean }): Promise<RoomPaneCatalogEntry[]> {
     const needGemini = opts?.needGemini ?? true;
     const needHarness = opts?.needHarness ?? true;
-    const [registry, enabledIds, harness, geminiQuota] = await Promise.all([
-      options.discover(), options.enabledRuntimeIds(),
+    const [registry, enabledIds, harness, geminiQuota]: [AgentRuntimeRegistry, string[], boolean, { allowed: boolean; reason?: string }] = await Promise.all([
+      options.discover(opts?.fresh), options.enabledRuntimeIds(),
       needHarness ? options.harnessAvailable() : Promise.resolve(true),
       needGemini && options.checkGeminiQuota ? options.checkGeminiQuota().catch(() => ({ allowed: true })) : Promise.resolve({ allowed: true })
     ]);
@@ -71,7 +72,12 @@ export function createRoomPaneCommands(options: {
   async function resolve(roomId: string, items: RoomPaneBatchItem[]): Promise<CreatePaneInput[]> {
     const needGemini = items.some((item) => (item.mode === "TERMINAL" || isCopilotPaneMode(item.mode)) && "terminalRuntimeId" in item && item.terminalRuntimeId === "cli:gemini");
     const needHarness = items.some((item) => item.mode === "HARNESS");
-    const entries = await catalog({ needGemini, needHarness });
+    let entries = await catalog({ needGemini, needHarness });
+    // 4/11 lab: Claude Code signed in outside Space's login flow, and 28 s later a pane open was refused on the cached "login
+    // required" (the cache drops only on Space's own login). A runtime that would refuse an open is read fresh once first.
+    const blocked = items.some((item) => entries.some(({ definition, available }) => !available && definition.runtimeId
+      && definition.runtimeId === ("terminalRuntimeId" in item ? item.terminalRuntimeId : undefined)));
+    if (blocked) entries = await catalog({ needGemini, needHarness, fresh: true });
     const readyCliRuntimeIds: string[] = entries.flatMap(({ definition, available }) =>
       definition.mode === "TERMINAL" && available && definition.runtimeId ? [definition.runtimeId] : []);
     let roomCwd = "/etc";

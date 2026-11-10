@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { NEEDS_YOU_KINDS, heldForNous, needsYou, type NotificationListQuery, type NotificationRaiseInput, type NotificationSource, type NotificationStatus, type NotificationsPending, type PushDeviceRegistration, type SpaceNotification } from "@space/contracts";
+import { NEEDS_YOU_KINDS, heldForNous, needsYou, withoutAccountFacts, type NotificationListQuery, type NotificationRaiseInput, type NotificationSource, type NotificationStatus, type NotificationsPending, type PushDeviceRegistration, type PushLevel, type SpaceNotification } from "@space/contracts";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 
 // One record per thing the operator should see; the API's notification service decides channels. Postgres on
@@ -8,6 +8,7 @@ import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 // A read after the record was resolved turned it back into READ, and the Needs you list showed it again (2026-10-25).
 const movesForward = (from: NotificationStatus, to: NotificationStatus) => from === "OPEN" || (from === "READ" && to !== "READ");
 
+export interface PushDeviceRecord { token: string; platform: "ANDROID"; appVersion: string | null; level: PushLevel; lastSeenAt: string }
 export interface SpaceNotificationsRepository {
   /** Inserts, or refreshes the open notification with the same dedupe key; `created` says which. */
   /** `reopen`: refreshing an open or read record makes it unread again (a re-alert). */
@@ -18,6 +19,8 @@ export interface SpaceNotificationsRepository {
   /** Moves a record only forward (OPEN → READ → ACKED/RESOLVED); otherwise answers it unchanged, so a late read never reopens it. */
   /** Forward only; `payload` merges into the record's payload when the status moves (the operator's answer to a needs-you record). */
   setStatus(owner: string, id: string, status: Exclude<NotificationStatus, "OPEN">, payload?: Record<string, unknown>): Promise<SpaceNotification | null>;
+  /** R13-6: merges into the payload of a record still waiting (OPEN or READ), its status unchanged; null otherwise. */
+  addPayload(owner: string, id: string, payload: Record<string, unknown>): Promise<SpaceNotification | null>;
   readAll(owner: string): Promise<number>;
   /** Resolves the open notifications carrying a dedupe key (a question answered, a thread handled). */
   resolveByDedupeKey(owner: string, dedupeKey: string): Promise<number>;
@@ -27,12 +30,14 @@ export interface SpaceNotificationsRepository {
   /** Queues the notification for the paired Telegram bot through the completion outbox; false when Telegram is off. */
   /** One Telegram message per notification; a re-alert passes its own `alertKey` so it is sent again. */
   enqueueTelegram(notification: SpaceNotification, labels: { source: string }, alertKey?: string): Promise<boolean>;
-  /** Registers or refreshes a push (FCM) token for the user; a token registered by another user moves to this one. */
+  /** Registers or refreshes a push (FCM) token for the user; a token registered by another user moves to this one; no level keeps its level. */
   registerPushDevice(owner: string, device: PushDeviceRegistration): Promise<void>;
   /** Removes one of the user's push tokens; false when it was not theirs. */
   removePushDevice(owner: string, token: string): Promise<boolean>;
-  /** The user's active push tokens, most recently seen first. */
-  pushTokens(owner: string): Promise<string[]>;
+  /** The user's active push tokens, most recently seen first; with `levels`, only devices on one of them. */
+  pushTokens(owner: string, levels?: readonly PushLevel[]): Promise<string[]>;
+  /** The user's active push devices with their tokens, most recently seen first (the devices list; the service hides the tokens). */
+  pushDevices(owner: string): Promise<PushDeviceRecord[]>;
   /** FCM reported the token unregistered or invalid: no more pushes until the device registers it again. */
   disablePushDevice(token: string): Promise<void>;
   dispose(): Promise<void>;
@@ -56,7 +61,9 @@ function build(input: NotificationRaiseInput & { id?: string }, at: string): Spa
  */
 function pendingOf(items: SpaceNotification[], roomOf: (item: SpaceNotification) => string | null = (item) => item.paneId ? item.roomId
   : !item.link.paneId && item.link.roomId === item.roomId ? item.roomId : null): NotificationsPending {
-  const open = items.filter((item) => item.status === "OPEN").sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  // A card held for Nous is nobody's "needs you" yet (operator 2/11 15:08 BKK: a held Marketing review still lit its pane).
+  const at = Date.now();
+  const open = items.filter((item) => item.status === "OPEN" && !heldForNous(item, at)).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const count = (key: (item: SpaceNotification) => string | null, items = open) => {
     const out: Record<string, number> = {};
     for (const item of items) { const value = key(item); if (value) out[value] = (out[value] ?? 0) + 1; }
@@ -64,7 +71,8 @@ function pendingOf(items: SpaceNotification[], roomOf: (item: SpaceNotification)
   };
   // byRoom drives the Rooms dock's "Needs attention": INFO (new mail, a finished run) never needs the user.
   return { total: open.length, bySource: count((item) => item.source), byRoom: count(roomOf, open.filter((item) => item.severity !== "INFO")),
-    byPane: count((item) => item.paneId), latest: open.slice(0, 20) };
+    // latest: the newest records a refresh delivers (the polled answer's size, its schema's 50; until 31/10 20); every one stays listed.
+    byPane: count((item) => item.paneId), latest: open.slice(0, 50) };
 }
 
 export class InMemorySpaceNotificationsRepository implements SpaceNotificationsRepository {
@@ -75,7 +83,9 @@ export class InMemorySpaceNotificationsRepository implements SpaceNotificationsR
     const at = this.now();
     const existing = input.dedupeKey ? [...this.items.values()].find((item) => item.ownerUserId === input.ownerUserId && item.dedupeKey === input.dedupeKey && (item.status === "OPEN" || item.status === "READ")) : undefined;
     if (existing) {
-      const refreshed = { ...existing, title: clip(input.title, 200), body: clip(input.body, 2000), severity: input.severity, link: input.link, payload: input.payload, updatedAt: at,
+      // A pane moved to another room (its old room deleted: room_id SET NULL) gets its card's room back from the next raise (28/10).
+      const refreshed = { ...existing, roomId: input.roomId ?? existing.roomId, paneId: input.paneId ?? existing.paneId,
+        title: clip(input.title, 200), body: clip(input.body, 2000), severity: input.severity, link: input.link, payload: input.payload, updatedAt: at,
         ...(input.reopen ? { status: "OPEN" as const, readAt: null } : {}) };
       this.items.set(existing.id, refreshed);
       return { notification: { ...refreshed }, created: false };
@@ -88,8 +98,10 @@ export class InMemorySpaceNotificationsRepository implements SpaceNotificationsR
   async list(owner: string, query: NotificationListQuery) {
     // shortcut: the in-memory store has no panes, so NEEDS_YOU keeps a closed pane's requests here (Postgres leaves them out).
     const matches = (item: SpaceNotification) => query.status === "ALL" || (query.status === "OPEN" ? item.status === "OPEN"
-      : (item.status === "OPEN" || item.status === "READ") && needsYou(item) && !heldForNous(item, Date.parse(this.now())));
+      : query.status === "WAITING" ? item.status === "OPEN" || item.status === "READ"
+        : (item.status === "OPEN" || item.status === "READ") && needsYou(item) && !heldForNous(item, Date.parse(this.now())));
     return [...this.items.values()].filter((item) => item.ownerUserId === owner && matches(item) && (!query.source || item.source === query.source)
+      && (!query.kind || item.kind === query.kind) && (!query.dedupeKey || item.dedupeKey === query.dedupeKey) && (!query.paneId || item.paneId === query.paneId)
       && (!query.before || item.createdAt < query.before)).sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, query.limit).map((item) => ({ ...item }));
   }
   async pending(owner: string) { return pendingOf([...this.items.values()].filter((item) => item.ownerUserId === owner)); }
@@ -99,6 +111,13 @@ export class InMemorySpaceNotificationsRepository implements SpaceNotificationsR
     if (!movesForward(item.status, status)) return { ...item };
     const at = this.now();
     const next = { ...item, status, updatedAt: at, ...(payload ? { payload: { ...item.payload, ...payload } } : {}), readAt: item.readAt ?? at, ...(status === "ACKED" ? { ackedAt: at } : {}), ...(status === "RESOLVED" ? { resolvedAt: at } : {}) };
+    this.items.set(id, next);
+    return { ...next };
+  }
+  async addPayload(owner: string, id: string, payload: Record<string, unknown>) {
+    const item = this.items.get(id);
+    if (!item || item.ownerUserId !== owner || (item.status !== "OPEN" && item.status !== "READ")) return null;
+    const next = { ...item, payload: { ...item.payload, ...payload }, updatedAt: this.now() };
     this.items.set(id, next);
     return { ...next };
   }
@@ -122,15 +141,23 @@ export class InMemorySpaceNotificationsRepository implements SpaceNotificationsR
   }
   async prune(before: string) {
     let count = 0;
-    for (const [id, item] of this.items) if (item.createdAt < before && !(item.severity !== "INFO" && (item.status === "OPEN" || item.status === "READ"))) { this.items.delete(id); count += 1; }
+    for (const [id, item] of this.items) if ((item.source === "NOUS" && item.kind === "REQUEST_DONE" && item.status === "ACKED" ? item.ackedAt ?? item.createdAt : item.createdAt) < before && !(item.severity !== "INFO" && (item.status === "OPEN" || item.status === "READ"))) { this.items.delete(id); count += 1; }
     return count;
   }
   async enqueueTelegram(notification: SpaceNotification) { if (!this.telegramEnabled) return false; this.telegram.push(notification); return true; }
-  readonly pushDevices = new Map<string, { owner: string; appVersion: string | null; disabled: boolean }>();
-  async registerPushDevice(owner: string, device: PushDeviceRegistration) { this.pushDevices.delete(device.token); this.pushDevices.set(device.token, { owner, appVersion: device.appVersion, disabled: false }); }
-  async removePushDevice(owner: string, token: string) { return this.pushDevices.get(token)?.owner === owner && this.pushDevices.delete(token); }
-  async pushTokens(owner: string) { return [...this.pushDevices].filter(([, device]) => device.owner === owner && !device.disabled).map(([token]) => token).reverse(); }
-  async disablePushDevice(token: string) { const device = this.pushDevices.get(token); if (device) device.disabled = true; }
+  private readonly devices = new Map<string, { owner: string; appVersion: string | null; level: PushLevel; lastSeenAt: string; disabled: boolean }>();
+  async registerPushDevice(owner: string, device: PushDeviceRegistration) {
+    const level = device.level ?? this.devices.get(device.token)?.level ?? "NOUS";
+    this.devices.delete(device.token);
+    this.devices.set(device.token, { owner, appVersion: device.appVersion, level, lastSeenAt: new Date().toISOString(), disabled: false });
+  }
+  async removePushDevice(owner: string, token: string) { return this.devices.get(token)?.owner === owner && this.devices.delete(token); }
+  async pushTokens(owner: string, levels?: readonly PushLevel[]) { return (await this.pushDevices(owner)).filter((device) => !levels || levels.includes(device.level)).map((device) => device.token); }
+  async pushDevices(owner: string) {
+    return [...this.devices].filter(([, device]) => device.owner === owner && !device.disabled)
+      .map(([token, device]) => ({ token, platform: "ANDROID" as const, appVersion: device.appVersion, level: device.level, lastSeenAt: device.lastSeenAt })).reverse();
+  }
+  async disablePushDevice(token: string) { const device = this.devices.get(token); if (device) device.disabled = true; }
   async dispose() {}
 }
 
@@ -139,23 +166,28 @@ interface Row { id: string; ownerUserId: string; roomId: string | null; paneId: 
 const columns = `id, owner_user_id AS "ownerUserId", room_id AS "roomId", pane_id AS "paneId", source, kind, severity, title, body, link, dedupe_key AS "dedupeKey", status, payload,
   created_at AS "createdAt", updated_at AS "updatedAt", read_at AS "readAt", acked_at AS "ackedAt", resolved_at AS "resolvedAt"`;
 const iso = (value: Date | string | null) => value === null ? null : value instanceof Date ? value.toISOString() : new Date(value).toISOString();
-const fromRow = (row: Row): SpaceNotification => ({ ...row, createdAt: iso(row.createdAt)!, updatedAt: iso(row.updatedAt)!, readAt: iso(row.readAt), ackedAt: iso(row.ackedAt), resolvedAt: iso(row.resolvedAt) });
+const fromRow = (row: Row): SpaceNotification => ({ ...row, body: withoutAccountFacts(row.body), createdAt: iso(row.createdAt)!, updatedAt: iso(row.updatedAt)!, readAt: iso(row.readAt), ackedAt: iso(row.ackedAt), resolvedAt: iso(row.resolvedAt) });
 
 export class PostgresSpaceNotificationsRepository implements SpaceNotificationsRepository {
   constructor(private readonly pool: PgPoolLike) {}
   static fromConnectionString(url: string) { return new PostgresSpaceNotificationsRepository(createSpacePgPool(url, { max: 2 })); }
   async raise(input: NotificationRaiseInput & { id?: string; reopen?: boolean }): Promise<{ notification: SpaceNotification; created: boolean }> {
     if (input.dedupeKey) {
+      // The raise's room and pane win: a card whose room was deleted (room_id SET NULL) and whose pane now lives elsewhere was
+      // refreshed roomless and the web shows no banner for a roomless card (28/10 03:29 UTC, Cleo/Kate: "no notification reached me").
       const existing = await this.pool.query<Row>(`UPDATE space_notifications SET title = $3, body = $4, severity = $5, link = $6::jsonb, payload = $7::jsonb, updated_at = now(),
-          status = CASE WHEN $8 THEN 'OPEN' ELSE status END, read_at = CASE WHEN $8 THEN NULL ELSE read_at END
+          status = CASE WHEN $8 THEN 'OPEN' ELSE status END, read_at = CASE WHEN $8 THEN NULL ELSE read_at END,
+          room_id = COALESCE((SELECT id FROM rooms WHERE id = $9), room_id), pane_id = COALESCE((SELECT id FROM panes WHERE id = $10), pane_id)
         WHERE owner_user_id = $1 AND dedupe_key = $2 AND status IN ('OPEN', 'READ') RETURNING ${columns}`,
-        [input.ownerUserId, input.dedupeKey, clip(input.title, 200), clip(input.body, 2000), input.severity, JSON.stringify(input.link), JSON.stringify(input.payload), input.reopen === true]);
+        [input.ownerUserId, input.dedupeKey, clip(input.title, 200), clip(input.body, 2000), input.severity, JSON.stringify(input.link), JSON.stringify(input.payload), input.reopen === true,
+          input.roomId ?? null, input.paneId ?? null]);
       if (existing.rows[0]) return { notification: fromRow(existing.rows[0]), created: false };
     }
     const notification = build(input, new Date().toISOString());
-    // Two raises of the same key at once: the partial unique index lets one in; the other refreshes it.
+    // Two raises of the same key at once: the partial unique index lets one in; the other refreshes it. A room or pane deleted since its raiser
+    // read it is left out, not a foreign-key error that loses the card (stable 3/11 08:15 UTC: an example.invalid campaign paused with no card).
     const inserted = await this.pool.query<Row>(`INSERT INTO space_notifications (id, owner_user_id, room_id, pane_id, source, kind, severity, title, body, link, dedupe_key, status, payload)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, 'OPEN', $12::jsonb) ON CONFLICT DO NOTHING RETURNING ${columns}`,
+      VALUES ($1, $2, (SELECT id FROM rooms WHERE id = $3), (SELECT id FROM panes WHERE id = $4), $5, $6, $7, $8, $9, $10::jsonb, $11, 'OPEN', $12::jsonb) ON CONFLICT DO NOTHING RETURNING ${columns}`,
       [notification.id, notification.ownerUserId, notification.roomId, notification.paneId, notification.source, notification.kind, notification.severity, notification.title, notification.body,
         JSON.stringify(notification.link), notification.dedupeKey, JSON.stringify(notification.payload)]);
     if (inserted.rows[0]) return { notification: fromRow(inserted.rows[0]), created: true };
@@ -172,9 +204,12 @@ export class PostgresSpaceNotificationsRepository implements SpaceNotificationsR
       AND ($3::text IS NULL OR source = $3) AND ($4::timestamptz IS NULL OR created_at < $4)
       AND ($6::text IS NULL OR (status IN ('OPEN', 'READ') AND severity <> 'INFO' AND room_id IS NOT NULL AND kind ~ $6
         AND EXISTS (SELECT 1 FROM panes p WHERE p.id = space_notifications.pane_id AND NOT p.is_closed)
-        AND NOT coalesce((payload->'heldForNous'->>'until')::timestamptz > now(), false)))
+        AND NOT coalesce((payload->'heldForNous'->>'until')::timestamptz > now(), false) AND payload->'heldForNous'->>'allowance' IS NULL))
+      AND ($7::text IS NULL OR kind = $7) AND ($8::text IS NULL OR dedupe_key = $8) AND (NOT $9::boolean OR status IN ('OPEN', 'READ'))
+      AND ($10::text IS NULL OR pane_id = $10)
       ORDER BY created_at DESC, id DESC LIMIT $5`,
-      [owner, query.status === "OPEN" ? "OPEN" : null, query.source ?? null, query.before ?? null, query.limit, query.status === "NEEDS_YOU" ? NEEDS_YOU_KINDS.source : null]);
+      [owner, query.status === "OPEN" ? "OPEN" : null, query.source ?? null, query.before ?? null, query.limit, query.status === "NEEDS_YOU" ? NEEDS_YOU_KINDS.source : null, query.kind ?? null, query.dedupeKey ?? null,
+        query.status === "WAITING", query.paneId ?? null]);
     return result.rows.map(fromRow);
   }
   async pending(owner: string) {
@@ -182,7 +217,7 @@ export class PostgresSpaceNotificationsRepository implements SpaceNotificationsR
     // first: hundreds of open INFO mail notices pushed them past the limit, so rooms lost their "Needs attention".
     const result = await this.pool.query<Row & { currentRoomId: string | null }>(`SELECT ${columns}, CASE WHEN pane_id IS NULL
       THEN CASE WHEN link->>'paneId' IS NULL AND link->>'roomId' = room_id THEN room_id END ELSE (SELECT p.room_id FROM panes p WHERE p.id = space_notifications.pane_id AND NOT p.is_closed) END AS "currentRoomId"
-      FROM space_notifications WHERE owner_user_id = $1 AND status = 'OPEN' ORDER BY severity = 'INFO', created_at DESC, id DESC LIMIT 500`, [owner]);
+      FROM space_notifications WHERE owner_user_id = $1 AND status = 'OPEN' ORDER BY severity = 'INFO', created_at DESC, id DESC`, [owner]);
     const rooms = new Map(result.rows.map((row) => [row.id, row.currentRoomId]));
     return pendingOf(result.rows.map(({ currentRoomId: _room, ...row }) => fromRow(row)), (item) => rooms.get(item.id) ?? null);
   }
@@ -193,12 +228,17 @@ export class PostgresSpaceNotificationsRepository implements SpaceNotificationsR
       WHERE owner_user_id = $1 AND id = $2 AND (status = 'OPEN' OR (status = 'READ' AND $3 <> 'READ')) RETURNING ${columns}`, [owner, id, status, JSON.stringify(payload ?? {})]);
     return result.rows[0] ? fromRow(result.rows[0]) : this.get(owner, id);
   }
+  async addPayload(owner: string, id: string, payload: Record<string, unknown>) {
+    const result = await this.pool.query<Row>(`UPDATE space_notifications SET payload = payload || $3::jsonb, updated_at = now()
+      WHERE owner_user_id = $1 AND id = $2 AND status IN ('OPEN', 'READ') RETURNING ${columns}`, [owner, id, JSON.stringify(payload)]);
+    return result.rows[0] ? fromRow(result.rows[0]) : null;
+  }
   async readAll(owner: string) {
     const result = await this.pool.query("UPDATE space_notifications SET status = 'READ', read_at = now(), updated_at = now() WHERE owner_user_id = $1 AND status = 'OPEN'", [owner]);
     return (result as { rowCount?: number | null }).rowCount ?? 0;
   }
   async unresolvedBySource(source: NotificationSource) {
-    const result = await this.pool.query<Row>(`SELECT ${columns} FROM space_notifications WHERE source = $1 AND status IN ('OPEN', 'READ') ORDER BY created_at DESC, id DESC LIMIT 500`, [source]);
+    const result = await this.pool.query<Row>(`SELECT ${columns} FROM space_notifications WHERE source = $1 AND status IN ('OPEN', 'READ') ORDER BY created_at DESC, id DESC`, [source]);
     return result.rows.map(fromRow);
   }
   async resolveByDedupeKey(owner: string, dedupeKey: string) {
@@ -207,7 +247,7 @@ export class PostgresSpaceNotificationsRepository implements SpaceNotificationsR
   }
   async prune(before: string) {
     // An unresolved ATTENTION or URGENT item (a review, a question, a Nous card) waits for the operator however old it is.
-    const result = await this.pool.query("DELETE FROM space_notifications WHERE created_at < $1 AND NOT (severity <> 'INFO' AND status IN ('OPEN', 'READ'))", [before]);
+    const result = await this.pool.query("DELETE FROM space_notifications WHERE (CASE WHEN source = 'NOUS' AND kind = 'REQUEST_DONE' AND status = 'ACKED' THEN coalesce(acked_at, created_at) ELSE created_at END) < $1 AND NOT (severity <> 'INFO' AND status IN ('OPEN', 'READ'))", [before]);
     return (result as { rowCount?: number | null }).rowCount ?? 0;
   }
   async enqueueTelegram(notification: SpaceNotification, labels: { source: string }, alertKey?: string) {
@@ -226,17 +266,24 @@ export class PostgresSpaceNotificationsRepository implements SpaceNotificationsR
     return ((result as { rowCount?: number | null }).rowCount ?? 0) > 0;
   }
   async registerPushDevice(owner: string, device: PushDeviceRegistration) {
-    await this.pool.query(`INSERT INTO space_push_devices (token, user_id, platform, app_version) VALUES ($1, $2, $3, $4)
-      ON CONFLICT (token) DO UPDATE SET user_id = EXCLUDED.user_id, platform = EXCLUDED.platform, app_version = EXCLUDED.app_version, last_seen_at = now(), disabled_at = NULL`,
-    [device.token, owner, device.platform, device.appVersion]);
+    await this.pool.query(`INSERT INTO space_push_devices (token, user_id, platform, app_version, level) VALUES ($1, $2, $3, $4, COALESCE($5, 'NOUS'))
+      ON CONFLICT (token) DO UPDATE SET user_id = EXCLUDED.user_id, platform = EXCLUDED.platform, app_version = EXCLUDED.app_version,
+        level = COALESCE($5, space_push_devices.level), last_seen_at = now(), disabled_at = NULL`,
+    [device.token, owner, device.platform, device.appVersion, device.level ?? null]);
   }
   async removePushDevice(owner: string, token: string) {
     const result = await this.pool.query("DELETE FROM space_push_devices WHERE user_id = $1 AND token = $2", [owner, token]);
     return ((result as { rowCount?: number | null }).rowCount ?? 0) > 0;
   }
-  async pushTokens(owner: string) {
-    const result = await this.pool.query<{ token: string }>("SELECT token FROM space_push_devices WHERE user_id = $1 AND disabled_at IS NULL ORDER BY last_seen_at DESC LIMIT 20", [owner]);
+  async pushTokens(owner: string, levels?: readonly PushLevel[]) {
+    const result = await this.pool.query<{ token: string }>(
+      "SELECT token FROM space_push_devices WHERE user_id = $1 AND disabled_at IS NULL AND ($2::text[] IS NULL OR level = ANY($2)) ORDER BY last_seen_at DESC LIMIT 20", [owner, levels ?? null]);
     return result.rows.map((row) => row.token);
+  }
+  async pushDevices(owner: string) {
+    const result = await this.pool.query<{ token: string; platform: "ANDROID"; app_version: string | null; level: PushLevel; last_seen_at: Date | string }>(
+      "SELECT token, platform, app_version, level, last_seen_at FROM space_push_devices WHERE user_id = $1 AND disabled_at IS NULL ORDER BY last_seen_at DESC", [owner]);
+    return result.rows.map((row) => ({ token: row.token, platform: row.platform, appVersion: row.app_version, level: row.level, lastSeenAt: new Date(row.last_seen_at).toISOString() }));
   }
   async disablePushDevice(token: string) {
     await this.pool.query("UPDATE space_push_devices SET disabled_at = now() WHERE token = $1 AND disabled_at IS NULL", [token]);

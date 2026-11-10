@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { councilRunSchema, jobApplicationSchema, mailCopilotRunViewSchema, mailThreadSchema, marketingPostSchema, taskItemSchema } from "@space/contracts";
 import { DemoStore } from "../src/demo/DemoStore.js";
 import { createCurrentMockFixture } from "../src/demo/mock-fixture.js";
-import { COPILOTS_ROOM_ID, MAIL_PANE_ID, PUBLIC_MOCK_MODULES } from "../src/demo/mock-copilots.js";
+import { COPILOTS_ROOM_ID, MAIL_PANE_ID, PUBLIC_MOCK_MODULES, publicMockModules } from "../src/demo/mock-copilots.js";
 import { installMockStorage } from "../src/demo/mock-storage.js";
 
 const store = () => new DemoStore(createCurrentMockFixture());
@@ -45,6 +45,15 @@ describe("public mock Copilots room", () => {
     await expect(api.nous()).rejects.toMatchObject({ status: 404 });
     installMockStorage();
     expect(JSON.parse(window.localStorage.getItem("space:docks-hidden:v1") ?? "[]")).toContain("nous");
+  });
+
+  // ARCH-003: ?modules= turns the mock's modules off for a real-browser view of a pane whose module is off; it never turns one on.
+  it("narrows its modules with ?modules=, never adding one", () => {
+    expect(publicMockModules("")).toEqual([...PUBLIC_MOCK_MODULES]);
+    expect(publicMockModules("?showcase=1")).toEqual([...PUBLIC_MOCK_MODULES]);
+    expect(publicMockModules("?modules=")).toEqual([]);
+    expect(publicMockModules("?modules=games,job-copilot")).toEqual(["games", "job-copilot"]);
+    expect(publicMockModules("?modules=job-copilot,freelance-copilot,nous")).toEqual(["job-copilot"]);
   });
 
   it("uses invented addresses only", () => {

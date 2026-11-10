@@ -111,12 +111,26 @@ describe("trace lookup projection", () => {
         targetType: "workflow", targetId: "workflow:projection", createdAt: "2026-10-11T10:00:00.000Z",
         metadata: { prompt: secret, parentTraceId: "req:parenttrace1" }
       }],
-      workflows: []
+      workflows: [],
+      // EXT-G-5: Space Gateway rows logged under this id; a code that is not an identifier is dropped, never echoed.
+      gatewayRequests: [
+        { provider: "ANTIGRAVITY", model: "gemini-3.8-flash-tiered", status: "success", errorCode: null, latencyMs: 4100, requestedAt: "2026-10-11T10:00:01.000Z" },
+        { provider: "CODEX", model: "gpt-image", status: "error", errorCode: `bad ${secret}`, latencyMs: 90, requestedAt: "2026-10-11T10:00:02.000Z" }
+      ]
     });
+    expect(projected.gatewayRequests).toEqual([
+      { provider: "ANTIGRAVITY", model: "gemini-3.8-flash-tiered", status: "success", errorCode: null, latencyMs: 4100, requestedAt: "2026-10-11T10:00:01.000Z" },
+      { provider: "CODEX", model: "gpt-image", status: "error", errorCode: null, latencyMs: 90, requestedAt: "2026-10-11T10:00:02.000Z" }
+    ]);
     expect(projected.causalError).toMatchObject({ code: "OPENCODE_TURN_TIMEOUT", category: "TIMEOUT", source: "event:TURN_FAILED" });
     expect(projected.events[0]).toMatchObject({ runId: "agent_run:1", status: "FAILED" });
     expect(projected.auditEvents[0]?.parentTraceId).toBe("req:parenttrace1");
     expect(JSON.stringify(projected)).not.toMatch(/sk-live|PRIVATE PROMPT|private|user:operator/);
+    // OBS-001: the same id reaches the pane hosts' cli_host_request and the Browser Host's browser_host_request lines.
+    expect(projected.logQueries).toMatchObject({
+      cliHost: `journalctl -u codex-pane-host.service -u space-admin-pane-host.service -o cat | grep -F '"traceId":"req:projection01"'`,
+      browserHost: `journalctl -u space-browser-host.service -o cat | grep -F '"traceId":"req:projection01"'`
+    });
   });
 
   it("names a failed agent run's code as the cause when no event carries one", async () => {

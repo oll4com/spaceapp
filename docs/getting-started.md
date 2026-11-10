@@ -304,6 +304,49 @@ Credentials are never accepted as command-line arguments. See
 authentication methods, storage boundaries, and the experimental DeepSeek
 warning.
 
+## Nous (optional)
+
+From 1.2.0, Nous starts with generic working knowledge, including its name from the Greek Νους (mind). Shared memory belongs to your installation team; personal memory stays personal. Your administrator reviews proposals in Settings → Assistants & AI → Nous → Shared memory, and can edit or retire entries. Daily curation proposes reusable lessons; auto-approval is off by default. New releases refresh the generic seed while preserving your administrator's changes. See [Shared Nous memory](runbooks/nous-shared-memory.md).
+
+Nous is SpaceApp's own agent: you talk to it in the Nous dock, and it works
+across your rooms, panes, plans and goals on your behalf. Type
+`/goal <what you want>` in its composer to give it a standing goal; it breaks
+the goal into plans and panes and keeps working on it until it is done. It
+asks you before anything that releases, deletes, spends money or contacts
+someone outside SpaceApp.
+
+Nous is **off** until you turn it on, and it needs Claude Code:
+
+1. connect Claude Code under the CLI providers (your Claude subscription
+   login, or an Anthropic API key with `credentials set claude`);
+2. open the Nous dock and switch on **Work on my behalf**. It turns on only
+   once Claude Code is signed in; until then the dock says what is missing.
+
+Each Nous turn is a headless Claude Code run in the `spaceapp-cli` container,
+on your own Claude account, with only Nous's tools. It runs in any profile,
+`small` included, and needs no extra service. Nothing goes to SpaceApp's
+servers. Its turns count against your Claude plan like any Claude Code
+session, so the defaults are deliberately lean:
+
+- Claude Sonnet 5.5 for every turn (medium effort when you write to it, low
+  for its own background turns);
+- background turns follow new events with no hourly cap; Low-spend mode "Always on"
+  keeps them to at most 6 an hour;
+- an active goal gets at most one turn every 15 minutes;
+- one helper at a time; no shell, no finished-pane sweeps, no daily review
+  and no pane board summaries (a stalled plan still gets one reminder per
+  stalled window).
+
+Every one of these is a setting in Settings → Assistants & AI → Nous. Stop ends the current turn
+at once, and switching Nous off stops all of its work. Tools that need a
+service a self-hosted install does not run (the source repository, the merge
+queue, Space Gateway with its web search, the Research Council, the credential
+Vault broker) are not offered to it. Without accounts, its file tools read the panes' workspace
+volume, and the files it writes for panes are in its `nous` folder there.
+
+See the [Nous guide](nous.md) for goals, the decisions Nous leaves to you,
+its allowances and its tools.
+
 ## Verify the installation
 
 ```bash

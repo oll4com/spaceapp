@@ -17,9 +17,12 @@ export interface PaneReportsRepository {
   /** The newest report of each of the owner's panes. */
   latest(owner: string): Promise<PaneReport[]>;
   /** One pane's reports, newest first. */
-  list(owner: string, paneId: string, limit: number): Promise<PaneReport[]>;
+  /** No limit: every report of the pane (kept 14 days). */
+  list(owner: string, paneId: string, limit?: number): Promise<PaneReport[]>;
   /** The newest report that names each plan. */
   latestPlans(owner: string): Promise<PaneReport[]>;
+  /** Every report naming one of the plans, newest first (a goal's work history). */
+  listForPlans(owner: string, planIds: string[]): Promise<PaneReport[]>;
   prune(before: string): Promise<number>;
   dispose(): Promise<void>;
 }
@@ -42,11 +45,12 @@ export class InMemoryPaneReportsRepository implements PaneReportsRepository {
     const seen = new Set<string>();
     return this.newest(owner).filter((row) => !seen.has(row.paneId) && Boolean(seen.add(row.paneId)));
   }
-  async list(owner: string, paneId: string, limit: number) { return this.newest(owner).filter((row) => row.paneId === paneId).slice(0, limit); }
+  async list(owner: string, paneId: string, limit?: number) { return this.newest(owner).filter((row) => row.paneId === paneId).slice(0, limit); }
   async latestPlans(owner: string) {
     const seen = new Set<string>();
     return this.newest(owner).filter((row) => row.planId && !seen.has(row.planId) && Boolean(seen.add(row.planId)));
   }
+  async listForPlans(owner: string, planIds: string[]) { return this.newest(owner).filter((row) => row.planId !== null && planIds.includes(row.planId)); }
   async prune(before: string) {
     const kept = this.rows.filter((row) => row.at >= before);
     const removed = this.rows.length - kept.length;
@@ -76,13 +80,18 @@ export class PostgresPaneReportsRepository implements PaneReportsRepository {
     const result = await this.pool.query<Row>(`SELECT DISTINCT ON (pane_id) ${columns} FROM pane_reports WHERE owner_user_id = $1 ORDER BY pane_id, at DESC, id DESC`, [owner]);
     return result.rows.map(reportOf);
   }
-  async list(owner: string, paneId: string, limit: number) {
-    const result = await this.pool.query<Row>(`SELECT ${columns} FROM pane_reports WHERE owner_user_id = $1 AND pane_id = $2 ORDER BY at DESC, id DESC LIMIT $3`, [owner, paneId, limit]);
+  async list(owner: string, paneId: string, limit?: number) {
+    const result = await this.pool.query<Row>(`SELECT ${columns} FROM pane_reports WHERE owner_user_id = $1 AND pane_id = $2 ORDER BY at DESC, id DESC LIMIT $3`, [owner, paneId, limit ?? null]);
     return result.rows.map(reportOf);
   }
   async latestPlans(owner: string) {
     const result = await this.pool.query<Row>(`SELECT DISTINCT ON (plan_id) ${columns} FROM pane_reports WHERE owner_user_id = $1 AND plan_id IS NOT NULL
       ORDER BY plan_id, at DESC, id DESC`, [owner]);
+    return result.rows.map(reportOf);
+  }
+  async listForPlans(owner: string, planIds: string[]) {
+    if (!planIds.length) return [];
+    const result = await this.pool.query<Row>(`SELECT ${columns} FROM pane_reports WHERE owner_user_id = $1 AND plan_id = ANY($2::text[]) ORDER BY at DESC, id DESC`, [owner, planIds]);
     return result.rows.map(reportOf);
   }
   async prune(before: string) {

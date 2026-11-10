@@ -26,8 +26,16 @@ describe("room work overlaps", () => {
       work("pane:hugo", "Hugo", "/wt/b", ["apps/api/src/backup.ts", "AGENTS.md", "README.md"]),
       work("pane:oscar", "Oscar", "/wt/c", ["AGENTS.md", "package-lock.json"])
     ], []);
-    expect(overlaps).toEqual([{ title: "Finn and Hugo and Jack change the same files", paneIds: ["pane:finn", "pane:jack", "pane:hugo"],
+    expect(overlaps).toEqual([{ title: "Finn and Hugo and Jack change the same files", paneIds: ["pane:finn", "pane:jack", "pane:hugo"], files: ["apps/api/src/backup.ts"],
       detail: "Shared files: apps/api/src/backup.ts. Worktrees: a (space/a), b (space/b)." }]);
+  });
+
+  it("names the colliding panes' live tickets, so the one coordinating knows who merges first (W45 step 1)", () => {
+    const [overlap] = roomWorkOverlaps([
+      work("pane:finn", "Finn", "/wt/a", ["apps/api/src/backup.ts"], { tickets: [ticket("q-1", "QUEUED"), ticket("q-0", "DEPLOYED")] }),
+      work("pane:jack", "Jack", "/wt/b", ["apps/api/src/backup.ts"])
+    ], []);
+    expect(overlap?.detail).toBe("Shared files: apps/api/src/backup.ts. Worktrees: a (space/a), b (space/b). Tickets: Finn q-1 QUEUED.");
   });
 
   it("reports a pane whose latest queue ticket conflicts, with the other panes changing those files", () => {
@@ -36,7 +44,7 @@ describe("room work overlaps", () => {
       work("pane:jack", "Jack", "/wt/b", ["apps/web/src/x.ts"]),
       work("pane:max", "Max", "/wt/c", [], { tickets: [ticket("q-2", "CONFLICT"), ticket("q-3", "DEPLOYED", { updatedAt: "2026-10-15T08:00:00.000Z" })] })
     ], []);
-    expect(overlaps).toEqual([{ title: "Finn's queue ticket q-1 hit a merge conflict", paneIds: ["pane:finn", "pane:jack"],
+    expect(overlaps).toEqual([{ title: "Finn's queue ticket q-1 hit a merge conflict", paneIds: ["pane:finn", "pane:jack"], files: ["apps/web/src/x.ts"],
       detail: "Conflicting files: apps/web/src/x.ts. Also changed by Jack." }]);
   });
 

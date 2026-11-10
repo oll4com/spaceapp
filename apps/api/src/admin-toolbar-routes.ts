@@ -9,7 +9,7 @@ import {
   codexResetCreditRedemptionInputSchema, codexResetCreditRedemptionResponseSchema, type CodexUsageAccountList,
   codexUsageAccountListSchema, type HostMemoryDetails, hostMemoryDetailsSchema,
   providerSwitchRequestSchema, providerSwitchTargetsSchema,
-  toolbarModelStatsSchema
+  subscriptionQuotaAtReset, toolbarModelStatsSchema
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 import type { CliRuntimeVisibilityPolicy } from "./cli-runtime-visibility.js";
@@ -26,9 +26,8 @@ const codexLbSpeedModelParamsSchema = z
 
 /**
  * ADMIN toolbar: usage accounts, Codex reset credits, CLI session stats, host memory, model stats, provider switch
- * targets and Codex-LB speed defaults. The CLI reap and memory reclaim routes share their in-flight flag with the
- * maintenance autopilot and stay in the composition root, which also retains authentication, CSRF, errors and rate
- * limits.
+ * targets and Codex-LB speed defaults. The CLI reap and memory reclaim routes are in admin-cleanup-routes.ts; the
+ * composition root retains authentication, CSRF, errors and rate limits.
  */
 export function registerAdminToolbarRoutes(app: FastifyInstance, options: {
   store: SpaceStore;
@@ -74,7 +73,8 @@ export function registerAdminToolbarRoutes(app: FastifyInstance, options: {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Toolbar system telemetry requires the ADMIN role.");
       }
       await cliRuntimeVisibility.assertEnabled("cli:gemini");
-      return antigravityUsageAccountListSchema.parse(await antigravityUsageProvider());
+      const list = await antigravityUsageProvider();
+      return antigravityUsageAccountListSchema.parse({ ...list, atReset: subscriptionQuotaAtReset("antigravity", list.data, Date.now()) });
     }
   );
   app.get(
@@ -85,7 +85,8 @@ export function registerAdminToolbarRoutes(app: FastifyInstance, options: {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Toolbar system telemetry requires the ADMIN role.");
       }
       await cliRuntimeVisibility.assertEnabled("cli:claude");
-      return claudeUsageAccountListSchema.parse(await claudeUsageProvider());
+      const list = await claudeUsageProvider();
+      return claudeUsageAccountListSchema.parse({ ...list, atReset: subscriptionQuotaAtReset("claude", list.data, Date.now()) });
     }
   );
   app.get(
@@ -106,7 +107,8 @@ export function registerAdminToolbarRoutes(app: FastifyInstance, options: {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Toolbar system telemetry requires the ADMIN role.");
       }
       await cliRuntimeVisibility.assertEnabled("cli:codex");
-      return codexUsageAccountListSchema.parse(await toolbarUsageProvider());
+      const list = await toolbarUsageProvider();
+      return codexUsageAccountListSchema.parse({ ...list, atReset: subscriptionQuotaAtReset("codex", list.data, Date.now()) });
     }
   );
   app.get(

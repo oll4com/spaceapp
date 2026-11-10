@@ -7,6 +7,7 @@ import { cliAgentFilesApiBaseUrl, issueCliAgentFilesToken } from "./cli-agent-fi
 import { agentTokenSecret, cliBrowserBridgeApiBaseUrl, issueCliBrowserBridgeToken } from "./cli-browser-bridge.js";
 import { issueControlToken } from "./space-control-token.js";
 import { tokenExpiryMs } from "./t3code/agent-tokens.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // A DeepSeek Harness agent has no Space CLI session, and one harness process serves every Harness pane.
 // Its pane-bound tools (space_browser, space_playwright_pane, space-task, Agent Files, Space Control) act
@@ -17,8 +18,8 @@ export const HARNESS_AGENT_RUNTIME_ID = "cli:harness";
 // (space-pane-<id>) and, when the operator picked another session in the pane, that one too. The harness gives every
 // shell command its session id as DSH_SESSION_ID and its Space plugin adds it to each dispatcher call
 // (deploy/space-harness-pane-env.mjs reads the file). Readable by the harness user's group only.
-export const HARNESS_AGENT_TOKEN_DIR = "/opt/spaceapp/var/harness-agent-tokens";
-const HARNESS_STATE_DIR = "/opt/spaceapp/var/deepseek-harness";
+export const HARNESS_AGENT_TOKEN_DIR = `${SPACE_INSTALL_ROOT}/var/harness-agent-tokens`;
+const HARNESS_STATE_DIR = `${SPACE_INSTALL_ROOT}/var/deepseek-harness`;
 const REFRESH_BEFORE_MS = 6 * 60 * 60 * 1000;
 // A harness session id that names a token file (deploy/space-harness-pane-env.mjs accepts the same pattern).
 const HARNESS_SESSION_FILE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;

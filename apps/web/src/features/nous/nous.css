@@ -25,14 +25,15 @@
 .nous-hero-side { display: grid; justify-items: end; gap: 0.4rem; }
 .nous-hero-actions { display: flex; gap: 0.3rem; }
 
-/* The views in one line (operator request 2026-10-27: seven names took four rows of a narrow dock): a segmented bar of icon tabs, evenly
-   spaced in the docked width (about 264 px inside), the chosen view's name from 21rem, every name from 45rem (where all seven fit). A tab keeps its name as its
-   accessible name and tooltip; while its name is hidden its count is a corner badge. Three classes deep: the room theme restyles every button. */
+/* The views as a segmented bar of icon tabs (operator request 2026-10-27: seven names took four rows of a narrow dock), the chosen view's name from
+   21rem, every name in one row from 45rem. Icon tabs never shrink below 2.25rem: a dock too narrow for one row wraps to a second (operator 31/10:
+   twelve tabs were cut off and scrolled in a 410 px dock). A tab keeps its name as its accessible name and tooltip; while its name is hidden its
+   count is a corner badge. Three classes deep: the room theme restyles every button. */
 .nous-dock > .nous-toolbar { padding-inline: 0.5rem; container-type: inline-size; }
-.nous-toolbar .nous-views { flex-wrap: nowrap; gap: 2px; padding: 3px; border: 1px solid var(--dock-border); border-radius: var(--dock-radius); background: var(--dock-surface); }
+.nous-toolbar .nous-views { flex-wrap: wrap; gap: 2px; padding: 3px; border: 1px solid var(--dock-border); border-radius: var(--dock-radius); background: var(--dock-surface); }
 .nous-toolbar .nous-views .dock-kit-chip {
-  position: relative; flex: 1 1 0; min-width: 1.5rem; min-height: 0; height: 1.9rem; justify-content: center; gap: 0.3rem; padding: 0 0.3rem;
-  border: 0; border-radius: var(--dock-radius-sm); background: transparent; color: var(--dock-muted); font-size: 0.72rem; overflow: hidden;
+  position: relative; flex: 1 0 2.25rem; min-width: 2.25rem; max-width: 3.5rem; min-height: 0; height: 1.9rem; justify-content: center; gap: 0.3rem;
+  padding: 0 0.3rem; border: 0; border-radius: var(--dock-radius-sm); background: transparent; color: var(--dock-muted); font-size: 0.72rem;
 }
 .nous-toolbar .nous-views .dock-kit-chip:hover:not(:disabled) { background: color-mix(in srgb, var(--dock-text) 7%, transparent); color: var(--dock-text); }
 .nous-toolbar .nous-views .dock-kit-chip[aria-pressed="true"],
@@ -42,29 +43,45 @@
 .nous-toolbar .nous-views .dock-kit-chip-icon { width: 1rem; height: 1rem; }
 .nous-toolbar .nous-views .dock-kit-chip-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .nous-toolbar .nous-views .dock-kit-chip-count {
-  /* At the centred icon's top-right corner, whatever the tab's width. */
-  position: absolute; top: 1px; left: calc(50% + 0.3rem); min-width: 0.85rem; padding: 0 0.18rem; background: var(--dock-accent); color: var(--dock-on-accent);
+  /* At the centred icon's top-right corner, whatever the tab's width; a longer count grows over the icon, never past the tab's edge. */
+  position: absolute; top: 1px; right: max(1px, calc(50% - 1.15rem)); min-width: 0.85rem; padding: 0 0.18rem; background: var(--dock-accent); color: var(--dock-on-accent);
   font-size: 0.56rem; font-weight: 700; line-height: 0.85rem; text-align: center;
 }
 @container (min-width: 21rem) {
-  .nous-toolbar .nous-views .dock-kit-chip[aria-pressed="true"] { flex: 0 1 auto; padding-inline: 0.6rem; }
+  .nous-toolbar .nous-views .dock-kit-chip[aria-pressed="true"] { flex: 0 1 auto; max-width: none; padding-inline: 0.6rem; }
   .nous-toolbar .nous-views .dock-kit-chip[aria-pressed="true"] .dock-kit-chip-label { position: static; width: auto; height: auto; min-width: 0; clip-path: none; text-overflow: ellipsis; }
   .nous-toolbar .nous-views .dock-kit-chip[aria-pressed="true"] .dock-kit-chip-count { position: static; flex: none; min-width: 1rem; padding: 0 0.25rem; font-size: 0.62rem; line-height: 1rem; }
 }
 @container (min-width: 45rem) {
-  .nous-toolbar .nous-views .dock-kit-chip { flex: 1 1 auto; padding-inline: 0.5rem; }
+  .nous-toolbar .nous-views { flex-wrap: nowrap; }
+  .nous-toolbar .nous-views .dock-kit-chip { flex: 1 1 auto; max-width: none; padding-inline: 0.5rem; }
   .nous-toolbar .nous-views .dock-kit-chip .dock-kit-chip-label { position: static; width: auto; height: auto; min-width: 0; clip-path: none; text-overflow: ellipsis; }
   .nous-toolbar .nous-views .dock-kit-chip .dock-kit-chip-count { position: static; flex: none; min-width: 1rem; padding: 0 0.25rem; font-size: 0.62rem; line-height: 1rem; }
+}
+/* Counts in every layout (operator 3/11, as the Nous app): neutral, amber only for what waits on the operator (Needs you, Decisions).
+   Opaque, as the narrow bar's badge sits on its icon; the attention text takes the surface colour, light themes having a dark amber. */
+.nous-dock .nous-views .dock-kit-chip .dock-kit-chip-count { background: var(--dock-border-strong); color: var(--dock-text); }
+.nous-dock .nous-views .dock-kit-chip .dock-kit-chip-count.is-attention { background: var(--dock-warning); color: var(--dock-surface); }
+/* Phone tabs keep both screen edges clear and wrap with larger touch targets. */
+@media (max-width: 760px) {
+  .nous-dock > .nous-toolbar { padding-inline: 12px; }
+  .nous-toolbar .nous-views .dock-kit-chip { min-width: 2.5rem; }
 }
 
 .nous-brain { display: block; color: var(--dock-accent); filter: drop-shadow(0 0 10px var(--dock-accent-soft)); }
 
 .nous-hero-text h2 { margin: 0; font-size: 1.15rem; letter-spacing: 0.04em; color: var(--dock-text); }
 .nous-tagline { margin: 0.1rem 0 0; color: var(--dock-muted); font-size: var(--dock-font-sm); }
+/* Three classes: the room theme paints every button (.space-shell[data-room-theme] button) as a raised box. */
+.nous-tagline .nous-model-link.nous-model-link { min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; color: inherit;
+  font: inherit; text-align: left; text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }
+.nous-tagline .nous-model-link.nous-model-link:hover { color: var(--dock-accent); }
+.nous-tagline .nous-model-link.nous-model-link:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 2px; border-radius: 4px; }
 .nous-status { margin: 0.25rem 0 0; font-size: var(--dock-font-sm); color: var(--dock-muted); }
 .nous-status.is-idle { color: var(--dock-success); }
 .nous-status.is-thinking { color: var(--dock-accent); }
 .nous-status.is-paused_model { color: var(--dock-warning); }
+.nous-status.is-unavailable { color: var(--dock-danger); }
 
 .nous-muted { margin: 0; color: var(--dock-muted); font-size: 0.72rem; line-height: 1.4; overflow-wrap: anywhere; }
 .nous-dock > .nous-last-error { padding: 0 0.5rem; }
@@ -133,6 +150,8 @@
   gap: 0.45rem;
   padding: 0 0.5rem 0.5rem;
 }
+
+.nous-load-earlier { align-self: center; flex: none; }
 
 .nous-message { max-width: 100%; overflow-wrap: anywhere; font-size: var(--dock-font, 0.8rem); line-height: 1.5; }
 .nous-message p { margin: 0; white-space: pre-wrap; }
@@ -226,6 +245,8 @@
   background: var(--dock-surface);
 }
 .nous-decision.is-open { border-color: var(--dock-accent); }
+/* .ny-files sits at grid-column 2 for the Needs-you card (also a .nous-decision); in a decision's one column it would add a column and squeeze the rest. */
+.nous-decision:not(.ny-card) > .ny-files { grid-column: 1 / -1; }
 .nous-decision header { display: grid; gap: 0.2rem; }
 .nous-decision h3 { margin: 0; font-size: 0.85rem; color: var(--dock-text); overflow-wrap: anywhere; }
 .nous-category { justify-self: start; padding: 0.05rem 0.45rem; border-radius: 999px; font-size: 0.65rem; background: var(--dock-soft); color: var(--dock-muted); }
@@ -237,6 +258,12 @@
 .nous-decision > .nous-decision-everything { justify-self: start; }
 .nous-decision-actions .dock-kit-button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; padding-block: 0.3rem; }
 .nous-decision-answer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.3rem; width: 100%; }
+.nous-needs-checked, .nous-needs-checked .chat-markdown { color: var(--dock-muted); font-size: 0.72rem; }
+/* What a needs-you card is about (plan clipboard:32etNsBgtbI- step 2): label and value rows; empty, it takes no room. */
+.nous-needs-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.15rem 0.5rem; margin: 0; font-size: var(--dock-font-sm); }
+.nous-needs-facts:empty { display: none; }
+.nous-needs-facts dt { color: var(--dock-muted); }
+.nous-needs-facts dd { margin: 0; color: var(--dock-text); overflow-wrap: anywhere; }
 
 .nous-overview section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.35rem; }
 .nous-overview h3 { margin: 0.3rem 0 0; font-size: 0.78rem; color: var(--dock-text); }
@@ -247,8 +274,9 @@
 .nous-progress { height: 4px; border-radius: 999px; background: var(--dock-soft); overflow: hidden; }
 .nous-progress span { display: block; height: 100%; background: var(--dock-accent); }
 
-/* In the conversation a decision keeps its body short; the Decisions tab and the plan view show it whole. */
-.nous-decision.is-inline > .chat-markdown { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+/* In the conversation a decision keeps its body short; the Decisions tab and the plan view show it whole. `clip`, not `hidden`: a hidden
+   box still scrolls (a link Tab-focused or scrolled into view past line 6), and Chrome then draws the clamped lines over the shown ones (4/11). */
+.nous-decision.is-inline > .chat-markdown { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: clip; }
 .nous-plan-view .nous-decision.is-inline > .chat-markdown { display: block; }
 .nous-plan-card { background: var(--dock-surface); }
 .nous-message .nous-plan-card { margin-top: 0.45rem; }
@@ -283,6 +311,9 @@
 .dock-panel.nous-dock.is-fullscreen :is(.nous-messages, .nous-decisions, .nous-overview, .nous-plan-view, .nous-composer, .nous-files.is-pending) {
   padding-inline: max(0.5rem, calc((100% - 76ch) / 2));
 }
+/* Wide views keep the stage's width with the heading's 1.25rem gutter; the stage itself has none, so Load's labels, values and
+   averages touched both borders (operator 3/11 22:01 BKK, nous_msg:e39eba86). The docked view keeps its own spacing. */
+.dock-panel.nous-dock.is-fullscreen :is(.nous-load, .nous-pane-board) { padding-inline: 1.25rem; }
 
 /* Files sent to Nous (plan clipboard:hQg9iKGYDqx7): the conversation takes drops; the composer shows pending chips. */
 /* In the dock and in the maximized view's stage alike: the messages scroll, the files and the composer keep their height. */
@@ -345,6 +376,24 @@
 .nous-file-chip.is-failed .nous-file-size { color: var(--dock-danger); }
 .nous-file-chip img { width: 2rem; height: 2rem; object-fit: cover; border-radius: 4px; flex: 0 0 auto; }
 .nous-file-chip .dock-kit-icon-button { width: 1.6rem; height: 1.6rem; min-height: 1.6rem; flex: 0 0 auto; }
+/* Three classes: the room theme paints every button (.space-shell[data-room-theme] button) as a raised box. */
+.nous-file-chip .nous-file-open.nous-file-open {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: zoom-in;
+}
+.nous-file-open:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 2px; border-radius: 4px; }
 
 .nous-file-name {
   min-width: 0;
@@ -368,6 +417,7 @@
 }
 
 .nous-file-thumb {
+  position: relative;
   padding: 0;
   border: 1px solid var(--dock-border);
   border-radius: var(--dock-radius-sm, 7px);
@@ -378,10 +428,26 @@
 }
 
 .nous-file-thumb img { display: block; max-width: 12rem; max-height: 9rem; object-fit: cover; }
-.nous-file-video { display: block; width: min(20rem, 100%); max-height: 14rem; border-radius: var(--dock-radius-sm, 7px); background: #000; }
+.nous-file-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1.6rem;
+  height: 1.6rem;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  filter: drop-shadow(0 0 3px rgb(0 0 0 / 0.8));
+  pointer-events: none;
+}
 
-.nous-file-doc {
+.nous-file .nous-file-doc.nous-file-doc {
   min-width: 0;
+  min-height: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: zoom-in;
   display: flex;
   align-items: center;
   gap: 0.4rem;
@@ -404,25 +470,12 @@
 .nous-file-download:hover, .nous-file-download:focus-visible { color: var(--dock-text); }
 .nous-file-download svg { width: 0.9rem; height: 0.9rem; }
 
-.nous-file-viewer {
-  position: fixed;
-  inset: 0;
-  z-index: 95;
-  display: grid;
-  place-items: center;
-  padding: 1.5rem;
-  background: rgb(5 8 10 / 0.86);
-  cursor: zoom-out;
-}
-
-.nous-file-viewer img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: default; }
-.nous-file-viewer-close { position: absolute; top: 0.75rem; right: 0.75rem; }
-
 /* Maximized Nous: a command center for the whole working day (operator request 2026-10-17). Nous itself on the left, the work
    in the middle, what waits for the operator on the right. Only the maximized view uses these rules; the dock stays as above. */
 .dock-panel.nous-dock.nous-workspace {
   display: grid;
-  grid-template-columns: 18rem minmax(0, 1fr) 23rem;
+  /* The right column grows with the screen (6/11, nous_msg:ea247fe8: wider appointment cards). */
+  grid-template-columns: 18rem minmax(0, 1fr) clamp(23rem, 24vw, 28rem);
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas: "rail stage tools" "rail stage board";
   gap: 0;
@@ -435,82 +488,107 @@
   scrollbar-color: var(--dock-border-strong) transparent;
 }
 
-/* Nous: a tinted rail lit from the brain down. */
+/* Nous: a tinted rail lit from the brain down. Its views and counts fit a laptop screen without scrolling (operator 3/11: thirteen tall
+   buttons ran off it). */
 .nous-rail {
   grid-area: rail;
   min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
-  padding: 1.75rem 1.25rem 1.25rem;
+  gap: 0.9rem;
+  padding: 1rem 0.85rem;
   min-width: 0;
   border-right: 1px solid var(--dock-border);
   background:
-    radial-gradient(130% 42% at 50% 0%, color-mix(in srgb, var(--dock-accent) 15%, transparent), transparent 72%),
+    radial-gradient(120% 22% at 20% 0%, color-mix(in srgb, var(--dock-accent) 14%, transparent), transparent 75%),
     color-mix(in srgb, var(--dock-accent) 4%, var(--dock-surface));
 }
-.nous-rail-identity { display: grid; justify-items: center; gap: 0.2rem; text-align: center; }
-.nous-rail-brain { position: relative; display: grid; place-items: center; margin-bottom: 0.5rem; }
+/* Who and how, as the Nous app's hero: a small brain beside the name, the switch at the right, the model, then the state in its colour. */
+.nous-rail-identity {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "brain name power" "model model model" "state state state";
+  align-items: center;
+  gap: 0.45rem 0.65rem;
+}
+.nous-rail-brain { grid-area: brain; position: relative; display: grid; place-items: center; }
 .nous-rail-brain::before {
   content: "";
   position: absolute;
-  inset: -12%;
+  inset: -22%;
   border-radius: 50%;
-  background: radial-gradient(closest-side, color-mix(in srgb, var(--dock-accent) 24%, transparent), transparent);
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--dock-accent) 26%, transparent), transparent);
   opacity: 0.55;
   transition: opacity 400ms ease-out;
 }
 .nous-workspace.is-thinking .nous-rail-brain::before { opacity: 1; animation: nous-breathe 2.6s ease-in-out infinite; }
 @keyframes nous-breathe { 50% { opacity: 0.6; transform: scale(0.94); } }
-.nous-rail-brain .nous-brain { position: relative; filter: drop-shadow(0 4px 18px var(--dock-accent-soft)); }
-.nous-rail h2 { margin: 0; font-size: 1.75rem; font-weight: 650; letter-spacing: 0.06em; line-height: 1.1; color: var(--dock-text); }
-.nous-rail .nous-tagline { font-size: 0.78rem; }
-.nous-rail .nous-tagline + .nous-tagline { margin: 0; color: var(--dock-text); }
-.nous-rail .nous-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin-top: 0.6rem;
-  padding: 0.25rem 0.7rem;
-  border-radius: 999px;
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  font-weight: 600;
+.nous-rail-brain .nous-brain { position: relative; filter: drop-shadow(0 3px 10px var(--dock-accent-soft)); }
+.nous-rail-name { grid-area: name; min-width: 0; }
+.nous-rail h2 { margin: 0; font-size: 1.3rem; font-weight: 650; letter-spacing: 0.05em; line-height: 1.15; color: var(--dock-text); }
+.nous-rail .nous-tagline { font-size: 0.74rem; }
+.nous-rail-identity > .nous-power { grid-area: power; }
+.nous-rail .nous-rail-model { grid-area: model; margin: 0; color: var(--dock-text); }
+.nous-rail-state {
+  --nous-state: var(--dock-muted);
+  grid-area: state;
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--nous-state) 35%, transparent);
+  border-radius: var(--dock-radius-sm);
+  background: color-mix(in srgb, var(--nous-state) 9%, transparent);
 }
-.nous-rail .nous-status::before { content: ""; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: currentColor; }
+.nous-rail-state:has(.is-idle) { --nous-state: var(--dock-success); }
+.nous-rail-state:has(.is-thinking) { --nous-state: var(--dock-accent); }
+.nous-rail-state:has(.is-paused_model) { --nous-state: var(--dock-warning); }
+.nous-rail-state:has(.is-unavailable) { --nous-state: var(--dock-danger); }
+.nous-rail .nous-status { display: flex; align-items: center; gap: 0.5rem; margin: 0; color: var(--nous-state); font-size: 0.8rem; font-weight: 650; }
+.nous-rail .nous-status::before {
+  content: ""; flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent);
+}
 .nous-rail .nous-status.is-thinking::before { animation: nous-blink 1.2s ease-in-out infinite; }
 @keyframes nous-blink { 50% { opacity: 0.3; } }
 .nous-running { margin: 0.2rem 0 0; font-size: 0.74rem; color: var(--dock-muted); font-variant-numeric: tabular-nums; }
-.nous-rail .nous-power { margin-top: 0.7rem; }
+.nous-rail .nous-running { margin: 0; padding-left: 1rem; }
+.nous-rail .nous-last-error { margin: 0; font-size: 0.74rem; }
 
-.nous-gauges { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; margin: 0; }
-.nous-gauges > div { display: grid; align-content: space-between; gap: 0.15rem; padding: 0.65rem 0.75rem; border-radius: var(--dock-radius); background: color-mix(in srgb, var(--dock-text) 4%, transparent); }
-.nous-gauges dt { font-size: 0.7rem; color: var(--dock-muted); }
-.nous-gauges dd { margin: 0; font-size: 1.4rem; font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; color: var(--dock-text); }
-.nous-gauges dd span { font-size: 0.78rem; font-weight: 500; color: var(--dock-muted); }
-.nous-gauges .is-attention dd { color: var(--dock-warning); }
-.nous-gauges .is-meter { grid-column: 1 / -1; }
-.nous-meter { height: 4px; margin-top: 0.3rem; border-radius: 999px; background: var(--dock-soft); overflow: hidden; }
-.nous-meter span { display: block; height: 100%; background: var(--dock-accent); transition: width 300ms ease-out; }
-
-/* The views as a vertical navigation list. */
-.nous-rail .dock-kit-chips { flex-direction: column; flex-wrap: nowrap; gap: 0.2rem; }
-.nous-rail .dock-kit-chip {
-  width: 100%;
-  min-height: 2.4rem;
-  justify-content: space-between;
-  padding: 0 0.85rem;
-  border-color: transparent;
-  border-radius: var(--dock-radius);
-  background: transparent;
-  font-size: 0.86rem;
+/* The views as a grouped list under Me, Work and System: compact rows, the chosen one with an accent bar. Three classes deep: the room
+   theme paints every button as a raised box. */
+.nous-rail .nous-views { flex-direction: column; flex-wrap: nowrap; gap: 0.55rem; }
+.nous-rail .dock-kit-chips-section { display: flex; flex-direction: column; gap: 1px; }
+.nous-rail .dock-kit-chips-heading { padding: 0 0.65rem 0.2rem; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--dock-muted); }
+.nous-rail .nous-views .dock-kit-chip {
+  width: 100%; min-height: 2rem; justify-content: flex-start; gap: 0.6rem; padding: 0 0.5rem 0 0.65rem;
+  border: 0; border-radius: var(--dock-radius-sm); background: transparent; box-shadow: none; color: var(--dock-muted); font-size: 0.83rem; font-weight: 550;
 }
-.nous-rail .dock-kit-chip:hover:not(:disabled) { border-color: transparent; background: color-mix(in srgb, var(--dock-text) 6%, transparent); }
-.nous-rail .dock-kit-chip[aria-pressed="true"],
-.nous-rail .dock-kit-chip[aria-pressed="true"]:hover:not(:disabled) { border-color: transparent; background: var(--dock-accent-soft); color: var(--dock-text); }
-.nous-rail .dock-kit-chip-count { background: var(--dock-warning-soft); color: var(--dock-warning); }
-.nous-rail .nous-views .dock-kit-chip { justify-content: flex-start; gap: 0.6rem; }
+.nous-rail .nous-views .dock-kit-chip:hover:not(:disabled) { background: color-mix(in srgb, var(--dock-text) 6%, transparent); color: var(--dock-text); }
+.nous-rail .nous-views .dock-kit-chip[aria-pressed="true"],
+.nous-rail .nous-views .dock-kit-chip[aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--dock-accent-soft); color: var(--dock-text); font-weight: 650; box-shadow: inset 3px 0 0 var(--dock-accent);
+}
+.nous-rail .nous-views .dock-kit-chip[aria-pressed="true"] .dock-kit-chip-icon { color: var(--dock-accent); }
+.nous-rail .nous-views .dock-kit-chip:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: -2px; }
+.nous-rail .nous-views .dock-kit-chip-icon { width: 1rem; height: 1rem; }
 .nous-rail .nous-views .dock-kit-chip-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.nous-rail .nous-views .dock-kit-chip .dock-kit-chip-count { min-width: 1.35rem; padding: 0 0.35rem; font-size: 0.68rem; font-weight: 700; line-height: 1.15rem; text-align: center; font-variant-numeric: tabular-nums; }
+
+/* The live counts, each a way into the view that explains it. */
+.nous-gauges { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.4rem; margin-top: auto; }
+.nous-workspace .nous-gauges > * {
+  display: grid; align-content: start; gap: 0.1rem; min-width: 0; min-height: 0; margin: 0; padding: 0.5rem 0.55rem;
+  border: 1px solid var(--dock-border); border-radius: var(--dock-radius-sm); background: color-mix(in srgb, var(--dock-text) 3%, transparent);
+  box-shadow: none; color: var(--dock-text); font: inherit; text-align: left;
+}
+.nous-workspace .nous-gauges > button { cursor: pointer; transition: border-color 120ms ease, background-color 120ms ease; }
+.nous-workspace .nous-gauges > button:hover { border-color: var(--dock-accent); background: var(--dock-accent-soft); }
+.nous-workspace .nous-gauges > button:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 1px; }
+.nous-gauge-value { font-size: 1.2rem; font-weight: 650; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.nous-gauge-label { font-size: 0.68rem; line-height: 1.25; color: var(--dock-muted); }
+.nous-workspace .nous-gauges > .is-attention { border-color: color-mix(in srgb, var(--dock-warning) 55%, transparent); background: var(--dock-warning-soft); }
+.nous-gauges > .is-attention .nous-gauge-value { color: var(--dock-warning); }
 
 /* The work: one readable column (the fullscreen rule above) at a larger size. */
 .nous-stage { grid-area: stage; grid-row: 1 / -1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem 0 1.25rem; }
@@ -566,6 +644,8 @@
   grid-area: board;
   min-height: 0;
   overflow-y: auto;
+  /* A horizontal flick on the appointments calendar never reaches the page (the browser's back swipe). */
+  overscroll-behavior-x: contain;
   display: flex;
   flex-direction: column;
   gap: 1.6rem;
@@ -631,15 +711,21 @@
 /* Smaller screens drop the board (its decisions stay in the conversation, its plans in Overview); on a phone Nous becomes a header. */
 @media (max-width: 1279px) {
   .dock-panel.nous-dock.nous-workspace { grid-template-columns: 17rem minmax(0, 1fr); grid-template-areas: "rail stage"; }
-  .nous-rail-brain .nous-brain { width: 7rem !important; height: 7rem !important; }
   .nous-board { display: none; }
 }
 @media (max-width: 760px) {
   .dock-panel.nous-dock.nous-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "rail" "stage"; }
-  .nous-rail { gap: 0.75rem; padding: 1rem; border-right: 0; border-bottom: 1px solid var(--dock-border); }
-  .nous-rail-brain, .nous-gauges { display: none; }
-  .nous-rail .dock-kit-chips { flex-direction: row; flex-wrap: wrap; }
-  .nous-rail .dock-kit-chip { width: auto; min-height: 2rem; padding: 0 0.75rem; }
+  .nous-rail { gap: 0.6rem; padding: 0.75rem 12px; border-right: 0; border-bottom: 1px solid var(--dock-border); }
+  .nous-gauges { display: none; }
+  .nous-rail-brain .nous-brain { width: 2.75rem !important; height: 2.75rem !important; }
+  /* On a phone the views are one bar of icons, as the narrow dock and the Nous app: the chosen one shows its name, a count rides on its icon. */
+  .nous-rail .nous-views { flex-direction: row; flex-wrap: wrap; gap: 2px; }
+  .nous-rail .dock-kit-chips-section { display: contents; }
+  .nous-rail .dock-kit-chips-heading { display: none; }
+  .nous-rail .nous-views .dock-kit-chip { position: relative; flex: 1 0 2.5rem; width: auto; min-height: 2.5rem; justify-content: center; gap: 0.35rem; padding: 0 0.4rem; }
+  .nous-rail .nous-views .dock-kit-chip[aria-pressed="true"] { flex: 0 1 auto; padding-inline: 0.7rem; box-shadow: inset 0 -2px 0 var(--dock-accent); }
+  .nous-rail .nous-views .dock-kit-chip:not([aria-pressed="true"]) .dock-kit-chip-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .nous-rail .nous-views .dock-kit-chip-label { flex: 0 1 auto; }
 }
 @media (prefers-reduced-motion: reduce) {
   .nous-workspace.is-thinking .nous-rail-brain::before, .nous-rail .nous-status.is-thinking::before { animation: none; }
@@ -660,6 +746,96 @@
   border-left: 1px solid var(--dock-border);
   background: color-mix(in srgb, var(--dock-raised) 55%, var(--dock-surface));
 }
+/* Its controls float over the right column's top corner, so the board starts at the top (6/11, nous_msg:ea247fe8: room to win at the top);
+   the Appointments head leaves them their width. The Panes board and narrower screens keep the tools row. */
+@media (min-width: 1280px) {
+  .dock-panel.nous-dock.nous-workspace:not(.is-pane-board) { grid-template-areas: "rail stage board" "rail stage board"; }
+  .nous-workspace:not(.is-pane-board) > .nous-workspace-tools { grid-area: auto; position: absolute; top: 0; right: 0; z-index: 2; border-left: 0; background: none; }
+  .nous-workspace:not(.is-pane-board) > .nous-board { padding-top: 0.6rem; }
+  .nous-workspace:not(.is-pane-board) .nous-board > .nous-appointments:first-child .nous-appointments-head { padding-right: 5.25rem; }
+}
+/* Appointments (2/11): the right column's first card; every upcoming one, scrolling inside the card. Redrawn 6/11 (nous_msg:ea247fe8): a
+   one-line head with the List / Week / Month icons, rows grouped by day with a kind-coloured edge, the badges on one line, and calendars. */
+.nous-appointments { display: grid; gap: 0.5rem; }
+.nous-appointments-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-height: 2.25rem; }
+.nous-appointments h3 { display: flex; align-items: center; gap: 0.4rem; min-width: 0; margin: 0; font-size: 0.86rem; font-weight: 600; color: var(--dock-text); }
+.nous-appointments .nous-appointments-open { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.nous-appointments .nous-appointments-open:hover { color: var(--dock-accent); }
+.nous-appointments-views { display: inline-flex; flex: none; gap: 2px; padding: 2px; border: 1px solid var(--dock-border); border-radius: 9px; background: var(--dock-surface); }
+.nous-appointments .nous-appointments-views button { display: inline-grid; place-items: center; width: 1.85rem; height: 1.6rem; min-height: 0; padding: 0; border: 0; border-radius: 7px; background: none; color: var(--dock-muted); cursor: pointer; }
+.nous-appointments .nous-appointments-views button:hover { color: var(--dock-text); background: var(--dock-soft); }
+.nous-appointments .nous-appointments-views button[aria-pressed="true"] { background: var(--dock-accent-soft); color: var(--dock-accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dock-accent) 40%, transparent); }
+.nous-appointments-views svg { width: 0.95rem; height: 0.95rem; }
+.nous-appointments :is(button, [role="group"]):focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 1px; }
+.nous-appointments-scroll { display: grid; gap: 0.6rem; max-height: min(24rem, 42vh); overflow-y: auto; scrollbar-width: thin; }
+.nous-appointments-day { display: grid; gap: 0.3rem; }
+.nous-appointments h4 { margin: 0; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.02em; color: var(--dock-muted); }
+.nous-appointments-relative { color: var(--dock-accent); }
+.nous-appointments .nous-appointments-list { display: grid; gap: 0.3rem; margin: 0; padding: 0; list-style: none; }
+.nous-appointments-item { border: 1px solid var(--dock-border); border-left: 3px solid var(--appt-kind, var(--dock-accent)); border-radius: 8px; background: var(--dock-surface); }
+.nous-appointments-item:hover, .nous-appointments-item.is-open { border-color: var(--dock-border-strong); border-left-color: var(--appt-kind, var(--dock-accent)); }
+.nous-appointments-item > button { display: grid; gap: 0.12rem; width: 100%; min-height: 0; padding: 0.35rem 0.5rem; border: 0; border-radius: 7px; background: none; color: var(--dock-text); font: inherit; text-align: left; cursor: pointer; }
+.nous-appointments-item:is(.is-done, .is-cancelled) { opacity: 0.62; }
+.nous-appointments-item.is-cancelled .nous-appointments-title { text-decoration: line-through; }
+.nous-appointments-line { display: flex; align-items: baseline; gap: 0.45rem; min-width: 0; }
+.nous-appointments-when { flex: none; font-size: 0.76rem; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--appt-kind, var(--dock-text)); }
+.nous-appointments-title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 0.78rem; font-weight: 550; }
+.nous-appointments-meta { display: flex; align-items: center; gap: 0.3rem; font-size: 0.69rem; color: var(--dock-muted); }
+.nous-appointments-meta svg { flex: none; width: 0.8rem; height: 0.8rem; color: var(--appt-kind, currentColor); }
+/* Short chips fit one line at the 368 px column; a chip that does not fit moves whole to the next line, never cut (operator 6/11 11:02 BKK). */
+.nous-appointments-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem 0.25rem; min-width: 0; }
+.nous-appointments-badges .appointments-badge { padding: 0 0.4rem; font-size: 0.62rem; }
+.nous-appointments-detail { display: grid; gap: 0.3rem; padding: 0.1rem 0.5rem 0.45rem; font-size: 0.74rem; color: var(--dock-text); overflow-wrap: anywhere; }
+.nous-appointments-detail p, .nous-appointments-detail dl, .nous-appointments-detail dd { margin: 0; }
+.nous-appointments-detail dt { margin-top: 0.25rem; font-size: 0.68rem; font-weight: 600; color: var(--dock-muted); }
+.nous-appointments-detail dd { white-space: pre-wrap; }
+.nous-appointments-actions { display: flex; gap: 0.4rem; padding-top: 0.15rem; }
+.nous-appointments-actions button { padding: 0.2rem 0.6rem; border: 1px solid var(--dock-border); border-radius: 6px; background: none; color: var(--dock-text); font: inherit; cursor: pointer; }
+.nous-appointments-actions button:first-child { border-color: color-mix(in srgb, var(--dock-success) 55%, var(--dock-border)); color: var(--dock-success); }
+.nous-appointments-actions button:hover { background: var(--dock-soft); }
+/* Week and month: a period bar, a seven-column grid in the operator's zone, the chosen day's appointments under it. */
+.nous-appointments-period { display: flex; align-items: center; gap: 0.25rem; }
+.nous-appointments-period h4 { margin-left: 0.3rem; font-size: 0.76rem; color: var(--dock-text); }
+.nous-appointments .nous-appointments-period button { display: inline-grid; place-items: center; height: 1.6rem; min-height: 0; padding: 0 0.5rem; border: 1px solid var(--dock-border); border-radius: 7px; background: none; color: var(--dock-text); font: inherit; font-size: 0.7rem; cursor: pointer; }
+.nous-appointments .nous-appointments-period .nous-appointments-icon { width: 1.6rem; padding: 0; }
+.nous-appointments-period svg { width: 0.9rem; height: 0.9rem; }
+.nous-appointments .nous-appointments-period button:hover { background: var(--dock-soft); }
+.nous-appointments-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
+.nous-appointments-week-day { display: flex; flex-direction: column; gap: 3px; min-width: 0; min-height: 6.5rem; padding: 2px; border: 1px solid var(--dock-border); border-radius: 8px; background: var(--dock-surface); }
+.nous-appointments-week-day.is-selected { border-color: var(--dock-accent); }
+.nous-appointments .nous-appointments-date { display: grid; justify-items: center; gap: 0; min-height: 0; padding: 0.1rem 0; border: 0; border-radius: 6px; background: none; color: var(--dock-text); font: inherit; cursor: pointer; }
+.nous-appointments .nous-appointments-date:hover { background: var(--dock-soft); }
+.nous-appointments-date small { font-size: 0.6rem; color: var(--dock-muted); }
+.nous-appointments-date strong { font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+.nous-appointments-week-day.is-today .nous-appointments-date strong { color: var(--dock-accent); }
+/* Three classes deep, as the pane's chips: the shell restyles every button's background. */
+.nous-appointments .nous-appointments-week .nous-appointments-chip { display: block; width: 100%; min-width: 0; min-height: 0; padding: 0.1rem 0.12rem; overflow: hidden;
+  border: 0; border-left: 2px solid var(--appt-kind); border-radius: 2px 5px 5px 2px; background: color-mix(in srgb, var(--appt-kind) 26%, transparent);
+  color: var(--dock-text); font: inherit; font-size: 0.6rem; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; text-align: left; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
+.nous-appointments .nous-appointments-week .nous-appointments-chip:hover { background: color-mix(in srgb, var(--appt-kind) 40%, transparent); }
+.nous-appointments-chip:is(.is-done, .is-cancelled) { opacity: 0.55; }
+.nous-appointments-chip.is-cancelled { text-decoration: line-through; }
+.nous-appointments-more { font-size: 0.6rem; color: var(--dock-muted); text-align: center; }
+.nous-appointments-month { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; }
+.nous-appointments-weekday { padding-bottom: 0.1rem; font-size: 0.6rem; font-weight: 600; color: var(--dock-muted); text-align: center; }
+.nous-appointments .nous-appointments-month-day { display: grid; grid-template-rows: auto 0.4rem; justify-items: center; align-content: center; gap: 0.15rem; min-height: 2.35rem; padding: 0.2rem 0; border: 1px solid transparent; border-radius: 7px; background: var(--dock-surface); color: var(--dock-text); font: inherit; font-size: 0.72rem; font-variant-numeric: tabular-nums; cursor: pointer; }
+.nous-appointments .nous-appointments-month-day:hover { border-color: var(--dock-border-strong); }
+.nous-appointments .nous-appointments-month-day.is-outside { background: none; color: var(--dock-muted); opacity: 0.6; }
+.nous-appointments .nous-appointments-month-day.has-items { font-weight: 650; }
+.nous-appointments .nous-appointments-month-day.is-today > span:first-child { display: inline-grid; place-items: center; min-width: 1.35rem; height: 1.35rem; border-radius: 999px; background: var(--dock-accent); color: var(--dock-on-accent, #fff); }
+.nous-appointments .nous-appointments-month-day.is-selected { border-color: var(--dock-accent); }
+.nous-appointments-dots { display: flex; gap: 2px; }
+.nous-appointments-dots i { width: 0.36rem; height: 0.36rem; border-radius: 999px; background: var(--appt-kind); }
+.nous-appointments-dots i:is(.is-done, .is-cancelled) { opacity: 0.45; }
+/* Horizontal swipes are the calendar's (nous_msg:e3776676), vertical pans stay the page's; the new period slides in from the side it came from. */
+.nous-appointments :is(.nous-appointments-week, .nous-appointments-month) { touch-action: pan-y; }
+@keyframes nous-appointments-slide { from { opacity: 0.35; transform: translateX(var(--appointments-slide-from)); } }
+@media (prefers-reduced-motion: no-preference) {
+  .nous-appointments :is(.nous-appointments-week, .nous-appointments-month):is(.is-slide-next, .is-slide-prev) { animation: nous-appointments-slide 180ms ease-out; }
+  .nous-appointments .is-slide-next { --appointments-slide-from: 1.5rem; }
+  .nous-appointments .is-slide-prev { --appointments-slide-from: -1.5rem; }
+}
+.nous-appointments-agenda { max-height: min(16rem, 30vh); overflow-y: auto; scrollbar-width: thin; }
 .nous-live { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.6rem; }
 .nous-live h3 { margin: 0; font-size: 0.86rem; font-weight: 600; color: var(--dock-text); }
 .nous-live-counts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.35rem; margin: 0; }
@@ -690,7 +866,11 @@
 }
 @media (max-width: 760px) {
   .dock-panel.nous-dock.nous-workspace { grid-template-rows: auto auto minmax(0, 1fr); grid-template-areas: "tools" "rail" "stage"; }
+  /* An open plan takes the whole phone screen (operator 31/10 16:15 BKK: the rail left it the bottom third); Back returns to the views. */
+  .nous-workspace.has-plan .nous-rail { display: none; }
 }
+.nous-stage-head .nous-plan-back { flex: none; }
+.nous-stage-head:has(.nous-plan-back) { justify-content: flex-start; }
 /* Pane board (plan clipboard:Y9cgKVHFaHrr): rooms with their panes, one live line each, the operator's items and a reply box. */
 .nous-pane-board { flex: 1 1 auto; display: flex; flex-direction: column; gap: 0.75rem; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 0.25rem 0.5rem 0.75rem; container-type: inline-size; }
 /* One row: the room and wait dropdowns, Clear (only while a filter is set) and Refresh. */
@@ -916,19 +1096,31 @@
 .nous-goals-loop.is-running .nous-goals-dot { background: var(--dock-accent); box-shadow: 0 0 0 3px var(--dock-accent-soft); animation: nous-goal-pulse 1.4s ease-in-out infinite; }
 @keyframes nous-goal-pulse { 50% { box-shadow: 0 0 0 6px transparent; } }
 .nous-goals-divider { flex: none; margin: 0.4rem 0 0; color: var(--dock-muted); font-size: 0.66rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
-/* A goal card: status, rank and percent, the operator's words, a progress bar, Nous's facts as a two-column list, the log, one row of actions. */
+/* A goal card: one row (status, rank, first line, percent, chevron) that opens the operator's words, a progress bar, Nous's facts as a
+   two-column list, the log and one row of actions. The row carries the card's padding so the whole row is the tap target. */
 .nous-goal {
-  flex: none; display: grid; gap: 0.5rem; padding: 0.7rem 0.75rem 0.55rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius);
+  flex: none; display: grid; padding: 0 0.75rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius);
   background: var(--dock-raised);
 }
 .nous-goal.is-active { border-color: color-mix(in srgb, var(--dock-accent) 35%, var(--dock-border)); box-shadow: inset 3px 0 0 var(--dock-accent); }
 .nous-goal.is-paused, .nous-goal.is-dropped { opacity: 0.72; }
-.nous-goal-top { display: flex; align-items: center; gap: 0.4rem; min-width: 0; }
+/* Three classes: the room theme paints every button (.space-shell[data-room-theme] button) as a raised box. */
+.nous-goal .nous-goal-head.nous-goal-head {
+  display: flex; align-items: center; gap: 0.4rem; min-width: 0; min-height: 0; margin: 0; padding: 0.65rem 0; border: 0; border-radius: 0;
+  background: none; box-shadow: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.nous-goal .nous-goal-head.nous-goal-head:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 2px; border-radius: 6px; }
+.nous-goal-status, .nous-goal-rank, .nous-goal-percent, .nous-goal-chevron { flex: none; }
+.nous-goal-line { flex: 1; min-width: 0; overflow: hidden; color: var(--dock-text); font-size: 0.8rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.nous-goal.is-open .nous-goal-line { color: var(--dock-muted); font-weight: 500; }
+.nous-goal-chevron { display: inline-flex; }
+.nous-goal-chevron svg { width: 1rem; height: 1rem; color: var(--dock-muted); }
+.nous-goal-body { display: grid; gap: 0.5rem; padding-bottom: 0.55rem; }
 .nous-goal-status { padding: 0.05rem 0.5rem; border-radius: 999px; background: var(--dock-soft); color: var(--dock-muted); font-size: 0.64rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
 .nous-goal-status.is-active { background: var(--dock-accent-soft); color: var(--dock-accent); }
 .nous-goal-status.is-achieved { background: var(--dock-success-soft); color: var(--dock-success); }
 .nous-goal-rank { color: var(--dock-muted); font-size: 0.7rem; font-variant-numeric: tabular-nums; }
-.nous-goal-percent { margin-left: auto; color: var(--dock-text); font-size: 0.95rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.nous-goal-percent { color: var(--dock-text); font-size: 0.95rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 .nous-goal-text { margin: 0; color: var(--dock-text); font-size: 0.86rem; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
 .nous-goal-bar { display: block; height: 5px; border-radius: 999px; background: var(--dock-soft); overflow: hidden; }
 .nous-goal-bar span { display: block; height: 100%; border-radius: inherit; background: var(--dock-accent); transition: width 300ms ease-out; }
@@ -938,14 +1130,165 @@
 .nous-goal-facts dd { margin: 0; min-width: 0; color: var(--dock-text); overflow-wrap: anywhere; }
 .nous-goal-facts dd.is-empty { color: var(--dock-muted); font-style: italic; }
 .nous-goal-facts dd.is-wait { color: var(--dock-warning); }
-.nous-goal-log summary { width: max-content; cursor: pointer; color: var(--dock-muted); font-size: 0.7rem; font-weight: 600; }
-.nous-goal-log ol { margin: 0.35rem 0 0; padding: 0 0 0 0.75rem; display: grid; gap: 0.3rem; border-left: 2px solid var(--dock-border); list-style: none;
-  font-size: 0.7rem; line-height: 1.4; color: var(--dock-text); overflow-wrap: anywhere; white-space: pre-line; }
-.nous-goal-log-when { color: var(--dock-muted); }
+/* Work history (plan clipboard:jNDx8l-vMEl9): hairline rows, each entry whole; wraps on a 360 px phone. */
+.nous-goal-history { display: grid; gap: 0.4rem; min-width: 0; }
+.nous-goal-history summary { width: max-content; cursor: pointer; color: var(--dock-muted); font-size: 0.7rem; font-weight: 600; }
+.nous-goal-history[open] summary { margin-bottom: 0.1rem; }
+.nous-goal-history ol { margin: 0; padding: 0; display: grid; list-style: none; }
+.nous-goal-history-entry { display: grid; gap: 0.15rem; min-width: 0; padding: 0.45rem 0 0.45rem 0.6rem; border-left: 2px solid var(--dock-border);
+  border-bottom: 1px solid var(--dock-border); font-size: 0.72rem; line-height: 1.4; overflow-wrap: anywhere; }
+.nous-goal-history-entry.is-turn { border-left-color: var(--dock-accent); }
+.nous-goal-history-entry.is-decision, .nous-goal-history-entry.is-card { border-left-color: var(--dock-warning); }
+.nous-goal-history-entry.is-ticket, .nous-goal-history-entry.is-done { border-left-color: var(--dock-success); }
+.nous-goal-history-when { color: var(--dock-muted); font-size: 0.66rem; }
+.nous-goal-history-title { color: var(--dock-text); font-weight: 600; }
+.nous-goal-history-detail { color: var(--dock-muted); white-space: pre-line; }
+.nous-goal-history-links { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.15rem; }
+.nous-goal-history-empty { margin: 0; color: var(--dock-muted); font-size: 0.72rem; font-style: italic; }
 .nous-goal-actions { display: flex; justify-content: flex-end; gap: 0.15rem; margin-top: 0.1rem; padding-top: 0.45rem; border-top: 1px solid var(--dock-border); }
 .nous-goal .nous-goal-actions .dock-kit-icon-button { --dock-control: 1.8rem; --dock-icon: 0.95rem; border-color: transparent; background: transparent; color: var(--dock-muted); }
 .nous-goal .nous-goal-actions .dock-kit-icon-button:hover:not(:disabled) { border-color: transparent; background: var(--dock-soft); color: var(--dock-text); }
 .nous-goal .nous-goal-actions .dock-kit-icon-button[aria-label="Delete the goal"]:hover:not(:disabled) { background: var(--dock-danger-soft); color: var(--dock-danger); }
 .nous-goal-edit { display: grid; gap: 0.35rem; }
 .nous-goal-edit-actions { display: flex; justify-content: flex-end; gap: 0.3rem; }
+/* Shared (plan clipboard:RQSrp1EczBbV): hairline rows like Done; the file's name opens it, the X ends only the share. */
+.nous-shared-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.15rem 0.5rem; padding: 0.5rem 0; border-bottom: 1px solid var(--dock-border); }
+.nous-shared-entry > :is(.nous-shared-note, .nous-shared-meta) { grid-column: 1; margin: 0; }
+.nous-shared-entry > .dock-kit-icon-button { grid-column: 2; grid-row: 1; }
+/* Three classes: the room theme paints every button (.space-shell[data-room-theme] button) as a raised box. */
+.nous-shared .nous-shared-open.nous-shared-open {
+  display: flex; align-items: center; gap: 0.45rem; min-width: 0; min-height: 44px; margin: 0; padding: 0; border: 0; border-radius: 0;
+  background: none; box-shadow: none; color: var(--dock-accent); font: inherit; text-align: left; cursor: pointer;
+}
+.nous-shared .nous-shared-open.nous-shared-open:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 2px; border-radius: 6px; }
+.nous-shared-icon { display: inline-flex; flex: none; }
+.nous-shared-icon svg { width: 1.1rem; height: 1.1rem; }
+.nous-shared-name { min-width: 0; overflow: hidden; font-size: 0.86rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.nous-shared-note { color: var(--dock-text); font-size: 0.8rem; line-height: 1.45; overflow-wrap: anywhere; }
+.nous-shared-meta { color: var(--dock-muted); font-size: 0.72rem; }
 @media (prefers-reduced-motion: reduce) { .nous-goals-loop.is-running .nous-goals-dot { animation: none; } }
+
+/* A plan's "What it needs from you" (plan clipboard:PHmjUTRmWM6C): its cards and decisions as in Needs you, inside the plan's own scroll. */
+.nous-plan-needs-you, .nous-plan-needs-list { display: grid; gap: 0.45rem; }
+.nous-plan-needs-you > h3 { margin: 0.2rem 0 0; font-size: var(--dock-font, 0.8rem); }
+.nous-plan-needs-you > .nous-recommendation { margin: 0; }
+/* R23-3: the artifacts a Needs you card asks about, shown above its answers. */
+.nous-needs-previews { display: grid; grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr)); gap: 0.5rem; }
+.nous-needs-previews figure { margin: 0; display: grid; gap: 0.2rem; font-size: var(--dock-font-sm); }
+.nous-needs-previews img, .nous-needs-previews video { width: 100%; max-height: 12rem; object-fit: contain; border-radius: 0.25rem; }
+
+/* Startup programs and oll4.com funding (operator 3/11 20:09 BKK, plan clipboard:17yLAnH5ZpyF): counts and filters, then one line per
+   program under its parent; a line opens its facts and mail timeline only on a click. */
+.nous-programs > * { flex: none; }
+.nous-programs-total { display: grid; gap: 2px; margin: 0; color: var(--dock-muted); font-size: var(--dock-font-sm); }
+.nous-programs-total p { margin: 0; }
+.nous-programs-total strong { color: var(--dock-success); font-variant-numeric: tabular-nums; }
+.nous-programs-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.nous-programs-tools .dock-kit-search { flex: 1 1 12rem; }
+.nous-programs-none { margin: 0; color: var(--dock-muted); font-size: 0.72rem; font-style: italic; }
+.nous-programs-group h3 { margin: 0.35rem 0 0.2rem; color: var(--dock-muted); font-size: 0.66rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.nous-programs-group h3 span, .nous-program-body h4 span { font-weight: 500; }
+.nous-programs-group ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.25rem; }
+.nous-program { border: 1px solid var(--dock-border); border-radius: var(--dock-radius); background: var(--dock-raised); }
+/* Three classes: the room theme paints every button as a raised box. */
+.nous-program .nous-program-head.nous-program-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; width: 100%; min-height: 0; margin: 0; padding: 0.4rem 0.6rem; border: 0;
+  border-radius: inherit; background: none; box-shadow: none; color: inherit; font: inherit; font-size: 0.76rem; text-align: left; cursor: pointer;
+}
+.nous-program .nous-program-head.nous-program-head:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 1px; }
+.nous-program-chevron { display: inline-flex; color: var(--dock-muted); }
+.nous-program-chevron svg, .nous-program-reapply svg, .nous-program-body a svg { width: 0.85rem; height: 0.85rem; }
+.nous-program-name { flex: 1 1 10rem; min-width: 0; color: var(--dock-text); font-weight: 600; overflow-wrap: anywhere; }
+.nous-program-name small { margin-left: 0.4rem; color: var(--dock-muted); font-weight: 500; }
+.nous-program-status { padding: 0.05rem 0.45rem; border-radius: 999px; background: var(--dock-soft); color: var(--dock-muted); font-size: 0.62rem; font-weight: 700;
+  letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; }
+.nous-program-status.is-approved { background: var(--dock-success-soft); color: var(--dock-success); }
+.nous-program-status.is-rejected { background: var(--dock-danger-soft); color: var(--dock-danger); }
+.nous-program-status.is-in_progress { background: var(--dock-accent-soft); color: var(--dock-accent); }
+.nous-program-status.is-applied { background: var(--dock-warning-soft); color: var(--dock-warning); }
+.nous-program-amount { color: var(--dock-text); font-variant-numeric: tabular-nums; }
+.nous-program-worth { color: var(--dock-text); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* A program's grouped tags (operator 6/11 21:42 BKK): quiet badges; the chips above filter by them. */
+.nous-program-tag { padding: 0.05rem 0.4rem; border: 1px solid var(--dock-border); border-radius: 999px; color: var(--dock-muted); font-size: 0.62rem; white-space: nowrap; }
+.nous-program-next { color: var(--dock-muted); white-space: nowrap; }
+.nous-program-next.is-overdue { color: var(--dock-warning); }
+.nous-program-reapply { display: inline-flex; align-items: center; gap: 0.2rem; color: var(--dock-warning); font-weight: 600; white-space: nowrap; }
+.nous-program-body { display: grid; gap: 0.45rem; padding: 0 0.6rem 0.6rem 1.7rem; font-size: 0.72rem; }
+.nous-program-body h4 { margin: 0.2rem 0 0; color: var(--dock-muted); font-size: 0.68rem; font-weight: 700; }
+.nous-program-body a { display: inline-flex; align-items: center; gap: 0.25rem; width: max-content; color: var(--dock-accent); }
+.nous-program-mails { margin: 0; padding: 0; list-style: none; display: grid; }
+.nous-program-mails li { display: grid; gap: 0.1rem; padding: 0.35rem 0 0.35rem 0.6rem; border-left: 2px solid var(--dock-border); min-width: 0; }
+.nous-program-mails li.is-sent { border-left-color: var(--dock-accent); }
+.nous-program-mail-when, .nous-program-mail-who { color: var(--dock-muted); font-size: 0.66rem; overflow-wrap: anywhere; }
+.nous-program-mail-subject { color: var(--dock-text); font-weight: 600; overflow-wrap: anywhere; }
+.nous-program-benefit-count { color: var(--dock-accent); font-size: 0.66rem; font-weight: 600; white-space: nowrap; }
+.nous-program-body h4 em { margin-left: 0.5rem; color: var(--dock-success); font-style: normal; }
+.nous-program-benefits ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.3rem; }
+.nous-program-benefits li { display: grid; gap: 0.15rem; min-width: 0; padding: 0.35rem 0.45rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius); }
+.nous-program-benefit-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.4rem; color: var(--dock-text); }
+.nous-program-benefit-head strong { min-width: 0; overflow-wrap: anywhere; }
+.nous-program-benefit-facts { display: flex; flex-wrap: wrap; gap: 0.1rem 0.7rem; color: var(--dock-text); font-variant-numeric: tabular-nums; }
+.nous-program-benefit-facts span { overflow-wrap: anywhere; }
+.nous-program-benefit-facts b { color: var(--dock-muted); font-weight: 600; }
+.nous-program-benefits small, .nous-program-tiers small { display: block; color: var(--dock-muted); font-weight: 400; overflow-wrap: anywhere; }
+/* Long notes and sources stay two lines; the whole text is on hover. */
+.nous-program-benefit-notes, .nous-program-benefits .nous-program-source { display: -webkit-box !important; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.nous-program-benefit-meter { display: flex; align-items: center; gap: 0.4rem; color: var(--dock-text); white-space: nowrap; }
+.nous-program-benefit-meter meter { flex: 1 1 auto; min-width: 3rem; height: 0.4rem; }
+.nous-program-benefit-status, .nous-program-tier-status { padding: 0.05rem 0.4rem; border-radius: 999px; background: var(--dock-soft); color: var(--dock-muted);
+  font-size: 0.6rem; font-weight: 700; white-space: nowrap; }
+.nous-program-benefit-status.is-active, .nous-program-tier-status.is-reached { background: var(--dock-success-soft); color: var(--dock-success); }
+.nous-program-benefit-status.is-pending, .nous-program-tier-status.is-pending { background: var(--dock-warning-soft); color: var(--dock-warning); }
+.nous-program-tier-status.is-next { background: var(--dock-accent-soft); color: var(--dock-accent); }
+.nous-program-tiers p { margin: 0; color: var(--dock-text); }
+.nous-program-if-approved { padding: 0.3rem 0.45rem; border-radius: var(--dock-radius); background: var(--dock-accent-soft); }
+.nous-program-tiers ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.3rem; }
+.nous-program-tiers li { display: grid; gap: 0.1rem; padding-left: 0.6rem; border-left: 2px solid var(--dock-border); color: var(--dock-text); }
+.nous-program-tiers li.is-reached { border-left-color: var(--dock-success); }
+.nous-program-tiers li.is-pending, .nous-program-tiers li.is-next { border-left-color: var(--dock-accent); }
+.nous-program-tiers li .nous-program-tier-status { width: max-content; }
+
+/* Job applications and Crypto (operator 3/11 22:33 BKK): the programs pages' look; a single-hue bar per step, its number and share beside it,
+   sections that open on a click, every row below. */
+.nous-report-funnel { display: grid; gap: 0.2rem; container-type: inline-size; }
+.nous-report-funnel h3 { margin: 0.35rem 0 0.1rem; color: var(--dock-muted); font-size: 0.66rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.nous-report-funnel h3 span { font-weight: 500; letter-spacing: 0; text-transform: none; }
+.nous-report-bar { display: grid; grid-template-columns: minmax(8rem, 13rem) minmax(3rem, 1fr) auto auto; align-items: center; gap: 0.5rem; font-size: 0.72rem; color: var(--dock-text); }
+.nous-report-bar-label { min-width: 0; overflow-wrap: anywhere; }
+.nous-report-bar-track { height: 0.5rem; border-radius: 999px; background: var(--dock-soft); overflow: hidden; }
+.nous-report-bar-track span { display: block; height: 100%; border-radius: 999px; background: var(--dock-accent); }
+.nous-report-bar strong { font-variant-numeric: tabular-nums; text-align: right; }
+.nous-report-bar small { color: var(--dock-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* A narrow dock (phone, side dock): the note goes under its bar, so the number and note stay inside (4/11 double-check: cut at the right edge);
+   after the rules it overrides: the same specificity, so order decides. */
+@container (max-width: 40rem) {
+  .nous-report-bar { grid-template-columns: minmax(0, 11rem) minmax(3rem, 1fr) auto; row-gap: 0.05rem; }
+  .nous-report-bar small { grid-column: 2 / -1; white-space: normal; }
+}
+.nous-report-section { border: 1px solid var(--dock-border); border-radius: var(--dock-radius); background: var(--dock-raised); font-size: 0.72rem; }
+.nous-report-section > summary { padding: 0.4rem 0.6rem; color: var(--dock-text); font-weight: 600; cursor: pointer; }
+.nous-report-section > summary span { margin-left: 0.3rem; color: var(--dock-muted); font-weight: 500; }
+.nous-report-section > :not(summary) { margin: 0 0.6rem 0.6rem; }
+.nous-report-table { overflow-x: auto; }
+.nous-report-table table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.nous-report-table th, .nous-report-table td { padding: 0.2rem 0.4rem; border-bottom: 1px solid var(--dock-border); text-align: right; white-space: nowrap; }
+.nous-report-table th[scope="row"], .nous-report-table thead th:first-child { text-align: left; white-space: normal; }
+.nous-report-table thead th { color: var(--dock-muted); font-weight: 600; }
+.nous-report-reasons { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.2rem; }
+.nous-report-reasons button { display: flex; align-items: center; gap: 0.5rem; width: 100%; padding: 0.25rem 0.4rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius);
+  background: none; color: var(--dock-text); font: inherit; text-align: left; cursor: pointer; }
+.nous-report-reasons button[aria-pressed="true"] { border-color: var(--dock-accent); background: var(--dock-accent-soft); }
+.nous-report-reasons button span { flex: 1 1 auto; }
+.nous-report-reasons button small { color: var(--dock-muted); }
+.nous-report-notes { margin: 0; padding-left: 1rem; display: grid; gap: 0.2rem; color: var(--dock-text); overflow-wrap: anywhere; }
+.nous-report-notes code { font-size: 0.66rem; overflow-wrap: anywhere; }
+.nous-report-rows { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.25rem; }
+.nous-report-id { color: var(--dock-accent); font-variant-numeric: tabular-nums; }
+
+/* Marketing (operator 5/11 10:42 BKK): the score and what pulls it down as small tiles on top. */
+.nous-marketing-tiles { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr)); gap: 0.3rem; }
+.nous-marketing-tiles li { display: grid; gap: 0.1rem; padding: 0.35rem 0.5rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius); background: var(--dock-raised); }
+.nous-marketing-tiles span { color: var(--dock-muted); font-size: 0.64rem; }
+.nous-marketing-tiles strong { color: var(--dock-text); font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+.nous-marketing-tiles .is-main strong { color: var(--dock-accent); font-size: 1.15rem; }
+.nous-marketing-tiles .is-down strong { color: var(--dock-danger); }

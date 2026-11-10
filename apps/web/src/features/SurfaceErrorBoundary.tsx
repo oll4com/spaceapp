@@ -9,6 +9,11 @@ export class SurfaceErrorBoundary extends Component<{
 }, { error: unknown; failed: boolean }> {
   state: { error: unknown; failed: boolean } = { error: null, failed: false };
 
+  componentDidCatch(error: unknown) {
+    // One reporter handles both React boundaries and uncaught errors; no second SDK listener.
+    window.dispatchEvent(new CustomEvent("space:surface-error", { detail: error }));
+  }
+
   static getDerivedStateFromError(error: unknown) { return { error, failed: true }; }
 
   componentDidUpdate(previous: Readonly<{ children: ReactNode; resetKey?: string }>) {

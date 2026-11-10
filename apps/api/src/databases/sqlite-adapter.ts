@@ -78,6 +78,11 @@ export class SqliteAdapter implements DatabaseAdapter {
         if (sessionId) {
           this.activeProcesses.delete(sessionId);
         }
+        // cancelSql/close killed it: a cancellation, not a worker failure (the exit code is null).
+        if (code !== 0 && child.killed) {
+          reject(new Error("Query cancelled."));
+          return;
+        }
         if (code !== 0) {
           try {
             const errObj = JSON.parse(stderr);

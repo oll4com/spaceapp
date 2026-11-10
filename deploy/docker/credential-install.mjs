@@ -70,14 +70,16 @@ export async function installLogin(runtime, stateRoot, payloadText) {
   return backup ? `IMPORTED backup=${backup}` : 'IMPORTED';
 }
 
-async function markOnboarded(path) {
+/** Marks Claude Code's first-run onboarding done and, with `trustedRoot`, the panes' workspace folder trusted. */
+export async function markOnboarded(path, trustedRoot) {
   const current = await readFile(path, 'utf8').then((text) => JSON.parse(text), (error) => {
     if (error.code === 'ENOENT') return {};
     throw error;
   });
   if (current.hasCompletedOnboarding === true) return;
+  const projects = trustedRoot ? { ...current.projects, [trustedRoot]: { ...current.projects?.[trustedRoot], hasTrustDialogAccepted: true } } : current.projects;
   const temporary = `${path}.tmp-${randomBytes(6).toString('hex')}`;
-  await writeFile(temporary, JSON.stringify({ ...current, hasCompletedOnboarding: true }, null, 2), { mode: 0o600, flag: 'wx' });
+  await writeFile(temporary, JSON.stringify({ ...current, hasCompletedOnboarding: true, ...(projects ? { projects } : {}) }, null, 2), { mode: 0o600, flag: 'wx' });
   await rename(temporary, path);
 }
 
@@ -93,7 +95,9 @@ async function main() {
   return installLogin(runtime, stateRoot, Buffer.concat(chunks).toString('utf8'));
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === '--onboarded') {
+  markOnboarded(process.argv[3], process.argv[4]).catch(() => { process.exitCode = 1; });
+} else if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().then(
     (line) => { process.stdout.write(`${line}\n`); process.exitCode = line.startsWith('FAILED') ? 1 : 0; },
     () => { process.stdout.write('FAILED write-failed\n'); process.exitCode = 1; }

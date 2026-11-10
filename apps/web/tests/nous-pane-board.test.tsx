@@ -95,6 +95,49 @@ describe("Nous pane board", () => {
     expect(screen.queryByRole("listitem", { name: "Bob in Alpha" })).toBeNull();
   });
 
+  // Operator 2026-10-31 (plan clipboard:d8nCNBw2mzDK): a folded room stays folded after a remount; a room no longer on the board is forgotten.
+  it("keeps folded rooms folded after a remount and forgets rooms that left the board", async () => {
+    const current = { board: board() };
+    serve(current);
+    const show = () => render(<NousPaneBoard active decisions={[]} overview={null} renderDecision={() => null} />);
+    show();
+    fireEvent.click(within(await screen.findByRole("region", { name: "Room Alpha" })).getByRole("button", { name: /Alpha/ }));
+    cleanup();
+    show();
+    const alpha = await screen.findByRole("region", { name: "Room Alpha" });
+    expect(within(alpha).getByRole("button", { name: /Alpha/ }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("listitem", { name: "Bob in Alpha" })).toBeNull();
+    expect(screen.getByRole("listitem", { name: "Mia in Beta" })).toBeTruthy();
+    cleanup();
+    current.board = board({ rooms: board().rooms.slice(1) });
+    show();
+    await screen.findByRole("listitem", { name: "Mia in Beta" });
+    await waitFor(() => expect(localStorage.getItem("space.nous.ui.panes.collapsed")).toBe("[]"));
+  });
+
+  // Operator 3/11 12:51 BKK (nous_msg:40a252b1): both filters stay after the board closes and opens again; a room that left reads as every room.
+  it("keeps the Room and Waits on filters after a remount and falls back when the room left", async () => {
+    const current = { board: board() };
+    serve(current);
+    const show = () => render(<NousPaneBoard active decisions={[]} overview={null} renderDecision={() => null} />);
+    const value = (name: string) => (screen.getByRole("combobox", { name }) as HTMLSelectElement).value;
+    show();
+    await screen.findByRole("region", { name: "Room Alpha" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Room" }), { target: { value: "room:beta00001" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Waits on" }), { target: { value: "PROMOTE" } });
+    cleanup();
+    show();
+    await screen.findByRole("listitem", { name: "Mia in Beta" });
+    expect([value("Room"), value("Waits on")]).toEqual(["room:beta00001", "PROMOTE"]);
+    expect(screen.queryByRole("region", { name: "Room Alpha" })).toBeNull();
+    cleanup();
+    current.board = board({ rooms: [board().rooms[0]!, { roomId: "room:gamma0001", name: "Gamma", panes: [pane("pane:gus00001", "Gus", "room:gamma0001")] }] });
+    show();
+    await screen.findByRole("combobox", { name: "Room" });
+    expect(value("Room")).toBe("ALL");
+    expect(value("Waits on")).toBe("PROMOTE");
+  });
+
   it("answers a prompt option, a copilot question and Nous from each pane's row", async () => {
     const calls = serve({ board: board() });
     render(<NousPaneBoard active decisions={[]} overview={null} renderDecision={() => null} />);

@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { MARKETING_CAMPAIGN_TEMPLATES, MARKETING_CHANNEL_DEFAULT_FORMAT, MARKETING_CHANNEL_DEFAULT_VIDEO_FORMAT, MARKETING_CHANNEL_LABELS, marketingWordingIssues, type MarketingCampaign, type MarketingPost, type MarketingPostStatus } from "@space/contracts";
+import { MARKETING_CAMPAIGN_TEMPLATES, MARKETING_CHANNEL_DEFAULT_FORMAT, MARKETING_CHANNEL_DEFAULT_VIDEO_FORMAT, MARKETING_CHANNEL_LABELS, marketingWordingIssues, type MarketingCampaign, type MarketingPost, type MarketingPostKind, type MarketingPostStatus } from "@space/contracts";
 import { api } from "../../api.js";
 import { Check, ExternalLink, Rocket, RotateCcw, Send, Undo2, X } from "../ui-theme/app-icons.js";
 import { modeIcons } from "../pane-card/pane-mode-icons.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 const DesignIcon = modeIcons.DESIGN;
 const VideoIcon = modeIcons.VIDEO;
@@ -13,6 +14,9 @@ const GROUPS: Array<{ status: MarketingPostStatus; label: string }> = [
   { status: "IN_REVIEW", label: "Needs your review" }, { status: "FAILED", label: "Failed" }, { status: "APPROVED", label: "Approved and scheduled" },
   { status: "PUBLISHING", label: "Publishing" }, { status: "DRAFT", label: "Drafts" }, { status: "PUBLISHED", label: "Published" }, { status: "REJECTED", label: "Rejected" }
 ];
+/** The post kinds as the operator reads them (the enum value stays what the API takes). */
+export const POST_KIND_LABEL: Record<MarketingPostKind, string> = { POST: "post", THREAD: "thread", ARTICLE: "article", VIDEO: "video", LAUNCH: "launch", REPLY: "reply", RELEASE_NOTE: "release note" };
+const ASSET_KIND_LABEL: Record<MarketingPost["assets"][number]["kind"], string> = { IMAGE: "image", VIDEO: "video", FILE: "file" };
 /** Character limits the operator should see while editing (X counts 280; LinkedIn posts 3000). */
 const CHARACTER_LIMIT: Partial<Record<MarketingPost["channel"], number>> = { X: 280, LINKEDIN: 3000 };
 
@@ -27,6 +31,8 @@ function when(iso: string | null): string {
 
 /** A post image at full size, like the Agent Files preview; the backdrop, Escape or Close shuts it. */
 function ImagePreview({ src, label, onClose }: { src: string; label: string; onClose(): void }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } };
     document.addEventListener("keydown", onKey);
@@ -35,8 +41,8 @@ function ImagePreview({ src, label, onClose }: { src: string; label: string; onC
   // Portalled: a pane card's own stacking would trap a fixed overlay.
   return createPortal(
     <div className="attachment-modal mk-asset-preview" onClick={onClose}>
-      <div className="attachment-modal-body" role="dialog" aria-modal="true" aria-label={`Preview ${label}`} onClick={(event) => event.stopPropagation()}>
-        <button type="button" className="mk-asset-preview-close" aria-label="Close preview" autoFocus onClick={onClose}><X aria-hidden="true" /></button>
+      <div className="attachment-modal-body" role="dialog" aria-modal="true" aria-label={t("Preview {label}", { label })} onClick={(event) => event.stopPropagation()}>
+        <button type="button" className="mk-asset-preview-close" aria-label={t("Close preview")} autoFocus onClick={onClose}><X aria-hidden="true" /></button>
         <img src={src} alt={label} />
       </div>
     </div>,
@@ -44,8 +50,11 @@ function ImagePreview({ src, label, onClose }: { src: string; label: string; onC
   );
 }
 
-function PostCard({ post, paneId, onChanged }: { post: MarketingPost; paneId: string; onChanged(): void }) {
-  const decidable = post.status === "IN_REVIEW" || post.status === "DRAFT";
+function PostCard({ post, paneId, onChanged, nousReviewing = false }: { post: MarketingPost; paneId: string; onChanged(): void; nousReviewing?: boolean }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
+  // A review Nous decides under "May send" is read only here (operator 2/11 15:08 BKK).
+  const decidable = (post.status === "IN_REVIEW" && !nousReviewing) || post.status === "DRAFT";
   const [title, setTitle] = useState(post.title ?? "");
   const [body, setBody] = useState(post.body);
   const [schedule, setSchedule] = useState(localInputValue(post.scheduledAt));
@@ -64,7 +73,7 @@ function PostCard({ post, paneId, onChanged }: { post: MarketingPost; paneId: st
       await action();
       onChanged();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The action failed.");
+      setError(caught instanceof Error ? caught.message : t("The action failed."));
     } finally {
       setBusy(false);
     }
@@ -76,46 +85,46 @@ function PostCard({ post, paneId, onChanged }: { post: MarketingPost; paneId: st
   const makeGraphic = () => void run(async () => {
     const brief = `A ${MARKETING_CHANNEL_LABELS[post.channel]} graphic for this post.${post.title ? `\nTitle: ${post.title}` : ""}\nPost: ${post.body}`.slice(0, 4000);
     const created = await api.requestDesignFromPane(paneId, { brief, formatIds: [graphicFormat!], callback: { kind: "MARKETING_POST", postId: post.id } });
-    setGraphicNote(created.designPaneId ? "Sent to the Design pane; the graphic is attached here when it is delivered." : "Queued: open a Design pane to make the graphic.");
+    setGraphicNote(created.designPaneId ? t("Sent to the Design pane; the graphic is attached here when it is delivered.") : t("Queued: open a Design pane to make the graphic."));
   });
   // "Make video": the owner's Video pane cuts the channel's video (its editor picks the sources from the room's Media) and the delivery attaches it to this post.
   const videoFormat = graphicFormat ? MARKETING_CHANNEL_DEFAULT_VIDEO_FORMAT[post.channel] : null;
   const makeVideo = () => void run(async () => {
     const brief = `A ${MARKETING_CHANNEL_LABELS[post.channel]} video for this post.${post.title ? `\nTitle: ${post.title}` : ""}\nPost: ${post.body}`.slice(0, 4000);
     const created = await api.requestVideoFromPane(paneId, { brief, formatIds: [videoFormat!], callback: { kind: "MARKETING_POST", postId: post.id } });
-    setGraphicNote(created.videoPaneId ? "Sent to the Video pane; the video is attached here when it is delivered." : "Queued: open a Video pane to make the video.");
+    setGraphicNote(created.videoPaneId ? t("Sent to the Video pane; the video is attached here when it is delivered.") : t("Queued: open a Video pane to make the video."));
   });
   return (
     <li className="mk-post" data-status={post.status.toLowerCase()}>
       <div className="mk-post-head">
         <span className="jc-tag accent">{MARKETING_CHANNEL_LABELS[post.channel]}</span>
-        <span className="jc-tag">{post.kind.toLowerCase().replace("_", " ")}</span>
+        <span className="jc-tag">{t(POST_KIND_LABEL[post.kind])}</span>
         {post.target ? <span className="jc-muted">{post.target}</span> : null}
-        {post.status === "APPROVED" ? <span className="jc-muted">{post.scheduledAt ? `Scheduled ${when(post.scheduledAt)}` : "Due now"}</span> : null}
+        {post.status === "APPROVED" ? <span className="jc-muted">{post.scheduledAt ? t("Scheduled {when}", { when: when(post.scheduledAt) }) : t("Due now")}</span> : null}
         {post.status === "PUBLISHED" ? <span className="jc-muted">{when(post.publishedAt)}</span> : null}
       </div>
       {decidable ? (
         <div className="mk-post-edit">
-          {post.kind !== "POST" || post.title ? <input value={title} placeholder="Title" aria-label="Post title" disabled={busy} onChange={(event) => setTitle(event.target.value)} /> : null}
-          <textarea rows={6} value={body} aria-label="Post text" disabled={busy} onChange={(event) => setBody(event.target.value)} />
+          {post.kind !== "POST" || post.title ? <input value={title} placeholder={t("Title")} aria-label={t("Post title")} disabled={busy} onChange={(event) => setTitle(event.target.value)} /> : null}
+          <textarea rows={6} value={body} aria-label={t("Post text")} disabled={busy} onChange={(event) => setBody(event.target.value)} />
           <div className="mk-post-meta">
-            {limit ? <span className={body.length > limit ? "mk-over" : "jc-muted"}>{body.length}/{limit}</span> : <span className="jc-muted">{body.length} characters</span>}
-            {issues.length ? <span className="mk-over" role="note">Unqualified claims: {issues.join(", ")}</span> : null}
-            {post.reviewNote ? <span className="jc-muted">Your note: {post.reviewNote}</span> : null}
+            {limit ? <span className={body.length > limit ? "mk-over" : "jc-muted"}>{body.length}/{limit}</span> : <span className="jc-muted">{t("{count} characters", { count: body.length })}</span>}
+            {issues.length ? <span className="mk-over" role="note">{t("Unqualified claims: {issues}", { issues: issues.join(", ") })}</span> : null}
+            {post.reviewNote ? <span className="jc-muted">{t("Your note: {note}", { note: post.reviewNote })}</span> : null}
           </div>
-          <label className="jc-field"><span>Publish at (empty: as soon as approved)</span>
+          <label className="jc-field"><span>{t("Publish at (empty: as soon as approved)")}</span>
             <input type="datetime-local" value={schedule} disabled={busy} onChange={(event) => setSchedule(event.target.value)} /></label>
-          <input value={note} placeholder="Note for the copilot (needed to send back)" aria-label="Note for the copilot" disabled={busy} onChange={(event) => setNote(event.target.value)} />
+          <input value={note} placeholder={t("Note for the copilot (needed to send back)")} aria-label={t("Note for the copilot")} disabled={busy} onChange={(event) => setNote(event.target.value)} />
           <div className="jc-actions">
             <button type="button" className="jc-button primary" disabled={busy || !body.trim()}
               onClick={() => void run(() => api.decideMarketingPost(paneId, post.id, edited ? { decision: "edit", title: title.trim() || null, body: body.trim(), scheduledAt, ...(note.trim() ? { note: note.trim() } : {}) }
                 : { decision: "approve", scheduledAt, ...(note.trim() ? { note: note.trim() } : {}) }))}>
-              <Check aria-hidden="true" /> {edited ? "Approve my version" : "Approve"}
+              <Check aria-hidden="true" /> {edited ? t("Approve my version") : t("Approve")}
             </button>
-            <button type="button" className="jc-button" disabled={busy || !note.trim()} title="Send it back to the copilot with your note"
-              onClick={() => void run(() => api.decideMarketingPost(paneId, post.id, { decision: "revise", note: note.trim() }))}><Undo2 aria-hidden="true" /> Send back</button>
+            <button type="button" className="jc-button" disabled={busy || !note.trim()} title={t("Send it back to the copilot with your note")}
+              onClick={() => void run(() => api.decideMarketingPost(paneId, post.id, { decision: "revise", note: note.trim() }))}><Undo2 aria-hidden="true" /> {t("Send back")}</button>
             <button type="button" className="jc-button ghost danger" disabled={busy}
-              onClick={() => void run(() => api.decideMarketingPost(paneId, post.id, { decision: "reject", ...(note.trim() ? { note: note.trim() } : {}) }))}><X aria-hidden="true" /> Reject</button>
+              onClick={() => void run(() => api.decideMarketingPost(paneId, post.id, { decision: "reject", ...(note.trim() ? { note: note.trim() } : {}) }))}><X aria-hidden="true" /> {t("Reject")}</button>
           </div>
         </div>
       ) : (
@@ -124,25 +133,25 @@ function PostCard({ post, paneId, onChanged }: { post: MarketingPost; paneId: st
           <p className="mk-post-body">{post.body}</p>
           {post.status === "FAILED" && typeof post.evidence.failure === "string" ? <p className="mk-over">{post.evidence.failure}</p> : null}
           <div className="jc-actions">
-            {post.status === "FAILED" ? <button type="button" className="jc-button" disabled={busy} onClick={() => void run(() => api.retryMarketingPost(paneId, post.id))}><RotateCcw aria-hidden="true" /> Retry</button> : null}
-            {post.publishedUrl ? <a className="jc-button ghost" href={post.publishedUrl} target="_blank" rel="noreferrer noopener"><ExternalLink aria-hidden="true" /> Open</a> : null}
+            {post.status === "FAILED" ? <button type="button" className="jc-button" disabled={busy} onClick={() => void run(() => api.retryMarketingPost(paneId, post.id))}><RotateCcw aria-hidden="true" /> {t("Retry")}</button> : null}
+            {post.publishedUrl ? <a className="jc-button ghost" href={post.publishedUrl} target="_blank" rel="noreferrer noopener"><ExternalLink aria-hidden="true" /> {t("Open")}</a> : null}
           </div>
         </>
       )}
       {post.assets.length ? (
         // What the copilot will upload with the post: captures play here; pane files show their kind.
-        <ul className="mk-assets" aria-label="Post media">
+        <ul className="mk-assets" aria-label={t("Post media")}>
           {post.assets.map((asset, index) => {
             const src = asset.artifactId ? api.artifactFileUrl(asset.artifactId) : null;
             return (
               <li key={index}>
                 {src && asset.kind === "VIDEO" ? <video src={src} controls playsInline preload="metadata" aria-label={asset.label} />
                   : src && asset.kind === "IMAGE" ? (
-                    <button type="button" className="mk-asset-open" title="Open preview" onClick={() => setPreview({ src, label: asset.label })}>
+                    <button type="button" className="mk-asset-open" title={t("Open preview")} onClick={() => setPreview({ src, label: asset.label })}>
                       <img src={src} alt={asset.label} loading="lazy" />
                     </button>
                   )
-                  : <span className="jc-tag">{asset.kind.toLowerCase()}</span>}
+                  : <span className="jc-tag">{t(ASSET_KIND_LABEL[asset.kind])}</span>}
                 <span className="jc-muted">{asset.label}</span>
               </li>
             );
@@ -152,8 +161,8 @@ function PostCard({ post, paneId, onChanged }: { post: MarketingPost; paneId: st
       {preview ? <ImagePreview src={preview.src} label={preview.label} onClose={() => setPreview(null)} /> : null}
       {graphicFormat ? (
         <div className="jc-actions">
-          <button type="button" className="jc-button ghost" disabled={busy} onClick={makeGraphic} title="Ask the Design pane for this channel's graphic"><DesignIcon aria-hidden="true" /> Make graphic</button>
-          {videoFormat ? <button type="button" className="jc-button ghost" disabled={busy} onClick={makeVideo} title="Ask the Video pane for this channel's video"><VideoIcon aria-hidden="true" /> Make video</button> : null}
+          <button type="button" className="jc-button ghost" disabled={busy} onClick={makeGraphic} title={t("Ask the Design pane for this channel's graphic")}><DesignIcon aria-hidden="true" /> {t("Make graphic")}</button>
+          {videoFormat ? <button type="button" className="jc-button ghost" disabled={busy} onClick={makeVideo} title={t("Ask the Video pane for this channel's video")}><VideoIcon aria-hidden="true" /> {t("Make video")}</button> : null}
           {graphicNote ? <span className="jc-muted" role="status">{graphicNote}</span> : null}
         </div>
       ) : null}
@@ -166,7 +175,9 @@ function PostCard({ post, paneId, onChanged }: { post: MarketingPost; paneId: st
  * Posts: ask the copilot for something, the campaigns, then every post grouped by state, reviews first.
  * A review approves the post as written, approves the operator's edit (learned), sends it back with a note, or rejects it.
  */
-export function PostsTab({ paneId, posts, campaigns, onChanged }: { paneId: string; posts: MarketingPost[]; campaigns: MarketingCampaign[]; onChanged(): void }) {
+export function PostsTab({ paneId, posts, campaigns, onChanged, nousReviewing = false }: { paneId: string; posts: MarketingPost[]; campaigns: MarketingCampaign[]; onChanged(): void; nousReviewing?: boolean }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [brief, setBrief] = useState("");
   const [campaignName, setCampaignName] = useState("");
   const [campaignGoal, setCampaignGoal] = useState("");
@@ -183,7 +194,7 @@ export function PostsTab({ paneId, posts, campaigns, onChanged }: { paneId: stri
       setMessage(done);
       onChanged();
     } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "The action failed.");
+      setMessage(caught instanceof Error ? caught.message : t("The action failed."));
     } finally {
       setBusy(false);
     }
@@ -191,19 +202,19 @@ export function PostsTab({ paneId, posts, campaigns, onChanged }: { paneId: stri
   const open = campaigns.filter((campaign) => campaign.status === "ACTIVE");
   return (
     <div className="mk-posts" role="tabpanel" id="jc-panel-posts" aria-labelledby="jc-tab-posts">
-      <form className="mk-brief" onSubmit={(event) => { event.preventDefault(); void run(async () => { await api.createMarketingBrief(paneId, { text: brief.trim() }); setBrief(""); }, "Sent to the copilot; it picks it up on its next run."); }}>
-        <textarea rows={2} value={brief} placeholder="Ask the copilot for something, e.g. a launch thread for the new version on X" aria-label="Brief for the copilot" disabled={busy} onChange={(event) => setBrief(event.target.value)} />
-        <button type="submit" className="jc-button primary" disabled={busy || !brief.trim()}><Send aria-hidden="true" /> Ask</button>
+      <form className="mk-brief" onSubmit={(event) => { event.preventDefault(); void run(async () => { await api.createMarketingBrief(paneId, { text: brief.trim() }); setBrief(""); }, t("Sent to the copilot; it picks it up on its next run.")); }}>
+        <textarea rows={2} value={brief} placeholder={t("Ask the copilot for something, e.g. a launch thread for the new version on X")} aria-label={t("Brief for the copilot")} disabled={busy} onChange={(event) => setBrief(event.target.value)} />
+        <button type="submit" className="jc-button primary" disabled={busy || !brief.trim()}><Send aria-hidden="true" /> {t("Ask")}</button>
       </form>
       <details className="mk-campaigns">
-        <summary>Campaigns ({open.length} active)</summary>
+        <summary>{t("Campaigns ({count} active)", { count: open.length })}</summary>
         <ul className="mk-campaign-list">
           {open.map((campaign) => (
             <li key={campaign.id} className="mk-campaign">
               <span><Rocket aria-hidden="true" /> <strong>{campaign.name}</strong>{campaign.goal ? <span className="jc-muted"> · {campaign.goal}</span> : null}</span>
               <span className="jc-actions">
-                <button type="button" className="jc-button ghost" disabled={busy} onClick={() => void run(() => api.decideMarketingCampaign(paneId, campaign.id, "complete"), "Campaign completed.")}>Complete</button>
-                <button type="button" className="jc-button ghost danger" disabled={busy} onClick={() => void run(() => api.decideMarketingCampaign(paneId, campaign.id, "cancel"), "Campaign cancelled.")}>Cancel</button>
+                <button type="button" className="jc-button ghost" disabled={busy} onClick={() => void run(() => api.decideMarketingCampaign(paneId, campaign.id, "complete"), t("Campaign completed."))}>{t("Complete")}</button>
+                <button type="button" className="jc-button ghost danger" disabled={busy} onClick={() => void run(() => api.decideMarketingCampaign(paneId, campaign.id, "cancel"), t("Campaign cancelled."))}>{t("Cancel")}</button>
               </span>
             </li>
           ))}
@@ -211,35 +222,36 @@ export function PostsTab({ paneId, posts, campaigns, onChanged }: { paneId: stri
         <form className="mk-campaign-form" onSubmit={(event) => { event.preventDefault(); void run(async () => {
           await api.createMarketingCampaign(paneId, { name: campaignName.trim(), goal: campaignGoal.trim() || null, ...(templateId ? { templateId } : {}) });
           setCampaignName(""); setCampaignGoal(""); setTemplateId("");
-        }, "Campaign started; the copilot plans its posts on its next run."); }}>
-          <select value={templateId} aria-label="Campaign template" disabled={busy} onChange={(event) => {
+        }, t("Campaign started; the copilot plans its posts on its next run.")); }}>
+          <select value={templateId} aria-label={t("Campaign template")} disabled={busy} onChange={(event) => {
             const template = MARKETING_CAMPAIGN_TEMPLATES.find((entry) => entry.id === event.target.value);
             setTemplateId(event.target.value);
             if (template) { setCampaignName((current) => current || template.name); setCampaignGoal((current) => current || template.goal); }
           }}>
-            <option value="">No template</option>
+            <option value="">{t("No template")}</option>
             {MARKETING_CAMPAIGN_TEMPLATES.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
           </select>
-          <input value={campaignName} placeholder="Campaign name" aria-label="Campaign name" disabled={busy} onChange={(event) => setCampaignName(event.target.value)} />
-          <input value={campaignGoal} placeholder="Goal (optional)" aria-label="Campaign goal" disabled={busy} onChange={(event) => setCampaignGoal(event.target.value)} />
-          <button type="submit" className="jc-button" disabled={busy || !campaignName.trim()}>Start campaign</button>
+          <input value={campaignName} placeholder={t("Campaign name")} aria-label={t("Campaign name")} disabled={busy} onChange={(event) => setCampaignName(event.target.value)} />
+          <input value={campaignGoal} placeholder={t("Goal (optional)")} aria-label={t("Campaign goal")} disabled={busy} onChange={(event) => setCampaignGoal(event.target.value)} />
+          <button type="submit" className="jc-button" disabled={busy || !campaignName.trim()}>{t("Start campaign")}</button>
         </form>
       </details>
       {message ? <p className="jc-message" role="status">{message}</p> : null}
       {posts.length === 0 ? (
-        <div className="jc-empty"><strong>No posts yet</strong><span>Ask for something above and press Start: drafts land here for your review before anything is published.</span></div>
+        <div className="jc-empty"><strong>{t("No posts yet")}</strong><span>{t("Ask for something above and press Start: drafts land here for your review before anything is published.")}</span></div>
       ) : GROUPS.filter((group) => showDone || (group.status !== "PUBLISHED" && group.status !== "REJECTED")).map((group) => {
         const entries = posts.filter((post) => post.status === group.status);
         if (!entries.length) return null;
+        const label = group.status === "IN_REVIEW" && nousReviewing ? "Nous reviewing" : group.label;
         return (
-          <section key={group.status} className="mk-group" aria-label={group.label}>
-            <h4>{group.label} <span className="jc-muted">{entries.length}</span></h4>
-            <ul className="mk-post-list">{entries.map((post) => <PostCard key={`${post.id}:${post.updatedAt}`} post={post} paneId={paneId} onChanged={onChanged} />)}</ul>
+          <section key={group.status} className="mk-group" aria-label={t(label)}>
+            <h4>{t(label)} <span className="jc-muted">{entries.length}</span></h4>
+            <ul className="mk-post-list">{entries.map((post) => <PostCard key={`${post.id}:${post.updatedAt}`} post={post} paneId={paneId} onChanged={onChanged} nousReviewing={nousReviewing} />)}</ul>
           </section>
         );
       })}
       {posts.some((post) => post.status === "PUBLISHED" || post.status === "REJECTED") ? (
-        <button type="button" className="jc-button ghost" onClick={() => setShowDone((shown) => !shown)}>{showDone ? "Hide published and rejected" : "Show published and rejected"}</button>
+        <button type="button" className="jc-button ghost" onClick={() => setShowDone((shown) => !shown)}>{showDone ? t("Hide published and rejected") : t("Show published and rejected")}</button>
       ) : null}
     </div>
   );

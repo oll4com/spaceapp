@@ -11,6 +11,7 @@ import { buildClaudeUpstreamHeaders } from "../src/providers/claude/headers.js";
 import { ClaudeStreamInspector, claudeResponseUsage, readClaudeRateLimitHeaders } from "../src/providers/claude/stream.js";
 import { claudeCostUsd } from "../src/pricing/pricing.js";
 import { RequestLogWriter } from "../src/request-log-writer.js";
+import { createPriorityPanes } from "../src/admin/priority-panes.js";
 import { createGatewayServer } from "../src/server.js";
 
 const cipher = createCredentialCipher(Buffer.alloc(32, 5));
@@ -45,7 +46,7 @@ async function setup(upstream: (token: string, body: Record<string, unknown>, ur
       lastRefreshAt: new Date(nowMs).toISOString() });
     await repository.saveUsageWindows(accountId, [{ window: "PRIMARY", usedPercent: used, resetAt: null, windowMinutes: 300 }]);
   }
-  await repository.updateSettings({ routingStrategy: "USAGE_WEIGHTED" });
+  await repository.updateSettings({ routingStrategy: "USAGE_WEIGHTED", subscriptionRouting: "WEEKLY_PACE" });
   const { plainKey, keyHash, keyPrefix } = generateGatewayApiKey();
   await repository.createApiKey({ keyId: `gw_key:${"c".repeat(32)}`, name: "Claude Code", keyHash, keyPrefix, trafficClass: "INTERACTIVE", allowedModels: [],
     enforcedModel: null, allowedReasoningEfforts: [], enforcedReasoningEffort: null, accountIds: [], compressionOverride: null, limits: [],
@@ -60,10 +61,14 @@ async function setup(upstream: (token: string, body: Record<string, unknown>, ur
     calls.push({ token, url, body, headers });
     return upstream(token, body, url);
   }) as unknown as typeof fetch;
+  const apiLog: Array<{ reqId: string; event: string }> = [];
+  const priorityPanes = createPriorityPanes({ now: () => nowMs });
   const server = createGatewayServer({ repository, version: "test", credentialKeyPresent: () => true, now: () => new Date(nowMs),
+    requestLog: (record) => apiLog.push(record),
     routes: (app, helpers) => {
       const claude = registerClaudeProxyRoutes(app, helpers, { pool, logs, settings: () => repository.getSettings(), fetchImpl, now: () => nowMs,
-        upstreamBaseUrl: "https://claude.test", settleKeyUsage: (keyId, usage) => repository.settleApiKeyUsage(keyId, usage), compression: compression as never });
+        upstreamBaseUrl: "https://claude.test", settleKeyUsage: (keyId, usage) => repository.settleApiKeyUsage(keyId, usage), compression: compression as never,
+        priorityPanes });
       registerCodexModelRoutes(app, helpers, { pool, fetchImpl, anthropicModels: claude.models });
     } });
   const post = (payload: Record<string, unknown>, headers: Record<string, string> = {}, url = "/v1/messages?beta=true") => server.app.inject({
@@ -71,8 +76,28 @@ async function setup(upstream: (token: string, body: Record<string, unknown>, ur
     headers: { "x-api-key": plainKey, "anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219", "user-agent": "claude-cli/2.1.206 (external, cli)", ...headers }
   });
   const get = (url: string, headers: Record<string, string> = {}) => server.app.inject({ method: "GET", url, headers: { "x-api-key": plainKey, ...headers } });
-  return { repository, logs, calls, post, get };
+  return { repository, pool, logs, calls, post, get, apiLog, server, priorityPanes };
 }
+
+it("correlates Claude CLI's validated id across Gateway API logs, rows, upstream and response (OBS-006)", async () => {
+  const f = await setup(() => streamResponse(messageStream("msg_trace")));
+  try {
+    const ids: string[] = [];
+    for (const supplied of ["req:claude-pane", "x".repeat(121), undefined]) {
+      const response = await f.post({ model: "claude-sonnet-4-5-20250929", stream: true, max_tokens: 100, messages: [{ role: "user", content: "PRIVATE_PROMPT" }] },
+        supplied ? { "x-request-id": supplied } : {});
+      expect(response.statusCode).toBe(200);
+      ids.push(String(response.headers["x-request-id"]));
+    }
+    await f.logs.flush();
+    expect(ids[0]).toBe("req:claude-pane");
+    for (const id of ids.slice(1)) expect(id).toMatch(/^req_[0-9a-f]{32}$/);
+    expect((await f.repository.listRequestLogs({ limit: 10 })).map((row) => row.requestId).reverse()).toEqual(ids);
+    expect(f.apiLog.map((row) => row.reqId)).toEqual(ids);
+    expect(f.calls.map((call) => call.headers["x-request-id"])).toEqual(ids);
+    expect(JSON.stringify(f.apiLog)).not.toContain("PRIVATE_PROMPT");
+  } finally { await f.server.app.close(); }
+});
 
 describe("Claude stream inspection", () => {
   it("reports content start, usage and completion", () => {
@@ -174,6 +199,65 @@ describe("Claude proxy", () => {
     const { error } = response.json() as { error: { type: string; code: string; message: string } };
     expect(error).toMatchObject({ type: "rate_limit_error", code: "usage_limit_reached" });
     expect(error.message).toMatch(/^All 2 Claude accounts in Space Gateway reached their usage limit\. The first one is back in 40m \(at \d\d:\d\d\)\.$/);
+  });
+
+  // Operator 3/11 13:09 BKK: fill first, and the last account with room serves Nous's OPERATOR and DECISION turns only.
+  it("fills the most used window first and keeps the last account with room for the operator's turns", async () => {
+    const start = async (usedA: number, usedB: number) => {
+      const harness = await setup(() => streamResponse(messageStream("msg")));
+      await harness.repository.updateSettings({ subscriptionRouting: "FILL_FIRST" });
+      for (const [accountId, used] of [[accountA, usedA], [accountB, usedB]] as const) {
+        await harness.repository.saveUsageWindows(accountId, [{ window: "PRIMARY", usedPercent: used, resetAt: new Date(nowMs + 3_600_000).toISOString(), windowMinutes: 300 }]);
+      }
+      const ask = (headers: Record<string, string> = {}) => harness.post({ model: "claude-sonnet-4-5", stream: true, max_tokens: 10, messages: [{ role: "user", content: "hi" }] }, headers);
+      return { ...harness, ask };
+    };
+    const filling = await start(10, 50);
+    expect((await filling.ask()).statusCode).toBe(200);
+    expect(filling.calls.at(-1)!.token).toBe("token-claude-b");
+    // b is out (past the floor); a, the reserve, is at 80% of its 5 hours (20% kept): other work waits, the operator's turn runs.
+    const full = await start(80, 99);
+    const held = await full.ask();
+    expect(held.statusCode).toBe(429);
+    expect((held.json() as { error: { message: string } }).error.message).toMatch(/kept for Nous's answers to the operator/);
+    expect(full.calls).toHaveLength(0);
+    expect((await full.ask({ "x-space-project": "nous-operator" })).statusCode).toBe(200);
+    expect(full.calls.at(-1)!.token).toBe("token-claude-a");
+    await full.repository.updateSettings({ claudeReservePercent: 10 });
+    expect((await full.ask()).statusCode).toBe(200);
+  });
+
+  // Operator 6/11 (nous_msg:a0d02e19) and the 31/10 rule (his requests never wait): the pace cap holds new background work only.
+  it("never holds background work past today's share of the week: no pace cap (operator 7/11 19:22 BKK, nous_msg:3d047588), subscriptions only", async () => {
+    const harness = await setup(() => streamResponse(messageStream("msg")));
+    const day = 86_400, now = nowMs / 1000;
+    const original = harness.pool.toBalancerState.bind(harness.pool);
+    // Both accounts past today's share of their week (60% at the pace day's start, 71% and 75% now).
+    vi.spyOn(harness.pool, "toBalancerState").mockImplementation((account) => ({ ...original(account), secondaryUsedPercent: account.id === accountA ? 71 : 75,
+      secondaryResetAt: now + 3.5 * day, weekDayStart: { at: (now - day / 2) * 1000, usedPercent: 60 } }));
+    const ask = (headers: Record<string, string> = {}) => harness.post({ model: "claude-sonnet-4-5", stream: true, max_tokens: 10, messages: [{ role: "user", content: "hi" }] }, headers);
+    for (const project of ["pane:finn0001", "pane:andy0001", "nous", "nous-operator"]) expect((await ask({ "x-space-project": project })).statusCode, project).toBe(200);
+    expect((await ask()).statusCode).toBe(200);
+    expect(harness.calls.every((call) => call.token.startsWith("token-claude-"))).toBe(true);
+  });
+
+  it("reselects an earlier-reset subscription after recovery instead of keeping a later account sticky", async () => {
+    const harness = await setup(() => streamResponse(messageStream("msg")));
+    await harness.repository.updateSettings({ subscriptionRouting: "FILL_FIRST" });
+    const windows = (used: number, days: number) => [
+      { window: "PRIMARY" as const, usedPercent: used, resetAt: new Date(nowMs + 3_600_000).toISOString(), windowMinutes: 300 },
+      { window: "SECONDARY" as const, usedPercent: 50, resetAt: new Date(nowMs + days * 86_400_000).toISOString(), windowMinutes: 10080 }
+    ];
+    await harness.repository.saveUsageWindows(accountA, windows(99, 1));
+    await harness.repository.saveUsageWindows(accountB, windows(60, 4));
+    const ask = () => harness.post({ model: "claude-sonnet-4-5", stream: true, max_tokens: 10, messages: [{ role: "user", content: "hi" }] },
+      { "x-space-project": "nous-operator", "x-claude-code-session-id": "same-conversation" });
+    expect((await ask()).statusCode).toBe(200);
+    expect(harness.calls.at(-1)!.token).toBe("token-claude-b");
+    await harness.repository.saveUsageWindows(accountA, windows(0, 1));
+    harness.pool.invalidate();
+    expect((await ask()).statusCode).toBe(200);
+    expect(harness.calls.at(-1)!.token).toBe("token-claude-a");
   });
 
   it("formats the pool limit message for one account, hours and an unknown reset", async () => {

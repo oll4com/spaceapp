@@ -1431,7 +1431,7 @@ describe("Space responsive shell", () => {
     // Resources summarises CLI sessions and CPU/RAM as overview rows (ecc0af72fb).
     fireEvent.click(await workspaceAction("Resources"));
     const metricLabel = (metric: HTMLElement) => metric.querySelector(".resources-summary-info")?.textContent;
-    const cliMetric = within(await screen.findByRole("dialog", { name: "Resources" })).getByRole("button", { name: /^Sessions/ });
+    const cliMetric = within(await screen.findByRole("dialog", { name: "Resources" })).getByRole("button", { name: /^CLI sessions/ });
     const ramMetric = within(screen.getByRole("dialog", { name: "Resources" })).getByRole("button", { name: /^System.*RAM/ });
     const cliMetricLabel = metricLabel(cliMetric);
     const ramMetricLabel = metricLabel(ramMetric);
@@ -1455,7 +1455,7 @@ describe("Space responsive shell", () => {
 
     if (!screen.queryByRole("dialog", { name: "Resources" })) fireEvent.click(await workspaceAction("Resources"));
     const resources = await screen.findByRole("dialog", { name: "Resources" });
-    expect(metricLabel(within(resources).getByRole("button", { name: /^Sessions/ }))).toBe(cliMetricLabel);
+    expect(metricLabel(within(resources).getByRole("button", { name: /^CLI sessions/ }))).toBe(cliMetricLabel);
     expect(metricLabel(within(resources).getByRole("button", { name: /^System.*RAM/ }))).toBe(ramMetricLabel);
   });
 
@@ -1798,12 +1798,12 @@ describe("Space responsive shell", () => {
     fireEvent.click(await workspaceAction("Resources"));
     const resources = await screen.findByRole("dialog", { name: "Resources" });
     expect(within(resources).getByRole("button", { name: "Close Resources" })).toBeTruthy();
-    // The merged Resources overview (ecc0af72fb) groups account usage, CLI sessions, CPU/RAM and
-    // latency into summary rows plus the alerts entry; the embedded view has no expand toggle.
-    for (const metric of [/^AI usage/, /^Sessions/, /^System.*CPU.*RAM/, /^Connection/, /^(Alerts & thresholds|\d+ alerts? need attention|Some measurements are unavailable)$/]) {
+    // The Resources overview: CLI sessions, CPU/RAM with latency, and alerts; the AI row only when an account exists
+    // (plan clipboard:sJpyQIBFGszW); the embedded view has no expand toggle.
+    for (const metric of [/^CLI sessions/, /^System.*Latency.*CPU.*RAM/, /^(Alerts & thresholds|\d+ alerts? need attention|Some measurements are unavailable)$/]) {
       expect(within(resources).getByRole("button", { name: metric })).toBeTruthy();
     }
-    expect(within(resources).getAllByRole("button").length).toBeGreaterThanOrEqual(6);
+    expect(within(resources).queryByRole("button", { name: /^Connection/ })).toBeNull();
     expect(container.querySelector(".pane-card")).toBeTruthy();
   });
 

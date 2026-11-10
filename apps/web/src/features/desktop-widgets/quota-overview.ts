@@ -1,8 +1,11 @@
+import { subscriptionQuotaAtReset, type QuotaLeftAtReset, type QuotaResetCredits } from "@space/contracts";
 import type { AccountQuotaEntry, AvailabilityCounts } from "../toolbar-metrics/AccountQuotaCards.js";
 import { countAvailability } from "../toolbar-metrics/AccountQuotaCards.js";
 import { compareAvailability } from "../toolbar-metrics/account-availability.js";
 import { antigravityAccountEntries, claudeAccountEntries, codexAccountEntries } from "../toolbar-metrics/account-entries.js";
+import { claudeSubscriptionAccounts } from "./quota-low.js";
 import type { SharedQuotaCache } from "./shared-quota-cache.js";
+import type { QuotaWindows } from "../toolbar-metrics/account-availability.js";
 
 // The AI Quota & Usage widget reads the same account cards as Resources > Accounts & quotas
 // and condenses them into provider summaries and the reset alert's watch list.
@@ -28,6 +31,11 @@ export interface ProviderQuotaOverview {
   counts: AvailabilityCounts;
   fiveHourAverage: number | null;
   weeklyAverage: number | null;
+  // Each window's next reset still ahead among the accounts that report it (operator 6/11: the Nous dock's card says when).
+  fiveHourResetAt: string | null;
+  weeklyResetAt: string | null;
+  // The share free at the weekly reset, the pane account menu's figure.
+  atReset: ProviderAtReset;
   next: NextAccountBack | null;
 }
 
@@ -66,25 +74,64 @@ function nextBack(entries: Array<{ entry: AccountQuotaEntry; provider: string }>
   return best;
 }
 
-function providerOverview(provider: QuotaProvider, entries: AccountQuotaEntry[]): ProviderQuotaOverview {
-  const rows = entries.filter((entry) => entry.availability.state !== "offline").flatMap((entry) => entry.rows);
+export type QuotaAtResetEntry = QuotaLeftAtReset & { scope: string | null; resetCredits?: QuotaResetCredits };
+
+export interface ProviderAtReset {
+  entries: QuotaAtResetEntry[];
+  // Why there is no figure, when there is none: "no connected account", "no weekly usage reported", ...
+  unknown: string | null;
+}
+
+type WeeklySample = { weeklyRemainingPercent?: number | null; weeklyResetAt?: string | null };
+
+/**
+ * quotaLeftAtReset over one provider's subscription accounts, counted as the pane account menus count them (subscriptionQuotaAtReset),
+ * and, when no account has a live week, why not.
+ */
+export function providerQuotaAtReset(provider: QuotaProvider, cache: Pick<SharedQuotaCache, "codex" | "agy" | "claude"> | null, clock: number): ProviderAtReset {
+  const list = provider === "codex" ? cache?.codex : provider === "claude" ? cache?.claude : cache?.agy;
+  const entries = subscriptionQuotaAtReset(provider, list?.data ?? [], clock);
+  if (entries.length) return { entries, unknown: null };
+  if (!list) return { entries, unknown: "not read yet" };
+  const counted: WeeklySample[] = provider === "codex" ? cache?.codex?.data ?? []
+    : provider === "claude" ? (cache?.claude?.data ?? []).filter((account) => account.status === "CONNECTED")
+      : (cache?.agy?.data ?? []).filter((account) => account.status === "CONNECTED").flatMap((account) => [account.gemini, account.claude]);
+  const weeks = counted.filter((week) => week.weeklyRemainingPercent != null);
+  const unknown = !counted.length ? (provider === "codex" ? "no account reported" : "no connected account")
+    : !weeks.length ? "no weekly usage reported"
+      : weeks.every((week) => !week.weeklyResetAt) ? "no weekly reset time reported" : "weekly sample out of date";
+  return { entries, unknown };
+}
+
+function nextReset(windows: QuotaWindows[], percent: "fiveHourRemainingPercent" | "weeklyRemainingPercent", reset: "fiveHourResetAt" | "weeklyResetAt", clock: number): string | null {
+  const next = Math.min(...windows.filter((window) => window[percent] != null).map((window) => Date.parse(window[reset] ?? "")).filter((ms) => ms > clock));
+  return Number.isFinite(next) ? new Date(next).toISOString() : null;
+}
+
+function providerOverview(provider: QuotaProvider, entries: AccountQuotaEntry[], cache: SharedQuotaCache | null, clock: number): ProviderQuotaOverview {
+  // Claude: each subscription account once, the Space Gateway pool's accounts included (the pool card alone has no rows).
+  const windows: QuotaWindows[] = provider === "claude" ? claudeSubscriptionAccounts(cache?.claude)
+    : entries.filter((entry) => entry.availability.state !== "offline").flatMap((entry) => entry.rows.map((row) => row.quota));
   const label = quotaProviderLabels[provider];
   return {
     provider,
     label,
     entries: [...entries].sort(compareAvailability),
     counts: countAvailability(entries),
-    fiveHourAverage: average(rows.map((row) => row.quota.fiveHourRemainingPercent)),
-    weeklyAverage: average(rows.map((row) => row.quota.weeklyRemainingPercent)),
+    fiveHourAverage: average(windows.map((window) => window.fiveHourRemainingPercent)),
+    weeklyAverage: average(windows.map((window) => window.weeklyRemainingPercent)),
+    fiveHourResetAt: nextReset(windows, "fiveHourRemainingPercent", "fiveHourResetAt", clock),
+    weeklyResetAt: nextReset(windows, "weeklyRemainingPercent", "weeklyResetAt", clock),
+    atReset: providerQuotaAtReset(provider, cache, clock),
     next: nextBack(entries.map((entry) => ({ entry, provider: label }))),
   };
 }
 
 export function buildQuotaOverview(cache: SharedQuotaCache | null, clock: number): QuotaOverview {
   const providers = [
-    providerOverview("codex", codexAccountEntries(cache?.codex?.data ?? [], clock)),
-    providerOverview("antigravity", antigravityAccountEntries(cache?.agy?.data ?? [], clock, { proOnly: false, geminiOnly: false })),
-    providerOverview("claude", claudeAccountEntries(cache?.claude?.data ?? [], clock)),
+    providerOverview("codex", codexAccountEntries(cache?.codex?.data ?? [], clock), cache, clock),
+    providerOverview("antigravity", antigravityAccountEntries(cache?.agy?.data ?? [], clock, { proOnly: false, geminiOnly: false }), cache, clock),
+    providerOverview("claude", claudeAccountEntries(cache?.claude?.data ?? [], clock), cache, clock),
   ].filter((overview) => overview.entries.length > 0);
   const tagged = providers.flatMap((overview) => overview.entries.map((entry) => ({ entry, provider: overview.label })));
   return {

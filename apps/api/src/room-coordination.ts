@@ -5,7 +5,7 @@ import type { BrowserHostActorContext } from "@space/browser-host";
 import type { RoomAgentEvent } from "@space/contracts";
 import type { ControlRepository } from "@space/db";
 import { SpaceConflictError, makeSpaceId, type SpaceStore } from "@space/runtime";
-import { defaultDeployQueueRoot, readDeployQueue } from "./deploy-queue.js";
+import { defaultDeployQueueRoot, readDeployQueue, readDeployQueueTicket } from "./deploy-queue.js";
 import { sendApiError } from "./http-errors.js";
 import { defaultReleasesOptions } from "./instance-releases.js";
 import { changeReleaseTrain, listReleaseTrains, releaseTrainInputSchema, releaseTrainLines, type ReleaseTrainActor, type ReleaseTrainInput } from "./release-trains.js";
@@ -82,6 +82,16 @@ export function createRoomCoordination(deps: {
           paneTitle: async (paneId) => { const pane = await store.getPane(paneId); return pane.paneName || pane.title; },
           roomName: async (roomId) => (await store.getRoom(roomId)).name
         });
+      });
+      app.get("/api/admin/deploy-queue/tickets/:id", routeOptions, async (request, reply) => {
+        if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "The deploy queue requires ADMIN.");
+        const { id } = z.object({ id: z.string().regex(/^q-\d{8}-\d{6}-[0-9a-f]{4}$/) }).parse(request.params);
+        const roots = [deps.deployQueueRoot ?? defaultDeployQueueRoot, deps.devQueueRoot ?? defaultReleasesOptions.devQueueRoot];
+        for (const root of new Set(roots)) {
+          const ticket = await readDeployQueueTicket(id, root);
+          if (ticket) return { ticket };
+        }
+        return sendApiError(reply, 404, "NOT_FOUND", "That merge-queue ticket was not found.");
       });
       // A pane reads or changes its product's release train through space-admin-action release-train (pane id from its env).
       app.post("/api/release-trains", routeOptions, async (request, reply) => {

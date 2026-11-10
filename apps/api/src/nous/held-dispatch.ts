@@ -11,10 +11,13 @@ import { makeSpaceId } from "@space/runtime";
 
 export type NousLoadLevel = "CALM" | "BUSY" | "OVERLOADED";
 export type HeldPriority = "normal" | "light";
-export interface HeldText { id: string; text: string; priority: HeldPriority; heldAt: string; attempts: number }
+/** R22-2: a model change held for a CLI still starting, applied at its first empty prompt instead of a typed text. */
+export interface HeldModel { modelId: string; reasoningEffort?: string }
+export interface HeldText { id: string; text: string; priority: HeldPriority; heldAt: string; attempts: number; model?: HeldModel }
 export interface HeldQueue { status: "HELD" | "EMPTY"; roomId: string; roomName: string; paneId: string; paneName: string; items: HeldText[] }
-export interface HeldDelivery { owner: string; roomId: string; paneId: string; paneName: string; text: string }
+export interface HeldDelivery { owner: string; roomId: string; paneId: string; paneName: string; text: string; model?: HeldModel }
 
+/** Safety: a pane that is never ready gets 3 tries, then the text goes back to Nous with a line (R18-6), never lost. */
 export const HELD_MAX_ATTEMPTS = 3;
 
 export function mayDeliver(level: NousLoadLevel, priority: HeldPriority): boolean {
@@ -24,7 +27,7 @@ export function mayDeliver(level: NousLoadLevel, priority: HeldPriority): boolea
 export interface HeldDispatchDeps {
   repository: Pick<ControlRepository, "get" | "list" | "write" | "listActive">;
   level(): Promise<NousLoadLevel>;
-  /** Sends the text to the pane as its next prompt (after its current turn); throws or returns ok false when it cannot. */
+  /** Sends the text to the pane as its next prompt (after its current turn), or sets its model; throws or returns ok false when it cannot. */
   deliver(item: HeldDelivery): Promise<{ ok: boolean; result: string }>;
   notice(owner: string, key: string, line: string): Promise<void>;
   now?(): string;
@@ -55,9 +58,9 @@ export function createHeldDispatch(deps: HeldDispatchDeps) {
 
   return {
     /** Holds a text for the pane; returns how many wait for it now. */
-    async hold(owner: string, target: Omit<HeldQueue, "status" | "items">, text: string, priority: HeldPriority = "normal"): Promise<{ id: string; waiting: number }> {
+    async hold(owner: string, target: Omit<HeldQueue, "status" | "items">, text: string, priority: HeldPriority = "normal", model?: HeldModel): Promise<{ id: string; waiting: number }> {
       const id = makeSpaceId("nous_held");
-      const queue = await change(owner, target, (items) => [...items, { id, text, priority, heldAt: now(), attempts: 0 }]);
+      const queue = await change(owner, target, (items) => [...items, { id, text, priority, heldAt: now(), attempts: 0, ...(model ? { model } : {}) }]);
       return { id, waiting: queue.items.length };
     },
 
@@ -83,7 +86,7 @@ export function createHeldDispatch(deps: HeldDispatchDeps) {
         const target = { roomId: queue.roomId, roomName: queue.roomName, paneId: queue.paneId, paneName: queue.paneName };
         let error: string | null = null;
         try {
-          const outcome = await deps.deliver({ owner, roomId: queue.roomId, paneId: queue.paneId, paneName: queue.paneName, text: item.text });
+          const outcome = await deps.deliver({ owner, roomId: queue.roomId, paneId: queue.paneId, paneName: queue.paneName, text: item.text, ...(item.model ? { model: item.model } : {}) });
           if (!outcome.ok) error = outcome.result;
         } catch (cause) {
           error = cause instanceof Error ? cause.message : String(cause);
@@ -93,13 +96,24 @@ export function createHeldDispatch(deps: HeldDispatchDeps) {
           delivered.set(owner, [...(delivered.get(owner) ?? []), `${queue.roomName}/${queue.paneName}`]);
           continue;
         }
-        const attempts = item.attempts + 1;
+        // R65-1: waiting for a model's empty prompt is not a failed delivery. Keep it across long turns/drafts and startup.
+        // A menu that did not confirm is a failed try (5/11 Bruno/Bob: kept forever, each minute's try ended in an Esc "Kept model").
+        if (item.model && /Native state is unknown|Pane has no active session|Send or clear the current CLI draft|not confirmed ready for input|Wait for (?:the OpenCode|this CLI) turn to finish|Live (?:Codex|OpenCode) model control is unavailable/i.test(error)) continue;
+        // 31/10 Alex/Max: a text left as an unsent draft is in the composer and Nous already has its line; typing it again would double it.
+        const drafted = /unsent draft/.test(error);
+        const attempts = drafted ? HELD_MAX_ATTEMPTS : item.attempts + 1;
         await change(owner, target, (items) => attempts >= HELD_MAX_ATTEMPTS ? items.filter((entry) => entry.id !== item.id)
           : items.map((entry) => entry.id === item.id ? { ...entry, attempts } : entry));
-        if (attempts >= HELD_MAX_ATTEMPTS) {
-          failed++;
-          await deps.notice(owner, `held-failed:${item.id}`, `A text held for ${queue.roomName}/${queue.paneName} since ${item.heldAt.slice(11, 16)} UTC could not be delivered `
-            + `(${HELD_MAX_ATTEMPTS} tries: ${error.slice(0, 160)}). Its text: "${item.text.slice(0, 120)}". Send it again or drop it.`);
+        // 2026-10-30 REVIEW (Alex/Dana: held texts failed 3 tries twice while its Codex read UNKNOWN): a pane not ready on 2 tries is named once, before the last try.
+        const what = item.model ? "model change" : "text";
+        if (attempts === HELD_MAX_ATTEMPTS - 1 && /not confirmed ready for input|UNKNOWN/i.test(error)) {
+          await deps.notice(owner, `held-stuck:${item.id}`, `${queue.roomName}/${queue.paneName} was not ready for input on ${attempts} tries of a ${what} held since ${item.heldAt.slice(11, 16)} UTC `
+            + `(${error}): read it (space_read_pane); if its CLI is stuck, restart it (space_restart_pane) and the ${what} goes after. One try is left.`);
+        }
+        if (attempts >= HELD_MAX_ATTEMPTS) failed++;
+        if (attempts >= HELD_MAX_ATTEMPTS && !drafted) {
+          await deps.notice(owner, `held-failed:${item.id}`, `A ${what} held for ${queue.roomName}/${queue.paneName} since ${item.heldAt.slice(11, 16)} UTC could not be delivered `
+            + `(${HELD_MAX_ATTEMPTS} tries: ${error}). ${item.model ? `It was: ${item.text}. Set it again or drop it.` : `Its text: "${item.text}". Send it again or drop it.`}`);
         }
       }
       for (const [owner, panes] of delivered) {

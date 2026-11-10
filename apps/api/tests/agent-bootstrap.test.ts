@@ -2,8 +2,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   BROWSER_HYGIENE_RULE,
-  CLOUDFLARE_HELPER_RULE, PRESS_HOLD_HELPER_RULE,
+  CLOUDFLARE_HELPER_RULE, PRESS_HOLD_HELPER_RULE, RECAPTCHA_HELPER_RULE, HCAPTCHA_HELPER_RULE, TEXT_CAPTCHA_HELPER_RULE,
   OPERATOR_HANDS_RULE,
+  OPERATOR_ORDERS_RULE,
+  operatorLanguageRule,
   TEST_ROOMS_RULE,
   VAULT_PASSWORDS_RULE,
   buildAppStudioPersonaMarkdown, buildVideoPersonaMarkdown, buildSecurityCopilotPersonaMarkdown, SECURITY_COPILOT_CLAUDE_SETTINGS, buildMonitoringCopilotPersonaMarkdown, MONITORING_COPILOT_CLAUDE_SETTINGS,
@@ -11,6 +13,7 @@ import {
   buildDesignPersonaMarkdown,
   buildFreelanceCopilotPersonaMarkdown,
   buildJobCopilotPersonaMarkdown,
+  VAULT_SIGNUP_RULE,
   buildMailCopilotPersonaMarkdown,
   buildMarketingCopilotPersonaMarkdown,
   buildSpaceAgentBootstrapPrompt
@@ -56,13 +59,20 @@ describe("Space agent bootstrap", () => {
     expect(markdown).toContain("- Space Memory: /var/lib/spaceapp/memory/space_memory.md plus /var/lib/spaceapp/memory/space_memory_monthly.md");
     expect(markdown).toContain("Read /etc/AGENTS.md once");
     // The public CLI image has no /opt/spaceapp/docs (exported as /opt/spaceapp/docs) and no memory bridge scripts.
-    expect(markdown).not.toMatch(/\/etc\/docs|space-memory-recall|space-memory-save|space_core/);
+    expect(markdown).not.toMatch(/\/opt\/spaceapp\/docs|space-memory-recall|space-memory-save|space_core/);
     expect(buildCliAgentBootstrapMarkdown()).toContain("space-memory-recall");
   });
 
   it("tells CLI agents to report their progress to Nous (plan clipboard:ot6-jLKOWDNC)", () => {
     expect(buildCliAgentBootstrapMarkdown()).toContain("node /opt/spaceapp/scripts/space-progress.mjs <started|progress|blocked|needs-decision|needs-you|waiting|done|failed>");
     expect(buildSpaceAgentBootstrapPrompt({ channel: "WEB_CHAT" })).not.toContain("space-progress.mjs");
+  });
+
+  it("instructs CLI agents to run a live egress IP check in their network namespace instead of quoting static host IPs", () => {
+    const cliMarkdown = buildCliAgentBootstrapMarkdown();
+    expect(cliMarkdown).toContain("curl -4 -s --max-time 5 https://api.ipify.org");
+    expect(cliMarkdown).toContain("NEVER quote static host IPs (such as Proxmox `192.0.2.10`)");
+    expect(buildSpaceAgentBootstrapPrompt({ channel: "WEB_CHAT" })).not.toContain("https://api.ipify.org");
   });
 
   it("gives every CLI pane, the six copilot personas and the six copilot skills the operator's-hands and browser hygiene rules (plan clipboard:m_d48PryBLRg)", () => {
@@ -77,28 +87,66 @@ describe("Space agent bootstrap", () => {
     }
   });
 
-  it("gives all copilots the bounded Cloudflare and Press & Hold exceptions without changing other handoffs", () => {
+  it("tells agents and Nous to write in the operator's chosen language; English adds nothing (operator 1/11 11:59 BKK)", () => {
+    expect(operatorLanguageRule("en")).toBeNull();
+    expect(operatorLanguageRule("el")).toMatch(/^The operator's language is Greek.*needs-you summaries, questions, options.*wins over any tool description that says English/);
+  });
+
+  it("gives every CLI pane, the nine copilot personas and their skills the operator's-orders rule (operator 31/10 13:37 BKK)", () => {
+    expect(OPERATOR_ORDERS_RULE).toContain("Never answer it with a refusal, a counter-proposal");
+    for (const text of [buildCliAgentBootstrapMarkdown(), buildJobCopilotPersonaMarkdown(), buildMailCopilotPersonaMarkdown(), buildMarketingCopilotPersonaMarkdown(),
+      buildFreelanceCopilotPersonaMarkdown(), buildDesignPersonaMarkdown(), buildAppStudioPersonaMarkdown(), buildVideoPersonaMarkdown(),
+      buildSecurityCopilotPersonaMarkdown(), buildMonitoringCopilotPersonaMarkdown()]) expect(text).toContain(OPERATOR_ORDERS_RULE);
+    for (const skill of ["space-job-applications", "space-mail-copilot", "space-marketing-copilot", "space-freelance-copilot", "space-design", "space-video",
+      "space-app-studio", "space-security-copilot", "space-monitoring-copilot"]) {
+      expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8"), skill).toContain(`**Operator's orders (2026-10-31):** ${OPERATOR_ORDERS_RULE}`);
+    }
+  });
+
+  it("tells the Job Copilot to pass a site's password rules and keep a sign-up page clean until the Vault fills it (28/10)", () => {
+    expect(buildJobCopilotPersonaMarkdown()).toContain(VAULT_SIGNUP_RULE);
+    expect(VAULT_SIGNUP_RULE).toContain("maxLength: 18");
+    const skill = readFileSync(new URL("../../../agent-skills/space-job-applications/SKILL.md", import.meta.url), "utf8");
+    expect(skill).toContain("## Candidate accounts (Vault sign-ups)");
+    expect(skill).toContain("`policy {minLength: <the stated minimum, else 8>, maxLength: 18}`");
+    expect(skill).toContain("`BLOCKED POLICY_NEEDS_HOST_RESTART`");
+  });
+
+  it("gives all copilots the bounded Cloudflare, Press & Hold and reCAPTCHA exceptions without changing other handoffs", () => {
+    expect(RECAPTCHA_HELPER_RULE).toContain("INVISIBLE_IDLE");
+    expect(RECAPTCHA_HELPER_RULE).toContain("never execute before submission is authorized");
+    expect(RECAPTCHA_HELPER_RULE).toContain("TOKEN_ISSUED");
+    expect(RECAPTCHA_HELPER_RULE).toContain("NEEDS_USER/browser handoff applies only to EXPIRED or BLOCKED");
     for (const text of [buildCliAgentBootstrapMarkdown(), buildJobCopilotPersonaMarkdown(), buildMailCopilotPersonaMarkdown(),
       buildMarketingCopilotPersonaMarkdown(), buildFreelanceCopilotPersonaMarkdown(), buildDesignPersonaMarkdown(), buildAppStudioPersonaMarkdown(),
       buildVideoPersonaMarkdown(), buildMonitoringCopilotPersonaMarkdown(), buildSecurityCopilotPersonaMarkdown()]) {
       expect(text).toContain(CLOUDFLARE_HELPER_RULE);
       expect(text).toContain(PRESS_HOLD_HELPER_RULE);
+      expect(text).toContain(RECAPTCHA_HELPER_RULE);
+      expect(text).toContain(HCAPTCHA_HELPER_RULE);
+      expect(text).toContain(TEXT_CAPTCHA_HELPER_RULE);
     }
     for (const skill of ["space-job-applications", "space-mail-copilot", "space-marketing-copilot", "space-freelance-copilot",
       "space-design", "space-video", "space-app-studio", "space-security-copilot", "space-monitoring-copilot"]) {
       expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8")).toContain(CLOUDFLARE_HELPER_RULE);
       expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8")).toContain(PRESS_HOLD_HELPER_RULE);
+      expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8")).toContain(RECAPTCHA_HELPER_RULE);
+      expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8")).toContain(TEXT_CAPTCHA_HELPER_RULE);
     }
   });
 
   it("obliges every CLI pane to delete the test rooms it opened when its task ends (operator 2026-10-21)", () => {
     expect(TEST_ROOMS_RULE).toContain("proof-room-delete room:<id>");
+    // R27-1: a test VM, CT or snapshot an agent creates is recorded, so Nous may remove it under "May delete what Nous created".
+    expect(TEST_ROOMS_RULE).toContain("node /opt/spaceapp/scripts/space-test-resource.mjs <vm|ct> <host> <vmid>");
     expect(buildCliAgentBootstrapMarkdown()).toContain(TEST_ROOMS_RULE);
   });
 
   it("sends every CLI pane to the Vault for passwords and keys, and has it keep the ones that reach it there (operator request 2026-10-26)", () => {
     expect(VAULT_PASSWORDS_RULE).toContain("space_vault_key_list");
     expect(VAULT_PASSWORDS_RULE).toContain("space_vault_key_save");
+    // Operator 31/10 10:03 BKK: saved logins never need the operator's unlock, and nobody asks for one.
+    expect(VAULT_PASSWORDS_RULE).toContain("never ask or remind the operator to unlock");
     expect(buildCliAgentBootstrapMarkdown()).toContain(VAULT_PASSWORDS_RULE);
     expect(buildCliAgentBootstrapMarkdown({ paneMode: "MAIL_COPILOT" })).toContain(VAULT_PASSWORDS_RULE);
   });

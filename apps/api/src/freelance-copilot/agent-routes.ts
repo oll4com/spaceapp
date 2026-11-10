@@ -1,8 +1,9 @@
+import { siteSigninFor } from "../site-signins.js";
 import { operatorHands } from "../owner-clock.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
-  effectiveFreelanceAutonomy, freelanceChannelEgress, FREELANCE_CHANNEL_ALIASES, FREELANCE_CHANNEL_LOGIN_URLS, FREELANCE_CHANNELS, FREELANCE_GOOGLE_SIGN_IN_CHANNELS, freelanceAccountUpdateSchema, freelanceChannelSchema, freelanceClientReadySchema,
+  effectiveFreelanceAutonomy, freelanceChannelAlias, freelanceChannelEgress, freelanceChannelSettings, FREELANCE_CHANNEL_LOGIN_URLS, FREELANCE_CHANNELS, FREELANCE_GOOGLE_SIGN_IN_CHANNELS, freelanceAccountUpdateSchema, freelanceChannelSchema, freelanceClientReadySchema,
   freelanceEventIdSchema, freelanceIncomingSchema, freelanceLeadCreateSchema, freelanceLeadIdSchema, freelanceLeadStatusSchema, freelanceLeadUpdateSchema, freelanceMemoryCreateSchema,
   freelanceMemoryIdSchema, freelanceMemoryQuerySchema, freelanceMessageCreateSchema, freelanceMessageIdSchema, freelanceMessageUpdateSchema, freelanceQuestionAskSchema, freelanceQuestionIdSchema,
   freelanceRuleProposalSchema, freelanceSendBeginSchema, freelanceSendDoneSchema, freelanceSendFailedSchema, type JobApplyCandidate, type Pane
@@ -10,7 +11,7 @@ import {
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 import { registerBookmarkAgentRoutes } from "../marketing-copilot/agent-routes.js";
 import type { MarketingCopilotService } from "../marketing-copilot/service.js";
-import type { FreelanceCopilotService } from "./service.js";
+import { freelanceSite, type FreelanceCopilotService } from "./service.js";
 
 // Agent-facing routes of the Freelance Copilot pane, reached with the pane-scoped CLI bridge token. The owner is the
 // room owner; the agent finds leads, drafts, asks and reports, and sends only through the send gate. The mailbox
@@ -63,9 +64,11 @@ export function registerFreelanceCopilotAgentRoutes(app: FastifyInstance, servic
     const settings = service.settingsOf(pane);
     return {
       paneId: pane.id, settings,
-      channels: Object.fromEntries(FREELANCE_CHANNELS.map((id) => [id, { ...settings.channels[id], effectiveAutonomy: effectiveFreelanceAutonomy(settings, id), egressRoute: freelanceChannelEgress(settings, id), loginUrl: FREELANCE_CHANNEL_LOGIN_URLS[id],
-        ...(FREELANCE_GOOGLE_SIGN_IN_CHANNELS.includes(id) ? { signIn: "GOOGLE", alias: null } : { signIn: "EMAIL", alias: FREELANCE_CHANNEL_ALIASES[id] }) }])),
-      accounts: await service.listAccounts(owner), mailbox: await service.mailboxStatus(owner), run: await service.runView(owner, pane), funnel: await service.funnel(owner)
+      channels: Object.fromEntries(await Promise.all(FREELANCE_CHANNELS.map(async (id) => {
+        const signin = await siteSigninFor(deps.store, owner, FREELANCE_CHANNEL_LOGIN_URLS[id]);
+        return [id, { ...freelanceChannelSettings(settings, id), effectiveAutonomy: effectiveFreelanceAutonomy(settings, id), egressRoute: freelanceChannelEgress(settings, id), loginUrl: FREELANCE_CHANNEL_LOGIN_URLS[id],
+        ...(signin ? {signIn: signin.method, alias: signin.siteAccountEmail ?? null, mailbox: signin.mailbox ?? null, signin} : FREELANCE_GOOGLE_SIGN_IN_CHANNELS.includes(id) ? { signIn: "GOOGLE", alias: null } : { signIn: "EMAIL", alias: freelanceChannelAlias(id, freelanceSite().aliasDomain) }) }]; }))),
+      accounts: await Promise.all((await service.listAccounts(owner)).map(async (account) => ({...account, signin: await siteSigninFor(deps.store, owner, FREELANCE_CHANNEL_LOGIN_URLS[account.channel])}))), mailbox: await service.mailboxStatus(owner), run: await service.runView(owner, pane), funnel: await service.funnel(owner)
     };
   });
   handle("post", "next", async ({ owner, pane }, request) => service.nextItem(owner, pane, body(z.object({ waitMs }).strict(), request)));
@@ -81,7 +84,7 @@ export function registerFreelanceCopilotAgentRoutes(app: FastifyInstance, servic
 
   // ---- leads -------------------------------------------------------------------------------------
   handle("get", "leads", async ({ owner }, request) => {
-    const query = parseQuery(z.object({ status: z.string().max(200).optional(), channel: freelanceChannelSchema.optional(), limit: z.coerce.number().int().min(1).max(200).default(50) }).strict(), request.query ?? {});
+    const query = parseQuery(z.object({ status: z.string().max(200).optional(), channel: freelanceChannelSchema.optional(), limit: z.coerce.number().int().min(1).optional() }).strict(), request.query ?? {});
     return { leads: await service.listLeads(owner, { status: query.status?.split(",").map((entry) => freelanceLeadStatusSchema.parse(entry.trim())), channel: query.channel, limit: query.limit }) };
   });
   handle("get", "leads/:id", async ({ owner }, request) => service.leadDetail(owner, parseQuery(z.object({ id: freelanceLeadIdSchema }).strict(), request.params).id));
@@ -97,8 +100,10 @@ export function registerFreelanceCopilotAgentRoutes(app: FastifyInstance, servic
   handle("post", "messages", async ({ owner, pane }, request) => service.createMessage(owner, pane, body(freelanceMessageCreateSchema, request)));
   handle("patch", "messages/:id", async ({ owner, pane }, request) => service.updateMessage(owner, pane, parseQuery(z.object({ id: freelanceMessageIdSchema }).strict(), request.params).id, body(freelanceMessageUpdateSchema, request)));
   handle("post", "messages/incoming", async ({ owner, pane }, request) => service.recordIncoming(owner, pane, body(freelanceIncomingSchema, request)));
-  handle("post", "review", async ({ owner, pane }, request) => service.requestReview(owner, pane, body(z.object({ messageId: freelanceMessageIdSchema, summary: z.string().trim().min(1).max(1000).optional() }).strict(), request)));
+  handle("post", "review", async ({ owner, pane }, request) => service.requestReview(owner, pane, body(z.object({ messageId: freelanceMessageIdSchema, summary: z.string().trim().min(1).max(1000).optional(), operatorOrder: z.string().regex(/^nous_msg:[A-Za-z0-9_-]{6,80}$/).optional() }).strict(), request)));
   handle("post", "review/wait", async ({ owner }, request) => service.waitForReview(owner, body(z.object({ messageId: freelanceMessageIdSchema, waitMs }).strict(), request)));
+  handle("post", "review/supersede", async ({ owner, pane }, request) => ({ message: await service.supersedeReview(owner, pane, body(z.object({ messageId: freelanceMessageIdSchema,
+    evidence: z.string().trim().min(10).max(1000), replacedBy: freelanceMessageIdSchema.optional() }).strict(), request)) }));
   handle("post", "send/begin", async ({ owner, pane }, request) => {
     const message = await service.beginSend(owner, pane, body(freelanceSendBeginSchema, request).messageId);
     await deps.audit(request, "freelance_copilot.send.begin", message.id, { channel: message.channel, kind: message.kind, ruleId: message.ruleId });
@@ -121,7 +126,7 @@ export function registerFreelanceCopilotAgentRoutes(app: FastifyInstance, servic
     return { candidate: rest };
   });
   handle("post", "accounts", async ({ owner, pane }, request) => ({ account: await service.updateAccount(owner, pane, body(freelanceAccountUpdateSchema, request), "AGENT") }));
-  handle("post", "mail/recent", async ({ owner }, request) => ({ messages: await service.recentMail(owner, body(z.object({ ...mailFilter, channel: freelanceChannelSchema.optional(), limit: z.number().int().min(1).max(20).default(10) }).strict(), request)) }));
+  handle("post", "mail/recent", async ({ owner }, request) => ({ messages: await service.recentMail(owner, body(z.object({ ...mailFilter, channel: freelanceChannelSchema.optional(), limit: z.number().int().min(1).default(10) }).strict(), request)) }));
   handle("post", "mail/read", async ({ owner }, request) => ({ mail: await service.readMail(owner, body(z.object({ uid: z.number().int().min(1) }).strict(), request).uid) }));
   handle("post", "mail/code", async ({ owner }, request) => {
     const input = body(z.object({ ...mailFilter, pattern: z.string().min(1).max(200).default("\\b(\\d{4,8})\\b"), timeoutMs }).strict(), request);

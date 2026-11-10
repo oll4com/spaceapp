@@ -78,6 +78,24 @@ export function registerHealthRoutes(app: FastifyInstance, options: {
           "UNAVAILABLE" as const
         )
       : Promise.resolve("in-memory" as const);
+    // Every check starts at once: one after another they took 2.6-3.9 s on a loaded host (4/11), longer than a
+    // deploy's readiness try (promote b-20261104-014005-3cec failed on it).
+    const cliHostCheck = config.cliEnabled
+      ? bounded(cliTerminalManager.hostPing().then((ok) => ok ? "RUNNING" as const : "UNAVAILABLE" as const).catch(() => "UNAVAILABLE" as const), "UNAVAILABLE" as const)
+      : Promise.resolve("disabled" as const);
+    const cliAdminHostCheck = config.cliRootEnabled
+      ? bounded(cliTerminalManager.hostPing("cli:root").then((ok) => ok ? "RUNNING" as const : "UNAVAILABLE" as const).catch(() => "UNAVAILABLE" as const), "UNAVAILABLE" as const)
+      : Promise.resolve("disabled" as const);
+    const browserHostCheck = config.browserSessionsEnabled && config.browserHostTransport === "unix"
+      ? (async () => Promise.all([
+          bounded(browserSessionManager.browserHostHealth
+            ? browserSessionManager.browserHostHealth()
+            : Promise.reject(new Error("Browser Host health checker is not configured.")),
+            { buildCommit: null, captureMetrics: null } as never),
+          readGitVersionMetadata()
+        ]))()
+      : null;
+    browserHostCheck?.catch(() => {}); // awaited in the try below; an early rejection must not count as unhandled
     const [worker, appDiagnostics, database] = await Promise.all([
       config.workflowsEnabled === false ? Promise.resolve(null) : bounded(shared("worker", () => workerReadinessChecker()), workerReadinessSchema.parse({
         id: "space-worker",
@@ -99,24 +117,13 @@ export function registerHealthRoutes(app: FastifyInstance, options: {
       shared("appDiagnostics", () => appDiagnosticsService.getStatus()),
       databaseCheck
     ]);
-    const cliHost = config.cliEnabled
-      ? await bounded(cliTerminalManager.hostPing().then((ok) => ok ? "RUNNING" as const : "UNAVAILABLE" as const).catch(() => "UNAVAILABLE" as const), "UNAVAILABLE" as const)
-      : "disabled" as const;
-    const cliAdminHost = config.cliRootEnabled
-      ? await bounded(cliTerminalManager.hostPing("cli:root").then((ok) => ok ? "RUNNING" as const : "UNAVAILABLE" as const).catch(() => "UNAVAILABLE" as const), "UNAVAILABLE" as const)
-      : "disabled" as const;
+    const [cliHost, cliAdminHost] = await Promise.all([cliHostCheck, cliAdminHostCheck]);
     let browserHost: "in-process" | "RUNNING" | "UNAVAILABLE" | "DISABLED" | "CAPACITY_MISMATCH" = "in-process";
     let browserHostBuildCommit: string | null = null;
     let browserHostCaptureMetrics: BrowserHostCaptureMetrics | null = null;
-    if (config.browserSessionsEnabled && config.browserHostTransport === "unix") {
+    if (browserHostCheck) {
       try {
-        const [health, git] = await Promise.all([
-          bounded(browserSessionManager.browserHostHealth
-            ? browserSessionManager.browserHostHealth()
-            : Promise.reject(new Error("Browser Host health checker is not configured.")),
-            { buildCommit: null, captureMetrics: null } as never),
-          readGitVersionMetadata()
-        ]);
+        const [health, git] = await browserHostCheck;
         browserHostBuildCommit = health.buildCommit;
         browserHostCaptureMetrics = health.captureMetrics;
         browserHost = browserHostReadiness(health, git?.commit ?? null);

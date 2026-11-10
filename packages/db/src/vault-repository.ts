@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { rollbackKeepingError } from "./rollback.js";
 import {
   type VaultAuditEvent, type VaultAuditRecord, type VaultEnrollment, type VaultItemMetadata, type VaultItemRecord, type VaultItemRecordInput, type VaultNoncePurpose,
   type VaultRecovery, newVaultHandle, vaultAuditEventSchema, vaultCanonicalJson, vaultDelegationCertificateSchema, vaultDigest,
@@ -54,10 +55,10 @@ const fromVaultRow = (row: VaultRow): VaultState => ({
   agentAccess: row.agentAccess === true
 });
 
-interface ItemRow { id: string; label: string; origins: string[]; fieldRoles: string[]; policy: unknown; status: string; googleAccountId: string | null; loginKey: string | null; keyVersion: number; dekEnvelope: unknown; fields: unknown; history: unknown }
-const itemColumns = `i.id, i.label, i.origins, i.field_roles AS "fieldRoles", i.policy, i.status, i.google_account_id AS "googleAccountId", i.login_key AS "loginKey", i.key_version AS "keyVersion", i.dek_envelope AS "dekEnvelope", i.fields, i.history`;
+interface ItemRow { id: string; label: string; origins: string[]; fieldRoles: string[]; policy: unknown; status: string; googleAccountId: string | null; loginKey: string | null; loginPage: string | null; keyVersion: number; dekEnvelope: unknown; fields: unknown; history: unknown }
+const itemColumns = `i.id, i.label, i.origins, i.field_roles AS "fieldRoles", i.policy, i.status, i.google_account_id AS "googleAccountId", i.login_key AS "loginKey", i.login_page AS "loginPage", i.key_version AS "keyVersion", i.dek_envelope AS "dekEnvelope", i.fields, i.history`;
 const fromItemRow = (row: ItemRow): VaultItemRecord => vaultItemRecordSchema.parse({
-  metadata: { id: row.id, label: row.label, origins: row.origins, fieldRoles: row.fieldRoles, policy: row.policy, status: row.status, googleAccountId: row.googleAccountId, loginKey: row.loginKey },
+  metadata: { id: row.id, label: row.label, origins: row.origins, fieldRoles: row.fieldRoles, policy: row.policy, status: row.status, googleAccountId: row.googleAccountId, loginKey: row.loginKey, loginPage: row.loginPage },
   keyVersion: row.keyVersion, dekEnvelope: row.dekEnvelope, fields: row.fields, history: row.history
 });
 
@@ -67,16 +68,18 @@ export class PostgresVaultRepository {
 
   private async transaction<T>(operation: (client: PgClientLike) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
+    let rollbackFailed = false;
     await client.query("BEGIN");
     try {
       const result = await operation(client);
       await client.query("COMMIT");
       return result;
     } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
+      const rollback = await rollbackKeepingError(client, error);
+      rollbackFailed = rollback.failed;
+      throw rollback.error;
     } finally {
-      client.release?.();
+      client.release?.(rollbackFailed || undefined);
     }
   }
 
@@ -179,15 +182,15 @@ export class PostgresVaultRepository {
       for (const item of items) {
         const { metadata } = item;
         // A handle belongs to one owner for good: another owner's id is never overwritten.
-        const saved = await client.query<ItemRow>(`INSERT INTO vault_items AS i (id, vault_id, owner_user_id, label, origins, field_roles, policy, key_version, dek_envelope, fields, status, history, google_account_id, login_key)
-          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10::jsonb, $11, $12::jsonb, $13, $14)
+        const saved = await client.query<ItemRow>(`INSERT INTO vault_items AS i (id, vault_id, owner_user_id, label, origins, field_roles, policy, key_version, dek_envelope, fields, status, history, google_account_id, login_key, login_page)
+          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10::jsonb, $11, $12::jsonb, $13, $14, $15)
           ON CONFLICT (id) DO UPDATE SET label = EXCLUDED.label, origins = EXCLUDED.origins, field_roles = EXCLUDED.field_roles, policy = EXCLUDED.policy,
             key_version = EXCLUDED.key_version, dek_envelope = EXCLUDED.dek_envelope, fields = EXCLUDED.fields, status = EXCLUDED.status, history = EXCLUDED.history,
-            google_account_id = EXCLUDED.google_account_id, login_key = EXCLUDED.login_key, updated_at = now()
+            google_account_id = EXCLUDED.google_account_id, login_key = EXCLUDED.login_key, login_page = EXCLUDED.login_page, updated_at = now()
           WHERE i.owner_user_id = EXCLUDED.owner_user_id AND i.vault_id = EXCLUDED.vault_id
           RETURNING ${itemColumns}`,
         [metadata.id, vault.id, owner, metadata.label, metadata.origins, metadata.fieldRoles, JSON.stringify(metadata.policy), item.keyVersion,
-          JSON.stringify(item.dekEnvelope), JSON.stringify(item.fields), metadata.status, JSON.stringify(item.history), metadata.googleAccountId, metadata.loginKey]);
+          JSON.stringify(item.dekEnvelope), JSON.stringify(item.fields), metadata.status, JSON.stringify(item.history), metadata.googleAccountId, metadata.loginKey, metadata.loginPage]);
         if (!saved.rows[0]) { results.push(null); continue; }
         await this.audit(client, vault, { actor: "OPERATOR", action: "ITEM_SAVE", result: "OK", itemId: metadata.id });
         results.push(fromItemRow(saved.rows[0]));
@@ -446,16 +449,25 @@ export class PostgresVaultRepository {
     const pending = vaultPendingSecretSchema.parse(input);
     const vault = await this.getVault(owner);
     if (!vault) return false;
-    await this.pool.query(`INSERT INTO vault_pending (id, vault_id, owner_user_id, kind, handle, label, origin, sealed_username, sealed_password, pane_id, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11)`,
-    [pending.id, vault.vaultId, owner, pending.kind, pending.handle, pending.label, pending.origin, json(pending.sealedUsername), json(pending.sealedPassword), pending.paneId, pending.createdAt]);
+    await this.pool.query(`INSERT INTO vault_pending (id, vault_id, owner_user_id, kind, handle, label, origin, sealed_username, sealed_password, pane_id, created_at, login_page)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12)`,
+    [pending.id, vault.vaultId, owner, pending.kind, pending.handle, pending.label, pending.origin, json(pending.sealedUsername), json(pending.sealedPassword), pending.paneId, pending.createdAt, pending.loginPage]);
     return true;
   }
   async listPending(owner: string): Promise<VaultPendingSecret[]> {
     const rows = (await this.pool.query<Record<string, unknown> & { createdAt: Date | string }>(`SELECT p.id, p.kind, p.handle, p.label, p.origin, p.sealed_username AS "sealedUsername",
-        p.sealed_password AS "sealedPassword", p.pane_id AS "paneId", p.created_at AS "createdAt"
+        p.sealed_password AS "sealedPassword", p.pane_id AS "paneId", p.created_at AS "createdAt", p.login_page AS "loginPage"
       FROM vault_pending p JOIN users u ON u.id = p.owner_user_id AND u.disabled_at IS NULL WHERE p.owner_user_id = $1 ORDER BY p.created_at`, [owner])).rows;
     return rows.map((row) => vaultPendingSecretSchema.parse({ ...row, createdAt: iso(row.createdAt) }));
+  }
+  /**
+   * A login's login page (nous_msg:cc5aba71), metadata only: the filed item and a new login the dock has not filed yet. No value is
+   * touched, so agents set it with the Vault locked; the caller checks it is on the login's own site. Answers the rows changed.
+   */
+  async setLoginPage(owner: string, handle: string, loginPage: string | null): Promise<number> {
+    const items = await this.pool.query(`UPDATE vault_items SET login_page = $3, updated_at = now() WHERE owner_user_id = $1 AND id = $2`, [owner, handle, loginPage]);
+    const pending = await this.pool.query(`UPDATE vault_pending SET login_page = $3 WHERE owner_user_id = $1 AND handle = $2 AND kind = 'NEW_ACCOUNT'`, [owner, handle, loginPage]);
+    return ((items as { rowCount?: number | null }).rowCount ?? 0) + ((pending as { rowCount?: number | null }).rowCount ?? 0);
   }
   async deletePending(owner: string, id: string): Promise<boolean> {
     const result = await this.pool.query(`DELETE FROM vault_pending WHERE owner_user_id = $1 AND id = $2`, [owner, id]);
@@ -524,6 +536,12 @@ export class PostgresVaultRepository {
     const result = await this.pool.query(`UPDATE vault_handoff_keys SET used_at = now(), used_by_pane_id = $3, value_sealed = CASE WHEN kept THEN value_sealed END
       WHERE id = $2 AND owner_user_id = $1 AND (kept OR (used_at IS NULL AND taken_by_pane_id = $3))`, [owner, id, paneId]);
     return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1;
+  }
+  /** Every enabled user's kept keys that still hold a value, sealed (the API's Space Gateway reconcile opens them); oldest first. */
+  async listKeptKeySeals(): Promise<Array<{ owner: string; id: string; label: string; valueSealed: string }>> {
+    return (await this.pool.query<{ owner: string; id: string; label: string; valueSealed: string }>(`SELECT k.owner_user_id AS owner, k.id, k.label, k.value_sealed AS "valueSealed"
+      FROM vault_handoff_keys k JOIN users u ON u.id = k.owner_user_id AND u.disabled_at IS NULL
+      WHERE k.kept AND k.value_sealed IS NOT NULL AND (k.expires_at IS NULL OR k.expires_at > now()) ORDER BY k.created_at`)).rows;
   }
   async deleteHandoffKey(owner: string, id: string): Promise<boolean> {
     const result = await this.pool.query(`DELETE FROM vault_handoff_keys WHERE owner_user_id = $1 AND id = $2`, [owner, id]);

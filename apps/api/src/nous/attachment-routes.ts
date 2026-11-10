@@ -1,18 +1,19 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { NOUS_ATTACHMENTS_PER_MESSAGE, nousAttachmentIdSchema } from "@space/contracts";
+import { nousAttachmentIdSchema } from "@space/contracts";
 import { InMemoryNousAttachmentRepository, PostgresNousAttachmentRepository, type NousAttachmentRepository } from "@space/db";
 import { applyFileResponsePolicy } from "../file-response-policy.js";
 import { withStagedUploads } from "../multipart-upload.js";
 import { openWorkspacePath } from "../workspace-filesystem.js";
 import { createNousAttachments, NOUS_ATTACHMENT_LIMITS, type NousAttachments } from "./attachments.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const idParams = z.object({ id: nousAttachmentIdSchema }).strict();
-const fileQuery = z.object({ download: z.enum(["1"]).optional(), preview: z.enum(["1"]).optional() }).strict();
+const fileQuery = z.object({ download: z.enum(["1"]).optional(), preview: z.enum(["1"]).optional(), text: z.enum(["1"]).optional() }).strict();
 const SWEEP_MS = 3_600_000;
 
 /**
- * The dock's file routes for Nous (plan clipboard:hQg9iKGYDqx7): upload, serve (with ranges, so a video can seek),
+ * The dock's file routes for Nous (plan clipboard:hQg9iKGYDqx7): upload, serve (with ranges, so a video can seek; `text=1` a document's text for its preview),
  * remove an unsent file; an hourly sweep removes unsent files after a day; sent files stay until the conversation is cleared. Owner-scoped:
  * another user's file is not found.
  */
@@ -25,7 +26,7 @@ export function registerNousAttachments(app: FastifyInstance, deps: {
   repository?: NousAttachmentRepository;
   readerWorkerPath?: string;
 }): NousAttachments {
-  const root = deps.config.browserEvidenceArtifactRoot || process.env.SPACE_ARTIFACT_ROOT || "/opt/spaceapp/var/artifacts";
+  const root = deps.config.browserEvidenceArtifactRoot || process.env.SPACE_ARTIFACT_ROOT || `${SPACE_INSTALL_ROOT}/var/artifacts`;
   const repository = deps.repository
     ?? (deps.config.databaseUrl ? PostgresNousAttachmentRepository.fromConnectionString(deps.config.databaseUrl) : new InMemoryNousAttachmentRepository());
   const attachments = createNousAttachments({ repository, root, readerWorkerPath: deps.readerWorkerPath });
@@ -33,7 +34,7 @@ export function registerNousAttachments(app: FastifyInstance, deps: {
 
   app.post("/api/nous/attachments", routeOptions, async (request, reply) => {
     const owner = await deps.owner(request);
-    const stored = await withStagedUploads(request, root, { maxFiles: NOUS_ATTACHMENTS_PER_MESSAGE, fileBytes: NOUS_ATTACHMENT_LIMITS.VIDEO },
+    const stored = await withStagedUploads(request, root, { maxFiles: Infinity, fileBytes: NOUS_ATTACHMENT_LIMITS.VIDEO },
       (uploads) => attachments.store(owner, uploads));
     return reply.code(201).send({ attachments: stored });
   });
@@ -42,6 +43,11 @@ export function registerNousAttachments(app: FastifyInstance, deps: {
     const owner = await deps.owner(request);
     const { id } = parseQuery(idParams, request.params);
     const query = parseQuery(fileQuery, request.query);
+    if (query.text === "1") {
+      const { attachment, text, truncated } = await attachments.text(owner, id);
+      applyFileResponsePolicy(reply, "text/plain", `${attachment.filename}.txt`);
+      return reply.type("text/plain; charset=utf-8").header("x-space-preview-truncated", String(truncated)).send(text);
+    }
     const { attachment, path, mimeType } = await attachments.file(owner, id, query.preview === "1");
     const handle = await openWorkspacePath(root, path);
     try {

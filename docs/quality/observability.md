@@ -29,8 +29,8 @@ same value is called `traceId`.
 | HTTP response | `x-request-id` header; `error.requestId` in every error envelope, including file errors |
 | API logs (pino, journald) | `reqId`, with `w3cTraceId` on the same line |
 | Turn input and workflow ID | `traceId`; the turn workflow ID ends with it: `workflow:codex-app-server:<roomId>:<paneId>:<traceId>` |
-| Temporal memo (turns started by the API) | `spaceTraceId`, `traceparent`, `w3cTraceId` |
-| Worker logs (journald) | `traceId` on `activity.started`, `activity.finished` and `turn.activity` lines |
+| Temporal memo (turns, Room Agent actions and Dot Goals started by the API) | `spaceTraceId`, `traceparent`, `w3cTraceId` (a Dot Goal: the request that created it, kept across `continueAsNew`) |
+| Worker logs (journald) | `traceId` on `activity.started`, `activity.finished` and `turn.activity` lines (Dot Goal steps with `goalId`) |
 | Database | `events.trace_id` (`TURN_STARTED`, `TURN_FAILED` with `payload.reasonCode`), `audit_events.trace_id`, `workflows.trace_id` |
 | Admin API | `GET /api/admin/traces/<traceId>` |
 
@@ -95,6 +95,9 @@ What changed in this package:
    ```sh
    journalctl -u space-api.service -u space-worker.service --since -6h -o cat | grep -F '<w3cTraceId>'
    ```
+
+   A pane CLI or browser request also reaches the hosts' journals under the same
+   id: run the lookup's `logQueries.cliHost` and `logQueries.browserHost`.
 5. **Temporal.** Run:
 
    ```sh
@@ -202,6 +205,9 @@ new API configuration keys.
   `UNAVAILABLE` and never stops the worker.
 - **`SPACE_WORKER_METRICS_HOST`:** only `127.0.0.1` (the default) or `::1`. Any
   other value disables the endpoint.
+- **`SPACE_MEMORY_MAINTENANCE_METRICS_PORT`, `SPACE_MEMORY_MUTATION_METRICS_PORT`:** the
+  same endpoint for the memory-maintenance and memory-mutation workers, each on its own
+  port (same host rule; 2026-10-28).
 - **`SPACE_WORKER_TEMPORAL_METRICS_BIND`:** for example `127.0.0.1:9464`, loopback
   only and unset by default. It installs the Temporal SDK's own Prometheus
   exporter (`Runtime.install`), which adds workflow-task schedule-to-start and
@@ -209,6 +215,14 @@ new API configuration keys.
 
 The worker endpoint was chosen instead of pushing to the API because it needs
 no credentials, no new API route and no shared state between processes.
+
+The monitoring collector (CT 210) cannot reach public-host's loopback, so on stable the API relays
+each endpoint at `GET /api/metrics/scrape/<target>` (`worker`, `worker-temporal`,
+`memory-maintenance`, `memory-mutation`; 2026-10-28, OBS-001) under the same rule as
+`/api/metrics/scrape`: the collector's bearer token from a private-network address. The
+ports are the units' (`WORKER_METRICS_TARGETS` in `apps/api/src/metrics-scrape.ts`, a test
+keeps them equal); an unknown target answers 404, a silent endpoint 503. Dev relays nothing,
+because its loopback would answer with stable's workers.
 
 Without the endpoint, every activity still writes `activity.started` and
 `activity.finished` records to journald.
@@ -323,6 +337,30 @@ No credential or transcript export was added.
   `cliSessions`: session, pane, room, runtime, `cliTaskId`, `cliTaskRevisionId`,
   launch mode, status and times. Sessions allocated before 0258 have no trace.
   Terminal input and output frames are not request-scoped and stay unlinked.
+- **Worker socket requests are logged under the caller's ids (since 2026-11-02, OBS-006).**
+  The worker's Unix socket (`/nous-turn`, `/move`) writes one `worker.socket_request`
+  line per request (route, COMPLETED/FAILED/INVALID/ABORTED, duration and the body's
+  allowlisted ids, `activityCorrelation`); a Nous turn or helper sends `traceId`
+  `trace:<turn id tail>`, the id its tool calls carry, and `turnId`. The `/move` callers
+  send their own id as `traceId`: a Council member call its run (`council_run:…`), a chess
+  move `<tournament>:<game>`, a pane board run one `trace:<24 hex>` that its failure line in
+  space-api also carries. With OTLP export on, each request also records one SERVER span
+  `worker.socket <route>` (outcome, the caller's `traceId` as `space.trace_id`): under the
+  body's `traceparent` when the caller sends one, else as its own trace, whose id the line
+  then carries as `w3cTraceId`. Still open: no API caller sends a traceparent (these runs
+  start outside any HTTP request), so the spans are roots. Since 2026-11-05 the callers also
+  send that `traceId` as `x-request-id`; the worker keeps it only when it is 8-64 of
+  `[A-Za-z0-9:_-]`, else makes its own `req_<24 hex>`, and writes it as `requestId` on the
+  line and in its answer's `x-request-id`.
+- **Space Gateway rows by request id (since 2026-11-03, OBS-006 and EXT-G-5).** The gateway
+  keeps a Space caller's `x-request-id` (1-120 visible ASCII characters) as the request
+  log's `request_id`, on the Claude, Codex and images routes. The API's gateway callers send
+  theirs (Room Agent, Council, Nous web search, chess, the card translator, the YouTube
+  summary, Design images), and `GET /api/admin/traces/:traceId` answers the matching rows as
+  `gatewayRequests` (provider, model, status, error code, latency; no text, account or key).
+  The shared gateway writes stable's database, so dev's lookup shows none. Not covered: CLI
+  panes' own gateway calls, task titles (no request), Nous step translations, the benchmark
+  and arena routes, and gateway spans.
 - **Hosts are observed from the API, not instrumented.** Since 2026-10-12 the
   API's `/metrics` carries `space_host_up`, `space_host_start_time_seconds`,
   `space_host_observed_timestamp_seconds`, `space_host_resident_memory_bytes` and
@@ -334,8 +372,10 @@ No credential or transcript export was added.
   line is that host. The hosts themselves still have no metrics endpoint or
   spans (a normal deploy never restarts them). Since 2026-10-16 the
   memory-maintenance and memory-mutation workers write the same `activity.started`
-  and `activity.finished` records as the main worker; their counters stay
-  in-process (no metrics endpoint of their own).
+  and `activity.finished` records as the main worker; since 2026-10-28 (OBS-007)
+  each serves its activity counters on its own loopback endpoint, like the main
+  worker's: `SPACE_MEMORY_MAINTENANCE_METRICS_PORT` (9470) and
+  `SPACE_MEMORY_MUTATION_METRICS_PORT` (9471) in their units.
 - **Some workflow-level faults are not in the trace lookup.** Workflow-task
   failures and nondeterminism appear only in Temporal history. Since 2026-10-16
   the lookup also returns the Space-native agent runs (`space_agent_runs`) of the
@@ -343,14 +383,31 @@ No credential or transcript export was added.
   names a failed run's code as the cause when no event carries one.
 - **Hosts emit no spans.** Since 2026-10-16 the OTLP exporter sends API SERVER
   spans and worker activity spans (the worker and both memory workers); the CLI
-  and Browser Hosts still join traces through log lines only.
+  and Browser Hosts join traces through log lines only. Since 2026-11-02 (OBS-001)
+  the pane hosts write one `cli_host_request` line (attach and input) and the
+  Browser Host one `browser_host_request` line (navigate, action, pages, control,
+  viewport, stream, stop, capture, Vault fill) for every call the API traced:
+  method, trace id, pane, status, code and duration, never input text or a URL.
+  The lookup's `logQueries.cliHost` and `logQueries.browserHost` name the greps.
+  The lines start with each host's guarded restart; on stable both have written
+  them since their restarts of 2026-11-02 (Browser Host 10:08, pane host 11:12
+  EET), each id leading back to the API's own log line for the request (OBS-001
+  registry). Kept so (accepted trade-off, 2026-11-02): host OTLP spans would add
+  no new lookup and cost two guarded host restarts; they can ride a future one if
+  a real need appears. Not traced: per-keystroke
+  browser input, lease heartbeats, resize and the operator's own keystrokes.
+  Since 2026-11-02 (OBS-006) a browser start (`startOrRestore`, the id in its
+  input) and a capture start (`createCapture`, in its context) write the line
+  too, and so does a CLI stop's `terminate` (the interrupt, pane close, CLI
+  restart and Room Agent restart/close requests' id). Resize and detach carry
+  none: the terminal socket drives them, with no request behind them.
 - **Recovery counters are partial.** Recovery counters exist for plan model
   retries, CLI terminal reconnects and worker activity retries only.
 - **Worker endpoints are not scraped yet.** Stable's `deploy/space-worker.service`
   enables `127.0.0.1:9469/metrics` (worker activities) and `127.0.0.1:9464`
   (Temporal SDK); on 2026-10-16 both answered on stable (`space_process_*` series,
-  and 53 `temporal_*` lines). Dev and public installs keep them off (off by
-  default). No collector scrapes them yet.
+  and 53 `temporal_*` lines). The memory workers' units enable 9470 and 9471 (2026-10-28).
+  Dev and public installs keep them off (off by default). No collector scrapes them yet.
 - **`/metrics` access on live, checked 2026-10-12 (d5af82d2d2).** Through the web
   origin that the public proxy forwards to (`127.0.0.1:4911`), `/metrics` is not
   proxied (it returns the app's HTML shell) and `/api/metrics` returns 401, also

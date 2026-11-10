@@ -24,3 +24,17 @@ export async function countRailDecisions(client: PgClientLike, owner: string, si
     `SELECT source, type, decision, count(*) AS count FROM (${[...rails, cards].join("\nUNION ALL\n")}) AS answers GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`, [owner, since]);
   return result.rows.map((row) => ({ source: row.source, type: row.type, decision: row.decision, count: Number(row.count) }));
 }
+
+/** R11-3: one operator answer in a copilot rail (Nous's own answers and, since R24-3, a copilot's own SUPERSEDED close left out), for the decision ledger. */
+export interface RailDecision { source: string; id: string; type: string; decision: string; title: string; at: string }
+
+/** The owner's own answers in every rail since `since`, oldest first (at most 500): the ledger appends the ones it does not hold yet. */
+export async function listRailDecisions(client: PgClientLike, owner: string, since: string): Promise<RailDecision[]> {
+  const rails = RAIL_DECISION_SOURCES.map(({ table, label, types }) => `SELECT '${label}' AS source, id::text AS id, type, coalesce(payload->>'decision', 'answered') AS decision,
+      left(coalesce(message, ''), 300) AS title, created_at AS at
+    FROM ${table} WHERE owner_user_id = $1 AND created_at >= $2::timestamptz AND type IN (${types.map((type) => `'${type}'`).join(", ")}) AND coalesce(message, '') NOT LIKE 'Nous %'
+      AND coalesce(payload->>'decision', '') <> 'superseded'`);
+  const result = await client.query<{ source: string; id: string; type: string; decision: string; title: string; at: Date | string }>(
+    `SELECT * FROM (${rails.join("\nUNION ALL\n")}) AS answers ORDER BY at ASC, source, id LIMIT 500`, [owner, since]);
+  return result.rows.map((row) => ({ ...row, at: row.at instanceof Date ? row.at.toISOString() : new Date(row.at).toISOString() }));
+}

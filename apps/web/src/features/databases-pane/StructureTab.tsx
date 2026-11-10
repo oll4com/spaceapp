@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Plus, Trash2, Key, Link as LinkIcon, Layers, X } from "../ui-theme/app-icons.js";
 import type { DatabaseTableMeta } from "@space/contracts";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export interface StructureTabProps {
   tableMeta: DatabaseTableMeta | null;
@@ -20,6 +21,8 @@ export function StructureTab({
   onAddIndex,
   onDropIndex
 }: StructureTabProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [showAddColModal, setShowAddColModal] = useState(false);
   const [colName, setColName] = useState("");
   const [colType, setColType] = useState("text");
@@ -34,7 +37,7 @@ export function StructureTab({
   if (!tableMeta) {
     return (
       <div style={{ padding: 24, textAlign: "center", color: "var(--modern-muted)" }}>
-        Select a table to view structure.
+        {t("Select a table to view structure.")}
       </div>
     );
   }
@@ -50,7 +53,7 @@ export function StructureTab({
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
           <h3 style={{ fontSize: "0.9rem", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, margin: 0 }}>
             <Layers size={15} style={{ color: "var(--modern-accent)" }} />
-            Columns ({columns.length})
+            {t("Columns ({count})", { count: columns.length })}
           </h3>
           {!isReadOnly && (
             <button
@@ -64,7 +67,7 @@ export function StructureTab({
               }}
             >
               <Plus size={13} />
-              <span>Add Column</span>
+              <span>{t("Add Column")}</span>
             </button>
           )}
         </div>
@@ -73,11 +76,11 @@ export function StructureTab({
           <thead>
             <tr>
               <th>#</th>
-              <th>Name</th>
-              <th>Type</th>
-              <th>Nullable</th>
-              <th>Default</th>
-              <th>Key</th>
+              <th>{t("Name")}</th>
+              <th>{t("Type")}</th>
+              <th>{t("Nullable")}</th>
+              <th>{t("Default")}</th>
+              <th>{t("Key")}</th>
               {!isReadOnly && <th className="actions-col" style={{ width: 36, minWidth: 36, maxWidth: 36, textAlign: "center" }}></th>}
             </tr>
           </thead>
@@ -87,8 +90,8 @@ export function StructureTab({
                 <td style={{ color: "var(--modern-faint)" }}>{i + 1}</td>
                 <td style={{ fontWeight: 600 }}>{c.name}</td>
                 <td><code>{c.type}</code></td>
-                <td>{c.nullable ? "YES" : "NO"}</td>
-                <td>{c.defaultValue !== null && c.defaultValue !== undefined ? <code>{String(c.defaultValue)}</code> : <span className="db-cell-null">None</span>}</td>
+                <td>{c.nullable ? t("YES") : t("NO")}</td>
+                <td>{c.defaultValue !== null && c.defaultValue !== undefined ? <code>{String(c.defaultValue)}</code> : <span className="db-cell-null">{t("None")}</span>}</td>
                 <td>
                   {c.isPrimaryKey && (
                     <span style={{ color: "var(--modern-accent)", display: "inline-flex", alignItems: "center", gap: 3, fontWeight: 700 }}>
@@ -102,9 +105,9 @@ export function StructureTab({
                       <button
                         type="button"
                         className="db-table-action-btn"
-                        title="Drop Column"
+                        title={t("Drop Column")}
                         onClick={() => {
-                          if (confirm(`Are you sure you want to drop column '${c.name}'?`)) {
+                          if (confirm(t("Are you sure you want to drop column '{name}'?", { name: c.name }))) {
                             void onDropColumn(c.name);
                           }
                         }}
@@ -125,7 +128,7 @@ export function StructureTab({
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
           <h3 style={{ fontSize: "0.9rem", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, margin: 0 }}>
             <Key size={15} style={{ color: "var(--modern-warning, #f59e0b)" }} />
-            Indexes ({indexes.length})
+            {t("Indexes ({count})", { count: indexes.length })}
           </h3>
           {!isReadOnly && (
             <button
@@ -138,20 +141,20 @@ export function StructureTab({
               }}
             >
               <Plus size={13} />
-              <span>Add Index</span>
+              <span>{t("Add Index")}</span>
             </button>
           )}
         </div>
 
         {indexes.length === 0 ? (
-          <div style={{ fontSize: "0.8rem", color: "var(--modern-muted)" }}>No secondary indexes.</div>
+          <div style={{ fontSize: "0.8rem", color: "var(--modern-muted)" }}>{t("No secondary indexes.")}</div>
         ) : (
           <table className="db-grid-table" style={{ border: "1px solid var(--modern-border, #2a3947)", borderRadius: 6 }}>
             <thead>
               <tr>
-                <th>Index Name</th>
-                <th>Columns</th>
-                <th>Unique</th>
+                <th>{t("Index Name")}</th>
+                <th>{t("Columns")}</th>
+                <th>{t("Unique")}</th>
                 {!isReadOnly && <th className="actions-col" style={{ width: 36, minWidth: 36, maxWidth: 36, textAlign: "center" }}></th>}
               </tr>
             </thead>
@@ -160,15 +163,15 @@ export function StructureTab({
                 <tr key={idx.name}>
                   <td style={{ fontWeight: 600 }}>{idx.name}</td>
                   <td>{idx.columns.join(", ") || "-"}</td>
-                  <td>{idx.unique ? "YES" : "NO"}</td>
+                  <td>{idx.unique ? t("YES") : t("NO")}</td>
                   {!isReadOnly && (
                     <td className="actions-col" style={{ width: 36, minWidth: 36, maxWidth: 36, textAlign: "center", padding: "2px 4px" }}>
                       <button
                         type="button"
                         className="db-table-action-btn"
-                        title="Drop Index"
+                        title={t("Drop Index")}
                         onClick={() => {
-                          if (confirm(`Are you sure you want to drop index '${idx.name}'?`)) {
+                          if (confirm(t("Are you sure you want to drop index '{name}'?", { name: idx.name }))) {
                             void onDropIndex(idx.name);
                           }
                         }}
@@ -189,21 +192,21 @@ export function StructureTab({
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
           <h3 style={{ fontSize: "0.9rem", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, margin: 0 }}>
             <LinkIcon size={15} style={{ color: "#64b5f6" }} />
-            Foreign Keys ({foreignKeys.length})
+            {t("Foreign Keys ({count})", { count: foreignKeys.length })}
           </h3>
         </div>
 
         {foreignKeys.length === 0 ? (
-          <div style={{ fontSize: "0.8rem", color: "var(--modern-muted)" }}>No foreign key relationships.</div>
+          <div style={{ fontSize: "0.8rem", color: "var(--modern-muted)" }}>{t("No foreign key relationships.")}</div>
         ) : (
           <table className="db-grid-table" style={{ border: "1px solid var(--modern-border, #2a3947)", borderRadius: 6 }}>
             <thead>
               <tr>
-                <th>Constraint Name</th>
-                <th>Column</th>
-                <th>References</th>
-                <th>On Update</th>
-                <th>On Delete</th>
+                <th>{t("Constraint Name")}</th>
+                <th>{t("Column")}</th>
+                <th>{t("References")}</th>
+                <th>{t("On Update")}</th>
+                <th>{t("On Delete")}</th>
               </tr>
             </thead>
             <tbody>
@@ -226,24 +229,24 @@ export function StructureTab({
         <div className="db-modal-overlay">
           <div className="db-modal">
             <div className="db-modal-header">
-              <span>Add Column to {tableMeta.name}</span>
+              <span>{t("Add Column to {name}", { name: tableMeta.name })}</span>
               <button className="db-crumb-btn" onClick={() => setShowAddColModal(false)}>
                 <X size={15} />
               </button>
             </div>
             <div className="db-modal-body">
               <div className="db-form-group">
-                <label className="db-form-label">Column Name</label>
+                <label className="db-form-label">{t("Column Name")}</label>
                 <input
                   type="text"
                   className="db-input"
-                  placeholder="e.g. status, user_id, bio"
+                  placeholder={t("e.g. status, user_id, bio")}
                   value={colName}
                   onChange={(e) => setColName(e.target.value)}
                 />
               </div>
               <div className="db-form-group">
-                <label className="db-form-label">Data Type</label>
+                <label className="db-form-label">{t("Data Type")}</label>
                 <select
                   className="db-select"
                   value={colType}
@@ -261,17 +264,17 @@ export function StructureTab({
               <div style={{ marginTop: 6 }}>
                 <SpaceToggle
                   id="col_nullable"
-                  label="Allow NULL values"
+                  label={t("Allow NULL values")}
                   checked={colNullable}
                   onChange={setColNullable}
                 />
               </div>
               <div className="db-form-group">
-                <label className="db-form-label">Default Value (optional)</label>
+                <label className="db-form-label">{t("Default Value (optional)")}</label>
                 <input
                   type="text"
                   className="db-input"
-                  placeholder="e.g. 'active', 0, now()"
+                  placeholder={t("e.g. 'active', 0, now()")}
                   value={colDefault}
                   onChange={(e) => setColDefault(e.target.value)}
                 />
@@ -279,7 +282,7 @@ export function StructureTab({
             </div>
             <div className="db-modal-footer">
               <button className="db-btn" onClick={() => setShowAddColModal(false)}>
-                Cancel
+                {t("Cancel")}
               </button>
               <button
                 className="db-btn db-btn-primary"
@@ -294,7 +297,7 @@ export function StructureTab({
                   setShowAddColModal(false);
                 }}
               >
-                Add Column
+                {t("Add Column")}
               </button>
             </div>
           </div>
@@ -306,14 +309,14 @@ export function StructureTab({
         <div className="db-modal-overlay">
           <div className="db-modal">
             <div className="db-modal-header">
-              <span>Create Index on {tableMeta.name}</span>
+              <span>{t("Create Index on {name}", { name: tableMeta.name })}</span>
               <button className="db-crumb-btn" onClick={() => setShowAddIdxModal(false)}>
                 <X size={15} />
               </button>
             </div>
             <div className="db-modal-body">
               <div className="db-form-group">
-                <label className="db-form-label">Index Name</label>
+                <label className="db-form-label">{t("Index Name")}</label>
                 <input
                   type="text"
                   className="db-input"
@@ -322,7 +325,7 @@ export function StructureTab({
                 />
               </div>
               <div className="db-form-group">
-                <label className="db-form-label">Indexed Columns</label>
+                <label className="db-form-label">{t("Indexed Columns")}</label>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 150, overflowY: "auto" }}>
                   {columns.map((c) => (
                     <SpaceToggle
@@ -340,7 +343,7 @@ export function StructureTab({
               <div style={{ marginTop: 6 }}>
                 <SpaceToggle
                   id="idx_unique"
-                  label="UNIQUE Index"
+                  label={t("UNIQUE Index")}
                   checked={idxUnique}
                   onChange={setIdxUnique}
                 />
@@ -348,7 +351,7 @@ export function StructureTab({
             </div>
             <div className="db-modal-footer">
               <button className="db-btn" onClick={() => setShowAddIdxModal(false)}>
-                Cancel
+                {t("Cancel")}
               </button>
               <button
                 className="db-btn db-btn-primary"
@@ -362,7 +365,7 @@ export function StructureTab({
                   setShowAddIdxModal(false);
                 }}
               >
-                Create Index
+                {t("Create Index")}
               </button>
             </div>
           </div>

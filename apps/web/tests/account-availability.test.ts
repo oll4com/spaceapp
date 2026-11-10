@@ -63,7 +63,7 @@ describe("account availability", () => {
     expect(formatUntil(at(200), clock, settings)).toBe("in 3h 20m");
     expect(formatUntil(at(120), clock, settings)).toBe("in 2h");
     expect(formatUntil(at(-5), clock, settings)).toBe("now");
-    expect(formatUntil(at(3 * 24 * 60 + 8), clock, settings)).toMatch(/^Wed 10:08$/);
+    expect(formatUntil(at(3 * 24 * 60 + 8), clock, settings)).toBe("Wed 14 Oct 10:08");
     expect(formatUntil(null, clock, settings)).toBeNull();
     expect(availabilityLabel({ state: "soon", backAt: at(52) }, clock, settings)).toBe("Back in 52m");
     expect(availabilityLabel({ state: "soon", backAt: null }, clock, settings)).toBe("Limit reached");

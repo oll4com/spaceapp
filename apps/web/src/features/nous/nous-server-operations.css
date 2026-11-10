@@ -1,0 +1,4 @@
+.nous-server-ops-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+/* Tappable on the phone (the Nous app): 44 px targets. */
+.nous-server-ops .dock-kit-button, .nous-server-ops select { min-height: 44px; }
+.nous-server-ops-result { padding: 6px 0; white-space: pre-wrap; }

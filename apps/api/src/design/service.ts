@@ -118,7 +118,7 @@ export function createDesignService(options: DesignServiceOptions) {
 
   async function record(owner: string, pane: Pane | null, input: { requestId?: string | null; assetId?: string | null; type: DesignEventType; message: string; payload?: Record<string, unknown> }) {
     const event = await repository.createEvent({ ownerUserId: owner, paneId: pane?.id ?? null, requestId: input.requestId ?? null, assetId: input.assetId ?? null, type: input.type,
-      message: trimmed(input.message, 2000), payload: input.payload ?? {} });
+      message: input.message, payload: input.payload ?? {} });
     options.onEvent?.(event);
     return event;
   }
@@ -246,10 +246,9 @@ export function createDesignService(options: DesignServiceOptions) {
 
   async function startOnce(owner: string, pane: Pane): Promise<boolean> {
     if (!options.kickoff || settingsOf(pane).paused) return false;
-    const working = (await repository.listRequests(owner, { designPaneId: pane.id, status: ["TAKEN", "IN_PROGRESS"], limit: 20 }))
-      .some((request) => now() - Date.parse(request.updatedAt) < DESIGN_REQUEST_STALE_MS);
-    // The agent works through the queue until it is empty; a kickoff while it does would type into its turn.
-    if (working || now() - (lastKickoff.get(pane.id) ?? 0) < KICKOFF_GAP_MS || !(await options.kickoff.ready(pane))) return false;
+    // The empty prompt (ready) keeps a kickoff out of the designer's turn, never a TAKEN request's age: on 31/10 a request Cleo/Cody's designer
+    // parked (touched 17 minutes earlier) held a new one in the queue while it sat idle.
+    if (now() - (lastKickoff.get(pane.id) ?? 0) < KICKOFF_GAP_MS || !(await options.kickoff.ready(pane))) return false;
     lastKickoff.set(pane.id, now());
     await options.kickoff.send(pane);
     await record(owner, pane, { type: "RUN_STARTED", message: "Asked the designer to work through the request queue" });
@@ -288,7 +287,7 @@ export function createDesignService(options: DesignServiceOptions) {
     let started = 0;
     for (const owner of owners) {
       await reroute(owner);
-      const queued = await repository.listRequests(owner, { status: ["QUEUED"], limit: 50 });
+      const queued = await repository.listRequests(owner, { status: ["QUEUED"] });
       if (!queued.length) continue;
       const panes = (await designPanes(owner)).filter((pane) => !settingsOf(pane).paused);
       const targets = panes.filter((pane) => queued.some((request) => request.designPaneId === pane.id));
@@ -302,7 +301,7 @@ export function createDesignService(options: DesignServiceOptions) {
    * unpaused Design pane of the owner, else back to the unassigned queue with its "Open a Design pane" notice. A paused pane keeps its work.
    */
   async function reroute(owner: string): Promise<void> {
-    const open = await repository.listRequests(owner, { status: ["QUEUED", "TAKEN", "IN_PROGRESS"], limit: 50 });
+    const open = await repository.listRequests(owner, { status: ["QUEUED", "TAKEN", "IN_PROGRESS"] });
     for (const request of open) {
       if (!request.designPaneId || (request.status !== "QUEUED" && now() - Date.parse(request.updatedAt) < DESIGN_REQUEST_STALE_MS)) continue;
       const current = await paneOrNull(request.designPaneId);
@@ -332,7 +331,7 @@ export function createDesignService(options: DesignServiceOptions) {
     const video = asset.mimeType === "video/mp4";
     let newest: DesignAsset | null = null;
     for (let depth = 0, current = asset; depth < 5; depth += 1) {
-      const children = await repository.listAssets(owner, { parentIds: [current.id], formatIds: [asset.formatId], limit: 20 });
+      const children = await repository.listAssets(owner, { parentIds: [current.id], formatIds: [asset.formatId] });
       const next = children.find((child) => (child.mimeType === "video/mp4") === video);
       if (!next) break;
       newest = current = next;
@@ -345,7 +344,7 @@ export function createDesignService(options: DesignServiceOptions) {
    * whether its measured size is the format's (null for video, whose size is not read) and the newer version that replaces it.
    */
   async function view(owner: string, request: DesignRequest) {
-    const assets = request.resultAssetIds.length ? await repository.listAssets(owner, { ids: request.resultAssetIds, limit: 32 }) : [];
+    const assets = request.resultAssetIds.length ? await repository.listAssets(owner, { ids: request.resultAssetIds }) : [];
     return {
       request,
       assets: await Promise.all(assets.map(async (asset) => {
@@ -360,7 +359,7 @@ export function createDesignService(options: DesignServiceOptions) {
   }
 
   async function finish(owner: string, pane: Pane | null, request: DesignRequest, assetIds: string[], message: string | null, from: DesignRequestStatus[]) {
-    const assets = await repository.listAssets(owner, { ids: assetIds, limit: 32 });
+    const assets = await repository.listAssets(owner, { ids: assetIds });
     let note = message;
     if (request.callback?.kind === "MARKETING_POST") {
       try {
@@ -458,13 +457,13 @@ export function createDesignService(options: DesignServiceOptions) {
     // ---- making designs
     saveAsset: async (owner: string, pane: Pane, input: Parameters<typeof saveAsset>[2]) => { assertDesignPane(pane); const asset = await saveAsset(owner, pane, input); await touch(owner, input.requestId); return asset; },
     async generateImage(owner: string, pane: Pane, input: { engine: DesignGeneratingEngine; prompt: string; formatId: string; referenceArtifactIds?: string[]; requestId?: string | null; label?: string | null;
-      description?: string | null; madeBy: DesignAssetMadeBy }) {
+      description?: string | null; madeBy: DesignAssetMadeBy; traceId?: string | null }) {
       assertDesignPane(pane);
       if (!options.generate) throw new SpaceFeatureDisabledError("DESIGN_ENGINE_UNAVAILABLE", "Image generation is not available on this runtime; templates still work.");
       const format = formatOrThrow(input.formatId);
       if (input.requestId) await requestOf(owner, input.requestId);
       const references = await Promise.all((input.referenceArtifactIds ?? []).slice(0, 3).map((id) => imageFile(owner, id)));
-      const generated = await options.generate({ engine: input.engine, prompt: input.prompt, width: format.width, height: format.height, references });
+      const generated = await options.generate({ engine: input.engine, prompt: input.prompt, width: format.width, height: format.height, references, traceId: input.traceId });
       const asset = await saveAsset(owner, pane, { bytes: generated.bytes, formatId: format.id, engine: input.engine, model: generated.model, prompt: input.prompt, requestId: input.requestId, label: input.label,
         description: input.description, madeBy: input.madeBy });
       await record(owner, pane, { requestId: input.requestId, assetId: asset.id, type: "IMAGE_GENERATED", message: `Generated an image with ${generated.model} for ${format.label}` });
@@ -603,7 +602,7 @@ export function createDesignService(options: DesignServiceOptions) {
     async deliver(owner: string, pane: Pane, requestId: string, input: { assetIds: string[]; message?: string | null }) {
       assertDesignPane(pane);
       const request = await requestOf(owner, requestId);
-      const assets = await repository.listAssets(owner, { ids: input.assetIds, limit: 32 });
+      const assets = await repository.listAssets(owner, { ids: input.assetIds });
       if (!input.assetIds.length || assets.length !== new Set(input.assetIds).size) throw new SpaceNotFoundError("Deliver assets of your library (space_design_assets).");
       if (settingsOf(pane).requestAutonomy === "APPROVAL") {
         const held = await transition(owner, requestId, ["TAKEN", "IN_PROGRESS", "DELIVERED"], { status: "NEEDS_APPROVAL", resultAssetIds: assets.map((asset) => asset.id), message: input.message ?? null });
@@ -623,7 +622,7 @@ export function createDesignService(options: DesignServiceOptions) {
       return finish(owner, pane, request, assetIds, input.message ?? request.message, ["QUEUED", "TAKEN", "IN_PROGRESS", "NEEDS_APPROVAL"]);
     },
     async fail(owner: string, pane: Pane, requestId: string, reason: string) {
-      const request = await transition(owner, requestId, ["TAKEN", "IN_PROGRESS", "NEEDS_APPROVAL"], { status: "FAILED", message: trimmed(reason, 2000) });
+      const request = await transition(owner, requestId, ["TAKEN", "IN_PROGRESS", "NEEDS_APPROVAL"], { status: "FAILED", message: reason });
       await record(owner, pane, { requestId, type: "FAILED", message: `Could not make it: ${trimmed(reason, 500)}` });
       await clearNotices(owner, requestId, ["question", "approval"]);
       await notice(owner, "failed", request, pane, `Design request failed (${pane.title})`, reason);
@@ -635,7 +634,7 @@ export function createDesignService(options: DesignServiceOptions) {
       await clearNotices(owner, requestId, ["queued", "question", "approval", "failed"]);
       return view(owner, request);
     },
-    events: (owner: string, filter: { paneId?: string; requestId?: string; limit: number }) => repository.listEvents(owner, filter),
+    events: (owner: string, filter: { paneId?: string; requestId?: string; limit?: number }) => repository.listEvents(owner, filter),
     formats: () => DESIGN_FORMATS.map((format) => ({ ...format, networkLabel: DESIGN_NETWORK_LABELS[format.network] }))
   };
 }

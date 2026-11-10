@@ -71,7 +71,7 @@ describe("native title usage boundary", () => {
     // OpenCode 2.0.31 `opencode --version` and `run --help`; a v2 run rejects requests unless --auto is passed.
     const v2Help = "FLAGS\n  --standalone            Run with a private server instead of the background service\n  --auto                  Auto-approve permissions that are not explicitly denied\n";
     expect(openCodeRunRejectsPermissionRequests("opencode v2.0.31", v2Help)).toBe(true);
-    expect(openCodeRunRejectsPermissionRequests("opencode v2.0.31", v2Help.replace(/  --auto.*\n/, ""))).toBe(false);
+    expect(openCodeRunRejectsPermissionRequests("opencode v2.0.31", v2Help.replace(/ {2}--auto.*\n/, ""))).toBe(false);
     expect(openCodeRunRejectsPermissionRequests("opencode v3.0.0", v2Help)).toBe(false);
   });
   it("reads OpenCode 2's model API as the catalog entries with the highest tier's cost", () => {

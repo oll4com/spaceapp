@@ -20,8 +20,7 @@ type FenceFill = VaultFillTarget & { viewer?: string };
 type Entry = { owner: string; fill: FenceFill | null } | null;
 /** A pane's open tabs as the Browser Host lists them. */
 export type VaultOpenPage = { pageId: string; isActive: boolean };
-// A bound on the row, far above the tabs a pane keeps open; tabs leave the list as soon as they are gone.
-const MAX_FENCED_TABS = 50;
+// Every fenced tab stays fenced (until 31/10 the row kept 50 earlier tabs and dropped the rest); tabs leave the list as soon as they are gone.
 
 const CACHE_MS = 5_000;
 // Viewers' frame polls ask the Browser Host about the live page at most this often (agents' calls always ask).
@@ -76,7 +75,7 @@ export function createVaultProtection(repository: VaultProtectionStore | null, l
       const previous = (await entryOf(paneId).catch(() => null))?.fill;
       const earlier = previous ? vaultFencedTabs(previous).filter((tab) => tab.targetId !== target.targetId) : [];
       const fill: FenceFill = { targetId: target.targetId, origin: target.origin, document: target.document,
-        ...(earlier.length ? { also: earlier.slice(0, MAX_FENCED_TABS) } : {}), ...(viewer ? { viewer } : {}) };
+        ...(earlier.length ? { also: earlier } : {}), ...(viewer ? { viewer } : {}) };
       if (!repository || !await repository.protectPane(owner, paneId, fill)) return false;
       cache.set(paneId, { entry: { owner, fill }, at: Date.now() });
       // Open automation connections to this browser close now (the CLI CDP proxy listens).
@@ -186,15 +185,23 @@ export function registerVaultFences(app: FastifyInstance, deps: { protection: Va
       // Closing a tab stays open, so an agent is never stuck behind the tab that holds the fence; its answer keeps only the
       // remaining tab ids (preSerialization below), never their addresses or titles.
       const commandType = route === "/api/cli/browser/commands" ? (body as { command?: { type?: unknown } }).command?.type : undefined;
+      // Fixed Microsoft text CAPTCHA: only a cropped, masked image and status;
+      // same viewers as masked_screenshot. No arbitrary selectors or page reads.
+      if (commandType === "TEXT_CAPTCHA" && [...protectedPanes].every(id => id === body.targetPaneId && maskedFor(id))) return;
+      // The masked readout (path, title, visible messages; never a field), so no step after a fill is taken blind (7/11 Oracle): same viewers.
+      if (commandType === "PAGE_READOUT" && [...protectedPanes].every(id => id === body.targetPaneId && maskedFor(id))) return;
       if (commandType === "CLOSE_PAGE") {
         fencedCloses.add(request);
         return;
       }
       if (handoffCommands.has(String(commandType))) return;
+      // A file input set writes into the page and reads nothing back (31/10: Index.dev, SuccessFactors and Workday ask for the CV
+      // after the password fill): only the pane holding the fence, only its own files (browser-file-upload.ts).
+      if (commandType === "UPLOAD_FILE" && body.targetPaneId === claims.paneId) return;
       let released = true;
       for (const id of protectedPanes) released = await deps.protection.release(id) && released;
       if (released) return;
-      return refuse(reply, "VAULT_PROTECTED_SESSION_REQUIRED", "This page is locked for agents after a Vault fill or an operator browser handoff, so nothing typed there is read back. It unlocks when the tab shows another page (navigate or reload it); until then agents can navigate, click, type and scroll it, and only the pane holding the browser or the agent that asked for the handoff gets masked screenshots (no page text, DevTools or Playwright).");
+      return refuse(reply, "VAULT_PROTECTED_SESSION_REQUIRED", "This page is locked for agents after a Vault fill or an operator browser handoff, so nothing typed there is read back. It unlocks when the tab shows another page (navigate or reload it); until then agents can navigate, click, type and scroll it, the pane holding the browser can upload its own files into it (space_browser_upload_file), and only that pane or the agent that asked for the handoff gets masked screenshots and the masked readout (space_browser_page_readout: path, title and the page's error or success text; no field values, DevTools or Playwright).");
     }
   });
 }

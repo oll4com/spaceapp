@@ -1,16 +1,17 @@
 import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // Runs inside the claude-vscode-parity wrapper as the CLI owner. It reads one account
 // profile's OAuth sign-in, asks Anthropic for the plan usage that Claude Code's /usage
 // shows, and prints only percentages and reset times. Tokens never leave this process.
 // It never refreshes a token: rotating it here could sign out a running Claude pane, and
 // every running pane already renews its own sign-in before it expires.
-export const CLAUDE_USAGE_CONFIG_ROOT = "/var/lib/spaceapp-user/.codex/space-claude";
-// The same key files claude-vscode-parity uses: the installation API key serves the "api" profile
-// (and main without a subscription login); the "space-gateway" profile signs in with a gateway key.
-export const CLAUDE_INSTALLATION_KEY_FILE = "/opt/spaceapp/secrets/space-claude.key";
-export const CLAUDE_GATEWAY_KEY_FILE = "/var/lib/spaceapp-user/.config/space-gateway/claude-code.key";
+export const CLAUDE_USAGE_CONFIG_ROOT = `${SPACE_AGENT_HOME}/.codex/space-claude`;
+// The same key files claude-vscode-parity uses: the installation API key serves the "api" profile only (every other
+// profile without a login is not signed in; the launcher never starts one on a key); "space-gateway" uses a gateway key.
+export const CLAUDE_INSTALLATION_KEY_FILE = `${SPACE_INSTALL_ROOT}/secrets/space-claude.key`;
+export const CLAUDE_GATEWAY_KEY_FILE = `${SPACE_AGENT_HOME}/.config/space-gateway/claude-code.key`;
 const apiKeyProfileId = "api";
 const gatewayProfileId = "space-gateway";
 export const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
@@ -144,9 +145,8 @@ async function privateKeyFile(path: string): Promise<boolean> {
   }
 }
 
-async function readApiKey(profileId: string, profileDir: string, installationKeyFile: string): Promise<string | null> {
-  const files = [join(profileDir, "credentials", "api-key"), ...(profileId === "main" || profileId === apiKeyProfileId ? [installationKeyFile] : [])];
-  for (const path of files) {
+async function readApiKey(profileDir: string, installationKeyFile: string): Promise<string | null> {
+  for (const path of [join(profileDir, "credentials", "api-key"), installationKeyFile]) {
     if (!(await regularFile(path))) continue;
     const key = (await readFile(path, "utf8").catch(() => "")).trim();
     if (key) return key;
@@ -213,17 +213,12 @@ export async function readClaudeProfileUsage(
   if (profileId === gatewayProfileId) {
     return { ...empty, status: (await privateKeyFile(options.gatewayKeyFile ?? CLAUDE_GATEWAY_KEY_FILE)) ? "GATEWAY" : "NOT_CONNECTED" };
   }
-  const installationKeyFile = options.installationKeyFile ?? CLAUDE_INSTALLATION_KEY_FILE;
-  const apiKey = await readApiKey(profileId, profileDir, installationKeyFile);
   // The API account bills its key even when a subscription login is also stored.
-  if (profileId === apiKeyProfileId && apiKey) {
-    return { ...empty, status: "API_KEY", apiKeyVerified: await verifyApiKey(apiKey, fetchImpl) };
-  }
+  const apiKey = profileId === apiKeyProfileId
+    ? await readApiKey(profileDir, options.installationKeyFile ?? CLAUDE_INSTALLATION_KEY_FILE) : null;
+  if (apiKey) return { ...empty, status: "API_KEY", apiKeyVerified: await verifyApiKey(apiKey, fetchImpl) };
   const signIn = await readSignIn(profileDir);
-  if (!signIn?.accessToken) {
-    if (!apiKey) return { ...empty, status: "NOT_CONNECTED" };
-    return { ...empty, status: "API_KEY", apiKeyVerified: await verifyApiKey(apiKey, fetchImpl) };
-  }
+  if (!signIn?.accessToken) return { ...empty, status: "NOT_CONNECTED" };
   const plan = signIn.plan;
   if (signIn.expiresAt !== null && signIn.expiresAt <= now().getTime() + tokenExpirySkewMs) {
     return { ...empty, plan, status: signIn.refreshable ? "IDLE" : "EXPIRED" };

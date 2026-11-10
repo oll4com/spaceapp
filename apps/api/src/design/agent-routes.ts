@@ -87,7 +87,7 @@ export function registerDesignAgentRoutes(app: FastifyInstance, service: DesignS
   handle("post", "next", true, async ({ owner, pane }) => service.takeNext(owner, pane));
   handle("post", "generate", true, async (bridge, request) => {
     const { madeByModel, ...input } = parseBody(designGenerateBodySchema.extend({ madeByModel: madeByModelSchema }), request.body ?? {});
-    const generated = await service.generateImage(bridge.owner, bridge.pane, { ...input, madeBy: madeBy(bridge, madeByModel) });
+    const generated = await service.generateImage(bridge.owner, bridge.pane, { ...input, madeBy: madeBy(bridge, madeByModel), traceId: request.id });
     await deps.audit(request, "design.generate", generated.asset.id, { paneId: bridge.pane.id, engine: input.engine, formatId: input.formatId, model: generated.asset.model });
     return generated;
   });
@@ -101,7 +101,7 @@ export function registerDesignAgentRoutes(app: FastifyInstance, service: DesignS
   handle("get", "assets/:id/file", false, async ({ owner, pane }, request, reply) => {
     const { id } = parseQuery(z.object({ id: designAssetIdSchema }), request.params);
     if (pane.mode !== "DESIGN") {
-      const delivered = await service.listRequests(owner, { requesterPaneId: pane.id, status: ["DELIVERED"], limit: 100 });
+      const delivered = await service.listRequests(owner, { requesterPaneId: pane.id, status: ["DELIVERED"] });
       if (!delivered.some((row) => row.resultAssetIds.includes(id))) throw new SpaceNotFoundError(`Design asset ${id} is not in a delivered request of this pane.`);
     }
     const { asset, path } = await service.assetFile(owner, id, pane.mode === "DESIGN" ? pane.roomId : undefined);
@@ -132,7 +132,7 @@ export function registerDesignAgentRoutes(app: FastifyInstance, service: DesignS
     return service.ask(owner, pane, input.requestId, input.question);
   });
   handle("post", "deliver", true, async ({ owner, pane }, request) => {
-    const input = parseBody(z.object({ requestId: designRequestIdSchema, assetIds: z.array(designAssetIdSchema).min(1).max(32), message: z.string().trim().max(2000).optional() }).strict(), request.body ?? {});
+    const input = parseBody(z.object({ requestId: designRequestIdSchema, assetIds: z.array(designAssetIdSchema).min(1), message: z.string().trim().max(2000).optional() }).strict(), request.body ?? {});
     const delivered = await service.deliver(owner, pane, input.requestId, input);
     await deps.audit(request, "design.request.deliver", input.requestId, { paneId: pane.id, status: delivered.request.status, assets: input.assetIds.length });
     return delivered;

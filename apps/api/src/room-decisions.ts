@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export const JEV_MODEL_ID = "typesafe/jev-1.13";
 export const JEV_DIRECT_MODEL_ID = "jev-1.13.0";
@@ -85,11 +86,11 @@ export function jevDecisionsEndpoint(baseUrl: string): string {
 }
 
 export const DEFAULT_JEV_TOKEN_FILES = [
-  "/opt/spaceapp/secrets/space-jev.key",
-  "/opt/spaceapp/secrets/space-jevtypesafe.key",
-  "/var/lib/spaceapp-user/.config/opencode/jev.token",
-  "/opt/spaceapp/secrets/space-openrouter.key",
-  "/var/lib/spaceapp-user/.config/opencode/openrouter.token"
+  `${SPACE_INSTALL_ROOT}/secrets/space-jev.key`,
+  `${SPACE_INSTALL_ROOT}/secrets/space-jevtypesafe.key`,
+  `${SPACE_AGENT_HOME}/.config/opencode/jev.token`,
+  `${SPACE_INSTALL_ROOT}/secrets/space-openrouter.key`,
+  `${SPACE_AGENT_HOME}/.config/opencode/openrouter.token`
 ] as const;
 
 export interface JevResolvedConfig {
@@ -139,7 +140,7 @@ export async function resolveJevConfig(options: {
     (source && (source.includes("jev") || source.includes("space-jev")))
   );
 
-  let baseUrl = options.baseUrl ?? process.env.SPACE_JEV_BASE_URL ?? (
+  const baseUrl = options.baseUrl ?? process.env.SPACE_JEV_BASE_URL ?? (
     isDirectJev ? JEV_DIRECT_BASE_URL : (apiKey?.startsWith("sk-or-") || source?.includes("openrouter")) ? JEV_OPENROUTER_BASE_URL : JEV_DIRECT_BASE_URL
   );
 

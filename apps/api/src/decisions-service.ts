@@ -26,6 +26,10 @@ import {
   resolveJevConfig,
   type JevResolvedConfig
 } from "./room-decisions.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
+
+/** A Space install's paths (this one's and the public image's), /etc, Proxmox and "production" count as production when no classifier answers. */
+const PRODUCTION_PATH = new RegExp(`${SPACE_INSTALL_ROOT.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}|\\/opt\\/spaceapp|\\/etc\\/|pve|production`, "i");
 
 export interface DecisionsServiceOptions {
   baseUrl?: string | null;
@@ -169,7 +173,7 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
       if (!raw.available) {
         const lower = `${action} ${target}`.toLowerCase();
         const matchesDestructive = /rm\s+-r|drop\s+table|mkfs|truncate\s+table|delete\s+from|git\s+reset\s+--hard|pveceph/i.test(lower);
-        const matchesProd = /\/srv\/space|\/opt\/spaceapp|\/etc\/|pve|production/i.test(lower);
+        const matchesProd = PRODUCTION_PATH.test(lower);
         return {
           available: false,
           isDestructive: matchesDestructive,

@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
+import { childProcessEnv } from "./child-process-env.js";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, appendFile, mkdir, open, readFile, rm, stat } from "node:fs/promises";
-import { basename, dirname } from "node:path";
+import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
@@ -147,7 +148,7 @@ function canonicalAppendBlock(
   createdAt: string
 ): { block: string; body: string; id: string; title: string } {
   const title = redactMemoryText(input.title).replace(/[\r\n]+/g, " ").slice(0, 160);
-  const body = redactMemoryText(input.body).slice(0, 10000);
+  const body = redactMemoryText(input.body);
   const id = `space_memory:${createHash("sha256").update(`${path}\n${createdAt}\n${title}\n${body}`).digest("hex").slice(0, 24)}`;
   const provenance = redactMemoryText(input.provenance).replace(/[\r\n]+/g, " ").slice(0, 500);
   const roomSuffix = input.roomId ? `, room=${input.roomId}` : "";
@@ -264,7 +265,7 @@ function isReadonlySidecarError(error: unknown): boolean {
 }
 
 async function execSqliteJson<T>(args: string[]): Promise<T[]> {
-  const { stdout } = await execFileAsync("sqlite3", args, { timeout: 5000, maxBuffer: 1024 * 1024 });
+  const { stdout } = await execFileAsync("sqlite3", args, { env: childProcessEnv(), timeout: 5000, maxBuffer: 1024 * 1024 });
   const trimmed = stdout.trim();
   if (!trimmed) return [];
   return JSON.parse(trimmed) as T[];

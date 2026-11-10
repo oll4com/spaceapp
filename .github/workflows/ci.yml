@@ -24,6 +24,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Full history: a failed provenance check names the public commit that edited an exported file.
+          fetch-depth: 0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -46,6 +48,11 @@ jobs:
 
       - name: Install ripgrep and ffmpeg (the file search tests run the real rg, the Nous attachment tests make media with ffmpeg)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep ffmpeg
+
+      - name: Pull the compose file's PostgreSQL image (the *-postgres tests start it with --pull=never and skip without it)
+        run: |
+          pinned=$(grep -oE 'pgvector/pgvector:[^@ ]+@sha256:[0-9a-f]{64}' packages/run-spaceapp/templates/compose.yml)
+          docker pull "$pinned" && docker tag "$pinned" "${pinned%@*}"
 
       - name: Public release tests
         working-directory: ${{ runner.temp }}/spaceapp-public-export

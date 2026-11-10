@@ -1,4 +1,4 @@
-import { api } from "../../api.js";
+import { api, SpaceApiError } from "../../api.js";
 
 export interface TerminalUploadPreview {
   id: string;
@@ -16,7 +16,12 @@ export async function loadCliPhotoHistory(
 ): Promise<TerminalUploadPreview[]> {
   const photos = new Map<string, TerminalUploadPreview>();
   for (let page = 1; isCurrent(); page += 1) {
-    const response = await api.artifacts({ roomId, paneId, kind: "IMAGE", page, pageSize: 100, sortOrder: "asc" });
+    const read = () => api.artifacts({ roomId, paneId, kind: "IMAGE", page, pageSize: 100, sortOrder: "asc" });
+    // One retry: a request in flight when nginx rolls the HTTP/2 connection over fails before any response (UPSTREAM_UNAVAILABLE).
+    const response = await read().catch((error: unknown) => {
+      if (!(error instanceof SpaceApiError && error.code === "UPSTREAM_UNAVAILABLE") || !isCurrent()) throw error;
+      return read();
+    });
     if (!isCurrent()) return [];
     for (const artifact of response.data) {
       if (artifact.roomId !== roomId || artifact.paneId !== paneId || artifact.kind !== "IMAGE" ||

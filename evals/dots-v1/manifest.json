@@ -1,0 +1,42 @@
+{
+  "version": "dots-v1",
+  "datasetSha256": "6c2088aed29912c6fc692720313a4eca96ce424e7cc3390e4fc53b943a598ed0",
+  "fixtures": {
+    "orders.csv": "155fa303d88156c29bb7b42df8d950060b7ec014bf8a4283862aa61476217ff6",
+    "meeting-notes.md": "b68cfd4f13996454d10cf17468113814edd7d9aac2b621c904e6d07b22843f1f",
+    "invoice.pdf": "92d542734c9dd1db11ef705062f29842a40b2bf66e357ce6cdb0181fccfa9006",
+    "scanned-receipt.pdf": "060c65e8cfe45537f8f7b9eeb5e445a2c995b91e6d0859db0992069ed7945049",
+    "budget.xlsx": "c8b8b8c1e966918cb2a42b605f38c39eb778b65cfc9b98c4cfaa37d32a2db3b7",
+    "memo.docx": "92a20808b7a5a3473d9e32643efb4a7bbbdf35333180f8241d091f4a70b3eaf3",
+    "red-square.png": "36f878618fa73b3f4125299a43e577af6fad75b67f37df41dccf2003742c8845"
+  },
+  "count": 50,
+  "groups": 25,
+  "families": [
+    "mcp",
+    "multimodal",
+    "background",
+    "channels"
+  ],
+  "split": {
+    "tuning": 32,
+    "holdout": 18
+  },
+  "splitUnit": "scenario-group; both language variants stay together",
+  "frozenBeforePolicyTuning": true,
+  "modelBenchmarkRun": false,
+  "independentCalibrationComplete": false,
+  "autoReleaseAuthorized": false,
+  "gates": {
+    "qualityFloorPerFamily": 0.95,
+    "nonInferiorityMargin": 0.02,
+    "confidence": 0.95,
+    "power": 0.8,
+    "planningDiscordance": 0.05
+  },
+  "limits": [
+    "Six groups per family size the method, not a release: the gates require several hundred independent groups per family to show a 2-point margin.",
+    "Tool and Goal checks verify recorded behaviour, not the full quality of the answer.",
+    "Channel and connected-account cases count as not run until the user connects those accounts."
+  ]
+}

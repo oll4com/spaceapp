@@ -3,9 +3,11 @@ import type {
   AntigravityUsageAccountList,
   ApiProviderAccount,
   ApiProviderAccountList,
+  ClaudeUsageAccountList,
   CodexUsageAccount,
   CodexUsageAccountList
 } from "@space/contracts";
+import { claudeSubscriptionAccounts } from "./quota-low.js";
 
 // Pure quota accounting shared by the AI quota widget and System Health.
 // Kept free of React/UI imports so System Health does not pull the widget in.
@@ -19,7 +21,7 @@ export interface QuotaBreakdownItem {
   fiveHourResetAt?: string | null;
   weeklyPercent: number | null;
   weeklyResetAt?: string | null;
-  subType?: "gemini" | "claude" | "codex";
+  subType?: "gemini" | "claude" | "codex" | "claude-max";
 }
 
 export function getCodexTierMultiplier(planType?: string | null): number {
@@ -42,7 +44,7 @@ export function getAntigravityTierMultiplier(tier?: string | null, status?: stri
 
 export interface ProviderQuotaMetrics {
   name: string;
-  providerKey: "codex" | "gemini" | "claude" | "antigravity" | "total";
+  providerKey: "codex" | "gemini" | "claude" | "antigravity" | "claude-max" | "total";
   totalAccounts: number;
   activeAccounts: number;
   exhaustedAccounts: number;
@@ -73,6 +75,8 @@ export interface AllQuotaAggregates {
   gemini: ProviderQuotaMetrics;
   claude: ProviderQuotaMetrics;
   antigravityCombined: ProviderQuotaMetrics;
+  /** Claude Max subscription accounts (Claude Code profiles and the gateway's pool), each counted once. */
+  claudeMax: ProviderQuotaMetrics;
   apiProviders: ApiProviderMetrics;
   totalAiPool: {
     pool5h: number;
@@ -87,12 +91,22 @@ export interface AllQuotaAggregates {
   isStale: boolean;
 }
 
+// The balance service lists every provider it knows; one without a key (UNCONFIGURED) is not in this installation
+// (operator 5/11, plan clipboard:sJpyQIBFGszW). The pane account menus keep their "No key" rows: they read the list directly.
+// Nothing left to spend stays out too (operator 6/11 21:49 BKK, nous_msg:71a41c2e: DeepSeek, OpenRouter, Vercel at $0 or below): EXHAUSTED, or a
+// balance of $0 or less; it comes back by itself once it has credit again. A Gateway pool paused in Space Gateway is not listed by the API at all.
+export function configuredApiProviders(apiList?: ApiProviderAccountList | null): ApiProviderAccount[] {
+  return (apiList?.data ?? []).filter((account) => account.status !== "UNCONFIGURED" && account.status !== "EXHAUSTED" && !(dollars(account.balance) <= 0));
+}
+/** A "$12.34" / "$-3.20" balance as a number; NaN for none or another form ("Connected"), which never hides a row. */
+const dollars = (balance: string | null | undefined) => balance?.startsWith("$") ? Number.parseFloat(balance.slice(1)) : Number.NaN;
+
 export function computeApiProviderMetrics(apiList?: ApiProviderAccountList | null): ApiProviderMetrics {
-  const accounts: ApiProviderAccount[] = apiList?.data ?? [];
+  const accounts = configuredApiProviders(apiList);
   const total = accounts.length;
   const connected = accounts.filter((a) => a.status === "CONNECTED").length;
   const exhausted = accounts.filter((a) => a.status === "EXHAUSTED").length;
-  const unconfigured = accounts.filter((a) => a.status === "UNCONFIGURED").length;
+  const unconfigured = (apiList?.data ?? []).filter((a) => a.status === "UNCONFIGURED").length;
   const error = accounts.filter((a) => a.status === "ERROR").length;
 
   let totalBalanceUsd = 0;
@@ -118,7 +132,8 @@ export function computeApiProviderMetrics(apiList?: ApiProviderAccountList | nul
 export function computeQuotaAggregates(
   codexList?: CodexUsageAccountList | null,
   agyList?: AntigravityUsageAccountList | null,
-  apiList?: ApiProviderAccountList | null
+  apiList?: ApiProviderAccountList | null,
+  claudeList?: ClaudeUsageAccountList | null
 ): AllQuotaAggregates {
   const codexAccounts: CodexUsageAccount[] = codexList?.data ?? [];
   const agyAccounts: AntigravityUsageAccount[] = agyList?.data ?? [];
@@ -145,22 +160,8 @@ export function computeQuotaAggregates(
   });
 
   const codexTotal = codexAccounts.length;
-  const codexPool5h = codexItems.reduce((sum, item) => sum + (item.weight ?? 1) * 100, 0);
-
-  // Available 5h quota cannot exceed remaining weekly quota, and accounts with exhausted weekly quota have 0 usable quota.
-  const codexAvail5h = codexItems.reduce((sum, item) => {
-    const effective5h =
-      item.weeklyPercent !== null && item.weeklyPercent !== undefined
-        ? Math.min(item.fiveHourPercent ?? 0, item.weeklyPercent)
-        : (item.fiveHourPercent ?? 0);
-    return sum + Math.max(0, effective5h) * (item.weight ?? 1);
-  }, 0);
-
-  const codexPoolW = codexPool5h;
-  const codexAvailW = codexItems.reduce(
-    (sum, item) => sum + Math.max(0, item.weeklyPercent ?? 0) * (item.weight ?? 1),
-    0
-  );
+  const codexFailed = Boolean(codexList?.isStale || codexList?.error);
+  const agyFailed = Boolean(agyList?.isStale || agyList?.error);
 
   const isCodexActive5h = (a: CodexUsageAccount) => {
     const week = a.weeklyRemainingPercent;
@@ -178,22 +179,8 @@ export function computeQuotaAggregates(
   const codexActive5h = codexAccounts.filter(isCodexActive5h).length;
   const codexActiveW = codexAccounts.filter(isCodexActiveW).length;
 
-  const codexMetrics: ProviderQuotaMetrics = {
-    name: "Codex",
-    providerKey: "codex",
-    totalAccounts: codexTotal,
-    activeAccounts: codexActive5h,
-    activeAccounts5h: codexActive5h,
-    activeAccountsWeekly: codexActiveW,
-    exhaustedAccounts: codexItems.filter(item => item.status === "QUOTA_EXCEEDED").length,
-    pool5h: codexPool5h,
-    available5h: Math.round(codexAvail5h),
-    percent5h: codexPool5h > 0 ? (codexAvail5h / codexPool5h) * 100 : 0,
-    poolWeekly: codexPoolW,
-    availableWeekly: Math.round(codexAvailW),
-    percentWeekly: codexPoolW > 0 ? (codexAvailW / codexPoolW) * 100 : 0,
-    accounts: codexItems
-  };
+  const codexMetrics = poolMetrics("Codex", "codex", codexItems, codexTotal, codexActive5h, codexActiveW,
+    codexItems.filter(item => item.status === "QUOTA_EXCEEDED").length, codexFailed);
 
   const isAgyGroupActive5h = (
     group?: { fiveHourRemainingPercent?: number | null; weeklyRemainingPercent?: number | null } | null,
@@ -242,39 +229,10 @@ export function computeQuotaAggregates(
     });
 
   const geminiTotal = agyAccounts.length;
-  const geminiPool5h = geminiItems.reduce((sum, item) => sum + (item.weight ?? 1) * 100, 0);
-  const geminiAvail5h = geminiItems.reduce((sum, item) => {
-    const effective5h =
-      item.weeklyPercent !== null && item.weeklyPercent !== undefined
-        ? Math.min(item.fiveHourPercent ?? 0, item.weeklyPercent)
-        : (item.fiveHourPercent ?? 0);
-    return sum + Math.max(0, effective5h) * (item.weight ?? 1);
-  }, 0);
-  const geminiPoolW = geminiPool5h;
-  const geminiAvailW = geminiItems.reduce(
-    (sum, item) => sum + Math.max(0, item.weeklyPercent ?? 0) * (item.weight ?? 1),
-    0
-  );
-
   const geminiActive5h = agyAccounts.filter((a) => isAgyGroupActive5h(a.gemini, a.status)).length;
   const geminiActiveW = agyAccounts.filter((a) => isAgyGroupActiveW(a.gemini, a.status)).length;
-
-  const geminiMetrics: ProviderQuotaMetrics = {
-    name: "Antigravity Gemini",
-    providerKey: "gemini",
-    totalAccounts: geminiTotal,
-    activeAccounts: geminiActive5h,
-    activeAccounts5h: geminiActive5h,
-    activeAccountsWeekly: geminiActiveW,
-    exhaustedAccounts: geminiItems.filter(item => item.status === "QUOTA_EXCEEDED").length,
-    pool5h: geminiPool5h,
-    available5h: Math.round(geminiAvail5h),
-    percent5h: geminiPool5h > 0 ? (geminiAvail5h / geminiPool5h) * 100 : 0,
-    poolWeekly: geminiPoolW,
-    availableWeekly: Math.round(geminiAvailW),
-    percentWeekly: geminiPoolW > 0 ? (geminiAvailW / geminiPoolW) * 100 : 0,
-    accounts: geminiItems
-  };
+  const geminiMetrics = poolMetrics("Antigravity Gemini", "gemini", geminiItems, geminiTotal, geminiActive5h, geminiActiveW,
+    geminiItems.filter(item => item.status === "QUOTA_EXCEEDED").length, agyFailed);
 
   // Antigravity Claude metrics
   const claudeItems: QuotaBreakdownItem[] = agyAccounts
@@ -301,69 +259,36 @@ export function computeQuotaAggregates(
       };
     });
 
-  const claudeTotal = agyAccounts.length;
-  const claudePool5h = claudeItems.reduce((sum, item) => sum + (item.weight ?? 1) * 100, 0);
-  const claudeAvail5h = claudeItems.reduce((sum, item) => {
-    const effective5h =
-      item.weeklyPercent !== null && item.weeklyPercent !== undefined
-        ? Math.min(item.fiveHourPercent ?? 0, item.weeklyPercent)
-        : (item.fiveHourPercent ?? 0);
-    return sum + Math.max(0, effective5h) * (item.weight ?? 1);
-  }, 0);
-  const claudePoolW = claudePool5h;
-  const claudeAvailW = claudeItems.reduce(
-    (sum, item) => sum + Math.max(0, item.weeklyPercent ?? 0) * (item.weight ?? 1),
-    0
-  );
-
   const claudeActive5h = agyAccounts.filter((a) => isAgyGroupActive5h(a.claude, a.status)).length;
   const claudeActiveW = agyAccounts.filter((a) => isAgyGroupActiveW(a.claude, a.status)).length;
+  const claudeMetrics = poolMetrics("Antigravity Claude", "claude", claudeItems, agyAccounts.length, claudeActive5h, claudeActiveW,
+    claudeItems.filter(item => item.status === "QUOTA_EXCEEDED").length, agyFailed);
 
-  const claudeMetrics: ProviderQuotaMetrics = {
-    name: "Antigravity Claude",
-    providerKey: "claude",
-    totalAccounts: claudeTotal,
-    activeAccounts: claudeActive5h,
-    activeAccounts5h: claudeActive5h,
-    activeAccountsWeekly: claudeActiveW,
-    exhaustedAccounts: claudeItems.filter(item => item.status === "QUOTA_EXCEEDED").length,
-    pool5h: claudePool5h,
-    available5h: Math.round(claudeAvail5h),
-    percent5h: claudePool5h > 0 ? (claudeAvail5h / claudePool5h) * 100 : 0,
-    poolWeekly: claudePoolW,
-    availableWeekly: Math.round(claudeAvailW),
-    percentWeekly: claudePoolW > 0 ? (claudeAvailW / claudePoolW) * 100 : 0,
-    accounts: claudeItems
-  };
+  const antigravityCombined = poolMetrics("Antigravity (Google + Claude)", "antigravity", [...geminiItems, ...claudeItems], geminiTotal,
+    Math.max(geminiActive5h, claudeActive5h), Math.max(geminiActiveW, claudeActiveW),
+    Math.min(geminiMetrics.exhaustedAccounts, claudeMetrics.exhaustedAccounts), agyFailed);
 
-  // Antigravity Combined
-  const agyPool5h = geminiPool5h + claudePool5h;
-  const agyAvail5h = geminiAvail5h + claudeAvail5h;
-  const agyPoolW = geminiPoolW + claudePoolW;
-  const agyAvailW = geminiAvailW + claudeAvailW;
+  const claudeMaxItems: QuotaBreakdownItem[] = claudeSubscriptionAccounts(claudeList).map((a) => ({
+    id: `claude-max-${a.label}`,
+    label: a.label,
+    status: a.fiveHourRemainingPercent === 0 || a.weeklyRemainingPercent === 0 ? "QUOTA_EXCEEDED"
+      : a.fiveHourRemainingPercent == null || a.weeklyRemainingPercent == null ? "UNKNOWN" : "ACTIVE",
+    weight: 1,
+    fiveHourPercent: a.fiveHourRemainingPercent ?? null,
+    fiveHourResetAt: a.fiveHourResetAt,
+    weeklyPercent: a.weeklyRemainingPercent ?? null,
+    weeklyResetAt: a.weeklyResetAt,
+    subType: "claude-max"
+  }));
+  const claudeMax = poolMetrics("Claude Max", "claude-max", claudeMaxItems, claudeMaxItems.length,
+    claudeMaxItems.filter((item) => (item.fiveHourPercent ?? 0) >= 1 && (item.weeklyPercent ?? 0) >= 1).length,
+    claudeMaxItems.filter((item) => (item.weeklyPercent ?? 0) >= 1).length,
+    claudeMaxItems.filter((item) => item.status === "QUOTA_EXCEEDED").length,
+    Boolean(claudeList?.isStale || claudeList?.error));
 
-  const antigravityCombined: ProviderQuotaMetrics = {
-    name: "Antigravity (Google + Claude)",
-    providerKey: "antigravity",
-    totalAccounts: geminiTotal,
-    activeAccounts: Math.max(geminiActive5h, claudeActive5h),
-    activeAccounts5h: Math.max(geminiActive5h, claudeActive5h),
-    activeAccountsWeekly: Math.max(geminiActiveW, claudeActiveW),
-    exhaustedAccounts: Math.min(geminiMetrics.exhaustedAccounts, claudeMetrics.exhaustedAccounts),
-    pool5h: agyPool5h,
-    available5h: Math.round(agyAvail5h),
-    percent5h: agyPool5h > 0 ? (agyAvail5h / agyPool5h) * 100 : 0,
-    poolWeekly: agyPoolW,
-    availableWeekly: Math.round(agyAvailW),
-    percentWeekly: agyPoolW > 0 ? (agyAvailW / agyPoolW) * 100 : 0,
-    accounts: [...geminiItems, ...claudeItems]
-  };
-
-  // Overall Total AI Pool
-  const totalPool5h = codexPool5h + geminiPool5h + claudePool5h;
-  const totalAvail5h = codexAvail5h + geminiAvail5h + claudeAvail5h;
-  const totalPoolW = codexPoolW + geminiPoolW + claudePoolW;
-  const totalAvailW = codexAvailW + geminiAvailW + claudeAvailW;
+  const allItems = [...codexItems, ...geminiItems, ...claudeItems];
+  const total5h = windowShare(allItems, "5h", codexFailed || agyFailed);
+  const totalWeekly = windowShare(allItems, "weekly", codexFailed || agyFailed);
 
   const result: AllQuotaAggregates = {
     codex: codexMetrics,
@@ -371,33 +296,56 @@ export function computeQuotaAggregates(
     claude: claudeMetrics,
     antigravityCombined,
     apiProviders: apiMetrics,
+    claudeMax,
     totalAiPool: {
-      pool5h: totalPool5h,
-      available5h: Math.round(totalAvail5h),
-      percent5h: totalPool5h > 0 ? (totalAvail5h / totalPool5h) * 100 : 0,
-      poolWeekly: totalPoolW,
-      availableWeekly: Math.round(totalAvailW),
-      percentWeekly: totalPoolW > 0 ? (totalAvailW / totalPoolW) * 100 : 0,
+      pool5h: total5h.pool,
+      available5h: total5h.available,
+      percent5h: total5h.percent,
+      poolWeekly: totalWeekly.pool,
+      availableWeekly: totalWeekly.available,
+      percentWeekly: totalWeekly.percent,
       totalAccounts: codexTotal + geminiTotal + apiMetrics.totalProviders
     },
-    lastCheckedAt: codexList?.checkedAt || agyList?.checkedAt || apiList?.checkedAt || null,
-    isStale: Boolean(codexList?.isStale || agyList?.isStale || apiList?.isStale)
+    lastCheckedAt: codexList?.checkedAt || agyList?.checkedAt || claudeList?.checkedAt || apiList?.checkedAt || null,
+    isStale: Boolean(codexList?.isStale || agyList?.isStale || claudeList?.isStale || apiList?.isStale)
   };
-  const codexFailed = Boolean(codexList?.isStale || codexList?.error);
-  const agyFailed = Boolean(agyList?.isStale || agyList?.error);
-  // Unknown limits cannot contribute a fabricated zero to capacity totals.
-  function preserveUnknown(metric: { percent5h: number | null; available5h: number | null; percentWeekly: number | null; availableWeekly: number | null }, items: QuotaBreakdownItem[], failed: boolean) {
-    if (failed || !items.length || items.some(item => item.fiveHourPercent == null || item.weeklyPercent == null)) {
-      // Either observed zero limit is sufficient to establish unusable short-window quota.
-      if (failed || !items.length || items.some(item => item.fiveHourPercent !== 0 && item.weeklyPercent !== 0 &&
-        (item.fiveHourPercent == null || item.weeklyPercent == null))) metric.percent5h = metric.available5h = null;
-    }
-    if (failed || !items.length || items.some(item => item.weeklyPercent == null)) metric.percentWeekly = metric.availableWeekly = null;
-  }
-  preserveUnknown(codexMetrics, codexItems, codexFailed);
-  preserveUnknown(geminiMetrics, geminiItems, agyFailed);
-  preserveUnknown(claudeMetrics, claudeItems, agyFailed);
-  preserveUnknown(antigravityCombined, [...geminiItems, ...claudeItems], agyFailed);
-  preserveUnknown(result.totalAiPool, [...codexItems, ...geminiItems, ...claudeItems], codexFailed || agyFailed);
   return result;
+}
+
+/**
+ * One window's share left, weighted by tier, over the accounts that report it: unknown limits never add a fabricated zero, and a
+ * pool is unknown (null) only when no account reports. An account without a 5h window counts in the 5h share at its weekly share
+ * (the week caps the 5h; Google gives Free accounts no 5h bucket); one without a weekly share counts nowhere unless its 5h is used up.
+ */
+function windowShare(items: QuotaBreakdownItem[], window: "5h" | "weekly", failed: boolean) {
+  const counted = failed ? [] : items.filter((item) =>
+    item.weeklyPercent != null || (window === "5h" && item.fiveHourPercent === 0));
+  const pool = counted.reduce((sum, item) => sum + (item.weight ?? 1) * 100, 0);
+  const left = counted.reduce((sum, item) => sum + (item.weight ?? 1) * Math.max(0, window === "weekly"
+    ? item.weeklyPercent ?? 0
+    : Math.min(item.fiveHourPercent ?? 100, item.weeklyPercent ?? 100)), 0);
+  if (!counted.length) return { pool, available: null, percent: null };
+  return { pool, available: Math.round(left), percent: pool > 0 ? (left / pool) * 100 : 0 };
+}
+
+function poolMetrics(name: string, providerKey: ProviderQuotaMetrics["providerKey"], items: QuotaBreakdownItem[], totalAccounts: number,
+  active5h: number, activeWeekly: number, exhaustedAccounts: number, failed: boolean): ProviderQuotaMetrics {
+  const fiveHour = windowShare(items, "5h", failed);
+  const weekly = windowShare(items, "weekly", failed);
+  return {
+    name,
+    providerKey,
+    totalAccounts,
+    activeAccounts: active5h,
+    activeAccounts5h: active5h,
+    activeAccountsWeekly: activeWeekly,
+    exhaustedAccounts,
+    pool5h: fiveHour.pool,
+    available5h: fiveHour.available,
+    percent5h: fiveHour.percent,
+    poolWeekly: weekly.pool,
+    availableWeekly: weekly.available,
+    percentWeekly: weekly.percent,
+    accounts: items
+  };
 }

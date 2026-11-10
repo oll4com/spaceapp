@@ -439,7 +439,9 @@ still unmeasured.
 - **RPO.** The weekly VM snapshot alone gave 21 days in practice. Since
   2026-10-11 the daily validated logical dump (see
   [Daily logical backups](#daily-logical-backups-added-2026-10-11)) bounds the
-  database RPO to 1 day; first runs `20261011T142920Z` and `20261012T001956Z`.
+  database recovery-point age by the newest successful run's start; first runs
+  `20261011T142920Z` and `20261012T001956Z`. Daily scheduling alone is not a
+  strict 24-hour bound: scheduling delay, backup duration and failed runs add age.
   - Both the daily dumps and the weekly snapshot source live on public-host, so losing
     public-host's storage still falls back to the last good `vzdump` (7–21 days).
   - Alert (since 2026-10-12): `scripts/vm-backup-watch.mjs` (daily user timer
@@ -493,11 +495,11 @@ still unmeasured.
 
 The recovery point no longer depends on the weekly VM snapshot alone.
 
-- **What:** `scripts/space-db-backup.mjs` dumps `space`, `temporal` and `temporal_visibility` from `space-postgres-1` with `pg_dump --format=custom` over `docker exec` (read-only). Each dump is validated twice: the table of contents is counted with `pg_restore --list`, and every data block is read and decompressed with `pg_restore --file=/dev/null`. Only then is the archive renamed from `.partial`.
+- **What:** `scripts/space-db-backup.mjs` dumps every application database of `space-postgres-1` (all but templates and `postgres`, `space` first: today `space`, `space_dev`, `temporal`, `temporal_visibility`; until 2026-11-09 a fixed list left the dev instance's `space_dev` out) with `pg_dump --format=custom` over `docker exec` (read-only). Each dump is validated twice: the table of contents is counted with `pg_restore --list`, and every data block is read and decompressed with `pg_restore --file=/dev/null`. Only then is the archive renamed from `.partial`.
 - **Where:** `/opt/spaceapp/backups/db/<UTC run>/{<database>.dump, manifest.json}`, with directory mode 0700 and file mode 0600. The manifest records bytes, SHA-256 and the archive entry count per database.
 - **When:** the user-level timer `space-db-backup.timer` runs daily at 03:15 local time (randomized by up to 10 minutes, `Persistent=true`). Installation steps are in `deploy/user-systemd/README.md`.
 - **Retention:** the newest run of each of the last 7 days and of each of the last 4 ISO weeks. Only complete runs (all three databases) prune.
-- **RPO:** at most 1 day for the database while the timer runs. The weekly VM snapshot still covers files outside PostgreSQL. Since 2026-10-16 the daily dumps are also copied to the StorageBox (see Open limits), so losing public-host's storage no longer loses them.
+- **RPO:** conservatively measured from the newest successful backup's run start, before the first dump. With daily successful runs, allow for scheduling delay and the time to finish the next backup; failed runs increase the age further. This is not a strict 24-hour guarantee. The databases are dumped sequentially, without a common cross-database snapshot. The weekly VM snapshot still covers files outside PostgreSQL. Since 2026-10-16 the daily dumps are also copied to the StorageBox (see Open limits), so losing public-host's storage no longer loses them.
 - **Measured on 2026-10-11:**
   - The three dumps took 9.2 s: space 36.8 MB with 1,017 entries, temporal 2.2 MB, temporal_visibility 47 KB.
   - Restoring them into a disposable PostgreSQL 17/pgvector container (`--network none`) took 10 s.
@@ -509,3 +511,10 @@ The recovery point no longer depends on the weekly VM snapshot alone.
   ```
 
   Restore into a disposable container first, and verify with `scripts/restore-drill.mjs` before touching live.
+- **Weekly restore proof (DATA-003):** `scripts/backup-restore-proof.mjs` restores the newest run into a throwaway PostgreSQL with no network. It then checks every table's rows against the dumps and migrates `space`. Next it runs the stack's Temporal schema job (`temporal-schema` in `docker-compose.yml`) and starts the stack's Temporal server on the restored `temporal` and `temporal_visibility`. The proof fails unless that server lists every restored namespace and reads a listed workflow's history.
+  - Since 2026-11-03, `rpoSeconds` is the conservative age from `backupStartedAt` (the manifest's run timestamp, truncated to seconds) to the proof's `startedAt`, rounded up. `rpoBasis` is `backup-run-start-conservative-bound`; `backupCompletedAt` is reported separately. Missing, malformed, mismatched or out-of-order timestamps fail the proof before any container call. Earlier reports measured from completion and understated this bound by the backup duration; their RPO numbers are historical completion ages, not corrected bounds. The focused synthetic regression (00:00 start, 00:30 finish, 01:00 proof) requires 3,600 seconds instead of 1,800. It is arithmetic evidence, not a new restore drill or proof of a common snapshot. Full VM boot remains the operator's Greece DR drill (`clipboard:EyrxHc1nCUTJ`).
+  - It runs from `space-backup-restore-proof.timer`, Mondays 03:00 Asia/Bangkok, after the week's kept backup (`deploy/user-systemd/README.md`). A failure adds one Space clipboard note.
+  - Measured on 2026-11-02, RTO with Temporal serving:
+    - Backup `20261101T191654Z`: 46.8 s.
+    - Backup `20261025T191046Z`: 29.7 s. Its Temporal schema predates the 1.30.8 server (visibility 1.9, the server needs 1.13), so the schema job is what makes it start.
+  - Both the schema job and the server run with `--pull=never`. A restore needs the pinned `temporalio/admin-tools` image already on the host; without it the proof reports `TEMPORAL_SCHEMA_TOOL_NOT_LOCAL`.

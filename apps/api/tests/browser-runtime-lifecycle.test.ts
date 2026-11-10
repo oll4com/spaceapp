@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
@@ -117,6 +117,17 @@ describe('managed browser runtime lifecycle', () => {
       expect((await readdir(profile)).sort()).toEqual(['Cookies', 'Preferences']);
     } finally { await f.cleanup(); }
   });
+  it('marks the last exit crashed so Chrome restores the session cookies, without the restore prompt (brief 20261101)', async () => {
+    const f = await fixture('FREELANCE_COPILOT');
+    try {
+      const preferences = join(f.session.profilePath, 'Default', 'Preferences');
+      await mkdir(join(f.session.profilePath, 'Default'), { recursive: true });
+      await writeFile(preferences, JSON.stringify({ profile: { exit_type: 'Normal', name: 'Person 1' }, session: { restore_on_startup: 5 } }));
+      await f.manager.getActive(f.pane);
+      expect(JSON.parse(await readFile(preferences, 'utf8'))).toEqual({ profile: { exit_type: 'Crashed', name: 'Person 1' }, session: { restore_on_startup: 5 } });
+      expect(f.children.find(child => child.command === process.execPath)?.args).toContain('--hide-crash-restore-bubble');
+    } finally { await f.cleanup(); }
+  });
   it('finishes late stream cleanup after Chrome exits instead of blocking the next account', async () => {
     const f = await fixture();
     try {
@@ -174,6 +185,34 @@ describe('managed browser runtime lifecycle', () => {
       expect(plain.children.find(child => child.command === process.execPath)?.env?.TZ).toBe(process.env.TZ);
     } finally { await plain.cleanup(); }
   });
+  it('starts any pane browser on the network route chosen for it, and an explicit "This server" restarts a routed Chrome (plan clipboard:iLvBs5eOMZjF)', async () => {
+    const f = await fixture('BROWSER');
+    try {
+      const chromes = () => f.children.filter(child => child.command === process.execPath);
+      f.store.setPaneBrowserRoute(f.pane.id, 'greece');
+      await f.manager.getActive(f.pane);
+      const args = chromes()[0]!.args;
+      const pac = Buffer.from(args.find(arg => arg.startsWith('--proxy-pac-url='))!.split('base64,')[1]!, 'base64').toString('utf8');
+      // Every site through the Greece route, localhost direct, no DIRECT fallback: a route that is down fails closed.
+      expect(pac).toContain('return "SOCKS5 10.254.241.2:1080"');
+      expect(pac).not.toMatch(/return "DIRECT";\n}$/);
+      expect(args).toContain('--force-webrtc-ip-handling-policy=disable_non_proxied_udp');
+      expect(args).toContain('--accept-lang=en-US,en,el');
+      expect(chromes()[0]!.env?.TZ).toBe('Europe/Athens');
+
+      // A pane sharing the account that chose "This server" is refused while the Greece pane holds the Chrome.
+      const other = f.store.createPane({ roomId: f.pane.roomId, title: 'direct', mode: 'BROWSER' });
+      f.store.createPaneBrowserSession({ sessionId: 'browser_session:direct', agentNumber: 2, paneId: other.id, roomId: f.pane.roomId,
+        profileId: 'profile:lifecycle', profilePath: f.session.profilePath, viewport: 'wide', targetUrl: null, status: 'READY', isActive: true });
+      f.store.setPaneBrowserRoute(other.id, 'direct');
+      await expect(f.manager.getActive(other)).rejects.toThrow(/BROWSER_ROUTE/);
+      // Once the Greece pane is on "This server" too, its restart starts the account's Chrome with no proxy.
+      f.store.setPaneBrowserRoute(f.pane.id, 'direct');
+      await f.manager.stopPane(f.pane.id);
+      await f.manager.getActive(other);
+      expect(chromes().at(-1)!.args.some(arg => arg.startsWith('--proxy-pac-url'))).toBe(false);
+    } finally { await f.cleanup(); }
+  });
   it('restarts an account Chrome open without Freelance routes with them; the panes sharing it come back streaming', async () => {
     const f = await fixture('BROWSER');
     try {
@@ -204,7 +243,7 @@ describe('managed browser runtime lifecycle', () => {
       const other = addFreelance('freelance-greece');
       const metadata = defaultFreelanceCopilotPaneMetadata();
       f.store.updateFreelanceCopilotMetadata(other.id, { ...metadata, settings: { ...metadata.settings, browserEgress: 'greece' } });
-      await expect(f.manager.getActive(other)).rejects.toThrow(/FREELANCE_EGRESS/);
+      await expect(f.manager.getActive(other)).rejects.toThrow(/BROWSER_ROUTE/);
       expect(chromes()).toHaveLength(2);
     } finally { await f.cleanup(); }
   });
@@ -216,5 +255,57 @@ describe('managed browser runtime lifecycle', () => {
       expect(adBlock).toBeTruthy();
       expect(adBlock).toContain('ytInitialPlayerResponse');
     } finally { await f.cleanup(); }
+  });
+});
+
+describe('a Browser Host that fails a request itself (round 9 item 4: Cleo/Bob lost a day to "unavailable")', () => {
+  it('passes its code and first zod issue through to the answer and tells Nous which pane it hit; other host errors stay as they were', async () => {
+    const { SpaceFeatureDisabledError } = await import('@space/runtime');
+    const { onBrowserHostInternalError, withBrowserHostErrorText } = await import('../src/browser-host-errors.js');
+    const pane = { id: 'pane:bob00001', roomId: 'room:cleo0001' };
+    const internal = new SpaceFeatureDisabledError('BROWSER_HOST_UNAVAILABLE', 'The Browser Host is unavailable.',
+      { hostCode: 'BROWSER_HOST_INTERNAL_ERROR', hostIssue: 'unrecognized_keys at input.pane.marketingCopilotMetadata (keys: bookmarksView)' });
+    const down = new SpaceFeatureDisabledError('BROWSER_HOST_UNAVAILABLE', 'The Browser Host is unavailable.', { hostCode: 'BROWSER_HOST_UNAVAILABLE' });
+    const manager = withBrowserHostErrorText({
+      startOrRestore: vi.fn(async () => { throw internal; }), getActive: vi.fn(async () => { throw down; }), health: () => 'ok'
+    });
+    const heard: unknown[] = [];
+    const stop = onBrowserHostInternalError((event) => heard.push(event));
+    const failed = await manager.startOrRestore({ pane } as never).catch((error: unknown) => error as InstanceType<typeof SpaceFeatureDisabledError>);
+    expect(failed).toMatchObject({ errorCode: 'BROWSER_HOST_UNAVAILABLE',
+      message: expect.stringMatching(/^The Browser Host is running but failed this request \(BROWSER_HOST_INTERNAL_ERROR: unrecognized_keys at input\.pane\.marketingCopilotMetadata \(keys: bookmarksView\)\)\. .*guarded restart/) });
+    expect(heard).toEqual([{ paneId: 'pane:bob00001', roomId: 'room:cleo0001', code: 'BROWSER_HOST_INTERNAL_ERROR', issue: 'unrecognized_keys at input.pane.marketingCopilotMetadata (keys: bookmarksView)' }]);
+    // A host that is down keeps its own answer; a non-function passes as it is.
+    await expect(manager.getActive(pane as never)).rejects.toBe(down);
+    expect(manager.health()).toBe('ok');
+    stop();
+  });
+
+  it('names a resident host older than the newest pane contract change once per host start, at most every 10 minutes', async () => {
+    const { createBrowserHostStaleWatch, PANE_METADATA_SCHEMA_FILES } = await import('../src/browser-host-errors.js');
+    expect(PANE_METADATA_SCHEMA_FILES).toContain('packages/contracts/src/marketing-copilot.ts');
+    let now = Date.parse('2026-10-28T07:00:00.000Z');
+    let startedAt = '2026-10-27T10:00:00.000Z';
+    const watch = createBrowserHostStaleWatch({ health: async () => ({ startedAt }), changedAt: async () => '2026-10-28T02:00:00.000Z', now: () => now });
+    expect(await watch.check()).toMatch(/^The resident Browser Host started 2026-10-27 10:00 UTC, before the newest change to the pane contracts it parses \(2026-10-28 02:00 UTC\)/);
+    now += 11 * 60_000;
+    expect(await watch.check()).toBeNull();
+    // After a restart the new host is newer than the change: nothing to say.
+    startedAt = '2026-10-28T07:05:00.000Z';
+    now += 11 * 60_000;
+    expect(await watch.check()).toBeNull();
+  });
+
+  it('keeps the told host start across an API restart (round 2, 1/11: 50 restarts told the same host 22 times)', async () => {
+    const { createBrowserHostStaleWatch, browserHostStaleToldStore } = await import('../src/browser-host-errors.js');
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const told = browserHostStaleToldStore(join(mkdtempSync(join(tmpdir(), 'stale-told-')), 'nested', 'told.json'));
+    const deps = { health: async () => ({ startedAt: '2026-10-27T10:00:00.000Z' }), changedAt: async () => '2026-10-28T02:00:00.000Z', now: () => Date.parse('2026-10-28T07:00:00.000Z'), told };
+    expect(await createBrowserHostStaleWatch(deps).check()).toMatch(/^The resident Browser Host started/);
+    expect(told.read()).toBe('2026-10-27T10:00:00.000Z');
+    expect(await createBrowserHostStaleWatch(deps).check()).toBeNull();
+    expect(await createBrowserHostStaleWatch({ ...deps, told: browserHostStaleToldStore('/nonexistent/dir/x.json') }).check()).toMatch(/^The resident Browser Host started/);
   });
 });

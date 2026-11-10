@@ -6,9 +6,10 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 import { rootWriteBackedUpFileAtomic, type AgentToolsOptions } from "./agent-tools.js";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export async function discoverRoutingProfiles(options: AgentToolsOptions = {}): Promise<ModelCapabilityProfileV1[]> {
-  const path = join(options.baseRoot ?? "/var/lib/spaceapp-user", ".codex/models_cache.json");
+  const path = join(options.baseRoot ?? SPACE_AGENT_HOME, ".codex/models_cache.json");
   let cache: { fetched_at?: string; models?: Array<{ slug?: string; input_modalities?: string[]; shell_type?: string }> };
   try { cache = JSON.parse(await readFile(path, "utf8")); }
   catch (error) {
@@ -71,7 +72,7 @@ export async function projectRoutingState(store: SpaceStore, options: AgentTools
   state.profiles = [...discovered, ...state.profiles.filter((entry) => !profileKeys.has(entry.runtimeId + ":" + entry.modelId))];
   await rootWriteBackedUpFileAtomic(
     options.rootWriterCommand ?? null,
-    join(options.canonicalRoot ?? "/opt/spaceapp/bin", "tool-routing-state.json"),
+    join(options.canonicalRoot ?? `${SPACE_INSTALL_ROOT}/bin`, "tool-routing-state.json"),
     JSON.stringify(state, null, 2) + "\n"
   );
 }

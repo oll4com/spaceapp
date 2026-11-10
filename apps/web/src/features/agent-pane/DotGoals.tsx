@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import type { DotGoal, DotProfile } from "@space/contracts";
 import { api } from "../../api.js";
 import { Crosshair, X } from "../ui-theme/app-icons.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 const statusLabels: Record<DotGoal["status"], string> = {
   ACTIVE: "Active", PAUSED: "Paused", COMPLETED: "Completed", BLOCKED: "Needs you", CANCELLED: "Cancelled",
@@ -15,6 +16,8 @@ export function DotGoalDialog({ dot, sessionId, onClose, onCreated, create = api
   dot: DotProfile; sessionId: string; onClose: () => void; onCreated: (goal: DotGoal) => void;
   create?: typeof api.createDotGoal;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [objective, setObjective] = useState("");
   const [milestones, setMilestones] = useState("");
   const [criteria, setCriteria] = useState("");
@@ -34,40 +37,40 @@ export function DotGoalDialog({ dot, sessionId, onClose, onCreated, create = api
         budget: { maxSteps, maxMinutes: Math.max(5, Math.round(maxHours * 60)) } });
       onCreated(goal);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "The Goal could not start.");
+      setError(err instanceof Error ? err.message : t("The Goal could not start."));
     } finally { setPending(false); }
   }
   return <div className="attachment-modal codex-resume-modal" onClick={() => { if (!pending) onClose(); }}>
-    <section className="attachment-modal-body codex-resume-modal-body dots-goal-dialog" role="dialog" aria-modal="true" aria-label={`Set a goal for ${dot.name}`}
+    <section className="attachment-modal-body codex-resume-modal-body dots-goal-dialog" role="dialog" aria-modal="true" aria-label={t("Set a goal for {name}", { name: dot.name })}
       onClick={(event) => event.stopPropagation()}>
-      <button type="button" className="terminal-upload-modal-close codex-resume-modal-close" aria-label="Close goal editor" disabled={pending} onClick={onClose}>
+      <button type="button" className="terminal-upload-modal-close codex-resume-modal-close" aria-label={t("Close goal editor")} disabled={pending} onClick={onClose}>
         <X aria-hidden="true" />
       </button>
       <div className="codex-resume-modal-header">
-        <span className="terminal-upload-modal-label codex-resume-modal-label"><Crosshair aria-hidden="true" />Goal</span>
-        <strong>Set a goal for {dot.name}</strong>
-        <small>{dot.name} keeps working step by step on the server, even when this tab is closed. You can pause, guide or cancel it.</small>
+        <span className="terminal-upload-modal-label codex-resume-modal-label"><Crosshair aria-hidden="true" />{t("Goal")}</span>
+        <strong>{t("Set a goal for {name}", { name: dot.name })}</strong>
+        <small>{t("{name} keeps working step by step on the server, even when this tab is closed. You can pause, guide or cancel it.", { name: dot.name })}</small>
       </div>
       <form className="codex-goal-editor" onSubmit={(event) => void submit(event)}>
-        <label><span>Objective</span>
-          <textarea aria-label="Goal objective" autoFocus rows={3} value={objective} disabled={pending} maxLength={4000}
+        <label><span>{t("Objective")}</span>
+          <textarea aria-label={t("Goal objective")} autoFocus rows={3} value={objective} disabled={pending} maxLength={4000}
             onChange={(event) => setObjective(event.currentTarget.value)} /></label>
-        <label><span>Milestones (optional, one per line)</span>
-          <textarea aria-label="Goal milestones" rows={3} value={milestones} disabled={pending} onChange={(event) => setMilestones(event.currentTarget.value)} /></label>
-        <label><span>Done when (optional, one per line)</span>
-          <textarea aria-label="Goal completion criteria" rows={2} value={criteria} disabled={pending} onChange={(event) => setCriteria(event.currentTarget.value)} /></label>
+        <label><span>{t("Milestones (optional, one per line)")}</span>
+          <textarea aria-label={t("Goal milestones")} rows={3} value={milestones} disabled={pending} onChange={(event) => setMilestones(event.currentTarget.value)} /></label>
+        <label><span>{t("Done when (optional, one per line)")}</span>
+          <textarea aria-label={t("Goal completion criteria")} rows={2} value={criteria} disabled={pending} onChange={(event) => setCriteria(event.currentTarget.value)} /></label>
         <div className="dots-goal-budget">
-          <label><span>Max steps</span><input type="number" min={1} max={200} value={maxSteps} disabled={pending}
+          <label><span>{t("Max steps")}</span><input type="number" min={1} max={200} value={maxSteps} disabled={pending}
             onChange={(event) => setMaxSteps(Number(event.currentTarget.value))} /></label>
-          <label><span>Max hours</span><input type="number" min={0.1} max={24} step="any" value={maxHours} disabled={pending}
+          <label><span>{t("Max hours")}</span><input type="number" min={0.1} max={24} step="any" value={maxHours} disabled={pending}
             onChange={(event) => setMaxHours(Number(event.currentTarget.value))} /></label>
         </div>
-        {milestoneList.length > 20 ? <p role="alert">Use at most 20 milestones.</p> : null}
-        {criteriaList.length > 10 ? <p role="alert">Use at most 10 completion criteria.</p> : null}
+        {milestoneList.length > 20 ? <p role="alert">{t("Use at most 20 milestones.")}</p> : null}
+        {criteriaList.length > 10 ? <p role="alert">{t("Use at most 10 completion criteria.")}</p> : null}
         {error ? <p role="alert">{error}</p> : null}
         <div>
-          <button type="button" disabled={pending} onClick={onClose}>Cancel</button>
-          <button type="submit" disabled={pending || !valid}>{pending ? "Starting…" : "Start goal"}</button>
+          <button type="button" disabled={pending} onClick={onClose}>{t("Cancel")}</button>
+          <button type="submit" disabled={pending || !valid}>{pending ? t("Starting…") : t("Start goal")}</button>
         </div>
       </form>
     </section>
@@ -79,6 +82,8 @@ export function DotGoalStrip({ dot, sessionId, refreshKey, visible = true, onCha
   dot: DotProfile | null; sessionId: string | null; refreshKey: string; visible?: boolean; onChanged?: (goal: DotGoal | null) => void;
   read?: typeof api.dotGoals; control?: typeof api.controlDotGoal; steer?: typeof api.steerDotGoal;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [goal, setGoal] = useState<DotGoal | null>(null);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [guidance, setGuidance] = useState("");
@@ -93,7 +98,7 @@ export function DotGoalStrip({ dot, sessionId, refreshKey, visible = true, onCha
       if (!current || result.dotId !== dot.dotId) return;
       const latest = result.items.find((item) => item.sessionId === sessionId && item.dotId === dot.dotId) ?? null;
       setGoal(latest); onChanged?.(latest);
-    }).catch(() => { if (current) setError("Goal status is unavailable."); });
+    }).catch(() => { if (current) setError(t("Goal status is unavailable.")); });
     return () => { current = false; };
   }, [dot?.dotId, sessionId, refreshKey, read, tick]);
   // Status decided between runs (budget, blocking question) appears without a reload:
@@ -109,7 +114,7 @@ export function DotGoalStrip({ dot, sessionId, refreshKey, visible = true, onCha
   async function act(action: "PAUSE" | "RESUME" | "CANCEL") {
     setBusy(true); setError(null);
     try { const next = (await control(dot!.dotId, goal!.goalId, action)).goal; setGoal(next); onChanged?.(next); setConfirmCancel(false); }
-    catch (err) { setError(err instanceof Error ? err.message : "The Goal could not change."); }
+    catch (err) { setError(err instanceof Error ? err.message : t("The Goal could not change.")); }
     finally { setBusy(false); }
   }
   async function guide(event: FormEvent<HTMLFormElement>) {
@@ -117,33 +122,33 @@ export function DotGoalStrip({ dot, sessionId, refreshKey, visible = true, onCha
     if (!guidance.trim() || busy) return;
     setBusy(true); setError(null);
     try { const next = (await steer(dot!.dotId, goal!.goalId, guidance.trim())).goal; setGoal(next); setGuidance(""); }
-    catch (err) { setError(err instanceof Error ? err.message : "Guidance was not saved."); }
+    catch (err) { setError(err instanceof Error ? err.message : t("Guidance was not saved.")); }
     finally { setBusy(false); }
   }
-  return <section className="dots-goal-strip" data-status={goal.status} aria-label={`${dot.name}'s goal`}>
+  return <section className="dots-goal-strip" data-status={goal.status} aria-label={t("{name}'s goal", { name: dot.name })}>
     <div className="dots-goal-head">
-      <span className="dots-goal-status">{dotGoalStatusLabel(goal.status)}</span>
+      <span className="dots-goal-status">{t(dotGoalStatusLabel(goal.status))}</span>
       <strong title={goal.objective}>{goal.objective}</strong>
-      {!open ? <button type="button" className="dots-goal-dismiss" aria-label="Dismiss goal" onClick={() => setDismissed(goal.goalId)}><X aria-hidden="true" /></button> : null}
+      {!open ? <button type="button" className="dots-goal-dismiss" aria-label={t("Dismiss goal")} onClick={() => setDismissed(goal.goalId)}><X aria-hidden="true" /></button> : null}
     </div>
     <p className="dots-goal-meta">
-      {goal.milestones.length ? `${done}/${goal.milestones.length} milestones · ` : ""}Step {goal.usage.steps} of {goal.budget.maxSteps}
+      {goal.milestones.length ? `${t("{done}/{total} milestones", { done, total: goal.milestones.length })} · ` : ""}{t("Step {steps} of {max}", { steps: goal.usage.steps, max: goal.budget.maxSteps })}
       {goal.statusReason && goal.status !== "ACTIVE" && goal.status !== "BLOCKED" ? ` · ${goal.statusReason}` : ""}
     </p>
-    {goal.status === "BLOCKED" && goal.statusReason ? <p className="dots-goal-question" role="status">{dot.name} needs you: {goal.statusReason} Add guidance, then resume.</p> : null}
+    {goal.status === "BLOCKED" && goal.statusReason ? <p className="dots-goal-question" role="status">{t("{name} needs you: {reason} Add guidance, then resume.", { name: dot.name, reason: goal.statusReason })}</p> : null}
     {goal.milestones.length ? <ol className="dots-goal-milestones">{goal.milestones.map((milestone) => <li key={milestone.id} data-status={milestone.status}>
       <span aria-hidden="true">{milestone.status === "DONE" ? "✓" : milestone.status === "IN_PROGRESS" ? "…" : "○"}</span>{milestone.title}
-      <span className="dots-visually-hidden"> ({milestone.status === "DONE" ? "done" : milestone.status === "IN_PROGRESS" ? "in progress" : "pending"})</span>
+      <span className="dots-visually-hidden"> ({milestone.status === "DONE" ? t("done") : milestone.status === "IN_PROGRESS" ? t("in progress") : t("pending")})</span>
     </li>)}</ol> : null}
     {open ? <div className="dots-goal-controls">
       <form onSubmit={(event) => void guide(event)}>
-        <input aria-label={`Guide ${dot.name}'s goal`} placeholder={`Guide ${dot.name}…`} value={guidance} maxLength={4000} disabled={busy}
+        <input aria-label={t("Guide {name}'s goal", { name: dot.name })} placeholder={t("Guide {name}…", { name: dot.name })} value={guidance} maxLength={4000} disabled={busy}
           onChange={(event) => setGuidance(event.currentTarget.value)} />
-        <button type="submit" disabled={busy || !guidance.trim()}>Guide</button>
+        <button type="submit" disabled={busy || !guidance.trim()}>{t("Guide")}</button>
       </form>
-      <button type="button" disabled={busy} onClick={() => void act(goal.status === "ACTIVE" ? "PAUSE" : "RESUME")}>{goal.status === "ACTIVE" ? "Pause" : "Resume"}</button>
-      {confirmCancel ? <button type="button" className="dots-goal-cancel" disabled={busy} onClick={() => void act("CANCEL")}>Confirm cancel</button>
-        : <button type="button" disabled={busy} onClick={() => setConfirmCancel(true)}>Cancel goal</button>}
+      <button type="button" disabled={busy} onClick={() => void act(goal.status === "ACTIVE" ? "PAUSE" : "RESUME")}>{goal.status === "ACTIVE" ? t("Pause") : t("Resume")}</button>
+      {confirmCancel ? <button type="button" className="dots-goal-cancel" disabled={busy} onClick={() => void act("CANCEL")}>{t("Confirm cancel")}</button>
+        : <button type="button" disabled={busy} onClick={() => setConfirmCancel(true)}>{t("Cancel goal")}</button>}
     </div> : null}
     {error ? <p role="alert" className="dots-goal-error">{error}</p> : null}
   </section>;

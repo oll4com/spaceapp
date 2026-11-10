@@ -3,6 +3,7 @@ import { claudeCostUsd, costUsd, geminiCostUsd } from "@space/gateway";
 import type { GatewayClaudeLogKey, GatewayRepository, SystemAnalyticsModelEventRecord, SystemAnalyticsRepository } from "@space/db";
 import type { GatewayRequestLog, GatewayUsageWindow } from "@space/contracts";
 import { z } from "zod";
+import { SPACE_AGENT_USER, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
  * Token usage page sources besides the CLI readers of the analytics service (operator request 2026-10-15): every
@@ -19,7 +20,7 @@ export const GATEWAY_LOG_CURSOR = "gateway-log-id-v3";
 export const CLAUDE_TIME_CURSOR = "claude-message-at-v4";
 /** The first Antigravity (Gemini) request through the gateway: Gemini CLI sessions from then on are counted there. */
 export const GEMINI_GATEWAY_CURSOR = "gemini-gateway-since";
-const HELPER = "/opt/spaceapp/bin/space-cli-token-usage";
+const HELPER = `${SPACE_INSTALL_ROOT}/bin/space-cli-token-usage`;
 const PAGE = 2000;
 
 export type TokenUsageGateway = Pick<GatewayRepository, "requestLogsAfter" | "claudeLogKeys">;
@@ -42,6 +43,18 @@ export interface TokenUsageSourceOptions {
   readClaude: (since: string | null) => Promise<unknown | null>;
   /** The helper's Codex turns of the last 35 days, from every rollout (older ones are owner-only), or null. */
   readCodexHistory: () => Promise<unknown | null>;
+  /** The helper's DeepSeek (Reasonix) sessions of the last 35 days, or null (CTX-001). */
+  readDeepseekHistory: () => Promise<unknown | null>;
+  /** The helper's Qwen Code sessions of the last 35 days, or null (CTX-001). */
+  readQwenHistory: () => Promise<unknown | null>;
+  /** The helper's Grok CLI sessions of the last 35 days, or null (CTX-001). */
+  readGrokHistory: () => Promise<unknown | null>;
+  /** The helper's GitHub Copilot CLI sessions of the last 35 days, or null (CTX-001). */
+  readCopilotHistory: () => Promise<unknown | null>;
+  /** The helper's Autohand sessions of the last 35 days, or null (CTX-001). */
+  readAutohandHistory: () => Promise<unknown | null>;
+  /** The helper's Kimi native subscription calls of the last 35 days, or null (CTX-001). */
+  readKimiHistory: () => Promise<unknown | null>;
   claudeSessionOwner: (claudeSessionId: string, at: string) => Promise<ClaudeSessionOwner | null>;
   now: () => Date;
 }
@@ -198,17 +211,96 @@ export async function ingestClaudeTranscripts(options: TokenUsageSourceOptions):
   return events.length;
 }
 
+const cliSessions = z.array(z.object({
+  sessionId: z.string().max(120), provider: z.string().max(160), model: z.string().max(160),
+  startedAt: z.string().datetime(), endedAt: z.string().datetime(), promptTokens: count, completionTokens: count,
+  reasoningTokens: count, cacheHitTokens: count, requestCount: count,
+  cacheCreationTokens: count.optional(),
+  // The CLI's own bill for the session, when its provider reported all of it (Grok); else no price.
+  costUsd: z.number().nonnegative().nullable().optional()
+})).max(200_000);
+type CliSession = z.infer<typeof cliSessions>[number];
+
+/**
+ * CLI panes on their own keys, off Space Gateway, from the helper's per-session counters: one DIRECT event per session (and
+ * model), upserted as it grows. Source `session` keeps it out of the per-turn dedupe (no migration).
+ */
+async function upsertCliSessions(options: TokenUsageSourceOptions, runtime: "deepseek" | "qwen" | "grok" | "copilot" | "autohand" | "kimi", sessions: CliSession[],
+  key: (session: CliSession) => string, providerId: (provider: string) => string): Promise<number> {
+  const updatedAt = options.now().toISOString();
+  const events: SystemAnalyticsModelEventRecord[] = sessions.map((session) => ({
+    eventKey: `${runtime}:${key(session)}`, source: "session", runtimeId: `cli:${runtime}`,
+    providerId: providerId(session.provider), modelId: session.model,
+    roomId: null, paneId: null, sessionId: null, turnId: session.sessionId, status: "COMPLETED", coverage: "NATIVE",
+    turnCount: session.requestCount, startedAt: session.startedAt, endedAt: session.endedAt,
+    tokensIn: session.promptTokens, tokensOut: session.completionTokens, tokensReasoning: session.reasoningTokens || null,
+    ttftMs: null, durationMs: Math.max(Date.parse(session.endedAt) - Date.parse(session.startedAt), 0), updatedAt,
+    route: "DIRECT", accountKey: `cli:${runtime}/${session.provider}`, costUsd: session.costUsd ?? null, tokensCacheRead: session.cacheHitTokens,
+    ...(session.cacheCreationTokens === undefined ? {} : { tokensCacheWrite: session.cacheCreationTokens })
+  }));
+  for (let index = 0; index < events.length; index += 500) await options.repository.upsertModelEvents(events.slice(index, index + 500));
+  return events.length;
+}
+
+/** DeepSeek (Reasonix) sessions, from each session's cumulative counters. */
+export async function ingestDeepseekSessions(options: TokenUsageSourceOptions): Promise<number> {
+  const raw = await options.readDeepseekHistory();
+  if (raw === null) return 0;
+  return upsertCliSessions(options, "deepseek", z.object({ schema: z.literal(2), deepseekSessions: cliSessions }).parse(raw).deepseekSessions,
+    (session) => session.sessionId, (provider) => (provider.startsWith("deepseek") ? "deepseek" : provider));
+}
+
+/** Qwen Code sessions, one event per session and model, from Qwen's own usage log (written when a session ends). */
+export async function ingestQwenSessions(options: TokenUsageSourceOptions): Promise<number> {
+  const raw = await options.readQwenHistory();
+  if (raw === null) return 0;
+  return upsertCliSessions(options, "qwen", z.object({ schema: z.literal(2), qwenSessions: cliSessions }).parse(raw).qwenSessions,
+    (session) => `${session.sessionId}:${session.model}`, (provider) => provider);
+}
+
+/** Grok CLI sessions, one event per session and model, from each session's cumulative counters and xAI's cost. */
+export async function ingestGrokSessions(options: TokenUsageSourceOptions): Promise<number> {
+  const raw = await options.readGrokHistory();
+  if (raw === null) return 0;
+  return upsertCliSessions(options, "grok", z.object({ schema: z.literal(2), grokSessions: cliSessions }).parse(raw).grokSessions,
+    (session) => `${session.sessionId}:${session.model}`, (provider) => provider);
+}
+
+/** GitHub Copilot CLI sessions, one event per session and model, summed from Copilot's per-call usage records. */
+export async function ingestCopilotSessions(options: TokenUsageSourceOptions): Promise<number> {
+  const raw = await options.readCopilotHistory();
+  if (raw === null) return 0;
+  return upsertCliSessions(options, "copilot", z.object({ schema: z.literal(2), copilotSessions: cliSessions }).parse(raw).copilotSessions,
+    (session) => `${session.sessionId}:${session.model}`, (provider) => provider);
+}
+
+/** Autohand sessions on its own OpenRouter key, one event per session, from the session's own total. */
+export async function ingestAutohandSessions(options: TokenUsageSourceOptions): Promise<number> {
+  const raw = await options.readAutohandHistory();
+  if (raw === null) return 0;
+  return upsertCliSessions(options, "autohand", z.object({ schema: z.literal(2), autohandSessions: cliSessions }).parse(raw).autohandSessions,
+    (session) => session.sessionId, (provider) => provider);
+}
+
+/** Kimi native subscription calls, summed per session and model across the main agent and subagents. */
+export async function ingestKimiSessions(options: TokenUsageSourceOptions): Promise<number> {
+  const raw = await options.readKimiHistory();
+  if (raw === null) return 0;
+  return upsertCliSessions(options, "kimi", z.object({ schema: z.literal(2), kimiSessions: cliSessions }).parse(raw).kimiSessions,
+    (session) => `${session.sessionId}:${session.model}`, (provider) => provider);
+}
+
 /** The analytics service's token sources: the gateway's database, and the helper where it may run. */
 export function tokenUsageSourcesFor(gateway: () => GatewayRepository, claudeHelper: boolean) {
   return {
     gateway, gatewayAccounts: () => gateway().listAccounts(),
     // The helper needs sudo: stable only (instance job token-usage-claude), never under tests.
-    ...(claudeHelper && process.env.VITEST !== "true" ? {} : { readClaude: async () => null, readCodexHistory: async () => null })
+    ...(claudeHelper && process.env.VITEST !== "true" ? {} : { readClaude: async () => null, readCodexHistory: async () => null, readDeepseekHistory: async () => null, readQwenHistory: async () => null, readGrokHistory: async () => null, readCopilotHistory: async () => null, readAutohandHistory: async () => null, readKimiHistory: async () => null })
   };
 }
 
 
-/** Runs the root-owned helper as spaceapp-user; null when it is missing or sudo refuses (dev, or before its deploy). */
+/** Runs the root-owned helper as the agent user; null when it is missing or sudo refuses (dev, or before its deploy). */
 export function readClaudeTokenUsage(since: string | null): Promise<unknown | null> {
   return runHelper(since ? ["--since", since] : []);
 }
@@ -217,9 +309,33 @@ export function readCodexHistory(): Promise<unknown | null> {
   return runHelper(["--codex-history"]);
 }
 
+export function readDeepseekHistory(): Promise<unknown | null> {
+  return runHelper(["--deepseek-history"]);
+}
+
+export function readQwenHistory(): Promise<unknown | null> {
+  return runHelper(["--qwen-history"]);
+}
+
+export function readGrokHistory(): Promise<unknown | null> {
+  return runHelper(["--grok-history"]);
+}
+
+export function readCopilotHistory(): Promise<unknown | null> {
+  return runHelper(["--copilot-history"]);
+}
+
+export function readAutohandHistory(): Promise<unknown | null> {
+  return runHelper(["--autohand-history"]);
+}
+
+export function readKimiHistory(): Promise<unknown | null> {
+  return runHelper(["--kimi-history"]);
+}
+
 function runHelper(args: string[]): Promise<unknown | null> {
   return new Promise((resolve) => {
-    execFile("sudo", ["-n", "-u", "spaceapp-user", HELPER, ...args],
+    execFile("sudo", ["-n", "-u", SPACE_AGENT_USER, HELPER, ...args],
       { timeout: 180_000, maxBuffer: 128 * 1024 * 1024, encoding: "utf8" }, (error, stdout) => {
         if (error) return resolve(null);
         try { resolve(JSON.parse(stdout)); } catch { resolve(null); }

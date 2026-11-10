@@ -174,6 +174,13 @@
   right: 1px;
   box-shadow: 0 0 0 2px var(--room-surface, #131b24);
 }
+/* The Notifications rail icon's unread count, drawn like the minimized-panes count. */
+.room-toolbar-collapsed .room-rail-notifications { position: relative; }
+.room-toolbar-collapsed .room-rail-count {
+  position: absolute; top: 1px; right: 1px; min-width: 0.95rem; height: 0.95rem; padding: 0 0.14rem; display: inline-flex; align-items: center;
+  justify-content: center; border-radius: 0.5rem; background: #121617; color: #e8c784; font-size: 0.55rem; font-weight: 700; line-height: 1;
+  pointer-events: none; box-shadow: 0 0 0 2px var(--room-surface, #131b24);
+}
 .space-shell[data-rail-downscaled="true"] :is(.health-indicator-rail, .room-toolbar-collapsed) .minimized-pane-bar-toggle-count {
   transform: scale(0.8);
   transform-origin: top right;
@@ -1967,7 +1974,9 @@
 }
 .space-shell .health-rail-expander { display: none; }
 .space-shell .room-rail-more { display: none; }
-@media (max-height: 900px), (max-width: 767px) {
+/* The pulse folds the rail only where its items cannot fit: the room toolbar's short-screen height and phones (900px folded
+   the desktop app's rail at 125% scaling for nothing, operator 5/11). */
+@media (max-height: 520px), (max-width: 767px) {
   .space-shell .health-rail-expander { display: inline-grid; }
   .space-shell .health-indicator-rail:not(.is-expanded) .health-rail-items { display: none; }
 }

@@ -188,6 +188,17 @@ test('the catalog call is retried after a 503 from overlapping starts, then the 
  assert.ok(listings[1]-listings[0]>=2900,'3 s apart');
 });
 
+// Windows lab, 2026-10-21 and 2026-10-28: right after a fresh install the catalog read succeeded with no free model; a minute later it listed them.
+test('a catalog read that succeeds with no free model is retried 15 s later, then the selection goes on as before',async()=>{
+ const listings=[];
+ const selected=await selectWorkingFreeModel({executeNative:async(args,env,cwd)=>{
+  if(args[0]==='api'){listings.push(Date.now());return listings.length===1?{code:0,stdout:catalog()}:{code:0,stdout:catalog(entry('big-pickle'))};}
+  return {code:0,stdout:toolRun(readFileSync(join(cwd,'spaceapp-check.txt'),'utf8').trim())};
+ }});
+ assert.equal(selected.id,'opencode/big-pickle');assert.equal(listings.length,2);
+ assert.ok(listings[1]-listings[0]>=14900,'15 s apart');
+});
+
 test('three failed catalog calls (503, timeout, connection) fail as before, within the budget',async()=>{
  const answers=[{code:1,stdout:'',stderr:'HTTP 503 Service Unavailable'},{code:124,stdout:'',stderr:''},{code:1,stdout:'',stderr:'Error: connect ECONNREFUSED 127.0.0.1:4096'}];
  let listings=0;const started=Date.now();

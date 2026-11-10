@@ -13,6 +13,7 @@ import {
 import { CliShortcutsMenu } from "../terminal-pane/CliShortcutsMenu.js";
 import { OSK_CLI_COMMANDS, type OskCliCommand } from "../osk-keyboard/cli-shortcuts.js";
 import { api } from "../../api.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { VoiceInputButton } from "../voice-input/VoiceInputButton.js";
 import {
   codexModelName,
@@ -44,13 +45,16 @@ type CodexModelCatalog = PaneCliModelSettings["models"];
 const LazyCodexModelPicker = lazy(() =>
   import("../codex-model-picker/CodexModelPicker.js").then((module) => ({ default: module.CodexModelPicker }))
 );
-const modelPickerLoadingFallback = (
-  <div className="terminal-model-picker">
-    <button type="button" className="terminal-model-chip" aria-label="Loading model selector" disabled>
-      <Bot aria-hidden="true" />
-    </button>
-  </div>
-);
+function ModelPickerLoadingFallback() {
+  const language = useUiLanguage();
+  return (
+    <div className="terminal-model-picker">
+      <button type="button" className="terminal-model-chip" aria-label={uiText(language, "Loading model selector")} disabled>
+        <Bot aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
 
 export interface CodexComposerProps {
   /** "dot": the Dot pane's composer (+, message, mic, send); its model and permissions come from Settings → Dots. */
@@ -148,6 +152,8 @@ export function CodexComposer({
   onRefreshModelCatalog,
   onModelConfigChange
 }: CodexComposerProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const lastFocusRequestKeyRef = useRef(focusRequestKey);
   const lastRestorePromptKeyRef = useRef(restorePromptKey);
@@ -565,19 +571,19 @@ export function CodexComposer({
 
   async function switchModel(modelId: string, reasoningEffort: string, providerId: string | null) {
     if (isDisabled) {
-      throw new Error(disabledReason ?? "Codex is disabled.");
+      throw new Error(disabledReason ?? t("Codex is disabled."));
     }
     const targetProvider = providerId === null
       ? null
       : modelProviders.find((provider) => provider.providerId === providerId) ?? null;
     if (providerId !== null && !targetProvider) {
-      throw new Error("The selected model provider is unavailable.");
+      throw new Error(t("The selected model provider is unavailable."));
     }
     let optionId: string;
     if (targetProvider) {
       const model = targetProvider.models.find((candidate) => candidate.id === modelId);
       if (!model) {
-        throw new Error("The selected model configuration is unavailable for this provider.");
+        throw new Error(t("The selected model configuration is unavailable for this provider."));
       }
       optionId = `${targetProvider.configIdPrefix}${model.id}|${reasoningEffort}`;
     } else {
@@ -585,7 +591,7 @@ export function CodexComposer({
         (candidate) => codexModelName(candidate) === modelId && candidate.reasoningKey === reasoningEffort
       );
       if (!option) {
-        throw new Error("The selected Codex model configuration is unavailable.");
+        throw new Error(t("The selected Codex model configuration is unavailable."));
       }
       optionId = option.id;
     }
@@ -605,7 +611,7 @@ export function CodexComposer({
           message: null
         };
       }
-      throw new Error("The server returned an unavailable Codex model configuration.");
+      throw new Error(t("The server returned an unavailable Codex model configuration."));
     }
     return {
       current: { modelId: normalizedModelId, reasoningEffort: normalizedReasoningEffort },
@@ -616,7 +622,7 @@ export function CodexComposer({
   return (
     <form className="codex-composer" data-variant={variant} onSubmit={submit} title={disabledTitle} onKeyDown={(event) => { if (event.key === "Escape") { setAddMenuOpen(false); } }}>
       {attachments.length ? (
-        <div className="codex-attachments" aria-label={"Attachments " + paneTitle}>
+        <div className="codex-attachments" aria-label={t("Attachments {pane}", { pane: paneTitle })}>
           {attachments.map((artifact) => {
             const kind = attachmentKind(artifact);
             const name = attachmentName(artifact);
@@ -628,15 +634,15 @@ export function CodexComposer({
                 ) : (
                   <div className="codex-attachment-file">
                     {kind === "video" ? <FileVideo aria-hidden="true" /> : <File aria-hidden="true" />}
-                    <span><strong>{name}</strong><small>{extension} · {artifact.byteSize.toLocaleString()} bytes</small></span>
+                    <span><strong>{name}</strong><small>{extension} · {t("{count} bytes", { count: artifact.byteSize.toLocaleString() })}</small></span>
                   </div>
                 )}
                 <button
                   type="button"
                   className="codex-attachment-remove"
                   onClick={() => onRemoveAttachment(artifact.id)}
-                  aria-label={`Remove attachment ${name}`}
-                  title={disabledTitle ?? "Remove attachment"}
+                  aria-label={t("Remove attachment {name}", { name })}
+                  title={disabledTitle ?? t("Remove attachment")}
                   disabled={isDisabled}
                 >
                   <X aria-hidden="true" />
@@ -648,8 +654,8 @@ export function CodexComposer({
             type="button"
             className="codex-attachments-clear"
             onClick={onClearAttachments}
-            aria-label="Clear all attachments"
-            title={disabledTitle ?? "Clear all attachments"}
+            aria-label={t("Clear all attachments")}
+            title={disabledTitle ?? t("Clear all attachments")}
             disabled={isDisabled}
           >
             <Trash2 aria-hidden="true" />
@@ -660,16 +666,16 @@ export function CodexComposer({
         <div className="codex-layout-suggestion" role="status" aria-live="polite">
           <Keyboard aria-hidden="true" style={{ width: 14, height: 14, flexShrink: 0 }} />
           <span className="codex-layout-suggestion-label">
-            Wrong layout? Convert to: <strong>{layoutSuggestion.convertedText.length > 48 ? layoutSuggestion.convertedText.slice(0, 48) + "…" : layoutSuggestion.convertedText}</strong>
+            {t("Wrong layout? Convert to:")} <strong>{layoutSuggestion.convertedText.length > 48 ? layoutSuggestion.convertedText.slice(0, 48) + "…" : layoutSuggestion.convertedText}</strong>
           </span>
           <button
             type="button"
             className="codex-layout-apply-btn"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => applyLayoutFix(layoutSuggestion.convertedText)}
-            title="Apply layout conversion (Alt+G)"
+            title={t("Apply layout conversion (Alt+G)")}
           >
-            Fix (Alt+G)
+            {t("Fix (Alt+G)")}
           </button>
           <button
             type="button"
@@ -679,7 +685,7 @@ export function CodexComposer({
               dismissedLayoutTextRef.current = promptRef.current?.value ?? "";
               setLayoutSuggestion(null);
             }}
-            aria-label="Dismiss layout suggestion"
+            aria-label={t("Dismiss layout suggestion")}
           >
             <X aria-hidden="true" style={{ width: 14, height: 14 }} />
           </button>
@@ -704,7 +710,7 @@ export function CodexComposer({
       <textarea
         ref={promptRef}
         name="agent-message"
-        aria-label={"Message " + paneTitle}
+        aria-label={t("Message {pane}", { pane: paneTitle })}
         defaultValue={initialPromptRef.current}
         onCompositionStart={() => {
           isComposingRef.current = true;
@@ -757,7 +763,7 @@ export function CodexComposer({
         onKeyUp={checkVariableToken}
         onSelect={checkVariableToken}
         onKeyDown={handlePromptKeyDown}
-        placeholder={variant === "dot" ? "Send a message" : "Ask anything, or give me a goal…"}
+        placeholder={variant === "dot" ? t("Send a message") : t("Ask anything, or give me a goal…")}
         rows={1}
         autoComplete="off"
         autoCorrect="off"
@@ -769,13 +775,13 @@ export function CodexComposer({
         disabled={pending || isDisabled}
         title={disabledTitle}
       />
-      <div className="codex-composer-toolbar" aria-label={"Agent composer controls " + paneTitle}>
-        {onAddFiles ? <button type="button" className="room-agent-add-trigger" aria-label="Add files or set a goal" aria-expanded={addMenuOpen} disabled={isDisabled || pending} onClick={() => { setAddMenuOpen(value => !value); }}><Plus aria-hidden="true" /></button> : null}
-        {addMenuOpen && onAddFiles ? <div className="room-agent-add-menu" role="group" aria-label="Add to conversation">
-          <button type="button" onClick={() => { setAddMenuOpen(false); onAddFiles(); }}><Paperclip aria-hidden="true" /><span><strong>Files</strong><small>Attach a document or image</small></span></button>
-          {onSetGoal ? <button type="button" onClick={() => { setAddMenuOpen(false); onSetGoal(); }}><Sparkles aria-hidden="true" /><span><strong>Set a goal</strong><small>Keep the objective in this chat</small></span></button> : null}
-          {onSetAcceptance ? <button type="button" onClick={() => { setAddMenuOpen(false); onSetAcceptance(); }}><Sparkles aria-hidden="true" /><span><strong>{hasAcceptance ? "Edit result check" : "Result check"}</strong><small>Check the next answer against expected text</small></span></button> : null}
-          {onVisualContext ? <><button type="button" onClick={() => { setAddMenuOpen(false); onVisualContext("screen"); }}><Monitor aria-hidden="true" /><span><strong>Screen</strong><small>Attach a screenshot you select</small></span></button><button type="button" onClick={() => { setAddMenuOpen(false); onVisualContext("camera"); }}><Camera aria-hidden="true" /><span><strong>Camera</strong><small>Attach a photo you select</small></span></button></> : null}
+      <div className="codex-composer-toolbar" aria-label={t("Agent composer controls {pane}", { pane: paneTitle })}>
+        {onAddFiles ? <button type="button" className="room-agent-add-trigger" aria-label={t("Add files or set a goal")} aria-expanded={addMenuOpen} disabled={isDisabled || pending} onClick={() => { setAddMenuOpen(value => !value); }}><Plus aria-hidden="true" /></button> : null}
+        {addMenuOpen && onAddFiles ? <div className="room-agent-add-menu" role="group" aria-label={t("Add to conversation")}>
+          <button type="button" onClick={() => { setAddMenuOpen(false); onAddFiles(); }}><Paperclip aria-hidden="true" /><span><strong>{t("Files")}</strong><small>{t("Attach a document or image")}</small></span></button>
+          {onSetGoal ? <button type="button" onClick={() => { setAddMenuOpen(false); onSetGoal(); }}><Sparkles aria-hidden="true" /><span><strong>{t("Set a goal")}</strong><small>{t("Keep the objective in this chat")}</small></span></button> : null}
+          {onSetAcceptance ? <button type="button" onClick={() => { setAddMenuOpen(false); onSetAcceptance(); }}><Sparkles aria-hidden="true" /><span><strong>{hasAcceptance ? t("Edit result check") : t("Result check")}</strong><small>{t("Check the next answer against expected text")}</small></span></button> : null}
+          {onVisualContext ? <><button type="button" onClick={() => { setAddMenuOpen(false); onVisualContext("screen"); }}><Monitor aria-hidden="true" /><span><strong>{t("Screen")}</strong><small>{t("Attach a screenshot you select")}</small></span></button><button type="button" onClick={() => { setAddMenuOpen(false); onVisualContext("camera"); }}><Camera aria-hidden="true" /><span><strong>{t("Camera")}</strong><small>{t("Attach a photo you select")}</small></span></button></> : null}
         </div> : null}
         {isComposerLayoutIconVisible(autocorrectSettings) ? (
           <button
@@ -798,23 +804,23 @@ export function CodexComposer({
                 setTypingMode(nextMode);
               }
             }}
-            aria-label={"Fix keyboard layout (Alt+G) " + paneTitle}
+            aria-label={t("Fix keyboard layout (Alt+G) {pane}", { pane: paneTitle })}
             title={
               layoutSuggestion
-                ? `Fix layout: "${layoutSuggestion.convertedText}" (Alt+G)`
+                ? t("Fix layout: \"{text}\" (Alt+G)", { text: layoutSuggestion.convertedText })
                 : typingLayoutMode === "el"
-                  ? "Keyboard layout: Greek (EL) active · Press Alt+G to switch to English"
+                  ? t("Keyboard layout: Greek (EL) active · Press Alt+G to switch to English")
                   : typingLayoutMode === "en"
-                    ? "Keyboard layout: English (EN) active · Press Alt+G to switch to Greek"
-                    : "Fix keyboard layout (Alt+G) · Convert EN ⇄ EL"
+                    ? t("Keyboard layout: English (EN) active · Press Alt+G to switch to Greek")
+                    : t("Fix keyboard layout (Alt+G) · Convert EN ⇄ EL")
             }
             disabled={isDisabled || pending}
           >
             <Keyboard aria-hidden="true" />
             {typingLayoutMode === "el" ? (
-              <span className="codex-layout-badge" aria-label="Greek layout active">EL</span>
+              <span className="codex-layout-badge" aria-label={t("Greek layout active")}>EL</span>
             ) : typingLayoutMode === "en" ? (
-              <span className="codex-layout-badge is-en" aria-label="English layout active">EN</span>
+              <span className="codex-layout-badge is-en" aria-label={t("English layout active")}>EN</span>
             ) : null}
           </button>
         ) : null}
@@ -847,18 +853,18 @@ export function CodexComposer({
         <VoiceInputButton label={paneTitle} active={voiceActive} disabled={voiceDisabled || isDisabled} onClick={onVoice} onPrewarm={onVoicePrewarm} />
         {variant === "dot" ? null : modelSettings ? (
           <span title={disabledTitle}>
-            <Suspense fallback={modelPickerLoadingFallback}>
+            <Suspense fallback={<ModelPickerLoadingFallback />}>
               <LazyCodexModelPicker compact settings={modelSettings} providers={modelProviders} disabled={isDisabled || pending || isRunning || !canSelectModel} allowSelectionWithoutCurrent onRefreshCatalog={onRefreshModelCatalog} onSwitch={switchModel} />
             </Suspense>
           </span>
-        ) : <button type="button" className="codex-model-unavailable" aria-label={`Codex model unavailable ${paneTitle}`} title={disabledTitle ?? "Codex model catalog unavailable"} disabled><Bot aria-hidden="true" /></button>}
+        ) : <button type="button" className="codex-model-unavailable" aria-label={t("Codex model unavailable {pane}", { pane: paneTitle })} title={disabledTitle ?? t("Codex model catalog unavailable")} disabled><Bot aria-hidden="true" /></button>}
         <button
           type={isRunning ? "button" : "submit"}
           className="codex-send"
           onClick={isRunning ? onStop : undefined}
           disabled={isDisabled || (isRunning ? !canInterrupt || pending : !canSubmit || pending)}
           title={disabledTitle}
-          aria-label={(isRunning ? "Stop" : "Send") + " " + paneTitle}
+          aria-label={t(isRunning ? "Stop {pane}" : "Send {pane}", { pane: paneTitle })}
         >{isRunning ? <Square aria-hidden="true" fill="currentColor" /> : <ArrowUp aria-hidden="true" />}</button>
       </div>
     </form>

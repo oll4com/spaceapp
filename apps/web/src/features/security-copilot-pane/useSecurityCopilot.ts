@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRuntimeRegistry, Pane, SecurityCopilotPaneMetadata } from "@space/contracts";
 import { api } from "../../api.js";
 import { usePanePolling } from "../../use-pane-polling.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { subscribeSecurityCopilotLiveEvents } from "./live-events.js";
 import type { SecurityCopilotState } from "./types.js";
 
@@ -21,6 +22,10 @@ export function useSecurityCopilotData(pane: Pane, enabled: boolean): SecurityCo
   const [runtimes, setRuntimes] = useState<AgentRuntimeRegistry | null>(() => api.cliRuntimesSnapshot());
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef<Promise<void> | null>(null);
+  // The refresh keeps one identity; it reads the language when an error happens.
+  const language = useUiLanguage();
+  const languageRef = useRef(language);
+  languageRef.current = language;
 
   const refresh = useCallback(async () => {
     if (inFlight.current) return inFlight.current;
@@ -29,7 +34,7 @@ export function useSecurityCopilotData(pane: Pane, enabled: boolean): SecurityCo
         setState(await api.securityCopilotState(pane.id));
         setError(null);
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "The Security Copilot could not be loaded.");
+        setError(caught instanceof Error ? caught.message : uiText(languageRef.current, "The Security Copilot could not be loaded."));
       } finally {
         inFlight.current = null;
       }

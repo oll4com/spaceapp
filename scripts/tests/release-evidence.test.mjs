@@ -49,3 +49,16 @@ test('the 1.1.9 Zen exception (operator decision 54b65a84) covers only a named f
  const otherScenario=withoutWindows('1.1.9');otherScenario.knownExceptions=named(['windows']);otherScenario.checks=otherScenario.checks.filter(x=>!(x.platform==='windows'&&x.scenario==='upgrade'));
  assert.deepEqual(validateEvidence(otherScenario,v119),['windows/upgrade: missing real successful proof']);
 });
+test('the 1.2.0 Zen exception (decision nous-20261106-report-25457) covers only named first-agent proofs of 1.2.0',()=>{
+ const v120={digest:'source',version:'1.2.0',runtime:'1.2.0',now};
+ const without=(version)=>{const e=complete();e.launcherVersion=version;e.runtimeVersion=version;e.checks=e.checks.filter(x=>x.scenario!=='first-agent');return e;};
+ const named=(platforms,decision='nous-20261106-report-25457')=>platforms.map(platform=>({platform,scenario:'first-agent',decision,reason:'OpenCode Zen free limit (provider.quota) on the lab address'}));
+ const passes=without('1.2.0');passes.knownExceptions=named(['linux','windows','macos']);
+ assert.deepEqual(validateEvidence(passes,v120),[]);
+ const oldDecision=without('1.2.0');oldDecision.knownExceptions=named(['linux','windows','macos'],'54b65a84');
+ assert.equal(validateEvidence(oldDecision,v120).length,3);
+ const onePlatform=without('1.2.0');onePlatform.knownExceptions=named(['linux']);
+ assert.deepEqual(validateEvidence(onePlatform,v120),['windows/first-agent: missing real successful proof','macos/first-agent: missing real successful proof']);
+ // A lab stamp is not 1.2.0: the exception names the release version only.
+ for(const version of ['1.2.0-nous.c14','1.2.1']){const e=without(version);e.knownExceptions=named(['linux','windows','macos']);assert.equal(validateEvidence(e,{...v120,version,runtime:version}).length,3,version);}
+});

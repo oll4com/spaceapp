@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import type { JobApplication, JobApplyEvent, JobApplyPendingItem, JobApplyStats } from "@space/contracts";
 import { api } from "../../api.js";
 import { AlertTriangle, Archive, Camera, Check, CheckCircle2, CircleHelp, FileText, Flame, Pause, Play, Send, Square, Upload, UserCheck, X } from "../ui-theme/app-icons.js";
-import { shortDay } from "./CommandBar.js";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
+import { Counted, shortDay } from "./CommandBar.js";
 import { relativeTime } from "./QueueTab.js";
 
 const EVENT_ICON: Record<JobApplyEvent["type"], typeof Check> = {
@@ -20,7 +22,9 @@ function eventTone(event: JobApplyEvent): string {
   return EVENT_TONE[event.type] ?? "muted";
 }
 
-function PendingCard({ item, application, onDone }: { item: JobApplyPendingItem; application: JobApplication | null; onDone(): void }) {
+function PendingCard({ item, application, onDone, nousReviewing = false }: { item: JobApplyPendingItem; application: JobApplication | null; onDone(): void; nousReviewing?: boolean }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,7 +41,7 @@ function PendingCard({ item, application, onDone }: { item: JobApplyPendingItem;
       await action();
       onDone();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Request failed.");
+      setError(caught instanceof Error ? caught.message : t("Request failed."));
       setBusy(false);
     }
   }
@@ -46,8 +50,8 @@ function PendingCard({ item, application, onDone }: { item: JobApplyPendingItem;
   if (item.kind === "QUESTION") {
     const question = typeof item.payload.question === "string" ? item.payload.question : item.message;
     return (
-      <section className="jc-pending" aria-label="The copilot asks">
-        <header><CircleHelp aria-hidden="true" /> <strong>The copilot asks</strong>{application ? <span className="jc-muted">{application.company} · {application.role}</span> : null}</header>
+      <section className="jc-pending" aria-label={t("The copilot asks")} data-copilot-pending-id={item.id}>
+        <header><CircleHelp aria-hidden="true" /> <strong>{t("The copilot asks")}</strong>{application ? <span className="jc-muted">{application.company} · {application.role}</span> : null}</header>
         <p>{question}</p>
         {options.length > 0 ? (
           <div className="jc-pending-options">
@@ -55,32 +59,33 @@ function PendingCard({ item, application, onDone }: { item: JobApplyPendingItem;
           </div>
         ) : null}
         <form className="jc-pending-answer" onSubmit={(event) => { event.preventDefault(); if (answer.trim()) void submit(() => api.answerJobApplyQuestion(applicationId, { questionId: item.id, answer: answer.trim() })); }}>
-          <input value={answer} placeholder="Type the answer; the copilot remembers it" aria-label="Answer" onChange={(event) => setAnswer(event.target.value)} disabled={busy} />
-          <button type="submit" className="jc-button primary" disabled={busy || !answer.trim()}>Answer</button>
+          <input value={answer} placeholder={t("Type the answer; the copilot remembers it")} aria-label={t("Answer")} onChange={(event) => setAnswer(event.target.value)} disabled={busy} />
+          <button type="submit" className="jc-button primary" disabled={busy || !answer.trim()}>{t("Answer")}</button>
         </form>
         {error ? <p className="jc-message" role="alert">{error}</p> : null}
       </section>
     );
   }
   return (
-    <section className="jc-pending" aria-label="Review before submit">
-      <header><CircleHelp aria-hidden="true" /> <strong>Review before submit</strong>{application ? <span className="jc-muted">{application.company} · {application.role}</span> : null}</header>
+    <section className="jc-pending" aria-label={t(nousReviewing ? "Nous reviewing" : "Review before submit")} data-copilot-pending-id={item.id}>
+      <header><CircleHelp aria-hidden="true" /> <strong>{t(nousReviewing ? "Nous reviewing" : "Review before submit")}</strong>{application ? <span className="jc-muted">{application.company} · {application.role}</span> : null}</header>
       {typeof item.payload.note === "string" && item.payload.note ? <p className="jc-muted">{item.payload.note}</p> : null}
       <div className="jc-review-fields">
         {fields.map((field) => (
           <label key={field.label} className="jc-field">
             <span>{field.label}</span>
-            <input value={edits[field.label] ?? field.value ?? ""} aria-label={field.label} disabled={busy} onChange={(event) => setEdits({ ...edits, [field.label]: event.target.value })} />
+            <input value={edits[field.label] ?? field.value ?? ""} aria-label={field.label} disabled={busy} readOnly={nousReviewing} onChange={(event) => setEdits({ ...edits, [field.label]: event.target.value })} />
           </label>
         ))}
       </div>
-      <div className="jc-actions">
+      {/* A review Nous decides under "May send" is read only here (operator 2/11 15:08 BKK). */}
+      {nousReviewing ? null : <div className="jc-actions">
         <button type="button" className="jc-button primary" disabled={busy} onClick={() => {
           const changed = Object.entries(edits).filter(([label, value]) => value !== (fields.find((field) => field.label === label)?.value ?? "")).map(([label, value]) => ({ label, value }));
           void submit(() => api.decideJobApplyReview(applicationId, changed.length > 0 ? { reviewId: item.id, decision: "edit", edits: changed } : { reviewId: item.id, decision: "approve" }));
-        }}><Check aria-hidden="true" /> {Object.keys(edits).length > 0 ? "Apply edits and submit" : "Approve and submit"}</button>
-        <button type="button" className="jc-button ghost danger" disabled={busy} onClick={() => void submit(() => api.decideJobApplyReview(applicationId, { reviewId: item.id, decision: "reject" }))}><X aria-hidden="true" /> Reject</button>
-      </div>
+        }}><Check aria-hidden="true" /> {Object.keys(edits).length > 0 ? t("Apply edits and submit") : t("Approve and submit")}</button>
+        <button type="button" className="jc-button ghost danger" disabled={busy} onClick={() => void submit(() => api.decideJobApplyReview(applicationId, { reviewId: item.id, decision: "reject" }))}><X aria-hidden="true" /> {t("Reject")}</button>
+      </div>}
       {error ? <p className="jc-message" role="alert">{error}</p> : null}
     </section>
   );
@@ -88,40 +93,63 @@ function PendingCard({ item, application, onDone }: { item: JobApplyPendingItem;
 
 /** The whole picture: totals since the first day (or the last reset), per day, and the earlier history apart. */
 function OverviewCard({ stats }: { stats: JobApplyStats }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const activeDays = stats.days.filter((day) => day.applied > 0).length;
   const { imported, archived } = stats.earlier;
   return (
-    <section className="jc-card jc-overview" aria-label="Overview">
+    <section className="jc-card jc-overview" aria-label={t("Overview")}>
       <header className="jc-overview-head">
-        <strong>Overview</strong>
-        <span className="jc-muted">{stats.firstDay ? `Since ${shortDay(stats.firstDay)} · ${activeDays} active day${activeDays === 1 ? "" : "s"}` : "No applications yet"}</span>
+        <strong>{t("Overview")}</strong>
+        <span className="jc-muted">{stats.firstDay ? (activeDays === 1 ? t("Since {day} · 1 active day", { day: shortDay(stats.firstDay, language) }) : t("Since {day} · {count} active days", { day: shortDay(stats.firstDay, language), count: activeDays })) : t("No applications yet")}</span>
       </header>
       <div className="jc-overview-totals">
-        <span className="jc-counter"><strong>{stats.totals.applied}</strong> applied</span>
-        <span className="jc-counter ok"><strong>{stats.totals.verified}</strong> verified</span>
-        {stats.totals.failed ? <span className="jc-counter bad"><strong>{stats.totals.failed}</strong> failed</span> : null}
-        <span className="jc-counter">Today <strong>{stats.today.applied}</strong></span>
+        <span className="jc-counter"><Counted t={t} text="{count} applied" count={stats.totals.applied} /></span>
+        <span className="jc-counter ok"><Counted t={t} text="{count} verified" count={stats.totals.verified} /></span>
+        {stats.totals.failed ? <span className="jc-counter bad"><Counted t={t} text="{count} failed" count={stats.totals.failed} /></span> : null}
+        <span className="jc-counter"><Counted t={t} text="Today {count}" count={stats.today.applied} /></span>
       </div>
       {stats.days.length > 0 ? (
         <details className="jc-overview-days" open>
-          <summary>Per day</summary>
+          <summary>{t("Per day")}</summary>
           <table>
-            <thead><tr><th scope="col">Day</th><th scope="col">Applied</th><th scope="col">Verified</th><th scope="col">Failed</th></tr></thead>
+            <thead><tr><th scope="col">{t("Day")}</th><th scope="col">{t("Applied")}</th><th scope="col">{t("Verified")}</th><th scope="col">{t("Failed")}</th></tr></thead>
             <tbody>
               {stats.days.map((day) => (
-                <tr key={day.day}><th scope="row">{shortDay(day.day)}</th><td>{day.applied}</td><td>{day.verified}</td><td>{day.failed}</td></tr>
+                <tr key={day.day}><th scope="row">{shortDay(day.day, language)}</th><td>{day.applied}</td><td>{day.verified}</td><td>{day.failed}</td></tr>
               ))}
             </tbody>
           </table>
         </details>
       ) : null}
-      {archived.sent || archived.failed ? <p className="jc-muted">Archived (before the last reset): {archived.sent} sent · {archived.failed} failed</p> : null}
-      {imported.sent || imported.failed ? <p className="jc-muted">Earlier campaign (imported): {imported.sent} sent · {imported.failed} failed</p> : null}
+      {archived.sent || archived.failed ? <p className="jc-muted">{t("Archived (before the last reset): {sent} sent · {failed} failed", { sent: archived.sent, failed: archived.failed })}</p> : null}
+      {imported.sent || imported.failed ? <p className="jc-muted">{t("Earlier campaign (imported): {sent} sent · {failed} failed", { sent: imported.sent, failed: imported.failed })}</p> : null}
     </section>
   );
 }
 
-export function ActivityTab({ events, pending, applications, stats = null, selectedId, onSelect, onChanged }: {
+/** A screenshot at full size over the app (Esc or a click outside closes it); a link opened a bare desktop window. */
+function ScreenshotViewer({ event, onClose }: { event: JobApplyEvent; onClose(): void }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
+  useEffect(() => {
+    const onKey = (key: KeyboardEvent) => { if (key.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return createPortal(
+    <div className="attachment-modal jc-shot-modal" onClick={onClose}>
+      <section className="attachment-modal-body" role="dialog" aria-modal="true" aria-label={t("Screenshot")} onClick={(click) => click.stopPropagation()}>
+        <button type="button" className="terminal-upload-modal-close" aria-label={t("Close")} onClick={onClose} autoFocus><X aria-hidden="true" /></button>
+        <img src={api.artifactFileUrl(event.artifactId!)} alt={t("Screenshot: {message}", { message: event.message })} />
+      </section>
+    </div>,
+    document.body
+  );
+}
+
+export function ActivityTab({ events, pending, applications, stats = null, selectedId, onSelect, onChanged, nousReviewing = false }: {
+  nousReviewing?: boolean;
   events: JobApplyEvent[];
   pending: JobApplyPendingItem[];
   applications: JobApplication[];
@@ -130,25 +158,28 @@ export function ActivityTab({ events, pending, applications, stats = null, selec
   onSelect(id: string | null): void;
   onChanged(): void;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const byId = new Map(applications.map((application) => [application.id, application]));
   const visible = selectedId ? events.filter((event) => event.applicationId === selectedId) : events;
+  const [shot, setShot] = useState<JobApplyEvent | null>(null);
   return (
     <div className="jc-activity" role="tabpanel" id="jc-panel-activity" aria-labelledby="jc-tab-activity">
       {stats && !selectedId ? <OverviewCard stats={stats} /> : null}
-      {pending.map((item) => <PendingCard key={item.id} item={item} application={item.applicationId ? byId.get(item.applicationId) ?? null : null} onDone={onChanged} />)}
+      {pending.map((item) => <PendingCard key={item.id} item={item} application={item.applicationId ? byId.get(item.applicationId) ?? null : null} onDone={onChanged} nousReviewing={nousReviewing && item.kind === "REVIEW"} />)}
       {selectedId ? (
         <div className="jc-activity-filter">
-          <span>Showing {byId.get(selectedId)?.company ?? "one application"}</span>
-          <button type="button" className="jc-chip" onClick={() => onSelect(null)}>Show all</button>
+          <span>{byId.get(selectedId)?.company ? t("Showing {company}", { company: byId.get(selectedId)!.company }) : t("Showing one application")}</span>
+          <button type="button" className="jc-chip" onClick={() => onSelect(null)}>{t("Show all")}</button>
         </div>
       ) : null}
       {visible.length === 0 ? (
         <div className="jc-empty">
-          <strong>No activity yet</strong>
-          <span>Queue postings and press Start. Every step, field, upload, screenshot and question lands here as the copilot works.</span>
+          <strong>{t("No activity yet")}</strong>
+          <span>{t("Queue postings and press Start. Every step, field, upload, screenshot and question lands here as the copilot works.")}</span>
         </div>
       ) : (
-        <ol className="jc-timeline" aria-label="Activity">
+        <ol className="jc-timeline" aria-label={t("Activity")}>
           {visible.map((event) => {
             const Icon = EVENT_ICON[event.type];
             const application = event.applicationId ? byId.get(event.applicationId) : null;
@@ -159,12 +190,13 @@ export function ActivityTab({ events, pending, applications, stats = null, selec
                   <p>{event.message}</p>
                   <div className="jc-event-meta">
                     {application ? <button type="button" className="jc-event-link" onClick={() => onSelect(application.id)}>{application.company}</button> : null}
-                    <span className="jc-muted" title={event.createdAt}>{relativeTime(event.createdAt)}</span>
+                    <span className="jc-muted" title={event.createdAt}>{relativeTime(event.createdAt, Date.now(), language)}</span>
                   </div>
+                  {/* Browser screenshots are room evidence, not Agent Files: /preview and /download serve only Agent Files. */}
                   {event.artifactId ? (
-                    <a className="jc-event-shot" href={api.agentFileDownloadUrl(event.artifactId)} target="_blank" rel="noopener noreferrer">
-                      <img src={api.agentFilePreviewUrl(event.artifactId)} alt={`Screenshot: ${event.message}`} loading="lazy" />
-                    </a>
+                    <button type="button" className="jc-event-shot" aria-label={t("Open screenshot")} onClick={() => setShot(event)}>
+                      <img src={api.artifactFileUrl(event.artifactId)} alt={t("Screenshot: {message}", { message: event.message })} loading="lazy" />
+                    </button>
                   ) : null}
                 </div>
               </li>
@@ -172,6 +204,7 @@ export function ActivityTab({ events, pending, applications, stats = null, selec
           })}
         </ol>
       )}
+      {shot ? <ScreenshotViewer event={shot} onClose={() => setShot(null)} /> : null}
     </div>
   );
 }

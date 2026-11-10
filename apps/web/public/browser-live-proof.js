@@ -8,8 +8,8 @@ const button = document.createElement('button');
 button.textContent = 'Test shared input';
 button.style.cssText = 'position:absolute;left:40px;top:80px;width:240px;height:80px;font:20px system-ui;background:#4ac6b2;border:0;border-radius:12px';
 let audio;
-button.onclick = () => {
-  button.textContent = 'Input received'; console.info('SPACE_BROWSER_PROOF_INPUT');
+// ?tone (PROVE_BROWSER_AUDIO_FOCUS) plays on load for the whole proof; a click plays 45 seconds.
+const playTone = (ms) => {
   if (audio) return;
   audio = new AudioContext();
   const tone = audio.createOscillator();
@@ -17,8 +17,10 @@ button.onclick = () => {
   gain.gain.value = 0.015; tone.frequency.value = 220;
   tone.connect(gain).connect(audio.destination); tone.start();
   void audio.resume().then(() => console.info('SPACE_BROWSER_PROOF_AUDIO_RUNNING'));
-  setTimeout(() => { tone.stop(); void audio.close(); }, 45000);
+  setTimeout(() => { tone.stop(); void audio.close(); }, ms);
 };
+button.onclick = () => { button.textContent = 'Input received'; console.info('SPACE_BROWSER_PROOF_INPUT'); playTone(45000); };
+if (new URLSearchParams(location.search).has('tone')) playTone(170000);
 document.body.append(button);
 const email = document.createElement('input');
 email.type = 'email';
@@ -98,3 +100,25 @@ scrollBox.addEventListener('scroll', () => {
   if (!scrolledDown && scrollBox.scrollTop >= 958) { scrolledDown = true; console.info('SPACE_BROWSER_PROOF_SCROLL_DOWN'); }
   if (scrolledDown && scrollBox.scrollTop <= 2) { scrolledDown = false; console.info('SPACE_BROWSER_PROOF_SCROLL_RETURN'); }
 });
+
+// ?needs-you-target (PROVE_NEEDS_YOU_TARGET; operator 3/11 12:40 BKK, Go now must land on the spot): a long form whose reCAPTCHA box waits far
+// below its empty required field, its Submit far below that. The title names the parts wholly in view, so the proof reads through the API
+// where Go to pane scrolled the tab.
+if (new URLSearchParams(location.search).has('needs-you-target')) {
+  const form = document.createElement('form');
+  form.style.cssText = 'position:absolute;left:40px;top:460px;display:flex;flex-direction:column;align-items:flex-start;gap:2400px';
+  form.onsubmit = (event) => event.preventDefault();
+  const field = Object.assign(document.createElement('input'), { required: true, placeholder: 'Required proof field' });
+  const captcha = Object.assign(document.createElement('div'), { className: 'g-recaptcha', textContent: 'Proof captcha' });
+  captcha.style.cssText = 'width:300px;height:78px;border:2px solid #4ac6b2';
+  const submit = Object.assign(document.createElement('button'), { type: 'submit', textContent: 'Submit proof form' });
+  const parts = new Map([[field, 'required'], [captcha, 'captcha'], [submit, 'submit']]);
+  form.append(...parts.keys());
+  document.body.append(form);
+  const inView = new Set();
+  const observer = new IntersectionObserver((entries) => {
+    for (const entry of entries) entry.intersectionRatio > 0.99 ? inView.add(parts.get(entry.target)) : inView.delete(parts.get(entry.target));
+    document.title = `Needs you target · in view: ${[...inView].sort().join(' ') || 'none'}`;
+  }, { threshold: 1 });
+  for (const part of parts.keys()) observer.observe(part);
+}

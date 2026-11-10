@@ -181,6 +181,7 @@ export interface DemoProjectsRepository {
   findOperationByKey(ownerUserId: string, projectId: string, operationKey: string): Promise<DemoOperationRecord | null>;
   upsertOperation(input: Omit<DemoOperationRecord, "createdAt" | "updatedAt">): Promise<DemoOperationRecord>;
   claimDueOperations(now: string, limit: number): Promise<DemoOperationRecord[]>;
+  listRunningOperations(): Promise<DemoOperationRecord[]>;
 
   createTestRun(input: Omit<DemoTestRunRecord, "createdAt">): Promise<DemoTestRunRecord>;
   listTestRuns(ownerUserId: string, projectId: string, limit: number): Promise<DemoTestRunRecord[]>;
@@ -379,6 +380,10 @@ export class InMemoryDemoProjectsRepository implements DemoProjectsRepository {
       claimed.push(clone(updated));
     }
     return claimed;
+  }
+
+  async listRunningOperations(): Promise<DemoOperationRecord[]> {
+    return [...this.operations.values()].filter((record) => record.status === "RUNNING").map(clone);
   }
 
   async createTestRun(input: Omit<DemoTestRunRecord, "createdAt">): Promise<DemoTestRunRecord> {
@@ -836,6 +841,13 @@ export class PostgresDemoProjectsRepository implements DemoProjectsRepository {
         RETURNING ${operationSelect}
       `,
       [now, limit]
+    );
+    return result.rows.map(mapOperation);
+  }
+
+  async listRunningOperations(): Promise<DemoOperationRecord[]> {
+    const result = await this.pool.query<OperationRow>(
+      `SELECT ${operationSelect} FROM demo_operations WHERE status = 'RUNNING' ORDER BY created_at ASC`
     );
     return result.rows.map(mapOperation);
   }

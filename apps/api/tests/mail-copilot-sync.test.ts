@@ -8,7 +8,7 @@ import type { ConnectorCapability } from "@space/contracts";
 import { createApp } from "../src/app.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { getApiConfig } from "../src/config.js";
-import type { MailCopilotGoogleAccess } from "../src/mail-copilot/service.js";
+import { createMailCopilotService, type MailCopilotGoogleAccess } from "../src/mail-copilot/service.js";
 import { createMailCopilotSync } from "../src/mail-copilot/sync.js";
 import { classifyThreadChange } from "../src/mail-copilot/history.js";
 
@@ -29,13 +29,18 @@ function fakeGmail(token: string) {
   let expired = false;
   const full = (message: FakeMessage) => ({ id: message.id, threadId: message.threadId, labelIds: message.labelIds, internalDate: String(Date.now()), snippet: message.plain.slice(0, 80),
     payload: { mimeType: "text/plain", headers: [{ name: "From", value: message.from }, { name: "To", value: "Me <me@gmail.com>" }, { name: "Subject", value: message.subject }, { name: "Message-ID", value: `<${message.id}@x>` }], body: { data: b64(message.plain) } } });
+  /** Drafts Gmail still holds; any other id answers 404 (sent or discarded). */
+  const drafts = new Set<string>();
   const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     if ((init?.headers as Record<string, string>)?.authorization !== `Bearer ${token}`) return Response.json({ error: { message: "bad token" } }, { status: 401 });
     const path = url.pathname.replace("/gmail/v1/users/me", "");
+    const draft = /^\/drafts\/([^/]+)$/.exec(path)?.[1];
+    if (draft) return drafts.has(draft) ? Response.json({ id: draft, message: { id: `${draft}-msg` } }) : Response.json({ error: { message: "Requested entity was not found." } }, { status: 404 });
     if (path === "/profile") return Response.json({ emailAddress: "me@gmail.com", historyId: String(historyId) });
     if (path === "/labels") return Response.json({ labels: [{ id: "INBOX", name: "INBOX", type: "system" }, { id: "Label_1", name: "Clients", type: "user" }, { id: "Label_9", name: "Job Applications/Confirmations", type: "user" }] });
     if (path === "/labels/INBOX") return Response.json({ id: "INBOX", threadsUnread: 0 });
+    if (path === "/settings/sendAs") return Response.json({ sendAs: [{ sendAsEmail: "me@gmail.com", isPrimary: true, isDefault: true }, { sendAsEmail: "Office@MyShop.example", verificationStatus: "accepted" }] });
     if (path === "/history") {
       if (expired) { expired = false; return Response.json({ error: { message: "startHistoryId is too old" } }, { status: 404 }); }
       const start = Number(url.searchParams.get("startHistoryId"));
@@ -45,6 +50,8 @@ function fakeGmail(token: string) {
       return Response.json({ historyId: String(historyId), history: slice.map((entry) => ({ id: String(entry.id), ...entry.entry })),
         ...(rows.length > page + 1 ? { nextPageToken: String(page + 1) } : {}) });
     }
+    // An expired history's gap (DATA-001): the inbox's threads, read by date, with every message the fake holds.
+    if (path === "/threads" && /\bafter:\d+/.test(url.searchParams.get("q") ?? "")) return Response.json({ threads: [...new Set([...messages.values()].filter((message) => message.labelIds.includes("INBOX")).map((message) => message.threadId))].map((id) => ({ id })) });
     if (path === "/threads") return Response.json({ threads: url.searchParams.get("q")?.includes("newer_than:30d") ? [...new Set([...messages.values()].map((message) => message.threadId))].map((id) => ({ id })) : [] });
     if (/^\/threads\/[^/]+\/(modify|trash)$/.test(path)) return Response.json({ id: path.split("/")[2] });
     const thread = /^\/threads\/([^/]+)$/.exec(path);
@@ -55,6 +62,7 @@ function fakeGmail(token: string) {
   }) as unknown as typeof fetch;
   return {
     fetchImpl,
+    drafts,
     receive(message: FakeMessage) {
       messages.set(message.id, message);
       historyId += 1;
@@ -120,7 +128,8 @@ describe("mail copilot sync poller", () => {
       async dailyRun(owner: string, pane: { id: string }, zone: string) { calls.push(`daily ${owner}:${pane.id}:${zone}`); return false; }
     };
     const store = {
-      listRooms: async () => [{ id: "room:1", ownerUserId: "u1" }, { id: "room:2", ownerUserId: null }, { id: "room:3", ownerUserId: "u2" }],
+      // room:4 is an Agent Proof room: its Mail Copilot (a proof's own pane, plan clipboard:32etNsBgtbI-) never syncs, runs or starts on real mail.
+      listRooms: async () => [{ id: "room:1", ownerUserId: "u1" }, { id: "room:2", ownerUserId: null }, { id: "room:3", ownerUserId: "u2" }, { id: "room:4", ownerUserId: "u1", kind: "AGENT_PROOF" }],
       listPanes: async (roomId: string) => roomId === "room:1" ? [{ id: "pane:a", mode: "MAIL_COPILOT", isClosed: false }, { id: "pane:b", mode: "MAIL_COPILOT", isClosed: false }, { id: "pane:c", mode: "MAIL_COPILOT", isClosed: true }, { id: "pane:d", mode: "TERMINAL", isClosed: false }]
         : roomId === "room:3" ? [{ id: "pane:e", mode: "MAIL_COPILOT", isClosed: false }] : [{ id: "pane:f", mode: "MAIL_COPILOT", isClosed: false }],
       getUserSettings: async (owner: string) => owner === "u1" ? { dateTime: { timeZone: "Asia/Bangkok" } } : null
@@ -149,8 +158,10 @@ describe("mail copilot learns from Gmail history", () => {
       const [first, second] = await Promise.all([fix("t2", "Fix the backup"), fix("t4", "Run the upgrade")]);
       expect([first.statusCode, second.statusCode]).toEqual([200, 200]);
       expect(kickoffs).toHaveLength(1);
-      const events = (await app.inject({ method: "GET", url: "/api/mail-copilot/events?limit=50", headers })).json().events as Array<{ type: string; threadId: string | null; status: string | null }>;
+      const events = (await app.inject({ method: "GET", url: "/api/mail-copilot/events?limit=50", headers })).json().events as Array<{ type: string; threadId: string | null; status: string | null; payload: Record<string, unknown> }>;
       expect(events.filter((event) => event.type === "RUN_STARTED")).toHaveLength(1);
+      // Score 6/11: a received mail keeps its To/Cc addresses, so a Bcc copy of our own send names whom it went to.
+      expect(events.find((event) => event.type === "MAIL_RECEIVED" && event.threadId === "t1")?.payload.to).toEqual(["me@gmail.com"]);
       expect(Object.fromEntries(events.filter((event) => event.type === "MAIL_RECEIVED").map((event) => [event.threadId, event.status]))).toEqual({ t1: "PENDING", t2: "DONE", t3: "DONE", t4: "DONE" });
       // The hand-offs come first, then the rest of the inbox.
       const order: string[] = [];
@@ -257,10 +268,17 @@ describe("mail copilot learns from Gmail history", () => {
       await sync.tick();
       const rows = await repository.listActions(owner, { limit: 20 });
       expect(rows.map((row) => [row.threadId, row.action, row.source]).sort()).toEqual([
-        ["t1", "MOVE", "GMAIL"], ["t1", "REPLY", "GMAIL"], ["t2", "TRASH", "GMAIL"], ["t5", "ARCHIVE", "PANE"], ["t5", "STAR", "GMAIL"]
+        ["t1", "MOVE", "GMAIL"], ["t1", "REPLY", "GMAIL"], ["t2", "TRASH", "GMAIL"], ["t5", "ARCHIVE", "PANE"], ["t5", "STAR", "GMAIL"], ["t9", "LABEL", "GMAIL"]
       ]);
+      // Job Copilot's filing is in the thread's label history as Space's, never as the operator's habit (operator 3/11).
+      expect(rows.find((row) => row.threadId === "t9")).toMatchObject({ labelIds: ["Label_9"], actor: "SPACE" });
       expect(rows.find((row) => row.action === "MOVE")).toMatchObject({ labelIds: ["Label_1"], fromAddress: "anna@acme.com", fromDomain: "acme.com", subject: "Invoice 42", subjectKey: "invoice 0", actor: "OPERATOR", accountEmail: "me@gmail.com" });
       expect(rows.find((row) => row.action === "REPLY")).toMatchObject({ messageId: "m6", fromAddress: "anna@acme.com" });
+
+      // Job Copilot takes its label off again: the removal is recorded too.
+      gmail.change({ labelsRemoved: [{ ...message("m9", "t9", []), labelIds: ["Label_9"] }] });
+      await sync.tick();
+      expect((await repository.listActions(owner, { threadId: "t9", limit: 5 })).map((row) => [row.action, row.labelIds.join(","), row.actor]).sort()).toEqual([["LABEL", "Label_9", "SPACE"], ["UNLABEL", "Label_9", "SPACE"]]);
 
       // Trash emptied: the deleted message has no metadata left, the log still knows the sender.
       gmail.change({ messagesDeleted: [message("m2", "t2", [])] });
@@ -309,11 +327,16 @@ describe("mail copilot new-mail sync", () => {
       await app.inject({ method: "POST", url: "/api/cli/mail-copilot/report", headers: agent, payload: { eventId: next.json().item.id, outcome: "skipped", summary: "Nothing to do." } });
       expect((await app.inject({ method: "POST", url: "/api/cli/mail-copilot/next", headers: agent, payload: { waitMs: 0 } })).json()).toMatchObject({ done: true, reason: "QUEUE_EMPTY" });
 
-      // An expired history restarts from now with a note; mail that arrived meanwhile is not re-read (the backlog scan covers it).
+      // An expired history (a week behind: a restore from an older backup, a long outage) restarts from now with a note, and the mail
+      // that arrived in the gap is read from the inbox by date (DATA-001): it becomes its item once; mail already seen does not.
+      gmail.receive({ id: "m3b", threadId: "t3b", from: "Tax Office <office@gov.example>", subject: "Deadline today", labelIds: ["INBOX"], plain: "Reply today" });
       gmail.expireHistory();
-      expect(await sync.tick()).toEqual({ accounts: 1, created: 0 });
+      expect(await sync.tick()).toEqual({ accounts: 1, created: 1 });
       const events = await app.inject({ method: "GET", url: `/api/mail-copilot/events?paneId=${encodeURIComponent(pane.id)}&limit=3`, headers });
       expect(events.json().events[0]).toMatchObject({ type: "SYNC_RESET", accountEmail: "me@gmail.com" });
+      expect(events.json().events[0].message).toContain("1 message");
+      expect(events.json().events[1]).toMatchObject({ type: "MAIL_RECEIVED", messageId: "m3b", status: "PENDING" });
+      expect(await sync.tick()).toEqual({ accounts: 1, created: 0 });
       gmail.receive({ id: "m4", threadId: "t4", from: "Anna <anna@acme.com>", subject: "Again", labelIds: ["INBOX"], plain: "Hi" });
       expect(await sync.tick()).toEqual({ accounts: 1, created: 1 });
 
@@ -321,15 +344,208 @@ describe("mail copilot new-mail sync", () => {
       await app.inject({ method: "PUT", url: `${paneUrl}/settings`, headers, payload: { version: 1, settings: { notifications: { newMail: false, needsYou: true, telegram: false } } } });
       gmail.receive({ id: "m5", threadId: "t5", from: "Anna <anna@acme.com>", subject: "Quiet", labelIds: ["INBOX"], plain: "Hi" });
       expect(await sync.tick()).toEqual({ accounts: 1, created: 1 });
-      expect((await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().total).toBe(3);
+      expect((await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().total).toBe(4);
 
       // The toggle back on with this account muted: its new mail stays quiet too.
       await app.inject({ method: "PUT", url: `${paneUrl}/settings`, headers, payload: { version: 1, settings: { notifications: { newMail: true, needsYou: true, telegram: false, mutedAccounts: ["Me@gmail.com"] } } } });
       gmail.receive({ id: "m6", threadId: "t6", from: "Anna <anna@acme.com>", subject: "Muted", labelIds: ["INBOX"], plain: "Hi" });
       expect(await sync.tick()).toEqual({ accounts: 1, created: 1 });
-      expect((await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().total).toBe(3);
+      expect((await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().total).toBe(4);
     } finally {
       await app.close();
     }
+  });
+});
+
+describe("always-on Mail Copilot health and important mail (operator P0 1/11 03:15 BKK)", () => {
+  const owner = "user:owner";
+  function setup(kickoff: Partial<import("../src/mail-copilot/kickoff.js").MailCopilotKickoff> = {}) {
+    let clock = "2026-10-31T07:06:51.000Z";
+    const repository = new InMemoryMailCopilotRepository(() => clock);
+    const gmail = fakeGmail("token-me");
+    const lines: Array<{ key: string; line: string; urgent: boolean }> = [];
+    const service = createMailCopilotService({ google: () => google, gmailFetch: gmail.fetchImpl, repository, now: () => clock,
+      notice: (_owner, key, line, urgent) => { lines.push({ key, line, urgent: urgent === true }); },
+      kickoff: { ready: async () => true, send: async () => undefined, ...kickoff } });
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Cleo", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Mail Copilot 24", mode: "MAIL_COPILOT", terminalRuntimeId: "cli:claude" });
+    return { repository, gmail, lines, service, pane, tick: (at: string) => { clock = at; } };
+  }
+  const mail = (id: string, from: string, subject: string, plain: string) => ({ id, threadId: `t-${id}`, from, subject, labelIds: ["INBOX"], plain });
+
+  it("brings Nous one urgent line for mail from the accountant, a deadline or a government sender, never for an automated job rejection", async () => {
+    const { repository, gmail, lines, service, pane } = setup();
+    await repository.recordAction({ ownerUserId: owner, accountEmail: "me@gmail.com", threadId: "t-old", messageId: null, action: "REPLY", labelIds: [], fromAddress: "sotfilop@gmail.com",
+      fromDomain: "gmail.com", subject: "ΟΙΚΟΝΟΜΙΚΕΣ ΚΑΤΑΣΤΑΣΕΙΣ 2025", subjectKey: null, actor: "OPERATOR", source: "GMAIL", ruleId: null, occurredAt: "2026-10-30T09:21:17.851Z" });
+    await service.syncAccount(owner, pane, "me@gmail.com"); // the first look only sets the cursor
+    gmail.receive(mail("acc", "sotfilop@gmail.com", "Να περιμένω κατι  ή να τα ανεβασω όπως μου τα έστειλες?", ""));
+    gmail.receive(mail("dl", "Anna Lawyer <anna@law.example>", "Υπογραφές", "Η προθεσμία λήγει σήμερα στις 17:00"));
+    gmail.receive(mail("gemi", "no-reply@businessportal.gr", "Επιτυχής ολοκλήρωση της αίτησής σας", "Αγαπητέ κύριε / κυρία σας ενημερώνουμε"));
+    gmail.receive(mail("rej", "Greenhouse <no-reply@us.greenhouse-mail.io>", "Update on your application", "Unfortunately we decided today not to move forward; urgent roles open"));
+    gmail.receive(mail("shop", "Shop <offers@shop.example>", "New arrivals", "Fresh styles for autumn"));
+    // The fake history serves one record a page, and a tick reads a few pages: two ticks take all five.
+    expect((await service.syncAccount(owner, pane, "me@gmail.com")).created + (await service.syncAccount(owner, pane, "me@gmail.com")).created).toBe(5);
+    expect(lines.map((entry) => entry.key).sort()).toEqual(["important-mail:me@gmail.com:acc", "important-mail:me@gmail.com:dl", "important-mail:me@gmail.com:gemi"]);
+    expect(lines.every((entry) => entry.urgent)).toBe(true);
+    expect(lines.find((entry) => entry.key.endsWith(":acc"))!.line).toContain("the operator wrote to sotfilop@gmail.com on 2026-10-30");
+    expect(lines.find((entry) => entry.key.endsWith(":dl"))!.line).toContain("it names a deadline");
+    expect(lines.find((entry) => entry.key.endsWith(":gemi"))!.line).toContain("a government or bank sender (businessportal.gr)");
+  });
+
+  it("R23-1 (1/11 00:07-00:52 UTC: routine vzdump mails from info@example.invalid read as \"the operator wrote to\"): no line for system mail or the operator's own addresses", async () => {
+    const { repository, gmail, lines, service, pane } = setup();
+    const wrote = (fromAddress: string) => repository.recordAction({ ownerUserId: owner, accountEmail: "me@gmail.com", threadId: `t-w-${fromAddress}`, messageId: null, action: "REPLY", labelIds: [],
+      fromAddress, fromDomain: fromAddress.split("@")[1]!, subject: "Re: hello", subjectKey: null, actor: "OPERATOR", source: "GMAIL", ruleId: null, occurredAt: "2026-10-30T09:21:17.851Z" });
+    for (const address of ["info@example.invalid", "office@myshop.example", "me2@example.invalid", "sotfilop@gmail.com"]) await wrote(address);
+    await repository.upsertMemory({ ownerUserId: owner, kind: "FACT", key: "own: me2@example.invalid", text: "me2@example.invalid is the operator's own mailbox at the shop.", contactEmail: "me2@example.invalid",
+      domain: null, accountEmail: null, tags: [], source: "USER", confidence: 1, pinned: false });
+    await service.syncAccount(owner, pane, "me@gmail.com");
+    const vzdump = (id: string, vm: string) => mail(id, "Proxmox VE <info@example.invalid>", "vzdump backup status (pve): backup successful",
+      `Details VMID Name Status Time Size Filename ${vm} ok 2m 44s 150 GiB Logs vzdump ${vm} --notification-mode`);
+    for (const [id, vm] of [["v224", "224"], ["v401", "401"], ["v105", "105"], ["v100", "100"]]) gmail.receive(vzdump(id!, vm!));
+    gmail.receive(mail("pkg", "Proxmox VE <info@example.invalid>", "New software packages available (pve)", "The following updates are available: libnss3"));
+    gmail.receive(mail("alias", "Shop Office <office@myshop.example>", "Invoice copy", "The copy you asked for"));
+    gmail.receive(mail("mine", "Me <me2@example.invalid>", "Notes", "A note to myself"));
+    gmail.receive(mail("fail", "Proxmox VE <info@example.invalid>", "vzdump backup status (pve): backup failed", "Details VMID Name Status 203 win-ts2022 err"));
+    gmail.receive(mail("acc", "sotfilop@gmail.com", "ΓΕΜΗ: Να περιμένω κατι ή να τα ανεβασω όπως μου τα έστειλες?", ""));
+    for (let pass = 0; pass < 6; pass++) await service.syncAccount(owner, pane, "me@gmail.com");
+    expect(lines.map((entry) => entry.key).sort()).toEqual(["important-mail:me@gmail.com:acc", "important-mail:me@gmail.com:fail"]);
+    expect(lines.find((entry) => entry.key.endsWith(":fail"))!.line).toContain("(system mail reporting a failure)");
+    expect(lines.find((entry) => entry.key.endsWith(":acc"))!.line).toContain("the operator wrote to sotfilop@gmail.com on 2026-10-30");
+  });
+
+  it("B (operator 2/11 10:37 BKK: the WIM reply sat 4 hours as a draft): an unsent draft 15 minutes on, or at once after its review was blocked, brings Nous ONE line", async () => {
+    const { repository, gmail, lines, service, pane, tick } = setup();
+    const drafted = (draftId: string, threadId: string, subject: string) => repository.createEvent({ ownerUserId: owner, paneId: pane.id, runId: null, accountEmail: "me@gmail.com", threadId,
+      messageId: null, type: "DRAFTED", status: null, message: `The copilot drafted: ${subject} → them@example.com`, payload: { draftId, draftMessageId: `${draftId}-msg` } });
+    const later = (type: string, threadId: string, payload: Record<string, unknown> = {}) => repository.createEvent({ ownerUserId: owner, paneId: pane.id, runId: null, accountEmail: "me@gmail.com",
+      threadId, messageId: type === "SENT" ? "sent-1" : null, type: type as never, status: null, message: type, payload });
+    for (const id of ["d-wim", "d-sent", "d-review"]) gmail.drafts.add(id); // d-gone was sent or discarded in Gmail
+    await drafted("d-wim", "t-wim", "Re: WIM Reporting Analyst");
+    await drafted("d-sent", "t-sent", "Re: Invoice");
+    await drafted("d-gone", "t-gone", "Re: Hello");
+    await drafted("d-review", "t-review", "Re: Offer");
+    tick("2026-10-31T07:08:00.000Z");
+    await later("SENT", "t-sent");
+    await later("REVIEW_REQUESTED", "t-review", { reviewId: "mailrev:open" });
+    tick("2026-10-31T07:15:00.000Z");
+    await service.keepAlive(owner, pane, "Cleo");
+    expect(lines.filter((entry) => entry.key.startsWith("mail-draft-unsent:"))).toEqual([]); // 8 minutes: not yet
+    tick("2026-10-31T07:22:00.000Z");
+    await service.keepAlive(owner, pane, "Cleo");
+    tick("2026-10-31T07:40:00.000Z");
+    await service.keepAlive(owner, pane, "Cleo");
+    const unsent = lines.filter((entry) => entry.key.startsWith("mail-draft-unsent:"));
+    expect(unsent.map((entry) => entry.key)).toEqual(["mail-draft-unsent:d-wim"]);
+    expect(unsent[0]).toMatchObject({ urgent: true });
+    expect(unsent[0]!.line).toContain("Mail Copilot draft NOT sent: Re: WIM Reporting Analyst → them@example.com (me@gmail.com, thread t-wim, draft d-wim) has sat unsent since 07:06 UTC");
+    expect(unsent[0]!.line).toContain("never say it was answered");
+
+    // A review a rule blocks: one line naming the rule at once, and its draft is named with the block without waiting 15 minutes.
+    await repository.upsertMemory({ ownerUserId: owner, kind: "LESSON", key: "telnyx rejection", text: "Telnyx rejection thank-you: no draft, no review request, no question. Archive it.",
+      contactEmail: null, domain: "telnyx.com", accountEmail: null, tags: [], source: "USER", confidence: 1, pinned: false });
+    const draft = { account: "me@gmail.com", to: ["talent@telnyx.com"], subject: "Re: Your application", text: "Thanks.", threadId: "t-tel" };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(service.requestReview(owner, pane, { draft, summary: "Telnyx rejection thank-you" })).rejects.toThrow("forbids it");
+    }
+    const blocked = lines.filter((entry) => entry.key.startsWith("mail-send-blocked:"));
+    expect(blocked.map((entry) => entry.key)).toEqual(["mail-send-blocked:me@gmail.com:t-tel"]);
+    expect(blocked[0]!.line).toContain("Mail Copilot reply blocked by policy, NOT sent: \"Re: Your application\" → talent@telnyx.com");
+    gmail.drafts.add("d-tel");
+    await drafted("d-tel", "t-tel", "Re: Your application");
+    await service.keepAlive(owner, pane, "Cleo");
+    const tel = lines.find((entry) => entry.key === "mail-draft-unsent:d-tel")!;
+    expect(tel.line).toContain("Its review was blocked: Not raised: Mail Copilot memory");
+  });
+
+  it("starts a stopped CLI within a minute and tells Nous; kicks a stalled run again and, after two kicks that brought nothing, sends ONE urgent line", async () => {
+    let cliUp = false;
+    let stuck: string | null = null;
+    const starts: string[] = [];
+    const kicks: string[] = [];
+    const { repository, lines, service, pane, tick } = setup({ cliRunning: async () => cliUp, startCli: async (target) => { starts.push(target.id); return true; },
+      send: async (_target, run) => { kicks.push(run.id); }, stuck: async () => stuck });
+    // 07:06 the kickoff went in; 07:09:55 the Gateway's 429 ended the turn and nothing moved again.
+    const run = await service.startRun(owner, pane.id);
+    await service.markKickoff(owner, run.run.id);
+    tick("2026-10-31T07:09:50.000Z");
+    await repository.createEvent({ ownerUserId: owner, paneId: pane.id, runId: null, accountEmail: "info@example.invalid", threadId: "t1", messageId: "m1", type: "MAIL_RECEIVED", status: "PENDING",
+      message: "New mail: RE: ΟΙΚΟΝΟΜΙΚΕΣ ΚΑΤΑΣΤΑΣΕΙΣ", payload: { from: { name: "", address: "sotfilop@gmail.com" }, subject: "RE: ΟΙΚΟΝΟΜΙΚΕΣ ΚΑΤΑΣΤΑΣΕΙΣ" } });
+    // The CLI exited: started again at once, once per start, with a line to Nous.
+    await service.keepAlive(owner, pane, "Cleo");
+    expect(starts).toEqual([pane.id]);
+    expect(lines).toEqual([expect.objectContaining({ key: `mail-copilot-cli:${pane.id}`, urgent: false })]);
+    expect(lines[0]!.line).toContain("Space started Mail Copilot");
+    cliUp = true;
+    tick("2026-10-31T07:20:00.000Z");
+    await service.keepAlive(owner, pane, "Cleo"); // 10 minutes of mail waiting: not stalled yet
+    expect(kicks).toEqual([]);
+    tick("2026-10-31T07:25:00.000Z");
+    await service.keepAlive(owner, pane, "Cleo"); // 15 minutes: kick 1
+    expect(kicks).toHaveLength(1);
+    tick("2026-10-31T07:30:00.000Z");
+    await service.keepAlive(owner, pane, "Cleo");
+    expect(kicks).toHaveLength(1); // the kick gets its 10 minutes
+    tick("2026-10-31T07:35:00.000Z");
+    await service.keepAlive(owner, pane, "Cleo");
+    expect(kicks).toHaveLength(2);
+    expect(lines).toHaveLength(1);
+    tick("2026-10-31T07:45:00.000Z");
+    stuck = "its CLI is at a usage limit";
+    await service.keepAlive(owner, pane, "Cleo");
+    const urgent = lines.filter((entry) => entry.key === `mail-copilot-stalled:${pane.id}`);
+    expect(urgent).toHaveLength(1);
+    expect(urgent[0]!.urgent).toBe(true);
+    expect(urgent[0]!.line).toMatch(/URGENT: Mail Copilot .* 2 kicks brought nothing \(its CLI is at a usage limit\); its run mailrun:\S+ is RUNNING but its last activity was 07:35 UTC and it took 0 items\..*sotfilop@gmail\.com "RE: ΟΙΚΟΝΟΜΙΚΕΣ ΚΑΤΑΣΤΑΣΕΙΣ"/);
+    tick("2026-10-31T07:56:00.000Z");
+    await service.keepAlive(owner, pane, "Cleo");
+    expect(lines.filter((entry) => entry.key === `mail-copilot-stalled:${pane.id}`)).toHaveLength(1); // once per stall
+    // The agent takes the mail: the stall is over.
+    await repository.setItemStatus(owner, (await repository.listEvents(owner, { status: ["PENDING"] }))[0]!.id, "DONE");
+    await service.keepAlive(owner, pane, "Cleo");
+    const before = kicks.length;
+    tick("2026-10-31T09:00:00.000Z");
+    await service.keepAlive(owner, pane, "Cleo");
+    expect(kicks).toHaveLength(before);
+  });
+
+  it("counts a kick refused at a prompt Space cannot type into as failed (a busy CLI is not), and tells Nous two refusals in", async () => {
+    let stuck: string | null = null;
+    const { repository, lines, service, pane, tick } = setup({ ready: async () => false, cliRunning: async () => true, startCli: async () => true, stuck: async () => stuck });
+    await repository.createEvent({ ownerUserId: owner, paneId: pane.id, runId: null, accountEmail: "info@example.invalid", threadId: "t1", messageId: "m1", type: "MAIL_RECEIVED", status: "PENDING",
+      message: "New mail", payload: { from: { name: "", address: "sotfilop@gmail.com" }, subject: "Να περιμένω κατι;" } });
+    for (const at of ["2026-10-31T07:22:00.000Z", "2026-10-31T07:23:00.000Z", "2026-10-31T07:24:00.000Z"]) { tick(at); await service.keepAlive(owner, pane, "Cleo"); }
+    expect(lines).toEqual([]); // working on a turn: busy, not stuck
+    stuck = "its prompt holds text Space reads as a draft, so the kickoff waits";
+    for (const at of ["2026-10-31T07:25:00.000Z", "2026-10-31T07:26:00.000Z", "2026-10-31T07:27:00.000Z"]) { tick(at); await service.keepAlive(owner, pane, "Cleo"); }
+    expect(lines.map((entry) => entry.key)).toEqual([`mail-copilot-stalled:${pane.id}`]);
+    expect(lines[0]!.line).toContain("it has no run");
+  });
+
+  it("Nous 03:20 BKK: a RUNNING run idle since 07:06 with counters 0 and 20 mails waiting is dead; a restarted CLI gets the kickoff at its first empty prompt", async () => {
+    let session = "cli_session:o5-DZ9JwkSi_";
+    const kicked = new Set<string>();
+    const kicks: string[] = [];
+    const { repository, service, pane, tick } = setup({ cliRunning: async () => true, startCli: async () => true,
+      newSession: async () => !kicked.has(session), send: async (_target, run) => { kicks.push(run.id); kicked.add(session); } });
+    const run = await service.startRun(owner, pane.id);
+    await service.markKickoff(owner, run.run.id);
+    kicked.add(session);
+    for (let index = 0; index < 20; index += 1) await repository.createEvent({ ownerUserId: owner, paneId: pane.id, runId: null, accountEmail: "info@example.invalid", threadId: `t${index}`,
+      messageId: `m${index}`, type: "MAIL_RECEIVED", status: "PENDING", message: `New mail ${index}`, payload: {} });
+    // 13 hours later the run still says RUNNING with nothing taken: health goes by its last activity, so it is kicked.
+    tick("2026-10-31T20:16:00.000Z");
+    expect((await repository.getActiveRun(pane.id))).toMatchObject({ status: "RUNNING", counters: { taken: 0 } });
+    await service.keepAlive(owner, pane, "Cleo");
+    expect(kicks).toEqual([run.run.id]);
+    // The CLI restarts a minute later (start_agent): the new session never saw the kickoff, so it gets it at once, not 10 minutes on.
+    session = "cli_session:A-unMcicsiDN";
+    tick("2026-10-31T20:17:30.000Z");
+    await service.keepAlive(owner, pane, "Cleo");
+    expect(kicks).toEqual([run.run.id, run.run.id]);
+    tick("2026-10-31T20:18:30.000Z");
+    await service.keepAlive(owner, pane, "Cleo"); // once per session
+    expect(kicks).toHaveLength(2);
   });
 });

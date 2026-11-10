@@ -1,5 +1,6 @@
 import { execFile } from "./safe-child-process.js";
 import { promisify } from "node:util";
+import { SPACE_AGENT_USER, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const execFileAsync = promisify(execFile);
 
@@ -18,7 +19,7 @@ const execFileAsync = promisify(execFile);
 export const reasonixNativeSessionRefPattern =
   /^(?:(?:\/(?!\.{1,2}\/)[A-Za-z0-9._-]+){1,4}\/\.reasonix\/projects\/[A-Za-z0-9._-]+\/sessions\/[A-Za-z0-9._-]+\.jsonl|session_[0-9a-f]{32})$/u;
 
-export const reasonixSessionIndexCommand = "/opt/spaceapp/bin/deepseek-vscode-parity";
+export const reasonixSessionIndexCommand = `${SPACE_INSTALL_ROOT}/bin/deepseek-vscode-parity`;
 export const reasonixSessionIndexTimeoutMs = 15_000;
 const reasonixSessionIndexMaxBytes = 512 * 1024;
 const reasonixSessionIndexMaxSessions = 200;
@@ -115,13 +116,13 @@ export function parseReasonixSessionIndex(text: string): ReasonixSessionIndexEnt
     .filter((entry): entry is ReasonixSessionIndexEntry => entry !== null);
 }
 
-/** Reads the CLI's own session index through the pane-side parity wrapper (runs as spaceapp-user). */
+/** Reads the CLI's own session index through the pane-side parity wrapper (runs as the agent user). */
 export async function readReasonixSessionIndex(
   input: ReadReasonixSessionIndexInput
 ): Promise<ReasonixSessionIndexEntry[]> {
   const command = input.command ?? reasonixSessionIndexCommand;
   const sudoPath = input.sudoPath ?? "/usr/bin/sudo";
-  const runAsUser = input.runAsUser ?? "spaceapp-user";
+  const runAsUser = input.runAsUser ?? SPACE_AGENT_USER;
   const exec = input.execImpl ?? (execFileAsync as unknown as ExecImpl);
   try {
     const result = await exec(

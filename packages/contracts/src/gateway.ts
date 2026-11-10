@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { atLeastOneField } from "./update-rules.js";
 
 /**
  * Space Gateway: the native TypeScript account load balancer (codex-lb rewrite) with built-in context
@@ -6,8 +7,49 @@ import { z } from "zod";
  */
 
 export const gatewayProviderSchema = z.enum([
-  "CODEX", "CLAUDE", "ANTIGRAVITY", "COPILOT", "OPENAI_API", "ANTHROPIC_API", "DEEPSEEK", "OPENROUTER", "GOOGLE_AI", "KIMI", "QWEN"
+  "CODEX", "CLAUDE", "ANTIGRAVITY", "COPILOT", "OPENAI_API", "ANTHROPIC_API", "DEEPSEEK", "OPENROUTER", "GOOGLE_AI", "KIMI", "QWEN",
+  // Free OpenAI-compatible key pools (operator 5/11 14:34 BKK).
+  "NVIDIA", "GROQ", "CLOUDFLARE_AI",
+  // Adaption Labs: granted credits (6/11, 1,500 credits that never expire, no card on file), an OpenAI-compatible key pool like the free ones.
+  "ADAPTION",
+  // AMD Token Lab: granted points (6/11, no card on file), an OpenAI-compatible key pool like Adaption.
+  "AMD_TOKEN_LAB",
+  // Granted free tokens (operator 7/11 10:53 BKK, nous_msg:c1272a0c): Inception Labs (Mercury chat, 100M), Jina AI (embeddings and rerank, 10M),
+  // Mixedbread (embeddings, $5) and AgentRouter ($149.78, a third-party relay that sees prompts).
+  "INCEPTION", "JINA", "MIXEDBREAD", "AGENTROUTER",
+  // Free.ai (7/11, Cleo's audit): free chat that answers even without a key (its startup program is in progress); a third party that sees prompts.
+  "FREEAI",
+  // Azure OpenAI (7/11, nous_msg:32dc26ee): $200 Microsoft for Startups credit until 5 Feb 2027 on a pay-as-you-go plan with a card behind it.
+  "AZURE_OPENAI",
+  // Free sign-ups (7/11, nous_msg:c1272a0c, new-signups.md): Z.AI's free GLM Flash models and SiliconFlow's $0 models (neither account has a card),
+  // OVHcloud AI Endpoints' anonymous access (no key, 2 requests a minute per IP).
+  "ZAI", "SILICONFLOW", "OVH",
+  // Mistral La Plateforme's free tier (7/11, nous_msg:d9b67550): every model, rate limited, no card (its free tier may train on prompts).
+  "MISTRAL",
+  // Claude on the clouds' credits (plan clipboard:qIOxhbvXfHyT step 3): Amazon Bedrock (AWS Activate) and Google Vertex AI (Google for Startups).
+  // A card is behind both, so their pools refuse until GATEWAY_FREE_GRANTS records the credit, and from 90% of it spent (key-pools.ts).
+  "BEDROCK", "VERTEX",
+  // Make AI on the Make Startup Program's credits through the space-ai-relay scenario (plan clipboard:F1nJVLcoWdd- step 4): BACKGROUND keys only, off until configured.
+  "MAKE"
 ]);
+/** The providers whose API keys Space Gateway takes (`POST /api/admin/gateway/api-key/add`). */
+export const GATEWAY_API_KEY_PROVIDERS = ["OPENAI_API", "OPENROUTER", "DEEPSEEK", "NVIDIA", "GROQ", "CLOUDFLARE_AI", "CLAUDE", "GOOGLE_AI", "ADAPTION", "AMD_TOKEN_LAB", "INCEPTION", "JINA", "MIXEDBREAD", "AGENTROUTER", "FREEAI", "AZURE_OPENAI", "ZAI", "SILICONFLOW", "OVH", "MISTRAL", "BEDROCK", "VERTEX"] as const;
+export type GatewayApiKeyProvider = (typeof GATEWAY_API_KEY_PROVIDERS)[number];
+/**
+ * Operator 7/11 10:53 BKK (nous_msg:c1272a0c, «σε όσα έχουμε λάβει tokens ... να μπαίνουν απευθείας στο spaceapp gateway χωρίς να σε ρωτήσω»):
+ * the free and granted key pools a key an agent saves in the Vault joins on its own, by the words of its label. Paid pools (OpenAI, OpenRouter,
+ * DeepSeek, Claude) stay a person's choice. The gateway's own key check (pattern, then a request that spends nothing) decides; a wrong match is refused there.
+ */
+const GATEWAY_FREE_KEY_LABELS: Array<[GatewayApiKeyProvider, RegExp]> = [["INCEPTION", /\binception\b|\bmercury\b/i], ["JINA", /\bjina\b/i],
+  ["MIXEDBREAD", /\bmixedbread\b|\bmxbai\b/i], ["AGENTROUTER", /\bagent ?router\b/i], ["FREEAI", /\bfree\.ai\b|\bfreeai\b/i], ["AZURE_OPENAI", /\bazure openai\b|\baoai\b/i], ["ZAI", /\bz\.ai\b|\bzai\b|\bzhipu\b/i],
+  ["SILICONFLOW", /\bsilicon ?flow\b/i], ["MISTRAL", /\bmistral\b|\bcodestral\b/i], ["BEDROCK", /\bbedrock\b/i], ["VERTEX", /\bvertex\b/i],
+  ["ADAPTION", /\badaption\b/i], ["AMD_TOKEN_LAB", /\bamd\b|token ?lab/i], ["GROQ", /\bgroq\b/i], ["NVIDIA", /\bnvidia\b|\bnvapi\b/i],
+  ["CLOUDFLARE_AI", /\bcloudflare\b.*\b(?:workers ai|ai)\b/i], ["GOOGLE_AI", /(?<![./~])\bgemini\b|\bai studio\b/i]];
+export const gatewayFreeKeyProviderOf = (label: string): GatewayApiKeyProvider | null => {
+  const matched = GATEWAY_FREE_KEY_LABELS.filter(([, words]) => words.test(label));
+  // One provider only: a label naming two (say "Jina key for the Gemini test") is left to a person.
+  return matched.length === 1 ? matched[0]![0] : null;
+};
 
 /** Same states as codex-lb accounts. */
 export const gatewayAccountStatusSchema = z.enum(["ACTIVE", "RATE_LIMITED", "QUOTA_EXCEEDED", "PAUSED", "REAUTH_REQUIRED", "DEACTIVATED"]);
@@ -53,6 +95,60 @@ export const gatewayCompressionProvidersSchema = z.object({
   CODEX: gatewayCompressionProviderSettingsSchema,
   ANTIGRAVITY: gatewayCompressionProviderSettingsSchema
 }).partial().strict();
+/**
+ * The provider routes Nous's "Space" provider tries, first to last (operator 3/11 15:03 BKK and 8/11): each route is a
+ * Space Gateway pool and the runtime that drives it. CLAUDE_OPENCODE is the Claude API-key account run by OpenCode, never by Claude Code
+ * (operator rule 27/10: the API budget is only for use outside Claude Code). ANTIGRAVITY is Gemini Argon, ANTIGRAVITY_FLASH Gemini 3.8 Flash and ANTIGRAVITY_CLAUDE the Claude models of Antigravity (8/11).
+ * Inside a route the pool's own account routing (fill-first) still picks the account; this order only says which route a turn tries next when one has no room.
+ */
+export const GATEWAY_PROVIDER_ROUTES = ["CLAUDE", "CODEX", "CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_FLASH", "ANTIGRAVITY_CLAUDE", "BEDROCK", "VERTEX"] as const;
+export const gatewayProviderRouteSchema = z.enum(GATEWAY_PROVIDER_ROUTES);
+export type GatewayProviderRoute = z.infer<typeof gatewayProviderRouteSchema>;
+/** The subscription routes. */
+const SUBSCRIPTION_ROUTES: ReadonlySet<GatewayProviderRoute> = new Set(["CLAUDE", "CODEX", "CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_FLASH", "ANTIGRAVITY_CLAUDE"]);
+export const GATEWAY_FREE_ROUTES: ReadonlySet<GatewayProviderRoute> = new Set([]);
+/**
+ * The free models of a pool whose catalog mixes free and paid and whose account has no card (new-signups.md 7/11, each provider's pricing page):
+ * the pool serves only these and its supported models tag them free, the rest paid. SiliconFlow: only the five billed $0.0000 on 7/11.
+ */
+export const GATEWAY_POOL_FREE_MODELS: Partial<Record<GatewayProvider, readonly string[]>> = {
+  ZAI: ["glm-4.5-flash", "glm-4.7-flash", "glm-4.6v-flash"],
+  SILICONFLOW: ["Qwen/Qwen3-8B", "Qwen/Qwen2.5-7B-Instruct", "Qwen/Qwen3.5-9B", "google/gemma-4-12B-it", "openai/gpt-oss-20b"]
+};
+/** Whether a pool's model is free: its free list, OVH's anonymous access (all free), OpenRouter's `:free` ids; null where nothing says. */
+export const gatewayPoolModelFree = (provider: GatewayProvider, id: string): boolean | null =>
+  provider === "OVH" || provider === "MISTRAL" ? true : GATEWAY_POOL_FREE_MODELS[provider]?.includes(id) ?? (id.endsWith(":free") || null);
+/** The stored "key" of a pool that needs none (OVH): one account, and no key header is sent. */
+export const GATEWAY_KEYLESS_KEY = "keyless-anonymous-access";
+/** Claude on cloud credits (plan clipboard:qIOxhbvXfHyT step 3): right after the subscriptions, off until a person turns one on, never for Claude Code. */
+export const CLOUD_CREDIT_ROUTES: ReadonlySet<GatewayProviderRoute> = new Set(["BEDROCK", "VERTEX"]);
+/** Free routes of unvetted third parties that see prompts: a stored order takes them in after its last free route, not before the others. */
+const GATEWAY_RELAY_ROUTES: ReadonlySet<GatewayProviderRoute> = new Set([]);
+/** The default provider order: Claude, Codex, Claude via OpenCode, Gemini Argon, Gemini 3.8 Flash and Claude (Antigravity); cloud credits off. */
+export const GATEWAY_DEFAULT_PROVIDER_ORDER: Array<{ route: GatewayProviderRoute; enabled: boolean }> = GATEWAY_PROVIDER_ROUTES
+  .map((route) => ({ route, enabled: !CLOUD_CREDIT_ROUTES.has(route) }));
+export const gatewayProviderOrderSchema = z.array(z.object({ route: gatewayProviderRouteSchema, enabled: z.boolean() }).strict())
+  .length(GATEWAY_PROVIDER_ROUTES.length).refine((order) => new Set(order.map((entry) => entry.route)).size === order.length, "Each provider route once.");
+/**
+ * A stored order read whole: unknown routes dropped, missing subscription ones appended on, cloud credit routes off.
+ */
+export function gatewayProviderOrderOf(value: unknown): Array<{ route: GatewayProviderRoute; enabled: boolean }> {
+  const rows = Array.isArray(value) ? value : [];
+  const seen = new Set<GatewayProviderRoute>();
+  const kept = rows.flatMap((row) => {
+    const parsed = z.object({ route: gatewayProviderRouteSchema, enabled: z.boolean() }).safeParse(row);
+    if (!parsed.success || seen.has(parsed.data.route)) return [];
+    seen.add(parsed.data.route);
+    return [parsed.data];
+  });
+  if (!kept.length) return GATEWAY_DEFAULT_PROVIDER_ORDER.map((entry) => ({ ...entry }));
+  const missing = GATEWAY_PROVIDER_ROUTES.filter((route) => !seen.has(route));
+  const after = kept.reduce((last, entry, index) => (SUBSCRIPTION_ROUTES.has(entry.route) ? index + 1 : last), 0);
+  const missingSubs = missing.filter((route) => SUBSCRIPTION_ROUTES.has(route)).map((route) => ({ route, enabled: true }));
+  const missingCredits = missing.filter((route) => CLOUD_CREDIT_ROUTES.has(route)).map((route) => ({ route, enabled: false }));
+  const missingOthers = missing.filter((route) => !SUBSCRIPTION_ROUTES.has(route) && !CLOUD_CREDIT_ROUTES.has(route)).map((route) => ({ route, enabled: true }));
+  return [...kept.slice(0, after), ...missingSubs, ...missingCredits, ...kept.slice(after), ...missingOthers];
+}
 export const gatewayLimitTypeSchema = z.enum(["TOTAL_TOKENS", "INPUT_TOKENS", "OUTPUT_TOKENS", "COST_USD"]);
 export const gatewayLimitWindowSchema = z.enum(["DAILY", "WEEKLY", "MONTHLY"]);
 export const gatewayReasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
@@ -95,7 +191,12 @@ export const gatewayAccountSchema = z.object({
   }).strict()).max(10).optional(),
   lastRefreshAt: isoSchema.nullable(),
   lastUsedAt: isoSchema.nullable(),
-  createdAt: isoSchema
+  createdAt: isoSchema,
+  /** The weekly used % when the account's pace day began (ms), for `gatewayPaceDay`; null when it could not be read. */
+  paceDayStart: z.object({ at: z.number(), usedPercent: z.number().min(0).max(100) }).strict().nullable().optional(),
+  /** A free key pool's models hidden because they answered 410 (end of life) or 404 (not served to the key), with when (model-checks.ts). */
+  hiddenModels: z.array(z.object({ model: z.string().min(1).max(200), status: z.number().int(), reason: z.string().max(300).nullable(), since: isoSchema.nullable() })
+    .strict()).optional()
 }).strict();
 
 export const gatewayApiKeyLimitSchema = z.object({
@@ -173,14 +274,14 @@ export const gatewayApiKeyUpdateRequestSchema = z.object({
   limits: z.array(gatewayApiKeyLimitInputSchema).max(20).optional(),
   expiresAt: isoSchema.nullable().optional(),
   resetUsage: z.boolean().optional()
-}).strict().refine((input) => Object.keys(input).length > 0, { message: "Nothing to update." });
+}).strict().refine(...atLeastOneField("Nothing to update."));
 
 /** Operator preferences of an account; `paused` pauses or resumes it. An empty alias clears it. */
 export const gatewayAccountUpdateRequestSchema = z.object({
   paused: z.boolean().optional(),
   alias: z.string().trim().max(80).nullable().optional().transform((value) => (value === "" ? null : value)),
   warmupEnabled: z.boolean().optional()
-}).strict().refine((input) => Object.keys(input).length > 0, { message: "Nothing to update." });
+}).strict().refine(...atLeastOneField("Nothing to update."));
 
 /** The plain key is returned exactly once, at creation. */
 export const gatewayApiKeyCreatedResponseSchema = z.object({
@@ -195,6 +296,15 @@ export const gatewaySettingsSchema = z.object({
   planPriority: z.array(z.string().min(1).max(40)).max(20),
   stickyReallocationBudgetThresholdPercent: z.number().min(0).max(100),
   exhaustionFloorPercent: z.number().min(0).max(50),
+  /** Fill first: % of the last available Claude subscription account's 5-hour window kept for Nous's OPERATOR and DECISION turns (default 20, 0 off). */
+  claudeReservePercent: z.number().min(0).max(100),
+  /**
+   * How new work picks a Claude Max or Codex subscription account (operator 3/11 13:09 BKK). FILL_FIRST: one account until
+   * about 93% of its 5 hours, then the next, so the resets come apart; fresh windows open in weekly use-it-or-lose-it order,
+   * none past 95% of its week unless it resets within 24 h, and the Claude account with most room is kept for Nous's OPERATOR and DECISION turns.
+   * WEEKLY_PACE: the account furthest under its weekly pace (2026-10-27).
+   */
+  subscriptionRouting: z.enum(["FILL_FIRST", "WEEKLY_PACE"]),
   compressionMode: gatewayCompressionModeSchema,
   compressionProfile: gatewayCompressionProfileSchema,
   /** Code and prose compression (lossless folds, CodeAware, TextCrusher); ON applies while compressionMode is ON. */
@@ -222,6 +332,8 @@ export const gatewaySettingsSchema = z.object({
    * uses it (operator rule 2026-10-27).
    */
   claudeApiKeyFallback: z.boolean(),
+  /** Nous's "Space" provider tries these routes in this order (GATEWAY_PROVIDER_ROUTES); an update replaces the whole list. */
+  providerOrder: gatewayProviderOrderSchema,
   /**
    * What the operator may spend on the Anthropic API each month (operator request 2026-10-24); the Claude API-key account
    * shows this month's Anthropic bill as a share of it. Null: not set.
@@ -239,7 +351,7 @@ export const gatewaySettingsSchema = z.object({
   warmupPrompt: z.string().trim().min(1).max(512),
   warmupCooldownSeconds: z.number().int().min(60).max(7 * 86_400),
   warmupMinAvailablePercent: z.number().gt(0).max(100),
-  /** LAN listener: ENV follows /opt/spaceapp/.env; OFF and ON override it. Applied by a reload. */
+  /** LAN listener: ENV follows the install root's .env; OFF and ON override it. Applied by a reload. */
   lanMode: gatewayLanModeSchema,
   lanHost: z.string().trim().min(7).max(45).nullable(),
   lanPort: z.number().int().min(1024).max(65535).nullable(),
@@ -248,7 +360,7 @@ export const gatewaySettingsSchema = z.object({
 }).strict();
 
 export const gatewaySettingsUpdateRequestSchema = gatewaySettingsSchema.omit({ updatedAt: true }).partial().strict()
-  .refine((input) => Object.keys(input).length > 0, { message: "Nothing to update." });
+  .refine(...atLeastOneField("Nothing to update."));
 
 export const gatewayRequestLogSchema = z.object({
   id: z.string().max(80),
@@ -490,16 +602,64 @@ export const gatewayReportRowSchema = z.object({
   reasoningTokens: z.number().int().min(0),
   reasoningReported: z.number().int().min(0),
   costUsd: z.number().min(0),
-  compressionTokensSaved: z.number().int().min(0)
+  compressionTokensSaved: z.number().int().min(0),
+  /** 429 refusals (rate or usage limit), from the daily savings rollups: days, models, providers and totals; accounts have none. */
+  rateLimited: z.number().int().min(0).optional()
+}).strict();
+
+const reportDaySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const lostAmount = { lostPercent: z.number().min(0), lostTokens: z.number().int().min(0), lostCostUsd: z.number().min(0),
+  /** Windows lost without a measured rate (no gateway traffic that week or any other): their tokens and value are not in the sums. */
+  unpriced: z.number().int().min(0) };
+
+/** One past weekly window of an account (or quota group): the share unused at its reset, in tokens and API value at the account's measured rate. */
+export const gatewayLostWindowSchema = z.object({
+  accountId: gatewayIdSchema,
+  label: z.string().max(120),
+  provider: gatewayProviderSchema,
+  planType: z.string().max(40).nullable(),
+  quotaKey: z.string().max(80),
+  /** The UTC Monday of the reset's week. */
+  week: reportDaySchema,
+  resetAt: isoSchema,
+  lastSampleAt: isoSchema,
+  usedPercent: z.number().min(0).max(100),
+  lostPercent: z.number().min(0).max(100),
+  /** Tokens (input with cache, plus output) and API value per 1 % of the window; null without traffic to measure it. */
+  tokensPerPercent: z.number().min(0).nullable(),
+  costUsdPerPercent: z.number().min(0).nullable(),
+  /** "own": the window's own 7 days; "nearest": the account's nearest measured window; null: unpriced. */
+  rateFrom: z.enum(["own", "nearest"]).nullable(),
+  lostTokens: z.number().int().min(0).nullable(),
+  lostCostUsd: z.number().min(0).nullable()
+}).strict();
+
+export const gatewayLostTokensSchema = z.object({
+  from: reportDaySchema,
+  to: reportDaySchema,
+  windows: z.array(gatewayLostWindowSchema),
+  /** Per week and provider, oldest first. */
+  weeks: z.array(z.object({ week: reportDaySchema, provider: gatewayProviderSchema, windows: z.number().int().min(0), ...lostAmount }).strict()),
+  totals: z.object({ windows: z.number().int().min(0), ...lostAmount,
+    /** Past resets left out: no sample within 6 hours before them (an account no longer polled), so what was unused is unknown. */
+    unobserved: z.number().int().min(0) }).strict()
 }).strict();
 
 export const gatewayReportSchema = z.object({
-  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  from: reportDaySchema,
+  to: reportDaySchema,
   days: z.array(gatewayReportRowSchema).max(400),
   models: z.array(gatewayReportRowSchema).max(500),
   accounts: z.array(gatewayReportRowSchema).max(1000),
-  totals: gatewayReportRowSchema
+  providers: z.array(gatewayReportRowSchema),
+  totals: gatewayReportRowSchema,
+  /** Space-pool requests one provider refused and another was tried for (one request id logged on both). */
+  fallbacks: z.array(z.object({ fromProvider: z.string().max(40), toProvider: z.string().max(40), requests: z.number().int().min(0),
+    served: z.number().int().min(0) }).strict()),
+  /** Every account's (and quota group's) 5-hour and weekly windows now: used share and reset time. */
+  windows: z.array(z.object({ accountId: gatewayIdSchema, label: z.string().max(120), provider: gatewayProviderSchema, status: gatewayAccountStatusSchema,
+    quotaKey: z.string().max(80), primary: gatewayUsageWindowSchema, secondary: gatewayUsageWindowSchema }).strict()),
+  lost: gatewayLostTokensSchema
 }).strict();
 
 const gatewayCompressionTotalsSchema = z.object({
@@ -811,7 +971,86 @@ export const gatewayHeadroomHistorySchema = z.object({
 }).strict();
 
 export const gatewayAccountListSchema = z.object({ data: z.array(gatewayAccountSchema).max(1000) }).strict();
+/** Every key pool's supported models as the gateway lists them live through its first active key (`models` null, with `error`, when it could not). */
+export const gatewayPoolModelsSchema = z.object({
+  data: z.array(z.object({ provider: gatewayProviderSchema, models: z.array(z.string()).nullable(), error: z.string().nullable() }).strict()),
+  fetchedAt: isoSchema
+}).strict();
+export type GatewayPoolModels = z.infer<typeof gatewayPoolModelsSchema>;
+/**
+ * Startup programs whose granted credits a Space Gateway pool spends: their Nous › Startup programs rows show that pool's supported models.
+ * shortcut: keyed by the data panes' program ids; becomes a program field once Nous renames ids or a program spends more than one pool.
+ */
+export const GATEWAY_PROGRAM_PROVIDERS: Readonly<Record<string, GatewayProvider>> = {
+  "nvidia-nim": "NVIDIA", "amd-ventures-startups": "AMD_TOKEN_LAB", "inception-labs-free-tokens": "INCEPTION", "jina-ai-free-tokens": "JINA",
+  "mixedbread-starter-credits": "MIXEDBREAD", "agentrouter-free-credits": "AGENTROUTER", "freeai-startup": "FREEAI"
+};
 export const gatewayApiKeyListSchema = z.object({ data: z.array(gatewayApiKeySchema).max(1000) }).strict();
+
+/**
+ * The free tokens and credits each Space Gateway pool spends (operator 7/11, nous_msg:d9b67550: "a record of the free tokens we have and of
+ * those already spent"): a grant has an amount from its start (the program's approval); a free tier has no balance, only its provider's limits.
+ * shortcut: amounts as the programs and providers stated them on 7/11 (Nous › Startup programs); a program field once one changes often.
+ */
+export interface GatewayFreeGrant { amount: number | null; unit: "tokens" | "usd"; since: string; validUntil?: string; program?: string; note: string;
+  /** A dollar grant whose provider reports no cost: its list price per million tokens, so "left" is an estimate (said so) instead of unknown. */
+  pricePerMillion?: { input: number; output: number } }
+export const GATEWAY_FREE_GRANTS: Partial<Record<GatewayProvider, GatewayFreeGrant>> = {
+  INCEPTION: { amount: 100_000_000, unit: "tokens", since: "2026-11-06", program: "inception-labs-free-tokens", note: "Mercury models (chat)" },
+  JINA: { amount: 10_000_000, unit: "tokens", since: "2026-11-06", program: "jina-ai-free-tokens", note: "embeddings and rerank" },
+  FREEAI: { amount: 15_000_000, unit: "tokens", since: "2026-11-07", program: "freeai-startup", note: "chat; third party that sees prompts" },
+  ADAPTION: { amount: 1_500, unit: "usd", since: "2026-11-06", note: "1,500 credits (1 credit = $1), never expire" },
+  AGENTROUTER: { amount: 149.78, unit: "usd", since: "2026-11-06", program: "agentrouter-free-credits", note: "third-party relay that sees prompts" },
+  MIXEDBREAD: { amount: 5, unit: "usd", since: "2026-11-06", program: "mixedbread-starter-credits", note: "embeddings" },
+  AZURE_OPENAI: { amount: 200, unit: "usd", since: "2026-11-07", validUntil: "2027-02-05", note: "Azure credit; a card is behind it, the pool stops on 5 Feb 2027",
+    // Its one deployment, gpt-5-mini, at Azure's list price (Global Standard, 7/11).
+    pricePerMillion: { input: 0.25, output: 2 } },
+  AMD_TOKEN_LAB: { amount: null, unit: "usd", since: "2026-11-06", program: "amd-ventures-startups", note: "granted points (amount not stated)" }
+};
+/** The free tiers without a balance: what limits them instead. */
+export const GATEWAY_FREE_TIERS: Partial<Record<GatewayProvider, string>> = {
+  GROQ: "free tier: per-model requests and tokens per minute and day", NVIDIA: "free tier: about 40 requests a minute",
+  CLOUDFLARE_AI: "free tier: 10,000 neurons a day (00:00 UTC)", GOOGLE_AI: "Gemini API free tier: Flash models, per-model daily caps",
+  OPENROUTER: "only the :free models (no credit spent)", ZAI: "free GLM Flash models only", SILICONFLOW: "free models only (needs a non-negative balance)",
+  OVH: "anonymous access: 2 requests a minute", MISTRAL: "La Plateforme free tier: every model, rate limited (about 1 request a second)"
+};
+export const gatewayFreeLedgerRowSchema = z.object({
+  provider: gatewayProviderSchema,
+  label: z.string().max(120),
+  kind: z.enum(["GRANT", "FREE_TIER"]),
+  /** The grant (null amount: not stated); null for a free tier. */
+  granted: z.object({ amount: z.number().nonnegative().nullable(), unit: z.enum(["tokens", "usd"]) }).strict().nullable(),
+  since: z.string().max(10).nullable(),
+  validUntil: z.string().max(10).nullable(),
+  /** Since the grant began (a free tier: the last 30 days), from the gateway's daily sums. */
+  spent: z.object({ requests: z.number().int().nonnegative(), inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(),
+    tokens: z.number().int().nonnegative(), costUsd: z.number().nonnegative(), /** costUsd is the list-price estimate (the provider reports none). */ estimated: z.boolean().optional() }).strict(),
+  /** What is left in the grant's unit; null when the grant has no amount or the provider reports no cost for a dollar grant. */
+  left: z.number().nullable(),
+  leftPercent: z.number().min(0).max(100).nullable(),
+  lastUsedAt: z.string().max(40).nullable(),
+  /** ACTIVE accounts serving it now. */
+  accounts: z.number().int().nonnegative(),
+  models: z.array(z.string().max(200)).max(200),
+  note: z.string().max(300)
+}).strict();
+export type GatewayFreeLedgerRow = z.infer<typeof gatewayFreeLedgerRowSchema>;
+export const gatewayFreeLedgerSchema = z.object({ rows: z.array(gatewayFreeLedgerRowSchema).max(60), at: z.string().max(40) }).strict();
+export type GatewayFreeLedger = z.infer<typeof gatewayFreeLedgerSchema>;
+
+const trimZeros = (text: string) => (text.includes(".") ? text.replace(/0+$/, "").replace(/\.$/, "") : text);
+const compactNumber = (value: number) => value >= 1e6 ? `${trimZeros((value / 1e6).toFixed(2))}M` : value >= 1e3 ? `${trimZeros((value / 1e3).toFixed(1))}k` : String(Math.round(value));
+const dollars = (value: number) => `$${value >= 1000 ? value.toFixed(0) : value.toFixed(2)}`;
+/** One line for a ledger row, the same everywhere (Gateway Accounts, Nous Quotas, Nous's world): "100M tokens granted · 12.3k used · 99.99M left". */
+export function gatewayFreeLedgerLine(row: GatewayFreeLedgerRow): string {
+  const used = row.spent.tokens ? `${compactNumber(row.spent.tokens)} tokens${row.spent.costUsd > 0 ? ` (${row.spent.estimated ? "about " : ""}${dollars(row.spent.costUsd)})` : ""}` : "nothing";
+  const last = row.lastUsedAt ? ` · last used ${row.lastUsedAt.slice(0, 10)}` : "";
+  if (row.kind === "FREE_TIER") return `Free tier · ${used} used in 30 days${last} · ${row.note}`;
+  const grant = row.granted?.amount == null ? "granted (amount not stated)" : row.granted.unit === "tokens" ? `${compactNumber(row.granted.amount)} tokens granted` : `${dollars(row.granted.amount)} granted`;
+  const left = row.left === null ? (row.granted?.unit === "usd" && row.granted.amount !== null ? " · left: the provider reports no cost" : "")
+    : ` · ${row.granted?.unit === "tokens" ? `${compactNumber(row.left)} tokens` : `${row.spent.estimated ? "about " : ""}${dollars(row.left)}`} left${row.leftPercent !== null ? ` (${Math.round(row.leftPercent)}%)` : ""}`;
+  return `${grant} · ${used} used${left}${row.validUntil ? ` · until ${row.validUntil}` : ""}${last}`;
+}
 
 export type GatewayProvider = z.infer<typeof gatewayProviderSchema>;
 export type GatewayAccountStatus = z.infer<typeof gatewayAccountStatusSchema>;
@@ -844,6 +1083,153 @@ export function gatewayWeekPace(account: { primaryWindow: GatewayUsageWindow; se
   return { usedPercent: week.usedPercent, passedPercent, points, resetAt: week.resetAt,
     pace: points === null ? null : points > GATEWAY_PACE_BAND ? "AHEAD" : points < -GATEWAY_PACE_BAND ? "UNDER" : "ON" };
 }
+/**
+ * Share of a pool's quota still free when the last of its periods resets (plan clipboard:mjpENip0ilmC: the pane account menus' "54% free"
+ * and Nous's provider advice compute the same figure), and the share free now (`now`). The pool's pace is the sum of its accounts' paces
+ * since each period began, spent at each moment on the accounts with room, the one resetting first first (operator 7/11
+ * nous_msg:e768734b: «43%» counted each account at its own pace, so the load of the 3 spent accounts never moved to the 2 with room).
+ * An account at its limit takes nothing more until it resets; each fresh period before the pool's last reset counts what it leaves free.
+ * shortcut: extrapolates the average pace since each period began (an account that hit its limit early understates the demand, and an
+ * account that already took a spent one's load counts it again in the sum); keep a pool usage history if a recent-days pace is wanted.
+ */
+export function quotaLeftAtReset(periods: Array<{ remaining: number | null | undefined; resetAt: string | null | undefined; periodMs: number }>, at: number): QuotaLeftAtReset | null {
+  const counted = periods.flatMap((period) => {
+    const resetMs = Date.parse(period.resetAt ?? "");
+    // Each period at least an hour long, so the first minutes do not extrapolate wildly and the loop below always ends.
+    return period.remaining == null || !(resetMs > at) ? [] : [{ remaining: period.remaining, room: period.remaining, resetMs, periodMs: Math.max(period.periodMs, 3_600_000) }];
+  });
+  if (!counted.length) return null;
+  const accounts = counted.length;
+  const last = Math.max(...counted.map((period) => period.resetMs));
+  const pace = counted.reduce((sum, { remaining, resetMs, periodMs }) => sum + (100 - remaining) / Math.max(at - (resetMs - periodMs), 3_600_000), 0);
+  let free = 0;
+  for (let now = at; now < last;) {
+    const next = Math.min(...counted.map((period) => period.resetMs));
+    let load = pace * (next - now);
+    for (const period of [...counted].sort((left, right) => left.resetMs - right.resetMs)) {
+      const spent = Math.min(period.room, load);
+      period.room -= spent;
+      load -= spent;
+    }
+    now = next;
+    for (const period of counted) {
+      if (period.resetMs !== now || now >= last) continue;
+      free += period.room;
+      period.room = 100;
+      period.resetMs += period.periodMs;
+    }
+  }
+  free += counted.reduce((sum, period) => sum + period.room, 0);
+  // gatewayWeekPace's points for any period length: used minus the share of the period passed.
+  const ahead = counted.reduce((sum, { remaining, resetMs, periodMs }) => sum + 100 - remaining - 100 * Math.min(1, Math.max(0, (at - (resetMs - periodMs)) / periodMs)), 0);
+  const points = Math.round(ahead / accounts);
+  // Fresh periods can hold more than one period's worth: the figure stays a share, at most all of it.
+  return { percent: Math.min(100, free / accounts), now: counted.reduce((sum, period) => sum + period.remaining, 0) / accounts, accounts,
+    resetAt: new Date(last).toISOString(), points, pace: points > GATEWAY_PACE_BAND ? "AHEAD" : points < -GATEWAY_PACE_BAND ? "UNDER" : "ON" };
+}
+export interface QuotaLeftAtReset { percent: number; now: number; accounts: number; resetAt: string; points: number; pace: "AHEAD" | "ON" | "UNDER" }
+
+const PACE_DAY_MS = 86_400_000;
+export interface GatewayPaceDay { dayStartAt: number; daysLeft: number; allowancePercent: number; usedTodayPercent: number; capped: boolean }
+/**
+ * Today's share of an account's week (plan clipboard:DotwYXVD2N3n, goal d844e0cc: no account at 100% before its reset): the allowance is
+ * (100 - used % when the day began) / days left, the days counted back from the weekly reset so the last one is its last 24 hours, which
+ * is never capped. `dayStart` is the used % read when the day began; one read for another day (it just turned, the reset moved) or none
+ * starts the day at the use seen now. A spent week (100%) is the usage limit's, never held. Times in ms; null without a live week.
+ */
+export function gatewayPaceDay(week: { usedPercent: number | null | undefined; resetAt: number | null | undefined }, dayStart: { at: number; usedPercent: number } | null | undefined, at: number): GatewayPaceDay | null {
+  if (week.usedPercent == null || week.resetAt == null || !(week.resetAt > at)) return null;
+  const daysLeft = Math.ceil((week.resetAt - at) / PACE_DAY_MS);
+  const dayStartAt = week.resetAt - daysLeft * PACE_DAY_MS;
+  const start = dayStart && Math.abs(dayStart.at - dayStartAt) < PACE_DAY_MS / 24 ? Math.min(dayStart.usedPercent, week.usedPercent) : week.usedPercent;
+  const allowancePercent = (100 - start) / daysLeft;
+  const usedTodayPercent = week.usedPercent - start;
+  return { dayStartAt, daysLeft, allowancePercent, usedTodayPercent, capped: daysLeft > 1 && week.usedPercent < 100 && usedTodayPercent >= allowancePercent };
+}
+
+/**
+ * Reserves only when needed (operator 5/11 nous_msg:3723fc28 «αν ξερουμε οτι γινονται reset οι λογαριασμοι τότε δεν προστατευουμε κανενα 3% …
+ * ξοδευονται και αυτα»): the one computation of every floor, cap and reserve of a pool (the Gateway's exhaustion floor, fill-first weekly cap
+ * and operator reserve, Nous Pro's room, Nous's room for its spend mode). `base` is kept only for the work the pool's room cannot carry
+ * until the next reset of any of its windows, its own included: the shortfall in points, at most `base`; a reset that comes first makes
+ * it 0 and every account spends to 100%. Times in any one unit; a window whose reset passed has all its room.
+ * shortcut: each window's pace is its average since it began (at least a tenth of the window) and the pool's is their sum, with every
+ * account's percent worth the same; keep a pool usage history if a recent pace or plan sizes are wanted.
+ */
+export function neededReservePercent(windows: ReadonlyArray<{ used: number | null | undefined; resetAt: number | null | undefined; length: number }>, base: number, now: number): number {
+  let relief = Infinity, burn = 0, room = 0;
+  for (const { used, resetAt, length } of windows) {
+    const live = resetAt != null && resetAt > now;
+    room += live || resetAt == null ? 100 - Math.min(100, Math.max(0, used ?? 0)) : 100;
+    if (!live) continue;
+    relief = Math.min(relief, resetAt);
+    burn += Math.max(0, used ?? 0) / Math.max(now - (resetAt - length), length / 10);
+  }
+  return base <= 0 || burn <= 0 ? 0 : Math.min(base, Math.max(0, burn * (relief - now) - room));
+}
+
+/**
+ * Codex weekly reset credits (operator 2/11 15:38 BKK, brief 20261102-codex-reset-credits): each one gives its account a fresh week,
+ * so a pool of `accounts` holds `weekPercent` more of its week than its windows show. Null when no account has a credit.
+ */
+export interface QuotaResetCredits { credits: number; accounts: number; weekPercent: number }
+export function quotaResetCredits(accounts: ReadonlyArray<{ resetCredits?: number | null }>): QuotaResetCredits | null {
+  const credits = accounts.reduce((sum, account) => sum + Math.max(0, account.resetCredits ?? 0), 0);
+  return credits > 0 ? { credits, accounts: accounts.length, weekPercent: Math.round((100 * credits) / accounts.length) } : null;
+}
+/** "+4 resets (≈ +200% of a week)": the pickers, the Quotas cards, Accounts & quotas and Nous's lines say it alike. */
+export const quotaResetCreditsText = (credits: QuotaResetCredits): string =>
+  `+${credits.credits} reset${credits.credits === 1 ? "" : "s"} (≈ +${credits.weekPercent}% of a week)`;
+
+type WeeklyQuotaSample = {
+  weeklyRemainingPercent?: number | null;
+  weeklyResetAt?: string | null;
+  fiveHourRemainingPercent?: number | null;
+  fiveHourResetAt?: string | null;
+};
+type AntigravityGroupSample = WeeklyQuotaSample & { id?: string };
+/**
+ * An Antigravity account's quota group by id: from `groups` when the account lists them (authoritative, so a group Google stopped
+ * reporting is absent), else from the older fixed `gemini`/`claude` fields.
+ */
+export function antigravityAccountGroup<T extends WeeklyQuotaSample>(
+  account: { gemini?: T; claude?: T; groups?: Array<T & { id: string }> },
+  group: string,
+): T | undefined {
+  if (account.groups) return account.groups.find((candidate) => candidate.id === group);
+  return group === "gemini" ? account.gemini : group === "claude" ? account.claude : undefined;
+}
+
+/**
+ * A subscription CLI's weekly quota still free at its reset (plan clipboard:FDitYcI63D9R): the one figure the pane account menus, the
+ * Quotas cards, Resources → Accounts & quotas and the usage routes (`atReset`, read by the Nous app) show. Claude and Antigravity count
+ * their connected accounts, Codex every account; Antigravity per quota group id (`antigravityAccountGroup`), both "Gemini" and
+ * "Claude · GPT" when `group` is null.
+ */
+export function subscriptionQuotaAtReset(
+  provider: "claude" | "codex" | "antigravity",
+  accounts: Array<WeeklyQuotaSample & { status?: string; gemini?: WeeklyQuotaSample; claude?: WeeklyQuotaSample; groups?: Array<AntigravityGroupSample & { id: string }>; resetCredits?: number | null }>,
+  at: number,
+  group: string | null = null,
+): Array<QuotaLeftAtReset & { scope: string | null; resetCredits?: QuotaResetCredits }> {
+  const counted = provider === "codex" ? accounts : accounts.filter((account) => account.status === "CONNECTED");
+  const scopes: Array<[(account: (typeof accounts)[number]) => WeeklyQuotaSample | undefined, string | null]> = provider !== "antigravity"
+    ? [[(account) => account, null]]
+    : group ? [[(account) => antigravityAccountGroup(account, group), null]] : [[(account) => account.gemini, "Gemini"], [(account) => account.claude, "Claude · GPT"]];
+  // Codex reset credits ride on the figure: each is one more fresh week the pool can still spend (operator 2/11 15:38 BKK).
+  const credits = provider === "codex" ? quotaResetCredits(counted) : null;
+  return scopes.flatMap(([week, scope]) => {
+    const left = quotaLeftAtReset(counted.map((account) => {
+      const sample = week(account);
+      // Google AI Pro meters Gemini models on a 5-hour window without a weekly limit; use the 5-hour window when no week is reported.
+      const hasWeek = sample?.weeklyRemainingPercent != null && sample?.weeklyResetAt != null;
+      return hasWeek || provider !== "antigravity"
+        ? { remaining: sample?.weeklyRemainingPercent, resetAt: sample?.weeklyResetAt, periodMs: 10_080 * 60_000 }
+        : { remaining: sample?.fiveHourRemainingPercent, resetAt: sample?.fiveHourResetAt, periodMs: 300 * 60_000 };
+    }), at);
+    return left ? [{ ...left, scope, ...(credits ? { resetCredits: credits } : {}) }] : [];
+  });
+}
 export type GatewayAccount = z.infer<typeof gatewayAccountSchema>;
 export type GatewayApiKeyLimit = z.infer<typeof gatewayApiKeyLimitSchema>;
 export type GatewayApiKey = z.infer<typeof gatewayApiKeySchema>;
@@ -852,6 +1238,7 @@ export type GatewayApiKeyUpdateRequest = z.input<typeof gatewayApiKeyUpdateReque
 export type GatewayAccountUpdateRequest = z.input<typeof gatewayAccountUpdateRequestSchema>;
 export type GatewayApiKeyCreatedResponse = z.infer<typeof gatewayApiKeyCreatedResponseSchema>;
 export type GatewaySettings = z.infer<typeof gatewaySettingsSchema>;
+export type GatewayProviderOrder = z.infer<typeof gatewayProviderOrderSchema>;
 export type GatewaySettingsUpdateRequest = z.infer<typeof gatewaySettingsUpdateRequestSchema>;
 export type GatewayRequestLog = z.infer<typeof gatewayRequestLogSchema>;
 export type GatewayRequestLogList = z.infer<typeof gatewayRequestLogListSchema>;
@@ -891,4 +1278,6 @@ export type GatewayAccountList = z.infer<typeof gatewayAccountListSchema>;
 export type GatewayApiKeyList = z.infer<typeof gatewayApiKeyListSchema>;
 export type GatewayReportRow = z.infer<typeof gatewayReportRowSchema>;
 export type GatewayReport = z.infer<typeof gatewayReportSchema>;
+export type GatewayLostWindow = z.infer<typeof gatewayLostWindowSchema>;
+export type GatewayLostTokens = z.infer<typeof gatewayLostTokensSchema>;
 export type GatewayCompressionStats = z.infer<typeof gatewayCompressionStatsSchema>;

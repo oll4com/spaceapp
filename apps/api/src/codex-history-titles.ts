@@ -89,7 +89,7 @@ export function buildSharedCliTaskContext(input: {
     .map((section) => {
       const role = section.stream === "stdin" ? "USER_INPUT" : section.stream === "stderr" ? "CLI_ERROR_OUTPUT" : "CLI_OUTPUT";
       const content = redactMemoryText(section.content)
-        .replace(/\u001b(?:[@-_]|\[[0-?]*[ -/]*[@-~])/g, "")
+        .replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|[0-~])/g, "")
         .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ")
         .replace(/\r/g, "\n");
       const neutralizedContent = neutralizeSharedCliHistoryMarkers(content).trim();

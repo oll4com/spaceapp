@@ -142,6 +142,20 @@ describe("connector crypto and messages", () => {
     await microsoft.searchMail("t", "invoice", 3);
     expect(decodeURIComponent(urls.at(-1)!)).toContain('$search="invoice"');
   });
+  it("follows Gmail and Graph pages up to the limit asked, past one page (31/10)", async () => {
+    const urls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      const at = String(url); urls.push(at);
+      if (at.includes("gmail") && at.includes("/messages?")) return Response.json(at.includes("pageToken=p2") ? { messages: [{ id: "m3" }, { id: "m4" }] } : { messages: [{ id: "m1" }, { id: "m2" }], nextPageToken: "p2" });
+      if (at.includes("graph.microsoft.com")) return Response.json(at.includes("skip=2") ? { value: [{ id: "o3" }] }
+        : { value: [{ id: "o1" }, { id: "o2" }], "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?skip=2" });
+      return Response.json({ id: "x", payload: { headers: [] } });
+    }) as unknown as typeof fetch;
+    expect(await createGoogleConnector({ clientId: "c", fetchImpl }).searchMail("t", "", 4)).toHaveLength(4);
+    expect(urls.some((url) => url.includes("pageToken=p2"))).toBe(true);
+    const microsoft = createMicrosoftConnector({ clientId: "c", clientSecret: "s", tenant: "common", fetchImpl });
+    expect((await microsoft.searchMail("t", "", 5)).map((message) => (message as { messageId: string }).messageId)).toEqual(["o1", "o2", "o3"]);
+  });
   it("exchanges the code and reads the verified account email", async () => {
     const fetchImpl = vi.fn(async (url: string) => String(url).includes("/token")
       ? Response.json({ access_token: "a", refresh_token: "r", expires_in: 3600, scope: "openid https://www.googleapis.com/auth/gmail.readonly" })
@@ -271,6 +285,23 @@ describe("connector routes and callback", () => {
     expect((await service.status("user:1")).accounts).toHaveLength(1);
     const forged = await app.inject({ url: `/api/auth/google/callback?state=forged&code=abc`, cookies: { ...cookies, space_oauth_state: "forged" } });
     expect(forged.headers.location).toBe("/?connector=expired");
+  });
+  it("hands a consent that ended in the phone's browser back to SpaceApp Android's Web tab (R8)", async () => {
+    const { app, service } = await server({ id: "user:1", role: "USER" });
+    const ua = "Mozilla/5.0 (Linux; Android 16; wv) Chrome/140 Mobile Safari/537.36 SpaceApp-Android/0.2.6";
+    const start = await app.inject({ url: "/api/connectors/google/start?capabilities=MAIL_READ", cookies: { space_session: "s1" }, headers: { "user-agent": ua } });
+    const cookies = Object.fromEntries(start.cookies.map((item) => [item.name, item.value]));
+    const callback = `/api/auth/google/callback?state=${encodeURIComponent(cookies.space_oauth_state!)}&code=abc`;
+    // The phone's browser has none of the WebView's cookies: back to the app, nothing exchanged.
+    const handed = await app.inject({ url: callback });
+    expect(handed.headers.location).toBe(`com.oll4.spaceapp:/oauth-return?to=${encodeURIComponent(callback)}`);
+    expect((await service.status("user:1")).accounts).toHaveLength(0);
+    // The app opens the same callback in its WebView, where the cookies are.
+    expect((await app.inject({ url: callback, cookies: { ...cookies, space_session: "s1" } })).headers.location).toBe("/?connector=connected");
+    // A flow a plain browser started is never handed to the app.
+    const plain = await app.inject({ url: "/api/connectors/google/start?capabilities=MAIL_READ", cookies: { space_session: "s1" } });
+    const plainState = plain.cookies.find((item) => item.name === "space_oauth_state")!.value;
+    expect((await app.inject({ url: `/api/auth/google/callback?state=${encodeURIComponent(plainState)}&code=abc` })).headers.location).toBe("/?connector=expired");
   });
   it("asks Google for Job Copilot's account by email and returns with a Job Copilot notice", async () => {
     const { app, google, service } = await server({ id: "user:1", role: "ADMIN" });

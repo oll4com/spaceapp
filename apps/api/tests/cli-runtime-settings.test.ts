@@ -395,7 +395,8 @@ describe("CLI runtime settings API", () => {
       }
     });
     expect(terminateSession).toHaveBeenCalledTimes(1);
-    expect(terminateSession).toHaveBeenCalledWith(deepseek.session.sessionId);
+    // OBS-006: the disable request's id reaches the pane host's terminate line.
+    expect(terminateSession).toHaveBeenCalledWith(deepseek.session.sessionId, disabled.headers["x-request-id"]);
     expect(store.getPaneCliSession(deepseek.session.sessionId)).toMatchObject({ status: "EXITED", isActive: false });
     expect(store.getPane(deepseek.pane.id).isClosed).toBe(true);
     expect(store.getPaneCliSession(codex.session.sessionId)).toMatchObject({ status: "RUNNING", isActive: true });

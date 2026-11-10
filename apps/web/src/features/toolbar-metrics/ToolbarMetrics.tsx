@@ -15,6 +15,7 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
+import { quotaLeftAtReset, quotaResetCredits, quotaResetCreditsText } from "@space/contracts";
 import type {
   AntigravityUsageAccountList,
   ApiProviderAccountList,
@@ -37,6 +38,7 @@ import type {
 } from "@space/contracts";
 import type { SystemAnalyticsTab } from "../system-analytics/SystemAnalyticsWorkspace.js";
 import { api, SpaceApiError } from "../../api.js";
+import { closeOrConfirm } from "../marketing-copilot-pane/close-or-confirm.js";
 import { measureHealthRtt } from "../system-health/measure-health-rtt.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntime, getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
@@ -56,8 +58,13 @@ import {
   compareAvailability,
   matchesAvailabilityFilter,
   type AccountAvailabilityFilter,
+  type QuotaWindows,
 } from "./account-availability.js";
 import { anthropicBillLines, antigravityAccountEntries, claudeAccountEntries, codexAccountEntries } from "./account-entries.js";
+import { QuotaAtReset } from "../desktop-widgets/QuotaAtReset.js";
+import { buildQuotaOverview, type QuotaProvider } from "../desktop-widgets/quota-overview.js";
+import { ProviderSummary } from "../desktop-widgets/AiQuotaWidget.js";
+import { configuredApiProviders } from "../desktop-widgets/quota-aggregates.js";
 import { ConfirmationDialog, MetricPopover } from "./MetricLayers.js";
 import {
   QUOTA_EXHAUSTION_THRESHOLD_PERCENT,
@@ -797,7 +804,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       if (onCloseSession) {
         await onCloseSession(paneId);
       } else {
-        await api.closePane(paneId);
+        await closeOrConfirm((force) => api.closePane(paneId, force));
       }
       void cli.load(true);
       void analyticsSessions.load(true);
@@ -836,7 +843,8 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   }
 
   async function redeemReset(accountId: string) {
-    if (!isCodexEnabled || resetInFlightRef.current.has(accountId) || !allowChanges || !canManage) return;
+    // Reset credits need only the ADMIN role (the route checks it), not Admin mode (operator 2/11: a greyed "Resets 2" in User mode).
+    if (!isCodexEnabled || resetInFlightRef.current.has(accountId) || !canManage) return;
     const retainedAttempt = resetAttempts[accountId];
     const idempotencyKey = retainedAttempt?.status === "retry"
       ? retainedAttempt.idempotencyKey
@@ -941,27 +949,55 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     if (!canManage) return <p className="toolbar-metric-note">ADMIN access is required for detailed system telemetry and actions.</p>;
     if (activePanel === "accounts") {
       const antigravityEntries = antigravityAccountEntries(antigravityAccounts.data?.data ?? [], clock, { proOnly: proFilter, geminiOnly: geminiFilter });
+      const codexCredits = quotaResetCredits(accounts.data?.data ?? []);
       const codexEntries = codexAccountEntries(accounts.data?.data ?? [], clock, (account) => {
         const reset = resetLabel(account.id);
         return (
           <button
             type="button"
-            disabled={!allowChanges || reset.disabled}
+            disabled={reset.disabled}
             title={reset.disabled ? undefined : `Use the earliest-expiring reset credit for ${account.label}`}
             onClick={() => void redeemReset(account.id)}
           >{reset.label}</button>
         );
       });
-      const claudeEntries = claudeAccountEntries(claudeAccounts.data?.data ?? [], clock, anthropicBillLines(anthropicBilling.data, clock, dateTimeSettings));
-      const scopedEntries = accountProviderFilter === "all"
+      // The Space Gateway profile pools accounts already listed here: no card or count of its own (operator 7/11, nous_msg:94ea75f7).
+      const claudeEntries = claudeAccountEntries((claudeAccounts.data?.data ?? []).filter((account) => account.status !== "GATEWAY"), clock, anthropicBillLines(anthropicBilling.data, clock, dateTimeSettings));
+      // Only what this installation has (operator 5/11, plan clipboard:sJpyQIBFGszW): a provider with accounts, an API provider
+      // with a key. A runtime switched off answers CLI_RUNTIME_DISABLED / CODEX_MASTER_DISABLED: absent, not a failure.
+      const overview = buildQuotaOverview({ codex: accounts.data ?? null, agy: antigravityAccounts.data ?? null, claude: claudeAccounts.data ?? null, api: null, fetchedAt: clock }, clock);
+      const summaryOf = (provider: QuotaProvider) => overview.providers.find((item) => item.provider === provider) ?? null;
+      const failed = (error: string | null) => Boolean(error) && !/^(CLI_RUNTIME_DISABLED|CODEX_MASTER_DISABLED):/.test(error ?? "");
+      const apiProviders = configuredApiProviders(apiProviderAccounts.data);
+      const present = {
+        antigravity: Boolean(summaryOf("antigravity")) || failed(antigravityAccounts.error),
+        codex: isCodexEnabled && (Boolean(summaryOf("codex")) || failed(accounts.error)),
+        claude: Boolean(summaryOf("claude")) || failed(claudeAccounts.error),
+        api: apiProviders.length > 0 || failed(apiProviderAccounts.error),
+      };
+      const providerTabs: Array<{ key: typeof accountProviderFilter; label: string; name: string }> = [
+        { key: "antigravity" as const, label: "Antigravity", name: "Antigravity (Google)" },
+        { key: "codex" as const, label: "Codex", name: "Codex" },
+        { key: "claude" as const, label: "Claude", name: "Claude" },
+        { key: "api" as const, label: "API", name: "API Providers" },
+      ].filter((tab) => present[tab.key]);
+      const providerFilter = providerTabs.some((tab) => tab.key === accountProviderFilter) ? accountProviderFilter : "all";
+      const shows = (key: keyof typeof present) => present[key] && (providerFilter === "all" || providerFilter === key);
+      const loadingAny = [accounts, antigravityAccounts, claudeAccounts, apiProviderAccounts].some((list) => list.loading && !list.data);
+      const scopedEntries = providerFilter === "all"
         ? [...antigravityEntries, ...codexEntries, ...claudeEntries]
-        : accountProviderFilter === "antigravity"
+        : providerFilter === "antigravity"
           ? antigravityEntries
-          : accountProviderFilter === "codex"
+          : providerFilter === "codex"
             ? codexEntries
-            : accountProviderFilter === "claude" ? claudeEntries : [];
+            : providerFilter === "claude" ? claudeEntries : [];
+      // Each account's (or a pool's) weekly quota still free at its reset, the same figure and line as the provider's.
+      const accountAtReset = (weeks: QuotaWindows[], why: string) => {
+        const left = quotaLeftAtReset(weeks.map((week) => ({ remaining: week.weeklyRemainingPercent, resetAt: week.weeklyResetAt, periodMs: 7 * 86_400_000 })), clock);
+        return <QuotaAtReset atReset={{ entries: left ? [{ ...left, scope: null }] : [], unknown: why }} clock={clock} />;
+      };
       const renderAccountSection = (section: {
-        provider: string;
+        provider: QuotaProvider;
         title: string;
         source: string;
         entries: AccountQuotaEntry[];
@@ -978,18 +1014,19 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
           .sort(compareAvailability);
         return (
           <div className="toolbar-metric-provider-section" data-provider={section.provider}>
-            <header>
-              <strong>{section.title}</strong>
-              {section.hasData && section.entries.length ? <AvailabilityCountChips counts={countAvailability(section.entries)} /> : null}
-              <small>{section.source}</small>
-            </header>
+            {summaryOf(section.provider) ? (
+              <div className="aiq resources-provider-summary"><ProviderSummary overview={{ ...summaryOf(section.provider)!, label: section.title }} clock={clock} settings={dateTimeSettings} /></div>
+            ) : (
+              <header><strong>{section.title}</strong></header>
+            )}
+            {section.source ? <small className="toolbar-metric-note">{section.source}</small> : null}
             {section.intro}
             {section.loading && !section.hasData ? <p className="toolbar-metric-note">Loading {section.title} accounts…</p> : null}
             {section.error ? <p className="toolbar-metric-error" role="alert">{section.error}</p> : null}
             {section.dataError ? <p className="toolbar-metric-error">{section.dataError}</p> : null}
             {section.hasData ? (
               <ul className="toolbar-metric-list">
-                {shown.map((entry) => <AccountQuotaCard key={entry.id} entry={entry} clock={clock} settings={dateTimeSettings} />)}
+                {shown.map((entry) => <AccountQuotaCard key={entry.id} entry={entry} clock={clock} settings={dateTimeSettings} atReset={accountAtReset} />)}
                 {!shown.length ? <li><span>{section.entries.length ? "No accounts match the active filters." : section.empty}</span></li> : null}
               </ul>
             ) : null}
@@ -997,45 +1034,43 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
           </div>
         );
       };
-      const providerTabs: Array<{ key: typeof accountProviderFilter; label: string; name: string }> = [
-        { key: "all", label: "All", name: "All Providers" },
-        { key: "antigravity", label: "Antigravity", name: "Antigravity (Google)" },
-        { key: "codex", label: "Codex", name: "Codex" },
-        { key: "claude", label: "Claude", name: "Claude" },
-        { key: "api", label: "API", name: "API Providers" },
-      ];
       return (
       <>
         {cooldown && <p role="status">Next Codex account available: {cooldown.accountLabel} in {cooldown.formatted}</p>}
-        <div className="toolbar-metric-provider-tabs" role="tablist" aria-label="Account providers">
-          {providerTabs.map((tab) => (
+        {!providerTabs.length ? (
+          <p className="toolbar-metric-note resources-empty-state" role="status">
+            {loadingAny ? "Loading accounts…" : "No AI accounts or API keys are connected in this installation yet. Connect them in Space Gateway → Accounts."}
+          </p>
+        ) : null}
+        {providerTabs.length > 1 ? <div className="toolbar-metric-provider-tabs" role="tablist" aria-label="Account providers">
+          {[{ key: "all" as const, label: "All", name: "All Providers" }, ...providerTabs].map((tab) => (
             <button
               key={tab.key}
               type="button"
               role="tab"
               aria-label={tab.name}
               title={tab.name}
-              aria-selected={accountProviderFilter === tab.key}
-              className={`toolbar-metric-tab-btn ${accountProviderFilter === tab.key ? "is-active" : ""}`}
+              aria-selected={providerFilter === tab.key}
+              className={`toolbar-metric-tab-btn ${providerFilter === tab.key ? "is-active" : ""}`}
               onClick={() => setAccountProviderFilter(tab.key)}
             >{tab.label}</button>
           ))}
-        </div>
+        </div> : null}
 
-        {accountProviderFilter !== "api" ? (
+        {providerFilter !== "api" && scopedEntries.length ? (
           <AvailabilityFilterBar counts={countAvailability(scopedEntries)} value={availabilityFilter} onChange={setAvailabilityFilter} />
         ) : null}
-        {accountProviderFilter === "antigravity" && (
+        {providerFilter === "antigravity" && (
           <div className="resources-quota-filters" role="group" aria-label="Account filters">
             <button type="button" className={proFilter ? "is-active" : ""} aria-pressed={proFilter} onClick={() => setProFilter(value => !value)}>Pro accounts</button>
             <button type="button" className={geminiFilter ? "is-active" : ""} aria-pressed={geminiFilter} onClick={() => setGeminiFilter(value => !value)}>Gemini only</button>
           </div>
         )}
 
-        {(accountProviderFilter === "all" || accountProviderFilter === "antigravity") && renderAccountSection({
+        {shows("antigravity") && renderAccountSection({
           provider: "antigravity",
           title: "Antigravity (Google)",
-          source: antigravityAccounts.data?.isStale ? "Stale sample" : "space-gemini-profiles",
+          source: antigravityAccounts.data?.isStale ? "Stale sample" : "",
           entries: antigravityEntries,
           loading: antigravityAccounts.loading,
           error: antigravityAccounts.error,
@@ -1044,30 +1079,35 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
           empty: "No Antigravity accounts configured.",
         })}
 
-        {(accountProviderFilter === "all" || accountProviderFilter === "codex") && renderAccountSection({
+        {shows("codex") && renderAccountSection({
           provider: "codex",
-          title: "Codex usage",
-          source: accounts.data?.isStale ? "Stale sample" : "On demand",
+          title: "Codex",
+          source: accounts.data?.isStale ? "Stale sample" : "",
           entries: codexEntries,
           loading: accounts.loading,
           error: accounts.error,
           dataError: accounts.data?.error,
           hasData: Boolean(accounts.data),
           empty: "No enabled account samples.",
-          intro: (
+          // Routing capacity only where a pool reports it (codex-lb is gone on most installs); reset credits only when there are some.
+          intro: environment?.lbUsage || codexCredits ? (
             <div className="toolbar-metric-grid">
-              <MetricRow
-                label="Routing capacity · all accounts"
-                value={formatPercent(environment?.lbUsage?.allAccountsRemainingPercent)}
-                tone={quotaTone(environment?.lbUsage?.allAccountsRemainingPercent)}
-              />
-              <MetricRow
-                label="Routing capacity · active accounts"
-                value={formatPercent(environment?.lbUsage?.activeAccountsRemainingPercent)}
-                tone={quotaTone(environment?.lbUsage?.activeAccountsRemainingPercent)}
-              />
+              {environment?.lbUsage ? <>
+                <MetricRow
+                  label="Routing capacity · all accounts"
+                  value={formatPercent(environment.lbUsage.allAccountsRemainingPercent)}
+                  tone={quotaTone(environment.lbUsage.allAccountsRemainingPercent)}
+                />
+                <MetricRow
+                  label="Routing capacity · active accounts"
+                  value={formatPercent(environment.lbUsage.activeAccountsRemainingPercent)}
+                  tone={quotaTone(environment.lbUsage.activeAccountsRemainingPercent)}
+                />
+              </> : null}
+              {/* Each reset credit is one more fresh week on top of the windows above (operator 2/11 15:38 BKK). */}
+              {codexCredits ? <MetricRow label="Reset credits" value={quotaResetCreditsText(codexCredits)} /> : null}
             </div>
-          ),
+          ) : undefined,
           footer: resetFeedback ? (
             <p className="toolbar-metric-reset-status" role="status" aria-live="polite">
               {resetFeedback.message}
@@ -1075,10 +1115,10 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
           ) : null,
         })}
 
-        {(accountProviderFilter === "all" || accountProviderFilter === "claude") && renderAccountSection({
+        {shows("claude") && renderAccountSection({
           provider: "claude",
           title: "Claude",
-          source: claudeAccounts.data?.isStale ? "Stale sample" : "space-claude-profiles",
+          source: claudeAccounts.data?.isStale ? "Stale sample" : "",
           entries: claudeEntries,
           loading: claudeAccounts.loading,
           error: claudeAccounts.error,
@@ -1087,24 +1127,19 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
           empty: "No Claude accounts configured.",
         })}
 
-        {(accountProviderFilter === "all" || accountProviderFilter === "api") && (
+        {shows("api") && (
           <div className="toolbar-metric-provider-section" data-provider="api">
             <header>
-              <strong>API Providers &amp; Balances</strong>
-              {apiProviderAccounts.data?.data.length ? (
-                <AvailabilityCountChips counts={countApiProviders(apiProviderAccounts.data.data)} />
-              ) : null}
-              <small>{apiProviderAccounts.data?.isStale ? "Stale sample" : "Claude, DeepSeek, OpenRouter, Vercel, Google & API keys"}</small>
+              <strong>API providers &amp; balances</strong>
+              {apiProviders.length ? <AvailabilityCountChips counts={countApiProviders(apiProviders)} /> : null}
+              {apiProviderAccounts.data?.isStale ? <small>Stale sample</small> : null}
             </header>
             {apiProviderAccounts.loading && !apiProviderAccounts.data ? <p className="toolbar-metric-note">Loading API provider details…</p> : null}
             {apiProviderAccounts.error ? <p className="toolbar-metric-error" role="alert">{apiProviderAccounts.error}</p> : null}
             {apiProviderAccounts.data?.error ? <p className="toolbar-metric-error">{apiProviderAccounts.data.error}</p> : null}
             {apiProviderAccounts.data ? (
               <ul className="toolbar-metric-list">
-                {apiProviderAccounts.data.data.map((account) => <ApiProviderCard key={account.id} account={account} />)}
-                {!apiProviderAccounts.data.data.length ? (
-                  <li><span>No API providers configured.</span></li>
-                ) : null}
+                {apiProviders.map((account) => <ApiProviderCard key={account.id} account={account} atReset={accountAtReset} />)}
               </ul>
             ) : null}
           </div>

@@ -7,7 +7,8 @@ import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 export const NOUS_PANE_VERDICTS = ["OK_WORKING", "WAITING_OPERATOR", "WAITING_DATE", "NEEDS_ACTION", "BLOCKED", "OPERATOR_TEST", "KEEP_OPEN"] as const;
 export type NousPaneVerdict = typeof NOUS_PANE_VERDICTS[number];
 export interface NousPaneCheck { paneId: string; roomId: string; checkedAt: string; verdict: NousPaneVerdict | null; note: string | null; nextCheckAt: string | null }
-export interface NousPaneCheckInput { paneId: string; roomId: string; at: string; verdict?: { verdict: NousPaneVerdict; note: string | null; nextCheckAt: string | null } }
+/** A verdict of null clears the recorded one (a done report ends OK_WORKING). */
+export interface NousPaneCheckInput { paneId: string; roomId: string; at: string; verdict?: { verdict: NousPaneVerdict | null; note: string | null; nextCheckAt: string | null } }
 
 export interface NousPaneChecksRepository {
   record(owner: string, input: NousPaneCheckInput): Promise<NousPaneCheck>;

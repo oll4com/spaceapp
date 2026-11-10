@@ -13,10 +13,14 @@ import type { RoomPaneObservation } from "../src/room-pane-control.js";
 vi.setConfig({ testTimeout: 30_000 });
 const temporaryRoots: string[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 /** A signed-in owner, a Job Copilot pane with a RUNNING CLI session, and both the operator and the agent credentials. */
+// Midday in the owner's default zone (Asia/Bangkok): quiet hours (23:00-09:00 there) would hold Telegram and push, so these
+// cases failed whenever the suite ran between 16:00 and 02:00 UTC. Only Date is faked, and it advances with real time.
+const atBangkokMidday = () => vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true, now: new Date("2026-10-12T05:00:00.000Z") });
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "space-job-apply-run-"));
   temporaryRoots.push(root);
@@ -26,7 +30,9 @@ async function fixture() {
   const config = getApiConfig({
     SPACE_CLI_ENABLED: "true", SPACE_CLI_COMMAND_PATH: root, SPACE_CLI_HOST_SOCKET: join(root, "pane-host.sock"), SPACE_CLI_CODEX_CREDENTIAL_SMOKE: "true",
     SPACE_CLI_WORKSPACE_ROOT: join(root, "workspaces"), SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true", SPACE_INTERNAL_API_TOKEN: "internal-token-for-job-apply-tests",
-    SPACE_ARTIFACT_ROOT: root
+    SPACE_ARTIFACT_ROOT: root,
+    // The test's own (empty) Space Memory, never the operator's: its pinned rules meet every question (plan clipboard:7L5KyWp3kQsP step 3).
+    SPACE_MEMORY_MONTHLY_PATH: join(root, "space_memory_2026-11.md")
   });
   const store = new InMemorySpaceStore();
   const sent: string[] = [];
@@ -62,13 +68,13 @@ async function fixture() {
 
 describe("job copilot run supervisor", () => {
   // Daily upgrade 2026-10-27 (plan clipboard:1NF6u6gcCwtj step 4): jobrun:Oi8f4FqqNQUo idled 06:47-14:46 UTC after a side prompt ended its loop.
-  it("types the kickoff again into a RUNNING run's CLI idle 10 minutes at an empty prompt with postings queued, never into a draft or a paused pane", async () => {
+  it("types the kickoff again into a RUNNING run's CLI at an empty prompt with postings queued (a minute after the last application, 10 during one), never into a draft or a paused pane", async () => {
     const { app, store, pane, headers } = await fixture();
     try {
       const paneUrl = `/api/panes/${encodeURIComponent(pane.id)}/job-apply`;
       await app.inject({ method: "POST", url: `${paneUrl}/queue`, headers, payload: { urls: ["https://boards.greenhouse.io/acme/jobs/1"] } });
       const run = (await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers })).json().run as JobApplyRun;
-      let clock = Date.parse(run.lastActivityAt) + 5 * 60_000;
+      let clock = Date.parse(run.lastActivityAt) + 30_000;
       let text = "✻ Done.\n────\n❯ \n────";
       const kickoff = vi.fn(async () => undefined);
       const markKickoff = vi.fn(async () => undefined);
@@ -76,7 +82,7 @@ describe("job copilot run supervisor", () => {
       const pacing = vi.fn(async () => ({ nextAllowedAt: null }) as never);
       const kick = createJobApplyRunKick({ runView: view, markKickoff, pacing }, { store, kickoff, log: { warn: () => undefined }, now: () => clock,
         inspect: async () => ({ sessionId: "cli_session:1", promptFingerprint: "f", state: "IDLE", usageLimited: false, text }) as RoomPaneObservation });
-      expect(await kick.tick()).toBe(0); // 5 minutes idle: the loop may still be between postings
+      expect(await kick.tick()).toBe(0); // 30 s after the start: the kickoff may still be on its way
       clock += 6 * 60_000;
       text = "✻ Done.\n────\n❯ a side question\n────";
       expect(await kick.tick()).toBe(0); // a draft waits in the composer
@@ -91,6 +97,29 @@ describe("job copilot run supervisor", () => {
       clock += 20 * 60_000;
       expect(await kick.tick()).toBe(0); // never while paused
       expect(kickoff).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("waits 10 idle minutes before kicking while an application is in progress", async () => {
+    const { app, store, pane, headers, agent } = await fixture();
+    try {
+      const paneUrl = `/api/panes/${encodeURIComponent(pane.id)}/job-apply`;
+      await app.inject({ method: "POST", url: `${paneUrl}/queue`, headers, payload: { urls: ["https://boards.greenhouse.io/acme/jobs/1", "https://jobs.ashbyhq.com/globex/2"] } });
+      await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers });
+      await app.inject({ method: "POST", url: "/api/cli/job-apply/job/next", headers: agent, payload: { waitMs: 0 } });
+      const view = async (_owner: string, paneId: string) => (await app.inject({ method: "GET", url: `/api/panes/${encodeURIComponent(paneId)}/job-apply/run`, headers })).json();
+      const run = (await view("", pane.id)).run as JobApplyRun;
+      expect(run.currentApplicationId).not.toBeNull();
+      let clock = Date.parse(run.lastActivityAt) + 5 * 60_000;
+      const kickoff = vi.fn(async () => undefined);
+      const kick = createJobApplyRunKick({ runView: view, markKickoff: vi.fn(async () => undefined), pacing: vi.fn(async () => ({ nextAllowedAt: null }) as never) },
+        { store, kickoff, log: { warn: () => undefined }, now: () => clock,
+          inspect: async () => ({ sessionId: "cli_session:1", promptFingerprint: "f", state: "IDLE", usageLimited: false, text: "✻ Done.\n────\n❯ \n────" }) as RoomPaneObservation });
+      expect(await kick.tick()).toBe(0);
+      clock += 6 * 60_000;
+      expect(await kick.tick()).toBe(1);
     } finally {
       await app.close();
     }
@@ -365,6 +394,7 @@ describe("job copilot run supervisor", () => {
   });
 
   it("routes questions and reviews to the operator, answers become memory, and Telegram gets the needs-you moments when enabled", async () => {
+    atBangkokMidday();
     const { app, pane, headers, agent, sent, telegramPersistence, telegramSecrets } = await fixture();
     try {
       const paneUrl = `/api/panes/${encodeURIComponent(pane.id)}/job-apply`;

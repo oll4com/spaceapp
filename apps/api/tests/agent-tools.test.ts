@@ -201,6 +201,17 @@ describe("agent-tools", () => {
     expect((await buildAgentToolsCatalog(store, options)).entries.some((entry) => entry.toolId === "mcp:mcp_dispatcher")).toBe(true);
   }, 15_000);
 
+  // 28/10 22:00:49 UTC an ENOSPC write emptied the shared OpenCode config; a rebuild from {} would have kept it a stub.
+  it("refuses to rebuild an empty or stub OpenCode config and leaves it for a restore", async () => {
+    const store = new InMemorySpaceStore();
+    const assignment = { toolId: "mcp:devtools", kind: "MCP" as const, scope: "SPECIFIC" as const, runtimeIds: ["cli:opencode"] };
+    for (const [text, reason] of [["", "holds only 0 bytes"], ["{\n  \"disabled_providers\": []\n}\n", "holds only 31 bytes"]] as const) {
+      await writeFile(join(configHome, "opencode.json"), text, "utf8");
+      await expect(applyAgentTools(store, [assignment], options)).rejects.toThrow(`opencode.json ${reason}; refusing to write it.`);
+      expect(await readFile(join(configHome, "opencode.json"), "utf8")).toBe(text);
+    }
+  }, 15_000);
+
   it("applies a COMMON assignment to every writable runtime config with backups", async () => {
     const store = new InMemorySpaceStore();
     const input = {

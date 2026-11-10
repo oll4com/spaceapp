@@ -1,4 +1,5 @@
 import type { AgentRuntimeAuthMode, AgentRuntimeAuthState, CliAdapterLimitation } from "@space/contracts";
+import { SPACE_AGENT_HOME } from "@space/contracts";
 
 export type CliRuntimeKey =
   | "codex"
@@ -41,8 +42,9 @@ export interface CliRuntimeDescriptor {
   nativeResumeArgs: readonly string[] | null;
   /**
    * Declares `REFERENCE` recovery: a RESUME launch passes the recorded native task reference
-   * (buildCliSpawnArgs) and both launch gates admit it. A launcher that can pass one while its
-   * exactness is unproven keeps this false and declares REFERENCE_PENDING_LIVE_PROOF instead.
+   * (buildCliSpawnArgs, or a variable sudo keeps that the wrapper turns into the CLI's resume-by-id
+   * flag) and both launch gates admit it. A launcher that can pass one while its exactness is
+   * unproven keeps this false and declares REFERENCE_PENDING_LIVE_PROOF instead.
    */
   declaresNativeReference: boolean;
   /** What the adapter cannot provide for this runtime; apps/api/tests/cli-adapter-contract.test.ts derives the expected set. */
@@ -63,7 +65,7 @@ export interface CliRuntimeDescriptor {
   loginBootstrapReason: string | null;
 }
 
-const proxmoxHome = "/var/lib/spaceapp-user";
+const proxmoxHome = SPACE_AGENT_HOME;
 const codexHome = `${proxmoxHome}/.codex`;
 
 const completionUnobserved: CliAdapterLimitation = {
@@ -81,16 +83,6 @@ const loginNotInTerminal: CliAdapterLimitation = {
   code: "LOGIN_NOT_IN_TERMINAL",
   detail: "Authentication happens inside the CLI or through managed credentials; a terminal login is refused before a session is allocated."
 };
-const hostLossRestartsFresh: CliAdapterLimitation = {
-  operation: "reconnect",
-  code: "HOST_LOSS_RESTARTS_FRESH",
-  detail: "A live host process reconnects; after a pane-host loss the session restarts fresh instead of resuming."
-};
-const referencePendingLiveProof = (form: string): CliAdapterLimitation => ({
-  operation: "nativeResume",
-  code: "REFERENCE_PENDING_LIVE_PROOF",
-  detail: `RESUME passes the recorded reference (${form}); REFERENCE stays undeclared until a live resume proof exists.`
-});
 const interactivePicker = (form: string): CliAdapterLimitation => ({
   operation: "nativeResume",
   code: "PROVIDER_SELECTION_INTERACTIVE_PICKER",
@@ -215,11 +207,11 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-gemini/tmp`,
     environment: {},
     nativeResumeArgs: ["--continue"],
-    declaresNativeReference: false,
-    adapterLimitations: [providerSelectionOnly, {
+    declaresNativeReference: true,
+    adapterLimitations: [{
       operation: "nativeResume",
       code: "REFERENCE_STEERED_BY_WRAPPER",
-      detail: "RESUME passes `--continue`; the recorded conversation id travels in SPACE_GEMINI_CONVERSATION_ID and the wrapper steers the continue to it. Unverified live."
+      detail: "RESUME passes `--continue` with the recorded conversation id in SPACE_GEMINI_CONVERSATION_ID; the wrapper launches `agy --conversation <id>` when that conversation is in the account's store, else the `--continue` it steers to it."
     }, completionUnobserved, loginNotInTerminal],
     accountProfileEnv: "SPACE_GEMINI_ACCOUNT_PROFILE",
     paneModelLaunchEnv: false,
@@ -247,13 +239,14 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     stateRoot: `${codexHome}/space-autohand`,
     tempDir: `${codexHome}/space-autohand/tmp`,
     environment: { AUTOHAND_HOME: `${codexHome}/space-autohand` },
-    nativeResumeArgs: null,
+    nativeResumeArgs: ["--resume"],
+    // Installed 0.9.9 supports a full id, but the authenticated Space CLI proof still needs account sign-in.
     declaresNativeReference: false,
     adapterLimitations: [{
       operation: "nativeResume",
-      code: "NATIVE_RESUME_UNSUPPORTED",
-      detail: "Space has no Autohand resume form; recovery starts a fresh session with bounded Space context."
-    }, hostLossRestartsFresh, completionUnobserved],
+      code: "REFERENCE_PENDING_LIVE_PROOF",
+      detail: "Space binds the native heartbeat to the pane process and can pass its full session id with --resume. Authenticated CLI resume is unproven. A preflight rejects invalid saved state, but later native resume errors can start fresh. Without a recorded id, --resume opens Autohand's session picker."
+    }, providerSelectionOnly, interactivePicker("a bare `--resume`"), completionUnobserved],
     accountProfileEnv: null,
     paneModelLaunchEnv: false,
     defaultModelId: "openrouter/auto",
@@ -284,8 +277,10 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
       QWEN_RUNTIME_DIR: `${codexHome}/space-qwen/runtime`
     },
     nativeResumeArgs: ["--continue"],
-    declaresNativeReference: false,
-    adapterLimitations: [providerSelectionOnly, referencePendingLiveProof("`--resume <uuid>`"), completionUnobserved],
+    // ADAPTER-006 live check 2026-11-03 (Qwen 0.26.1): `--resume <id>` reopened pane A's session while pane B's was newer. The id is
+    // recorded from the TUI's own chats/<id>.runtime.json (qwen-task-metadata.mjs); without one RESUME reaches `--continue`.
+    declaresNativeReference: true,
+    adapterLimitations: [completionUnobserved],
     accountProfileEnv: null,
     paneModelLaunchEnv: true,
     defaultModelId: null,
@@ -313,8 +308,11 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-kimi/tmp`,
     environment: { KIMI_CODE_HOME: `${codexHome}/space-kimi` },
     nativeResumeArgs: ["--session"],
-    declaresNativeReference: false,
-    adapterLimitations: [providerSelectionOnly, interactivePicker("`--session`"), completionUnobserved],
+    // ADAPTER-006 live check 2026-11-03 (Kimi Code 2.4.1): `--session <id>` reopened session A while B was newer, and A's turn
+    // leased A to the resumed process. The id is recorded only while a turn runs (kimi-native-session.ts); without one RESUME
+    // reaches the `--session` picker.
+    declaresNativeReference: true,
+    adapterLimitations: [interactivePicker("`--session`"), completionUnobserved],
     accountProfileEnv: "SPACE_KIMI_ACCOUNT_PROFILE",
     paneModelLaunchEnv: true,
     defaultModelId: "kimi-code/k3",
@@ -342,8 +340,12 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-grok/tmp`,
     environment: { GROK_HOME: `${codexHome}/space-grok` },
     nativeResumeArgs: ["--resume"],
-    declaresNativeReference: false,
-    adapterLimitations: [providerSelectionOnly, completionUnobserved],
+    declaresNativeReference: true,
+    adapterLimitations: [{
+      operation: "nativeResume",
+      code: "REFERENCE_STEERED_BY_WRAPPER",
+      detail: "Each start carries the pane's Grok session id in SPACE_GROK_SESSION_ID; the wrapper launches `grok --session-id <id>` on a fresh start and `grok --resume <id>` once the store holds that session, else the `--resume` it was given."
+    }, completionUnobserved],
     accountProfileEnv: null,
     paneModelLaunchEnv: true,
     defaultModelId: "grok-4.7",
@@ -403,8 +405,12 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
       AGENT_CLI_CREDENTIAL_STORE: "file"
     },
     nativeResumeArgs: ["--continue"],
-    declaresNativeReference: false,
-    adapterLimitations: [providerSelectionOnly, completionUnobserved],
+    declaresNativeReference: true,
+    adapterLimitations: [{
+      operation: "nativeResume",
+      code: "REFERENCE_STEERED_BY_WRAPPER",
+      detail: "Each start carries the pane's Cursor chat id in SPACE_CURSOR_SESSION_ID; the wrapper launches `cursor-agent --resume <id>` on a fresh start (Cursor starts a new chat on that id), and on RESUME when the store holds that chat, else the `--continue` it was given."
+    }, completionUnobserved],
     accountProfileEnv: "SPACE_CURSOR_ACCOUNT_PROFILE",
     paneModelLaunchEnv: false,
     defaultModelId: "auto",
@@ -432,8 +438,12 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-copilot/tmp`,
     environment: { COPILOT_HOME: `${codexHome}/space-copilot` },
     nativeResumeArgs: ["--continue"],
-    declaresNativeReference: false,
-    adapterLimitations: [providerSelectionOnly, completionUnobserved],
+    declaresNativeReference: true,
+    adapterLimitations: [{
+      operation: "nativeResume",
+      code: "REFERENCE_STEERED_BY_WRAPPER",
+      detail: "Each start carries the pane's Copilot session id in SPACE_COPILOT_SESSION_ID; the wrapper launches `copilot --session-id <id>` on a fresh start, and on RESUME when the store holds that session, else the `--continue` it was given."
+    }, completionUnobserved],
     accountProfileEnv: "SPACE_COPILOT_ACCOUNT_PROFILE",
     paneModelLaunchEnv: true,
     defaultModelId: null,
@@ -457,12 +467,14 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     credentialSmokeMarker: "SPACE_HERMES_OK",
     loginBootstrapEnv: null,
     loginBootstrapRuntimeEnv: null,
-    stateRoot: "/var/lib/spaceapp-user/.hermes",
-    tempDir: "/var/lib/spaceapp-user/.codex/space-hermes/tmp",
-    environment: { HERMES_HOME: "/var/lib/spaceapp-user/.hermes" },
+    stateRoot: `${SPACE_AGENT_HOME}/.hermes`,
+    tempDir: `${SPACE_AGENT_HOME}/.codex/space-hermes/tmp`,
+    environment: { HERMES_HOME: `${SPACE_AGENT_HOME}/.hermes` },
     nativeResumeArgs: ["--continue"],
-    declaresNativeReference: false,
-    adapterLimitations: [providerSelectionOnly, completionUnobserved, loginNotInTerminal],
+    // ADAPTER-006 live check 2026-11-03 (Hermes 0.22.5): `--resume <id>` reopened pane A's session while pane B's was newer.
+    // The id is recorded only while the pane's TUI runs (hermes-task-metadata.py); without one RESUME reaches `--continue`.
+    declaresNativeReference: true,
+    adapterLimitations: [completionUnobserved, loginNotInTerminal],
     accountProfileEnv: null,
     paneModelLaunchEnv: true,
     defaultModelId: "space-gateway-claude:claude-opus-5-5",
@@ -490,8 +502,10 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-omp/tmp`,
     environment: {},
     nativeResumeArgs: ["--continue"],
-    declaresNativeReference: false,
-    adapterLimitations: [providerSelectionOnly, completionUnobserved, loginNotInTerminal],
+    // ADAPTER-006 live check 2026-11-02 (omp 18.14.2): `--resume <id>` reopened that session while a newer one was the
+    // folder's latest, and omp's terminal breadcrumb named its file. The id is recorded only while the pane's omp runs; without one RESUME reaches `--continue`.
+    declaresNativeReference: true,
+    adapterLimitations: [completionUnobserved, loginNotInTerminal],
     accountProfileEnv: null,
     paneModelLaunchEnv: true,
     defaultModelId: "space-gateway/gpt-6-sol",
@@ -521,8 +535,10 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     environment: {},
     // The Qoder sudoers admits `--continue`/`-c` only; a bare `--resume` was refused by `sudo -n`.
     nativeResumeArgs: ["--continue"],
-    declaresNativeReference: false,
-    adapterLimitations: [providerSelectionOnly, referencePendingLiveProof("`-r <uuid>`, fresh `--session-id <uuid>`"), completionUnobserved, loginNotInTerminal],
+    // ADAPTER-006 live check 2026-11-02 (qodercli 1.1.81, wrapper inner mode): `-r <uuid>` resumed the pane's
+    // session while a newer one was the folder's latest. Fresh starts take `--session-id <uuid>`.
+    declaresNativeReference: true,
+    adapterLimitations: [completionUnobserved, loginNotInTerminal],
     accountProfileEnv: null,
     paneModelLaunchEnv: true,
     defaultModelId: null,
@@ -550,8 +566,11 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-muse/tmp`,
     environment: {},
     nativeResumeArgs: ["resume", "--last"],
-    declaresNativeReference: false,
-    adapterLimitations: [providerSelectionOnly, completionUnobserved, loginNotInTerminal],
+    // ADAPTER-006 live check 2026-11-02 (Muse 1.4.14): `resume <id>` reopened that session while a newer one was the latest,
+    // and the live muse-bin held its folder's .session.lock open. The id is recorded only while the pane's Muse runs; without
+    // one RESUME reaches `resume --last`, as the wrapper does when Muse no longer holds the recorded session.
+    declaresNativeReference: true,
+    adapterLimitations: [completionUnobserved, loginNotInTerminal],
     accountProfileEnv: null,
     paneModelLaunchEnv: true,
     defaultModelId: null,
@@ -580,7 +599,11 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     environment: {},
     nativeResumeArgs: ["--resume", "--last"],
     declaresNativeReference: false,
-    adapterLimitations: [providerSelectionOnly, completionUnobserved, loginNotInTerminal],
+    adapterLimitations: [providerSelectionOnly, {
+      operation: "nativeResume",
+      code: "REFERENCE_PENDING_LIVE_PROOF",
+      detail: "The installed CLI accepts --resume <id>. Space can pass a recorded id and opportunistically bind a writable session file held by the pane's Droid process. Native descriptor lifetime and authenticated exact resume remain unproven; no descriptor means no captured id."
+    }, completionUnobserved, loginNotInTerminal],
     accountProfileEnv: null,
     paneModelLaunchEnv: true,
     defaultModelId: null,

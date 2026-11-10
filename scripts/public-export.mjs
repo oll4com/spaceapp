@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import {
   basename,
@@ -33,6 +33,9 @@ const repoRoot = resolve(dirname(scriptPath), "..");
 
 const rootFiles = new Set([
   ".dockerignore",
+  // The secret scan's config and its reviewed fingerprints: the public suite checks them in the export (CORE-002).
+  ".gitleaks.toml",
+  ".gitleaksignore",
   ".gitignore",
   ".nvmrc",
   ".trivyignore",
@@ -54,6 +57,7 @@ const rootFiles = new Set([
 ]);
 
 const publicDocs = new Set([
+  "docs/runbooks/nous-shared-memory.md",
   // Linked from the README (review F4: the link was stripped because the file was not exported).
   "docs/architecture.md",
   "docs/clean-room-testing.md",
@@ -63,6 +67,8 @@ const publicDocs = new Set([
   "docs/quality/domain-boundaries.json",
   "docs/decisions/ADR-010-public-distribution.md",
   "docs/getting-started.md",
+  // The Nous guide, linked from the README and Getting started (plan clipboard:1NF6u6gcCwtj step 5).
+  "docs/nous.md",
   "docs/legal/cli-distribution-policy.json",
   "docs/operations.md",
   "docs/installer-release-runbook.md",
@@ -78,8 +84,15 @@ const publicDocs = new Set([
 export const publicRepositoryMaintainedFiles = new Set(["docs/security-model.md"]);
 
 const publicScripts = new Set([
+  "scripts/space-shared-memory-seed.mjs",
+  "scripts/tests/space-shared-memory-seed.test.mjs",
   // Loaded by apps/api/src/cli-render-proof-fixture.ts (proof rooms); missing, that path failed (review F18).
   "scripts/cli-render-fixture.mjs",
+  // packages/contracts' build runs it (Sentry release stamp); missing, every image build failed (1.2.0 c9).
+  "scripts/space-sentry-release.mjs",
+  // Preload worker-hard-kill.integration starts its workers with (1.2.0 c4 public suite: missing, every case failed).
+  "scripts/test-support/worktree-source-loader.mjs",
+  "scripts/test-support/worktree-source-hooks.mjs",
   // Maintained here; listed so the CI re-export of this repository keeps them.
   "scripts/public-test-exclusions.json",
   "scripts/verify-export-provenance.mjs",
@@ -96,6 +109,8 @@ const publicScripts = new Set([
   "scripts/embed-image-lock.mjs",
   "scripts/tests/embed-image-lock.test.mjs",
   "scripts/tests/opencode-standalone.test.mjs",
+  // Nous on a public install (2026-10-27): the CLI container runs its Claude Code turns.
+  "scripts/tests/claude-agent.test.mjs",
   "scripts/container-image-size-budget.mjs",
   "scripts/fix-build-permissions.mjs",
   "scripts/portable-backup.mjs",
@@ -138,7 +153,45 @@ const publicScripts = new Set([
   "scripts/tests/quality-known-limitations.test.mjs",
   "scripts/contributor-smoke.mjs",
   "scripts/fixtures/offline-cli.mjs",
-  "scripts/tests/contributor-smoke.test.mjs"
+  "scripts/tests/contributor-smoke.test.mjs",
+  // 1.2.0 (operator 5/11, plan clipboard:NtXOwLkXVN1x): the scripts the API runs and agent-bootstrap.ts tells panes to run,
+  // with every repository file they load. Missing, Nous never heard from panes and the Design, Video and App Studio panes failed.
+  "scripts/space-progress.mjs",
+  "scripts/space-task.mjs",
+  "scripts/space-test-resource.mjs",
+  "deploy/space-harness-pane-env.mjs",
+  "scripts/space-design-render.mjs",
+  "scripts/design-templates/base.css",
+  "scripts/design-templates/bold-thumbnail.html",
+  "scripts/design-templates/gradient-headline.html",
+  "scripts/design-templates/logo.html",
+  "scripts/design-templates/photo-headline.html",
+  "scripts/design-templates/quote-card.html",
+  "scripts/design-templates/release-announcement.html",
+  "scripts/design-templates/wide-banner.html",
+  "scripts/design-templates/fonts/Inter-LICENSE.txt",
+  "scripts/design-templates/fonts/InterVariable.woff2",
+  "scripts/lib/space-chrome-render.mjs",
+  "scripts/space-media-capture.mjs",
+  "scripts/space-dots-home-check.mjs",
+  "scripts/space-video-engine.mjs",
+  "scripts/space-video-tools-setup.mjs",
+  "scripts/video-tools/manifest.json",
+  "scripts/video-tools/requirements.txt",
+  "scripts/video-tools/requirements-chatterbox.txt",
+  "scripts/space-app-studio-build.mjs",
+  "scripts/space-app-studio-mcp.mjs",
+  "scripts/space-android-toolchain-setup.mjs",
+  "scripts/android-toolchain/manifest.json",
+  // Not scripts/space-app-studio-apk-proof.mjs: it drives the maintainer's own Proxmox emulator VM over ssh.
+  "scripts/space-load-gate.mjs",
+  "scripts/space-security-copilot-mcp.mjs",
+  "scripts/space-monitoring-copilot-mcp.mjs",
+  "scripts/space-site-signins-tools.mjs",
+  "scripts/space-security-inventory.mjs",
+  "scripts/space-security-probe.sh",
+  "scripts/space-security-scanner-setup.mjs",
+  "scripts/lib/mcp-result.mjs"
 ]);
 
 // Root package.json scripts may name only files in the public tree: exported
@@ -164,6 +217,8 @@ const privateOnlyTests = new Map(Object.entries(JSON.parse(
 )));
 
 const publicBinaryFiles = new Map([
+  // Inter (SIL OFL 1.1, its licence ships beside it): the Design pane's template font.
+  ["scripts/design-templates/fonts/InterVariable.woff2", "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3"],
   ["apps/web/public/brand/spaceapp-bg-ascii-orbital-optimized.gif", "42e0be38c08a14c7affca0cdb77583a2d015156a0ca741bef093ddf79078ebcc"],
   ["apps/web/public/brand/spaceapp-bg-ascii-orbital.gif", "2fcddf4f10b823cb579fc9971551b322380269d097654b4a90fba8a51ba7a254"],
   ["apps/web/public/brand/spaceapp-bg-ascii-v1.jpg", "b2bbbdcc8c374358e05b0c463f25d614d4fe05effa77f905fce4ca97d1444bca"],
@@ -183,6 +238,12 @@ const publicBinaryFiles = new Map([
   ],
   // Web app manifest icons (source f5f90a9fff): the Space rocket mark only, PNG chunks IHDR/IDAT/IEND, reviewed 2026-10-16.
   ["apps/web/public/brand/apple-touch-icon.png", "3bd68378e1b58b393d479970abcde878ec0f50608fe037cb222770fc6837857b"],
+  // Dots evaluation fixtures (evals/dots-v1, provenance authored-synthetic): synthetic invoice, receipt, budget, memo and a 16x16 red PNG, reviewed 2026-10-30.
+  ["evals/dots-v1/fixtures/budget.xlsx", "c8b8b8c1e966918cb2a42b605f38c39eb778b65cfc9b98c4cfaa37d32a2db3b7"],
+  ["evals/dots-v1/fixtures/invoice.pdf", "92d542734c9dd1db11ef705062f29842a40b2bf66e357ce6cdb0181fccfa9006"],
+  ["evals/dots-v1/fixtures/memo.docx", "92a20808b7a5a3473d9e32643efb4a7bbbdf35333180f8241d091f4a70b3eaf3"],
+  ["evals/dots-v1/fixtures/red-square.png", "36f878618fa73b3f4125299a43e577af6fad75b67f37df41dccf2003742c8845"],
+  ["evals/dots-v1/fixtures/scanned-receipt.pdf", "060c65e8cfe45537f8f7b9eeb5e445a2c995b91e6d0859db0992069ed7945049"],
   ["apps/web/public/brand/space-icon-192.png", "2cf31549af07f8116b7a13a6ae91b353646dd6dde4fa7d3d18751fc91f78f79d"],
   ["apps/web/public/brand/space-icon-512.png", "bfae3d0b7eee9659b0f697696189a563dfb8c8356e1d7682b69f2e4301f846d2"],
   // Liquid Glass theme wallpapers (source b7d9434873): planet and rocket artwork, a single VP8 chunk, reviewed 2026-10-16.
@@ -244,7 +305,11 @@ const textReplacements = [
   ...privateRules.replacements.map(({ pattern, flags, to }) => [new RegExp(pattern, flags), to]),
   // Any Proxmox VM identifier is private infra and must not leak into the
   // public installer; generic rule covers current and future ids.
-  [new RegExp("\\bVM\\d{2,4}\\b", "g"), "public-host"]
+  [new RegExp("\\bVM\\d{2,4}\\b", "g"), "public-host"],
+  // The same id as Space's alert keys write it (lower case, digits as n), so an expected key follows its renamed source line.
+  [new RegExp("\\bvmn\\b", "g"), "public-host"],
+  // A licensor mailbox URL-encoded in a query (Gmail rfc822msgid searches) follows its @ form to example.invalid.
+  [new RegExp("%40oll4\\.com\\b", "g"), "%40example.invalid"]
 ];
 
 const contentRules = [
@@ -329,6 +394,15 @@ const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAACXBIWXM
     // latest event is a race (1 of 3 runs); the test means that the alert was stored. Source fix in the dev queue.
     return text.replace('    expect(store.getLatestEvent(room.id)?.type).toBe("ROOM_WATCHDOG_ALERT");',
       '    expect(store.listEvents(room.id).find((event) => event.id === recorded.id)?.type).toBe("ROOM_WATCHDOG_ALERT");');
+  }
+  if (path === "apps/api/tests/nous-reset-credits.test.ts") {
+    // 1.2.0 c4 public suite: scripts/space-admin-action.mjs (the operator's admin actions) is private; the public test checks the API's key alone.
+    return text.replace('import { codexResetKey as scriptKey, codexResetView } from "../../../scripts/space-admin-action.mjs";\n', "")
+      .replace(/^ *expect\((?:scriptKey|codexResetView)\(.*\n/gm, "");
+  }
+  if (path === "apps/worker/tests/support/child-process-env-scan.mjs") {
+    // 1.2.0 c4 public suite: run-spaceapp is the launcher on the user's own computer, before any Space credential exists, like apps/desktop.
+    return text.replace('.concat(readdirSync(resolve(root, "packages")).map(', '.concat(readdirSync(resolve(root, "packages")).filter((pkg) => pkg !== "run-spaceapp").map(');
   }
   if (path === "apps/api/tests/setup.test.ts") {
     return text.replace('expect(login.cookies[0]?.name).toBe("space_session")', 'expect(login.cookies.find(cookie => cookie.name === "space_session")?.value).toBeTruthy()');
@@ -506,6 +580,41 @@ const operatorHostSkills = new Set([
   "space-sync-to-vm218", "spaceapp-devtest", "run-spaceapp-devtest", "spaceapp-setup-maintenance", "spaceapp-setup-release"
 ]);
 
+// 1.2.0 (operator 5/11, plan clipboard:NtXOwLkXVN1x): the repository scripts a public install runs. agent-bootstrap.ts tells panes to run
+// /opt/spaceapp/scripts/..., the API and worker load ../scripts/... and ../deploy/... with new URL, and each of those loads more by
+// relative import. Packages are built into the image, so the walk stops at packages/. The export and the image guards both read this.
+export const maintainerOnlyScripts = new Map([
+  // Its session comes from the maintainer's root auth broker (sudo), which a self-hosted install does not have.
+  ["scripts/space-admin-action.mjs", "maintainer auth broker"]
+]);
+// Folders those scripts read by path (templates, pinned tool manifests), not by import, each with a file it must hold.
+export const runtimeScriptData = new Map([
+  ["scripts/design-templates", "base.css"], ["scripts/video-tools", "manifest.json"], ["scripts/android-toolchain", "manifest.json"]
+]);
+export function runtimeScripts(root) {
+  const named = new Set();
+  for (const [, path] of readFileSync(join(root, "apps/api/src/agent-bootstrap.ts"), "utf8").matchAll(/\/(scripts\/[\w./-]+\.(?:mjs|sh))/g)) named.add(path);
+  const sources = (dir) => readdirSync(join(root, dir), { recursive: true }).filter((file) => /\.tsx?$/.test(file) && !/\.test\.tsx?$/.test(file))
+    .map((file) => join(dir, file));
+  for (const file of [...sources("apps/api/src"), ...sources("apps/worker/src")]) {
+    for (const [, ref] of readFileSync(join(root, file), "utf8").matchAll(/new URL\(\s*["']((?:\.\.\/)+(?:scripts|deploy)\/[^"']+)["']/g)) {
+      named.add(relative(root, resolve(root, file, "..", ref)));
+    }
+  }
+  const seen = new Set();
+  for (const queue = [...named]; queue.length;) {
+    const path = queue.pop();
+    if (seen.has(path) || maintainerOnlyScripts.has(path)) continue;
+    seen.add(path);
+    if (!/\.mjs$/.test(path) || !existsSync(join(root, path))) continue;
+    for (const [, ref] of readFileSync(join(root, path), "utf8").matchAll(/(?:from\s*|import\s*\(\s*|new URL\(\s*)["'](\.{1,2}\/[^"']+)["']/g)) {
+      const target = relative(root, resolve(root, path, "..", ref));
+      if (!target.startsWith("packages/")) queue.push(target);
+    }
+  }
+  return [...seen].sort();
+}
+
 export function isPublicExportPath(path) {
   const normalized = path.replaceAll("\\", "/");
   // Client binary releases are distributed separately, never inside the server installer.
@@ -515,8 +624,6 @@ export function isPublicExportPath(path) {
   if (/^agent-skills\/space-hyperframes\/.+\.(?:woff2|mp3|png)$/.test(normalized)) return false;
   if (operatorHostSkills.has(normalized.match(/^agent-skills\/([^/]+)\//)?.[1])) return false;
   if (privateOnlyTests.has(normalized)) return false;
-  // Tests named *-postgres* start a disposable PostgreSQL container (--pull=never) that public CI does not have.
-  if (/\/(?:tests|__tests__)\/[^/]*-postgres[^/]*$/.test(normalized)) return false;
   if (normalized.includes("/tests/")) {
     return publicScripts.has(normalized) || /^(apps|packages)\//.test(normalized);
   }
@@ -526,6 +633,8 @@ export function isPublicExportPath(path) {
     normalized.startsWith("apps/") ||
     normalized.startsWith("packages/") ||
     normalized.startsWith("starter-memory/") ||
+    // The Dots evaluation dataset and its fixtures, all authored-synthetic: attachment-readers and dot-evals read them.
+    normalized.startsWith("evals/dots-v1/") ||
     normalized.startsWith("demos/") ||
     normalized.startsWith("deploy/docker/") ||
     // Licence texts of third-party code in apps/ and packages/ (Claude review 1.1.7 F5).

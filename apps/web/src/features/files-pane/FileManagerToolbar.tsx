@@ -16,6 +16,8 @@ import {
   PanelLeftClose,
   PanelLeft
 } from "../ui-theme/app-icons.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export interface FileManagerToolbarProps {
   currentPath: string;
@@ -58,13 +60,15 @@ export function FileManagerToolbar({
   sidebarVisible,
   onToggleSidebar
 }: FileManagerToolbarProps) {
-  const safePath = currentPath || workspaceRoot || "/opt/spaceapp";
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
+  const safePath = currentPath || workspaceRoot || SPACE_INSTALL_ROOT;
   const [isEditingPath, setIsEditingPath] = useState(false);
   const [pathInput, setPathInput] = useState(safePath);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    setPathInput(currentPath || workspaceRoot || "/opt/spaceapp");
+    setPathInput(currentPath || workspaceRoot || SPACE_INSTALL_ROOT);
   }, [currentPath, workspaceRoot]);
 
   useEffect(() => {
@@ -156,7 +160,7 @@ export function FileManagerToolbar({
           className="fm-action-btn"
           style={{ marginLeft: 4, padding: "2px 4px" }}
           onClick={() => setIsEditingPath(true)}
-          title="Edit Path (Ctrl+L)"
+          title={t("Edit Path (Ctrl+L)")}
         >
           <Pencil size={13} />
         </button>
@@ -172,8 +176,8 @@ export function FileManagerToolbar({
           type="button"
           className={`fm-sidebar-toggle ${sidebarVisible ? "active" : "closed"}`}
           onClick={onToggleSidebar}
-          title={sidebarVisible ? "Hide sidebar" : "Show sidebar"}
-          aria-label={sidebarVisible ? "Hide sidebar" : "Show sidebar"}
+          title={sidebarVisible ? t("Hide sidebar") : t("Show sidebar")}
+          aria-label={sidebarVisible ? t("Hide sidebar") : t("Show sidebar")}
         >
           {sidebarVisible ? <PanelLeftClose size={14} /> : <PanelLeft size={14} />}
         </button>
@@ -184,7 +188,7 @@ export function FileManagerToolbar({
           <input
             className="fm-search-input"
             type="text"
-            placeholder="Filter files..."
+            placeholder={t("Filter files...")}
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
           />
@@ -194,50 +198,50 @@ export function FileManagerToolbar({
         <button
           type="button"
           className={`desktop-mode-switch fm-mode-switch ${mode === "admin" ? "admin-mode" : "user-mode"}`}
-          aria-label={mode === "admin" ? "Admin mode" : "User mode"}
+          aria-label={mode === "admin" ? t("Admin mode") : t("User mode")}
           aria-pressed={mode === "admin"}
           onClick={onModeToggle}
           title={
             mode === "admin"
-              ? "Admin mode: Full filesystem root & editing unlocked. Click to switch to User mode (Read-only)."
+              ? t("Admin mode: Full filesystem root & editing unlocked. Click to switch to User mode (Read-only).")
               : isAdminCapable
-              ? "User mode: View-only access. Click to unlock Admin mode."
-              : "User mode: View-only access."
+              ? t("User mode: View-only access. Click to unlock Admin mode.")
+              : t("User mode: View-only access.")
           }
         >
           {mode === "admin" ? <ShieldCheck size={14} aria-hidden="true" /> : <UserCheck size={14} aria-hidden="true" />}
-          <span className="fm-btn-text">{mode === "admin" ? "Admin mode" : "User mode"}</span>
+          <span className="fm-btn-text">{mode === "admin" ? t("Admin mode") : t("User mode")}</span>
         </button>
 
         {/* Write Operations - ONLY in Admin Mode */}
         {mode === "admin" && (
           <>
-            <button className="fm-btn" onClick={onNewFile} title="New File">
+            <button className="fm-btn" onClick={onNewFile} title={t("New File")}>
               <FileInput size={14} />
-              <span className="fm-btn-text">+ File</span>
+              <span className="fm-btn-text">{t("+ File")}</span>
             </button>
 
-            <button className="fm-btn" onClick={onNewFolder} title="New Folder">
+            <button className="fm-btn" onClick={onNewFolder} title={t("New Folder")}>
               <FolderPlus size={14} />
-              <span className="fm-btn-text">+ Folder</span>
+              <span className="fm-btn-text">{t("+ Folder")}</span>
             </button>
 
-            <button className="fm-btn primary" onClick={onUploadClick} title="Upload File">
+            <button className="fm-btn primary" onClick={onUploadClick} title={t("Upload File")}>
               <Upload size={14} />
-              <span className="fm-btn-text">Upload</span>
+              <span className="fm-btn-text">{t("Upload")}</span>
             </button>
           </>
         )}
 
         {/* Read / View Controls */}
-        <button className="fm-btn" onClick={onRefresh} title="Refresh directory">
+        <button className="fm-btn" onClick={onRefresh} title={t("Refresh directory")}>
           <RefreshCw size={14} />
         </button>
 
         <button
           className="fm-btn"
           onClick={onToggleHidden}
-          title={showHidden ? "Hide dotfiles" : "Show dotfiles"}
+          title={showHidden ? t("Hide dotfiles") : t("Show dotfiles")}
         >
           {showHidden ? <EyeOff size={14} /> : <Eye size={14} />}
         </button>
@@ -245,7 +249,7 @@ export function FileManagerToolbar({
         <button
           className="fm-btn"
           onClick={onToggleViewMode}
-          title={viewMode === "table" ? "Switch to Grid View" : "Switch to List View"}
+          title={viewMode === "table" ? t("Switch to Grid View") : t("Switch to List View")}
         >
           {viewMode === "table" ? <LayoutGrid size={14} /> : <List size={14} />}
         </button>

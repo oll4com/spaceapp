@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDedicatedSpacePgPool, createSpacePgPool, SHARED_SPACE_PG_POOL_MAX } from "../src/space-store.js";
 
 // Pools connect lazily, so nothing here reaches a database.
@@ -77,5 +77,20 @@ describe("shared Space pg pool", () => {
     expect(dedicated.options).not.toBe(shared.options);
     expect(dedicated.options.max).toBe(4);
     await Promise.all([shared.end(), other.end(), dedicated.end()]);
+  });
+
+  it("logs a pool error's message without the credentials in it (OBS-011: the Browser Host, API and worker share it)", async () => {
+    const pool = createDedicatedSpacePgPool(url, options);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      pool.emit("error", new Error("connect failed for postgres://space:hunter2secret@db.internal/space token=abcd1234efgh")); // synthetic credentials the log must redact; gitleaks:allow
+      const line = logged.mock.calls.flat().join(" ");
+      expect(line).toContain("Postgres pool connection error");
+      expect(line).not.toContain("hunter2secret");
+      expect(line).not.toContain("abcd1234efgh");
+    } finally {
+      logged.mockRestore();
+      await pool.end();
+    }
   });
 });

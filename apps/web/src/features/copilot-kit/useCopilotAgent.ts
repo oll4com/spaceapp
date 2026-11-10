@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Pane } from "@space/contracts";
 import { api } from "../../api.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { loadDefaultAccountProfileId } from "./AgentAccountField.js";
 import type { CopilotKind } from "./copilot-kind.js";
 import { copilotAccountFor, copilotAgentLabel, loadPaneAccountProfileId, saveCopilotLaunch, type CopilotRuntimeOption } from "./copilot-runtimes.js";
@@ -18,6 +19,9 @@ export function useCopilotAgent({ kind, pane, runtimeOptions, onSwitched, onNoti
   onSwitched?(): void;
   onNotice(notice: string | null): void;
 }) {
+  const language = useUiLanguage();
+  const languageRef = useRef(language);
+  languageRef.current = language; // read at error time, so a language change never refetches
   const [switching, setSwitching] = useState(false);
   const [terminalKey, setTerminalKey] = useState(0);
   const [accountRevision, setAccountRevision] = useState(0);
@@ -39,7 +43,7 @@ export function useCopilotAgent({ kind, pane, runtimeOptions, onSwitched, onNoti
       setTerminalKey((key) => key + 1);
       onSwitched?.();
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : "The copilot agent could not be switched.");
+      onNotice(error instanceof Error ? error.message : uiText(languageRef.current, "The copilot agent could not be switched."));
     } finally {
       setSwitching(false);
     }
@@ -54,9 +58,11 @@ export function useCopilotAgent({ kind, pane, runtimeOptions, onSwitched, onNoti
       const accountProfileId = await loadPaneAccountProfileId(pane.id, runtimeId);
       await saveCopilotLaunch(kind, { runtimeId, accountProfileId, askOnLaunch: false });
       const option = runtimeOptions.find((entry) => entry.runtime.id === runtimeId);
-      onNotice(`New ${kind.label} panes open with ${copilotAgentLabel(runtimeId, option?.runtime)}${accountProfileId ? ` (${accountProfileId} account)` : ""} from now on.`);
+      const agent = copilotAgentLabel(runtimeId, option?.runtime);
+      onNotice(accountProfileId ? uiText(languageRef.current, "New {kind} panes open with {agent} ({account} account) from now on.", { kind: kind.label, agent, account: accountProfileId })
+        : uiText(languageRef.current, "New {kind} panes open with {agent} from now on.", { kind: kind.label, agent }));
     } catch (error) {
-      onNotice(error instanceof Error ? `The default agent could not be saved: ${error.message}` : "The default agent could not be saved.");
+      onNotice(error instanceof Error ? uiText(languageRef.current, "The default agent could not be saved: {error}", { error: error.message }) : uiText(languageRef.current, "The default agent could not be saved."));
     }
   }, [kind, onNotice, pane.id, pane.terminalRuntimeId, runtimeOptions]);
 

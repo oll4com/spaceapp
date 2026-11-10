@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo, useCallback, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Grid2X2, RotateCcw, CircleAlert, GripVertical } from "../ui-theme/app-icons.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import {
   DOCK_DEFINITIONS,
   NON_HIDEABLE_DOCK_IDS,
@@ -27,6 +28,8 @@ export function DocksSettingsCard({
   onNavigateToPlugins
 }: DocksSettingsCardProps) {
   const { isDockVisible, showDock, hideDock, resetDocks, dockOrder, setDockOrder } = useDocksVisibility();
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [drag, setDrag] = useState<{ id: string; over: string | null } | null>(null);
   const [internalGitActive, setInternalGitActive] = useState<boolean>(Boolean(gitPluginsActive));
 
@@ -124,8 +127,9 @@ export function DocksSettingsCard({
       onNavigateToPlugins();
       return;
     }
+    // The Plugins section's button is named in the operator's language too.
     const pluginsBtn = document.querySelector<HTMLButtonElement>(
-      'button[aria-label="Plugins"], button[aria-label="Plugins settings"]'
+      `button[aria-label="Plugins"], button[aria-label="Plugins settings"], button[aria-label="${t("Plugins")}"]`
     );
     if (pluginsBtn) {
       pluginsBtn.click();
@@ -136,20 +140,20 @@ export function DocksSettingsCard({
   return (
     <section
       className="agent-settings-card settings-flat-card docks-settings-card"
-      aria-label="Workspace docks visibility settings"
+      aria-label={t("Workspace docks visibility settings")}
     >
       <div className="agent-settings-section-title settings-flat-heading docks-settings-heading">
         <Grid2X2 aria-hidden="true" />
         <span>
-          <strong>Workspace docks</strong>
-          <small>Choose which docks appear in your workspace navigation and toolbar. Drag a dock to change its place.</small>
+          <strong>{t("Workspace docks")}</strong>
+          <small>{t("Choose which docks appear in your workspace navigation and toolbar. Drag a dock to change its place.")}</small>
         </span>
         <div className="settings-flat-heading-actions">
           <button
             type="button"
             className="docks-settings-reset-btn"
-            title="Reset dock visibility and order to defaults"
-            aria-label="Reset dock visibility and order to defaults"
+            title={t("Reset dock visibility and order to defaults")}
+            aria-label={t("Reset dock visibility and order to defaults")}
             onClick={resetDocks}
           >
             <RotateCcw aria-hidden="true" />
@@ -157,7 +161,7 @@ export function DocksSettingsCard({
         </div>
       </div>
 
-      <div className="docks-toggle-list" role="group" aria-label="Dock toggles">
+      <div className="docks-toggle-list" role="group" aria-label={t("Dock toggles")}>
         {displayedDocks.map((dock, index) => {
           const isGitDock = dock.requiresGitPlugin;
           const isGitDisabled = isGitDock && !internalGitActive;
@@ -165,26 +169,24 @@ export function DocksSettingsCard({
 
           let isChecked = isDockVisible(dock.id);
           let isDisabled = false;
-          let detail = dock.description;
+          let detail = t(dock.description);
           let title: string | undefined;
           let badge = null;
 
           if (isLocked) {
             isChecked = true;
             isDisabled = true;
-            detail = `${dock.description} Always visible to ensure you never lose access to workspace settings.`;
-            title = "Always visible. Settings dock cannot be hidden.";
-            badge = <span className="dock-status-badge is-muted">Always visible</span>;
+            detail = `${t(dock.description)} ${t("Always visible to ensure you never lose access to workspace settings.")}`;
+            title = t("Always visible. Settings dock cannot be hidden.");
+            badge = <span className="dock-status-badge is-muted">{t("Always visible")}</span>;
           } else if (isGitDisabled) {
             isChecked = false;
             isDisabled = true;
-            detail =
-              "Default hidden: required plugin is not active. Cannot be enabled until it is activated.";
-            title =
-              "Default hidden because the required plugin is not active. Cannot be enabled until it is activated.";
-            badge = <span className="dock-status-badge is-warning">Default hidden</span>;
+            detail = t("Default hidden: required plugin is not active. Cannot be enabled until it is activated.");
+            title = t("Default hidden because the required plugin is not active. Cannot be enabled until it is activated.");
+            badge = <span className="dock-status-badge is-warning">{t("Default hidden")}</span>;
           } else if (isGitDock && internalGitActive) {
-            badge = <span className="dock-status-badge is-success">Plugin active</span>;
+            badge = <span className="dock-status-badge is-success">{t("Plugin active")}</span>;
           }
 
           return (
@@ -196,8 +198,8 @@ export function DocksSettingsCard({
               <button
                 type="button"
                 className="dock-order-handle"
-                title={`Drag to move ${dock.label}, or use the arrow keys`}
-                aria-label={`Move ${dock.label} dock (position ${index + 1} of ${displayedDocks.length})`}
+                title={t("Drag to move {label}, or use the arrow keys", { label: t(dock.label) })}
+                aria-label={t("Move {label} dock (position {position} of {total})", { label: t(dock.label), position: index + 1, total: displayedDocks.length })}
                 onPointerDown={(event) => startDrag(event, dock.id)}
                 onKeyDown={(event) => handleOrderKey(event, dock.id, index)}
               >
@@ -206,11 +208,11 @@ export function DocksSettingsCard({
               <SpaceToggle
                 className="settings-flat-row settings-flat-toggle-row dock-visibility-row"
                 name={`dock-visibility-${dock.id}`}
-                ariaLabel={`Toggle ${dock.label} dock visibility`}
+                ariaLabel={t("Toggle {label} dock visibility", { label: t(dock.label) })}
                 label={
                   <span className="docks-toggle-label-wrap">
                     <dock.icon className="dock-toggle-icon" aria-hidden="true" />
-                    <span>{dock.label}</span>
+                    <span>{t(dock.label)}</span>
                     {badge}
                   </span>
                 }
@@ -231,14 +233,13 @@ export function DocksSettingsCard({
                 <div className="docks-plugin-notice" role="note">
                   <CircleAlert size={15} aria-hidden="true" />
                   <span>
-                    Default hidden: Neither GitHub nor Gitea plugin is active. Cannot be enabled until at least
-                    one of these plugins is activated.
+                    {t("Default hidden: Neither GitHub nor Gitea plugin is active. Cannot be enabled until at least one of these plugins is activated.")}
                     <button
                       type="button"
                       className="docks-plugin-link"
                       onClick={handleOpenPlugins}
                     >
-                      Configure Plugins
+                      {t("Configure Plugins")}
                     </button>
                   </span>
                 </div>
@@ -249,7 +250,7 @@ export function DocksSettingsCard({
       </div>
 
       <p className="docks-summary-note">
-        {visibleCount} of {displayedDocks.length} docks visible.
+        {t("{count} of {total} docks visible.", { count: visibleCount, total: displayedDocks.length })}
       </p>
     </section>
   );

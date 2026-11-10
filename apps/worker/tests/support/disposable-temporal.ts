@@ -13,6 +13,8 @@ import pg from "pg";
 
 /** Same images as the production compose file. Tests never pull them. */
 export const disposablePostgresImage = process.env.SPACE_TEST_PG_IMAGE ?? "pgvector/pgvector:0.8.7-pg17-trixie";
+// shortcut: the compose file runs temporalio/server 1.30.8 with admin-tools jobs, but auto-setup ended at 1.29.7 and sets up a
+// disposable Temporal in one container; move to the two-image setup when a test needs 1.30 server behaviour.
 export const disposableTemporalImage = process.env.SPACE_TEST_TEMPORAL_IMAGE ?? "temporalio/auto-setup:1.29.7";
 
 function docker(args: string[], timeout = 60_000): string {

@@ -1,3 +1,4 @@
+import { GATEWAY_FREE_PLAN_PAUSE_REASON } from "@space/contracts";
 import type { GatewayAccountRecord } from "@space/db";
 import type { AccountPool } from "./account-pool.js";
 
@@ -11,6 +12,8 @@ export function startAccountUsagePoller(input: {
   pool: AccountPool;
   intervalMs: number;
   refresh: (account: GatewayAccountRecord) => Promise<unknown>;
+  /** Also check accounts paused only by the free-plan rule so a renewed paid plan returns to rotation automatically. */
+  includeFreePaused?: boolean;
   /** An authorization failure counts as an account error for routing. */
   isAuthError?: (error: unknown) => boolean;
   /** The provider rejected the account's access token (HTTP 401). */
@@ -24,7 +27,8 @@ export function startAccountUsagePoller(input: {
     let refreshed = 0;
     try {
       const accounts = (await input.pool.accounts())
-        .filter((account) => account.status !== "PAUSED" && account.status !== "DEACTIVATED" && !input.pool.isSignedOut(account));
+        .filter((account) => (account.status !== "PAUSED" || (input.includeFreePaused && account.statusReason === GATEWAY_FREE_PLAN_PAUSE_REASON))
+          && account.status !== "DEACTIVATED" && !input.pool.isSignedOut(account));
       for (const account of accounts) {
         try {
           await input.refresh(account);

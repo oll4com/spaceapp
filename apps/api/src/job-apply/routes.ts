@@ -52,6 +52,8 @@ export interface JobApplyRouteDependencies {
 
 /** A RUNNING run with no activity this long, whose CLI sits at an empty prompt with postings queued, lost its loop. */
 const RUN_IDLE_MS = 10 * 60_000;
+/** Between applications the agent ends its turn (one application per Claude session, plan clipboard:qH5emwVaV6yO step 6): kick the next soon. */
+const BETWEEN_APPLICATIONS_MS = 60_000;
 
 /** The stalled-run kick of Job Copilot panes (see registerJobApplyRoutes); `now` for tests. */
 export function createJobApplyRunKick(service: Pick<JobApplyService, "runView" | "markKickoff" | "pacing">, deps: Pick<JobApplyRouteDependencies, "store" | "kickoff">
@@ -61,7 +63,7 @@ export function createJobApplyRunKick(service: Pick<JobApplyService, "runView" |
     paused: (pane) => resolveJobApplyPaneMetadata(pane.jobApplyMetadata).settings.paused,
     runView: async (owner, pane) => {
       const { run, queue } = await service.runView(owner, pane.id);
-      if (run === null || now() - Date.parse(run.lastActivityAt) < RUN_IDLE_MS) return { run, backlog: 0 };
+      if (run === null || now() - Date.parse(run.lastActivityAt) < (run.currentApplicationId ? RUN_IDLE_MS : BETWEEN_APPLICATIONS_MS)) return { run, backlog: 0 };
       // 27/10 (queue item 22): with every site at its daily cap the kick re-typed all night and the agent answered PACING; a capped
       // site's postings wait for 00:00 UTC, when the count changes and the kick fires again.
       const eligible = jobApplicationQueueHolds(queue, new Date(now()).toISOString()).eligible;

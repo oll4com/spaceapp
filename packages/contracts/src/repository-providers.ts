@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { PluginAuthField } from "./plugins.js";
 import type { GitRemoteRepository, PersonalGitConnection, ProjectRepositoryBinding } from "./source-control.js";
+import { webUrlWithoutCredentials } from "./link-rules.js";
 
 /** Personal providers are deliberately independent of ADMIN deployment providers. */
 export const repositoryProviderIdSchema = z.enum(["github", "gitea", "forgejo", "gitlab", "bitbucket", "azure-devops"]);
@@ -98,7 +99,7 @@ export interface RepositoryProviderAdapter extends Pick<LegacyRepositoryProvider
 }
 const projectPath = z.string().min(1).max(4096).refine(path => !path.includes("\0"), "Invalid path.");
 const cloneUrl = z.string().url().max(4096).refine(input => {
-  try { const url = new URL(input); return url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash; } catch { return false; }
+  try { const url = new URL(input); return webUrlWithoutCredentials(url) && !url.search && !url.hash; } catch { return false; }
 }, "Use an HTTPS repository URL without credentials or query parameters.");
 export const projectSourceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("new"), name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/) }).strict(),

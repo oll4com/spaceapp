@@ -16,7 +16,7 @@ vi.setConfig({ testTimeout: 30_000 });
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
-async function fixture() {
+async function fixture(designGenerate?: Parameters<typeof createApp>[0]["designGenerate"]) {
   const root = await mkdtemp(join(tmpdir(), "space-design-routes-"));
   roots.push(root);
   // No Design gateway key: generation answers DESIGN_ENGINE_UNAVAILABLE while templates work.
@@ -28,7 +28,7 @@ async function fixture() {
   const renders: DesignRenderInput[] = [];
   const app = await createApp({ store, config, eventBus, jobApplyMailTriage: false, marketingCopilotScheduler: false,
     designRender: async (_owner, input) => { renders.push(input); return { bytes: pngOf(input.width, input.height), mimeType: "image/png", width: input.width, height: input.height }; },
-    designKickoff: async () => undefined,
+    designKickoff: async () => undefined, designGenerate,
     auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false } });
   const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { email: "space@space.local", password: "space-dev" } });
   const cookie = `space_session=${login.cookies.find((entry) => entry.name === "space_session")?.value}`;
@@ -102,6 +102,20 @@ describe("Design pane routes", () => {
       expect(generate.statusCode).toBe(503);
       expect(generate.json().error.code).toBe("DESIGN_ENGINE_UNAVAILABLE");
       expect((await app.inject({ method: "POST", url: `${url}/generate`, headers, payload: { engine: "TEMPLATE", prompt: "x", formatId: "square" } })).statusCode).toBe(422);
+    } finally { await app.close(); }
+  });
+
+  it("sends the Studio's request id with a generated image, so Space Gateway's log row carries it (EXT-G-5)", async () => {
+    const traces: Array<string | null | undefined> = [];
+    const { app, headers, url } = await fixture(async (input) => {
+      traces.push(input.traceId);
+      return { bytes: pngOf(1024, 1024), mimeType: "image/png", model: "gemini-3.1-flash-image", text: null };
+    });
+    try {
+      const generate = await app.inject({ method: "POST", url: `${url}/generate`, headers, payload: { engine: "NANO_BANANA", prompt: "A calm orbit", formatId: "square" } });
+      expect(generate.statusCode).toBe(200);
+      expect(traces).toEqual([generate.headers["x-request-id"]]);
+      expect(traces[0]).toMatch(/^req:/);
     } finally { await app.close(); }
   });
 

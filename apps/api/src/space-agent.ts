@@ -775,6 +775,7 @@ function runStatusFromRecord(
   return "IDLE";
 }
 
+/** The session view's newest 100 (it is polled); GET /api/rooms/:id/agent-history pages through every session. */
 function historyFromNativeAndLegacy(nativeHistory: AgentPaneHistoryItem[], legacyHistory: AgentPaneHistoryItem[]): AgentPaneHistoryItem[] {
   return [...nativeHistory, ...legacyHistory]
     .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
@@ -1435,7 +1436,7 @@ export function createSpaceAgentAdapter(options: {
     const canSend =
       !pendingRequest && !gates.gate && runStatus !== "RUNNING" && runStatus !== "QUEUED" && runStatus !== "INTERRUPTING";
     const history = projectedSession.dotId
-      ? (await Promise.all(nativeHistory.map(async item => {
+      ? (await Promise.all(nativeHistory.slice(0, 100).map(async item => {
           const record = item.sessionId ? await store.getSpaceAgentSession(item.sessionId) : null;
           return record && record.dotId === projectedSession.dotId && record.roomId === projectedSession.roomId ? item : null;
         }))).filter((item): item is AgentPaneHistoryItem => item !== null)

@@ -10,12 +10,12 @@ const newId = (prefix: string) => `${prefix}:${randomBytes(9).toString("base64ur
 
 export type VideoRequestCreateRecord = Omit<VideoRequest, "id" | "status" | "resultAssetIds" | "question" | "answer" | "message" | "takenAt" | "deliveredAt" | "createdAt" | "updatedAt">;
 export type VideoRequestPatch = Partial<Pick<VideoRequest, "videoPaneId" | "sources" | "status" | "resultAssetIds" | "question" | "answer" | "message" | "takenAt" | "deliveredAt">>;
-export interface VideoRequestFilter { status?: VideoRequestStatus[]; videoPaneId?: string; requesterPaneId?: string; limit: number }
+export interface VideoRequestFilter { status?: VideoRequestStatus[]; videoPaneId?: string; requesterPaneId?: string; /** No limit: every matching request. */ limit?: number }
 export type VideoAssetCreateRecord = Omit<VideoAsset, "id" | "createdAt" | "updatedAt">;
 export type VideoAssetPatch = Partial<Pick<VideoAsset, "label" | "pinned" | "requestId" | "description" | "credits" | "durationSec" | "width" | "height">>;
-export interface VideoAssetFilter { paneId?: string; requestId?: string; formatIds?: string[]; kinds?: VideoAsset["kind"][]; ids?: string[]; parentIds?: string[]; artifactIds?: string[]; limit: number }
+export interface VideoAssetFilter { paneId?: string; requestId?: string; formatIds?: string[]; kinds?: VideoAsset["kind"][]; ids?: string[]; parentIds?: string[]; artifactIds?: string[]; /** No limit: every match. */ limit?: number }
 export type VideoEventCreateRecord = Omit<VideoEvent, "id" | "createdAt">;
-export interface VideoEventFilter { paneId?: string; requestId?: string; limit: number }
+export interface VideoEventFilter { paneId?: string; requestId?: string; /** No limit: every match. */ limit?: number }
 
 export interface VideoRepository {
   createRequest(input: VideoRequestCreateRecord): Promise<VideoRequest>;
@@ -63,7 +63,7 @@ export class InMemoryVideoRepository implements VideoRepository {
   async listRequests(owner: string, filter: VideoRequestFilter) {
     return [...this.requests.values()].filter((row) => row.ownerUserId === owner && (!filter.status?.length || filter.status.includes(row.status))
       && (!filter.videoPaneId || row.videoPaneId === filter.videoPaneId) && (!filter.requesterPaneId || row.requester.paneId === filter.requesterPaneId))
-      .sort(byNewest).slice(0, filter.limit).map(copy);
+      .sort(byNewest).slice(0, filter.limit ?? undefined).map(copy);
   }
   async updateRequest(owner: string, id: string, patch: VideoRequestPatch, fromStatus?: VideoRequestStatus[]) {
     const row = this.owned(this.requests, owner, id);
@@ -97,7 +97,7 @@ export class InMemoryVideoRepository implements VideoRepository {
       && (!filter.requestId || row.requestId === filter.requestId) && (!filter.formatIds?.length || (row.formatId !== null && filter.formatIds.includes(row.formatId)))
       && (!filter.kinds?.length || filter.kinds.includes(row.kind)) && (!filter.ids || filter.ids.includes(row.id))
       && (!filter.parentIds || (row.parentAssetId !== null && filter.parentIds.includes(row.parentAssetId))) && (!filter.artifactIds || filter.artifactIds.includes(row.artifactId)))
-      .sort(byNewest).slice(0, filter.limit).map(copy);
+      .sort(byNewest).slice(0, filter.limit ?? undefined).map(copy);
   }
   async updateAsset(owner: string, id: string, patch: VideoAssetPatch) {
     const row = this.owned(this.assets, owner, id);
@@ -121,7 +121,7 @@ export class InMemoryVideoRepository implements VideoRepository {
   }
   async listEvents(owner: string, filter: VideoEventFilter) {
     return this.events.filter((row) => row.ownerUserId === owner && (!filter.paneId || row.paneId === filter.paneId) && (!filter.requestId || row.requestId === filter.requestId))
-      .sort(byNewest).slice(0, filter.limit).map(copy);
+      .sort(byNewest).slice(0, filter.limit ?? undefined).map(copy);
   }
   async dispose() {}
 }
@@ -196,7 +196,7 @@ export class PostgresVideoRepository implements VideoRepository {
   async listRequests(owner: string, filter: VideoRequestFilter) {
     return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(requestTable as Table<unknown>)} FROM video_requests WHERE owner_user_id=$1 AND ($2::text[] IS NULL OR status = ANY($2::text[]))
         AND ($3::text IS NULL OR video_pane_id=$3) AND ($4::text IS NULL OR requester->>'paneId'=$4) ORDER BY created_at DESC, id DESC LIMIT $5`,
-      [owner, filter.status?.length ? filter.status : null, filter.videoPaneId ?? null, filter.requesterPaneId ?? null, filter.limit])).rows.map(requestTable.row);
+      [owner, filter.status?.length ? filter.status : null, filter.videoPaneId ?? null, filter.requesterPaneId ?? null, filter.limit ?? null])).rows.map(requestTable.row);
   }
   updateRequest(owner: string, id: string, patch: VideoRequestPatch, fromStatus?: VideoRequestStatus[]) {
     return fromStatus ? this.update(requestTable, owner, id, patch, "AND status = ANY($3::text[])", [fromStatus]) : this.update(requestTable, owner, id, patch);
@@ -217,7 +217,7 @@ export class PostgresVideoRepository implements VideoRepository {
         AND ($3::text IS NULL OR request_id=$3) AND ($4::text[] IS NULL OR format_id = ANY($4::text[])) AND ($5::text[] IS NULL OR kind = ANY($5::text[]))
         AND ($6::text[] IS NULL OR id = ANY($6::text[])) AND ($8::text[] IS NULL OR parent_asset_id = ANY($8::text[]))
         AND ($9::text[] IS NULL OR artifact_id = ANY($9::text[])) ORDER BY created_at DESC, id DESC LIMIT $7`,
-      [owner, filter.paneId ?? null, filter.requestId ?? null, filter.formatIds?.length ? filter.formatIds : null, filter.kinds?.length ? filter.kinds : null, filter.ids ?? null, filter.limit,
+      [owner, filter.paneId ?? null, filter.requestId ?? null, filter.formatIds?.length ? filter.formatIds : null, filter.kinds?.length ? filter.kinds : null, filter.ids ?? null, filter.limit ?? null,
         filter.parentIds ?? null, filter.artifactIds ?? null])).rows.map(assetTable.row);
   }
   updateAsset(owner: string, id: string, patch: VideoAssetPatch) { return this.update(assetTable, owner, id, patch); }
@@ -229,7 +229,7 @@ export class PostgresVideoRepository implements VideoRepository {
   createEvent(input: VideoEventCreateRecord) { return this.insert(eventTable, { ...input, id: newId("vevt") }); }
   async listEvents(owner: string, filter: VideoEventFilter) {
     return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(eventTable as Table<unknown>)} FROM video_events WHERE owner_user_id=$1 AND ($2::text IS NULL OR pane_id=$2)
-        AND ($3::text IS NULL OR request_id=$3) ORDER BY created_at DESC, id DESC LIMIT $4`, [owner, filter.paneId ?? null, filter.requestId ?? null, filter.limit])).rows.map(eventTable.row);
+        AND ($3::text IS NULL OR request_id=$3) ORDER BY created_at DESC, id DESC LIMIT $4`, [owner, filter.paneId ?? null, filter.requestId ?? null, filter.limit ?? null])).rows.map(eventTable.row);
   }
   async dispose() { await (this.pool as PgPoolLike & { end?: () => Promise<void> }).end?.(); }
 }

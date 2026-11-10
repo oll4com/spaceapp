@@ -52,3 +52,8 @@ background work, and is hidden in the web app. Public installs upgraded from
 1.1.x that used Job Copilot, the games, channels, Telegram or the desktop
 routes set the modules they keep, for example
 `SPACE_OPTIONAL_MODULES=job-copilot,games`.
+
+## Error reports
+
+`SPACE_ERROR_REPORTS` (`off` by default, `own`, `share`) decides whether a public install sends crash reports to Sentry and where;
+see Error reports.

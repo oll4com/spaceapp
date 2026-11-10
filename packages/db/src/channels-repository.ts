@@ -149,7 +149,7 @@ export class PostgresChannelsRepository implements ChannelsRepository {
     await this.pool.query(`UPDATE channel_threads SET ${sets.join(", ")}, updated_at=now() WHERE thread_id=$1`, values);
   }
   async threads(owner: string) {
-    return (await this.pool.query<ChannelThreadRecord>(`SELECT ${threadColumns} FROM channel_threads WHERE owner_user_id=$1 ORDER BY updated_at DESC LIMIT 50`, [owner])).rows.map(mapThread);
+    return (await this.pool.query<ChannelThreadRecord>(`SELECT ${threadColumns} FROM channel_threads WHERE owner_user_id=$1 ORDER BY updated_at DESC`, [owner])).rows.map(mapThread);
   }
   async threadById(threadId: string) {
     const row = (await this.pool.query<ChannelThreadRecord>(`SELECT ${threadColumns} FROM channel_threads WHERE thread_id=$1`, [threadId])).rows[0];

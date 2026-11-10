@@ -5,7 +5,7 @@ import {
   openVaultEnvelope, openWithVaultPrivateKey, sealPasswordEnvelope, sealRecoveryEnvelope, sealServerShare, sealToVaultPublicKey,
   sealVaultEnvelope, signVaultCertificate, signVaultMessage, splitVaultRootKey, vaultAgentResultSchema, vaultAgentSaveRequestSchema, vaultAgentSaveSite, vaultAuditEventSchema,
   vaultBase64url, vaultDelegationCertificateSchema, vaultDigest, vaultEnvelopeSchema, vaultItemMetadataSchema, vaultKdfParamsSchema,
-  vaultRandomBytes, vaultUnlockChallengeMessage, verifyVaultCertificate, verifyVaultMessage
+  vaultItemLink, vaultLoginPageProblem, vaultOriginCovers, vaultRandomBytes, vaultUnlockChallengeMessage, verifyVaultCertificate, verifyVaultMessage
 } from "../src/index.js";
 
 // Synthetic values only. The test KDF stands in for the browser's Argon2id (PBKDF2 keeps the suite fast).
@@ -122,6 +122,20 @@ describe("Vault exact origins", () => {
     expect(vaultItemMetadataSchema.safeParse({ ...item, origins: ["http://example.com"], policy: { ...item.policy, acceptedOriginRisks: ["http://example.com"] } }).success).toBe(true);
     expect(vaultItemMetadataSchema.safeParse({ ...item, fieldRoles: ["PASSWORD", "PASSWORD"] }).success).toBe(false);
   });
+
+  it("fills a login on any clean https origin of its registrable domain, never across domains (operator 2026-10-30)", () => {
+    for (const target of ["https://login.gsis.gr", "https://oauth2.gsis.gr", "https://www.gsis.gr", "https://gsis.gr"]) expect(vaultOriginCovers(["https://login.gsis.gr"], target)).toBe(true);
+    for (const target of ["http://oauth2.gsis.gr", "https://oauth2.gsis.gr:444", "https://gsis.gr.evil.test", "https://www.aade.gr", "https://gr", "https://10.0.0.1"]) {
+      expect(vaultOriginCovers(["https://login.gsis.gr"], target)).toBe(false);
+    }
+    // Private suffixes stay tenants: one github.io site never covers another.
+    expect(vaultOriginCovers(["https://foo.github.io"], "https://bar.github.io")).toBe(false);
+    expect(vaultOriginCovers(["https://foo.github.io"], "https://docs.foo.github.io")).toBe(true);
+    // An accepted http or port origin fills only exactly.
+    expect(vaultOriginCovers(["http://login.gsis.gr"], "http://login.gsis.gr")).toBe(true);
+    expect(vaultOriginCovers(["http://login.gsis.gr"], "https://oauth2.gsis.gr")).toBe(false);
+    expect(vaultOriginCovers(["https://login.gsis.gr:8443"], "https://oauth2.gsis.gr")).toBe(false);
+  });
 });
 
 describe("Vault unlock challenge, certificates and transport", () => {
@@ -178,6 +192,41 @@ describe("Vault logins agents save (operator decision 2026-10-18)", () => {
     const { password: _password, ...usernameOnly } = login;
     expect(vaultAgentSaveRequestSchema.safeParse(usernameOnly).success).toBe(true);
     for (const bad of [{ ...login, site: "http://shop.example" }, { ...login, password: "" }, { ...login, otp: "123456" }, { ...login, label: "" }]) {
+      expect(vaultAgentSaveRequestSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+  });
+});
+
+describe("Vault login page (nous_msg:cc5aba71)", () => {
+  const origins = ["https://shop.example", "https://accounts.example"];
+  it("takes only an address on one of the item's own origins", () => {
+    expect(vaultLoginPageProblem("https://shop.example/portal-gui/login?next=1", origins)).toBeNull();
+    expect(vaultLoginPageProblem("https://accounts.example/signin", origins)).toBeNull();
+    for (const bad of ["https://evil.example/login", "https://sub.shop.example/login", "http://shop.example/login", "https://shop.example:8443/login",
+      "https://u:p@shop.example/login", "javascript:alert(1)", "/login", "not a url"]) expect(vaultLoginPageProblem(bad, origins), bad).not.toBeNull();
+    const item = {
+      id: newVaultHandle("vault_item"), label: "Synthetic login", origins, fieldRoles: ["USERNAME", "PASSWORD"],
+      policy: { agentUse: false, approvalMode: "ASSIST", submitAllowed: false, maxFillsPerHour: 6, acceptedOriginRisks: [] }
+    };
+    expect(vaultItemMetadataSchema.parse(item).loginPage).toBeNull();
+    expect(vaultItemMetadataSchema.safeParse({ ...item, loginPage: "https://shop.example/login" }).success).toBe(true);
+    expect(vaultItemMetadataSchema.safeParse({ ...item, loginPage: "https://evil.example/login" }).success).toBe(false);
+  });
+
+  it("opens the login page when there is one, else the first origin", () => {
+    expect(vaultItemLink({ origins, loginPage: "https://shop.example/login" })).toBe("https://shop.example/login");
+    expect(vaultItemLink({ origins, loginPage: null })).toBe("https://shop.example");
+    expect(vaultItemLink({ origins })).toBe("https://shop.example");
+  });
+
+  it("lets an agent set it by handle alone, or with a new login on that login's site", () => {
+    const handle = newVaultHandle("vault_item");
+    expect(vaultAgentSaveRequestSchema.safeParse({ handle, loginPage: "https://shop.example/login" }).success).toBe(true);
+    expect(vaultAgentSaveRequestSchema.safeParse({ handle, loginPage: null }).success).toBe(true);
+    const login = { site: "https://shop.example", username: "synthetic@example.com", label: "Shop" };
+    expect(vaultAgentSaveRequestSchema.safeParse({ ...login, loginPage: "https://shop.example/login" }).success).toBe(true);
+    for (const bad of [{ handle }, { handle, ...login, loginPage: "https://shop.example/login" }, { handle, password: SENTINEL, loginPage: null },
+      { ...login, loginPage: "https://evil.example/login" }, { loginPage: "https://shop.example/login" }]) {
       expect(vaultAgentSaveRequestSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
     }
   });

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://fundingjson.org/schema/v1.1.0.json",
+  "version": "v1.1.0",
+  "entity": {
+    "type": "organisation",
+    "role": "owner",
+    "name": "OLL4 (INTRATRADE SINGLE MEMBER P.C.)",
+    "email": "crew@spaceapp.dev",
+    "description": "OLL4 is the founder-led systems company of Nikolaos Theodoropoulos (INTRATRADE SINGLE MEMBER P.C., Greece; based in Bangkok). It builds and maintains SpaceApp, an open-source (MIT) self-hosted workspace where AI agent CLIs work side by side, with safety the system enforces rather than the prompt.",
+    "webpageUrl": {
+      "url": "https://github.com/oll4com"
+    }
+  },
+  "projects": [
+    {
+      "guid": "spaceapp",
+      "name": "SpaceApp",
+      "description": "Open-source (MIT) self-hosted AI agent workspace: agent CLIs such as Claude Code, Codex, OpenCode and Gemini work side by side in persistent rooms with live terminals, a managed browser and files. Its protections are enforced by the system, not the prompt: an agent-blind vault (an agent asks the vault to fill a login and never sees the password), server-side human approval gates for payments, deletions, releases and messages, and an audit log. One-command install on Linux, Windows 11 and macOS: npx --yes run-spaceapp@latest install.",
+      "webpageUrl": {
+        "url": "https://github.com/oll4com/spaceapp"
+      },
+      "repositoryUrl": {
+        "url": "https://github.com/oll4com/spaceapp"
+      },
+      "licenses": ["spdx:MIT"],
+      "tags": ["ai-agents", "agent-safety", "self-hosted", "developer-tools", "security"]
+    }
+  ],
+  "funding": {
+    "channels": [
+      {
+        "guid": "bank-transfer",
+        "type": "bank",
+        "description": "Bank transfer (SEPA or SWIFT) to INTRATRADE SINGLE MEMBER P.C., Greece. Account details on request at crew@spaceapp.dev."
+      }
+    ],
+    "plans": [
+      {
+        "guid": "maintainer-year",
+        "status": "active",
+        "name": "SpaceApp maintenance for one year",
+        "description": "A year of full-time maintainer work on SpaceApp (USD 5,500 a month) and its test servers (about USD 150 a month): security fixes, releases, installers and the vault and approval gates.",
+        "amount": 67800,
+        "currency": "USD",
+        "frequency": "yearly",
+        "channels": ["bank-transfer"]
+      },
+      {
+        "guid": "any-amount",
+        "status": "active",
+        "name": "Any amount",
+        "description": "One-time support of any size.",
+        "amount": 0,
+        "currency": "USD",
+        "frequency": "one-time",
+        "channels": ["bank-transfer"]
+      }
+    ]
+  }
+}

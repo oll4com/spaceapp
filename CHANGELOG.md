@@ -5,6 +5,224 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+Planned as 1.2.0. Changes since 1.1.9, up to the sanitized Space app @ a6f92b14f7 (the 1.2.0 c9 candidate's
+export source): Node.js 26 and TypeScript 7, Nous on self-hosted installs, and the fixes from the 1.1.9 in-app
+reviews. Open items are listed in `docs/quality/KNOWN_LIMITATIONS.md`.
+
+### Added
+
+- Nous on self-hosted installs. SpaceApp's own agent (the Nous dock: rooms, panes, plans and `/goal` standing goals)
+  now runs on a self-hosted install: each turn is a headless Claude Code run in the `spaceapp-cli` container on the
+  owner's own Claude Code login (Claude subscription sign-in, or an Anthropic API key with `credentials set claude`),
+  with only Nous's tools, in every profile, `small` included. Nothing goes to SpaceApp's servers.
+  - Off by default. One switch, **Work on my behalf** in the Nous dock, turns it on, and only once Claude Code is
+    signed in; until then the dock says what is missing instead of an error.
+  - Lean defaults, because its turns count against the owner's Claude plan: Claude Sonnet 5.5 (medium effort for your
+    messages, low for its own turns), one goal turn every 15 minutes at most, one helper at a time, no shell, no pane
+    board summaries, no finished-pane sweeps and no daily review. Every one is a setting in Settings → Assistants & AI
+    → Nous.
+  - Tools that need a service a self-hosted install does not run (the source repository, the merge queue, Space
+    Gateway with its web search, the Research Council, the credential Vault broker) are not offered to it. Without user
+    accounts, its file tools read the panes' workspace volume (`/workspaces`), and the files it writes for panes are in
+    its `nous` folder there.
+  See `docs/getting-started.md#nous-optional` and `docs/nous.md`.
+- Shared Nous memory: Nous starts with generic working knowledge that ships with each version. Your installation's
+  team shares it, personal memory stays personal; an administrator reviews Nous's proposals, edits or retires entries
+  in Settings → Assistants & AI → Nous → Shared memory (auto-approval off by default), and a new release refreshes the
+  seed without undoing those changes.
+- Nous dock, Score tab: a performance score that can go negative (open plans and unanswered requests lose points as
+  they age; finished work, use of capacity, missed daily tasks and errors count too), with 24-hour and 7-day changes,
+  a graph and one sorted list whose rows open on click.
+- Nous dock, Load tab: how much of the server's capacity and of the AI quota is in use, as a live graph with each part
+  and the averages for the last hour, today, 7 and 30 days.
+- Nous dock, Requests tab: every message you sent Nous, newest first, with how it ended (Done, Answered, In progress,
+  Waits for you, Not answered), a status filter with counts, a badge for those in progress, and paging back.
+- Nous dock, Done tab: each request Nous finished, in your words with a short summary; Got it clears it.
+- Nous dock, Updates tab: the reports Nous posts on what it approved and carried out, with an unread count.
+- Nous dock, Shared tab: Agent Files Nous shares with you for a while (72 hours by default, at most 14 days) with its
+  note; a click opens the preview, Remove ends the share and leaves the file.
+- Nous dock, Quotas tab: Accounts & quotas on one page per provider.
+- Nous dock, Job applications and Marketing pages (with the Job and Marketing Copilot modules): a live funnel of the
+  Job Copilot's applications, mails, tests and interviews by platform and week; every Marketing Copilot post scored
+  0-100 per post, platform and overall, with 7- and 30-day trends.
+- Nous dock, Task runs tab (administrators): every scheduled-task run with its result, judged by the pane's own report.
+- Nous goals: a Work history per goal, and an optional limit (a date or a measurable target) under its progress bar.
+- Nous dock: every attachment opens a preview (images, video and audio players, PDFs, a document's text), sent or
+  still in the composer; "Load earlier messages" and "Go to my last message" page through the whole conversation, and
+  Clear conversation only hides the history. Settings → Assistants & AI → Nous → Dock tabs shows or hides each tab.
+- Nous knows whether you write from a phone, tablet, the desktop app or a browser, and fits its answers to it.
+- Appointments pane: upcoming appointments in your time zone in List, Week and Month views, with a countdown,
+  add/edit/cancel and Completed; reminders 1 day, 3 hours and 1 hour before (Settings → Notifications). Nous and
+  agents add appointments, and a Job Copilot interview or test keeps one per mail thread.
+- Sign PDFs: every PDF in Agent Files has a Sign view (a signature pad for touch or mouse; a tap places your
+  signature, phone number or the date). Agents can ask for a signature through a Needs you card; the signed copy is
+  saved beside the original as `-signed`.
+- Notification Center: a bell with an unread count beside Nous on the collapsed rail.
+- Interface and agent language: Settings → Personal → Language has "Interface language" (SpaceApp's own labels in
+  English or Greek, now in every pane, dock and notification label) and "Agent language" (what Nous and the agents
+  write to you). Nous writes Greek only when the agent language asks for it; otherwise it answers in your message's
+  language.
+- History period: one setting in Settings → History (7 to 90 days, default 90) that every history view and range
+  picker follows. Nothing is deleted, and items still waiting show whatever their age.
+- File names and Agent File ids in the Nous chat, decisions, Needs you, Done, appointments and notifications are links
+  that open the file's preview.
+- Optional error reports (Sentry), off by default: a self-hosted install sends nothing unless `SPACE_ERROR_REPORTS` is
+  `own` (your own DSN) or `share` (SpaceApp's). Every report passes an allowlist privacy scrubber; the web app's
+  error-only Replay masks all text and inputs and is off on terminal, Vault and mail views.
+- Mail Campaigns (optional module, off by default; its Campaigns tab is in the Mail Copilot pane): newsletters and
+  offers to mailing lists, with versioned templates, lists with a consent basis, contacts whose health every list
+  shares, CSV, text and mail-thread imports, and a do-not-mail list.
+  - Nothing reaches a recipient until you have read every recipient's rendered mail and approved that exact campaign;
+    any later change sends it back to review.
+  - Sending keeps the campaign's hours, interval and daily cap, per-consent caps, a 72-hour frequency cap and the
+    do-not-mail list, never mails an address twice per campaign, and pauses on hard bounces or complaints. Mails carry
+    a one-click unsubscribe when an https unsubscribe endpoint is configured, a mailto unsubscribe otherwise.
+  - A sender warms up: its daily volume rises only after 2 days of sending; the deliverability check records the SPF,
+    DKIM and DMARC result of each test message.
+- Vault: generated passwords follow the site's rules; an item can keep its login page; a login an agent creates waits
+  for your confirmation; copilots and Nous share one saved sign-in method per site and record whether it worked.
+- Snip Tool: Record video. Select an area like a snip and only it is recorded, with a frame around it (a browser
+  records this tab, the desktop app the screen SpaceApp is on); the video goes to the room's Media dock.
+- Voice input: the browser's own speech recognition is the default engine (English or Greek), free and with no key;
+  the paid relay is only used when chosen. The Nous composer has a microphone too.
+- Quotas: every account and model picker shows the share of the quota that will still be free at its reset, or
+  "Unknown" with the reason ("Checking…" until the first sample); the quota icons turn red when a Codex, Antigravity or
+  Claude subscription window is under 5%.
+- Mail Copilot: label chips on threads (the x removes a label) and a per-thread label history.
+- A tab still running an older build offers Reload once a new build is live.
+
+### Changed
+
+- Runtime: Node.js 26 LTS (26.13.0, npm 11.21.1) in the core, browser and CLI images (was Node 22); pgvector
+  0.8.7-pg17-trixie pinned by digest.
+- TypeScript 7 and the newest major versions of the dependencies across the workspaces. The `run-spaceapp` launcher
+  itself still runs on Node 20.11 or later on your machine. The runtime images no longer carry TypeScript.
+- No arbitrary caps: lists, searches, memory recall, copilot feeds, mail reads and tool answers return every match,
+  paged where large, instead of the first N; a bound that remains is technical and says how to read the rest.
+- Needs you, redesigned: each card has a title, one answer and Details, grouped by where the work is; a card that asks
+  for information has a text field and Send; a card about an Agent File shows it; Go to pane opens the exact mail
+  thread, page or item. The screen never moves without your click, and Go now scrolls to the field that waits.
+- Needs you holds only what needs you: with Nous on, copilot questions and agents' requests go to Nous first, one card
+  per topic; Nous does not repeat a question you answered, ask about what one of your rules already decides, or open a
+  second card for the same thing, and it withdraws a decision once events overtake it. Each decision card shows Nous's
+  prediction of your answer and its recommended option.
+- Nous allowances, off by default and switchable only by a person: "May send" (an outside send of a kind you approved
+  before, after a 10-minute notice you can Decline, with only the exact files you saw), "May delete own", and "Never
+  refuse my requests". Nous's decisions and cards never show your sign-ins, Vault logins or own addresses.
+- Nous answers a message you send during one of its turns at that turn's next step; it reopens closed panes, waits for
+  a pane's empty prompt before typing, and keeps plans moving by handing idle panes their plan's next step.
+- Nous dock: background turns with nothing new post nothing; each of your messages is quoted once above its answer;
+  the rail is grouped into Me, Work and System, and each tab's filters are remembered per user. On narrow docks and
+  phones tabs wrap to a second row, an opened plan fits the screen, and goal cards start collapsed.
+- Low-spend mode stays NORMAL while an account still has weekly quota that would go unused at its reset, and changes
+  between NORMAL and LOW only after 30 minutes.
+- While SpaceApp restarts or updates, the app shows a calm "SpaceApp is updating… reconnecting" notice that turns red
+  only after 60 seconds; copilot panes show "Loading…" instead of empty tabs.
+- Quiet hours: every notification that is not urgent waits overnight for one morning summary; within 30 minutes of
+  your last message to Nous nothing is held.
+- Server load reads as overloaded only at 90% CPU, low free RAM (scaled to the machine's memory) or 90% swap, no
+  longer on the load average alone.
+- Browser panes: sound plays only from the pane in front of you; Chrome's own sandbox is used where the host supports
+  it; a repeat handoff on the same pane and site within 30 minutes is listed without a new alert.
+- Mail, Marketing, Freelance and Job Copilots: a review or question that the copilot's own rule memories forbid is
+  refused, naming the memory; a question the memory already answers returns that answer; a draft that promises a
+  call, visit or payment needs the memory's leave; Approve with a longer note sends the note back for a new draft.
+- Copilots: Start on an empty queue gives the agent a brief to search, plan or check; a closed pane reopens when its
+  work falls due; Security, Monitoring and App Studio take the oldest waiting brief first.
+- Security and Monitoring Copilots (Monitoring: optional module, off by default): upgrades, restarts, config, WAF and
+  container changes on your inventory hosts that carry a backup and a rollback run at every autonomy level ("Ask me
+  before changes on my own hosts" makes them wait); reboots and deletes wait for a person, never an agent.
+- Marketing Copilot metrics count open issues and open pull requests separately. Job Copilot salary research applies
+  the salary rules kept in its memory; mail triage gives each thread one Job Applications label.
+- Values from the original author's server are settings now: source control has no built-in Gitea server (set
+  `SPACE_GITEA_URL`); browser evidence, mail campaign SMTP/HELO and screenshot masks use the instance's own address.
+- A pane of an optional module the server has turned off says so instead of "Not found".
+- Agent Proof rooms left behind by agents are deleted automatically (empty for 30 minutes, or idle for 6 hours).
+- The README is a short developer README. The bounty programme has ended: contributions are voluntary and unpaid.
+- Space Gateway (installs that run it; a default self-hosted install does not): one `/pools/space` endpoint for every
+  client in its own protocol; fill-first routing for Claude and Codex subscription accounts by default, with a share of
+  the last Claude account kept for Nous; Reports with 429s, fallbacks, each account's windows and the tokens left
+  unused at each weekly reset; it keeps running through a database outage.
+
+### Fixed
+
+- Restore (DATA-013, DATA-014): a failed restore rolls back the database it was restoring and a file swap that failed
+  part way, and never deletes the files it left.
+- User settings no longer reset all at once: when one stored setting fails validation after an update, only that
+  setting goes back to its default; voice and autocorrect saves are retried instead of dropped. Saving one Nous
+  setting no longer resets the rest of its group.
+- Self-hosted installs: no false "Space Gateway is down" card (and one an earlier version raised is closed); panes Nous
+  starts run in the room's folder; a Claude Code pane opens after a sign-in made outside SpaceApp's login flow, and
+  every Claude pane starts past Claude Code's first-run screens.
+- The API no longer crash-loops when its startup takes longer than 10 seconds on a loaded host; work a restart left
+  marked running (connection checks, syncs, CLI maintenance, screenshots) is cleaned up (DATA-001).
+- OpenCode: right after a fresh install, the first OpenCode launch no longer fails with "No free OpenCode model…"; a
+  prompt to a pane whose server control is down is typed into its terminal; the shared configuration is written
+  atomically with a dated backup.
+- Telemetry: an install that opted in before install ids existed gets its random install id on its next `update`,
+  `up` or repair; installs that never opted in get nothing.
+- CLI panes: the open terminal follows a session SpaceApp replaced itself (task resume, account switch, usage-limit
+  move) instead of showing "CLI exit"; SpaceApp never types into a working pane or a composer that holds text.
+- CLI runtime compatibility: idle prompts are recognised in OpenCode 2, Codex, Claude Code, Qoder, Copilot, DeepSeek,
+  Antigravity (every agy 1.4.12 mode hint), Muse, Kimi and Autohand; a DeepSeek setup panel is never typed into; an Oh
+  My Pi stop ends the whole turn; Hermes and Oh My Pi tasks without a saved session continue in a fresh one; Gemini
+  "Individual quota reached" reads as a usage limit and an account switch keeps the conversation; Claude's model
+  switch works on narrow panes; Codex "model at capacity" counts as an API error the Room Agent continues.
+- A prompt to one pane no longer holds the whole room; a Nous change to a pane named in one room never reaches a pane
+  of the same name in another.
+- Browser panes: native dropdowns inside iframes can be picked exactly; taps land right on phones when the keyboard
+  resizes the view; session-cookie sign-ins survive a Chrome relaunch; after a crash the active tab gets its page
+  back; closing a pane stops its browser even under agent control; agents reconnect after Chrome is restored.
+- Space Memory: removed, archived and superseded memories no longer come back in recall (DATA-004).
+- Database: a connection lost mid-transaction reports its real error and never goes back to the pool.
+- Needs you: Approve and Decline of a copilot review no longer fail, and a failed answer keeps the card with the reason;
+  an agent's request stays until you answer it; the focus visit works on phones and the desktop.
+- Room Watchdog: self-clearing alerts no longer stack red banners, and its checks never send Ctrl+C or Esc to a CLI.
+- Mail Copilot: mail since the last sync is read after a long outage or an older backup; stale Gmail attachment ids
+  are found by file name.
+- Job Copilot mail triage: job alerts are never filed as tests; a test named in the subject or sent by an assessment
+  platform becomes a test task with its deadline; the Gmail check paces its reads and names accounts it could not read.
+- Agent Files: MCP results that carry files open and delete again; previews fit a phone and long text starts at the top.
+- Live: Real View hides Screen where the browser cannot share it. Push notifications carry their text, not only the
+  title. Databases: Cancel stops its own query. Phones: the room toolbar no longer covers full-screen Close buttons.
+
+### Security
+
+- MU-010, MU-011: a team member without admin rights can no longer become database admin through `?mode=admin` or
+  `x-space-mode`, and lists database turns only from rooms they can reach.
+- Files host mode (EXT-G-2): every change is confined to the workspace, the panes' CLI workspace and the agent
+  workspace; credential and config folders (`~/.ssh`, `~/.gnupg`, `~/.config`, `~/.codex`, `~/.claude`) are refused and
+  refusals are audited.
+- Signed image provenance: each published image carries a GitHub artifact attestation (Sigstore) that names this
+  repository, `release.yml` and the run's commit; every third-party image is pinned by digest.
+- The core container's migrations, worker and web proxy start without the session secret or credentials they do not
+  need (EXT-C-F8, INT5-C-F5); helper processes SpaceApp starts get an environment without its session secret,
+  database URL and tokens.
+- An approval to send files covers only those exact files (SHA-256 and size); a changed file is held for a new
+  approval. Security Copilot reboots and deletes need a person, never an agent session.
+- Temporal SDK 1.25.0 (zip 9.0.5: CVE-2026-115905 and the related zip advisories 1.1.9 listed as ignored);
+  `@hono/node-server` 2.1.3 (CVE-2026-118663); npm 11.21.1 with ip-address 10.7.4 and undici 6.29.1 in the images;
+  dropping TypeScript from the runtime images removes 15 fixable High findings of its Go compiler.
+- Log redaction: database pool, clipboard, worker and request-log lines (also link URLs nested in requests, OBS-006)
+  pass through credential redaction; the harness proxy no longer logs raw request URLs.
+- The export carries its secret-scan configuration (`.gitleaks.toml`, `.gitleaksignore`) so the public suite checks it.
+- The bundled HyperFrames skill's media telemetry sends nothing unless `MEDIA_USE_POSTHOG_KEY` names a project.
+
+### Performance
+
+- Room switches: warm switches are faster after the TypeScript 7 move (p95 about 108 ms → 87 ms), and a switch no
+  longer rewrites every terminal pane's file input or the debug log once per pane.
+- Browser panes stream live only for the pane in front of you; one an agent drives out of view gets a 1 fps preview,
+  and hidden or minimized panes stream nothing.
+- Nous dock: Requests loads in 54 ms instead of 2.3 s for 3,000 messages, and Space Memory is parsed once per text
+  instead of on every recall.
+- Nous uses fewer tokens: inbox lines are batched, routine-only batches take no turn, and background and goal turns
+  get only the context of their own work.
+- CLI panes: session reads after a restart no longer wait about 5 s for discovery, and terminal replay no longer
+  blocks the server's main thread.
+- SQLite reads run inside the API process instead of thousands of `sqlite3` processes an hour; `/readyz` runs its
+  checks in parallel; Source Control lists about 300 worktrees in about 14 s instead of about a minute.
+
 ## [1.1.9] - 2026-10-25
 
 Source: sanitized Space app @ 25bcec3e77 (5029 files). 1.1.8 was prepared but never published; its changes are part of
@@ -47,7 +265,7 @@ backups more safely, and ships the remaining fixes from the 1.1.7 reviews; open 
   OpenCode Zen, which refused every free model because the lab's address had reached Zen's free usage limit. The Windows
   fresh install, upgrade, the large machine profile and the OpenCode launch passed, as did the first answer on Linux and macOS.
 - Known limitation: right after a fresh install, the first OpenCode launch may show "No free OpenCode model…"; launch it
-  again. Fixed in 1.1.10.
+  again. Fixed in 1.2.0.
 - New CLI panes start their CLI on time even when the browser's clock differs from the server's (known limitation UX-004
   fixed).
 - A detached pane's room screen keeps its terminal's own width.

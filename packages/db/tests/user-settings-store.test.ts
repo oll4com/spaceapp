@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
-import { defaultUserSettings, type UserSettings } from "@space/contracts";
+import { defaultUserSettings } from "@space/contracts";
 import { PostgresSpaceStore, type PgClientLike } from "../src/index.js";
+import { parseStoredUserSettings } from "../src/space-store.js";
 
 class FakeUserSettingsPgClient implements PgClientLike {
   readonly calls: Array<{ sql: string; values: unknown[] }> = [];
@@ -31,6 +32,11 @@ class FakeUserSettingsPgClient implements PgClientLike {
     }
 
     return { rows: [], rowCount: 0 };
+  }
+
+  /** A row as an older build stored it. */
+  seed(userId: string, settings: unknown): void {
+    this.settingsMap.set(userId, settings);
   }
 
   // Writes run in a transaction on a pooled client.
@@ -99,6 +105,51 @@ describe("User settings store", () => {
     expect(retrieved.uiTheme).toBe("codex");
     expect(retrieved.voice.language).toBe("el");
     expect(retrieved.keyboardAutocorrect.soundEnabled).toBe(false);
+  });
+
+  // Operator 1/11: Alt+G off and the CLI shortcuts menu choices vanished again. One stored field that stopped fitting the schema read
+  // the whole row as the defaults, and the next PATCH wrote those defaults back for good.
+  it("keeps every valid setting when stored fields no longer fit the schema, and a PATCH after it keeps them too", async () => {
+    const stored = {
+      ...defaultUserSettings,
+      uiTheme: "codex",
+      keyboardAutocorrect: { ...defaultUserSettings.keyboardAutocorrect, enabled: false },
+      voice: { ...defaultUserSettings.voice, terminalHiddenShortcuts: ["clear", "deploy"], terminalContextMenu: false, provider: "retired-provider" },
+      // A strict group with a key an older build wrote, and a refine that fails again after its field is dropped.
+      nous: { enabled: true, keyThatLeft: true, lowSpend: { lowBudgetRemainingPercent: 10, criticalBudgetRemainingPercent: 30 } },
+      youtubeSummaryModel: "gone-model",
+      promptVariables: [{ id: "v1", name: "ok", value: "x" }, { id: "v2", name: "bad name", value: "" }, { id: "v3", name: "fine", value: "y" }]
+    };
+    const warnings: string[] = [];
+    const read = parseStoredUserSettings(stored, (text) => warnings.push(text));
+    expect(read.uiTheme).toBe("codex");
+    expect(read.keyboardAutocorrect.enabled).toBe(false);
+    expect(read.voice.terminalHiddenShortcuts).toEqual(["clear", "deploy"]);
+    expect(read.voice.terminalContextMenu).toBe(false);
+    expect(read.voice.provider).toBe(defaultUserSettings.voice.provider);
+    expect(read.nous?.enabled).toBe(true);
+    expect(read.nous?.lowSpend.criticalBudgetRemainingPercent).toBe(20);
+    expect(read.promptVariables).toEqual([{ id: "v1", name: "ok", value: "x" }, { id: "v3", name: "fine", value: "y" }]);
+    expect(read.youtubeSummaryModel).toBeUndefined();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("voice.provider");
+    expect(warnings[0]).toContain("nous.keyThatLeft");
+    expect(warnings[0]).toContain("promptVariables.1");
+    expect(parseStoredUserSettings(defaultUserSettings, (text) => warnings.push(text))).toEqual(defaultUserSettings);
+    expect(parseStoredUserSettings("not a row")).toEqual(defaultUserSettings);
+    expect(warnings).toHaveLength(1);
+
+    const fakeClient = new FakeUserSettingsPgClient();
+    fakeClient.seed("user:operator", stored);
+    const store = new PostgresSpaceStore(fakeClient);
+    expect((await store.getUserSettings("user:operator")).voice.terminalHiddenShortcuts).toEqual(["clear", "deploy"]);
+    const updated = await store.updateUserSettings("user:operator", { uiZoom: 110 });
+    expect(updated.uiZoom).toBe(110);
+    expect(updated.uiTheme).toBe("codex");
+    expect(updated.keyboardAutocorrect.enabled).toBe(false);
+    expect(updated.voice.terminalHiddenShortcuts).toEqual(["clear", "deploy"]);
+    expect(updated.voice.terminalContextMenu).toBe(false);
+    expect((await store.getUserSettings("user:operator")).keyboardAutocorrect.enabled).toBe(false);
   });
 
   it("stores, retrieves and merges all per-user cloud sync fields", async () => {

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pane, PaneBrowserSessionResponse } from "@space/contracts";
 import { ManagedYouTubeBrowser as YouTubePane } from "../src/features/browser-pane/ManagedYouTubeBrowser.js";
 import { dispatchBrowserPaneActionEvent } from "../src/features/browser-pane/events.js";
+import { routePaneKeyboardInput } from "../src/features/osk-keyboard/pane-keyboard-input.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 
@@ -190,6 +191,8 @@ describe("YouTubePane", () => {
     vi.useRealTimers();
     MockBrowserWebSocket.reset();
     vi.stubGlobal("WebSocket", MockBrowserWebSocket);
+    // The pane is in front of the operator: Live streams only to a focused window (operator 2/11).
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
     for (const mock of Object.values(apiMock)) {
       if (typeof mock === "function" && "mockReset" in mock) mock.mockReset();
     }
@@ -344,6 +347,26 @@ describe("YouTubePane", () => {
     await waitFor(() =>
       expect(container.querySelector(".youtube-pane")?.getAttribute("data-browser-stream-state")).toBe("ready")
     );
+  });
+
+  it("streams only while the operator has the pane in front of them (operator 2/11)", async () => {
+    const response = sessionResponse({ streamMode: "REALTIME", resolvedStreamMode: "REALTIME" });
+    apiMock.startBrowserSession.mockResolvedValue({ ...response, websocket: streamTicket(0) });
+    apiMock.browserStreamTicket.mockResolvedValue({ websocket: streamTicket(1) });
+    apiMock.browserStreamWebSocketUrl.mockReturnValue("ws://space.test/browser/stream");
+    render(<YouTubePane pane={pane()} agentNumber={4} />);
+    await screen.findByRole("img", { name: "YouTube 1 browser frame" });
+    await waitFor(() => expect(MockBrowserWebSocket.instances).toHaveLength(1));
+
+    vi.mocked(document.hasFocus).mockReturnValue(false);
+    act(() => { window.dispatchEvent(new Event("blur")); });
+    await waitFor(() => expect(MockBrowserWebSocket.instances[0]!.readyState).toBe(MockBrowserWebSocket.CLOSED));
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(MockBrowserWebSocket.instances).toHaveLength(1);
+
+    vi.mocked(document.hasFocus).mockReturnValue(true);
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    await waitFor(() => expect(MockBrowserWebSocket.instances).toHaveLength(2));
   });
 
   it("routes interactive canvas input over the live stream when control is acquired", async () => {
@@ -511,6 +534,22 @@ describe("YouTubePane", () => {
     expect(sentInput.type).toBe("input");
     expect(sentInput.input.type).toBe("NAVIGATION");
     expect(sentInput.input.action).toBe("RELOAD");
+  });
+
+  it("routes on-screen keys to the managed YouTube browser only while the operator holds control", async () => {
+    apiMock.startBrowserSession.mockResolvedValue(sessionResponse());
+    apiMock.acquireBrowserControl.mockResolvedValue({ lease: { ...operatorLease().lease, expiresAt: new Date(Date.now() + 60_000).toISOString() } });
+    render(<YouTubePane pane={pane()} agentNumber={4} />);
+    await screen.findByRole("img", { name: "YouTube 1 browser frame" });
+    const type = () => routePaneKeyboardInput(pane(), { key: "q", code: "KeyQ", text: "q", terminalData: "q", shiftKey: false }, { terminal: vi.fn(), chat: vi.fn() });
+    expect(type()).toBe(true);
+    expect(apiMock.browserInput).not.toHaveBeenCalled();
+    expect(apiMock.acquireBrowserControl).not.toHaveBeenCalled();
+    dispatchBrowserPaneActionEvent({ paneId: "pane:youtube-proof", action: "reload" });
+    await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalled());
+    type();
+    await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalledWith("pane:youtube-proof",
+      expect.objectContaining({ type: "KEY", eventType: "char", text: "q", leaseId: "browser_lease:operator" })));
   });
 
   it("falls back to the browser input endpoint when the stream is not connected", async () => {

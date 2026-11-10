@@ -35,10 +35,11 @@ const shotOf = (room: unknown, viewport = "desktop") => ({ room, blockedWrites: 
 describe("Space Control screenshot capture", () => {
   it("captures the room read-only as the actor and stores a room SCREENSHOT artifact", async () => {
     const { capture, requests, createArtifact, artifactRoot } = await adapter((request) => shotOf(request.room));
-    const evidence = await capture({ id: "user:operator" }, "room:studio001", { format: "png", viewport: "mobile" });
+    const evidence = await capture({ id: "user:operator" }, "room:studio001", { format: "png", viewport: "mobile", language: "el" });
 
     const [request] = requests;
-    expect(request).toMatchObject({ instance: "dev", cookieName: "space_session_dev", room: "room:studio001", viewport: "mobile", format: "png" });
+    // language is the capture page's for this run (the engine's capture-only preview), never a saved setting.
+    expect(request).toMatchObject({ instance: "dev", cookieName: "space_session_dev", room: "room:studio001", viewport: "mobile", format: "png", language: "el" });
     // The engine gets a short READ_ONLY session of the actor's own account: terminals attach as observers.
     expect(verifySession(String(request!.cookieValue), secret)).toMatchObject({ id: "user:operator", role: "ADMIN", proofScope: "READ_ONLY" });
 

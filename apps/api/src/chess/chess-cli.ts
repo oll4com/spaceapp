@@ -1,5 +1,10 @@
+import { randomBytes } from "node:crypto";
 import { access, constants } from "node:fs/promises";
 import { request } from "node:http";
+import { formatTraceparent } from "@space/contracts";
+import { otlpSpanExporterFromEnv, type SpanExporter } from "@space/runtime";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
+import { gatewayRequestIdHeader } from "../gateway-request-id.js";
 
 /**
  * SpaceApp CLI runtimes as chess players. One move is one `agent-chat` turn,
@@ -82,7 +87,7 @@ export function cliModelEfforts(spec: ChessCliProviderSpec, model: ChessCliModel
   return ["default"];
 }
 
-const OPENCODE_CURRENT = "/opt/spaceapp/var/cli-versions/opencode/current/node_modules/.bin/opencode";
+const OPENCODE_CURRENT = `${SPACE_INSTALL_ROOT}/var/cli-versions/opencode/current/node_modules/.bin/opencode`;
 /** The worker's own limit for one move; the tournament's move clock aborts sooner. */
 const WORKER_MOVE_TIMEOUT_MS = 180_000;
 
@@ -104,26 +109,61 @@ export interface CliAgentChatInput {
   claudeProfile?: string | null;
   prompt: string;
   signal: AbortSignal;
+  /** The caller's own id (Council run, chess game, pane board run), written on the worker's worker.socket_request line (OBS-006). */
+  traceId?: string;
 }
 
 /** Runs one CLI move and returns the answer text. */
 export type CliMoveRunner = (input: CliAgentChatInput) => Promise<string>;
 
 /** Where the worker takes chess moves (apps/worker/src/chess-cli-move.ts). */
-export const CHESS_MOVE_SOCKET = "/opt/spaceapp/var/chess-benchmark/worker.sock";
+export const CHESS_MOVE_SOCKET = `${SPACE_INSTALL_ROOT}/var/chess-benchmark/worker.sock`;
+
+let defaultWorkerCallSpans: SpanExporter | null | undefined;
+
+/** The API process's exporter for worker calls (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT); null with export off, the default. */
+export function workerCallSpans(): SpanExporter | null {
+  return (defaultWorkerCallSpans ??= otlpSpanExporterFromEnv(process.env, "space-api"));
+}
+
+/**
+ * The API's CLIENT span of one worker socket call (OBS-006), null with export off. Its traceparent goes in the request body, so
+ * the worker's "worker.socket <route>" span is its child: Council, chess, pane board runs and Nous turns start outside an HTTP
+ * request, so this span is their trace's root. Only the route, outcome and the caller's id; never prompt text.
+ */
+export function startWorkerCallSpan(spans: SpanExporter | null, route: string, traceId?: unknown) {
+  if (!spans) return null;
+  const ids = { traceId: randomBytes(16).toString("hex"), spanId: randomBytes(8).toString("hex") };
+  const started = Date.now();
+  return {
+    traceparent: formatTraceparent(ids.traceId, ids.spanId),
+    end(outcome: "COMPLETED" | "FAILED" | "ABORTED") {
+      spans.record({
+        ...ids, parentSpanId: null, name: `api.worker_socket /${route}`,
+        startTimeUnixNano: BigInt(started) * 1_000_000n, endTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
+        attributes: { "space.route": route, "space.outcome": outcome, ...(typeof traceId === "string" && traceId ? { "space.trace_id": traceId } : {}) },
+        error: outcome === "FAILED", kind: 3
+      });
+    }
+  };
+}
 
 /**
  * CLI moves run in the worker: CLI processes must never live in the space-api cgroup. The worker
  * listens on a Unix socket only the space account can open; aborting a move closes the request,
  * which stops the CLI there.
  */
-export function createWorkerCliMoveRunner(socketPath = CHESS_MOVE_SOCKET): CliMoveRunner {
+export function createWorkerCliMoveRunner(
+  socketPath = CHESS_MOVE_SOCKET,
+  spans: SpanExporter | null = workerCallSpans()
+): CliMoveRunner {
   return (input) =>
     new Promise<string>((resolve, reject) => {
       if (input.signal.aborted) {
         reject(new DOMException("The move was aborted.", "AbortError"));
         return;
       }
+      const span = startWorkerCallSpan(spans, "move", input.traceId);
       const body = JSON.stringify({
         runtimeId: input.runtimeId,
         model: input.model,
@@ -131,17 +171,20 @@ export function createWorkerCliMoveRunner(socketPath = CHESS_MOVE_SOCKET): CliMo
         claudeProfile: input.claudeProfile ?? null,
         prompt: input.prompt,
         timeoutMs: WORKER_MOVE_TIMEOUT_MS,
+        ...(input.traceId ? { traceId: input.traceId } : {}),
+        ...(span ? { traceparent: span.traceparent } : {}),
       });
       let settled = false;
       const finish = (error: Error | null, text?: string) => {
         if (settled) return;
         settled = true;
         input.signal.removeEventListener("abort", onAbort);
+        span?.end(!error ? "COMPLETED" : error.name === "AbortError" ? "ABORTED" : "FAILED");
         if (error) reject(error);
         else resolve(text ?? "");
       };
       const call = request(
-        { socketPath, path: "/move", method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) } },
+        { socketPath, path: "/move", method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body), ...gatewayRequestIdHeader(input.traceId) } },
         (response) => {
           let data = "";
           response.setEncoding("utf8");

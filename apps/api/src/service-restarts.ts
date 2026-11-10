@@ -1,4 +1,6 @@
 import { execFile } from "./safe-child-process.js";
+import { createHash } from "node:crypto";
+import { VAULT_BROKER_BUNDLE_PATH } from "./vault/broker-report.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
@@ -29,7 +31,7 @@ export const VAULT_BROKER_REINSTALL_COMMAND = {
 } as const;
 
 const VAULT_BROKER_REINSTALL_OUTCOMES: Record<string, string> = {
-  "0": "Rebuilt the Vault broker from stable's code and restarted it; the previous one is kept. Unlock the Vault once so agents can fill again.",
+  "0": "Rebuilt the Vault broker from stable's code and restarted it; the previous one is kept. Agents keep filling under the current delegation; no unlock is needed.",
   "3": "The installed Vault broker already matches stable's code; nothing changed.",
   "2": "Refused before any change: stable's checkout has local changes or the build failed.",
   "1": "The new Vault broker did not start; the previous one was restored and runs again.",
@@ -37,18 +39,24 @@ const VAULT_BROKER_REINSTALL_OUTCOMES: Record<string, string> = {
 };
 
 /** Runs the reinstall unit and says what happened; its JSON report is in `journalctl -u space-vault-broker-reinstall`. */
-export async function reinstallVaultBroker(): Promise<string> {
-  const unit = (): Promise<Record<string, string>> => execFileAsync("/usr/bin/systemctl", ["show", "space-vault-broker-reinstall.service",
+export async function reinstallVaultBroker(run: (command: string, args: readonly string[], options: { timeout: number; windowsHide: boolean }) => Promise<{ stdout: string }> = execFileAsync,
+  bundlePath = VAULT_BROKER_BUNDLE_PATH): Promise<string> {
+  const unit = (): Promise<Record<string, string>> => run("/usr/bin/systemctl", ["show", "space-vault-broker-reinstall.service",
     "--property=InvocationID,ExecMainStatus"], { timeout: 5000, windowsHide: true })
     .then(({ stdout }) => Object.fromEntries(stdout.trim().split("\n").map((line) => line.split("=", 2))), () => ({}));
-  const before = await unit();
-  const failed = await execFileAsync(VAULT_BROKER_REINSTALL_COMMAND.command, VAULT_BROKER_REINSTALL_COMMAND.args, { timeout: 320_000, windowsHide: true })
+  const bundle = () => readFile(bundlePath).then((bytes) => createHash("sha256").update(bytes).digest("hex"), () => null);
+  const [before, bundleBefore] = [await unit(), await bundle()];
+  const failed = await run(VAULT_BROKER_REINSTALL_COMMAND.command, VAULT_BROKER_REINSTALL_COMMAND.args, { timeout: 320_000, windowsHide: true })
     .then(() => null, (error: { stderr?: string; message: string }) => error);
   const after = await unit();
-  // A new invocation proves the unit ran: sudo refuses on dev and before the deploy that installs it.
-  const outcome = after.InvocationID && after.InvocationID !== before.InvocationID ? VAULT_BROKER_REINSTALL_OUTCOMES[after.ExecMainStatus ?? ""] : undefined;
+  // A new invocation proves the unit ran: sudo refuses on dev and before the deploy that installs it. A run that succeeded (0 or 3)
+  // leaves no invocation: systemd unloads the inactive oneshot at once (30/10 the reinstall worked and read "did not run"), so
+  // `systemctl start` succeeding is the proof and the installed bundle tells a rebuild (0) from one already current (3).
+  const status = after.InvocationID && after.InvocationID !== before.InvocationID ? after.ExecMainStatus
+    : failed ? undefined : (await bundle()) === bundleBefore && bundleBefore !== null ? "3" : "0";
+  const outcome = VAULT_BROKER_REINSTALL_OUTCOMES[status ?? ""];
   if (!outcome) throw new Error(`The reinstall did not run (the operator installs its unit once, ADR-012 "Enablement"): ${(failed?.stderr || failed?.message || "no exit status").trim().slice(0, 300)}`);
-  if (after.ExecMainStatus === "0" || after.ExecMainStatus === "3") return outcome;
+  if (status === "0" || status === "3") return outcome;
   throw new Error(`${outcome} See journalctl -u space-vault-broker-reinstall.`);
 }
 

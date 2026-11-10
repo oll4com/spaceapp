@@ -33,6 +33,19 @@ describe("Claude API key card", () => {
     expect(entry).toMatchObject({ availability: { state: "offline" }, offlineLabel: "Connected · API key", rows: [] });
   });
 
+  it("shows a profile with no sign-in of its own by Space Gateway's sample of its account, never as an API key", () => {
+    const weeklyResetAt = new Date(clock + 3 * 86_400_000).toISOString();
+    const [held, bare] = claudeAccountEntries([
+      apiCard({ id: "main", label: "ntheo", email: "ntheo@spaceapp.dev", status: "NOT_CONNECTED", fiveHourRemainingPercent: 0, weeklyRemainingPercent: 0, weeklyResetAt }),
+      apiCard({ id: "solo", label: "solo", status: "NOT_CONNECTED" })
+    ], clock, ["this month $500.60"]);
+    expect(held).toMatchObject({ availability: { state: "exhausted" }, notes: [expect.stringMatching(/^Not signed in on this profile · quota from Space Gateway/)] });
+    expect(held!.rows).toHaveLength(1);
+    expect(bare).toMatchObject({ availability: { state: "offline" }, offlineLabel: "Not signed in", rows: [] });
+    expect(bare!.notes).toBeUndefined();
+    for (const entry of [held!, bare!]) expect(JSON.stringify(entry)).not.toMatch(/API key|Paid per token|\$500/);
+  });
+
   it("labels the key in the pane account picker without making it a pick", () => {
     const pick = (patch: Partial<ClaudeUsageAccount>) => cliAccountAvailability({
       runtimeId: "cli:claude", profileId: "api", identity: null, clock,

@@ -18,6 +18,8 @@ import {
 import { api } from "../../api.js";
 import type { FileItem, DiskStats } from "@space/contracts";
 import { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export interface FileFolderTreeProps {
   currentPath: string;
@@ -36,13 +38,15 @@ interface TreeNode {
 }
 
 export function FileFolderTree({
-  currentPath = "/opt/spaceapp",
-  workspaceRoot = "/opt/spaceapp",
+  currentPath = SPACE_INSTALL_ROOT,
+  workspaceRoot = SPACE_INSTALL_ROOT,
   mode = "user",
   onNavigate,
   collapsed = false
 }: FileFolderTreeProps) {
-  const root = workspaceRoot || "/opt/spaceapp";
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
+  const root = workspaceRoot || SPACE_INSTALL_ROOT;
   // Quick bookmarks
   const bookmarks = [
     { label: "Workspace", path: root, icon: <HardDrive size={15} color="var(--modern-accent)" /> },
@@ -126,7 +130,7 @@ export function FileFolderTree({
     setContextMenu(null);
     try {
       await navigator.clipboard.writeText(path);
-      setCopiedNotice(`Copied: ${path}`);
+      setCopiedNotice(t("Copied: {path}", { path }));
       setTimeout(() => setCopiedNotice(null), 2500);
     } catch {
       try {
@@ -136,7 +140,7 @@ export function FileFolderTree({
         input.select();
         document.execCommand("copy");
         document.body.removeChild(input);
-        setCopiedNotice(`Copied: ${path}`);
+        setCopiedNotice(t("Copied: {path}", { path }));
         setTimeout(() => setCopiedNotice(null), 2500);
       } catch {
         // ignore
@@ -254,7 +258,7 @@ export function FileFolderTree({
       <div className="fm-sidebar-scroll-area">
         {/* Quick Bookmarks */}
         <div className="fm-sidebar-section">
-          <div className="fm-sidebar-title">Bookmarks</div>
+          <div className="fm-sidebar-title">{t("Bookmarks")}</div>
           {bookmarks.map((bm) => {
             const isActive = currentPath === bm.path;
             return (
@@ -262,12 +266,12 @@ export function FileFolderTree({
                 key={bm.path}
                 className={`fm-bookmark-item ${isActive ? "active" : ""}`}
                 data-tree-path={bm.path}
-                data-tree-label={bm.label}
+                data-tree-label={t(bm.label)}
                 onClick={() => onNavigate(bm.path)}
-                onContextMenu={(e) => handleContextMenu(e, bm.path, bm.label)}
+                onContextMenu={(e) => handleContextMenu(e, bm.path, t(bm.label))}
               >
                 {bm.icon}
-                <span>{bm.label}</span>
+                <span>{t(bm.label)}</span>
                 {bm.tag && <span className="fm-bookmark-tag">{bm.tag}</span>}
               </div>
             );
@@ -276,7 +280,7 @@ export function FileFolderTree({
 
         {/* Directory Hierarchy Tree */}
         <div className="fm-sidebar-section">
-          <div className="fm-sidebar-title">Folder Tree</div>
+          <div className="fm-sidebar-title">{t("Folder Tree")}</div>
           {treeData.map((rootNode) => renderTreeNode(rootNode, 0))}
         </div>
       </div>
@@ -290,7 +294,7 @@ export function FileFolderTree({
           >
             <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <HardDrive size={13} color="var(--modern-accent, #61d2c3)" />
-              Disk Storage
+              {t("Disk Storage")}
             </span>
           </div>
 
@@ -311,14 +315,14 @@ export function FileFolderTree({
             </div>
 
             <div className="fm-disk-meta-row">
-              <span>Used: <strong>{diskStats.usedFormatted}</strong></span>
-              <span>Free: <strong>{diskStats.freeFormatted}</strong></span>
+              <span>{t("Used:")} <strong>{diskStats.usedFormatted}</strong></span>
+              <span>{t("Free:")} <strong>{diskStats.freeFormatted}</strong></span>
             </div>
 
             <div className="fm-disk-meta-row secondary">
-              <span>Total: {diskStats.totalFormatted} ({diskStats.usedPercent}%)</span>
-              <span className="fm-disk-tag" title="Daily cached background scan">
-                Cached daily
+              <span>{t("Total: {size} ({percent}%)", { size: diskStats.totalFormatted, percent: diskStats.usedPercent })}</span>
+              <span className="fm-disk-tag" title={t("Daily cached background scan")}>
+                {t("Cached daily")}
               </span>
             </div>
           </div>
@@ -349,7 +353,7 @@ export function FileFolderTree({
             onClick={() => void handleCopyPath(contextMenu.path)}
           >
             <Copy size={14} color="var(--modern-accent, #61d2c3)" />
-            <span>Copy Path</span>
+            <span>{t("Copy Path")}</span>
           </button>
           <button
             type="button"
@@ -360,7 +364,7 @@ export function FileFolderTree({
             }}
           >
             <Folder size={14} color="#ffd43b" />
-            <span>Open Folder</span>
+            <span>{t("Open Folder")}</span>
           </button>
         </div>
       )}

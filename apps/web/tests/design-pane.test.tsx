@@ -196,13 +196,13 @@ describe("DesignPane", () => {
     fireEvent.click(within(studio).getByRole("button", { name: "Save colours" }));
     await waitFor(() => expect(apiMock.updateUserSettings).toHaveBeenCalledWith({ designColorPresets: [night, expect.objectContaining({ name: "Launch week" })] }));
 
-    // A full list refuses a new combination instead of dropping the oldest.
-    apiMock.userSettings.mockResolvedValue({ designColorPresets: Array.from({ length: 30 }, (_, index) => ({ ...night, name: `Saved ${index}` })) });
+    // No count cap (until 31/10 a 31st was refused): it joins the 30, none dropped.
+    const thirty = Array.from({ length: 30 }, (_, index) => ({ ...night, name: `Saved ${index}` }));
+    apiMock.userSettings.mockResolvedValue({ designColorPresets: thirty });
     apiMock.updateUserSettings.mockClear();
     fireEvent.change(within(studio).getByLabelText("Colour combination name"), { target: { value: "One more" } });
     fireEvent.click(within(studio).getByRole("button", { name: "Save colours" }));
-    expect(await within(studio).findByText(/You have 30 saved colour combinations: delete one first/)).toBeTruthy();
-    expect(apiMock.updateUserSettings).not.toHaveBeenCalled();
+    await waitFor(() => expect(apiMock.updateUserSettings).toHaveBeenCalledWith({ designColorPresets: [...thirty, expect.objectContaining({ name: "One more" })] }));
   });
 
   it("downloads a design from its Media file, saves a copy to Agent Files › Graphics / Design and deletes it", async () => {

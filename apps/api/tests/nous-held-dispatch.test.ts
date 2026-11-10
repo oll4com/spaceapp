@@ -60,6 +60,26 @@ describe("Nous's held dispatch", () => {
     expect(restarted.sent.map((item) => item.text)).toEqual(["After the restart."]);
   });
 
+  it("R65-1: keeps a model through readiness failures until its empty prompt, but still reports permanent failures", async () => {
+    const f = fixture("CALM");
+    await f.held.hold(owner, andy, "Set the model", "light", { modelId: "gpt-6-astra", reasoningEffort: "high" });
+    for (const result of ["Pane has no active session.", "Native state is unknown.", "Send or clear the current CLI draft before changing model settings.",
+      "Wait for the OpenCode turn to finish.", "Wait for this CLI turn to finish before changing models."]) {
+      f.deliver.mockResolvedValueOnce({ ok: false, result });
+      expect(await f.held.tick()).toEqual({ delivered: 0, failed: 0 });
+    }
+    expect(f.notices).toEqual([]);
+    expect(await f.held.tick()).toEqual({ delivered: 1, failed: 0 });
+    expect(f.sent.at(-1)?.model).toEqual({ modelId: "gpt-6-astra", reasoningEffort: "high" });
+    expect(await f.held.summary(owner)).toBeNull();
+    await f.held.hold(owner, andy, "Set the model", "light", { modelId: "gpt-6-astra" });
+    // 5/11 Bruno/Bob: a menu that did not confirm is a failed try, not a wait (it was retried each minute, each try an Esc "Kept model").
+    f.deliver.mockResolvedValue({ ok: false, result: "Claude Code has not confirmed the model change." });
+    await f.held.tick(); await f.held.tick();
+    expect(await f.held.tick()).toEqual({ delivered: 0, failed: 1 });
+    expect(f.notices.at(-1)).toMatchObject({ key: expect.stringMatching(/^held-failed:/), line: expect.stringContaining("has not confirmed the model change") });
+  });
+
   it("drops nothing silently: after three failed tries the text goes back to Nous's inbox", async () => {
     const f = fixture("CALM");
     f.deliver.mockImplementation(async () => ({ ok: false, result: "The pane is closed." }));
@@ -69,6 +89,30 @@ describe("Nous's held dispatch", () => {
     expect(f.notices).toEqual([]);
     expect(await f.held.tick()).toEqual({ delivered: 0, failed: 1 });
     expect(f.notices).toEqual([{ key: expect.stringMatching(/^held-failed:nous_held:/), line: expect.stringContaining("could not be delivered (3 tries: The pane is closed.). Its text: \"Never arrives.\"") }]);
+    expect(await f.held.summary(owner)).toBeNull();
+  });
+
+  it("names a pane not ready for input on 2 tries once, before the last try (2026-10-30 REVIEW: Alex/Dana read UNKNOWN)", async () => {
+    const f = fixture("CALM");
+    f.deliver.mockImplementation(async () => ({ ok: false, result: "Andy: not confirmed ready for input (state UNKNOWN)." }));
+    await f.held.hold(owner, andy, "Next step.");
+    await f.held.tick();
+    expect(f.notices).toEqual([]);
+    await f.held.tick();
+    expect(f.notices).toEqual([{ key: expect.stringMatching(/^held-stuck:nous_held:/), line: expect.stringContaining("was not ready for input on 2 tries of a text held since") }]);
+    expect(f.notices[0]!.line).toContain("restart it (space_restart_pane) and the text goes after. One try is left.");
+    await f.held.tick();
+    expect(f.notices.map((notice) => notice.key.split(":")[0])).toEqual(["held-stuck", "held-failed"]);
+  });
+
+  it("never types a text again that stayed an unsent draft: it leaves the queue and Space's own draft line is the only one (31/10 Alex/Max)", async () => {
+    const f = fixture("CALM");
+    f.deliver.mockImplementation(async () => ({ ok: false, result: "Max: The CLI kept the text as an unsent draft after Enter; it was not submitted." }));
+    await f.held.hold(owner, andy, "Next step.");
+    expect(await f.held.tick()).toEqual({ delivered: 0, failed: 1 });
+    await f.held.tick();
+    expect(f.deliver).toHaveBeenCalledOnce();
+    expect(f.notices).toEqual([]);
     expect(await f.held.summary(owner)).toBeNull();
   });
 

@@ -3,13 +3,17 @@ import { chooseOpenBrowserSelectOption, readOpenBrowserSelect } from "../src/bro
 
 // Option D (plan clipboard:gHaiX_8yanVA): Chrome draws an open native dropdown in a popup no live-view frame shows, so the
 // Browser Host reads it in an isolated world and picks an option with real keys.
-function fakePage(value: unknown) {
+function fakePage(value: unknown, ignoresSet = false) {
   const calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
   const send = async <T,>(method: string, params?: Record<string, unknown>): Promise<T> => {
     calls.push({ method, params });
     if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame-1" } } } as T;
     if (method === "Page.createIsolatedWorld") return { executionContextId: 7 } as T;
-    if (method === "Runtime.evaluate") return { result: { value } } as T;
+    if (method === "Runtime.evaluate") {
+      // The set expression (R20-3) answers the dropdown with the option it took, unless this page ignores it.
+      const chosen = /selectedIndex = (\d+)/.exec(String(params?.expression))?.[1];
+      return { result: { value: chosen && value && !ignoresSet ? { ...(value as object), selectedIndex: Number(chosen) } : value } } as T;
+    }
     return {} as T;
   };
   const keys = () => calls.filter((call) => call.method === "Input.dispatchKeyEvent" && call.params?.type === "rawKeyDown").map((call) => call.params?.key);
@@ -37,13 +41,17 @@ describe("the live view's own dropdown list", () => {
     expect(state!.labels.length).toBeLessThan(400);
   });
 
-  it("picks an option with arrows over the enabled options only, then one Enter", async () => {
-    const down = fakePage(countries);
-    expect(await chooseOpenBrowserSelectOption(down.client, "session-1", 3)).toBe('Chose "Thailand".');
-    expect(down.keys()).toEqual(["ArrowDown", "ArrowDown", "Enter"]);
-    const up = fakePage({ ...countries, selectedIndex: 3 });
-    await chooseOpenBrowserSelectOption(up.client, "session-1", 1);
-    expect(up.keys()).toEqual(["ArrowUp", "Enter"]);
+  it("closes the popup and sets the option by its index with the page's events, never arrows counted from the selected one (R20-3)", async () => {
+    // 30/10 09:37 BKK, Braintrust: arrows from the selected option moved from where Chrome's popup was scrolled and chose
+    // "French Southern Territories" for Greece.
+    const page = fakePage(countries);
+    expect(await chooseOpenBrowserSelectOption(page.client, "session-1", 3)).toBe('Chose "Thailand".');
+    expect(page.keys()).toEqual(["Escape"]);
+    const set = page.calls.filter((call) => call.method === "Runtime.evaluate").at(-1);
+    expect(String(set?.params?.expression)).toContain("select.selectedIndex = 3;");
+    expect(String(set?.params?.expression)).toContain('new Event("change", { bubbles: true })');
+    expect(String(set?.params?.expression)).not.toContain(":open");
+    await expect(chooseOpenBrowserSelectOption(fakePage(countries, true).client, "session-1", 1)).rejects.toThrow("The dropdown did not take that option");
   });
 
   it("refuses a disabled option, an option past the list and a dropdown that closed", async () => {
@@ -52,5 +60,113 @@ describe("the live view's own dropdown list", () => {
     const closed = fakePage(null);
     await expect(chooseOpenBrowserSelectOption(closed.client, "session-1", 1)).rejects.toThrow("The dropdown is no longer open.");
     expect(closed.keys()).toEqual([]);
+  });
+});
+
+
+// The frame id comes from Chrome's DOM node, never a URL supplied by page script.
+function framedPage(oopif = false, nested = false) {
+  const calls: Array<{ method: string; params?: Record<string, unknown>; sessionId?: string }> = [];
+  const send = async <T,>(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<T> => {
+    calls.push({ method, params, sessionId });
+    if (method === "Page.getFrameTree") return { frameTree: sessionId === "child-session"
+      ? { frame: { id: "child" }, ...(nested ? { childFrames: [{ frame: { id: "nested" } }] } : {}) }
+      : { frame: { id: "top" }, ...(!oopif ? { childFrames: [{ frame: { id: "child" } }] } : {}) } } as T;
+    if (method === "Page.createIsolatedWorld") {
+      if (oopif && params?.frameId === "child" && sessionId !== "child-session") throw new Error("different process");
+      return { executionContextId: params?.frameId === "top" ? 1 : params?.frameId === "child" ? 2 : 3 } as T;
+    }
+    if (method === "Runtime.evaluate") {
+      const frame = params?.contextId === 1 || (nested && params?.contextId === 2);
+      if (params?.returnByValue === false) return { result: { objectId: params?.contextId === 1 ? "frame-node" : "nested-node" } } as T;
+      const chosen = /selectedIndex = (\d+)/.exec(String(params?.expression))?.[1];
+      return { result: { value: frame ? { focusFrame: true, x: params?.contextId === 1 ? 112 : 15, y: params?.contextId === 1 ? 124 : 20 }
+        : chosen ? { ...countries, selectedIndex: Number(chosen) } : countries } } as T;
+    }
+    if (method === "DOM.describeNode") return { node: { nodeName: "IFRAME", frameId: params?.objectId === "frame-node" ? "child" : "nested" } } as T;
+    if (method === "Target.getTargets") return { targetInfos: [{ type: "iframe", targetId: "unrelated" }, { type: "iframe", targetId: "child" }] } as T;
+    if (method === "Target.attachToTarget") return { sessionId: "child-session" } as T;
+    return {} as T;
+  };
+  return { send, calls };
+}
+
+describe("native dropdowns inside focused frames", () => {
+  it("follows the same-process focused child and translates its box to the page", async () => {
+    const page = framedPage();
+    expect(await readOpenBrowserSelect(page.send, "page-session")).toEqual({ ...countries, box: { ...countries.box, x: 624, y: 212 } });
+    expect(page.calls.filter(call => call.method === "Page.createIsolatedWorld").map(call => call.params?.frameId)).toEqual(["top", "child"]);
+    expect(page.calls.some(call => call.method === "Target.attachToTarget")).toBe(false);
+  });
+
+  it("attaches only the focused OOPIF target, reads in its isolated world and detaches", async () => {
+    const page = framedPage(true);
+    expect(await readOpenBrowserSelect(page.send, "page-session")).toEqual({ ...countries, box: { ...countries.box, x: 624, y: 212 } });
+    expect(page.calls.find(call => call.method === "Target.attachToTarget")?.params).toEqual({ targetId: "child", flatten: true });
+    expect(page.calls.find(call => call.method === "Runtime.evaluate" && call.params?.contextId === 2)?.sessionId).toBe("child-session");
+    expect(page.calls.find(call => call.method === "Target.detachFromTarget")?.params).toEqual({ sessionId: "child-session" });
+  });
+
+  it("adds offsets through nested same-process frames within an OOPIF", async () => {
+    const page = framedPage(true, true);
+    expect((await readOpenBrowserSelect(page.send, "page-session"))?.box).toEqual({ ...countries.box, x: 639, y: 232 });
+  });
+
+  it.each([false, true])("sends a pick through the focused page for an iframe (OOPIF %s)", async oopif => {
+    const page = framedPage(oopif);
+    expect(await chooseOpenBrowserSelectOption(page, "page-session", 3)).toBe('Chose "Thailand".');
+    const keys = page.calls.filter(call => call.method === "Input.dispatchKeyEvent" && call.params?.type === "rawKeyDown");
+    expect(keys.map(call => call.params?.key)).toEqual(["Escape"]);
+    expect(keys.every(call => call.sessionId === "page-session")).toBe(true);
+    // R20-3: the option is set in the dropdown's own frame.
+    const set = page.calls.filter(call => call.method === "Runtime.evaluate" && String(call.params?.expression).includes("selectedIndex = 3"));
+    expect(set.at(-1)?.params?.contextId).toBe(2);
+  });
+
+  it("fails closed and detaches the OOPIF when its document disappears", async () => {
+    const page = framedPage(true);
+    const send: typeof page.send = (method, params, sessionId) => {
+      if (method === "Runtime.evaluate" && sessionId === "child-session") throw new Error("navigated");
+      return page.send(method, params, sessionId);
+    };
+    expect(await readOpenBrowserSelect(send, "page-session")).toBeNull();
+    expect(page.calls.some(call => call.method === "Target.detachFromTarget")).toBe(true);
+  });
+});
+
+describe("focused-frame safety bounds", () => {
+  it("does not inspect an unrelated iframe target", async () => {
+    const page = framedPage(true);
+    const send: typeof page.send = async <T,>(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<T> => {
+      if (method === "Target.getTargets") return { targetInfos: [{ type: "iframe", targetId: "unrelated" }] } as T;
+      return page.send<T>(method, params, sessionId);
+    };
+    expect(await readOpenBrowserSelect(send, "page-session")).toBeNull();
+    expect(page.calls.some(call => call.method === "Target.attachToTarget")).toBe(false);
+  });
+
+  it("stops after four focused frame edges", async () => {
+    const worlds: string[] = [];
+    const tree = (index: number): object => ({ frame: { id: `frame-${index}` }, ...(index < 6 ? { childFrames: [tree(index + 1)] } : {}) });
+    const send = async <T,>(method: string, params?: Record<string, unknown>): Promise<T> => {
+      if (method === "Page.getFrameTree") return { frameTree: tree(0) } as T;
+      if (method === "Page.createIsolatedWorld") {
+        worlds.push(String(params?.frameId));
+        return { executionContextId: Number(String(params?.frameId).split("-")[1]) } as T;
+      }
+      if (method === "Runtime.evaluate") return { result: params?.returnByValue === false
+        ? { objectId: `element-${Number(params?.contextId) + 1}` }
+        : { value: { focusFrame: true, x: 1, y: 2 } } } as T;
+      if (method === "DOM.describeNode") return { node: { nodeName: "IFRAME", frameId: String(params?.objectId).replace("element", "frame") } } as T;
+      return {} as T;
+    };
+    expect(await readOpenBrowserSelect(send)).toBeNull();
+    expect(worlds).toEqual(["frame-0", "frame-1", "frame-2", "frame-3", "frame-4"]);
+  });
+
+  it("rejects unexpected frame geometry without following it", async () => {
+    const page = fakePage({ focusFrame: true, x: Infinity, y: 3 });
+    expect(await readOpenBrowserSelect(page.send)).toBeNull();
+    expect(page.calls.some(call => call.method === "DOM.describeNode")).toBe(false);
   });
 });

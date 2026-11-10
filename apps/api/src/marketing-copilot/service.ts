@@ -6,7 +6,10 @@ import {
   type MarketingRunView, type Pane
 } from "@space/contracts";
 import type { MarketingCopilotRepository, MarketingPostFilter } from "@space/db";
+import { forbiddenByMemoryText, forbiddingMemory, MEMORY_HITS_NOTE, questionMemoryHits } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
+import { operatorOrder, operatorOrderOverride, type OperatorMessageRefs } from "../copilot-operator-order.js";
+import { PaneCloseRefusedError } from "../pane-guards.js";
 import type { BrowserHostActorContext } from "@space/browser-host";
 
 export interface MarketingCopilotServiceOptions {
@@ -18,6 +21,8 @@ export interface MarketingCopilotServiceOptions {
   openInBrowser?(owner: string, pane: Pane, bookmark: MarketingBookmark, traceId: string, actor: BrowserHostActorContext): Promise<unknown>;
   /** A capture in the owner's room Media as a post asset: its file path and kind, kept until deleted by hand. */
   resolveArtifactAsset?(owner: string, artifactId: string): Promise<{ path: string; kind: "IMAGE" | "VIDEO" }>;
+  /** The operator's messages to Nous: a review's operatorOrder is checked against them. */
+  operatorMessages?: OperatorMessageRefs;
   now?(): string;
 }
 
@@ -53,7 +58,7 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
 
   async function record(owner: string, input: EventInput): Promise<MarketingEvent> {
     const event = await repository.createEvent({ ownerUserId: owner, paneId: input.paneId ?? null, runId: input.runId ?? null, postId: input.postId ?? null, campaignId: input.campaignId ?? null,
-      type: input.type, status: input.status ?? null, message: input.message.slice(0, 1000), payload: input.payload ?? {} });
+      type: input.type, status: input.status ?? null, message: input.message, payload: input.payload ?? {} });
     try { options.onEvent?.(event); } catch { /* listeners never break the write */ }
     return event;
   }
@@ -70,18 +75,26 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     if (!post) throw new SpaceNotFoundError(`Post ${id} was not found.`);
     return post;
   }
+  /** R12-5: a review or question the copilot's own memory forbids (scoped to the channel, or about the same words) is never raised. */
+  async function refuseForbidden(owner: string, item: string, channel?: MarketingPost["channel"], itemId?: string, order?: string): Promise<string | undefined> {
+    const memory = await forbiddingMemory((query) => repository.listMemory(owner, { query, kinds: ["FACT", "LESSON", "PREFERENCE", "CHANNEL_RULE"], channel }), item,
+      (found) => Boolean(channel && found.channel), itemId ? [itemId] : []);
+    if (memory && !order) throw new SpaceConflictError(forbiddenByMemoryText("Marketing Copilot", memory));
+    return memory && order ? operatorOrderOverride(order, memory.id) : undefined;
+  }
   async function bumpRun(owner: string, paneId: string, counter: keyof MarketingRun["counters"]): Promise<string | null> {
     const run = await repository.getActiveRun(paneId);
     if (!run || run.ownerUserId !== owner) return null;
     await repository.updateRun(owner, run.id, { counters: { ...run.counters, [counter]: run.counters[counter] + 1 }, lastActivityAt: now() });
     return run.id;
   }
-  /** When the channel's next publication slot opens; null while one is free. */
-  async function nextSlot(owner: string, pane: Pane | null, post: Pick<MarketingPost, "channel">): Promise<string | null> {
+  /** When the channel's next publication slot opens; null while one is free. Replies have no cap and use no slot (operator 6/11, nous_msg:89c59e6c). */
+  async function nextSlot(owner: string, pane: Pane | null, post: Pick<MarketingPost, "channel" | "kind">): Promise<string | null> {
+    if (post.kind === "REPLY") return null;
     const channel = settingsOf(pane).channels[post.channel];
     const since = new Date(Date.parse(now()) - channel.perDays * DAY_MS).toISOString();
     if (await repository.countPublications(owner, post.channel, since) < channel.posts) return null;
-    const recent = await repository.listPosts(owner, { status: ["PUBLISHED"], channel: post.channel, limit: Math.max(1, channel.posts) });
+    const recent = await repository.listPosts(owner, { status: ["PUBLISHED"], channel: post.channel, excludeKinds: ["REPLY"], limit: Math.max(1, channel.posts) });
     const oldest = recent.map((entry) => entry.publishedAt ?? entry.updatedAt).sort()[0];
     return oldest ? new Date(Date.parse(oldest) + channel.perDays * DAY_MS).toISOString() : now();
   }
@@ -93,7 +106,7 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
    */
   async function sendStaleApprovalBack(owner: string, pane: Pane | null, post: MarketingPost): Promise<boolean> {
     if (post.status !== "APPROVED" || post.scheduledAt) return false;
-    const approval = (await repository.listEvents(owner, { postId: post.id, types: ["REVIEW_DECIDED"], limit: 20 }))
+    const approval = (await repository.listEvents(owner, { postId: post.id, types: ["REVIEW_DECIDED"] }))
       .find((event) => event.payload.decision === "approve" || event.payload.decision === "edit");
     const approvedAt = approval ? Date.parse(approval.createdAt) : Number.NaN;
     const reason = !approval ? "it has no recorded approval"
@@ -166,10 +179,10 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       return updated;
     },
     // ---- briefs (the operator's requests, the agent's work items) -----------------------------
-    async createBrief(owner: string, pane: Pane | null, input: { text: string; campaignId?: string | null; channels?: MarketingPost["channel"][]; postId?: string | null }) {
+    async createBrief(owner: string, pane: Pane | null, input: { text: string; campaignId?: string | null; channels?: MarketingPost["channel"][]; postId?: string | null; /** R10-13: a brief Nous wrote. */ from?: "NOUS" }) {
       if (input.campaignId && !await repository.getCampaign(owner, input.campaignId)) throw new SpaceNotFoundError("The campaign was not found.");
       return record(owner, { paneId: pane?.id ?? null, campaignId: input.campaignId ?? null, postId: input.postId ?? null, type: "BRIEF", status: "PENDING", message: input.text,
-        payload: { text: input.text, channels: input.channels ?? [] } });
+        payload: { text: input.text, channels: input.channels ?? [], ...(input.from ? { from: input.from } : {}) } });
     },
     // ---- posts --------------------------------------------------------------------------------
     listPosts: (owner: string, filter: MarketingPostFilter) => repository.listPosts(owner, filter),
@@ -203,7 +216,8 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
      */
     async deferPublish(owner: string, pane: Pane | null, input: { postId: string; until: string; reason: string }) {
       const at = Date.parse(now());
-      if (Date.parse(input.until) <= at || Date.parse(input.until) > at + 14 * DAY_MS) throw new SpaceConflictError("MARKETING_DEFER: until must be in the next 14 days.");
+      // Any future time (until 31/10 at most 14 days ahead).
+      if (Date.parse(input.until) <= at) throw new SpaceConflictError("MARKETING_DEFER: until must be in the future.");
       const post = await repository.updatePost(owner, input.postId, { scheduledAt: new Date(Date.parse(input.until)).toISOString() }, ["APPROVED"]);
       if (!post) throw new SpaceConflictError("Only an approved post waiting to be published can be deferred.");
       await record(owner, { paneId: pane?.id ?? post.paneId, postId: post.id, campaignId: post.campaignId, type: "NOTE",
@@ -218,13 +232,21 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       await record(owner, { paneId: post.paneId, postId: post.id, campaignId: post.campaignId, type: "NOTE", message: `The Design pane attached ${assets.length} graphic${assets.length === 1 ? "" : "s"}` });
       return post;
     },
-    async requestReview(owner: string, pane: Pane | null, input: { postId: string; summary?: string }) {
+    async requestReview(owner: string, pane: Pane | null, input: { postId: string; summary?: string; operatorOrder?: string }) {
+      const draft = await postOf(owner, input.postId);
+      const order = await operatorOrder(options.operatorMessages, owner, input.operatorOrder);
+      const overrides = await refuseForbidden(owner, `${draft.title ?? ""} ${input.summary ?? ""}`, draft.channel, draft.id, order);
+      // R12-4: a post an approved rule covers, or one written for a Nous brief, carries Approve as the card's recommended answer.
+      const vouched = (await repository.listRules(owner, ["APPROVED"])).some((rule) => marketingRuleMatches(rule, draft)) ? "RULE"
+        : (await repository.listEvents(owner, { paneId: pane?.id ?? draft.paneId, types: ["BRIEF"] })).some((brief) => brief.payload.from === "NOUS"
+          && (brief.status === "TAKEN" || brief.postId === draft.id)) ? "NOUS" : null;
       const post = await repository.updatePost(owner, input.postId, { reviewNote: null }, ["DRAFT", "FAILED"]).then((updated) => updated && repository.updatePost(owner, input.postId, { status: "IN_REVIEW" }));
       if (!post) throw new SpaceConflictError("Only a draft (or a failed post) can be sent for review.");
       const wordingIssues = marketingWordingIssues(`${post.title ?? ""}\n${post.body}`);
       await record(owner, { paneId: pane?.id ?? post.paneId, postId: post.id, campaignId: post.campaignId, type: "REVIEW_REQUESTED",
-        message: `Review: ${input.summary ?? `${MARKETING_CHANNEL_LABELS[post.channel]} ${post.kind.toLowerCase().replace("_", " ")}${post.title ? ` "${post.title}"` : ""}`}`, payload: { wordingIssues } });
-      return { post, wordingIssues };
+        message: `Review: ${input.summary ?? `${MARKETING_CHANNEL_LABELS[post.channel]} ${post.kind.toLowerCase().replace("_", " ")}${post.title ? ` "${post.title}"` : ""}`}${overrides ? ` (${overrides})` : ""}`,
+        payload: { wordingIssues, ...(order ? { operatorOrder: order } : {}), ...(vouched ? { vouched } : {}) } });
+      return { post, wordingIssues, ...(overrides ? { overrides } : {}) };
     },
     /** The operator decides a post: approve, edit (their version is approved and learned), revise (back to the agent) or reject. */
     async decideReview(owner: string, pane: Pane | null, postId: string, input: MarketingPostReviewDecision) {
@@ -250,6 +272,25 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       const verb = { approve: "approved", edit: "edited and approved", revise: "sent back for changes", reject: "rejected" }[input.decision];
       await record(owner, { paneId: pane?.id ?? post.paneId, postId: post.id, campaignId: post.campaignId, type: "REVIEW_DECIDED", message: `You ${verb} the ${label} post${input.note ? `: ${input.note}` : ""}`,
         payload: { decision: input.decision, note: input.note ?? null } });
+      return post;
+    },
+    /**
+     * R24-3 (operator rule 5e8bc029, 1/11 11:50 BKK; mktpost:SUoAkMeF1xpR sat IN_REVIEW after it went stale): the copilot closes its own post
+     * in review that went stale or a newer post replaced (`replacedBy`, newer and of the same channel), with evidence; its review card resolves.
+     */
+    async supersedeReview(owner: string, pane: Pane | null, input: { postId: string; evidence: string; replacedBy?: string }) {
+      const current = await postOf(owner, input.postId);
+      if (input.replacedBy) {
+        const newer = await postOf(owner, input.replacedBy);
+        if (newer.id === current.id || newer.channel !== current.channel || newer.createdAt <= current.createdAt) {
+          throw new SpaceConflictError(`${newer.id} is not a newer ${MARKETING_CHANNEL_LABELS[current.channel]} post than ${current.id}.`);
+        }
+      }
+      const post = await repository.updatePost(owner, input.postId, { status: "SUPERSEDED", reviewNote: `Superseded: ${input.evidence}` }, ["IN_REVIEW"]);
+      if (!post) throw new SpaceConflictError(`Only a post in review can be superseded; ${current.id} is ${current.status.toLowerCase().replace("_", " ")}.`);
+      await record(owner, { paneId: pane?.id ?? post.paneId, postId: post.id, campaignId: post.campaignId, type: "REVIEW_DECIDED",
+        message: `The copilot closed the ${MARKETING_CHANNEL_LABELS[post.channel]} post in review as superseded: ${input.evidence}`,
+        payload: { decision: "superseded", note: input.evidence, replacedBy: input.replacedBy ?? null } });
       return post;
     },
     async waitForReview(owner: string, input: { postId: string; waitMs: number }) {
@@ -299,7 +340,7 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     },
     // ---- memory -------------------------------------------------------------------------------
     async recallMemory(owner: string, query: MarketingMemoryQuery) {
-      const merged = [...new Map([...(await repository.listMemory(owner, { ...query, query: undefined, limit: 200 })).filter((memory) => memory.pinned), ...await repository.listMemory(owner, query)]
+      const merged = [...new Map([...(await repository.listMemory(owner, { ...query, query: undefined, limit: undefined })).filter((memory) => memory.pinned), ...await repository.listMemory(owner, query)]
         .map((memory) => [memory.id, memory])).values()];
       await repository.touchMemories(owner, merged.map((memory) => memory.id));
       return merged;
@@ -321,14 +362,19 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       return { bookmark, pages: await options.openInBrowser(owner, pane, bookmark, traceId, actor) };
     },
     // ---- questions ----------------------------------------------------------------------------
-    async askQuestion(owner: string, pane: Pane, input: { question: string; options?: string[]; postId?: string }) {
+    async askQuestion(owner: string, pane: Pane, input: { question: string; options?: string[]; postId?: string; afterMemory?: boolean }) {
+      await refuseForbidden(owner, input.question);
+      // R13-5 (Job's item 34 for Marketing): the copilot's own memories that may answer it come back first, nothing asked.
+      // Every memory a question word finds, up to the memory list's page of 200 (until 31/10 five a word).
+      const memoryHits = input.afterMemory ? [] : await questionMemoryHits((query) => repository.listMemory(owner, { query, kinds: ["FACT", "AUDIENCE", "CHANNEL_RULE", "LESSON", "PREFERENCE"] }), input.question);
+      if (memoryHits.length) return { questionId: null, memoryHits, note: MEMORY_HITS_NOTE };
       const questionId = `mktq:${randomBytes(9).toString("base64url")}`;
       await record(owner, { paneId: pane.id, postId: input.postId ?? null, type: "QUESTION", message: `Needs you: ${input.question}`, payload: { questionId, question: input.question, options: input.options ?? [] } });
       return { questionId };
     },
     /** by NOUS: Nous, the mind of SpaceApp, answered for the operator (its answer is the agent's memory, not the operator's voice). */
     async answerQuestion(owner: string, pane: Pane | null, input: { questionId: string; answer: string }, by: "USER" | "NOUS" = "USER") {
-      const question = (await repository.listEvents(owner, { types: ["QUESTION"], limit: 300 })).find((event) => event.payload.questionId === input.questionId);
+      const question = (await repository.listEvents(owner, { types: ["QUESTION"] })).find((event) => event.payload.questionId === input.questionId);
       if (!question) throw new SpaceNotFoundError("The question was not found.");
       const memory = await repository.upsertMemory({ ownerUserId: owner, kind: "FACT", key: String(question.payload.question).toLowerCase().slice(0, 300), text: input.answer, channel: null, tags: ["question"], source: by === "NOUS" ? "AGENT" : "USER", pinned: false });
       await record(owner, { paneId: pane?.id ?? question.paneId, postId: question.postId, type: "ANSWERED", message: `${by === "NOUS" ? "Nous" : "You"} answered: ${input.answer.slice(0, 200)}`, payload: { questionId: input.questionId, answer: input.answer, memoryId: memory.id, answeredBy: by } });
@@ -337,7 +383,7 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     async waitForAnswer(owner: string, input: { questionId: string; waitMs: number }) {
       const deadline = Date.now() + Math.min(input.waitMs, NEXT_MAX_WAIT_MS);
       for (;;) {
-        const answered = (await repository.listEvents(owner, { types: ["ANSWERED"], limit: 300 })).find((event) => event.payload.questionId === input.questionId);
+        const answered = (await repository.listEvents(owner, { types: ["ANSWERED"] })).find((event) => event.payload.questionId === input.questionId);
         if (answered) return { answered: true as const, answer: String(answered.payload.answer ?? "") };
         if (Date.now() >= deadline) return { answered: false as const, answer: null };
         await sleep(Math.min(NEXT_POLL_MS, Math.max(0, deadline - Date.now())));
@@ -359,11 +405,11 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       return updated;
     },
     // ---- activity, pending items and runs ------------------------------------------------------
-    listEvents: (owner: string, filter: { paneId?: string; limit: number }) => repository.listEvents(owner, filter),
+    listEvents: (owner: string, filter: { paneId?: string; types?: string[]; limit?: number }) => repository.listEvents(owner, filter),
     async pendingItems(owner: string, paneId: string | null): Promise<MarketingPendingItem[]> {
       const [reviews, questions, campaigns, rules] = await Promise.all([
-        repository.listPosts(owner, { status: ["IN_REVIEW"], limit: 100 }),
-        repository.listEvents(owner, { paneId, types: ["QUESTION", "ANSWERED"], limit: 300 }),
+        repository.listPosts(owner, { status: ["IN_REVIEW"] }),
+        repository.listEvents(owner, { paneId, types: ["QUESTION", "ANSWERED"] }),
         repository.listCampaigns(owner, ["PROPOSED"]),
         repository.listRules(owner, ["PROPOSED"])
       ]);
@@ -373,24 +419,48 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
         ...questions.filter((event) => event.type === "QUESTION" && !answered.has(String(event.payload.questionId))).map((event) => ({ kind: "QUESTION" as const, id: String(event.payload.questionId), message: event.message, payload: event.payload, createdAt: event.createdAt })),
         ...campaigns.map((campaign) => ({ kind: "CAMPAIGN" as const, id: campaign.id, message: `Campaign proposed: ${campaign.name}`, payload: { campaign }, createdAt: campaign.createdAt })),
         ...rules.map((rule) => ({ kind: "RULE" as const, id: rule.id, message: `Rule proposed: ${rule.name}`, payload: { rule }, createdAt: rule.createdAt }))
-      ].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, 200);
+      ].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    },
+    /** Approved posts with a time still ahead, soonest first: the pane that owns one does not close (operator rule 9/11). */
+    async scheduledPosts(owner: string) {
+      const at = Date.parse(now());
+      return (await repository.listPosts(owner, { status: ["APPROVED"] })).filter((post) => post.scheduledAt !== null && Date.parse(post.scheduledAt) > at)
+        .sort((left, right) => Date.parse(left.scheduledAt!) - Date.parse(right.scheduledAt!));
+    },
+    /** Every pane close and room delete asks this (operator rule 9/11: a copilot pane closes only once its copilot has nothing scheduled). */
+    async assertMayClose(owner: string, paneId: string) {
+      const posts = (await service.scheduledPosts(owner)).filter((post) => post.paneId === paneId);
+      const next = posts[0];
+      if (!next) return;
+      const when = `${next.scheduledAt!.slice(0, 16).replace("T", " ")} UTC`;
+      throw new PaneCloseRefusedError(`Pane ${paneId} stays open: its Marketing Copilot has ${posts.length} approved post${posts.length === 1 ? "" : "s"} scheduled, the next ${next.id}`
+        + `${next.title ? ` "${next.title}"` : ""} on ${MARKETING_CHANNEL_LABELS[next.channel]} at ${when}. It closes once nothing is scheduled; only the operator can force-close it.`,
+        { paneId, scheduledPosts: posts.length, nextPostId: next.id, nextPostTitle: next.title, nextChannel: MARKETING_CHANNEL_LABELS[next.channel], nextScheduledAt: next.scheduledAt });
     },
     /** Approved posts whose time has come, on channels that are on and have a free slot. */
     async duePosts(owner: string, pane: Pane | null) {
       const settings = settingsOf(pane);
       const at = now();
-      const due = (await repository.listPosts(owner, { status: ["APPROVED"], limit: 200 })).filter((post) => settings.channels[post.channel].enabled && (!post.scheduledAt || post.scheduledAt <= at))
+      const due = (await repository.listPosts(owner, { status: ["APPROVED"] })).filter((post) => settings.channels[post.channel].enabled && (!post.scheduledAt || post.scheduledAt <= at))
         .sort((left, right) => (left.scheduledAt ?? left.updatedAt).localeCompare(right.scheduledAt ?? right.updatedAt));
       const open: MarketingPost[] = [];
       for (const post of due) if (!await sendStaleApprovalBack(owner, pane, post) && !await nextSlot(owner, pane, post)) open.push(post);
       return open;
     },
+    /** Briefs waiting for the pane's agent (its own and unassigned ones). */
+    async pendingBriefs(owner: string, pane: Pane) {
+      return (await repository.listEvents(owner, { types: ["BRIEF"], status: ["PENDING"] })).filter((brief) => !brief.paneId || brief.paneId === pane.id).length;
+    },
+    /** The pane's work: its briefs in `status` and approved posts that are due. */
+    async backlog(owner: string, pane: Pane, status: Array<"PENDING" | "TAKEN"> = ["PENDING"]) {
+      const briefs = await repository.listEvents(owner, { types: ["BRIEF"], status });
+      const own = briefs.filter((brief) => !brief.paneId || brief.paneId === pane.id);
+      return own.length + (await service.duePosts(owner, pane)).length;
+    },
     async runView(owner: string, pane: Pane): Promise<MarketingRunView> {
       const run = await repository.getActiveRun(pane.id);
       const mine = run && run.ownerUserId === owner ? run : null;
-      const briefs = await repository.listEvents(owner, { types: ["BRIEF"], status: ["PENDING"], limit: 200 });
-      const own = briefs.filter((brief) => !brief.paneId || brief.paneId === pane.id);
-      return { run: mine, status: mine?.status ?? "IDLE", pending: await service.pendingItems(owner, pane.id), backlog: own.length + (await service.duePosts(owner, pane)).length };
+      return { run: mine, status: mine?.status ?? "IDLE", pending: await service.pendingItems(owner, pane.id), backlog: await service.backlog(owner, pane) };
     },
     activeRun: (paneId: string) => repository.getActiveRun(paneId),
     async startRun(owner: string, paneId: string): Promise<{ run: MarketingRun; kickoff: boolean }> {
@@ -440,11 +510,11 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
             await bumpRun(owner, pane.id, "taken");
             const post = brief.postId ? await repository.getPost(owner, brief.postId) : null;
             const campaign = brief.campaignId ? await repository.getCampaign(owner, brief.campaignId) : null;
-            const memories = await service.recallMemory(owner, { query: brief.message.slice(0, 300), limit: 15 });
+            const memories = await service.recallMemory(owner, { query: brief.message.slice(0, 300) });
             return { done: false as const, kind: "BRIEF" as const, item: brief, post, campaign, memories, autonomy: settings.autonomy };
           }
           const [due] = await service.duePosts(owner, pane);
-          if (due) return { done: false as const, kind: "PUBLISH" as const, post: due, memories: await service.recallMemory(owner, { kinds: ["CHANNEL_RULE"], channel: due.channel, limit: 10 }) };
+          if (due) return { done: false as const, kind: "PUBLISH" as const, post: due, memories: await service.recallMemory(owner, { kinds: ["CHANNEL_RULE"], channel: due.channel }) };
           const [measure] = await service.postsToMeasure(owner);
           if (measure) return { done: false as const, kind: "MEASURE" as const, post: measure };
           await service.stopRun(owner, pane.id, "Run finished");
@@ -456,10 +526,14 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     },
     // ---- analytics -----------------------------------------------------------------------------
     recordMetrics: (owner: string, metrics: MarketingMetric[]) => repository.recordMetrics(owner, metrics),
+    listMetrics: (owner: string, sinceDay: string) => repository.listMetrics(owner, sinceDay),
+    /** The stats collector's reading of a published post from a public API (no Activity line: it runs every 3 hours). */
+    recordPostStats: async (owner: string, post: MarketingPost, metrics: Record<string, number>) =>
+      repository.updatePost(owner, post.id, { metrics: { ...post.metrics, ...metrics }, evidence: { ...post.evidence, statsAt: now() } }, ["PUBLISHED"]),
     /** Published posts whose engagement is due a reading: a day after publication, and again after a week. */
     async postsToMeasure(owner: string): Promise<MarketingPost[]> {
       const at = Date.parse(now());
-      return (await repository.listPosts(owner, { status: ["PUBLISHED"], limit: 100 })).filter((post) => {
+      return (await repository.listPosts(owner, { status: ["PUBLISHED"] })).filter((post) => {
         const age = at - Date.parse(post.publishedAt ?? post.updatedAt);
         return age < 30 * DAY_MS && ((age >= DAY_MS && !post.evidence.measured1d) || (age >= 7 * DAY_MS && !post.evidence.measured7d));
       });
@@ -475,17 +549,17 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
         message: `${MARKETING_CHANNEL_LABELS[post.channel]} post: ${Object.entries(input.metrics).map(([key, value]) => `${value} ${key.replace(/_/g, " ")}`).join(", ")}`, payload: { metrics: input.metrics } });
       return updated;
     },
-    /** The last 90 days of public numbers and the published posts ranked by their recorded engagement. */
+    /** Every recorded public number (until 31/10 the last 90 days) and the published posts ranked by their recorded engagement. */
     async analytics(owner: string) {
-      const since = new Date(Date.parse(now()) - 90 * DAY_MS).toISOString().slice(0, 10);
       const engagement = (post: MarketingPost) => Object.values(post.metrics).reduce((sum, value) => sum + value, 0);
-      const published = await repository.listPosts(owner, { status: ["PUBLISHED"], limit: 200 });
-      return { metrics: await repository.listMetrics(owner, since), topPosts: published.filter((post) => engagement(post) > 0).sort((a, b) => engagement(b) - engagement(a)).slice(0, 10), published: published.length };
+      // Every published post with engagement, best first (until 31/10 the top 10 of the newest 200).
+      const published = await repository.listPosts(owner, { status: ["PUBLISHED"] });
+      return { metrics: await repository.listMetrics(owner), topPosts: published.filter((post) => engagement(post) > 0).sort((a, b) => engagement(b) - engagement(a)), published: published.length };
     },
     /** Once a week: the public numbers and their change since a week ago, as one line in the pane's Activity. */
     async metricsDigest(owner: string, pane: Pane) {
       const at = Date.parse(now());
-      const [last] = await repository.listEvents(owner, { types: ["METRICS"], limit: 20 }).then((events) => events.filter((event) => event.payload.digest === true));
+      const [last] = await repository.listEvents(owner, { types: ["METRICS"] }).then((events) => events.filter((event) => event.payload.digest === true));
       if (last && at - Date.parse(last.createdAt) < 6.5 * DAY_MS) return null;
       const rows = await repository.listMetrics(owner, new Date(at - 8 * DAY_MS).toISOString().slice(0, 10));
       const series = (source: string, key: string) => rows.filter((row) => row.source === source && row.key === key);
@@ -505,7 +579,7 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       record(owner, { paneId: pane.id, postId: input.postId ?? null, type: input.needsUser ? "NEEDS_USER" : "NOTE", message: input.message }),
     /** The agent closes a brief: what it did (drafted posts, asked, skipped) for the timeline. */
     async reportBrief(owner: string, pane: Pane, input: { eventId: string; outcome: "drafted" | "needs_user" | "skipped" | "done"; summary: string; memoryIds?: string[] }) {
-      const brief = (await repository.listEvents(owner, { types: ["BRIEF"], status: ["TAKEN", "PENDING"], limit: 500 })).find((event) => event.id === input.eventId);
+      const brief = (await repository.listEvents(owner, { types: ["BRIEF"], status: ["TAKEN", "PENDING"] })).find((event) => event.id === input.eventId);
       if (!brief) throw new SpaceNotFoundError(`Brief ${input.eventId} is not open.`);
       await repository.setEventStatus(owner, brief.id, "DONE");
       if (input.memoryIds?.length) await repository.touchMemories(owner, input.memoryIds);

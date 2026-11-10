@@ -7,13 +7,14 @@ import { type SpaceCapabilitySnapshot, spaceCapabilitySnapshotSchema } from "@sp
 import { nowIso, type SpaceStore } from "@space/runtime";
 import { discoverAgentRuntimes } from "./cli-runtimes.js";
 import type { SpaceApiConfig } from "./config.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export type SpaceCapabilityInventoryCollector = (context: {
   store: SpaceStore;
   config: SpaceApiConfig;
 }) => Promise<SpaceCapabilitySnapshot> | SpaceCapabilitySnapshot;
 
-const spaceCapabilityInventorySnapshotPath = "/opt/spaceapp/var/inventory/space-capabilities.json";
+const spaceCapabilityInventorySnapshotPath = `${SPACE_INSTALL_ROOT}/var/inventory/space-capabilities.json`;
 
 async function readSpaceCapabilityInventorySnapshotFile(): Promise<SpaceCapabilitySnapshot | null> {
   try {
@@ -54,7 +55,7 @@ export async function collectDefaultSpaceCapabilityInventory(context: {
         id: "bounded-helper-snapshot",
         label: "Bounded Space helper snapshot",
         status: "DISABLED",
-        statusReason: "No readable helper snapshot was found under /opt/spaceapp/var/inventory.",
+        statusReason: `No readable helper snapshot was found under ${SPACE_INSTALL_ROOT}/var/inventory.`,
         lastCheckedAt: generatedAt
       }
     ],

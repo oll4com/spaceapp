@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { hostname } from "node:os";
+import { gatewayPaceDay, neededReservePercent } from "@space/contracts";
 import { backoffSeconds, parseRetryAfter } from "./retry.js";
 
 /**
@@ -52,6 +53,8 @@ export interface AccountState {
   ignoreStandardQuota?: boolean;
   /** Draw-weight multiplier from the recent upstream error rate; 1 is neutral. */
   selectionWeightMultiplier?: number;
+  /** The weekly used % when this account's pace day began (ms), for `paceDay`; none starts the day at the use seen now. */
+  weekDayStart?: { at: number; usedPercent: number } | null;
 }
 
 export interface SelectionResult {
@@ -59,6 +62,8 @@ export interface SelectionResult {
   errorMessage: string | null;
   errorCode?: string | null;
   resetsAt?: number | null;
+  /** Fill first: the last account with room is kept for the operator's own turns. */
+  reserved?: boolean;
 }
 
 export interface RoutingCost { total: number; reason?: string | null }
@@ -124,6 +129,27 @@ const PRESERVE_MIN_SHORT_WINDOW_FLOOR_PCT = 10;
 const NORMAL_LAST_ACCOUNT_EMERGENCY_FLOOR_PCT = 5;
 const RECENT_FOREGROUND_ACTIVITY_SECONDS = 30 * 60;
 export const USAGE_LIMIT_REACHED = "usage_limit_reached";
+/** Every account used today's share of its week (`paceCap`): background work waits for the next pace day, the operator's turns run. */
+export const PACE_CAP = "PACE_CAP";
+
+/** Today's share of the account's week (`gatewayPaceDay`, plan clipboard:DotwYXVD2N3n); `current` in seconds. */
+export function paceDay(state: AccountState, current: number) {
+  return gatewayPaceDay({ usedPercent: state.secondaryUsedPercent, resetAt: state.secondaryResetAt == null ? null : state.secondaryResetAt * 1000 },
+    state.weekDayStart, current * 1000);
+}
+
+/** The room a Claude Max week keeps per day to its reset for the work that must run on it (operator and Nous turns); `weekShort` below it. */
+export const WEEK_RUNWAY_DAILY_PERCENT = 2;
+/**
+ * Plan clipboard:DotwYXVD2N3n (6/11 19:00 BKK: ntheo at 92% of its week 5.6 days before its reset served 18,551 requests in a day): an
+ * account whose week would not last to its reset, under `WEEK_RUNWAY_DAILY_PERCENT` per day left or at 95% with more than a day left.
+ * Its last 24 hours are never short: what is left would be lost at the reset.
+ */
+export function weekShort(state: AccountState, current: number): boolean {
+  const used = state.secondaryUsedPercent, reset = state.secondaryResetAt;
+  if (used === null || used === undefined || !reset || reset - current <= SECONDS_PER_DAY) return false;
+  return used >= 95 || 100 - used < (reset - current) / SECONDS_PER_DAY * WEEK_RUNWAY_DAILY_PERCENT;
+}
 
 type SortKey = (number | string)[];
 
@@ -439,6 +465,124 @@ export function weeklyPacePoints(state: AccountState, current: number): number {
   return used - 100 * (1 - Math.min(7 * SECONDS_PER_DAY, reset - current) / (7 * SECONDS_PER_DAY));
 }
 
+export const FILL_FIRST_FIVE_HOUR_CAP_PERCENT = 93;
+/** The project tag of Nous's OPERATOR and DECISION turns: the only work the fill-first reserve serves in its last 20%. */
+export const NOUS_OPERATOR_PROJECT = "nous-operator";
+/** The project tags of every Nous run: its own turns, its operator and decision turns and its helpers (apps/worker/src/nous-turn.ts caller). */
+export const NOUS_PROJECTS: ReadonlySet<string> = new Set(["nous", "nous-helper", NOUS_OPERATOR_PROJECT]);
+/**
+ * Plan clipboard:DotwYXVD2N3n, operator 6/11 (nous_msg:a0d02e19): today's share of every account's week holds back NEW background
+ * work only. Nous, the orchestrator (about 4 % of the day's tokens), is never held: a turn cut after its first steps wastes what it spent.
+ * A continuation of a session already running on an account (sticky or owner) is never held either; the proxies skip the cap there.
+ * Nor is a pane that works on an open operator request (operator rule 31/10: his requests never wait; `priorityPanes`, from Space's API),
+ * nor what Nous's pace cap emergency covers (some panes or all background work; operator 7/11 19:24 BKK: nothing it covers is held, only a spent week stops).
+ */
+export function paceCapApplies(project: string | null, priorityPanes?: { has(project: string | null): boolean }): boolean {
+  // priorityPanes also answers for an untagged request (null) while a pace cap emergency covers all background work.
+  return !((project !== null && NOUS_PROJECTS.has(project)) || priorityPanes?.has(project) === true);
+}
+
+/** Fill first: this account's 5-hour window already counts (used and not reset). */
+export function fillFirstWindowStarted(state: AccountState, current: number): boolean {
+  return (state.usedPercent ?? 0) > 0 && (!state.primaryResetAt || state.primaryResetAt > current);
+}
+export const FILL_FIRST_WEEKLY_CAP_PERCENT = 95;
+export const FILL_FIRST_DEFAULT_RESERVE_PERCENT = 20;
+export const FILL_FIRST_RESERVE_SHARED_PERCENT = 100 - FILL_FIRST_DEFAULT_RESERVE_PERCENT;
+
+/** A week that resets within a day: with room left it serves first (the weekly-pace `losing` order), as it would lose that room. */
+export function fillFirstNearWeeklyReset(state: AccountState, current: number): boolean {
+  return Boolean(state.secondaryResetAt && state.secondaryResetAt > current && state.secondaryResetAt - current <= SECONDS_PER_DAY);
+}
+
+/**
+ * Goal d844e0cc (5/11: ops at 100% of its week with 56% of it passed, while crew lost 38% and ops 31% at earlier resets): weekly pace
+ * points (`weeklyPacePoints`) past `ahead` mark an account that runs out early, under `under` one that would leave its week unused. Fixed.
+ */
+export const ROUTING_PACE_POINTS = { ahead: 15, under: -10 } as const;
+/**
+ * The pool's order by weekly pace: 0 a week that resets within a day with 15% or more left (it would lose that room), 1 under pace,
+ * 2 on pace, 3 ahead. Order only: an ahead account serves when no other is under its 5-hour switch point, and no request is refused for it.
+ */
+export function paceRank(state: AccountState, current: number): 0 | 1 | 2 | 3 {
+  const left = state.secondaryUsedPercent === null || state.secondaryUsedPercent === undefined ? 100 : 100 - state.secondaryUsedPercent;
+  if (fillFirstNearWeeklyReset(state, current) && left >= 15) return 0;
+  const points = weeklyPacePoints(state, current);
+  return points < ROUTING_PACE_POINTS.under ? 1 : points > ROUTING_PACE_POINTS.ahead ? 3 : 2;
+}
+
+/**
+ * Reserves only when needed (operator 5/11 nous_msg:3723fc28; 4/11 09:42Z ntheo, week 95% and 16 h from its reset, held at the weekly cap
+ * while every other request was refused): what the pool keeps of a week or of 5 hours for a base, by `neededReservePercent`. An account at
+ * or past `weekBase`'s weekly reserve brings nothing back at its 5-hour reset, so only the others' 5-hour windows count.
+ */
+export function poolReserves(states: readonly AccountState[], current: number, weekBase: number): { week: (base: number) => number; fiveHour: (base: number) => number } {
+  const pool = states.filter((state) => !["DEACTIVATED", "PAUSED", "REAUTH_REQUIRED"].includes(state.status));
+  const weeks = pool.map((state) => ({ used: state.secondaryUsedPercent, resetAt: state.secondaryResetAt, length: SECONDS_PER_WEEK }));
+  const week = (base: number) => neededReservePercent(weeks, base, current);
+  const kept = week(weekBase);
+  const fives = pool.filter((state) => 100 - (state.secondaryResetAt && state.secondaryResetAt <= current ? 0 : state.secondaryUsedPercent ?? 0) > kept)
+    .map((state) => ({ used: state.usedPercent, resetAt: state.primaryResetAt, length: (state.primaryWindowMinutes ?? 300) * 60 }));
+  return { week, fiveHour: (base: number) => neededReservePercent(fives, base, current) };
+}
+/** What the weekly-pace route keeps now: the fill-first weekly cap, and the floors of the week and of 5 hours (`poolReserves`). */
+export interface PoolKept { weekCap: number; weekFloor: number; fiveFloor: number }
+
+/** The fill-first refusal names each account and what stopped it (5-hour window or weekly cap), and the one kept for the operator. */
+export function fillFirstReservedMessage(pool: readonly AccountState[], current: number, kept: PoolKept, names: Readonly<Record<string, string>> = {}): string {
+  const used = (value: number | null | undefined, resetAt: number | null | undefined) =>
+    Math.round(value === null || value === undefined || (resetAt && resetAt <= current) ? 0 : value);
+  const name = (state: AccountState) => names[state.accountId] ?? state.accountId;
+  const weekly = (state: AccountState) => used(state.secondaryUsedPercent, state.secondaryResetAt);
+  const fiveHour = (state: AccountState) => used(state.usedPercent, state.primaryResetAt);
+  const weekFull = (state: AccountState) => weekly(state) >= Math.min(kept.weekCap, 100 - kept.weekFloor);
+  const held = pool.filter((state) => !weekFull(state) && 100 - fiveHour(state) > kept.fiveFloor);
+  const out = pool.filter((state) => !held.includes(state))
+    .map((state) => `${name(state)} ${weekFull(state) ? `weekly ${weekly(state)}%${kept.weekCap < 100 ? ` (cap ${Math.round(kept.weekCap)}%)` : ""}` : `5-hour ${fiveHour(state)}%`}`);
+  return `Space Gateway's other Claude accounts reached a usage limit (${out.join(", ") || "none"}); the last one with room, `
+    + `${held.map((state) => `${name(state)} (5-hour ${fiveHour(state)}%)`).join(", ") || "none"}, is kept for Nous's answers to the operator. Try again in a few minutes.`;
+}
+
+/**
+ * Fill first (operator 4/11, plan nUloPOH3blDT step 12): use an eligible subscription's earliest weekly reset first,
+ * so ntheo → lab → dev drain before later-reset crew/ops. A started 5h window breaks equal-reset ties only.
+ * The weekly pace orders before the reset (goal d844e0cc, `paceRank`): an account ahead of its pace serves last, one under it first.
+ * Known spent 5h/weekly windows keep their existing caps; unknown/expired weekly reset dates sort last.
+ * NORMAL work reserves a later-reset account for the operator, using 5h room to break ties. No in-flight request is moved.
+ * If every 5h window is capped, retain the existing available-room fallback rather than stop utilization.
+ * `reservePercent` and `weekCap` are what the pool keeps now (`poolReserves`): 0 and 100 when a reset comes before the work runs short.
+ */
+export function fillFirstAccount(
+  pool: readonly AccountState[],
+  current: number,
+  reserve: "NORMAL" | "PRIORITY" | null,
+  reservePercent = FILL_FIRST_DEFAULT_RESERVE_PERCENT,
+  weekCap = FILL_FIRST_WEEKLY_CAP_PERCENT
+): AccountState | "RESERVED" | null {
+  const used = (value: number | null | undefined, resetAt: number | null | undefined) =>
+    value === null || value === undefined || (resetAt && resetAt <= current) ? 0 : value;
+  const fiveHour = (state: AccountState) => used(state.usedPercent, state.primaryResetAt);
+  const week = (state: AccountState) => used(state.secondaryUsedPercent, state.secondaryResetAt);
+  const reset = (state: AccountState) => state.secondaryResetAt && state.secondaryResetAt > current ? state.secondaryResetAt : Infinity;
+  const weekOk = pool.filter((state) => week(state) < weekCap);
+  const open = weekOk.filter((state) => fiveHour(state) < FILL_FIRST_FIVE_HOUR_CAP_PERCENT);
+  if (!open.length) return weekOk.length ? minBy(weekOk, (state) => [fiveHour(state), state.accountId]) : null;
+  // Goal d844e0cc: the weekly pace orders first (`paceRank`), then the earliest reset.
+  const rank = (state: AccountState) => paceRank(state, current);
+  const order = (state: AccountState): SortKey => {
+    const started = fiveHour(state) > 0;
+    return [rank(state), reset(state), started ? 0 : 1, -fiveHour(state), state.accountId];
+  };
+  if (reserve !== "NORMAL" || reservePercent <= 0) return minBy(open, order);
+  // Hold the capacity spent last (the most ahead of its pace, then the latest reset), not an earlier reset we need to spend first.
+  const held = minBy(open, (state) => [-rank(state), -reset(state), fiveHour(state), state.accountId]);
+  const others = open.filter((state) => state !== held);
+  if (others.length) return minBy(others, order);
+  const beyondCap = weekOk.filter((state) => state !== held);
+  if (beyondCap.length) return minBy(beyondCap, (state) => [fiveHour(state), state.accountId]);
+  return fiveHour(held) < 100 - reservePercent ? held : "RESERVED";
+}
+
 /** Normalizes plan names for plan-priority tiers ("Pro Lite" -> "prolite"). */
 export function normalizePlanPriorityType(value: string | null | undefined): string {
   const cleaned = (value ?? "").trim().toLowerCase();
@@ -512,6 +656,31 @@ export interface SelectAccountOptions {
    * furthest under its pace serves new work, accounts ahead of pace last; plan tiers only break ties.
    */
   weeklyPace?: boolean;
+  /**
+   * Weekly pace only: an account with this % or less left of its week or 5 hours serves only when no other has more (default 3, 0 off);
+   * kept only while the pool runs short before its next reset (`poolReserves`).
+   */
+  exhaustionFloorPercent?: number;
+  /**
+   * Weekly pace only: new work skips an account past this much of its 5-hour window while another is under it (default 85,
+   * plan clipboard:ctqx7SPqkWR2 step 4: on 1/11 four Max accounts hit 100% of 5 hours by 10:00 BKK, every week under pace).
+   */
+  fiveHourSoftCapPercent?: number;
+  /**
+   * Weekly pace only, fill first (operator 3/11 13:09 BKK): see `fillFirstAccount`. `reserve` keeps the account with most 5-hour
+   * room for priority traffic: NORMAL work takes it only when no other account has room, and only under `100 - reservePercent` (default 20% kept,
+   * only while the pool runs short before its next reset, `poolReserves`).
+   */
+  fillFirst?: { reserve: "NORMAL" | "PRIORITY" | null; reservePercent?: number } | null;
+  /**
+   * Background work (not the operator's turns, plan clipboard:DotwYXVD2N3n): an account that used today's share of its week (`paceDay`) is
+   * skipped; when every one has, the answer is PACE_CAP. An account's last 24 hours before its weekly reset are never capped.
+   */
+  paceCap?: boolean;
+  /** Weekly pace only (the Claude pool): an account short of its week (`weekShort`) serves only when no other with room can. */
+  weekRunway?: boolean;
+  /** Account id → the name the operator sees, for the fill-first refusal's text. */
+  accountNames?: Readonly<Record<string, string>>;
   allowBackoffFallback?: boolean;
   deterministicProbe?: boolean;
   recoveryProbeOnly?: boolean;
@@ -629,6 +798,22 @@ export function selectAccount(states: Iterable<AccountState>, options: SelectAcc
     }
   }
 
+  if (options.paceCap) {
+    const days = new Map(available.map((state) => [state.accountId, paceDay(state, current)]));
+    const open = available.filter((state) => !days.get(state.accountId)?.capped);
+    // A spent week is the usage limit's to report: held only while no account left has week room either.
+    if (open.length < available.length && !open.some((state) => (state.secondaryUsedPercent ?? 0) < 100)) {
+      const name = (id: string) => options.accountNames?.[id] ?? id;
+      const held = [...days].filter(([, day]) => day?.capped);
+      const next = Math.min(...held.map(([, day]) => day!.dayStartAt / 1000 + SECONDS_PER_DAY));
+      const used = held.map(([id, day]) => `${name(id)} ${Math.round(day!.usedTodayPercent)}%/${Math.round(day!.allowancePercent)}%`);
+      return { account: null, errorCode: PACE_CAP, resetsAt: next, errorMessage: `Space Gateway is holding background work: every account used today's `
+        + `share of its week (used today/allowance: ${used.join(", ")}), so none runs out before its weekly reset. The operator's turns still run; `
+        + `background work resumes at ${new Date(next * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC.` };
+    }
+    available = open;
+  }
+
   if (options.planPriority && options.planPriority.length > 0 && !options.weeklyPace) {
     // Strict exhaustion order: inside the first available plan tier, always use the least-used 5h account;
     // weekly usage only breaks ties. Health tiers and weights never move traffic to a busier account here.
@@ -663,8 +848,32 @@ export function selectAccount(states: Iterable<AccountState>, options: SelectAcc
   if (options.weeklyPace) {
     const tiers = (options.planPriority ?? []).map(normalizePlanPriorityType);
     const tier = (state: AccountState) => { const index = tiers.indexOf(normalizePlanPriorityType(state.planType)); return index < 0 ? tiers.length : index; };
-    return { account: minBy(effectivePool, (state) => [Math.round(weeklyPacePoints(state, current)), tier(state), state.usedPercent ?? 0, state.accountId]),
-      errorMessage: null };
+    // Goal d844e0cc: an account under pace is never fed to 100% while another has room; unknown or reset windows have room.
+    const floor = options.exhaustionFloorPercent ?? 3;
+    const left = (used: number | null | undefined, resetAt: number | null | undefined) =>
+      used === null || used === undefined || (resetAt && resetAt <= current) ? 100 : 100 - used;
+    // Operator 5/11 (nous_msg:3723fc28): the floor, the weekly cap and the operator's reserve hold only while the pool runs short before a reset.
+    const reserves = poolReserves(allStates, current, options.fillFirst ? Math.max(floor, 100 - FILL_FIRST_WEEKLY_CAP_PERCENT) : floor);
+    const kept: PoolKept = { weekCap: 100 - reserves.week(100 - FILL_FIRST_WEEKLY_CAP_PERCENT), weekFloor: reserves.week(floor), fiveFloor: reserves.fiveHour(floor) };
+    const withRoom = floor > 0
+      ? effectivePool.filter((state) => left(state.secondaryUsedPercent, state.secondaryResetAt) > kept.weekFloor && left(state.usedPercent, state.primaryResetAt) > kept.fiveFloor)
+      : effectivePool;
+    const fill = (pool: readonly AccountState[]) => options.fillFirst ? fillFirstAccount(pool, current, options.fillFirst.reserve,
+      reserves.fiveHour(options.fillFirst.reservePercent ?? FILL_FIRST_DEFAULT_RESERVE_PERCENT), kept.weekCap) : null;
+    // weekRunway: an account short of its week is set aside while another serves; it takes what they refuse.
+    const short = (state: AccountState) => Boolean(options.weekRunway) && weekShort(state, current);
+    const roomy = withRoom.filter((state) => !short(state));
+    let filled = fill(roomy.length ? roomy : withRoom);
+    if ((!filled || filled === "RESERVED") && roomy.length && roomy.length < withRoom.length) filled = fill(withRoom);
+    if (filled === "RESERVED") {
+      return { account: null, errorMessage: fillFirstReservedMessage(effectivePool, current, kept, options.accountNames), errorCode: USAGE_LIMIT_REACHED, reserved: true };
+    }
+    if (filled) return { account: filled, errorMessage: null };
+    const softCap = options.fiveHourSoftCapPercent ?? 85;
+    const underCap = withRoom.filter((state) => left(state.usedPercent, state.primaryResetAt) > 100 - softCap);
+    // Operator 5/11 («μην χάνετε ούτε ένα token»): a week that resets within a day with 15% or more left serves first (`paceRank`).
+    return { account: minBy(underCap.length ? underCap : withRoom.length ? withRoom : effectivePool,
+      (state) => [short(state) ? 1 : 0, paceRank(state, current), Math.round(weeklyPacePoints(state, current)), tier(state), state.usedPercent ?? 0, state.accountId]), errorMessage: null };
   }
 
   let selected: AccountState;

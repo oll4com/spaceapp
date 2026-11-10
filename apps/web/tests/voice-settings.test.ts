@@ -25,6 +25,7 @@ describe("Voice composer settings", () => {
 
     expect(readVoiceComposerSettings()).toEqual({
       enabled: false,
+      engine: "browser",
       provider: "openai",
       model: "invalid-legacy-model",
       voice: "Aoede",
@@ -54,6 +55,7 @@ describe("Voice composer settings", () => {
     writeVoiceComposerSettings(readVoiceComposerSettings());
     expect(JSON.parse(window.localStorage.getItem(VOICE_SETTINGS_STORAGE_KEY) ?? "null")).toEqual({
       enabled: false,
+      engine: "browser",
       provider: "openai",
       model: "invalid-legacy-model",
       voice: "Aoede",
@@ -85,6 +87,7 @@ describe("Voice composer settings", () => {
   it("persists prewarm, float-button toggles and hidden shortcuts in menu order", () => {
     writeVoiceComposerSettings({
       enabled: true,
+      engine: "relay",
       model: "gpt-live-1",
       voice: "ash",
       language: "en",
@@ -110,6 +113,7 @@ describe("Voice composer settings", () => {
 
     expect(readVoiceComposerSettings()).toEqual({
       enabled: true,
+      engine: "relay",
       provider: "openai",
       model: "gpt-live-1",
       voice: "ash",

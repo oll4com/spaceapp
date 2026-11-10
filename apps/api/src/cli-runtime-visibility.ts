@@ -18,6 +18,7 @@ import {
 } from "@space/runtime";
 import type { CliRuntimePaneRestore } from "./cli-runtime-pane-restore.js";
 import type { RuntimeProcessSweepResult } from "./cli-runtime-process-sweeper.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 interface CliRuntimeImpact {
   sessionIds: string[];
@@ -35,7 +36,7 @@ interface DisableConfirmation extends CliRuntimeImpact {
 
 export interface CliRuntimeVisibilityPolicyOptions {
   store: SpaceStore;
-  terminateSession: (sessionId: string) => Promise<boolean>;
+  terminateSession: (sessionId: string, traceId: string) => Promise<boolean>;
   interruptChatPane?: (paneId: string, reason: string, traceId: string) => Promise<boolean>;
   stopRoomAgentMission?: (roomId: string, missionId: string, reason: string, traceId: string) => Promise<boolean>;
   killRuntimeProcesses?: (runtimeId: CliToggleRuntimeId, traceId: string) => Promise<RuntimeProcessSweepResult>;
@@ -52,7 +53,7 @@ export interface CliRuntimeVisibilityPolicyOptions {
   visibilityFile?: string | null;
 }
 
-export const defaultCliRuntimeVisibilityFile = "/opt/spaceapp/var/cli-runtime-visibility.json";
+export const defaultCliRuntimeVisibilityFile = `${SPACE_INSTALL_ROOT}/var/cli-runtime-visibility.json`;
 
 export function resolveCliRuntimeVisibilityFile(option: string | null | undefined, env: NodeJS.ProcessEnv = process.env): string | null {
   if (option !== undefined) return option;
@@ -181,7 +182,7 @@ export class CliRuntimeVisibilityPolicy {
     const unresolvedSessionIds: string[] = [];
     for (const sessionId of impact.sessionIds) {
       try {
-        const terminated = await this.options.terminateSession(sessionId);
+        const terminated = await this.options.terminateSession(sessionId, traceId);
         if (!terminated) {
           unresolvedSessionIds.push(sessionId);
           continue;

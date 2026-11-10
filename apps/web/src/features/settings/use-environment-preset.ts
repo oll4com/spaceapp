@@ -182,7 +182,9 @@ export function useEnvironmentPreset(options?: {
   const [isActivating, setIsActivating] = useState(false);
   const [activationStep, setActivationStep] = useState(0);
   const [activationProgress, setActivationProgress] = useState(0);
-  const [activationStepLabel, setActivationStepLabel] = useState("");
+  // The step text is the English key the card shows through its language table, with its {slots}.
+  const [activationText, setActivationText] = useState<{ text: string; vars?: Record<string, string | number> }>({ text: "" });
+  const setActivationStepLabel = (text: string, vars?: Record<string, string | number>) => setActivationText({ text, vars });
   const [activationComplete, setActivationComplete] = useState(false);
   const [restoredCustom, setRestoredCustom] = useState(false);
   const isOperatingRef = useRef(false);
@@ -399,7 +401,7 @@ export function useEnvironmentPreset(options?: {
             const name = getCliDisplayName(runtimeId);
             const progress = 70 + Math.round(((i + 1) / totalClis) * 25);
             setActivationProgress(progress);
-            setActivationStepLabel(`Activating ${name} (${i + 1}/${totalClis})...`);
+            setActivationStepLabel("Activating {name} ({step}/{total})...", { name, step: i + 1, total: totalClis });
 
             try {
               await withTimeout(api.updateCliRuntimeSetting(runtimeId, { enabled: true }), 4000);
@@ -513,7 +515,7 @@ export function useEnvironmentPreset(options?: {
             const name = getCliDisplayName(runtimeId);
             const progress = 70 + Math.round(((i + 1) / totalClis) * 25);
             setActivationProgress(progress);
-            setActivationStepLabel(`Disabling ${name} (${i + 1}/${totalClis})...`);
+            setActivationStepLabel("Disabling {name} ({step}/{total})...", { name, step: i + 1, total: totalClis });
 
             try {
               await withTimeout(
@@ -540,7 +542,9 @@ export function useEnvironmentPreset(options?: {
             }
           }
           if (keptWithOpenWork.length > 0) {
-            setActivationStepLabel(`Kept ${keptWithOpenWork.join(", ")} enabled: open panes are still using ${keptWithOpenWork.length === 1 ? "it" : "them"}.`);
+            setActivationStepLabel(keptWithOpenWork.length === 1
+              ? "Kept {names} enabled: open panes are still using it."
+              : "Kept {names} enabled: open panes are still using them.", { names: keptWithOpenWork.join(", ") });
             await new Promise((resolve) => setTimeout(resolve, 1200));
           }
         }
@@ -589,7 +593,7 @@ export function useEnvironmentPreset(options?: {
     isActivating,
     activationStep,
     activationProgress,
-    activationStepLabel,
+    activationText,
     activationComplete,
     restoredCustom,
     dismissBanners,

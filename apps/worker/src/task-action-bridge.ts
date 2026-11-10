@@ -156,13 +156,13 @@ export async function executeTaskActionBridge(input: {
     try {
       if (request.action.type === "list") {
         const query = listTaskItemsQuerySchema.parse({
-          page: 1,
+          page: request.action.page,
           pageSize: request.action.pageSize,
           q: request.action.q,
           status: request.action.status
         });
         const result = await input.store.listTaskItems(input.turnInput.operatorUserId, query);
-        lines.push(`- EXECUTED tasks:list; matches=${result.total}; returned=${result.items.length}`);
+        lines.push(`- EXECUTED tasks:list; matches=${result.total}; page=${request.action.page}; returned=${result.items.length}`);
         for (const item of result.items) lines.push(`  - ${formatTaskItem(item, listPreviewCharacters)}`);
         executedActionCount += 1;
         continue;

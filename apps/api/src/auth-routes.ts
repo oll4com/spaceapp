@@ -3,11 +3,11 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
-import { acceptUserInviteInputSchema, type AuthUser, loginInputSchema } from "@space/contracts";
+import { acceptUserInviteInputSchema, appWebViewIdSchema, appWebViewOf, appWebViewReturnUrl, type AppWebViewId, type AuthUser, loginInputSchema } from "@space/contracts";
 import { type GoogleAccount, nowIso, SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import {
   type AuthConfig, authenticateLogin, buildGoogleAuthUrl, cookieName, defaultSessionRevocationStore,
-  exchangeGoogleCode, generatePkcePair, hashPassword, operatorSessionTtlSeconds, signOAuthState, signSession, signSessionWithTtl,
+  exchangeGoogleCode, generatePkcePair, googleStepUpRefusal, hashPassword, operatorSessionTtlSeconds, signOAuthState, signSession, signSessionWithTtl,
   verifyGoogleIdToken, verifyOAuthState, verifyPassword, verifySession
 } from "./auth.js";
 import { operatorBrowserActor } from "./browser-actors.js";
@@ -19,8 +19,9 @@ import type { GoogleBrowserStatusSummary } from "./google-browser-session-check.
 import { sendApiError } from "./http-errors.js";
 import { createDesktopAuthHandoffStore, decodeDesktopAuthHandoffCookie, desktopAuthHandoffRedirect, encodeDesktopAuthHandoffCookie, parseDesktopAuthHandoffBinding } from "./desktop-auth-handoffs.js";
 import { recordAudit } from "./request-audit.js";
-import { APP_SIGNIN_COOKIE, decodeAppSignInCookie, encodeAppSignInCookie, parseAppSignInBinding, type AppSignIn } from "./app-signin.js";
+import { APP_SIGNIN_COOKIE, appStepUpReturn, decodeAppSignInCookie, encodeAppSignInCookie, parseAppSignInBinding, type AppSignIn, type StepUpTicket } from "./app-signin.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
  * Operator login/logout and Google sign-in (OAuth, linked accounts, desktop handoff); the parent retains
@@ -233,7 +234,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     auth.googleClientId = clientId;
     auth.googleClientSecret = clientSecret;
     let saved = false;
-    for (const dir of ["/opt/spaceapp/secrets", "/var/lib/spaceapp"]) {
+    for (const dir of [`${SPACE_INSTALL_ROOT}/secrets`, "/var/lib/spaceapp"]) {
       try {
         await mkdir(dir, { recursive: true, mode: 0o700 });
         await writeFile(
@@ -330,6 +331,25 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     const linking = query?.link === "true" || request.routeOptions.url === "/api/auth/google/accounts/link";
     if (linking && !request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Sign in before linking a Google account.");
     if (linking && isGoogleProofSession(request)) return sendApiError(reply, 403, "FORBIDDEN", "Proof sessions cannot link external accounts.");
+    // A step-up before pairing a phone (Nous Pro security review P1-5): the person signed in here signs in to Google again (claims auth_time,
+    // max_age=0, its own nonce); the callback checks auth_time (or, without it, that nonce and a fresh iat) and that the Google account is
+    // theirs, then marks this session for 5 minutes.
+    const stepUp = query?.stepUp === "mobile";
+    // R10b: the phone's system browser has no SpaceApp session; its ticket (POST /api/auth/app/step-up/start) names the app session.
+    let ticket: StepUpTicket | null = null;
+    if (stepUp && query?.ticket !== undefined) {
+      if (!options.appSignIn || linking || query.app !== undefined || query.desktopHandoff !== undefined || query.mobile !== undefined) {
+        return sendApiError(reply, 403, "FORBIDDEN", "Start confirming it is you from SpaceApp on your phone again.");
+      }
+      ticket = options.appSignIn.stepUp.take(query.ticket);
+      if (!ticket) return sendApiError(reply, 403, "STEP_UP_TICKET_INVALID", "This link was used or expired; start confirming it is you from SpaceApp on your phone again.");
+    } else if (stepUp) {
+      if (!request.user || !options.appSignIn) return sendApiError(reply, 401, "UNAUTHORIZED", "Sign in to SpaceApp before confirming it is you.");
+      options.appSignIn.assertPerson(request);
+      if (request.appSession || linking || query?.app !== undefined || query?.desktopHandoff !== undefined || query?.mobile !== undefined) {
+        return sendApiError(reply, 403, "FORBIDDEN", "Confirm it is you from SpaceApp in a browser on your computer.");
+      }
+    }
     // A desktop sign-in must name the desktop app's loopback port and PKCE challenge; a bare handoff id would hand the
     // session to whoever chose it (run-spaceapp 1.1.7 review, Codex finding 1).
     const desktopBinding = query?.desktopHandoff === undefined ? null
@@ -343,11 +363,17 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
       return sendApiError(reply, 400, "APP_HANDOFF_UNBOUND", "This app sign-in link names an unknown app or lacks its S256 challenge and state. Start the sign-in from the app again.");
     }
     const pkce = generatePkcePair();
+    const nonce = randomBytes(16).toString("hex");
     const rawState = Buffer.from(JSON.stringify({
-      nonce: randomBytes(16).toString("hex"), expiresAt: Date.now() + 600_000,
-      userId: linking ? request.user!.id : null,
-      sessionHash: linking ? createHash("sha256").update(request.cookies[cookieName]!).digest("hex") : null,
-      codeChallenge: pkce.codeChallenge
+      nonce, expiresAt: Date.now() + 600_000,
+      userId: ticket?.userId ?? (linking || stepUp ? request.user!.id : null),
+      sessionHash: ticket?.sessionHash ?? (linking || stepUp ? createHash("sha256").update(request.cookies[cookieName]!).digest("hex") : null),
+      codeChallenge: pkce.codeChallenge,
+      // A step-up sends its nonce to Google too: an ID token without auth_time passes only with this nonce and an iat after startedAt.
+      ...(stepUp ? { stepUp: true, startedAt: Date.now() } : {}),
+      ...(ticket ? { appState: ticket.state } : {}),
+      // SpaceApp Android's Web tab: linking finishes in the phone's browser and comes back to the WebView (APP_WEBVIEW_RETURN_URIS).
+      ...(linking && !stepUp && appWebViewOf(request.headers["user-agent"]) ? { webView: appWebViewOf(request.headers["user-agent"]) } : {})
     })).toString("base64url");
     const state = signOAuthState(rawState, auth.sessionSecret);
     const signedPkce = signOAuthState(pkce.codeVerifier, auth.sessionSecret);
@@ -377,7 +403,8 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
       clientId: auth.googleClientId,
       redirectUri,
       state,
-      codeChallenge: pkce.codeChallenge
+      codeChallenge: pkce.codeChallenge,
+      ...(stepUp ? { reauth: { loginHint: ticket?.email ?? request.user!.email, nonce } } : {})
     });
 
     if (desktopBinding) {
@@ -432,6 +459,78 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
   };
   app.get("/api/auth/google/start", defaultRouteRateLimitOptions, startGoogleOAuth);
   app.get("/api/auth/google/accounts/link", defaultRouteRateLimitOptions, startGoogleOAuth);
+  // The step-up of an ADMIN's SpaceApp Android session (R10, SpaceApp Android 0.2.13): Google refuses its web sign-in inside the app, so the
+  // app signs in to Google itself and sends the id token. Checked like the web's callback (the person's own Google account, signed in at
+  // most 5 minutes ago) and marks only this session (mobile/routes.ts).
+  // Written at each route so the limit stays visible to CodeQL and route-rate-limits.test.ts.
+  const appStepUpRateLimit = { max: 10, timeWindow: "15 minutes" };
+  /** An ADMIN's SpaceApp Android session, a person's: null when it may step up, else the reply already sent. */
+  const appStepUpRefused = (request: FastifyRequest, reply: FastifyReply) => {
+    reply.header("Cache-Control", "no-store");
+    if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Sign in to SpaceApp first.");
+    options.appSignIn?.assertPerson(request);
+    if (!options.appSignIn || request.appSession !== "spaceapp" || request.user.role !== "ADMIN" || isGoogleProofSession(request)) {
+      return sendApiError(reply, 403, "FORBIDDEN", "Only an administrator's SpaceApp Android session confirms it is you here.");
+    }
+    return null;
+  };
+  // R10b: Android's native Google sign-in gives no auth_time, so the phone runs the web's step-up in its system browser with a ticket;
+  // the callback marks this session and sends the browser back to the app (com.oll4.spaceapp:/oauth2redirect?stepUp=done|failed&state=).
+  app.post("/api/auth/app/step-up/start", { config: { ...defaultRouteRateLimitOptions.config, rateLimit: appStepUpRateLimit } }, async (request, reply) => {
+    const refused = appStepUpRefused(request, reply);
+    if (refused) return refused;
+    const input = z.object({ state: z.string().regex(/^[A-Za-z0-9_-]{16,64}$/) }).strict().safeParse(request.body ?? {});
+    if (!input.success) return sendApiError(reply, 400, "INVALID_INPUT", "The body takes only state (16-64 letters, digits, - or _).");
+    const ticket = options.appSignIn!.stepUp.issue({ sessionHash: createHash("sha256").update(request.cookies[cookieName] ?? "").digest("hex"),
+      userId: request.user!.id, email: request.user!.email, state: input.data.state });
+    return { url: `/api/auth/google/start?stepUp=mobile&ticket=${ticket}` };
+  });
+  app.post("/api/auth/app/step-up", { config: { ...defaultRouteRateLimitOptions.config, rateLimit: appStepUpRateLimit } }, async (request, reply) => {
+    const refused = appStepUpRefused(request, reply);
+    if (refused) return refused;
+    const user = request.user!, signIn = options.appSignIn!;
+    const input = z.object({ idToken: z.string().min(1).max(16_384) }).strict().safeParse(request.body ?? {});
+    if (!input.success) return sendApiError(reply, 400, "INVALID_INPUT", "The body takes only idToken (a Google id token).");
+    const googleInfo = await verifyGoogleIdToken({ idToken: input.data.idToken, clientId: auth.googleClientId }).catch(() => null);
+    const owner = googleInfo ? await store.getUserByGoogleId?.(googleInfo.sub) : null;
+    const refusal = googleInfo && owner?.id === user.id ? googleStepUpRefusal(googleInfo) : null;
+    if (!googleInfo || owner?.id !== user.id || refusal) {
+      return sendApiError(reply, 403, "STEP_UP_FAILED", refusal?.message ?? "Sign in with your own Google account, with its password, to confirm it is you.");
+    }
+    signIn.stepUp.mark(createHash("sha256").update(request.cookies[cookieName] ?? "").digest("hex"));
+    await recordAudit(store, request, { actorUserId: user.id, action: "auth.step_up", targetType: "user", targetId: user.id, metadata: { purpose: "mobile", via: "spaceapp" } });
+    return { steppedUp: true, until: new Date(Date.now() + 5 * 60_000).toISOString() };
+  });
+  // A step-up with the person's own SpaceApp password (ADR-013's open item: installs without Google sign-in, and Google accounts whose
+  // ID token carries no auth_time): typing it proves what a fresh Google sign-in proves. A web session of a person only; marks this session.
+  app.post("/api/auth/step-up/password", { config: { ...defaultRouteRateLimitOptions.config, rateLimit: { max: 5, timeWindow: "15 minutes" } } }, async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Sign in to SpaceApp first.");
+    options.appSignIn?.assertPerson(request);
+    if (!options.appSignIn || request.appSession || isGoogleProofSession(request)) {
+      return sendApiError(reply, 403, "FORBIDDEN", "Confirm it is you from SpaceApp on a computer.");
+    }
+    const input = z.object({ password: z.string().min(1).max(1024) }).strict().safeParse(request.body ?? {});
+    if (!input.success) return sendApiError(reply, 400, "INVALID_INPUT", "The body takes only password.");
+    const user = request.user;
+    const owner = await store.getOwnerCredentials();
+    const account = owner?.user.id === user.id ? owner : await store.getPasswordUser?.(user.email) ?? null;
+    // A Google-only account has no password: hash a decoy so the answer takes the same time.
+    const matches = await verifyPassword(input.data.password, account?.user.id === user.id ? account.passwordHash : await (decoyHash ??= hashPassword(randomBytes(16).toString("hex"))));
+    // An install whose operator lives only in .env (no owner row, as stable) signs in through authenticateLogin: the step-up takes the same password.
+    // With .env's email, not the session's: a Google sign-in's session carries the users row's email, which can differ (d130a43784, stable 7/11).
+    const envEmail = user.id === "user:operator" && auth.operatorEmail ? auth.operatorEmail : user.email;
+    const envLogin = auth.devLogin || !owner ? await authenticateLogin({ email: envEmail, password: input.data.password }, auth) : null;
+    // Login stores that user under the row holding its email (upsertUser), whose id need not be "user:operator" (stable 7/11): compare that row.
+    const envOperator = envLogin !== null && (await store.getControlActor(envLogin.id, envLogin.email))?.id === user.id;
+    if (!envOperator && (!matches || account?.user.id !== user.id)) {
+      await recordAudit(store, request, { actorUserId: user.id, action: "auth.step_up_failed", targetType: "user", targetId: user.id, metadata: { purpose: "mobile", via: "password" } });
+      return sendApiError(reply, 403, "STEP_UP_FAILED", "That is not your SpaceApp password.");
+    }
+    options.appSignIn.stepUp.mark(createHash("sha256").update(request.cookies[cookieName] ?? "").digest("hex"));
+    await recordAudit(store, request, { actorUserId: user.id, action: "auth.step_up", targetType: "user", targetId: user.id, metadata: { purpose: "mobile", via: "password" } });
+    return { steppedUp: true, until: new Date(Date.now() + 5 * 60_000).toISOString() };
+  });
   app.get("/api/auth/google/callback", defaultRouteRateLimitOptions, async (request, reply) => {
     if (!auth.googleClientId) {
       return sendApiError(reply, 400, "GOOGLE_AUTH_DISABLED", "Google authentication is not configured on this server.");
@@ -450,31 +549,58 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     const appHandoff = decodeAppSignInCookie(request.cookies[APP_SIGNIN_COOKIE]);
     for (const name of ["space_oauth_state", "space_oauth_pkce", "space_oauth_link_user", "space_oauth_desktop_handoff", "space_oauth_mobile", APP_SIGNIN_COOKIE]) reply.clearCookie(name, { path: "/" });
     const verifiedState = verifyOAuthState(state, auth.sessionSecret);
-    let transaction: { userId: string | null; sessionHash: string | null; codeChallenge: string; expiresAt: number } | null = null;
+    let transaction: { nonce?: string; userId: string | null; sessionHash: string | null; codeChallenge: string; expiresAt: number; stepUp?: boolean; startedAt?: number;
+      appState?: string; webView?: AppWebViewId } | null = null;
     try {
-      transaction = z.object({ userId: z.string().nullable(), sessionHash: z.string().nullable(), codeChallenge: z.string().min(43), expiresAt: z.number() })
+      transaction = z.object({ nonce: z.string().min(16).optional(), userId: z.string().nullable(), sessionHash: z.string().nullable(), codeChallenge: z.string().min(43),
+        expiresAt: z.number(), stepUp: z.literal(true).optional(), startedAt: z.number().optional(), appState: z.string().optional(), webView: appWebViewIdSchema.optional() })
         .parse(JSON.parse(Buffer.from(verifiedState ?? "", "base64url").toString("utf8")));
     } catch { /* Reject malformed and legacy transactions; a fresh start is safe. */ }
-    const errorKey = transaction?.userId || linkCookie ? "googleLinkError" : "authError";
-    const fail = (message: string) => reply.redirect(`/?${errorKey}=${encodeURIComponent(message)}`);
+    // SpaceApp Android: a link started in the Web tab ended in the phone's browser, without the WebView's cookies; the WebView finishes it.
+    if (!savedState && state && transaction?.webView && transaction.expiresAt > Date.now()) return reply.redirect(appWebViewReturnUrl(transaction.webView, request.url));
+    const errorKey = transaction?.stepUp ? "mobileStepUpError" : transaction?.userId || linkCookie ? "googleLinkError" : "authError";
+    // A phone's step-up (R10b, its state signed in the transaction) ends in the app whatever went wrong.
+    const appState = transaction?.stepUp ? transaction.appState : undefined;
+    // A refused step-up leaves its reason code in the log and the audit (auth.step_up_failed): never a code, token or address (R10b, Nous 4/11).
+    const fail = async (message: string, reason: string) => {
+      if (transaction?.stepUp) {
+        request.log.warn({ event: "MOBILE_STEP_UP_FAILED", reason }, "Mobile step-up refused");
+        await recordAudit(store, request, { actorUserId: transaction.userId, action: "auth.step_up_failed", targetType: "user", targetId: transaction.userId,
+          metadata: { purpose: "mobile", reason, ...(appState ? { via: "spaceapp-browser" } : {}) } })
+          .catch(() => request.log.warn({ event: "MOBILE_STEP_UP_AUDIT_FAILED", reason }, "Mobile step-up refusal not audited")); // the redirect still goes back
+      }
+      return reply.redirect(appState ? appStepUpReturn("failed", appState) : `/?${errorKey}=${encodeURIComponent(message)}`);
+    };
     if (!state || state !== savedState || !verifiedState || !transaction || transaction.expiresAt <= Date.now()) {
-      return fail("Invalid or expired Google OAuth state. Try signing in again.");
+      return fail("Invalid or expired Google OAuth state. Try signing in again.",
+        !savedState ? "STATE_COOKIE_MISSING" : state !== savedState ? "STATE_MISMATCH" : transaction ? "STATE_EXPIRED" : "STATE_INVALID");
     }
-    if (query?.error) return fail("Google authentication was cancelled or failed.");
-    if (!code) return fail("Google authorization code is missing. Try signing in again.");
+    if (query?.error) return fail("Google authentication was cancelled or failed.", "GOOGLE_ERROR");
+    if (!code) return fail("Google authorization code is missing. Try signing in again.", "CODE_MISSING");
     const codeVerifier = verifyOAuthState(pkceCookie, auth.sessionSecret);
     if (!codeVerifier || createHash("sha256").update(codeVerifier).digest("base64url") !== transaction.codeChallenge) {
-      return fail("Invalid or expired Google PKCE session. Try signing in again.");
+      return fail("Invalid or expired Google PKCE session. Try signing in again.", codeVerifier ? "PKCE_MISMATCH" : "PKCE_COOKIE_MISSING");
     }
     let linkUser: AuthUser | null = null;
-    if (transaction.userId) {
+    if (transaction.stepUp && appState) {
+      // The phone's system browser: its ticket named the app session and user; no SpaceApp session here.
+      if (!options.appSignIn || !transaction.userId || !transaction.sessionHash || isGoogleProofSession(request) || linkCookie) {
+        return fail("", !options.appSignIn ? "APP_SIGNIN_OFF" : linkCookie ? "LINK_COOKIE" : isGoogleProofSession(request) ? "PROOF_SESSION" : "TICKET_INCOMPLETE");
+      }
+    } else if (transaction.stepUp) {
+      // The same person in the same browser session that asked for the step-up.
+      if (!options.appSignIn || !request.user || request.user.id !== transaction.userId || isGoogleProofSession(request) || request.appSession || linkCookie ||
+        transaction.sessionHash !== createHash("sha256").update(request.cookies[cookieName] ?? "").digest("hex")) {
+        return fail("Sign in to SpaceApp in this browser, then confirm it is you again.", "BROWSER_SESSION_MISMATCH");
+      }
+    } else if (transaction.userId) {
       linkUser = verifySession(linkCookie, auth.sessionSecret);
       if (!linkUser || linkUser.id !== transaction.userId || isGoogleProofSession(request) || !request.user || request.user.id !== transaction.userId ||
         transaction.sessionHash !== createHash("sha256").update(request.cookies[cookieName] ?? "").digest("hex")) {
-        return fail("You must be actively logged into the original account linking session. Please try again.");
+        return fail("You must be actively logged into the original account linking session. Please try again.", "LINK_SESSION_MISMATCH");
       }
     } else if (linkCookie) {
-      return fail("Invalid account linking session. Please try again.");
+      return fail("Invalid account linking session. Please try again.", "LINK_COOKIE");
     }
 
     const forwardedProto = request.headers["x-forwarded-proto"];
@@ -491,6 +617,18 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
         redirectUri,
         codeVerifier
       });
+
+      if (transaction.stepUp) {
+        const owner = await store.getUserByGoogleId?.(googleInfo.sub);
+        if (owner?.id !== transaction.userId) return fail("Sign in with your own Google account, with its password, to confirm it is you.", "WRONG_GOOGLE_ACCOUNT");
+        const refusal = googleStepUpRefusal(googleInfo, undefined, transaction.nonce && transaction.startedAt !== undefined
+          ? { nonce: transaction.nonce, startedAtS: Math.floor(transaction.startedAt / 1000) } : undefined);
+        if (refusal) return fail(refusal.message, refusal.reason);
+        options.appSignIn!.stepUp.mark(transaction.sessionHash!);
+        await recordAudit(store, request, { actorUserId: transaction.userId!, action: "auth.step_up", targetType: "user", targetId: transaction.userId!,
+          metadata: { purpose: "mobile", fresh: googleInfo.authTime !== undefined ? "auth_time" : "nonce_iat", ...(appState ? { via: "spaceapp-browser" } : {}) } });
+        return reply.redirect(appState ? appStepUpReturn("done", appState) : "/?mobileStepUp=ok");
+      }
 
       if (linkUser) {
         const linkUserId = linkUser.id;
@@ -546,7 +684,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
 
       if (appHandoff && options.appSignIn) {
         // Owner only while multi-user is off (Nous decision 2026-10-23).
-        if (!config.multiUserEnabled && user.role !== "ADMIN") return fail("App sign-in is only for the operator's own account.");
+        if (!config.multiUserEnabled && user.role !== "ADMIN") return fail("App sign-in is only for the operator's own account.", "NOT_OPERATOR");
         return reply.redirect(await options.appSignIn.issue(appHandoff, user, request));
       }
 
@@ -579,7 +717,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       request.log.warn({ event: "GOOGLE_OAUTH_FAILED" }, "Google OAuth callback failed");
       const clientMessage = err instanceof SpaceConflictError || (err instanceof Error && err.message.includes("not linked"))
         ? err.message : "Google authentication failed. Please try again or sign in with your password.";
-      return fail(clientMessage);
+      return fail(clientMessage, "GOOGLE_EXCHANGE_FAILED");
     }
   });
   app.post("/api/auth/desktop-handoff", defaultRouteRateLimitOptions, async (request, reply) => {

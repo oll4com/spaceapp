@@ -180,4 +180,13 @@ describe("Anthropic billing", () => {
     expect(await costValue(repository)).toBe(13_000_000);
     await close();
   });
+
+  it("fails the sync, never the gateway, when the database cannot be reached (2026-10-28)", async () => {
+    const { sync, repository, close } = await setup(anthropic().fetchImpl);
+    const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:54329"), { code: "ECONNREFUSED" });
+    repository.getAnthropicAdmin = async () => { throw refused; };
+    repository.recordAnthropicSync = async () => { throw refused; };
+    expect(await sync.runOnce()).toEqual({ ok: false, error: "sync_failed", limitsSet: 0 });
+    await close();
+  });
 });

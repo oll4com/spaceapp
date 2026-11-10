@@ -1,6 +1,7 @@
 import { useState, type KeyboardEvent } from "react";
 import { X, FolderPlus, FileInput, TextCursorInput, Trash2, AlertTriangle } from "../ui-theme/app-icons.js";
 import type { FileItem } from "@space/contracts";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export interface CreateModalProps {
   type: "file" | "directory";
@@ -10,6 +11,8 @@ export interface CreateModalProps {
 }
 
 export function CreateModal({ type, currentPath, onClose, onSubmit }: CreateModalProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [name, setName] = useState("");
 
   function handleSubmit() {
@@ -31,7 +34,7 @@ export function CreateModal({ type, currentPath, onClose, onSubmit }: CreateModa
         <div className="fm-modal-header">
           <div className="fm-modal-title">
             {type === "directory" ? <FolderPlus size={16} /> : <FileInput size={16} />}
-            <span>Create New {type === "directory" ? "Folder" : "File"}</span>
+            <span>{type === "directory" ? t("Create New Folder") : t("Create New File")}</span>
           </div>
           <button className="fm-action-btn" onClick={onClose}>
             <X size={16} />
@@ -40,7 +43,7 @@ export function CreateModal({ type, currentPath, onClose, onSubmit }: CreateModa
 
         <div className="fm-modal-body">
           <div style={{ fontSize: "0.82rem", color: "var(--modern-muted)" }}>
-            In: <code>{currentPath}</code>
+            {t("In:")} <code>{currentPath}</code>
           </div>
           <input
             autoFocus
@@ -48,16 +51,16 @@ export function CreateModal({ type, currentPath, onClose, onSubmit }: CreateModa
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={type === "directory" ? "e.g. components" : "e.g. index.ts"}
+            placeholder={type === "directory" ? t("e.g. components") : t("e.g. index.ts")}
           />
         </div>
 
         <div className="fm-modal-footer">
           <button className="fm-btn" onClick={onClose}>
-            Cancel
+            {t("Cancel")}
           </button>
           <button className="fm-btn primary" onClick={handleSubmit} disabled={!name.trim()}>
-            Create
+            {t("Create")}
           </button>
         </div>
       </div>
@@ -72,6 +75,8 @@ export interface RenameModalProps {
 }
 
 export function RenameModal({ entry, onClose, onSubmit }: RenameModalProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [name, setName] = useState(entry.name);
 
   function handleSubmit() {
@@ -93,7 +98,7 @@ export function RenameModal({ entry, onClose, onSubmit }: RenameModalProps) {
         <div className="fm-modal-header">
           <div className="fm-modal-title">
             <TextCursorInput size={16} />
-            <span>Rename {entry.isDirectory ? "Folder" : "File"}</span>
+            <span>{entry.isDirectory ? t("Rename Folder") : t("Rename File")}</span>
           </div>
           <button className="fm-action-btn" onClick={onClose}>
             <X size={16} />
@@ -112,10 +117,10 @@ export function RenameModal({ entry, onClose, onSubmit }: RenameModalProps) {
 
         <div className="fm-modal-footer">
           <button className="fm-btn" onClick={onClose}>
-            Cancel
+            {t("Cancel")}
           </button>
           <button className="fm-btn primary" onClick={handleSubmit} disabled={!name.trim() || name === entry.name}>
-            Rename
+            {t("Rename")}
           </button>
         </div>
       </div>
@@ -130,13 +135,15 @@ export interface DeleteModalProps {
 }
 
 export function DeleteModal({ entry, onClose, onConfirm }: DeleteModalProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   return (
     <div className="fm-modal-backdrop" onClick={onClose}>
       <div className="fm-modal-card" style={{ maxWidth: "440px" }} onClick={(e) => e.stopPropagation()}>
         <div className="fm-modal-header">
           <div className="fm-modal-title" style={{ color: "var(--modern-danger)" }}>
             <AlertTriangle size={18} />
-            <span>Confirm Deletion</span>
+            <span>{t("Confirm Deletion")}</span>
           </div>
           <button className="fm-action-btn" onClick={onClose}>
             <X size={16} />
@@ -145,22 +152,22 @@ export function DeleteModal({ entry, onClose, onConfirm }: DeleteModalProps) {
 
         <div className="fm-modal-body">
           <p style={{ margin: 0, fontSize: "0.88rem", color: "var(--modern-text)" }}>
-            Are you sure you want to permanently delete{" "}
+            {t("Are you sure you want to permanently delete")}{" "}
             <strong>{entry.name}</strong>?
           </p>
           <p style={{ margin: 0, fontSize: "0.78rem", color: "var(--modern-muted)" }}>
-            Path: <code>{entry.path}</code>
+            {t("Path:")} <code>{entry.path}</code>
           </p>
           {entry.isDirectory && (
             <div style={{ padding: "8px 12px", background: "var(--modern-danger-soft)", color: "var(--modern-danger)", borderRadius: 4, fontSize: "0.8rem" }}>
-              Warning: All files and subdirectories inside this folder will be deleted recursively!
+              {t("Warning: All files and subdirectories inside this folder will be deleted recursively!")}
             </div>
           )}
         </div>
 
         <div className="fm-modal-footer">
           <button className="fm-btn" onClick={onClose}>
-            Cancel
+            {t("Cancel")}
           </button>
           <button
             className="fm-btn"
@@ -171,7 +178,7 @@ export function DeleteModal({ entry, onClose, onConfirm }: DeleteModalProps) {
             }}
           >
             <Trash2 size={14} />
-            <span>Delete</span>
+            <span>{t("Delete")}</span>
           </button>
         </div>
       </div>

@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { FREELANCE_CHANNELS, type Pane } from "@space/contracts";
+import { FREELANCE_CHANNELS, freelanceChannelSettings, type Pane } from "@space/contracts";
 import { api } from "../../api.js";
-import { dispatchBrowserPaneActionEvent } from "../browser-pane/events.js";
-import { HandoffOverlay, HeldBrowserStrip } from "../copilot-kit/HandoffOverlay.js";
+import { CopilotBrowserControlHint } from "../copilot-kit/browser-control-hint.js";
 import { CopilotRail, type CopilotRailTabDefinition } from "../copilot-kit/CopilotRail.js";
 import { FREELANCE_COPILOT_KIND } from "../copilot-kit/copilot-kind.js";
 import { useCopilotLayout } from "../copilot-kit/copilot-layout.js";
 import { copilotRuntimeOptions } from "../copilot-kit/copilot-runtimes.js";
 import { RAIL_DEFAULT_WIDTH, RAIL_MAX_WIDTH, RAIL_MIN_WIDTH, readRailPreference, writeRailPreference, type RailPreference } from "../copilot-kit/rail-preference.js";
 import { useCopilotAgent } from "../copilot-kit/useCopilotAgent.js";
+import { useNousReviewing } from "../copilot-kit/nous-reviewing.js";
 import { Activity, Bookmark, Boxes, Brain, Globe, Settings, Terminal, Users } from "../ui-theme/app-icons.js";
 import { ActivityTab } from "./ActivityTab.js";
 import { FreelanceCommandBar } from "./CommandBar.js";
@@ -18,10 +18,13 @@ import { BookmarksTab } from "../marketing-copilot-pane/BookmarksTab.js";
 import { PlatformsTab } from "./PlatformsTab.js";
 import { SetupTab } from "./SetupTab.js";
 import { useFreelanceCopilotData } from "./useFreelanceCopilot.js";
-import { useBrowserControlHeld, useLiveHandoff } from "../copilot-kit/live-handoff.js";
+import { useLiveHandoff } from "../copilot-kit/live-handoff.js";
+import { onPaneTarget } from "../notifications/pane-target.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import "../copilot-kit/copilot-pane.css";
 import "../marketing-copilot-pane/marketing-copilot-pane.css";
 import "./freelance-copilot-pane.css";
+import { CopilotNotice } from "../copilot-kit/CopilotNotice.js";
 
 export interface FreelanceCopilotPaneProps {
   pane: Pane;
@@ -58,6 +61,8 @@ export function resolveActiveTab(tab: string | null | undefined, layout: "split"
  * panes (phones) stack: one surface at a time, the browser as a tab, the tab strip at the bottom.
  */
 export function FreelanceCopilotPane({ pane, isVisible, terminal, browser }: FreelanceCopilotPaneProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const data = useFreelanceCopilotData(pane, isVisible);
   const paneRef = useRef<HTMLDivElement | null>(null);
   const layout = useCopilotLayout(paneRef);
@@ -67,13 +72,15 @@ export function FreelanceCopilotPane({ pane, isVisible, terminal, browser }: Fre
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const runtimeOptions = useMemo(() => copilotRuntimeOptions(data.runtimes, FREELANCE_COPILOT_KIND), [data.runtimes]);
   const settings = data.settings?.settings ?? null;
-  const channels = useMemo(() => ({ enabled: settings ? FREELANCE_CHANNELS.filter((id) => settings.channels[id].enabled).length : 0, total: FREELANCE_CHANNELS.length }), [settings]);
+  const channels = useMemo(() => ({ enabled: settings ? FREELANCE_CHANNELS.filter((id) => freelanceChannelSettings(settings, id).enabled).length : 0, total: FREELANCE_CHANNELS.length }), [settings]);
   const onSwitched = useCallback(() => { setRail((current) => ({ ...current, collapsed: false, tab: "terminal" })); void data.refresh(); }, [data]);
   const agent = useCopilotAgent({ kind: FREELANCE_COPILOT_KIND, pane, runtimeOptions, onSwitched, onNotice: setNotice });
-  const pending = useMemo(() => data.run?.pending ?? [], [data.run]);
+  // Reviews Nous decides under "May send" are not the operator's: no count, badge or tab switch (Leads shows them as "Nous reviewing").
+  const nousReviewing = useNousReviewing();
+  const allPending = useMemo(() => data.run?.pending ?? [], [data.run]);
+  const pending = useMemo(() => allPending.filter((item) => !nousReviewing || item.kind !== "REVIEW"), [allPending, nousReviewing]);
   const handoff = useLiveHandoff(data.handoff);
-  const controlHeld = useBrowserControlHeld(pane.id);
-  const sendingOn = useMemo(() => data.events.find((event) => event.type === "SENDING") ?? null, [data.events]);
+  const browserControlHint = useMemo(() => ({ reason: handoff?.reason ?? null }), [handoff?.reason]);
   // A new handoff request brings the browser forward on phones (it is always visible in the split layout).
   const lastHandoffRef = useRef<string | null>(null);
   useEffect(() => {
@@ -83,20 +90,11 @@ export function FreelanceCopilotPane({ pane, isVisible, terminal, browser }: Fre
   }, [handoff, layout]);
   // A notification click opens what it is about: a lead in Leads, anything else in Activity.
   useEffect(() => {
-    const onOpen = (event: Event) => {
-      const detail = (event as CustomEvent<{ paneId?: string; target?: string }>).detail;
-      if (detail?.paneId !== pane.id) return;
-      const tab = detail.target?.startsWith("lead:") ? "leads" : "activity";
+    return onPaneTarget(pane.id, (target) => {
+      const tab = target.startsWith("lead:") ? "leads" : /^(?:browser$|url:|tab:)/.test(target) ? "browser" : "activity";
       setRail((current) => ({ ...current, collapsed: false, tab }));
-    };
-    window.addEventListener("space:notification-open", onOpen);
-    return () => window.removeEventListener("space:notification-open", onOpen);
+    });
   }, [pane.id]);
-  const takeControl = useCallback(() => dispatchBrowserPaneActionEvent({ paneId: pane.id, action: "handoff", roomId: pane.roomId }), [pane.id, pane.roomId]);
-  const returnToAgent = useCallback(() => {
-    dispatchBrowserPaneActionEvent({ paneId: pane.id, action: "release", roomId: pane.roomId });
-    void data.refresh();
-  }, [data, pane.id, pane.roomId]);
   const inLeads = pending.filter((item) => item.kind === "REVIEW" || item.kind === "CLIENT_READY").length;
   const runAction = useCallback(async (action: "start" | "pause" | "stop") => {
     if (runBusy) return;
@@ -106,11 +104,11 @@ export function FreelanceCopilotPane({ pane, isVisible, terminal, browser }: Fre
       data.setRun(await api.freelanceCopilotRunAction(pane.id, action));
       void data.refresh();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "The run could not be changed.");
+      setNotice(error instanceof Error ? error.message : uiText(language, "The run could not be changed."));
     } finally {
       setRunBusy(false);
     }
-  }, [data, pane.id, runBusy]);
+  }, [data, language, pane.id, runBusy]);
   // A ready client, review, question or proposal opens the tab it lives in; the first load does not.
   const lastPendingRef = useRef<string | null>(null);
   useEffect(() => {
@@ -166,18 +164,15 @@ export function FreelanceCopilotPane({ pane, isVisible, terminal, browser }: Fre
         runState={data.run?.status ?? "IDLE"} counters={data.run?.run?.counters ?? null} needsYou={pending.length} backlog={data.run?.backlog ?? 0} runBusy={runBusy} onRun={(action) => void runAction(action)}
         railOpen={railOpen} layout={layout} switching={agent.switching} onSwitchRuntime={(runtimeId) => void agent.switchAgent(runtimeId)} onSetDefault={() => void agent.setAsDefault()}
         onTogglePaused={(checked) => void togglePaused(checked)} onToggleRail={toggleRail} />
-      {notice || data.error ? <div className="jc-notice" role="status">{notice ?? data.error}</div> : null}
+      <CopilotNotice text={notice || data.error} loaded={Boolean(data.settings)} />
       <div className="jc-body">
-        <section className="jc-browser" aria-label="Live browser" data-active={browserShown ? "true" : "false"} aria-hidden={browserShown ? undefined : "true"}>
-          {browser}
-          {handoff ? <HandoffOverlay handoff={handoff} detail={sendingOn ? sendingOn.message : null}
-            onTakeControl={takeControl} onReturnToAgent={returnToAgent} />
-            : controlHeld ? <HeldBrowserStrip onReturnToAgent={returnToAgent} /> : null}
+        <section className="jc-browser" aria-label={t("Live browser")} data-active={browserShown ? "true" : "false"} aria-hidden={browserShown ? undefined : "true"}>
+          <CopilotBrowserControlHint.Provider value={browserControlHint}>{browser}</CopilotBrowserControlHint.Provider>
         </section>
-        <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label="Resize the copilot rail" aria-hidden={rail.collapsed ? "true" : undefined}
+        <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label={t("Resize the copilot rail")} aria-hidden={rail.collapsed ? "true" : undefined}
           onPointerDown={onResizeStart} onPointerMove={onResizeMove} onPointerUp={onResizeEnd} onPointerCancel={onResizeEnd} onDoubleClick={() => setRail((current) => ({ ...current, width: RAIL_DEFAULT_WIDTH }))} />
-        <CopilotRail tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
-          {railOpen && activeTab === "leads" ? <LeadsTab paneId={pane.id} leads={data.leads} pending={pending} funnel={data.funnel} onChanged={() => void data.refresh()} /> : null}
+        <CopilotRail firstRead={{ text: notice || data.error, loaded: Boolean(data.settings) }} tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
+          {railOpen && activeTab === "leads" ? <LeadsTab paneId={pane.id} nousReviewing={nousReviewing} leads={data.leads} pending={allPending} funnel={data.funnel} onChanged={() => void data.refresh()} /> : null}
           {railOpen && activeTab === "platforms" ? <PlatformsTab paneId={pane.id} leads={data.leads} funnel={data.funnel} onChanged={() => void data.refresh()} /> : null}
           {railOpen && activeTab === "bookmarks" ? <BookmarksTab paneId={pane.id} onOpened={() => { if (layout === "stacked") selectTab("browser"); }} /> : null}
           {railOpen && activeTab === "activity" ? <ActivityTab paneId={pane.id} events={data.events} pending={pending} onChanged={() => void data.refresh()} onOpenLeads={() => selectTab("leads")} onOpenSetup={() => selectTab("setup")} /> : null}
@@ -186,7 +181,7 @@ export function FreelanceCopilotPane({ pane, isVisible, terminal, browser }: Fre
             <SetupTab pane={pane} settings={data.settings} onOpenBrowser={() => { if (layout === "stacked") selectTab("browser"); }} runtimeOptions={runtimeOptions} switching={agent.switching} accountRevision={agent.accountRevision}
               onSettingsChange={data.setSettings} onSwitchAgent={(runtimeId, accountProfileId) => void agent.switchAgent(runtimeId, accountProfileId)} onSetDefault={() => void agent.setAsDefault()} />
           ) : null}
-          {railOpen && activeTab === "setup" && !data.settings ? <p className="jc-muted jc-panel-loading" role="status">{data.loading ? "Loading setup…" : "Setup is unavailable."}</p> : null}
+          {railOpen && activeTab === "setup" && !data.settings ? <p className="jc-muted jc-panel-loading" role="status">{data.loading ? t("Loading setup…") : t("Setup is unavailable.")}</p> : null}
           <div key={agent.terminalKey} className="jc-panel-terminal" role="tabpanel" id="jc-panel-terminal" aria-labelledby="jc-tab-terminal" data-active={railOpen && activeTab === "terminal" ? "true" : "false"}>
             {terminal}
           </div>

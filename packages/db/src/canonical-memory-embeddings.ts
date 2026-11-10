@@ -1,5 +1,5 @@
 import pg from "pg";
-import type { PgPoolLike } from "./space-store.js";
+import { errorTextForLog, type PgPoolLike } from "./space-store.js";
 
 export interface CanonicalEmbeddingRow { id: string; inputHash: string }
 export class CanonicalMemoryEmbeddings {
@@ -8,7 +8,7 @@ export class CanonicalMemoryEmbeddings {
     const pool = new pg.Pool({ connectionString, max: 2, connectionTimeoutMillis: 5000, statement_timeout: 10000 });
     // A PostgreSQL restart terminates pooled clients. Without listeners that
     // becomes an unhandled 'error' event, which ends the API process.
-    pool.on("error", (error: Error) => console.error("[db] Canonical memory pool connection error:", error?.message ?? error));
+    pool.on("error", (error: Error) => console.error("[db] Canonical memory pool connection error:", errorTextForLog(error)));
     pool.on("connect", (client) => client.on("error", () => { /* reported by the pending query or the pool */ }));
     return new CanonicalMemoryEmbeddings(pool, () => pool.end());
   }
@@ -27,12 +27,17 @@ export class CanonicalMemoryEmbeddings {
       embedding=excluded.embedding,updated_at=now()`,
       [input.id,input.hash,input.provider,input.model,JSON.stringify(input.embedding)]);
   }
-  async search(embedding: number[], provider: string, model: string, allowedIds?: string[]): Promise<Array<CanonicalEmbeddingRow & { similarity: number }>> {
+  async remove(ids: string[]) {
+    if (ids.length) await this.pool.query("DELETE FROM memory_graph_embeddings WHERE canonical_memory_id = ANY($1::text[])", [ids]);
+  }
+  /** Every embedding at least `minSimilarity` near the query, nearest first (until 31/10 the nearest 100 only). */
+  async search(embedding: number[], provider: string, model: string, allowedIds?: string[], minSimilarity?: number): Promise<Array<CanonicalEmbeddingRow & { similarity: number }>> {
     if (embedding.length !== 1536 || !embedding.every(Number.isFinite)) throw new Error("Invalid canonical query embedding.");
     const result = await this.pool.query<CanonicalEmbeddingRow & { similarity: number }>(`SELECT canonical_memory_id AS id,
       input_hash AS "inputHash", 1-(embedding <=> $1::vector) AS similarity
       FROM memory_graph_embeddings WHERE provider=$2 AND model=$3 AND ($4::text[] IS NULL OR canonical_memory_id=ANY($4::text[]))
-      ORDER BY embedding <=> $1::vector LIMIT 100`, [JSON.stringify(embedding), provider, model, allowedIds ?? null]);
+        AND ($5::float8 IS NULL OR 1-(embedding <=> $1::vector) >= $5::float8)
+      ORDER BY embedding <=> $1::vector`, [JSON.stringify(embedding), provider, model, allowedIds ?? null, minSimilarity ?? null]);
     return result.rows;
   }
   async close() { await this.closePool?.(); }

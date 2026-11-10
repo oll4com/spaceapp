@@ -25,9 +25,12 @@ function waitForFrame(video: HTMLVideoElement, signal: AbortSignal) {
 
 // Called only from the operator's camera/Screen action. No provider request,
 // synthetic DOM rendering or programmatic permission bypass occurs here.
+export const LIVE_SCREEN_UNSUPPORTED = "Screen sharing is not available here. Use Camera, or the snip tool for a still of the page.";
 export async function captureLiveVisual(source: "camera" | "screen", signal: AbortSignal) {
   if (signal.aborted) throw abortError();
   const platform = getSpaceRuntime().platform;
+  // SpaceApp Android's WebView has no screen sharing (getDisplayMedia); its snip tool captures the page natively.
+  if (source === "screen" && !platform.displayMediaSupported) throw new Error(LIVE_SCREEN_UNSUPPORTED);
   let stream: MediaStream | undefined;
   let video: HTMLVideoElement | undefined;
   try {

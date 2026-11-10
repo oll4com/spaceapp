@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import { isGatewayFreePlan } from "@space/contracts";
 import type { GatewayRepository } from "@space/db";
 import type { AccountPool, StoredCredentials } from "../accounts/account-pool.js";
 import type { CredentialCipher } from "../credential-cipher.js";
@@ -35,16 +36,19 @@ export function registerAntigravitySignInRoutes(app: FastifyInstance, options: {
         expiresAtMs = refreshed.expiresAtMs;
       }
       const info = await loadCodeAssist(accessToken, { fetchImpl: options.fetchImpl });
-      const externalAccountId = tokens.subject ?? tokens.email;
+      const existing = (await options.repository.listAccounts()).find((account) => account.provider === "ANTIGRAVITY"
+        && ((tokens.subject && account.externalAccountId === tokens.subject)
+          || (tokens.email && (account.externalAccountId === tokens.email || account.email?.toLowerCase() === tokens.email.toLowerCase()))));
+      const externalAccountId = tokens.subject ?? existing?.externalAccountId ?? tokens.email;
       if (!externalAccountId) throw new AntigravityAuthError("invalid_identity", "The Antigravity sign-in does not name its Google account.");
       const credentials: StoredCredentials = { accessToken, refreshToken: tokens.refreshToken, idToken: null, upstreamAccountId: info.project, accessExpiresAtMs: expiresAtMs };
-      const existing = (await options.repository.listAccounts()).find((account) => account.provider === "ANTIGRAVITY" && account.externalAccountId === externalAccountId);
       const boundId = existing?.id ?? `gw_account:${randomBytes(16).toString("hex")}`;
       const saved = await options.repository.upsertAccount({
-        accountId: boundId, provider: "ANTIGRAVITY", label: tokens.email ?? "Antigravity account", email: tokens.email, externalAccountId,
+        accountId: boundId, provider: "ANTIGRAVITY", label: tokens.email ?? existing?.label ?? "Antigravity account", email: tokens.email ?? existing?.email ?? null, externalAccountId,
         planType: info.planType, credentialsEncrypted: cipher.encrypt(JSON.stringify(credentials), boundId),
         credentialsExpiresAt: new Date(expiresAtMs).toISOString(), source: "PROFILE_ADOPTION", sourceRef, lastRefreshAt: new Date(now()).toISOString()
       });
+      await options.pool.recordPlanType(saved, info.planType);
       options.pool.signedIn(saved.id);
       await fetchQuotaSummary(accessToken, info.project, { fetchImpl: options.fetchImpl })
         .then((groups) => storeAntigravityUsage(options.repository, saved.id, groups)).catch(() => undefined);
@@ -68,9 +72,15 @@ export function antigravityAccountActions(options: { repository: GatewayReposito
   return {
     async test(account) {
       const startedAt = now();
-      const credentials = await options.pool.credentials(account);
+      const credentials = await options.pool.credentials(account, { allowFreePlan: true });
       try {
         const info = await loadCodeAssist(credentials.accessToken, { fetchImpl: options.fetchImpl });
+        const wasFree = isGatewayFreePlan(account.planType);
+        await options.pool.recordPlanType(account, info.planType);
+        if (wasFree && !isGatewayFreePlan(info.planType)) {
+          await fetchQuotaSummary(credentials.accessToken, info.project ?? credentials.upstreamAccountId, { fetchImpl: options.fetchImpl })
+            .then((groups) => storeAntigravityUsage(options.repository, account.id, groups)).catch(() => undefined);
+        }
         await options.pool.markSuccess(account.id);
         return { ok: true, model: null, status: 200, latencyMs: now() - startedAt, error: null, planType: info.planType };
       } catch (error) {

@@ -106,9 +106,10 @@ export class CliHostClient {
     attachmentId: string,
     data: string,
     display: "visible" | "hidden" = "visible",
-    idempotencyKey?: string
+    idempotencyKey?: string,
+    traceId?: string
   ): Promise<CliHostInputResult> {
-    return this.request("input", { identity, attachmentId, data, display, idempotencyKey }) as Promise<CliHostInputResult>;
+    return this.request("input", { identity, attachmentId, data, display, idempotencyKey, traceId }) as Promise<CliHostInputResult>;
   }
 
   async resize(identity: CliHostIdentity, attachmentId: string, cols: number, rows: number): Promise<void> {
@@ -122,8 +123,8 @@ export class CliHostClient {
     return detached;
   }
 
-  async terminate(identity: CliHostIdentity): Promise<boolean> {
-    return this.request("terminate", { identity }) as Promise<boolean>;
+  async terminate(identity: CliHostIdentity, traceId?: string): Promise<boolean> {
+    return this.request("terminate", { identity, traceId }) as Promise<boolean>;
   }
 
   async reapDetached(): Promise<CliHostReapResult> {

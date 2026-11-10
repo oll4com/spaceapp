@@ -899,6 +899,7 @@ export class ChessTournamentRunner {
             system: CHESS_SYSTEM_PROMPT,
             prompt: buildMovePrompt(position, legal, game.san, previous),
             signal: AbortSignal.any([outer, timeout]),
+            traceId: `${this.state!.id}:${game.id}`,
           });
           tokens += reply.tokens ?? 0;
           const move = findMoveInText(position, reply.text, legal);

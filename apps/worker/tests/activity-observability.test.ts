@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { request } from "node:http";
 import { MetricsRegistry } from "@space/runtime";
 import {
@@ -153,6 +153,11 @@ describe("worker metrics endpoint", () => {
     expect(resolveWorkerMetricsListen({ SPACE_WORKER_METRICS_PORT: "9469" })).toEqual({ host: "127.0.0.1", port: 9469 });
     expect(resolveWorkerMetricsListen({ SPACE_WORKER_METRICS_PORT: "9469", SPACE_WORKER_METRICS_HOST: "0.0.0.0" })).toBeNull();
     expect(resolveWorkerMetricsListen({ SPACE_WORKER_METRICS_PORT: "9469", SPACE_WORKER_METRICS_HOST: "::1" })).toEqual({ host: "::1", port: 9469 });
+    // OBS-007: each memory worker reads only its own port variable, under the same loopback rules.
+    const memoryEnv = { SPACE_WORKER_METRICS_PORT: "9469", SPACE_MEMORY_MAINTENANCE_METRICS_PORT: "9470" };
+    expect(resolveWorkerMetricsListen(memoryEnv, "SPACE_MEMORY_MAINTENANCE_METRICS_PORT")).toEqual({ host: "127.0.0.1", port: 9470 });
+    expect(resolveWorkerMetricsListen(memoryEnv, "SPACE_MEMORY_MUTATION_METRICS_PORT")).toBeNull();
+    expect(resolveWorkerMetricsListen({ ...memoryEnv, SPACE_WORKER_METRICS_HOST: "0.0.0.0" }, "SPACE_MEMORY_MAINTENANCE_METRICS_PORT")).toBeNull();
     expect(resolveTemporalCoreMetricsBind({})).toBeNull();
     expect(resolveTemporalCoreMetricsBind({ SPACE_WORKER_TEMPORAL_METRICS_BIND: "127.0.0.1:9464" })).toBe("127.0.0.1:9464");
     expect(resolveTemporalCoreMetricsBind({ SPACE_WORKER_TEMPORAL_METRICS_BIND: "0.0.0.0:9464" })).toBeNull();
@@ -186,7 +191,7 @@ it("registers the activity interceptor on every Temporal worker, including both 
   const { readFile } = await import("node:fs/promises");
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans(?:, reportError: captureSentryException)? \}\)\] \}/);
   }
 });
 
@@ -202,4 +207,18 @@ it("exports one INTERNAL span per activity under the caller's traceparent", asyn
   expect(recorded).toHaveLength(1);
   expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "00f067aa0ba902b7", name: "activity runTurn",
     kind: 1, error: false, startTimeUnixNano: 1_000_000_000n, endTimeUnixNano: 1_250_000_000n });
+});
+
+
+it("reports failed activities with only a fresh child trace, preserves retries and ignores cancellation", async () => {
+  const logs = capture(); restoreLogs = logs.restore;
+  const reportError = vi.fn();
+  const failure = new Error("private activity prompt");
+  await expect(observeActivityExecution(info(), [{ traceparent, prompt: secretPrompt }], async () => { throw failure; }, { reportError })).rejects.toBe(failure);
+  expect(reportError).toHaveBeenCalledWith(failure, { trace_id: "4bf92f3577b34da6a3ce929d0e0e4736", span_id: expect.stringMatching(/^[a-f0-9]{16}$/) });
+  reportError.mockClear();
+  await expect(observeActivityExecution(info(), [], async () => { throw failure; }, { reportError, cancelled: () => true })).rejects.toBe(failure);
+  expect(reportError).not.toHaveBeenCalled();
+  reportError.mockImplementation(() => { throw new Error("telemetry down"); });
+  await expect(observeActivityExecution(info(), [], async () => { throw failure; }, { reportError })).rejects.toBe(failure);
 });

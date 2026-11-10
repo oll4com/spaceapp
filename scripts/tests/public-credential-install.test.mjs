@@ -43,6 +43,20 @@ test('a Claude login also marks Claude Code onboarded, keeping its other setting
   assert.deepEqual(await readdir(codex), ['auth.json']);
 });
 
+test('every Claude pane starts past the first-run screens: the wrapper marks onboarding and trusts the workspaces (1.2.0 lab 2/11)', async () => {
+  // An API-key install or an in-container login never ran the login import, so a pane Nous opened stopped at the theme picker.
+  const root = await mkdtemp(join(tmpdir(), 'spaceapp-login-'));
+  const file = join(root, '.claude.json');
+  await writeFile(file, JSON.stringify({ userID: 'kept', customApiKeyResponses: { approved: ['x'] } }), { mode: 0o600 });
+  const script = new URL('../../deploy/docker/credential-install.mjs', import.meta.url);
+  execFileSync(process.execPath, [script.pathname, '--onboarded', file, '/workspaces']);
+  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { userID: 'kept', customApiKeyResponses: { approved: ['x'] }, hasCompletedOnboarding: true,
+    projects: { '/workspaces': { hasTrustDialogAccepted: true } } });
+  const wrapper = readFileSync(new URL('../../deploy/docker/public-cli-wrapper.sh', import.meta.url), 'utf8');
+  assert.match(wrapper, /ensure_optional_provider\n[^]*?if \[ "\$runtime_name" = claude \] && ! grep -qs '"hasCompletedOnboarding": true' "\$HOME\/\.claude\.json"; then\n  node \/app\/deploy\/docker\/credential-install\.mjs --onboarded "\$HOME\/\.claude\.json" "\$\{SPACE_CLI_WORKSPACE_ROOT:-\/workspaces\}"/);
+  assert.ok(wrapper.indexOf('--onboarded') < wrapper.lastIndexOf('exec "$command_name" "$@"'));
+});
+
 test('rejects unknown runtimes, file names outside the allowlist and damaged logins without writing', async () => {
   const root = await mkdtemp(join(tmpdir(), 'spaceapp-login-'));
   assert.equal(await installLogin('hermes', root, payload({ 'auth.json': login })), 'FAILED not-supported-on-target');

@@ -1,8 +1,9 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import type { NousOverview, NousPlanHold, NousPlanHolds } from "@space/contracts";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
 import { DockChips, DockState } from "../dock-kit/DockKit.js";
 import { Nous } from "../ui-theme/app-icons.js";
+import { isFlag, useNousUiState } from "./nous-ui-state.js";
 
 /**
  * The Plans view (operator request 2026-10-25), the same picture Nous reads in its world: the server-wide holds, what to unblock
@@ -25,10 +26,11 @@ const GROUP_TITLE = new Map(GROUPS);
 const when = (iso: string) => formatUserTime(iso, { withDate: true });
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 const DATES_SHOWN = 6;
+const isPlanView = (value: unknown): value is "list" | "diagram" => value === "list" || value === "diagram";
 
 export function NousPlanMap({ overview, onOpen }: { overview: NousOverview | null; onOpen(id: string): void }) {
-  const [view, setView] = useState<"list" | "diagram">("list");
-  const [allDates, setAllDates] = useState(false);
+  const [view, setView] = useNousUiState("plans.view", "list", isPlanView);
+  const [allDates, setAllDates] = useNousUiState("plans.allDates", false, isFlag);
   if (!overview) return <DockState kind="loading" title="Loading the plans" />;
   const plans = overview.plans;
   if (!plans.length) return <DockState kind="empty" icon={Nous} title="No open plans" detail="Plans you or Nous record appear here with what they wait on, their dates and what depends on what." />;

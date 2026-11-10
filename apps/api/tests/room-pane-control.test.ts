@@ -60,3 +60,22 @@ it("controls a copilot pane's CLI as a CLI, so its model can be set (Nous, 2026-
   await controller.configure(pane, action, "trace:1");
   expect(configureCli).toHaveBeenCalledWith(pane, action, "trace:1");
 });
+
+it("reads a Chat run's ledger usage, never its text, so Control can verify a turn's receipt (CTX-001)", async () => {
+  const store = new InMemorySpaceStore();
+  const room = store.createRoom({ name: "Receipt", initialPaneCount: 0 });
+  const pane = store.createPane({ roomId: room.id, title: "Chat", mode: "CHAT" });
+  const session = store.createSpaceAgentSession({ paneId: pane.id, roomId: room.id, title: "Chat",
+    selectedModelId: null, selectedModelConfigId: null, selectedProviderId: "cli:claude",
+    selectedProviderName: null, selectedModelName: null, selectedReasoningKey: null, selectedToolIds: [] });
+  const prompt = store.createSpaceAgentMessage({ sessionId: session.sessionId, role: "user", content: "Reply OK", status: "COMPLETED" });
+  const answer = store.createSpaceAgentMessage({ sessionId: session.sessionId, role: "assistant", content: "OK", status: "RUNNING" });
+  const run = store.createSpaceAgentRun({ sessionId: session.sessionId, roomId: room.id, paneId: pane.id, workflowId: "workflow:receipt",
+    status: "RUNNING", promptMessageId: prompt.messageId, responseMessageId: answer.messageId });
+  const usage = { status: "MEASURED" as const, inputTokens: 1690, cachedInputTokens: 0, outputTokens: 4, reasoningOutputTokens: 0,
+    totalTokens: 1694, source: "claude-cli:result", observedAt: new Date().toISOString(), model: "claude-opus-5-5" };
+  store.updateSpaceAgentRun(run.runId, { status: "COMPLETED", usage });
+  const controller = createRoomPaneController({ store, chat: { loadSession: vi.fn(async () => null) } } as never);
+  const [task] = (await controller.inspect(pane)).tasks;
+  expect(task).toMatchObject({ taskId: run.runId, status: "COMPLETED", usage });
+});

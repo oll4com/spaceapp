@@ -21,7 +21,8 @@ export function verifiedLegacyVoiceTurns(owner: string, room: string, source: st
       result.push({ id: `legacy:${id}`, sessionId: "legacy-import", roomId: room, role: item.role, text: item.text.slice(0, 32000), timestamp: item.timestamp, createdAtMs, revision: 1 });
     } catch {}
   }
-  return result.slice(-200);
+  // Every verified legacy turn is imported (until 31/10 only the newest 200; the rest were lost on import).
+  return result;
 }
 export function registerLiveHistoryRoutes(app: FastifyInstance, options: {
   repository: LiveHistoryRepository;
@@ -42,13 +43,14 @@ export function registerLiveHistoryRoutes(app: FastifyInstance, options: {
   };
   app.get("/api/live/history", routeOptions, async request => {
     const id = owner(request);
-    const input = z.object({ roomId: z.string().min(1).max(120).optional(), limit: z.coerce.number().int().min(1).max(200).default(200) }).parse(request.query);
+    const input = z.object({ roomId: z.string().min(1).max(120).optional(), limit: z.coerce.number().int().min(1).default(200) }).parse(request.query);
     if (input.roomId) { await options.assertAccess(request, input.roomId); await migrate(id, input.roomId); }
     return { ok: true, ownerId: id, ...await repository.read(id, input.roomId, input.limit) };
   });
   app.post("/api/live/history/turns", routeOptions, async request => {
     const id = owner(request);
-    const input = z.object({ expectedOwnerId: z.string().min(1).max(160), turns: z.array(z.object({ item: turnSchema, epoch: z.number().int().min(0) }).strict()).min(1).max(50) }).strict().parse(request.body);
+    const input = z.object({ expectedOwnerId: z.string().min(1).max(160), // Technical: one request's body; the Live pane sends its pending turns 50 a request (live-history-sync.ts).
+      turns: z.array(z.object({ item: turnSchema, epoch: z.number().int().min(0) }).strict()).min(1).max(50) }).strict().parse(request.body);
     if (input.expectedOwnerId !== id) throw new SpaceConflictError("Live owner changed. Reload before syncing history.");
     for (const room of new Set(input.turns.map(turn => turn.item.roomId))) await options.assertAccess(request, room);
     const receipts = [];
@@ -63,15 +65,16 @@ export function registerLiveHistoryRoutes(app: FastifyInstance, options: {
   app.get("/api/voice/realtime/history/:roomId", routeOptions, async request => {
     const id = owner(request), { roomId } = z.object({ roomId: z.string().min(1).max(120) }).parse(request.params);
     await options.assertAccess(request, roomId); await migrate(id, roomId);
-    const { limit } = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }).parse(request.query);
+    const { limit } = z.object({ limit: z.coerce.number().int().min(1).default(50) }).parse(request.query);
     return { ok: true, roomId, ...await repository.read(id, roomId, limit) };
   });
   const search = async (request: FastifyRequest) => {
     const id = owner(request);
-    const input = z.object({ query: z.string().max(1000).optional(), q: z.string().max(1000).optional(), roomId: z.string().min(1).max(120).optional(), limit: z.coerce.number().int().min(1).max(50).default(10) }).parse(request.method === "POST" ? request.body : request.query);
+    const input = z.object({ query: z.string().max(1000).optional(), q: z.string().max(1000).optional(), roomId: z.string().min(1).max(120).optional(), limit: z.coerce.number().int().min(1).default(10) }).parse(request.method === "POST" ? request.body : request.query);
     if (input.roomId) await options.assertAccess(request, input.roomId);
     const q = (input.query ?? input.q ?? "").trim().toLocaleLowerCase();
-    const items = q ? (await repository.read(id, input.roomId, 200)).items : [];
+    // Every turn is searched (until 31/10 only the newest 200).
+    const items = q ? (await repository.read(id, input.roomId)).items : [];
     return { ok: true, results: items.filter(item => item.text.toLocaleLowerCase().includes(q)).slice(-input.limit) };
   };
   app.get("/api/voice/realtime/history/search", routeOptions, search);

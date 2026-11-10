@@ -143,6 +143,25 @@ describe("Design pane request loop", () => {
     expect(clock).toBe(3_000);
   });
 
+  it("kicks a new request into an idle designer past a request it parked 17 minutes earlier (31/10 Cleo/Cody)", async () => {
+    let clock = Date.parse("2026-10-31T01:53:26.000Z");
+    const iso = () => new Date(clock).toISOString();
+    const { service, fromPane, kickoffs, openDesign } = await fixture({ repository: new InMemoryDesignRepository(iso), now: () => clock });
+    const cody = openDesign();
+    const parked = await service.createRequest(owner, fromPane, { brief: "Waits on the operator's logo", formatIds: ["x"], referenceArtifactIds: [], designPaneId: cody.id });
+    expect((await service.takeNext(owner, cody)).request?.id).toBe(parked.request.id);
+    clock = Date.parse("2026-10-31T02:10:59.000Z");
+    // The parked request is TAKEN and was touched 17 minutes ago; the designer sits at an empty prompt (ready): the new request goes in.
+    const next = await service.createRequest(owner, fromPane, { brief: "Square post", formatIds: ["square"], referenceArtifactIds: [], designPaneId: cody.id });
+    expect(next.runStarted).toBe(true);
+    expect(kickoffs).toEqual([cody.id, cody.id]);
+    expect(await service.dispatchQueued()).toBe(0);
+    clock += 61_000;
+    expect(await service.dispatchQueued()).toBe(1);
+    // The designer takes the new request; the parked one stays parked.
+    expect((await service.takeNext(owner, cody)).request?.id).toBe(next.request.id);
+  });
+
   it("the queue pass hands QUEUED work to an idle, unpaused Design pane at an empty prompt, and to nothing else", async () => {
     let ready = false;
     const kickoffs: string[] = [];

@@ -21,6 +21,7 @@ import {
   roomAgentSupervisorInputSchema,
   roomAgentSupervisorQueueItemSchema,
   roomAgentSupervisorStopSignalSchema,
+  singleAttemptTurnOutcomeUnknownMessage,
   type DummyTurnInput,
   type DummyTurnResult,
   type RoomAgentSupervisorInput,
@@ -97,18 +98,20 @@ export const dotGoalWakeSignal = defineSignal<[]>(DOT_GOAL_SIGNAL);
  * API reports the Goal finished. State lives in PostgreSQL; this workflow only
  * sequences steps, so it survives worker restarts and closed browsers.
  */
-export async function dotGoalWorkflow(input: { goalId: string }): Promise<{ goalStatus: string }> {
+export async function dotGoalWorkflow(input: { goalId: string; traceId?: string; traceparent?: string }): Promise<{ goalStatus: string }> {
   let woken = false;
   setHandler(dotGoalWakeSignal, () => { woken = true; });
+  // The creating request's ids ride in each step's input, so the activity log line names the Goal and that request (OBS-006).
+  const trace = { ...(input.traceId ? { traceId: input.traceId } : {}), ...(input.traceparent ? { traceparent: input.traceparent } : {}) };
   const result = await runDotGoalLoop(input.goalId, {
-    step: (goalId) => dotGoalActivities.dotGoalStep(goalId),
-    observe: (goalId, runId) => dotGoalActivities.dotGoalObserve(goalId, runId),
+    step: (goalId) => dotGoalActivities.dotGoalStep({ goalId, ...trace }),
+    observe: (goalId, runId) => dotGoalActivities.dotGoalObserve({ goalId, runId, ...trace }),
     // A wake-up that arrives during an activity is kept and ends the next wait at once.
     wait: async (timeout) => { await condition(() => woken, timeout); woken = false; },
     shouldContinueAsNew: () => workflowInfo().continueAsNewSuggested || workflowInfo().historyLength > 10_000
   }, 300);
   // A long Goal continues as a new run to bound workflow history.
-  if (result.goalStatus === null) await continueAsNew<typeof dotGoalWorkflow>({ goalId: input.goalId });
+  if (result.goalStatus === null) await continueAsNew<typeof dotGoalWorkflow>({ goalId: input.goalId, ...trace });
   return { goalStatus: result.goalStatus ?? "UNKNOWN" };
 }
 
@@ -233,7 +236,7 @@ async function legacyRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorIn
             missionId: item.missionId,
             roomId: item.turn.roomId,
             status: isCancellation(error) ? "INTERRUPTED" : "FAILED",
-            statusReason: isCancellation(error) ? activeStopReason : "Room agent child workflow failed.",
+            statusReason: isCancellation(error) ? activeStopReason : supervisorFailureReason(error, "Room agent child workflow failed."),
             ...(isCancellation(error) ? {} : { errorCode: supervisorFailureCode(error) })
           })
         );
@@ -266,7 +269,7 @@ const ROOM_AGENT_SUPERVISOR_CARRY_LIMIT = 100;
 async function continuingRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorInput): Promise<never> {
   const input = roomAgentSupervisorInputSchema.parse(rawInput);
   let pending = [...input.pending];
-  let interrupted = [...input.interrupted];
+  const interrupted = [...input.interrupted];
   const monitoring = new Set(input.monitoringMissionIds);
   let active: RoomAgentSupervisorQueueItem | null = null;
   let scope: CancellationScope | null = null;
@@ -341,7 +344,7 @@ async function continuingRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervis
         });
       } catch (error) {
         await CancellationScope.nonCancellable(async () => {
-          const reason = isCancellation(error) ? stopReason : "Room Agent supervisor turn failed.";
+          const reason = isCancellation(error) ? stopReason : supervisorFailureReason(error, "Room Agent supervisor turn failed.");
           const errorCode = isCancellation(error) ? undefined : supervisorFailureCode(error);
           await supervisorActivities.discardRoomAgentSupervisorTurn({ item, reason, errorCode });
           if (!roomAgentMissionHasContinuation(pending, item.missionId)) {
@@ -407,7 +410,14 @@ function supervisorFailureCode(error: unknown): string {
   let failure = error as { name?: unknown; type?: unknown; cause?: unknown } | undefined;
   for (let depth = 0; failure && depth < 8; depth++, failure = failure.cause as typeof failure) {
     if (failure.name === "TimeoutFailure") code = "ROOM_AGENT_SUPERVISOR_TIMEOUT";
+    // Core fails an attempt cut by a graceful worker stop (every deploy) as "WorkerShutdown"; a single-attempt turn
+    // is never retried and its run already says TURN_OUTCOME_UNKNOWN, so the mission says the same (DATA-001).
+    else if (failure.type === "WorkerShutdown") code = "TURN_OUTCOME_UNKNOWN";
     else if (isSafeErrorCode(failure.type)) code = failure.type;
   }
   return code;
+}
+
+function supervisorFailureReason(error: unknown, fallback: string): string {
+  return supervisorFailureCode(error) === "TURN_OUTCOME_UNKNOWN" ? singleAttemptTurnOutcomeUnknownMessage : fallback;
 }

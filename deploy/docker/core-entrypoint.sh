@@ -4,6 +4,7 @@ set -eu
 : "${SPACE_DATABASE_URL_SOURCE_FILE:=/run/secrets/database-url}"
 : "${SPACE_DATABASE_URL_FILE:=/run/spaceapp/database-url}"
 : "${SPACE_SESSION_SECRET_FILE:=/run/secrets/session-secret}"
+: "${SPACE_AGENT_TOKEN_SECRET_FILE:=/run/secrets/agent-token-secret}"
 : "${SPACE_SETUP_TOKEN_SOURCE_FILE:=/run/secrets/setup-token}"
 : "${SPACE_SETUP_TOKEN_RUNTIME_FILE:=/run/spaceapp/setup-token}"
 : "${SPACE_MEMORY_ROOT:=/var/lib/spaceapp/memory}"
@@ -21,6 +22,10 @@ if [ ! -r "$SPACE_SESSION_SECRET_FILE" ]; then
   echo "SpaceApp session secret is unavailable." >&2
   exit 1
 fi
+if [ ! -r "$SPACE_AGENT_TOKEN_SECRET_FILE" ]; then
+  echo "SpaceApp agent token secret is unavailable; run the launcher's repair." >&2
+  exit 1
+fi
 if [ ! -r "$SPACE_SETUP_TOKEN_SOURCE_FILE" ]; then
   echo "SpaceApp setup token secret is unavailable." >&2
   exit 1
@@ -28,8 +33,6 @@ fi
 
 export SPACE_DATABASE_URL
 SPACE_DATABASE_URL="$(cat "$SPACE_DATABASE_URL_SOURCE_FILE")"
-export SPACE_SESSION_SECRET
-SPACE_SESSION_SECRET="$(cat "$SPACE_SESSION_SECRET_FILE")"
 
 install -d -o spaceapp -g spaceapp -m 0700 \
   /var/lib/spaceapp \
@@ -69,4 +72,10 @@ if [ ! -e "$SPACE_MEMORY_ROOT/installation-guide.md" ]; then
 fi
 
 gosu spaceapp node packages/db/dist/migrate.js
+# Only the api needs the session secret; migrate.js reads only SPACE_DATABASE_URL (EXT-C-F8).
+export SPACE_SESSION_SECRET
+SPACE_SESSION_SECRET="$(cat "$SPACE_SESSION_SECRET_FILE")"
+# The api signs the panes' bridge tokens with it; the worker and the web proxy never get it (core-supervisor.mjs).
+export SPACE_AGENT_TOKEN_SECRET
+SPACE_AGENT_TOKEN_SECRET="$(cat "$SPACE_AGENT_TOKEN_SECRET_FILE")"
 exec gosu spaceapp node deploy/docker/core-supervisor.mjs

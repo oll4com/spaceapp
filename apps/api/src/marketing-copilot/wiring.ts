@@ -13,9 +13,11 @@ import { GitControlError } from "../source-control/errors.js";
 import type { NotificationService } from "../notifications/service.js";
 import { apiPackageVersion } from "../package-version.js";
 import { registerMarketingCopilotRoutes, type MarketingCopilotRouteDependencies } from "./routes.js";
-import { createMarketingCopilotMetrics } from "./metrics.js";
+import { createMarketingCopilotMetrics, marketingPaneOwners } from "./metrics.js";
+import { createMarketingStatsCollector, ga4ConfigFromEnv } from "./stats.js";
+import { buildMarketingReport, marketingSnapshot } from "../nous/marketing.js";
 import { createMarketingCopilotScheduler } from "./scheduler.js";
-import { createMarketingCopilotService, type MarketingCopilotService } from "./service.js";
+import { createMarketingCopilotService, type MarketingCopilotService, type MarketingCopilotServiceOptions } from "./service.js";
 
 export interface MarketingCopilotWiring extends Omit<MarketingCopilotRouteDependencies, "store" | "kickoff"> {
   store: SpaceStore;
@@ -37,14 +39,29 @@ export interface MarketingCopilotWiring extends Omit<MarketingCopilotRouteDepend
   metrics: boolean;
   /** Nous's inbox, for the metrics job's GitHub issues watch. */
   notice?(owner: string, key: string, line: string): Promise<void> | void;
+  /** Reopens a closed pane as its owner (task-schedules' path); with it the scheduler reopens a closed pane whose posts are due (queue item 44). */
+  reopen?(pane: Pane, owner: string): Promise<unknown>;
   log: { warn(details: unknown, message: string): void };
   /** The pane's CLI as the Room Agent sees it: a stalled RUNNING run is kicked only at an empty prompt. */
   inspect?(pane: Pane): Promise<RoomPaneObservation>;
+  operatorMessages?: MarketingCopilotServiceOptions["operatorMessages"];
 }
 
 const KICKOFF = (runId: string) => `Marketing Copilot run ${runId} started in this pane. Read the space-marketing-copilot skill (SKILL.md and references/channels.md), then loop: call space_marketingcopilot space_marketing_next until it returns done=true (without MCP tools in this session, call them on demand: JSON {"serverId","toolName","arguments"} on stdin to space-capability call); ground every claim in space_marketing_facts, recall memory before drafting, ask for a review under Assist and on capped channels, publish only after space_marketing_publish_begin succeeds, and report the published URL with space_marketing_publish_done. For a post's graphic ask the Design pane with space_design space_design_request (callback {kind:"MARKETING_POST", postId}): the delivery attaches it to the post.`;
 
 /** Which notification an event raises or resolves: the key pairs a request with the decision that ends it. */
+/**
+ * Every pane close and room delete asks this (operator rule 9/11): a Marketing Copilot pane closes only once nothing it owns is scheduled.
+ * The service comes later in app.ts; no pane closes before the app is ready.
+ */
+export const marketingPaneCloseGuard = (service: () => MarketingCopilotService | undefined, roomOwner: (roomId: string) => Promise<string | null>) =>
+  async (pane: Pane): Promise<void> => {
+    const copilot = service();
+    if (pane.mode !== "MARKETING_COPILOT" || !copilot) return;
+    const owner = await roomOwner(pane.roomId);
+    if (owner) await copilot.assertMayClose(owner, pane.id);
+  };
+
 export function marketingNotificationFor(event: MarketingEvent): { action: "raise" | "resolve" | "published"; key: string } | null {
   switch (event.type) {
     case "REVIEW_REQUESTED": return { action: "raise", key: `review:${event.postId}` };
@@ -86,19 +103,22 @@ export function registerMarketingCopilot(app: FastifyInstance, deps: MarketingCo
     const settings = service.settingsOf(pane).notifications;
     if (plan.action === "published" ? !settings.published : !settings.needsYou) return;
     // Needs you as questions (plan clipboard:5AQvaoSR-IZa): the operator answers or decides from the card.
-    const decide = (item: "REVIEW" | "RULE" | "CAMPAIGN", itemId: unknown) => itemId ? makeNeedsYouAsk(event.message, { kind: "COPILOT_DECISION", copilot: "MARKETING", item, itemId: String(itemId) }, ["Approve", "Decline"]) : null;
+    const decide = (item: "REVIEW" | "RULE" | "CAMPAIGN", itemId: unknown) => itemId ? makeNeedsYouAsk(event.message, { kind: "COPILOT_DECISION", copilot: "MARKETING", item, itemId: String(itemId) }, ["Approve", "Decline"],
+      event.payload.vouched ? "Approve" : null) : null;
     const ask = event.type === "QUESTION" ? makeNeedsYouAsk(String(event.payload.question ?? event.message), { kind: "COPILOT_QUESTION", copilot: "MARKETING", questionId: String(event.payload.questionId) },
       Array.isArray(event.payload.options) ? event.payload.options.map(String) : [])
       : event.type === "REVIEW_REQUESTED" ? decide("REVIEW", event.postId) : event.type === "RULE_PROPOSED" ? decide("RULE", event.payload.ruleId) : event.type === "CAMPAIGN_PROPOSED" ? decide("CAMPAIGN", event.campaignId) : null;
     await notifications.raise({ ownerUserId: owner, roomId: pane.roomId, paneId: pane.id, source: "MARKETING_COPILOT", kind: event.type, severity: plan.action === "published" ? "INFO" : "ATTENTION",
-      title: plan.action === "published" ? `Published by Marketing Copilot (${pane.title})` : `Marketing Copilot needs you (${pane.title})`, body: event.message.slice(0, 2000),
-      link: { roomId: pane.roomId, paneId: pane.id, target: event.postId ? `post:${event.postId}` : `event:${event.id}` }, dedupeKey, payload: { eventId: event.id, ...(ask ? { ask } : {}) },
+      title: plan.action === "published" ? `Published by Marketing Copilot (${pane.title})` : `Marketing Copilot needs you (${pane.title})`, body: event.message,
+      link: { roomId: pane.roomId, paneId: pane.id, target: event.postId ? `post:${event.postId}` : `event:${event.id}` }, dedupeKey, payload: { eventId: event.id, ...(ask ? { ask } : {}),
+        // R24-2: a review goes to Nous first, and its inbox line carries the post's text.
+        ...(event.type === "REVIEW_REQUESTED" && event.postId ? await repository.getPost(owner, event.postId).then((post) => post ? { review: { id: post.id, channel: post.channel, text: post.body } } : {}, () => ({})) : {}) },
       telegram: settings.telegram ? true : null });
   }
 
   const paneRooms = new Map<string, string>();
   const service = createMarketingCopilotService({
-    repository,
+    repository, operatorMessages: deps.operatorMessages,
     openInBrowser: async (owner, pane, bookmark, traceId, actor) => {
       // Tabs in another Google account are ADMIN-only, like the browser's account menu and the CLI bridge's SELECT_ACCOUNT.
       if (bookmark.profileId !== null && (await store.getControlActor(owner))?.role !== "ADMIN") throw new GitControlError("ADMIN_REQUIRED", "Google account selection requires a room owned by an ADMIN.", 403);
@@ -151,6 +171,7 @@ export function registerMarketingCopilot(app: FastifyInstance, deps: MarketingCo
   if (deps.scheduler) {
     const scheduler = createMarketingCopilotScheduler({
       service, store, log: deps.log, version: apiPackageVersion,
+      ...(deps.reopen ? { reopen: { reopen: (owner: string, pane: Pane) => deps.reopen!(pane, owner), ...(deps.notice ? { notice: deps.notice } : {}) } } : {}),
       hasAgent: async (pane) => deps.kickoff !== undefined || Boolean(await activeSession(pane)),
       hasActiveRun: async (pane) => Boolean(await service.activeRun(pane.id)),
       ...(deps.inspect ? { ready: async (pane: Pane) => atEmptyPrompt(await deps.inspect!(pane)) } : {}),
@@ -180,6 +201,13 @@ export function registerMarketingCopilot(app: FastifyInstance, deps: MarketingCo
     const metrics = createMarketingCopilotMetrics({ service, store, log: deps.log, githubTrafficToken: process.env.SPACE_GITHUB_TRAFFIC_TOKEN || undefined, notice: deps.notice });
     metrics.start();
     app.addHook("onClose", async () => metrics.stop());
+    // The Nous Marketing page's numbers (plan clipboard:netzt-nNvtBL): public post stats, GA4 and the day's score snapshot every 3 hours.
+    const ga4 = ga4ConfigFromEnv();
+    const stats = createMarketingStatsCollector({ service, log: deps.log, ga4, devtoApiKey: process.env.SPACE_DEVTO_API_KEY || null, owners: async () => [...(await marketingPaneOwners(store)).keys()],
+      snapshot: async (owner, day) => marketingSnapshot(buildMarketingReport({ posts: await service.listPosts(owner, {}), mail: null, ga4Configured: Boolean(ga4),
+        metrics: await service.listMetrics(owner, new Date(Date.now() - 70 * 86_400_000).toISOString().slice(0, 10)), trafficConfigured: Boolean(process.env.SPACE_GITHUB_TRAFFIC_TOKEN), now: Date.now() }), day) });
+    stats.start();
+    app.addHook("onClose", async () => stats.stop());
   }
   return service;
 }

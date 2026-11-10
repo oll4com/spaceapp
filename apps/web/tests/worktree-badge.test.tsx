@@ -2,7 +2,7 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { WorktreeBadge } from "../src/features/worktrees/WorktreeBadge.js";
+import { WORKTREE_BADGE_POLL_MS, WorktreeBadge } from "../src/features/worktrees/WorktreeBadge.js";
 
 afterEach(() => {
   cleanup();
@@ -10,6 +10,24 @@ afterEach(() => {
 });
 
 describe("WorktreeBadge", () => {
+  it("polls at the server's 60 s item cache, not faster", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: { status: "ACTIVE", isDirty: false, aheadCount: 1 } }) });
+      vi.stubGlobal("fetch", fetchMock);
+      render(<WorktreeBadge worktreePath="/opt/spaceapp/var/worktrees/space/wt-poll" branch="wt-poll" />);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(WORKTREE_BADGE_POLL_MS - 1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(WORKTREE_BADGE_POLL_MS).toBe(60_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("renders collapsed isolated worktree badge with branch name in title", () => {
     render(
       <WorktreeBadge

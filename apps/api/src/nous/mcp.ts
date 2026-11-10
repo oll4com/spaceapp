@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { gatewayRequestIdHeader } from "../gateway-request-id.js";
 import type { NousAttachments } from "./attachments.js";
 import type { NousService } from "./service.js";
 import type { NousToolDefinition } from "./tools.js";
@@ -121,7 +122,9 @@ export function postToWorker<T>(socketPath: string, path: string, body: unknown,
     if (signal.aborted) { reject(new Error("The turn was stopped.")); return; }
     const data = JSON.stringify(body);
     const onAbort = () => { call.destroy(new Error("The turn was stopped.")); };
-    const call = httpRequest({ socketPath, path, method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data) } }, (response) => {
+    // OBS-006: the body's traceId also goes as x-request-id, the id the worker's worker.socket_request line and answer carry.
+    const headers = { "content-type": "application/json", "content-length": Buffer.byteLength(data), ...gatewayRequestIdHeader((body as { traceId?: string } | null)?.traceId) };
+    const call = httpRequest({ socketPath, path, method: "POST", headers }, (response) => {
       let text = "";
       let settled = false;
       const streaming = /application\/x-ndjson/.test(String(response.headers["content-type"] ?? ""));

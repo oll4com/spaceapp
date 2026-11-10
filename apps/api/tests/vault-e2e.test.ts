@@ -9,7 +9,7 @@ import {
 } from "@space/contracts";
 import { runVaultSignup } from "../src/vault/signup.js";
 import { createVaultBroker, createVaultBrokerHttpServer } from "../src/vault/broker-server.js";
-import { VaultBrokerRefusedError, createSocketVaultBroker, type VaultBroker } from "../src/vault/broker-client.js";
+import { VaultBrokerRefusedError, VaultBrokerUnavailableError, createSocketVaultBroker, type VaultBroker } from "../src/vault/broker-client.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { fixture } from "./support/vault-fakes.js";
 
@@ -36,7 +36,10 @@ const signed = async (vaultId: string, kind: VaultOperatorSignedKind, body: Reco
   ({ ...body, operatorSignature: await signVaultMessage(key, vaultOperatorRequestMessage(kind, { ownerUserId: owner, vaultId, ...body })) });
 
 describe("Vault end to end: browser crypto, API routes and the real broker", () => {
-  it("enrolls, unlocks only with password AND broker, delegates with the operator's signature, and revocation reaches the broker", async () => {
+  it.each([
+    { storedOrigin: "https://login.example", origins: ["https://login.example"], loginOrigin: "https://login.example" },
+    { storedOrigin: "https://www1.gsis.gr", origins: ["https://www1.gsis.gr", "https://login.gsis.gr"], loginOrigin: "https://login.gsis.gr" }
+  ])("delegates $storedOrigin through the real broker with signed origins and revocation", async ({ storedOrigin, origins, loginOrigin }) => {
     const root = await mkdtemp(join(tmpdir(), "space-vault-e2e-"));
     roots.push(root);
     const core = await createVaultBroker({ ark: vaultRandomBytes(32), stateDir: join(root, "state") });
@@ -109,7 +112,7 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
       const dek = vaultRandomBytes(32);
       const itemScope = { ...scope, itemId: handle };
       const item = {
-        metadata: { id: handle, label: "Synthetic login", origins: ["https://login.example"], fieldRoles: ["PASSWORD"], status: "ACTIVE",
+        metadata: { id: handle, label: "Synthetic login", origins: [storedOrigin], fieldRoles: ["PASSWORD"], status: "ACTIVE",
           policy: { agentUse: true, approvalMode: "FULL", submitAllowed: false, maxFillsPerHour: 6, acceptedOriginRisks: [] } },
         keyVersion: 1, history: [], dekEnvelope: await sealVaultEnvelope(vrk, dek, { ...itemScope, purpose: "ITEM_KEY" }),
         fields: { PASSWORD: await sealVaultEnvelope(dek, new TextEncoder().encode(SENTINEL), { ...itemScope, purpose: "ITEM_FIELD", field: "PASSWORD" }) }
@@ -119,7 +122,7 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
       const fillKey = vaultRandomBytes(32);
       const generation = state.delegationGeneration + 1;
       const fillEnvelopes = { [handle]: { PASSWORD: await sealVaultEnvelope(fillKey, new TextEncoder().encode(SENTINEL), { ...itemScope, purpose: "FILL_FIELD", field: "PASSWORD", generation }) } };
-      const items = [{ handle, origins: ["https://login.example"], fields: ["PASSWORD" as const], approvalMode: "FULL" as const, submit: false }];
+      const items = [{ handle, origins, fields: ["PASSWORD" as const], approvalMode: "FULL" as const, submit: false }];
       const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
       const envelopeDigest = await vaultDigest(fillEnvelopes);
       const operatorSignature = await signVaultMessage(secrets.unlockPrivateKey, vaultDelegationOperatorMessage({ ownerUserId: owner, vaultId, envelopeDigest, generation, unlockEpoch: state.epoch, expiresAt, items }));
@@ -129,7 +132,19 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
       // The broker refuses a signature over anything else (here: another key's).
       const wrong = await signVaultMessage((await generateVaultSigningKey()).privateKey, new TextEncoder().encode("x"));
       expect((await delegate({ sealedFillKey, operatorSignature: wrong })).json().error.code).toBe("VAULT_DELEGATION_REFUSED");
+      for (const extra of ["https://other.gsis.gr", "https://login.gsis.gr.evil.test", "http://login.gsis.gr", "https://login.gsis.gr:444"]) {
+        const widened = [{ ...items[0]!, origins: [...origins, extra] }];
+        const signature = await signVaultMessage(secrets.unlockPrivateKey, vaultDelegationOperatorMessage({ ownerUserId: owner, vaultId, envelopeDigest, generation, unlockEpoch: state.epoch, expiresAt, items: widened }));
+        expect((await delegate({ sealedFillKey, items: widened, operatorSignature: signature })).json().error.code).toBe("VAULT_DELEGATION_REFUSED");
+        expect((await harness.repository.listAudit(owner, { limit: 1 }))[0]?.event.reason).toBe("ORIGINS_MISMATCH");
+      }
       expect((await delegate({ sealedFillKey })).json()).toEqual({ generation });
+      expect((await harness.repository.getItem(owner, handle))!.metadata.origins).toEqual([storedOrigin]);
+      const delegation = (await harness.repository.getActiveDelegation(owner))!;
+      const useRequest = { ownerUserId: owner, vaultId, certificate: delegation.certificate, epoch: state.epoch, handle, fields: ["PASSWORD"], submit: false,
+        paneId: "pane:synthetic", targetId: "t", pageId: "t", frameId: "f", origin: loginOrigin };
+      expect((await core.handle("POST", "/v1/use", useRequest)).body).toHaveProperty("capability");
+      expect((await core.handle("POST", "/v1/use", { ...useRequest, origin: "https://login.gsis.gr.evil.test" })).body).toEqual({ error: "NOT_DELEGATED" });
 
       // Agent access is off until the operator turns it on in the dock, so every agent call is BLOCKED.
       const room = (await as("POST", "/api/rooms", { name: "E2E", initialPaneCount: 0 })).json();
@@ -144,7 +159,7 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
       const certificate = (await harness.repository.getActiveDelegation(owner))!.certificate;
       expect((await as("POST", "/api/space-vault/revoke", {})).json()).toMatchObject({ generation: generation + 1 });
       const use = await core.handle("POST", "/v1/use", { ownerUserId: owner, vaultId, certificate, epoch: state.epoch, handle, fields: ["PASSWORD"], submit: false,
-        paneId: pane.id, targetId: "t", pageId: "t", frameId: "f", origin: "https://login.example" });
+        paneId: pane.id, targetId: "t", pageId: "t", frameId: "f", origin: loginOrigin });
       expect(use.body).toEqual({ error: "GENERATION_RETIRED" });
 
       // Nothing secret ever crossed the API.
@@ -275,7 +290,10 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
     const real = createSocketVaultBroker(join(root, "broker.sock"));
     // A broker installed before 2026-10-20 refuses the inbox key as an unknown field.
     let legacy = true;
-    const broker: VaultBroker = { ...real, delegate: (input) => legacy && input.sealedInboxKey ? Promise.reject(new VaultBrokerRefusedError("BAD_REQUEST")) : real.delegate(input) };
+    // The broker restarting (a reinstall) while an agent saves: that hand-over fails.
+    let restarting = false;
+    const broker: VaultBroker = { ...real, delegate: (input) => legacy && input.sealedInboxKey ? Promise.reject(new VaultBrokerRefusedError("BAD_REQUEST")) : real.delegate(input),
+      delegatePending: (input) => restarting ? Promise.reject(new VaultBrokerUnavailableError()) : real.delegatePending(input) };
     const harness = await fixture({ broker });
     const seen: string[] = [];
     try {
@@ -336,7 +354,7 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
         return answer.json();
       };
       const saveLogin = (password: string) => agent("save", { site: "https://new.example", username: "agent@example.com", password, label: "Synthetic new site" });
-      // Under the older broker a saved login waits for the operator's unlock, as before.
+      // Under the older broker a saved login waits for the next delegation, as before.
       expect(await saveLogin("SYNTHETIC-agent-saved-1")).toMatchObject({ status: "SAVED" });
       expect((await agent("list", {})).items.map((item: { label: string }) => item.label)).toEqual(["Synthetic login"]);
 
@@ -362,6 +380,29 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
       expect(await fillOf(listed[2]!.handle, "https://login.example")).toEqual({ error: "NOT_DELEGATED" });
       expect(await fillOf(handle, "https://login.example")).toEqual({ PASSWORD: SENTINEL });
 
+      // A hand-over that failed (the broker restarting) joins on the agent's next call, with the Vault still locked (31/10).
+      restarting = true;
+      expect(await agent("save", { site: "https://later.example", username: "agent@example.com", password: "SYNTHETIC-agent-saved-3", label: "Saved while restarting" })).toMatchObject({ status: "SAVED" });
+      restarting = false;
+      const rejoined = ((await agent("list", {})).items as Array<{ handle: string; label: string }>).find((item) => item.label === "Saved while restarting")!;
+      expect(await fillOf(rejoined.handle, "https://later.example")).toEqual({ PASSWORD: "SYNTHETIC-agent-saved-3" });
+      expect(await agent("status", {})).toEqual({ status: "LISTED", auditId: expect.any(String), agentAccess: true, delegatedItems: 4 });
+      // A new password of a login the operator hid from agents never joins a delegation, not even through the re-attach.
+      const hidden = newVaultHandle("vault_item");
+      const hiddenKey = vaultRandomBytes(32);
+      expect((await as("PUT", `/api/space-vault/items/${encodeURIComponent(hidden)}`, {
+        metadata: { id: hidden, label: "Hidden login", origins: ["https://hidden.example"], fieldRoles: ["PASSWORD"], status: "ACTIVE",
+          policy: { agentUse: false, approvalMode: "FULL", submitAllowed: false, maxFillsPerHour: 6, acceptedOriginRisks: [] } },
+        keyVersion: 1, history: [], dekEnvelope: await sealVaultEnvelope(vrk, hiddenKey, { ...scope, itemId: hidden, purpose: "ITEM_KEY" }),
+        fields: { PASSWORD: await sealVaultEnvelope(hiddenKey, new TextEncoder().encode("x"), { ...scope, itemId: hidden, purpose: "ITEM_FIELD", field: "PASSWORD" }) }
+      })).statusCode).toBe(200);
+      await harness.repository.addPending(owner, { id: newVaultHandle("vault_pending"), kind: "CHANGE_PASSWORD", handle: hidden, label: "Hidden login", origin: "https://hidden.example",
+        sealedUsername: null, sealedPassword: await sealToVaultPublicKey(inbox.publicKey, new TextEncoder().encode("x"), scope), paneId: pane.id, createdAt: new Date().toISOString() });
+      expect((await delegate()).json()).toEqual({ generation: 3 });
+      const held = (await harness.repository.getActiveDelegation(owner))!.certificate.claims.items.map((item) => item.handle);
+      expect(held).toContain(rejoined.handle);
+      expect(held).not.toContain(hidden);
+
       // Revoking drops it with the rest.
       const revoked = (await harness.repository.getActiveDelegation(owner))!;
       await as("POST", "/api/space-vault/revoke", {});
@@ -370,7 +411,7 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
           sealedPassword: await sealToVaultPublicKey(inbox.publicKey, new TextEncoder().encode("x"), scope) } })).body).toEqual({ error: "GENERATION_RETIRED" });
 
       const all = seen.join("\n");
-      for (const secret of [SENTINEL, "SYNTHETIC-agent-saved-1", "SYNTHETIC-agent-saved-2", PASSWORD, b64.encode(inbox.privateKey)]) expect(all).not.toContain(secret);
+      for (const secret of [SENTINEL, "SYNTHETIC-agent-saved-1", "SYNTHETIC-agent-saved-2", "SYNTHETIC-agent-saved-3", PASSWORD, b64.encode(inbox.privateKey)]) expect(all).not.toContain(secret);
     } finally {
       await harness.app.close();
     }

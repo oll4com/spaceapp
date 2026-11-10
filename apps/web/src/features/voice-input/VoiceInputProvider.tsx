@@ -12,6 +12,7 @@ import { inferProviderFromModel, type LiveAudioProviderId, type VoiceTranscripti
 import { api } from "../../api.js";
 import { openVoiceRealtimeSession, supportsDeferredVoiceCapture, type VoiceRealtimeSessionHandle } from "../../voice-realtime.js";
 import { resolveVoiceProvider, voiceProviderLabel, voiceProviderUnavailable, type VoiceProviderChoice } from "../../voice-relay-close.js";
+import { browserSpeechLang, browserSpeechSupported, openBrowserSpeechSession } from "./browser-speech.js";
 import {
   VOICE_SETTINGS_UPDATED_EVENT,
   readVoiceComposerSettings,
@@ -198,7 +199,7 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
 
   // Hover or focus only connects; the microphone opens when the recording is claimed by an explicit start.
   const prewarm = useCallback(() => {
-    if (!settings.prewarm || !serverSettings?.enabled) return;
+    if (settings.engine === "browser" || !settings.prewarm || !serverSettings?.enabled) return;
     if (sessionRef.current || warmSessionRef.current || warmPromiseRef.current) return;
     if (Date.now() < prewarmCooldownRef.current) return;
     const choice = sessionChoice();
@@ -327,7 +328,8 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
   const start = useCallback(async (target: VoiceInputTarget) => {
     cancel();
     if (!settings.enabled) return;
-    if (!serverSettings?.enabled) {
+    const browser = settings.engine === "browser";
+    if (!browser && !serverSettings?.enabled) {
       const message = serverSettings?.statusReason ?? settingsError ?? "Voice transcription is not configured.";
       ownerRef.current = target.id;
       setOwnerId(target.id);
@@ -343,20 +345,20 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     setPreview("");
     setError(null);
 
-    const choice = sessionChoice()!;
-    if (choice.fallbackFrom) setPreview(`${voiceProviderLabel(choice.fallbackFrom)} has no voice credits; using ${voiceProviderLabel(choice.provider)}.`);
+    const choice = browser ? null : sessionChoice()!;
+    if (choice?.fallbackFrom) setPreview(`${voiceProviderLabel(choice.fallbackFrom)} has no voice credits; using ${voiceProviderLabel(choice.provider)}.`);
     const fail = (message: string) => {
       if (generationRef.current !== generation || ownerRef.current !== target.id) return;
       closeActiveSession();
-      if (startOnFallback(target, choice.provider)) return;
+      if (choice && startOnFallback(target, choice.provider)) return;
       setStatus("idle");
       setError(message);
       target.onError?.(message);
     };
 
-    // A warm connection to a provider that has since run out of credits is dropped, not claimed.
-    const warmUsable = () => !warmProviderRef.current || warmProviderRef.current === choice.provider;
-    const warmPromise = warmPromiseRef.current;
+    // A warm connection to a provider that has since run out of credits is dropped, not claimed; the browser engine never takes one.
+    const warmUsable = () => !warmProviderRef.current || warmProviderRef.current === choice?.provider;
+    const warmPromise = choice ? warmPromiseRef.current : null;
     if (warmPromise) {
       const handle = await warmPromise;
       warmPromiseRef.current = null;
@@ -366,7 +368,7 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
       }
       handle?.close();
       warmSessionRef.current = null;
-    } else if (warmSessionRef.current) {
+    } else if (choice && warmSessionRef.current) {
       const handle = warmSessionRef.current;
       warmSessionRef.current = null;
       if (warmUsable()) {
@@ -377,15 +379,39 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     }
     if (generationRef.current !== generation || ownerRef.current !== target.id) return;
 
-    sessionProviderRef.current = choice.provider;
+    sessionProviderRef.current = choice?.provider ?? null;
     try {
-      const handle = await openVoiceRealtimeSession(
+      const callbacks = {
+        onTranscriptDelta: (text: string) => {
+          if (generationRef.current !== generation || ownerRef.current !== target.id) return;
+          setPreview(text);
+          target.onTranscriptDelta?.(text);
+        },
+        onTranscriptComplete: async (text: string) => {
+          if (generationRef.current !== generation || ownerRef.current !== target.id) return;
+          const transcript = text.trim();
+          closeActiveSession();
+          if (!transcript) {
+            reset();
+            return;
+          }
+          setPreview(transcript);
+          try {
+            await target.onTranscriptComplete(transcript);
+            if (generationRef.current === generation && ownerRef.current === target.id) reset();
+          } catch (completeError) {
+            fail(errorMessage(completeError, "Voice transcript could not be submitted."));
+          }
+        },
+        onError: fail
+      };
+      const handle = !choice ? openBrowserSpeechSession(browserSpeechLang(settings.language), callbacks) : await openVoiceRealtimeSession(
         {
           provider: choice.provider,
           model: choice.model,
           voice: choice.voice,
           language: settings.language,
-          delay: serverSettings.defaultDelay,
+          delay: serverSettings!.defaultDelay,
           opening: settings.opening,
           prompt: settings.prompt,
           delegatedModel: settings.delegatedModel,
@@ -394,30 +420,7 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
           delegatedWebSearch: settings.delegatedWebSearch,
           delegatedPrompt: settings.delegatedPrompt
         },
-        {
-          onTranscriptDelta: (text) => {
-            if (generationRef.current !== generation || ownerRef.current !== target.id) return;
-            setPreview(text);
-            target.onTranscriptDelta?.(text);
-          },
-          onTranscriptComplete: async (text) => {
-            if (generationRef.current !== generation || ownerRef.current !== target.id) return;
-            const transcript = text.trim();
-            closeActiveSession();
-            if (!transcript) {
-              reset();
-              return;
-            }
-            setPreview(transcript);
-            try {
-              await target.onTranscriptComplete(transcript);
-              if (generationRef.current === generation && ownerRef.current === target.id) reset();
-            } catch (completeError) {
-              fail(errorMessage(completeError, "Voice transcript could not be submitted."));
-            }
-          },
-          onError: fail
-        }
+        callbacks
       );
       if (generationRef.current !== generation || ownerRef.current !== target.id) {
         handle.close();
@@ -431,7 +434,7 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
         setStatus("transcribing");
         handle.commit();
         clearStopTimer();
-      }, serverSettings.maxDurationMs);
+      }, serverSettings?.maxDurationMs ?? 60_000);
     } catch (startError) {
       fail(errorMessage(startError, "Microphone permission was not granted."));
     }
@@ -451,9 +454,11 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     if (status === "idle") reset();
   }, [reset, status]);
 
+  // The browser engine needs no server key; every mic (CLI panes too) is gated on serverSettings.enabled.
+  const browserReady = settings.engine === "browser" && browserSpeechSupported();
   const value = useMemo<VoiceInputContextValue>(() => ({
     settings,
-    serverSettings,
+    serverSettings: browserReady && serverSettings ? { ...serverSettings, enabled: true } : serverSettings,
     settingsLoading,
     settingsError,
     ownerId,
@@ -470,7 +475,7 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     recordingStartedAt,
     cancelNotice,
     clearCancelNotice: () => setCancelNotice(null)
-  }), [cancel, cancelNotice, clearError, ensureServerSettings, error, loadServerSettings, ownerId, prewarm, preview, recordingStartedAt, serverSettings, settings, settingsError, settingsLoading, start, status, stop]);
+  }), [browserReady, cancel, cancelNotice, clearError, ensureServerSettings, error, loadServerSettings, ownerId, prewarm, preview, recordingStartedAt, serverSettings, settings, settingsError, settingsLoading, start, status, stop]);
 
   return <VoiceInputContext.Provider value={value}>{children}</VoiceInputContext.Provider>;
 }

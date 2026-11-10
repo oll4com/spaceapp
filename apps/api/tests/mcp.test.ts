@@ -280,6 +280,20 @@ describe("MCP discovery smoke", () => {
     ]);
   });
 
+  it.each(["ok", "empty-cursor"])("discovers every tools/list page (%s) before returning the complete catalog", async mode => {
+    const config = enabledStdioConfig();
+    config.mcpServerConfigs![0]!.args = [fixturePath, `discovery-page-${mode}`];
+    const catalog = await discoverMcpCatalog(config, { gatewayStatus: gatewayStatus(), servers: [] }, { timeoutMs: 2_000 });
+    expect(catalog.tools.map(tool => tool.name)).toEqual(["space_first", "space_second"]);
+    expect(catalog.servers[0]?.toolCount).toBe(2);
+  });
+
+  it.each(["invalid", "cycle", "error", "duplicate"])("rejects %s pagination instead of returning a partial catalog", async mode => {
+    const config = enabledStdioConfig();
+    config.mcpServerConfigs![0]!.args = [fixturePath, `discovery-page-${mode}`];
+    await expect(discoverMcpCatalog(config, { gatewayStatus: gatewayStatus(), servers: [] }, { timeoutMs: 2_000 })).rejects.toThrow();
+  });
+
   it("does not spawn discovery for disabled configs", async () => {
     const result = await runMcpDiscoverySmoke(
       enabledStdioConfig({

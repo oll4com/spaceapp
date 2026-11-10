@@ -93,7 +93,14 @@ function mediaTime(value: string): string {
 }
 
 export function mediaEntries(artifacts: Artifact[]): MediaEntry[] {
-  return sortMediaArtifacts(artifacts).filter(isRoomMediaArtifact).map((artifact) => {
+  const seen = new Set<string>();
+  // shortcut: the same bytes saved twice (a clipboard snip, then its paste into a pane) show once, the newest copy; deleting it shows the older one.
+  const unique = sortMediaArtifacts(artifacts).filter(isRoomMediaArtifact).filter((artifact) => {
+    if (seen.has(artifact.sha256)) return false;
+    if (artifact.sha256) seen.add(artifact.sha256);
+    return true;
+  });
+  return unique.map((artifact) => {
     const mediaType: MediaType = isImageArtifact(artifact) ? "image" : isVideoArtifact(artifact) ? "video" : "file";
     const kindLabel = mediaKindLabel(artifact, mediaType);
     const time = mediaTime(artifact.createdAt);

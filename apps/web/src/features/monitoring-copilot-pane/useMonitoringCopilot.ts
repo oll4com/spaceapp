@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRuntimeRegistry, Pane, MonitoringCopilotPaneMetadata } from "@space/contracts";
 import { api } from "../../api.js";
 import { usePanePolling } from "../../use-pane-polling.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { subscribeMonitoringCopilotLiveEvents } from "./live-events.js";
 import type { MonitoringCopilotState } from "./types.js";
 
@@ -21,6 +22,10 @@ export function useMonitoringCopilotData(pane: Pane, enabled: boolean): Monitori
   const [runtimes, setRuntimes] = useState<AgentRuntimeRegistry | null>(() => api.cliRuntimesSnapshot());
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef<Promise<void> | null>(null);
+  // A ref, so a language change never rebuilds `refresh` (and restarts the polling that depends on it).
+  const language = useUiLanguage();
+  const languageRef = useRef(language);
+  languageRef.current = language;
 
   const refresh = useCallback(async () => {
     if (inFlight.current) return inFlight.current;
@@ -29,7 +34,7 @@ export function useMonitoringCopilotData(pane: Pane, enabled: boolean): Monitori
         setState(await api.monitoringCopilotState(pane.id));
         setError(null);
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "The Monitoring Copilot could not be loaded.");
+        setError(caught instanceof Error ? caught.message : uiText(languageRef.current, "The Monitoring Copilot could not be loaded."));
       } finally {
         inFlight.current = null;
       }

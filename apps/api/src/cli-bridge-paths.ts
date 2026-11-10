@@ -7,16 +7,22 @@ import { cliVideoPathPrefix } from "./video/agent-routes.js";
 import { cliAppStudioPathPrefix } from "./app-studio/agent-routes.js";
 import { cliSecurityCopilotPathPrefix } from "./security-copilot/agent-routes.js";
 import { cliMonitoringCopilotPathPrefix } from "./monitoring-copilot/agent-routes.js";
+import { cliMailCampaignsPathPrefix } from "./mail-campaigns/routes.js";
 import { cliTaskItemsPathPrefix } from "./task-agent-routes.js";
 import { cliNousPathPrefix } from "./nous/mcp.js";
 import { cliVaultPathPrefix } from "./vault/routes.js";
-import { cliProgressPath } from "./pane-report-routes.js";
+import { cliProgressPath, cliTestResourcePath } from "./pane-report-routes.js";
 import { queueOperatorGrantPath } from "./queue-operator-grants.js";
 
 // Routes the pane CLIs reach with their pane bridge token instead of a session. The API skips session
 // authentication for them, so every one of these routes verifies the bridge token itself.
 const cliBrowserBridgePaths = new Set([
   "/api/cli/agent-files",
+  "/api/cli/site-signins",
+  "/api/cli/appointments",
+  "/api/cli/appointments/list",
+  "/api/cli/signature-requests",
+  "/api/cli/signature-apply",
   "/api/cli/browser/context",
   "/api/cli/browser/session",
   "/api/cli/browser/actions",
@@ -25,7 +31,7 @@ const cliBrowserBridgePaths = new Set([
   "/api/cli/browser/cdp/status"
 ]);
 // Nous's MCP route checks its own turn token (nous/mcp.ts).
-const cliBridgePathPrefixes = [cliJobApplyPathPrefix, cliMailCopilotPathPrefix, cliMarketingCopilotPathPrefix, cliFreelanceCopilotPathPrefix, cliDesignPathPrefix, cliVideoPathPrefix, cliAppStudioPathPrefix, cliSecurityCopilotPathPrefix, cliMonitoringCopilotPathPrefix, cliTaskItemsPathPrefix, cliNousPathPrefix, cliVaultPathPrefix, cliProgressPath, queueOperatorGrantPath];
+const cliBridgePathPrefixes = [cliJobApplyPathPrefix, cliMailCopilotPathPrefix, cliMarketingCopilotPathPrefix, cliFreelanceCopilotPathPrefix, cliDesignPathPrefix, cliVideoPathPrefix, cliAppStudioPathPrefix, cliSecurityCopilotPathPrefix, cliMonitoringCopilotPathPrefix, cliMailCampaignsPathPrefix, cliTaskItemsPathPrefix, cliNousPathPrefix, cliVaultPathPrefix, cliProgressPath, cliTestResourcePath, queueOperatorGrantPath];
 
 /** Whether the matched route path is a CLI bridge route (decide on the router's matched path, never the raw URL). */
 export function isCliBridgeRoutePath(routePath: string): boolean {

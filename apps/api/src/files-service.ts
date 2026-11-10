@@ -2,16 +2,19 @@ import { lstat, readdir, open, writeFile, mkdir, rename, chmod, rm, realpath } f
 import { execFile } from "./safe-child-process.js";
 import { promisify } from "node:util";
 import path from "node:path";
+import { homedir } from "node:os";
 import { constants } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { FilesystemError, filesystemError } from "./filesystem-error.js";
 import { openWorkspacePath, descriptorPath, readBoundedText } from "./workspace-filesystem.js";
+import { NOUS_FILES_ROOT } from "./nous/files.js";
 export { FilesystemError } from "./filesystem-error.js";
 import type { AuthUser, FileItem } from "@space/contracts";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const execFileAsync = promisify(execFile);
 
-export const WORKSPACE_ROOT = process.env.SPACE_WORKSPACE_ROOT || "/opt/spaceapp";
+export const WORKSPACE_ROOT = process.env.SPACE_WORKSPACE_ROOT || SPACE_INSTALL_ROOT;
 const PROTECTED_SYSTEM_PATHS = new Set([
   "/",
   "/bin",
@@ -29,6 +32,42 @@ const PROTECTED_SYSTEM_PATHS = new Set([
   "/usr",
   "/var"
 ]);
+
+// EXT-G-2: host mode never deletes, moves out of or renames over credential and config directories.
+// Real paths decide (a symlinked ancestor or a symlinked directory cannot reach them); HOME is read per call.
+function credentialDirs() {
+  const home = homedir();
+  const varDir = process.env.SPACE_VAR_DIR;
+  return [".ssh", ".gnupg", ".config", ".codex", ".claude"].map((dir) => path.join(home, dir))
+    .concat(`${SPACE_INSTALL_ROOT}/var`, varDir ? [path.resolve(varDir)] : []);
+}
+
+async function realEntryPath(target: string) {
+  return path.join(await realpath(path.dirname(target)).catch(() => path.dirname(target)), path.basename(target));
+}
+
+async function assertNotCredentialPath(target: string, verb: string) {
+  const dirs = credentialDirs();
+  const allDirs = dirs.concat(await Promise.all(dirs.map((dir) => realpath(dir).catch(() => dir))));
+  const overlaps = (entry: string, dir: string) => entry === dir || entry.startsWith(`${dir}/`) || dir.startsWith(`${entry}/`);
+  const candidates = [target, await realEntryPath(target)];
+  if (candidates.some((entry) => allDirs.some((dir) => overlaps(entry, dir)))) {
+    throw new FilesystemError(`${verb} ${target} is refused: it is or holds a credential or config directory.`, 403, "PATH_DENIED");
+  }
+}
+
+// EXT-G-2: host mode changes files (write, create, upload, delete, move, chmod) only inside the workspace, the panes' CLI
+// workspace root and the agent workspace; the given path and its real path must both be strictly inside one (a symlinked
+// parent cannot point elsewhere). chmod follows a final symlink, so its caller passes the target's full real path as `real`;
+// an upload directory may be a root itself (`orRoot`).
+async function assertInsideRoots(target: string, workspaceRoot: string, verb: string, real?: string, orRoot = false) {
+  const roots = [workspaceRoot, process.env.SPACE_CLI_WORKSPACE_ROOT, NOUS_FILES_ROOT].filter((root): root is string => Boolean(root)).map((root) => path.resolve(root));
+  const allRoots = roots.concat(await Promise.all(roots.map((root) => realpath(root).catch(() => root))));
+  const inside = (entry: string) => allRoots.some((root) => (orRoot && entry === root) || entry.startsWith(`${root}/`));
+  if (![target, real ?? await realEntryPath(target)].every(inside)) {
+    throw new FilesystemError(`${verb} ${target} is refused: host mode changes files only inside ${roots.join(", ")}.`, 403, "PATH_DENIED");
+  }
+}
 
 const MIME_TYPE_MAP: Record<string, string> = {
   // Code / Text
@@ -370,6 +409,7 @@ export async function writeFileContent(options: {
   }
   const root = options.workspaceRoot || WORKSPACE_ROOT;
   const { resolvedPath } = assertAccessAllowed(options.targetPath, options.mode, options.user, root);
+  await assertInsideRoots(resolvedPath, root, "Writing");
 
   // Atomic write via temporary file
   const dir = path.dirname(resolvedPath);
@@ -411,6 +451,7 @@ export async function createEntry(options: {
   }
   const root = options.workspaceRoot || WORKSPACE_ROOT;
   const { resolvedPath } = assertAccessAllowed(options.targetPath, options.mode, options.user, root);
+  await assertInsideRoots(resolvedPath, root, "Creating");
 
   if (options.type === "directory") {
     await mkdir(resolvedPath, { recursive: true });
@@ -430,6 +471,10 @@ export async function createEntry(options: {
   };
 }
 
+export async function assertUploadDirectory(directory: string, workspaceRoot: string) {
+  await assertInsideRoots(directory, workspaceRoot, "Uploading to", await realpath(directory).catch(() => undefined), true);
+}
+
 export async function renameEntry(options: {
   oldPath: string;
   newPath: string;
@@ -443,6 +488,10 @@ export async function renameEntry(options: {
   const root = options.workspaceRoot || WORKSPACE_ROOT;
   const { resolvedPath: srcPath } = assertAccessAllowed(options.oldPath, options.mode, options.user, root);
   const { resolvedPath: destPath } = assertAccessAllowed(options.newPath, options.mode, options.user, root);
+  await assertNotCredentialPath(srcPath, "Moving");
+  if (await lstat(destPath).then(() => true, () => false)) await assertNotCredentialPath(destPath, "Renaming over");
+  await assertInsideRoots(srcPath, root, "Moving");
+  await assertInsideRoots(destPath, root, "Moving to");
 
   await rename(srcPath, destPath);
   return {
@@ -470,6 +519,7 @@ export async function chmodEntry(options: {
   if (Number.isNaN(modeNumber)) {
     throw new FilesystemError(`Invalid octal permissions: ${options.octalPermissions}`, 400);
   }
+  await assertInsideRoots(resolvedPath, root, "Changing permissions of", await realpath(resolvedPath).catch(() => undefined));
 
   await chmod(resolvedPath, modeNumber);
   const stats = await lstat(resolvedPath);
@@ -509,6 +559,8 @@ export async function deleteEntry(options: {
   if ([resolvedPath, realTarget].some((target) => isProtected(target, workspace) || isProtected(target, realWorkspace))) {
     throw new FilesystemError(`Deleting protected system directory (${resolvedPath}) is prohibited.`, 403);
   }
+  await assertNotCredentialPath(resolvedPath, "Deleting");
+  await assertInsideRoots(resolvedPath, root, "Deleting");
 
   await rm(resolvedPath, { recursive: options.recursive ?? false, force: true });
   return {

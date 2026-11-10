@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { FastifyRequest } from "fastify";
 import { dotGoalStepPrompt, type DotGoal } from "@space/contracts";
 import { SpaceConflictError } from "@space/runtime";
 import { createDotGoalService, DotGoalError, type DotGoalServiceDeps } from "../src/dot-goals.js";
@@ -73,9 +74,15 @@ describe("Dot Goals", () => {
     const { service, deps } = fixture();
     const goal = await service.create("user:1", dotId, input, null);
     expect(goal).toMatchObject({ status: "ACTIVE", budget: { maxSteps: 2, maxMinutes: 180 }, milestones: [{ id: "m1", title: "Draft" }, { id: "m2" }] });
-    expect(deps.workflow!.start).toHaveBeenCalledWith(goal.goalId);
+    expect(deps.workflow!.start).toHaveBeenCalledWith(goal.goalId, undefined);
     await expect(service.create("user:1", dotId, input, null)).rejects.toMatchObject({ status: 409, code: "DOT_GOAL_OPEN" });
     await expect(service.create("user:2", dotId, input, null)).rejects.toBeInstanceOf(DotGoalError);
+  });
+
+  it("hands the creating request's id to the Goal's workflow (OBS-006)", async () => {
+    const { service, deps } = fixture();
+    const goal = await service.create("user:1", dotId, input, { id: "req:obs006goal" } as FastifyRequest);
+    expect(deps.workflow!.start).toHaveBeenCalledWith(goal.goalId, "req:obs006goal");
   });
 
   it("starts each step once with an idempotent key, delivers guidance, and waits while a run is active", async () => {

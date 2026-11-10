@@ -2,6 +2,8 @@ import type {} from "./request-context.js";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from "fastify";
+import type { OperatorPaneChange } from "./nous/pane-moves.js";
+import { spaceControlInvokeHeader } from "./space-control-token.js";
 import { z } from "zod";
 import {
   type AuthUser, cliToggleRuntimeIdSchema, createPaneInputSchema, createRoomPanesRequestSchema, eventSchema,
@@ -23,7 +25,7 @@ import type { CliTerminalManager } from "./cli-terminal.js";
 import type { SpaceApiConfig } from "./config.js";
 import { publishHarnessAgentTokens } from "./harness-agent-tokens.js";
 import { sendApiError } from "./http-errors.js";
-import { getLatestRoomEvent, getPaneById, isBrowserPane, isCliPane } from "./pane-guards.js";
+import { getLatestRoomEvent, getPaneById, isBrowserPane, isCliPane, operatorForce } from "./pane-guards.js";
 import { mayCreatePaneDirectory } from "./project-paths.js";
 import { recordAudit } from "./request-audit.js";
 import type { RoomAgentService } from "./room-agent.js";
@@ -154,12 +156,19 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
   resumePreviousJobCopilotSession?: (pane: Pane, traceId: string) => Promise<boolean>;
   /** Records the native conversation of a running CLI session, for CLIs that name it only while they run (Claude). */
   rememberCliNativeRef?: (session: PaneCliSession) => Promise<void>;
+  /** The operator's own pane moves and closes, for Nous's inbox (R10-2). */
+  paneChanged?: (change: OperatorPaneChange) => void;
+  /** Throws PaneCloseRefusedError while the pane may not close (a Marketing Copilot with posts scheduled); the operator's `?force=true` skips it. */
+  assertPaneMayClose?: (pane: Pane) => Promise<void>;
 }) {
   const { config, store, eventBus, browserSessionManager, cliTerminalManager, cliRuntimeVisibility,
     taskTitleRepository, taskTitleProviders, taskTitles, roomPaneCommands, spaceControl, roomAgentService,
     assertRootAdmin, routeOptions: defaultRouteRateLimitOptions, assertRoomAccess, youtubePlaybackStore,
     readDeepSeekHarnessMaintenanceStatus, youtubeSessionStarts, youtubeAccountOperations,
-    initializeNewPaneGoogleAccount, cliPaneReopener, resumePreviousJobCopilotSession, rememberCliNativeRef } = options;
+    initializeNewPaneGoogleAccount, cliPaneReopener, resumePreviousJobCopilotSession, rememberCliNativeRef, paneChanged, assertPaneMayClose } = options;
+  // The operator's own hands: neither an agent's broker session nor Space Control's in-process call (Nous, the Room Agent, Dots).
+  const operatorHands = (request: FastifyRequest) => !request.sessionPrincipal && request.headers[spaceControlInvokeHeader] === undefined;
+  const nameOf = (pane: Pane) => pane.paneName ?? pane.title;
   /** One pane per request continues the previous Job Copilot session; more would share one conversation. */
   function continuePreviousJobCopilot(panes: Pane[], traceId: string): void {
     const copilot = panes.find((pane) => pane.mode === "JOB_APPLY");
@@ -385,9 +394,14 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
         sourceRoomId: move.sourceRoomId,
         targetPaneId: move.targetPane.id,
         targetRoomId: move.targetRoomId,
-        mode: move.targetPane.mode
+        mode: move.targetPane.mode,
+        // Nous follows a pane name to the pane that had it (R10-2).
+        sourcePaneName: nameOf(move.sourcePane),
+        targetPaneName: nameOf(move.targetPane)
       }
     });
+    if (request.user && operatorHands(request)) paneChanged?.({ owner: request.user.id, paneId: move.targetPane.id, fromRoomId: move.sourceRoomId,
+      fromName: nameOf(move.sourcePane), toRoomId: move.targetRoomId, toName: nameOf(move.targetPane) });
     const [sourceEvent, targetEvent] = await Promise.all([
       getLatestRoomEvent(store, move.sourceRoomId),
       getLatestRoomEvent(store, move.targetRoomId)
@@ -431,6 +445,8 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
       .catch((err)=>app.log.warn({err,paneId:pane.id},"harness agent tokens were not published for the bound session"));
     return bound;
   });
+  // A pane's current record: a CLI's own tools read its room here, since the operator may have moved it after launch (R9-13).
+  app.get("/api/panes/:id", defaultRouteRateLimitOptions, async (request) => getPaneById(store, parseQuery(idParamSchema, request.params).id));
   app.get("/api/panes/:id/capabilities", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
@@ -439,6 +455,7 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
   app.delete("/api/panes/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = request.params as { id: string };
     const current = await getPaneById(store, params.id);
+    if (!current.isClosed && !operatorForce(request)) await assertPaneMayClose?.(current);
     await spaceControl.rememberStop(current);
     let interruptedCliSessionId: string | null = null;
     if (isCliPane(current)) {
@@ -450,7 +467,7 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
         // The next Job Copilot pane continues this conversation; Claude names it only while it still runs.
         if (current.mode === "JOB_APPLY") await rememberCliNativeRef?.(session).catch(() => undefined);
         try {
-          await cliTerminalManager.interrupt(session.sessionId);
+          await cliTerminalManager.interrupt(session.sessionId, undefined, request.requestIdForSpace);
         } catch (error) {
           request.log.warn({ err: error, paneId: current.id, sessionId: session.sessionId }, "CLI session interrupt failed during pane close; closing pane anyway");
         }
@@ -475,7 +492,9 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
       const active = await store.getActivePaneBrowserSession(current.id);
       if (active) {
         try {
-          await browserSessionManager.stopPane(current.id, request.requestIdForSpace, operatorBrowserActor(request));
+          // No actor: closing the pane outranks a control lease. With one, an agent driving the browser made the stop throw and
+          // the closed pane kept its Chrome and pool slot (pane:6iGtx15xLOHA, 3/11).
+          await browserSessionManager.stopPane(current.id, request.requestIdForSpace);
           if (current.mode === "YOUTUBE") {
             const stopped = await store.getLatestPaneBrowserSession(current.id);
             const playback = youtubeBrowserPlayback(stopped?.currentUrl ?? null, stopped?.title ?? null);
@@ -501,12 +520,16 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
       }
     }
     const pane = await store.updatePane(params.id, { isClosed: true, status: "CLOSED" }, request.requestIdForSpace);
+    // Streams hear the close now, as after every other pane route: left to the durable relay, it reached no page within a minute (stable mobile 1/11 22:02 UTC).
+    const closedEvent = await getLatestRoomEvent(store, pane.roomId);
+    if (closedEvent) eventBus.publish(closedEvent);
     await recordAudit(store, request, {
       action: "pane.close",
       targetType: "pane",
       targetId: pane.id,
       metadata: { roomId: pane.roomId, interruptedCliSessionId }
     });
+    if (request.user && operatorHands(request)) paneChanged?.({ owner: request.user.id, paneId: pane.id, fromRoomId: pane.roomId, fromName: nameOf(pane) });
     return pane;
   });
 }

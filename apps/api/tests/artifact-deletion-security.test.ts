@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -65,5 +65,37 @@ it.each([false, true])("keeps missing-file deletion idempotent (existing parent:
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ ok: true, artifactId: file.id });
     expect(store.listArtifacts().some(item => item.id === file.id)).toBe(false);
+  } finally { await app.close(); }
+});
+
+// DATA-001 (2026-11-03): each browser capture has its own folder; the expiry sweep and a permanent delete left 749 empty
+// SCREENSHOT folders on stable. The folder goes with its last file, never while another file is in it.
+it("removes a browser-evidence capture folder with its last file, never one that still holds a file", async () => {
+  const folder = join(root, "browser-evidence", "fixture");
+  await mkdir(folder, { recursive: true });
+  await writeFile(join(folder, "sentinel.txt"), "x");
+  await writeFile(join(folder, "timeline.json"), "{}");
+  const expired = artifact(true);
+  const kept = await sweepExpiredBrowserArtifacts({ store, artifactRoot: root, at: "2026-10-03T00:00:00.000Z" });
+  expect(kept).toMatchObject({ softDeleted: 1, filesRemoved: 1, fileErrors: [] });
+  expect(store.getArtifact(expired.id).deletedAt).not.toBeNull();
+  expect(await readFile(join(folder, "timeline.json"), "utf8")).toBe("{}");
+
+  await rm(join(folder, "timeline.json"));
+  await writeFile(join(folder, "sentinel.txt"), "x");
+  artifact(true);
+  await sweepExpiredBrowserArtifacts({ store, artifactRoot: root, at: "2026-10-03T00:00:00.000Z" });
+  await expect(stat(folder)).rejects.toMatchObject({ code: "ENOENT" });
+  expect((await stat(join(root, "browser-evidence"))).isDirectory()).toBe(true);
+
+  await mkdir(folder);
+  await writeFile(join(folder, "sentinel.txt"), "x");
+  const file = artifact();
+  const app = await createApp({ store, config: getApiConfig({ SPACE_ARTIFACT_ROOT: root, SPACE_LOG_LEVEL: "silent" }),
+    auth: { sessionSecret: secret, devLogin: false, secureCookies: false } });
+  try {
+    const response = await app.inject({ method: "DELETE", url: `/api/artifacts/${encodeURIComponent(file.id)}`, headers });
+    expect(response.statusCode).toBe(200);
+    await expect(stat(folder)).rejects.toMatchObject({ code: "ENOENT" });
   } finally { await app.close(); }
 });

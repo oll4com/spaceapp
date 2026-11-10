@@ -50,6 +50,11 @@ describe("Vault inbox for generated passwords", () => {
       const listed = await vault.as("GET", "/api/space-vault/pending");
       expect(listed.json().pending).toEqual([pending]);
       expect(listed.body).not.toContain(SENTINEL);
+      // The dock's list reads the rows without their sealed values (operator 30/10: saved logins show while the Vault is locked).
+      const rows = await vault.as("GET", "/api/space-vault/pending?sealed=0");
+      expect(rows.json().pending).toEqual([{ ...pending, sealedPassword: null }]);
+      expect(rows.body).not.toContain(JSON.stringify(sealedPassword).slice(1, 40));
+      expect((await vault.as("GET", "/api/space-vault/pending?sealed=2")).statusCode).toBe(422);
       expect((await vault.as("DELETE", `/api/space-vault/pending/${encodeURIComponent(newVaultHandle("vault_pending"))}`)).statusCode).toBe(404);
       expect((await vault.as("DELETE", `/api/space-vault/pending/${encodeURIComponent(pending.id)}`)).json()).toEqual({ deleted: true });
       expect((await vault.as("GET", "/api/space-vault/pending")).json().pending).toEqual([]);

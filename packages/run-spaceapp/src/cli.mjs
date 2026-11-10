@@ -38,6 +38,7 @@ import {
   resolveInstallProfile,
   resolveSpaceAppHome,
   saveConfig,
+  withTelemetryInstallId,
   readRecordedDigests,
   selectLatestBackupId,
   SPACEAPP_UPGRADE_POLICY,
@@ -420,8 +421,10 @@ export async function run(argv, {
     if (args.some((arg) => !["--dry-run", "--fix"].includes(arg))) throw new Error("Usage: repair [--dry-run] or doctor --fix");
     return repairRuntime({ root, config: null, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch, inspectResources, dryRun: args.includes("--dry-run") });
   }
-  const config = await loadConfig(root);
+  let config = await loadConfig(root);
   if (commandNeedsRuntimeFiles(command, args)) {
+    const withId = withTelemetryInstallId(config);
+    if (withId !== config) await saveConfig(root, config = withId);
     await writeRuntimeFiles(root, config);
   }
   const runtimeExecute = (spec, io) => executeWithDockerDiagnostics(
@@ -1320,7 +1323,7 @@ async function repairRuntime({ root, config, platform, stdin, stdout, stderr, ex
   const prerequisites = await ensureDocker({platform, arch, env, stdin, stdout, stderr, execute, sleep: sleep || wait,
     installArgs: {root,requestedProfile:repaired.profile,requestedAccessMode:repaired.accessMode,noOpen:true,autoConfirm:true}});
   if(prerequisites.reexecuted || prerequisites.code !== 0) return prerequisites.code;
-  config = repaired;
+  config = withTelemetryInstallId(repaired);
   if (await verifyStorage({ root, config, existingConfig: config, operation: "repair", inspectResources, execute, stdout, stderr }) !== 0) return 1;
   await saveConfig(root, config);
   await writeRuntimeFiles(root, config);
@@ -1376,13 +1379,13 @@ async function performUpdate({
   sleep,
   inspectResources = inspectSystemResources
 }) {
-  const updated = targetVersion === config.version
+  const updated = withTelemetryInstallId(targetVersion === config.version
     ? config
     : {
       ...config,
       version: targetVersion,
       previousVersion: config.version
-    };
+    });
   const stagedRoot = await mkdtemp(join(tmpdir(), "spaceapp-update-"));
   let checkpoint = null;
   try {

@@ -493,6 +493,10 @@ describe("task title coordinator", () => {
     f.advance(6);
     await f.service.tick();
     expect(f.generate).toHaveBeenCalledTimes(1);
+    // OBS-006: the title call carries the task's key, so its Space Gateway row names the task.
+    const taskKey = f.store.getPane(f.pane.id).taskMetadata?.taskKey;
+    expect(taskKey).toBeTruthy();
+    expect((f.generate.mock.calls[0] as unknown[] | undefined)?.[3]).toBe(taskKey);
     await f.service.observe(f.pane.id);
     f.advance(600);
     await f.service.tick();

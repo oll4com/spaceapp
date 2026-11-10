@@ -179,8 +179,9 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
   app.get("/api/rooms/:id/room-agent/events", defaultRouteRateLimitOptions, async (request) => {
     if (!options.monitor) return { events: [] };
     const params = parseQuery(idParamSchema, request.params);
-    const query = parseQuery(z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }), request.query);
-    return { events: await options.monitor.repository.listEvents(params.id, { limit: query.limit }) };
+    // Every event the monitor keeps (30 days) unless a caller asks for fewer (until 31/10 50 by default, 200 at most).
+    const query = parseQuery(z.object({ limit: z.coerce.number().int().min(1).optional() }), request.query);
+    return { events: await options.monitor.repository.listEvents(params.id, query.limit ? { limit: query.limit } : {}) };
   });
   app.post("/api/rooms/:id/room-agent/events/:eventId/ack", defaultRouteRateLimitOptions, async (request) => {
     if (!options.monitor) throw new SpaceConflictError("The room monitor is unavailable.");

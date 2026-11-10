@@ -3,11 +3,17 @@ import { createSign } from "node:crypto";
 import {
   type ApiProviderAccount,
   type ApiProviderAccountList,
+  type GatewayAccount,
   type GatewayAnthropicBillingReport,
-  type GatewaySettings
+  type GatewayFreeLedger,
+  type GatewayProvider,
+  type GatewaySettings,
+  gatewayFreeLedgerLine
 } from "@space/contracts";
+import { GATEWAY_FREE_POOL_NAMES } from "./gateway/free-ledger.js";
 import { anthropicMonthSpendUsd } from "./claude-usage-services.js";
 import { getLastKnownJevCredits } from "./room-decisions.js";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const CACHE_TTL_MS = 60_000;
 const FETCH_TIMEOUT_MS = 6_000;
@@ -28,6 +34,7 @@ interface ProviderKeys {
   googleSa?: GoogleServiceAccountKey;
   openai?: string;
   jev?: string;
+  make?: string;
 }
 
 export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
@@ -45,7 +52,7 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
 
   // 2. Reasonix .env file
   try {
-    const raw = await readFile("/var/lib/spaceapp-user/.reasonix/.env", "utf8");
+    const raw = await readFile(`${SPACE_AGENT_HOME}/.reasonix/.env`, "utf8");
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) continue;
@@ -67,10 +74,10 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
   if (!keys.deepseek) {
     for (const file of [
       process.env.SPACE_DEEPSEEK_KEY_FILE,
-      "/opt/spaceapp/secrets/space-deepseek.key",
-      "/opt/spaceapp/secrets/space-deepseek-voice.key",
-      "/var/lib/spaceapp-user/.codex/space-deepseek/credentials/api-key",
-      "/var/lib/spaceapp-user/.config/opencode/deepseek.token"
+      `${SPACE_INSTALL_ROOT}/secrets/space-deepseek.key`,
+      `${SPACE_INSTALL_ROOT}/secrets/space-deepseek-voice.key`,
+      `${SPACE_AGENT_HOME}/.codex/space-deepseek/credentials/api-key`,
+      `${SPACE_AGENT_HOME}/.config/opencode/deepseek.token`
     ]) {
       if (!file) continue;
       try {
@@ -88,9 +95,9 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
   if (!keys.openrouter) {
     for (const file of [
       process.env.SPACE_OPENROUTER_KEY_FILE,
-      "/opt/spaceapp/secrets/space-openrouter.key",
-      "/opt/spaceapp/secrets/space-openrouter-voice.key",
-      "/var/lib/spaceapp-user/.config/opencode/openrouter.token"
+      `${SPACE_INSTALL_ROOT}/secrets/space-openrouter.key`,
+      `${SPACE_INSTALL_ROOT}/secrets/space-openrouter-voice.key`,
+      `${SPACE_AGENT_HOME}/.config/opencode/openrouter.token`
     ]) {
       if (!file) continue;
       try {
@@ -109,8 +116,8 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
     for (const file of [
       process.env.SPACE_GOOGLE_VOICE_KEY_FILE,
       process.env.SPACE_GEMINI_VOICE_KEY_FILE,
-      "/opt/spaceapp/secrets/space-google-voice.key",
-      "/opt/spaceapp/secrets/space-gemini-voice.key"
+      `${SPACE_INSTALL_ROOT}/secrets/space-google-voice.key`,
+      `${SPACE_INSTALL_ROOT}/secrets/space-gemini-voice.key`
     ]) {
       if (!file) continue;
       try {
@@ -127,7 +134,7 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
   // 5. Fallback OpenAI secret key
   if (!keys.openai) {
     try {
-      const raw = await readFile("/opt/spaceapp/secrets/space-openai-voice.key", "utf8");
+      const raw = await readFile(`${SPACE_INSTALL_ROOT}/secrets/space-openai-voice.key`, "utf8");
       const val = raw.trim();
       if (val) keys.openai = val;
     } catch {}
@@ -136,7 +143,7 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
   // 6. Fallback Vercel secret key
   if (!keys.vercel) {
     try {
-      const raw = await readFile("/opt/spaceapp/secrets/space-vercel-voice.key", "utf8");
+      const raw = await readFile(`${SPACE_INSTALL_ROOT}/secrets/space-vercel-voice.key`, "utf8");
       const val = raw.trim();
       if (val) keys.vercel = val;
     } catch {}
@@ -144,7 +151,7 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
 
   // 7. Google Cloud Service Account JSON
   try {
-    const saPath = process.env.SPACE_GOOGLE_SA_FILE || "/opt/spaceapp/secrets/space-google-sa.json";
+    const saPath = process.env.SPACE_GOOGLE_SA_FILE || `${SPACE_INSTALL_ROOT}/secrets/space-google-sa.json`;
     const raw = await readFile(saPath, "utf8");
     const parsed = JSON.parse(raw);
     if (parsed.project_id && parsed.client_email && parsed.private_key) {
@@ -161,9 +168,9 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
   if (!keys.jev) {
     for (const file of [
       process.env.SPACE_JEV_TOKEN_FILE,
-      "/opt/spaceapp/secrets/space-jev.key",
-      "/opt/spaceapp/secrets/space-jevtypesafe.key",
-      "/var/lib/spaceapp-user/.config/opencode/jev.token"
+      `${SPACE_INSTALL_ROOT}/secrets/space-jev.key`,
+      `${SPACE_INSTALL_ROOT}/secrets/space-jevtypesafe.key`,
+      `${SPACE_AGENT_HOME}/.config/opencode/jev.token`
     ]) {
       if (!file) continue;
       try {
@@ -175,6 +182,13 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
         }
       } catch {}
     }
+  }
+
+  // 9. Make (the API runs as `space`: the Vault's copy in the agent home is readable only by its own user).
+  if (process.env.MAKE_API_KEY) keys.make = process.env.MAKE_API_KEY.trim();
+  for (const file of [process.env.SPACE_MAKE_KEY_FILE, `${SPACE_INSTALL_ROOT}/secrets/space-make.key`, `${SPACE_AGENT_HOME}/.config/space/make-api.key`]) {
+    if (keys.make || !file) continue;
+    keys.make = (await readFile(file, "utf8").catch(() => "")).trim() || undefined;
   }
 
   return keys;
@@ -942,6 +956,62 @@ async function queryJevTypeSafe(apiKey: string): Promise<ApiProviderAccount> {
   };
 }
 
+export interface MakeOrganization {
+  id: number;
+  name: string;
+  productName?: string;
+  centicreditsConsumed: string;
+  nextReset?: string | null;
+  license: { operations: number };
+}
+
+/**
+ * Make's credits this month (plan clipboard:F1nJVLcoWdd- step 5): used (centicredits / 100) against the plan's allowance
+ * `license.operations`, read from Make each time so a plan change shows its new allowance by itself.
+ */
+export function makeProviderAccount(org: MakeOrganization, sampledAt: string): ApiProviderAccount {
+  const count = (value: number) => value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  const used = Number(org.centicreditsConsumed) / 100;
+  const allowance = org.license.operations;
+  const left = allowance - used;
+  return {
+    id: `make-${org.id}`,
+    providerId: "make",
+    label: "Make",
+    status: left <= 0 ? "EXHAUSTED" : "CONNECTED",
+    balance: null,
+    currency: null,
+    usage: `${count(used)} credits`,
+    limit: `${count(allowance)} credits`,
+    remainingPercent: allowance > 0 ? Math.min(100, Math.max(0, Math.round((left / allowance) * 100))) : 0,
+    detail: [`${org.productName ?? "Make"} plan`, org.name, `${count(used)} of ${count(allowance)} credits used`,
+      ...(org.nextReset ? [`Resets ${org.nextReset.slice(0, 10)}`] : [])].join(" · "),
+    sampledAt
+  };
+}
+
+// shortcut: every call goes to the eu1 zone, where Space's organization lives; a token of another zone needs its zone's host here.
+const MAKE_API = "https://eu1.make.com/api/v2";
+
+async function queryMake(apiKey: string): Promise<ApiProviderAccount[]> {
+  const sampledAt = new Date().toISOString();
+  const headers = { Authorization: `Token ${apiKey}` };
+  const failed = (detail: string): ApiProviderAccount => ({ id: "make", providerId: "make", label: "Make", status: "ERROR", balance: null, currency: null, detail, sampledAt });
+  const read = async <T>(path: string): Promise<T> => {
+    const res = await fetchWithTimeout(`${MAKE_API}${path}`, { headers });
+    if (!res.ok) throw new Error(`HTTP error ${res.status}: ${res.statusText}`);
+    return (await res.json()) as T;
+  };
+  try {
+    const { organizations = [] } = await read<{ organizations?: Array<{ id: number }> }>("/organizations");
+    return await Promise.all(organizations.map(({ id }) => read<{ organization: MakeOrganization }>(`/organizations/${id}`)
+      .then(({ organization }) => makeProviderAccount(organization, sampledAt))
+      .catch((err: unknown) => ({ ...failed(err instanceof Error ? err.message : "Failed to read the Make organization"), id: `make-${id}` }))));
+  } catch (err) {
+    return [failed(err instanceof Error ? err.message : "Failed to reach the Make API")];
+  }
+}
+
 /**
  * The Claude API (operator request 2026-10-24) from Space Gateway's Anthropic bill sync: a day Anthropic has not posted yet
  * counts the gateway's estimate. Anthropic's Admin API has no credit balance, so with the credits set in Space Gateway the
@@ -990,6 +1060,47 @@ export function anthropicProviderAccount(report: GatewayAnthropicBillingReport, 
   };
 }
 
+/** Space Gateway's key pools that no balance service reads, by the names the operator knows them (every free or granted pool, free-ledger.ts). */
+const GATEWAY_POOL_LABELS: Partial<Record<GatewayProvider, string>> = GATEWAY_FREE_POOL_NAMES;
+
+/**
+ * Those pools on the quota views (operator 6/11 21:49 BKK, nous_msg:71a41c2e): one row per provider (no account name or e-mail, as the Quotas page),
+ * from the accounts Space Gateway serves. Its Pause/Resume is the switch: a paused or deactivated account stays out, a resumed one comes back by itself.
+ * With the free-token ledger (nous_msg:d9b67550) each row says what was granted, what is spent and what is left, the same line Nous reads.
+ */
+export function gatewayPoolProviderAccounts(accounts: Array<Pick<GatewayAccount, "provider" | "status">>, sampledAt: string, ledger: GatewayFreeLedger | null = null): ApiProviderAccount[] {
+  const states = new Map<GatewayProvider, Array<GatewayAccount["status"]>>();
+  for (const { provider, status } of accounts) {
+    // OpenRouter's own row is its paid key's balance (the OpenRouter card); its free models are the ledger's row.
+    if (GATEWAY_POOL_LABELS[provider] && provider !== "OPENROUTER" && status !== "PAUSED" && status !== "DEACTIVATED") states.set(provider, [...states.get(provider) ?? [], status]);
+  }
+  return [...states].map(([provider, of]) => {
+    const serving = of.some((status) => status === "ACTIVE" || status === "RATE_LIMITED");
+    const spent = !serving && of.includes("QUOTA_EXCEEDED");
+    const row = ledger?.rows.find((entry) => entry.provider === provider);
+    const usd = row?.granted?.unit === "usd" && row.granted.amount !== null;
+    const meter = row ? { balance: usd && row.left !== null ? `$${row.left.toFixed(2)}` : null, currency: usd ? "USD" : null,
+      usage: row.spent.tokens ? `${row.spent.tokens} tokens` : null,
+      limit: row.granted?.amount != null ? (usd ? `$${row.granted.amount.toFixed(2)}` : `${row.granted.amount} tokens`) : null,
+      remainingPercent: row.leftPercent, ...(row.models.length ? { models: row.models.slice(0, 30) } : {}) } : { balance: null, currency: null };
+    const state = serving ? "" : spent ? " · out of credits" : " · its key needs replacing in Space Gateway";
+    return { id: `gateway-${provider.toLowerCase()}`, providerId: provider.toLowerCase(), label: GATEWAY_POOL_LABELS[provider]!,
+      status: serving ? (row?.left === 0 ? "EXHAUSTED" : "CONNECTED") : spent ? "EXHAUSTED" : "ERROR", ...meter,
+      detail: (row ? `${gatewayFreeLedgerLine(row)}${state}` : `Space Gateway key pool${state}`).slice(0, 500), sampledAt };
+  });
+}
+
+/**
+ * Space Gateway serves OpenAI with the server's own key: when none of its OpenAI accounts serves (out of credit, or switched off for
+ * that, nous_msg:71a41c2e), the key's row is not usable either. Its own check only lists the models, which a key with no credit still can.
+ */
+export function withGatewayOpenAi(rows: ApiProviderAccount[], gateway: Array<Pick<GatewayAccount, "provider" | "status">>): ApiProviderAccount[] {
+  const openai = gateway.filter((account) => account.provider === "OPENAI_API");
+  if (!openai.length || openai.some((account) => account.status === "ACTIVE" || account.status === "RATE_LIMITED")) return rows;
+  return rows.map((row) => (row.providerId === "openai" && row.status === "CONNECTED"
+    ? { ...row, status: "EXHAUSTED", balance: null, detail: "No credit: Space Gateway's OpenAI key is out of credit or switched off" } : row));
+}
+
 export function createApiProviderAccountProvider(
   options: {
     now?: () => Date;
@@ -998,9 +1109,15 @@ export function createApiProviderAccountProvider(
       billing: () => Promise<GatewayAnthropicBillingReport>;
       settings: () => Promise<Pick<GatewaySettings, "anthropicMonthlyBudgetUsd" | "anthropicCreditsUsd">>;
       usage: () => Promise<Array<{ source: string; value: number }>>;
+      /** Whether an Anthropic Admin key is saved; a failed bill read without one is "not set up", never an error card. */
+      configured: () => Promise<boolean>;
     };
+    /** Space Gateway's accounts; its key pools join the list (gatewayPoolProviderAccounts). */
+    gatewayAccounts?: () => Promise<Array<Pick<GatewayAccount, "provider" | "status">>>;
+    /** The free-token ledger the pool rows show (granted, spent, left). */
+    freeLedger?: () => Promise<GatewayFreeLedger>;
   } = {}
-): () => Promise<ApiProviderAccountList> {
+): (() => Promise<ApiProviderAccountList>) & { peek: () => ApiProviderAccountList | null } {
   const now = options.now ?? (() => new Date());
   const { anthropic } = options;
 
@@ -1016,15 +1133,17 @@ export function createApiProviderAccountProvider(
     inFlight = (async () => {
       try {
         const keys = await discoverApiProviderKeys();
-        const queries: Promise<ApiProviderAccount>[] = [];
+        const queries: Promise<ApiProviderAccount | ApiProviderAccount[]>[] = [];
 
         if (anthropic) {
           queries.push(Promise.all([anthropic.billing(), anthropic.settings(), anthropic.usage()])
             .then(([report, settings, rows]) => anthropicProviderAccount(report,
               { budgetUsd: settings.anthropicMonthlyBudgetUsd ?? null, creditsUsd: settings.anthropicCreditsUsd ?? null },
               rows.filter((row) => row.source === "COST").reduce((sum, row) => sum + row.value, 0) / 100, now().getTime()))
-            .catch((err: unknown): ApiProviderAccount => ({
-              id: "anthropic", providerId: "anthropic", label: "Claude API (Anthropic)", status: "ERROR", balance: null, currency: "USD",
+            // A clean install (no key) whose read fails, e.g. before the gateway is ready, stays hidden as UNCONFIGURED (1.2.0 lab).
+            .catch(async (err: unknown): Promise<ApiProviderAccount> => ({
+              id: "anthropic", providerId: "anthropic", label: "Claude API (Anthropic)", balance: null, currency: "USD",
+              status: await anthropic.configured().catch(() => false) ? "ERROR" : "UNCONFIGURED",
               detail: `Anthropic bill unavailable: ${err instanceof Error ? err.message.slice(0, 200) : "unknown error"}`, sampledAt: null
             })));
         }
@@ -1079,7 +1198,19 @@ export function createApiProviderAccountProvider(
           queries.push(queryJevTypeSafe(keys.jev));
         }
 
-        const accounts = await Promise.all(queries);
+        // A Gateway read that fails lists no pools this time (the gateway's own pages show why); the other rows stay.
+        let gateway: Array<Pick<GatewayAccount, "provider" | "status">> = [];
+        if (options.gatewayAccounts) {
+          queries.push(Promise.all([options.gatewayAccounts(), options.freeLedger?.().catch(() => null) ?? null]).then(([accounts, ledger]) => { gateway = accounts;
+            return gatewayPoolProviderAccounts(accounts, now().toISOString(), ledger); }, () => []));
+        }
+
+        // No Make key (self-hosted installs): no Make row anywhere.
+        if (keys.make) {
+          queries.push(queryMake(keys.make));
+        }
+
+        const accounts = withGatewayOpenAi((await Promise.all(queries)).flat(), gateway);
 
         const list: ApiProviderAccountList = {
           data: accounts,
@@ -1119,9 +1250,10 @@ export function createApiProviderAccountProvider(
 
   // The last sample answers at once whatever its age; an old one asks the providers again in the background, so the
   // quota views never wait for their remote balance calls.
-  return async (): Promise<ApiProviderAccountList> => {
+  // `peek` reads the last sample only, never a provider (Nous's provider advice, plan clipboard:mjpENip0ilmC: no new remote polling).
+  return Object.assign(async (): Promise<ApiProviderAccountList> => {
     if (!cached) return refresh();
     if (now().getTime() - cached.collectedAtMs >= CACHE_TTL_MS) void refresh();
     return cached.value;
-  };
+  }, { peek: (): ApiProviderAccountList | null => cached?.value ?? null });
 }

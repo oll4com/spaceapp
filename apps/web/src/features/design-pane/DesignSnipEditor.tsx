@@ -5,11 +5,14 @@ import { api } from "../../api.js";
 import { SnipEditor, type SnipBusy, type SnipEdit } from "../snip-tool/SnipEditor.js";
 import { exportSnip, type SnipFrame } from "../snip-tool/snip-image.js";
 import "../snip-tool/snip-tool.css";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 const LIBRARY = "library";
 
 /** Crop or annotate a design with the snip editor; the result is a new version of the asset in the library (and Media). */
 export function DesignSnipEditor({ paneId, asset, onSaved, onClose }: { paneId: string; asset: DesignAsset; onSaved(asset: DesignAsset): void; onClose(): void }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [frame, setFrame] = useState<SnipFrame | null>(null);
   const [busy, setBusy] = useState<SnipBusy>(null);
   const [notice, setNotice] = useState("Crop or mark up the design; Save as a new version keeps the original.");
@@ -21,7 +24,7 @@ export function DesignSnipEditor({ paneId, asset, onSaved, onClose }: { paneId: 
     const image = new Image();
     image.src = api.artifactFileUrl(asset.artifactId);
     image.decode().then(() => { if (!cancelled) setFrame({ source: image, width: image.naturalWidth, height: image.naturalHeight }); },
-      () => { if (!cancelled) setAlert("The design could not be opened for editing."); });
+      () => { if (!cancelled) setAlert(t("The design could not be opened for editing.")); });
     return () => { cancelled = true; };
   }, [asset.artifactId]);
 
@@ -40,22 +43,22 @@ export function DesignSnipEditor({ paneId, asset, onSaved, onClose }: { paneId: 
         return;
       }
       const whole = edit.crop.width === frame.width && edit.crop.height === frame.height;
-      if (!whole && (edit.crop.width < DESIGN_CUSTOM_MIN_PX || edit.crop.height < DESIGN_CUSTOM_MIN_PX)) throw new Error(`Keep at least ${DESIGN_CUSTOM_MIN_PX} px per side.`);
+      if (!whole && (edit.crop.width < DESIGN_CUSTOM_MIN_PX || edit.crop.height < DESIGN_CUSTOM_MIN_PX)) throw new Error(t("Keep at least {min} px per side.", { min: DESIGN_CUSTOM_MIN_PX }));
       const formatId = whole ? asset.formatId : designCustomFormatRef(edit.crop.width, edit.crop.height);
       const saved = await api.uploadDesignAsset(paneId, blob, { formatId, parentAssetId: asset.id, ...(asset.label ? { label: asset.label } : {}), ...(asset.requestId ? { requestId: asset.requestId } : {}) });
       onSaved(saved.asset);
     } catch (error) {
-      setAlert(error instanceof Error ? error.message : "The edit could not be saved.");
+      setAlert(error instanceof Error ? error.message : t("The edit could not be saved."));
     } finally {
       setBusy(null);
     }
   }
 
-  if (!frame) return alert ? createPortal(<div className="snip-editor" role="dialog" aria-label="Edit design"><p className="snip-alert" role="alert">{alert}</p><button type="button" className="snip-text-btn" onClick={onClose}>Close</button></div>, document.body) : null;
+  if (!frame) return alert ? createPortal(<div className="snip-editor" role="dialog" aria-label={t("Edit design")}><p className="snip-alert" role="alert">{alert}</p><button type="button" className="snip-text-btn" onClick={onClose}>{t("Close")}</button></div>, document.body) : null;
   return createPortal(
-    <SnipEditor key={generation} frame={frame} initialCrop={{ x: 0, y: 0, width: frame.width, height: frame.height }} busy={busy} notice={notice} alert={alert}
-      destinations={[{ value: LIBRARY, label: "Design library" }]} destination={LIBRARY} onDestinationChange={() => undefined}
-      primaryLabel="Save as a new version" primaryDisabled={false} allowChangeSource={false} trapFocus
+    <SnipEditor key={generation} frame={frame} initialCrop={{ x: 0, y: 0, width: frame.width, height: frame.height }} busy={busy} notice={t(notice)} alert={alert}
+      destinations={[{ value: LIBRARY, label: t("Design library") }]} destination={LIBRARY} onDestinationChange={() => undefined}
+      primaryLabel={t("Save as a new version")} primaryDisabled={false} allowChangeSource={false} trapFocus
       onPrimary={(edit) => void output("save", edit)} onCopy={(edit) => void output("copy", edit)} onSave={(edit) => void output("download", edit)}
       onRetake={() => setGeneration((value) => value + 1)} onChangeSource={() => undefined} onClose={onClose} />,
     document.body

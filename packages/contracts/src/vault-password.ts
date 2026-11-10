@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { orderedRange } from "./range-rules.js";
 
 // Vault password generator (plan clipboard:vEYtT6-bEN0J, operator request 2026-10-17 13:55 UTC). Pure and shared: the
 // Browser Host fill path (phase 3) and the dock's Generate button (phase 5) both call it. CSPRNG only, uniform choice by
@@ -29,6 +30,20 @@ export type VaultPasswordPolicy = z.infer<typeof vaultPasswordPolicySchema>;
 export const VAULT_PASSWORD_DEFAULTS: VaultPasswordPolicy = {
   length: 24, lower: true, upper: true, digits: true, symbols: VAULT_PASSWORD_SYMBOLS, requireEachClass: true, maxConsecutive: null
 };
+
+/**
+ * The rules a site states next to its password field that its attributes do not carry (queue item 37, 28/10: SuccessFactors takes
+ * 8-18 characters, the default is 24), as the agent read them. `vaultPolicyConstraints` merges them with the field: the stricter wins,
+ * never under 8 characters, and a policy nothing satisfies fails closed instead of making a weaker password.
+ */
+export const vaultGeneratePolicySchema = z.object({
+  minLength: z.number().int().min(MIN_LENGTH).max(MAX_LENGTH).optional(),
+  maxLength: z.number().int().min(MIN_LENGTH).max(MAX_LENGTH).optional(),
+  /** DEFAULT: the Vault's symbols; NONE: letters and digits only; else the only symbols the site allows. */
+  symbols: z.union([z.enum(["DEFAULT", "NONE"]), z.string().min(1).max(32).regex(/^[\x21-\x7e]+$/)]).optional(),
+  requireEachClass: z.boolean().optional()
+}).strict().refine(...orderedRange("minLength", "maxLength", "minLength is above maxLength."));
+export type VaultGeneratePolicy = z.infer<typeof vaultGeneratePolicySchema>;
 
 export class VaultPasswordPolicyError extends Error {
   constructor(readonly code: "TOO_SHORT" | "NO_CLASSES" | "UNSATISFIABLE") { super(`Vault password policy: ${code}`); }
@@ -144,6 +159,17 @@ export function vaultPasswordPolicyForField(field: VaultPasswordFieldConstraints
   const maxConsecutive = [base.maxConsecutive, rules?.maxConsecutive].filter((value): value is number => typeof value === "number")
     .reduce<number | null>((low, value) => low === null ? value : Math.min(low, value), null);
   return { length, alphabet, required, maxConsecutive };
+}
+
+/** A field's own constraints narrowed by a declared policy (larger minimum, smaller maximum), and the base policy its symbols give. */
+export function vaultPolicyConstraints(field: VaultPasswordFieldConstraints = {}, policy?: VaultGeneratePolicy): { field: VaultPasswordFieldConstraints; base: VaultPasswordPolicy } {
+  if (!policy) return { field, base: VAULT_PASSWORD_DEFAULTS };
+  const lengths = (values: Array<number | null | undefined>) => values.filter((value): value is number => typeof value === "number" && value > 0);
+  const min = lengths([field.minLength, policy.minLength]);
+  const max = lengths([field.maxLength, policy.maxLength]);
+  const symbols = policy.symbols === "NONE" ? "" : policy.symbols === undefined || policy.symbols === "DEFAULT" ? VAULT_PASSWORD_DEFAULTS.symbols : unique(policy.symbols);
+  return { field: { ...field, minLength: min.length ? Math.max(...min) : null, maxLength: max.length ? Math.min(...max) : null },
+    base: { ...VAULT_PASSWORD_DEFAULTS, symbols, requireEachClass: policy.requireEachClass ?? VAULT_PASSWORD_DEFAULTS.requireEachClass } };
 }
 
 /**

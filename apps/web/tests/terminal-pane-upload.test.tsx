@@ -4513,6 +4513,30 @@ describe("TerminalPane uploads and paste", () => {
     expect(xtermMock.instances[0]?.writes.join("").match(/historic output/g)?.length).toBe(1);
   });
 
+  it("keeps the hidden file input element untouched across a visibility re-render and still uploads (PERF-001 C-2)", async () => {
+    const view = render(<TerminalPane pane={cliPane()} terminalFontSize={12} isVisible />);
+    await waitFor(() => expect(apiMock.createCliSession).toHaveBeenCalled());
+    await waitFor(() => expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.OPEN));
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    // React 19 rewrites name and type of an <input> whose element is recreated; a room switch re-renders every pane.
+    const writes: string[] = [];
+    const observer = new MutationObserver((records) => writes.push(...records.map((record) => record.attributeName ?? record.type)));
+    observer.observe(input, { attributes: true });
+    view.rerender(withVoiceInput(<TerminalPane pane={cliPane()} terminalFontSize={12} isVisible={false} />));
+    view.rerender(withVoiceInput(<TerminalPane pane={cliPane()} terminalFontSize={12} isVisible />));
+    await act(async () => { await Promise.resolve(); });
+    observer.disconnect();
+    expect(document.querySelector('input[type="file"]')).toBe(input);
+    expect(writes).toEqual([]);
+    expect(input).toMatchObject({ name: "cli-files-pane:cli-upload", type: "file", multiple: true, accept: "*/*", hidden: true });
+
+    const notes = new File(["notes"], "notes.txt", { type: "text/plain" });
+    fireEvent.change(input, { target: { files: [notes] } });
+    await waitFor(() =>
+      expect(apiMock.uploadCliFiles).toHaveBeenCalledWith({ paneId: "pane:cli-upload", source: "USER_UPLOAD", files: [notes] })
+    );
+  });
+
   it("labels video and file uploads separately and injects their hidden paths only on native Enter", async () => {
     window.localStorage.setItem("space.clipboardDebug", "true");
     render(<TerminalPane pane={cliPane()} terminalFontSize={12} />);
@@ -6184,7 +6208,7 @@ describe("TerminalPane uploads and paste", () => {
       })
     );
     expect(xtermMock.instances[0]?.writes.join("")).not.toContain("/opt/spaceapp/var/artifacts/cli-uploads/");
-    expect(screen.queryByText(/srv\/space\/var\/artifacts\/cli-uploads/)).toBeNull();
+    expect(screen.queryByText(/opt\/spaceapp\/var\/artifacts\/cli-uploads/)).toBeNull();
     expect(screen.queryByText(/Clipboard debug/i)).toBeNull();
   });
 

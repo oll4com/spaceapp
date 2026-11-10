@@ -4,6 +4,7 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { CliBridgeClaims } from "./mail-copilot/agent-routes.js";
 import { withoutNegatedRelease } from "./nous/guardrails.js";
+import { lastSpacePromptAt } from "./space-prompts.js";
 
 /**
  * Grants for the merge queue's operator-only commands (hardening plan clipboard:sFj1wGEY473i step 5): `space-queue
@@ -26,7 +27,13 @@ const pending = new Map<string, Held>();
 
 /** A person in the operator's own session; never an agent's broker, proof or automation session (hardening plan step 5). */
 export const isOperatorPerson = (user: FastifyRequest["user"]): boolean =>
-  user?.role === "ADMIN" && !user.automationScope && !user.brokerScope && !user.proofScope;
+  user?.role === "ADMIN" && !user.automationScope && !user.brokerScope && !user.proofScope && (!user.mobile || user.mobile.person);
+
+/**
+ * Whether a line this request submits to a pane may hold a promote grant: the operator in person at their own browser, never
+ * a mobile app's device session (Nous Pro security review P0-1, 2026-10-31: a phone's pane board answer "promote it" granted one).
+ */
+export const grantsFromOperatorLine = (request: FastifyRequest): boolean => isOperatorPerson(request.user) && !request.appSession;
 
 /** `file` keeps held grants across restarts (null: memory only, tests). */
 export function configureQueueOperatorGrants(sessionSecret: string, file: string | null = null): void {
@@ -114,10 +121,11 @@ type PromoteLine = { at: number; negation: string | null; usedAt: number | null 
 const promoteLines = new Map<string, PromoteLine>();
 
 /**
- * A line the operator in person submitted to a pane (the caller checks `isOperatorPerson`): one that asks to promote with
+ * A line the operator in person submitted to a pane (the caller checks `grantsFromOperatorLine`): one that asks to promote with
  * no negation holds the promote grant for that pane, so the pane may run `space-queue promote` once within 30 minutes.
  */
 export function noteOperatorPromoteLine(paneId: string, line: string, source: OperatorLineSource, nowMs = Date.now()): void {
+  if (line.trim()) noteOperatorLine(paneId, nowMs);
   const verdict = promoteLineVerdict(line);
   if (!verdict) return;
   promoteLines.delete(paneId);
@@ -127,7 +135,44 @@ export function noteOperatorPromoteLine(paneId: string, line: string, source: Op
   saveState(nowMs);
 }
 
-/** Keystrokes the operator types into a pane from their own browser (the caller checks `isOperatorPerson`): each submitted line. */
+/**
+ * Operator turns (7/11 01:08 BKK, plan clipboard:1NF6u6gcCwtj): a prompt the operator in person typed or sent into a pane (every caller of
+ * noteOperatorPromoteLine checks `grantsFromOperatorLine`; Nous, agents and the scheduler never reach it) makes that pane a priority pane,
+ * which Space Gateway's pace cap never holds, until its turn stops working plus OPERATOR_TURN_GRACE_MS (Nous's paceExemptions).
+ */
+export const OPERATOR_TURN_GRACE_MS = 5 * 60_000;
+const operatorLineAt = new Map<string, number>();
+const operatorLineListeners = new Set<() => void>();
+function noteOperatorLine(paneId: string, nowMs: number): void {
+  // Only a pane's first line in a minute pushes the list again (each Enter would otherwise).
+  const fresh = nowMs - (operatorLineAt.get(paneId) ?? -Infinity) >= 60_000;
+  operatorLineAt.delete(paneId);
+  operatorLineAt.set(paneId, nowMs);
+  if (operatorLineAt.size > 1000) operatorLineAt.delete(operatorLineAt.keys().next().value!);
+  if (fresh) for (const listener of operatorLineListeners) listener();
+}
+// Operator 8/11 20:08 BKK: who prompted each pane last (Space's prompts: space-prompts.ts).
+/** Whether the operator in person sent this pane its newest prompt (the pane works or answered for them). */
+export const operatorPromptedLast = (paneId: string): boolean => (operatorLineAt.get(paneId) ?? -Infinity) > lastSpacePromptAt(paneId);
+/** Called when a pane gets the operator's first line in a minute (Nous pushes the priority panes at once); returns the unsubscribe. */
+export function onOperatorLine(listener: () => void): () => void {
+  operatorLineListeners.add(listener);
+  return () => { operatorLineListeners.delete(listener); };
+}
+/**
+ * The panes on an operator's turn now. `alive` holds each turn's last sign of life between calls: the operator's line, then every call that
+ * finds the pane still working; a turn not seen working for OPERATOR_TURN_GRACE_MS has ended (a later Nous prompt there is not the operator's).
+ */
+export async function operatorTurnPanes(alive: Map<string, number>, working: (paneIds: string[]) => Promise<ReadonlySet<string>>, nowMs = Date.now()): Promise<string[]> {
+  for (const [paneId, at] of operatorLineAt) if (at > (alive.get(paneId) ?? -Infinity) && nowMs - at < OPERATOR_TURN_GRACE_MS) alive.set(paneId, at);
+  for (const [paneId, last] of alive) if (nowMs - last >= OPERATOR_TURN_GRACE_MS) alive.delete(paneId);
+  if (!alive.size) return [];
+  const busy = await working([...alive.keys()]).catch(() => new Set<string>());
+  for (const paneId of alive.keys()) if (busy.has(paneId)) alive.set(paneId, nowMs);
+  return [...alive.keys()];
+}
+
+/** Keystrokes the operator types into a pane from their own browser (the caller checks `grantsFromOperatorLine`): each submitted line. */
 export function noteOperatorPaneInput(paneId: string, data: string, nowMs = Date.now()): void {
   let line = typedLines.get(paneId) ?? "";
   for (const ch of data) {

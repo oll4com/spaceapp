@@ -1,9 +1,10 @@
 import type { CSSProperties } from "react";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { Check, Lock } from "../ui-theme/app-icons.js";
 import {
-  accountEntryForProfile, accountEntryProfile, accountEntryTarget, accountMenuEntries, accountMenuLabel, accountNeedsSignIn,
+  accountTextEnglish, accountEntryForProfile, accountEntryProfile, accountEntryTarget, accountMenuEntries, accountMenuLabel, accountNeedsSignIn,
   browserAccountStatusHint, browserAccountStatusLabel, effectiveAccountId, isAccountEntrySelected,
-  type AccountMenuEntry, type BrowserAccountStatus, type YouTubeAccounts
+  type AccountMenuEntry, type AccountText, type BrowserAccountStatus, type YouTubeAccounts
 } from "./youtube-accounts.js";
 
 type StatusTone = "ok" | "attention";
@@ -21,12 +22,12 @@ export function avatarHue(value: string): number {
 }
 
 /** The account a pane trigger shows: its name, sign-in status and status tone. */
-export function selectedAccountSummary(accounts: YouTubeAccounts): { name: string; status: string | null; tone?: StatusTone } {
+export function selectedAccountSummary(accounts: YouTubeAccounts, t: AccountText = accountTextEnglish): { name: string; status: string | null; tone?: StatusTone } {
   const effectiveId = effectiveAccountId(accounts);
-  const entry = accountEntryForProfile(accounts, effectiveId);
-  if (!entry) return { name: "Unavailable account", status: null };
+  const entry = accountEntryForProfile(accounts, effectiveId, t);
+  if (!entry) return { name: t("Unavailable account"), status: null };
   const { browserStatus } = accountEntryProfile(entry, effectiveId);
-  return { name: entry.title, status: browserAccountStatusLabel(browserStatus), tone: statusTone(browserStatus) };
+  return { name: entry.title, status: browserAccountStatusLabel(browserStatus, t), tone: statusTone(browserStatus) };
 }
 
 /** Content of the Google account menu shared by Browser and YouTube panes. */
@@ -37,22 +38,24 @@ export function GoogleAccountMenuItems({ accounts, onSelect, onSignIn, scope }: 
   /** What a choice changes when it is not the whole pane ("This tab"). */
   scope?: string;
 }) {
+  const language = useUiLanguage();
+  const t: AccountText = (text, vars) => uiText(language, text, vars);
   const effectiveId = effectiveAccountId(accounts);
-  const entries = accountMenuEntries(accounts);
+  const entries = accountMenuEntries(accounts, t);
   const shared = entries.filter(entry => entry.group === "shared");
   const needSignIn = shared.filter(entry => accountNeedsSignIn(accountEntryProfile(entry, effectiveId).browserStatus)).length;
   const selected = entries.find(entry => isAccountEntrySelected(entry, effectiveId));
   const selectedNeedsSignIn = selected ? accountNeedsSignIn(accountEntryProfile(selected, effectiveId).browserStatus) : false;
   const row = (entry: AccountMenuEntry) => {
     const { browserStatus } = accountEntryProfile(entry, effectiveId);
-    const status = browserAccountStatusLabel(browserStatus);
+    const status = browserAccountStatusLabel(browserStatus, t);
     const tone = statusTone(browserStatus);
     const checked = isAccountEntrySelected(entry, effectiveId);
     const target = accountEntryTarget(entry, effectiveId);
     const avatarStyle = entry.group === "shared" ? { "--account-hue": avatarHue(entry.title) } as CSSProperties : undefined;
     return <button key={entry.key} type="button" role="menuitemradio" className="account-menu-item" data-profile-id={target} data-status={tone}
-      aria-checked={checked} aria-label={accountMenuLabel(entry, effectiveId)}
-      title={[entry.title, browserAccountStatusHint(browserStatus)].filter(Boolean).join("\n")} onClick={() => onSelect(target)}>
+      aria-checked={checked} aria-label={accountMenuLabel(entry, effectiveId, t)}
+      title={[entry.title, browserAccountStatusHint(browserStatus, t)].filter(Boolean).join("\n")} onClick={() => onSelect(target)}>
       <span className={`account-menu-avatar${entry.group === "private" ? " private" : ""}`} style={avatarStyle} aria-hidden="true">
         {entry.group === "private" ? <Lock /> : entry.title.charAt(0).toUpperCase()}
       </span>
@@ -68,19 +71,19 @@ export function GoogleAccountMenuItems({ accounts, onSelect, onSignIn, scope }: 
   };
   return <>
     <div className="account-menu-head">
-      <strong>Google account</strong>
+      <strong>{t("Google account")}</strong>
       {scope ? <small className="account-menu-scope">{scope}</small> : null}
-      {needSignIn ? <span className="account-menu-alert">{needSignIn === 1 ? "1 needs sign-in" : `${needSignIn} need sign-in`}</span> : null}
+      {needSignIn ? <span className="account-menu-alert">{needSignIn === 1 ? t("1 needs sign-in") : t("{count} need sign-in", { count: needSignIn })}</span> : null}
     </div>
-    {shared.length ? <small className="account-menu-group">Shared by all panes</small> : null}
+    {shared.length ? <small className="account-menu-group">{t("Shared by all panes")}</small> : null}
     {shared.map(row)}
-    <small className="account-menu-group">This pane only</small>
+    <small className="account-menu-group">{t("This pane only")}</small>
     {entries.filter(entry => entry.group === "private").map(row)}
     <div className="account-menu-footer">
       <button type="button" role="menuitem" className={`account-menu-signin${selectedNeedsSignIn ? " attention" : ""}`} onClick={() => onSignIn(effectiveId)}>
-        Sign in to selected account
+        {t("Sign in to selected account")}
       </button>
-      <small>Sign in once per Google account. Every Browser and YouTube pane using that account stays signed in.</small>
+      <small>{t("Sign in once per Google account. Every Browser and YouTube pane using that account stays signed in.")}</small>
     </div>
   </>;
 }

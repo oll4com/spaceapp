@@ -29,7 +29,18 @@ export interface OwnerQuietState {
   zoneSet: boolean;
   start: string;
   end: string;
+  /** Inside quiet hours by the clock; `quiet` is false while the operator is active (operator 1/11 23:08 BKK). */
+  night: boolean;
+  /** At night while the operator is active: when quiet hours resume, 30 minutes after their last message (ISO). */
+  activeUntil: string | null;
+  /** "23:38 ICT" */
+  activeUntilLocal: string | null;
+  /** "23:08 ICT" */
+  activeLocal: string | null;
 }
+
+/** Operator 1/11 23:08 BKK: while they talk to Nous there are no quiet hours; only 30 minutes after their last message. */
+export const OPERATOR_ACTIVE_MS = 30 * 60_000;
 
 const minutesOf = (clock: string) => Number(clock.slice(0, 2)) * 60 + Number(clock.slice(3, 5));
 
@@ -40,18 +51,39 @@ export function localParts(now: Date, timeZone: string) {
     minutes: Number(parts.hour) * 60 + Number(parts.minute) };
 }
 
-export function ownerQuietState(settings: OwnerSettings, now = new Date()): OwnerQuietState {
+/** `lastActiveAt`: the operator's newest own message (operatorActiveAt); under 30 minutes old it pauses quiet hours. */
+export function ownerQuietState(settings: OwnerSettings, now = new Date(), lastActiveAt?: string | null): OwnerQuietState {
   const timeZone = ownerWorkingTimeZone(settings);
   const zoneSet = settings?.dateTime?.timeZone === timeZone;
   const { enabled, start, end } = resolveNotificationSettings(settings?.notifications ?? null).quietHours;
   const local = localParts(now, timeZone);
   const [from, to, at] = [minutesOf(start), minutesOf(end), local.minutes];
   // Across midnight (23:00-09:00) or within a day (13:00-15:00); equal start and end means no quiet hours.
-  const quiet = enabled && zoneSet && from !== to && (from > to ? at >= from || at < to : at >= from && at < to);
+  const night = enabled && zoneSet && from !== to && (from > to ? at >= from || at < to : at >= from && at < to);
+  const activeMs = lastActiveAt ? Date.parse(lastActiveAt) : Number.NaN;
+  const active = night && now.getTime() - activeMs < OPERATOR_ACTIVE_MS;
+  const until = active ? new Date(activeMs + OPERATOR_ACTIVE_MS) : null;
+  const quiet = night && !active;
   // shortcut: the wake time adds the local minutes left to now, so a DST change during the night shifts it by that hour; fine for DST-free zones (Asia/Bangkok).
   const wake = quiet ? new Date(now.getTime() - (now.getTime() % 60_000) + (((to - at + 1440) % 1440) || 1440) * 60_000) : null;
-  return { timeZone, local: local.label, quiet, wakeAt: wake?.toISOString() ?? null, wakeLocal: wake ? `${end} ${local.zone}` : null, enabled, zoneSet, start, end };
+  return { timeZone, local: local.label, quiet, wakeAt: wake?.toISOString() ?? null, wakeLocal: wake ? `${end} ${local.zone}` : null, enabled, zoneSet, start, end,
+    night, activeUntil: until?.toISOString() ?? null, activeUntilLocal: until ? clockLabel(until, timeZone) : null, activeLocal: active ? clockLabel(new Date(activeMs), timeZone) : null };
 }
+
+const clockLabel = (at: Date, timeZone: string) => { const label = localParts(at, timeZone).label; return label.slice(label.indexOf(":") - 2); };
+
+// The operator's newest own message per owner: noted on each message, read once from Nous's store after an API start.
+const activeAt = new Map<string, string | null>();
+let activityReader: ((owner: string) => Promise<string | null>) | null = null;
+export function setOperatorActivityReader(reader: ((owner: string) => Promise<string | null>) | null): void { activityReader = reader; activeAt.clear(); }
+export function noteOperatorActive(owner: string, at: string): void { activeAt.set(owner, at); }
+export async function operatorActiveAt(owner: string | null | undefined): Promise<string | null> {
+  if (!owner) return null;
+  if (!activeAt.has(owner) && activityReader) activeAt.set(owner, await activityReader(owner).catch(() => null));
+  return activeAt.get(owner) ?? null;
+}
+/** ownerQuietState with the operator's activity: what every caller with an owner uses. */
+export const ownerQuietNow = async (settings: OwnerSettings, owner: string | null | undefined, now = new Date()) => ownerQuietState(settings, now, await operatorActiveAt(owner));
 
 export const isOwnerQuietTime = (settings: OwnerSettings, now = new Date()) => ownerQuietState(settings, now).quiet;
 
@@ -67,7 +99,8 @@ export function nextOwnerWakeTime(settings: OwnerSettings, now = new Date()): Da
 
 /** Nous's world first line: "Operator's time: Tue 20 Oct 00:44 ICT (night, quiet until 09:00 ICT)". */
 export function ownerTimeHeader(state: OwnerQuietState): string {
-  const mode = state.quiet ? `night, quiet until ${state.wakeLocal}: hand requests wait for the morning batch`
+  const mode = state.night && !state.quiet ? `night, but the operator is active (last message ${state.activeLocal}): quiet hours paused until ${state.activeUntilLocal}, 30 min after their last message; alerts and asks go to them now`
+    : state.quiet ? `night, quiet until ${state.wakeLocal}: every alert but an urgent one waits for the morning batch; prepare decisions, ask none unless urgent`
     : !state.zoneSet ? "no working time zone set, so quiet hours cannot apply" : state.enabled ? `day; quiet hours ${state.start}-${state.end}` : "quiet hours off";
   return `Operator's time: ${state.local} (${mode})`;
 }
@@ -86,5 +119,5 @@ export function handoffTtlSeconds(state: Pick<OwnerQuietState, "wakeAt">, now = 
 
 /** The answer for an agent that just asked for the operator's hands, read from the owner's settings now. */
 export async function operatorHands(store: Pick<SpaceStore, "getUserSettings">, owner: string, now = new Date()) {
-  return ownerHandsAnswer(ownerQuietState(await store.getUserSettings(owner), now));
+  return ownerHandsAnswer(await ownerQuietNow(await store.getUserSettings(owner), owner, now));
 }

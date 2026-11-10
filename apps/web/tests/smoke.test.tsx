@@ -1812,16 +1812,15 @@ describe("Space web shell", () => {
     expect(within(codexPane).queryByText("Live stats")).toBeNull();
     expect(await within(historyDialog).findByRole("button", { name: "Codex task Codex Live Task" })).toBeTruthy();
     fireEvent.click(within(historyDialog).getByRole("button", { name: "Close task history" }));
-    // The room toolbar Codex LB strip merged into Resources (ecc0af72fb): all-account capacity under
-    // AI usage and the provider (GW, Space Gateway) under Provider routing.
+    // The room toolbar Codex LB strip merged into Resources (ecc0af72fb): all-account capacity under Accounts & quotas.
+    // This fixture serves no account list, so the overview has no AI row (plan clipboard:sJpyQIBFGszW): pick the view.
     fireEvent.click(await workspaceAction("Resources", "Utilities", true));
     const resources = await screen.findByRole("dialog", { name: "Resources" });
-    fireEvent.click(within(resources).getByRole("button", { name: /^AI usage/ }));
-    const allAccounts = (await within(resources).findByText("Routing capacity · all accounts")).parentElement as HTMLElement;
-    expect(allAccounts.textContent).toContain("62%");
-    fireEvent.change(within(resources).getByRole("combobox", { name: "Resource view" }), { target: { value: "provider" } });
-    const codexProvider = (await within(resources).findByText("Codex provider")).parentElement as HTMLElement;
-    expect(codexProvider.textContent).toContain("GW");
+    fireEvent.click(within(resources).getByRole("button", { name: /^System/ }));
+    fireEvent.change(within(resources).getByRole("combobox", { name: "Resource view" }), { target: { value: "ai" } });
+    // No Codex account here: no Codex section, even with a routing-capacity figure; one empty state instead.
+    expect(await within(resources).findByText(/No AI accounts or API keys are connected in this installation yet/)).toBeTruthy();
+    expect(within(resources).queryByText("Routing capacity · all accounts")).toBeNull();
     fireEvent.click(within(resources).getByRole("button", { name: "Close Resources" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Resources" })).toBeNull());
     expect(screen.queryByLabelText("Agent provider Codex Pane")).toBeNull();
@@ -2858,8 +2857,9 @@ describe("Space web shell", () => {
     // The room toolbar Codex LB strip merged into Resources > AI usage (ecc0af72fb).
     fireEvent.click(await workspaceAction("Resources", "Utilities", true));
     const accountResources = await screen.findByRole("dialog", { name: "Resources" });
-    fireEvent.click(within(accountResources).getByRole("button", { name: /^AI usage/ }));
-    expect(((await within(accountResources).findByText("Routing capacity · all accounts")).parentElement as HTMLElement).textContent).toContain("62%");
+    fireEvent.click(within(accountResources).getByRole("button", { name: /^System/ }));
+    fireEvent.change(within(accountResources).getByRole("combobox", { name: "Resource view" }), { target: { value: "ai" } });
+    expect(await within(accountResources).findByText(/No AI accounts or API keys are connected in this installation yet/)).toBeTruthy();
     expect(within(accountResources).queryByText("ACT")).toBeNull();
     fireEvent.click(within(accountResources).getByRole("button", { name: "Close Resources" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Resources" })).toBeNull());
@@ -3116,8 +3116,9 @@ describe("Space web shell", () => {
     const resources = await screen.findByRole("dialog", { name: "Resources" });
     const summaryRow = (name: RegExp) => within(resources).getByRole("button", { name });
     await waitFor(() => expect(summaryRow(/^System/).querySelector(".resources-summary-value")?.textContent).toBe("CPU 17% · RAM 80%"));
-    await waitFor(() => expect(summaryRow(/^Sessions/).querySelector(".resources-summary-value")?.textContent).toBe("3"));
-    expect(summaryRow(/^AI usage/).querySelector(".resources-summary-value")?.textContent).toBe("44%");
+    await waitFor(() => expect(summaryRow(/^CLI sessions/).querySelector(".resources-summary-value")?.textContent).toBe("3"));
+    // No account list in this fixture: no Accounts & quotas row (plan clipboard:sJpyQIBFGszW).
+    expect(within(resources).queryByRole("button", { name: /^Accounts & quotas/ })).toBeNull();
     fireEvent.click(summaryRow(/^System/));
     expect(await within(resources).findByText("Swap")).toBeTruthy();
     expect((within(resources).getByText("Swap").parentElement as HTMLElement).textContent).toContain("10%");

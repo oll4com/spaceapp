@@ -165,6 +165,8 @@ export function createRoomActionExecutor(options: {
   isCliRuntimeEnabled?: (runtimeId: string) => Promise<boolean>;
   assertCliRuntimeEnabled?: (runtimeId: string) => Promise<void>;
   decisionsService?: DecisionsService;
+  /** The pane close guard every close path asks (pane-routes DELETE /api/panes/:id); a Room Agent never force-closes. */
+  assertPaneMayClose?: (pane: Pane) => Promise<void>;
 }) {
   const { store, cliTerminalManager, spaceAgentAdapter, browserSessionManager, roomPlanInventoryProvider } = options;
   const taskEvaluator = options.taskEvaluator ?? unavailableRoomTaskEvaluator;
@@ -738,7 +740,7 @@ export function createRoomActionExecutor(options: {
     if (pane.mode === "TERMINAL") {
       if (!options.paneController) throw new Error("Pane controller is unavailable.");
       const active = await store.getActivePaneCliSession(pane.id);
-      if (active) await cliTerminalManager.interrupt(active.sessionId);
+      if (active) await cliTerminalManager.interrupt(active.sessionId, undefined, traceId);
       return options.paneController.start(pane, traceId);
     }
     if (pane.mode === "CHAT") {
@@ -1639,13 +1641,14 @@ export function createRoomActionExecutor(options: {
       }
       case "close_pane": {
         const pane = await paneInRoom(bridge.roomId, request.action.paneId, bridge.agentPaneId);
+        await options.assertPaneMayClose?.(pane);
         await interruptPane(bridge.roomId, bridge.agentPaneId, pane.id, "Soft-closed by Room Agent.", traceId);
         if (pane.mode === "TERMINAL") {
-          const runningSessions = (await store.listPaneCliSessions(pane.id, 100)).filter(
+          const runningSessions = (await store.listPaneCliSessions(pane.id)).filter(
             (session) => session.status === "RUNNING"
           );
           for (const session of runningSessions) {
-            await cliTerminalManager.interrupt(session.sessionId);
+            await cliTerminalManager.interrupt(session.sessionId, undefined, traceId);
           }
         }
         const closed = await store.updatePane(pane.id, { isClosed: true, status: "CLOSED" }, traceId);

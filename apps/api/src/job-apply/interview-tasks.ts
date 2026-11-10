@@ -1,5 +1,6 @@
-import { isValidTimeZone, ownerWorkingTimeZone, type NotificationListQuery, type NotificationRaiseInput, type SpaceNotification, type TaskItem } from "@space/contracts";
+import { isValidTimeZone, ownerWorkingTimeZone, type Appointment, type JobApplyEventInput, type NotificationListQuery, type NotificationRaiseInput, type SpaceNotification, type TaskItem } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
+import { appointmentsFor } from "../appointments.js";
 import { localParts } from "../owner-clock.js";
 import { NOT_A_REQUEST } from "./mail-triage.js";
 
@@ -120,8 +121,10 @@ const SCHEDULE_WORDS = /\b(interview|scheduled|when|date|time|meeting|call|confi
 const START_ONLY = (sentence: string) => /\bstart/i.test(sentence) && !/\b(interview|meeting|call)\b/i.test(sentence);
 const COUNT_WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, fourteen: 14 };
 const COUNT = String.raw`(\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|fourteen)`;
-const RELATIVE = new RegExp(String.raw`\b(?:within(?: the next)?|in the next|in|due(?: in)?):?\s+${COUNT}\s+(?:calendar\s+)?(days?|hours?)\b|\b${COUNT}\s+(?:calendar\s+)?(days?|hours?)\s+to\s+(?:complete|finish|submit|take)\b`, "i");
-const RELATIVE_ASK = /\b(complete|finish|submit|take|due|deadline|expir\w*|valid|available|respond|reply|book|schedule|attempt)\b/i;
+// "within 48 hours", "within 48 hrs", "a 48-hour window to complete" (31/10, Criteria's "complete within 48 hours");
+// "valid for 48 hours", "expires after 2 days", "48h to record" (5/11, Flosum's Hireflix video interview link).
+const RELATIVE = new RegExp(String.raw`\b(?:within(?: the next)?|in the next|in|due(?: in)?|valid(?: for)?(?: the next)?|expires? after):?\s+${COUNT}\s*(?:calendar\s+)?(days?|hours?|hrs?|h)\b|\b${COUNT}(?:\s*|-)(?:calendar\s+)?(days?|hours?|hrs?|h)(?:\s+window)?\s+to\s+(?:complete|finish|submit|take|record)\b`, "i");
+const RELATIVE_ASK = /\b(complete|finish|submit|take|record|due|deadline|expir\w*|valid|available|respond|reply|book|schedule|attempt)\b/i;
 
 /**
  * The deadline (or an interview's time) a test or interview mail states, as an ISO time: an explicit date and time with
@@ -148,7 +151,7 @@ export function parseDeadline(text: string, sentAt: string | null): string | nul
     if (!match || NOT_A_REQUEST.test(sentence) || !RELATIVE_ASK.test(sentence)) continue;
     const count = match[1] ?? match[3]!;
     const amount = COUNT_WORDS[count.toLowerCase()] ?? Number(count);
-    const hours = /^hour/i.test(match[2] ?? match[4]!) ? amount : amount * 24;
+    const hours = /^h/i.test(match[2] ?? match[4]!) ? amount : amount * 24;
     if (amount > 0 && hours <= 60 * 24) return new Date(sent + hours * 3_600_000).toISOString();
   }
   return null;
@@ -173,10 +176,26 @@ export function taskDeadline(task: Pick<TaskItem, "objective">): string | null |
 function taskText(base: string, kind: "Test" | "Interview", dueAt: string | null, zone: string, rest: string): { title: string; objective: string } {
   const when = dueAt ? local(dueAt, zone) : null;
   const title = `${base}, ${when ? (kind === "Test" ? `due ${when}` : when) : "deadline not stated"}`;
-  const todo = kind === "Test" ? "Take the test before its deadline; the mail has the link." : "Go to the interview (or book its time); the mail has the details.";
+  // Operator 4/11 (nous_msg:a6016259): an appointment holds everything the operator needs, which this parser cannot write; the agent records it.
+  const record = ` Record it in Appointments if it is not there: space_appointment_add, sourceRef this task's id, kind ${kind === "Test" ? "DEADLINE" : "INTERVIEW"}, its format and timing (a test: TEST, FLEXIBLE until its deadline) and every section its notes require (read in the mail).`;
+  const todo = (kind === "Test" ? "Take the test before its deadline; the mail has the link." : "Go to the interview (or book its time); the mail has the details.") + record;
   const missing = "The mail states no deadline: find it and record it (space_job_mail_deadline), or ask the recruiter.";
   return { title, objective: [base, `Deadline: ${dueAt ? `${dueAt} (${when})` : "not stated"}`, dueAt ? todo : `${todo} ${missing}`, rest].join("\n") };
 }
+
+/**
+ * A later mail moves the time of the thread's appointment, which an agent recorded with every section (taskText asks it to); this parser
+ * never writes one (operator 4/11, nous_msg:a6016259: subject-line titles and empty notes). A failure never fails the triage.
+ */
+async function syncAppointment(store: InterviewTaskStore, owner: string, task: TaskItem, dueAt: string | null): Promise<void> {
+  const service = appointmentsFor(store);
+  if (!service || !dueAt) return;
+  const own = (await service.repository.list(owner, new Date().toISOString()).catch(() => [])).find((item) => ownAppointment(item, task));
+  if (own?.status === "UPCOMING" && Date.parse(own.startsAt) !== Date.parse(dueAt)) await service.update(owner, own.id, { startsAt: dueAt }).catch(() => undefined);
+}
+
+/** The task's id is already "task:<id>"; rows made before 2/11 carried it prefixed twice. */
+const ownAppointment = (item: { sourceRef: string | null }, task: TaskItem) => item.sourceRef === task.id || item.sourceRef === `task:${task.id}`;
 
 export async function findThreadTask(store: InterviewTaskStore, owner: string, threadId: string): Promise<TaskItem | null> {
   const { items } = await store.listTaskItems(owner, { q: `${THREAD_LINE}${threadId}`, page: 1, pageSize: 10 });
@@ -234,9 +253,12 @@ export async function recordInterviewTask(store: InterviewTaskStore, owner: stri
   const who = company && !subject.toLowerCase().includes(company.toLowerCase()) ? `${company}: ${subject}` : subject;
   const rest = [...(from ? [`Deadline stated in: ${clip(from.from, 200)} (thread ${from.threadId}); this mail states none.`] : []), `From: ${clip(request.from, 200)}`, `Mail: "${clip(request.subject, 300)}"${request.sentAt ? ` sent ${local(request.sentAt, zone)}` : ""}`,
     `${THREAD_LINE}${request.threadId} (${request.account})`].join("\n");
-  const { title, objective } = taskText(`${kind}: ${clip(who, 110)}`, kind, dueAt, zone, rest);
-  if (existing) return store.updateTaskItem(owner, existing.id, { title, objective, status: "OPEN" });
-  return store.upsertTaskItem({ ownerUserId: owner, title, objective, status: "OPEN", source: "AGENT" });
+  const base = `${kind}: ${clip(who, 110)}`;
+  const { title, objective } = taskText(base, kind, dueAt, zone, rest);
+  const task = existing ? await store.updateTaskItem(owner, existing.id, { title, objective, status: "OPEN" })
+    : await store.upsertTaskItem({ ownerUserId: owner, title, objective, status: "OPEN", source: "AGENT" });
+  await syncAppointment(store, owner, task, dueAt);
+  return task;
 }
 
 /** The deadline an agent read in the mail when the parser found none (or a wrong one); null when the thread has no task. */
@@ -247,13 +269,63 @@ export async function setInterviewDeadline(store: InterviewTaskStore, owner: str
   const [base = task.title, , , ...rest] = task.objective.split("\n");
   const { title, objective } = taskText(base, base.startsWith("Interview:") ? "Interview" : "Test", new Date(dueAt).toISOString(), zone,
     rest.filter((line) => !line.startsWith("Deadline stated in: ")).join("\n"));
-  return store.updateTaskItem(owner, task.id, { title, objective });
+  const updated = await store.updateTaskItem(owner, task.id, { title, objective });
+  await syncAppointment(store, owner, updated, new Date(dueAt).toISOString());
+  return updated;
 }
 
 /** A later mail of the thread reports the test done, or rejects: the task is done (never deleted). */
 export async function closeInterviewTask(store: InterviewTaskStore, owner: string, threadId: string): Promise<TaskItem | null> {
   const task = await findThreadTask(store, owner, threadId);
-  return task && task.status === "OPEN" ? store.updateTaskItem(owner, task.id, { status: "DONE" }) : null;
+  if (!task || task.status !== "OPEN") return null;
+  const service = appointmentsFor(store);
+  const appointment = service && (await service.repository.list(owner, new Date().toISOString()).catch(() => [])).find((item) => ownAppointment(item, task));
+  // The repository's write, not the service's: a rejection is no completed interview (completeAppointment is for the operator's, Nous's or an agent's DONE).
+  if (appointment?.status === "UPCOMING") await service!.repository.update(owner, appointment.id, { status: "DONE" }).catch(() => undefined);
+  return store.updateTaskItem(owner, task.id, { status: "DONE" });
+}
+
+export interface AppointmentDoneDeps {
+  store: InterviewTaskStore & Pick<SpaceStore, "getTaskItem">;
+  /** The triage's MAIL events name a thread's application; the event log records the step. */
+  jobApply: { listEvents(owner: string, filter: { types?: string[] }): Promise<Array<{ applicationId: string | null; payload: Record<string, unknown> }>>;
+    logEvent(owner: string, input: JobApplyEventInput): Promise<unknown> };
+  notifications: Pick<InterviewNotifications, "raise"> & { waiting(owner: string): Promise<SpaceNotification[]>;
+    setStatus(owner: string, id: string, status: "RESOLVED", payload?: Record<string, unknown>, reason?: string): Promise<SpaceNotification | null> };
+  now?: () => Date;
+}
+
+/**
+ * An appointment marked DONE by the operator, Nous or an agent (operator 4/11, nous_msg:dc24e81ea2c9): the test or interview task of its mail
+ * thread closes, so the daily "Tests and interviews" list drops it (today's card is refreshed) and the job report reads that stage as passed (stages
+ * are these tasks, report.ts); the thread's application gets a NOTE; every waiting card about the appointment or its thread is resolved.
+ * Its reminders stop by themselves (only UPCOMING ones are reminded). A plain task's or a series' appointment changes no task.
+ */
+export async function completeAppointment(deps: AppointmentDoneDeps, owner: string, item: Appointment): Promise<{ taskId: string | null; applicationId: string | null; closed: number }> {
+  const ref = (item.sourceRef ?? "").split("#")[0]!;
+  const gmail = /^gmail:([^:\s]+):(\S+)$/.exec(ref);
+  const byRef = ref.startsWith("task:") ? await deps.store.getTaskItem(owner, ref.replace(/^task:(?=task:)/, "")) : null;
+  const line = byRef ? /^Gmail thread: (\S+) \((.+)\)$/m.exec(byRef.objective) : null;
+  const [account, threadId] = gmail ? [gmail[1]!, gmail[2]!] : line ? [line[2]!, line[1]!] : [null, null];
+  const task = line ? byRef : threadId ? await findThreadTask(deps.store, owner, threadId) : null;
+  if (task?.status === "OPEN") await deps.store.updateTaskItem(owner, task.id, { status: "DONE" });
+  const applicationId = threadId ? (await deps.jobApply.listEvents(owner, { types: ["MAIL"] })).find((event) => event.applicationId && event.payload.threadId === threadId)?.applicationId ?? null : null;
+  if (applicationId) await deps.jobApply.logEvent(owner, { applicationId, type: "NOTE", message: `Completed: ${item.title}`,
+    payload: { category: "APPOINTMENT_DONE", appointmentId: item.id, threadId, taskId: task?.id ?? null } });
+  let closed = 0;
+  for (const card of await deps.notifications.waiting(owner)) {
+    if (task && card.kind === "INTERVIEW_REMINDER" && Array.isArray(card.payload.taskIds) && card.payload.taskIds.includes(task.id)) {
+      const open = await deps.store.listTaskItems(owner, { q: THREAD_LINE, status: "OPEN", page: 1, pageSize: 100 });
+      const reminder = renderInterviewReminder(open.items, (deps.now?.() ?? new Date()).getTime());
+      if (reminder) {
+        await deps.notifications.raise({ ownerUserId: owner, roomId: card.roomId, paneId: card.paneId, source: card.source, kind: card.kind, severity: card.severity,
+          title: reminder.title, body: reminder.body, link: card.link, dedupeKey: card.dedupeKey, payload: { ...card.payload, taskIds: reminder.taskIds }, telegram: null });
+        continue;
+      }
+    } else if (card.payload.appointmentId !== item.id && !(threadId && (card.payload.threadId === threadId || card.link.target === `thread:${account}:${threadId}`))) continue;
+    if (await deps.notifications.setStatus(owner, card.id, "RESOLVED", undefined, "appointment completed")) closed += 1;
+  }
+  return { taskId: task?.id ?? null, applicationId, closed };
 }
 
 /** The daily list: open ones soonest first ("not stated" last), "due in <24 h" marked, and deadlines passed in the last day once. */
@@ -278,7 +350,8 @@ export async function remindInterviews(deps: { store: InterviewTaskStore; notifi
   if (localParts(now, zone).minutes < 600) return false;
   const dedupeKey = `job-apply:interviews:${new Intl.DateTimeFormat("en-CA", { timeZone: zone }).format(now)}`;
   if (deps.sent.has(`${owner}|${dedupeKey}`)) return false;
-  if ((await deps.notifications.list(owner, { status: "ALL", source: "JOB_COPILOT", limit: 200 })).some((item) => item.dedupeKey === dedupeKey)) {
+  // Looked up by its key (until 31/10 among the newest 200 Job Copilot records, so an older one was missed and sent again).
+  if ((await deps.notifications.list(owner, { status: "ALL", source: "JOB_COPILOT", dedupeKey, limit: 1 })).some((item) => item.dedupeKey === dedupeKey)) {
     deps.sent.add(`${owner}|${dedupeKey}`);
     return false;
   }

@@ -20,6 +20,8 @@ export interface NousFollowupsRepository {
   listOpen(): Promise<NousFollowup[]>;
   /** Closes an open follow-up once; null when it is not open (fired, cancelled, another owner's). */
   close(owner: string, id: string, status: "FIRED" | "CANCELLED", outcome: string): Promise<NousFollowup | null>;
+  /** R23-4: adds a note to an open follow-up (one follow-up per ticket); null when it is not open. */
+  appendNote(owner: string, id: string, note: string): Promise<NousFollowup | null>;
   dispose(): Promise<void>;
 }
 
@@ -50,6 +52,12 @@ export class InMemoryNousFollowupsRepository implements NousFollowupsRepository 
     const row = this.rows.find((entry) => entry.id === id && entry.ownerUserId === owner && entry.status === "OPEN");
     if (!row) return null;
     Object.assign(row, { status, outcome, closedAt: new Date().toISOString() });
+    return structuredClone(row);
+  }
+  async appendNote(owner: string, id: string, note: string) {
+    const row = this.rows.find((entry) => entry.id === id && entry.ownerUserId === owner && entry.status === "OPEN");
+    if (!row) return null;
+    row.note = `${row.note}\n${note}`;
     return structuredClone(row);
   }
   async dispose() {}
@@ -98,6 +106,11 @@ export class PostgresNousFollowupsRepository implements NousFollowupsRepository 
   async close(owner: string, id: string, status: "FIRED" | "CANCELLED", outcome: string) {
     const result = await this.pool.query<Row>(`UPDATE nous_followups SET status = $3, outcome = $4, closed_at = now()
       WHERE owner_user_id = $1 AND id = $2 AND status = 'OPEN' RETURNING ${columns}`, [owner, id, status, outcome.slice(0, 1_000)]);
+    return result.rows[0] ? followupOf(result.rows[0]) : null;
+  }
+  async appendNote(owner: string, id: string, note: string) {
+    const result = await this.pool.query<Row>(`UPDATE nous_followups SET note = note || E'\\n' || $3
+      WHERE owner_user_id = $1 AND id = $2 AND status = 'OPEN' RETURNING ${columns}`, [owner, id, note]);
     return result.rows[0] ? followupOf(result.rows[0]) : null;
   }
   async dispose() { await (this.pool as PgPoolLike & { end?: () => Promise<void> }).end?.(); }

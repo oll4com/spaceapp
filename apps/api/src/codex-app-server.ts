@@ -22,6 +22,7 @@ import {
 } from "@space/contracts";
 import type { z } from "zod";
 import type { SpaceApiConfig } from "./config.js";
+import { SPACE_AGENT_HOME } from "@space/contracts";
 
 export type CodexAppServerStatus = z.infer<typeof codexAppServerStatusSchema>;
 export type CodexAppServerSchemaManifest = z.infer<typeof codexAppServerSchemaManifestSchema>;
@@ -245,7 +246,7 @@ export function buildCodexAppServerChildEnv(
   config: SpaceApiConfig,
   baseEnv: NodeJS.ProcessEnv
 ): CodexAppServerProcessEnv {
-  const codexHome = resolve(config.codexAppServerHome ?? "/var/lib/spaceapp-user/.codex");
+  const codexHome = resolve(config.codexAppServerHome ?? `${SPACE_AGENT_HOME}/.codex`);
   const keyFile = resolveCodexAppServerKeyFile(config);
   const credential = keyFile && (!codexHome || basename(codexHome) !== ".codex")
     ? { name: config.codexAppServerKeyEnv, value: readCodexAppServerKeyFile(keyFile) }

@@ -1,6 +1,7 @@
 // Nous's pane board (plan clipboard:Y9cgKVHFaHrr): fingerprints decide which panes the cheap model re-summarizes, in one batched
 // call; unchanged panes cost no call, a heartbeat alone waits 30 minutes, the daily cap and a missing model fall back to Space's
 // own lines, and a bad answer keeps the previous line.
+import { noteModelState, resetModelUnavailable } from "../src/model-unavailable.js";
 import type { NousPaneBoardSettings, Pane, Room, SpaceNotification } from "@space/contracts";
 import { nousPaneBoardSettingsSchema } from "@space/contracts";
 import { InMemoryNousPaneSummariesRepository, type PaneReport } from "@space/db";
@@ -43,7 +44,7 @@ function setup(options: { settings?: Partial<NousPaneBoardSettings>; answer?: (p
     const ids = [...prompt.matchAll(/"paneId":"([^"]+)"/g)].map((match) => match[1]).filter((id) => id !== "…");
     return JSON.stringify(ids.map((paneId) => ({ paneId, line: `Γραμμή για ${paneId}`, waitsOn: paneId === bob.id ? "NOUS" : "NONE", needsOperator: false })));
   });
-  const run = vi.fn(async (input: { model: string; prompt: string }) => { prompts.push(input.prompt); return answer(input.prompt); });
+  const run = vi.fn(async (input: { model: string; prompt: string; traceId?: string }) => { prompts.push(input.prompt); return answer(input.prompt); });
   const published: Array<string | null> = [];
   const board = createPaneBoard({
     repository, now: () => now,
@@ -63,6 +64,8 @@ describe("Nous pane board summaries", () => {
     expect(await board.tick(owner)).toEqual({ called: true, summarized: 3, paused: null });
     expect(run).toHaveBeenCalledTimes(1);
     expect(run.mock.calls[0]![0].model).toBe("claude-haiku-5-5");
+    // OBS-006: one trace per run, written on the worker's worker.socket_request line and on a failed run's warn line.
+    expect(run.mock.calls[0]![0].traceId).toMatch(/^trace:[0-9a-f]{24}$/);
     // Agents' proof rooms stay out; the waiting pane goes first; the prompt says Greek and treats pane text as data.
     expect(prompts[0]).not.toContain("pane:test0001");
     expect(prompts[0]!.indexOf("pane:bob00001")).toBeLessThan(prompts[0]!.indexOf("pane:andy0001"));
@@ -178,9 +181,24 @@ describe("Nous pane board pieces", () => {
     expect(panePrompt({ pane: andy, state: "working", report: snapshot.reports[1]! })).toBeNull();
   });
 
+  it("says a pane's model is unavailable instead of what it was doing, while its CLI shows it so (R11-5)", () => {
+    resetModelUnavailable();
+    try {
+      const { snapshot, andy } = world();
+      noteModelState(owner, andy, "❯ \n Build  claude-sonnet-5-5 (unavailable)");
+      const input = boardPanes(snapshot, { showClosed: false }).find((entry) => entry.pane.id === andy.id)!;
+      expect(input.state).toBe("model unavailable");
+      expect(fallbackSummary(input, 0)).toEqual(expect.objectContaining({ line: "Model unavailable (gateway): claude-sonnet-5-5; its work waits", waitsOn: "NONE" }));
+      noteModelState(owner, andy, "❯ \n Build  claude-sonnet-5-5  space-gateway-claude");
+      expect(boardPanes(snapshot, { showClosed: false }).find((entry) => entry.pane.id === andy.id)!.state).not.toBe("model unavailable");
+    } finally {
+      resetModelUnavailable();
+    }
+  });
+
   it("keeps INFO notices (new mail, a learned rule) off the board: only what waits for the operator (operator request 2026-10-21)", () => {
     const { snapshot, andy } = world();
-    const notice = (id: string, severity: string) => ({ id, paneId: andy.id, source: "MAIL_COPILOT", severity, title: id, status: "OPEN" }) as unknown as SpaceNotification;
+    const notice = (id: string, severity: string) => ({ id, paneId: andy.id, source: "MAIL_COPILOT", severity, title: id, status: "OPEN", payload: {} }) as unknown as SpaceNotification;
     snapshot.notifications = [notice("notification:mail", "INFO"), notice("notification:review", "ATTENTION")];
     expect(boardPanes(snapshot, { showClosed: false }).find((entry) => entry.pane.id === andy.id)!.notifications.map((item) => item.id)).toEqual(["notification:review"]);
   });

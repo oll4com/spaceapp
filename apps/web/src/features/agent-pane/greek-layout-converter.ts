@@ -167,7 +167,7 @@ export function hasGreekDeadKey(token: string): boolean {
 
 /**
  * Checks whether a token represents a code identifier, path, acronym, or programming token.
- * Examples: "paneId", "CodexComposer", "space-web", "package.json", "MCP", "API", "/opt/spaceapp", "v2", "vm207".
+ * Examples: "paneId", "CodexComposer", "space-web", "package.json", "MCP", "API", "/usr/local", "v2", "vm207".
  */
 export function isCodeOrIdentifier(token: string): boolean {
   if (!token || token.length < 2) return false;
@@ -183,7 +183,7 @@ export function isCodeOrIdentifier(token: string): boolean {
   if (/[a-z]/.test(token) && /[A-Z]/.test(token)) {
     return true;
   }
-  // Paths, filenames, kebab-case, snake_case: space-web, docker-compose, package.json, /opt/spaceapp
+  // Paths, filenames, kebab-case, snake_case: space-web, docker-compose, package.json, /usr/local
   if (/[-_./\\]/.test(token) && /[a-zA-Z]/.test(token)) {
     return true;
   }

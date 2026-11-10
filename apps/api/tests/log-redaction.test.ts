@@ -3,6 +3,33 @@ import Fastify from "fastify";
 import { expect, it } from "vitest";
 import { apiLoggerOptions, apiLogRedaction, redactSecretText } from "../src/request-logging.js";
 
+it("redacts nested link URLs from incoming request logs without changing handler input (OBS-006)", async () => {
+  const lines: string[] = [];
+  const stream = new Writable({ write(chunk, _encoding, callback) { lines.push(String(chunk)); callback(); } });
+  const app = Fastify({ logger: apiLoggerOptions(stream) });
+  // Exercise the production logger without invoking link inspection or any upstream network request.
+  app.get("/api/links/inspect", async (request) => ({ query: request.query, url: request.url }));
+  const nestedUrl = "https://obs006-user:obs006-password%3Aprobe@private.example.test/private-path?accessToken=obs006-token%2Fprobe#private-fragment";
+  const url = `/api/links/inspect?${new URLSearchParams({ url: nestedUrl, safe: "kept" })}`;
+  try {
+    const response = await app.inject({ method: "GET", url });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ query: { url: nestedUrl, safe: "kept" }, url });
+  } finally {
+    await app.close();
+  }
+
+  const output = lines.join("");
+  const entries = output.trim().split("\n").map((line) => JSON.parse(line));
+  const incoming = entries.find((entry) => entry.msg === "incoming request");
+  expect(incoming?.req.url).toBe("/api/links/inspect?url=%5BREDACTED%5D&safe=kept");
+  for (const secret of ["obs006-user", "obs006-password:probe", "obs006-token/probe", "private.example.test", "private-path", "private-fragment"]) {
+    for (const value of [secret, encodeURIComponent(secret), encodeURIComponent(encodeURIComponent(secret))]) {
+      expect(output, value).not.toContain(value);
+    }
+  }
+});
+
 it("redacts credentials in structured API log objects", async () => {
   const lines: string[] = [];
   const stream = new Writable({ write(chunk, _encoding, callback) { lines.push(String(chunk)); callback(); } });

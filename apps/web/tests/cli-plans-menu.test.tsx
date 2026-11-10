@@ -1318,6 +1318,30 @@ describe("CliPlansMenu", () => {
       });
     });
 
+    it("reads the pane's completed plan again only when the open plans change, not on every reveal (PERF-001 C-3)", async () => {
+      mockByQuery([completedHandoff]);
+      const paneReads = () => vi.mocked(api.clipboardItems).mock.calls.filter(([query]) => (query as { paneId?: string } | undefined)?.paneId === "pane:bob").length;
+      const menu = (active: boolean) => <CliPlansMenu pane={{ id: "pane:bob", title: "Bob" }} active={active} disabled={false} onSelectPlan={vi.fn()} />;
+      const view = render(menu(true));
+      await screen.findByRole("button", { name: /Completed plan: Handoff Plan/i });
+      expect(paneReads()).toBe(1);
+
+      // A room switch hides and reveals the pane; the open plans are the same.
+      view.rerender(menu(false));
+      view.rerender(menu(true));
+      await screen.findByRole("button", { name: /Completed plan: Handoff Plan/i });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(paneReads()).toBe(1);
+
+      // An open plan moves: the completed-plan read runs once more.
+      vi.mocked(api.clipboardItems).mockImplementation(async (query: any = {}) =>
+        query.paneId ? page([completedHandoff]) : page([{ ...mockPlans[0]!, progressPercentage: 40 }, mockPlans[1]!])
+      );
+      notifyClipboardUpdated();
+      await waitFor(() => expect(paneReads()).toBe(2));
+      expect(screen.getByRole("button", { name: /Completed plan: Handoff Plan/i })).toBeDefined();
+    });
+
     it("falls back to the open-plan count when the pane never owned a plan", async () => {
       mockByQuery([completedHandoff]);
       render(<CliPlansMenu pane={{ id: "pane:dana", title: "Claude Code CLI" }} active={true} disabled={false} onSelectPlan={vi.fn()} />);

@@ -1,15 +1,18 @@
 import { randomBytes } from "node:crypto";
 import {
-  effectiveFreelanceAutonomy, FREELANCE_CHANNEL_ALIASES, FREELANCE_CHANNEL_LABELS, FREELANCE_CHANNELS, freelanceChannelOfSender, freelanceMailboxConfigSchema, freelanceRuleMatches,
+  effectiveFreelanceAutonomy, freelanceChannelAlias, freelanceChannelSettings, FREELANCE_CHANNEL_LABELS, FREELANCE_CHANNELS, freelanceChannelOfSender, freelanceMailboxConfigSchema, freelanceRuleMatches,
   freelanceScamSignals, freelanceUrlMatchesChannel, freelanceWordingIssues, resolveFreelanceCopilotPaneMetadata,
   type FreelanceAccount, type FreelanceAccountUpdate, type FreelanceChannel, type FreelanceEvent, type FreelanceEventType, type FreelanceFunnel, type FreelanceLead, type FreelanceLeadCreate,
   type FreelanceLeadDecision, type FreelanceLeadUpdate, type FreelanceMailboxInput, type FreelanceMemoryCreate, type FreelanceMemoryQuery, type FreelanceMessage, type FreelanceMessageCreate,
   type FreelanceMessageReviewDecision, type FreelanceMessageUpdate, type FreelancePendingItem, type FreelanceRule, type FreelanceRuleProposal, type FreelanceRun, type FreelanceRunView, type Pane
 } from "@space/contracts";
 import type { FreelanceCopilotRepository } from "@space/db";
+import { forbiddenByMemoryText, forbiddingMemory, MEMORY_HITS_NOTE, questionMemoryHits } from "@space/db";
+import type { PinnedMemoryHit } from "../nous/operator-facts.js";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
+import { operatorOrder, operatorOrderOverride, type OperatorMessageRefs } from "../copilot-operator-order.js";
 import { connectorSealContext, type ConnectorCrypto } from "../dot-connectors.js";
-import { extractCode, extractLinksFromText, type MailboxFactory, type MailboxReader } from "../job-apply/mailbox.js";
+import { extractCode, extractLinksFromText, isReportSender, type MailboxFactory, type MailboxReader } from "../job-apply/mailbox.js";
 
 export interface FreelanceCopilotServiceOptions {
   /** Leads, messages, accounts, memory, activity, runs, rules and the mailbox. */
@@ -21,6 +24,16 @@ export interface FreelanceCopilotServiceOptions {
   /** Every activity event, for the room stream and notifications. */
   onEvent?(event: FreelanceEvent): void;
   now?(): string;
+  /** Plan clipboard:7L5KyWp3kQsP step 3: the operator's pinned Space Memory entries sharing a question's words (their rules answer it). */
+  operatorMemory?(question: string): Promise<PinnedMemoryHit[]>;
+  /** The operator's messages to Nous: a review's operatorOrder is checked against them. */
+  operatorMessages?: OperatorMessageRefs;
+}
+
+/** The owner's own freelance sites, set per instance (stable: deploy/space-api.service; review EXT-C-F18 R2). */
+export function freelanceSite(env: NodeJS.ProcessEnv = process.env) {
+  return { aliasDomain: env.SPACE_FREELANCE_ALIAS_DOMAIN?.trim() || null,
+    linkHosts: (env.SPACE_FREELANCE_LINK_HOSTS ?? "").split(",").map((host) => host.trim().toLowerCase()).filter(Boolean) };
 }
 
 const NEXT_POLL_MS = 2_000;
@@ -31,6 +44,8 @@ const DAY_MS = 86_400_000;
 const FOLLOW_UP_DAYS = [3, 4];
 /** Six weeks without a contract: change niche or channel (Research Council stop rule). */
 const STOP_RULE_MS = 42 * DAY_MS;
+/** Where pollMail files DMARC reports (imapflow adds the server's namespace prefix). */
+const REPORT_FOLDER = "DMARC";
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface EventInput { paneId?: string | null; runId?: string | null; leadId?: string | null; messageId?: string | null; type: FreelanceEventType; status?: "PENDING" | "TAKEN" | "DONE" | null; message: string; payload?: Record<string, unknown> }
@@ -53,7 +68,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
 
   async function record(owner: string, input: EventInput): Promise<FreelanceEvent> {
     const event = await repository.createEvent({ ownerUserId: owner, paneId: input.paneId ?? null, runId: input.runId ?? null, leadId: input.leadId ?? null, messageId: input.messageId ?? null,
-      type: input.type, status: input.status ?? null, message: input.message.slice(0, 1000), payload: input.payload ?? {} });
+      type: input.type, status: input.status ?? null, message: input.message, payload: input.payload ?? {} });
     try { options.onEvent?.(event); } catch { /* listeners never break the write */ }
     return event;
   }
@@ -67,6 +82,13 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
     if (!message) throw new SpaceNotFoundError(`Message ${id} was not found.`);
     return message;
   }
+  /** R12-5: a review or question the copilot's own memory forbids (scoped to the platform, or about the same words) is never raised. */
+  async function refuseForbidden(owner: string, item: string, channel?: FreelanceMessage["channel"], itemIds: string[] = [], order?: string): Promise<string | undefined> {
+    const memory = await forbiddingMemory((query) => repository.listMemory(owner, { query, kinds: ["FACT", "LESSON", "PREFERENCE", "CHANNEL_RULE", "CLIENT"], channel }), item,
+      (found) => Boolean(channel && found.channel), itemIds);
+    if (memory && !order) throw new SpaceConflictError(forbiddenByMemoryText("Freelance Copilot", memory));
+    return memory && order ? operatorOrderOverride(order, memory.id) : undefined;
+  }
   async function bumpRun(owner: string, paneId: string, counter: keyof FreelanceRun["counters"]): Promise<string | null> {
     const run = await repository.getActiveRun(paneId);
     if (!run || run.ownerUserId !== owner) return null;
@@ -74,7 +96,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
     return run.id;
   }
   function issuesOf(pane: Pane | null, lead: FreelanceLead, message: Pick<FreelanceMessage, "body" | "bid">): string[] {
-    const issues = freelanceWordingIssues(message.body, { channel: lead.channel, contracted: lead.status === "WON", bid: message.bid, rateFloorHourly: settingsOf(pane).rateFloorHourly });
+    const issues = freelanceWordingIssues(message.body, { channel: lead.channel, contracted: lead.status === "WON", bid: message.bid, rateFloorHourly: settingsOf(pane).rateFloorHourly, ownHosts: freelanceSite().linkHosts });
     if (Array.isArray(lead.payload.scamSignals) && lead.payload.scamSignals.length) issues.push("scam-signals");
     return issues;
   }
@@ -85,7 +107,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
     const settings = settingsOf(pane);
     const label = FREELANCE_CHANNEL_LABELS[message.channel];
     if (settings.paused) throw new SpaceConflictError("FREELANCE_PAUSED: the pane is paused; nothing is sent until the operator resumes it.");
-    const channel = settings.channels[message.channel];
+    const channel = freelanceChannelSettings(settings, message.channel);
     if (!channel.enabled) throw new SpaceConflictError(`FREELANCE_CHANNEL_OFF: ${label} is off in this pane's Setup.`);
     if (await repository.countSends(owner, message.channel, ago(DAY_MS)) >= channel.dailyCap) {
       throw new SpaceConflictError(`FREELANCE_LIMIT: ${label} allows ${channel.dailyCap} proposal(s) and message(s) a day; wait until the oldest of the last 24 hours ages out.`);
@@ -109,10 +131,10 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
     return { ruleId: rule.id };
   }
 
-  // ---- mailbox (work@example.invalid) --------------------------------------------------------------------
+  // ---- mailbox (the work mailbox) -----------------------------------------------------------------
   async function openMailbox(owner: string): Promise<MailboxReader> {
     const mailbox = await repository.getMailbox(owner);
-    if (!mailbox) throw new SpaceConflictError("FREELANCE_MAILBOX: no mailbox is connected; the operator connects work@example.invalid in the pane's Setup.");
+    if (!mailbox) throw new SpaceConflictError("FREELANCE_MAILBOX: no mailbox is connected; the operator connects the work mailbox in the pane's Setup.");
     const context = connectorSealContext("freelance-mailbox", owner);
     const password = options.crypto.open(mailbox.passwordSealed, context);
     // A password sealed before the connector key (v1) is sealed again as v2 once read; without the key it stays as it is.
@@ -139,25 +161,25 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
   async function followUpsDue(owner: string, pane: Pane | null): Promise<FreelanceLead[]> {
     const settings = settingsOf(pane);
     if (!settings.followUps) return [];
-    return (await repository.listLeads(owner, { status: ["PROPOSED"], dueBefore: now(), limit: 50 })).filter((lead) => settings.channels[lead.channel].enabled);
+    return (await repository.listLeads(owner, { status: ["PROPOSED"], dueBefore: now() })).filter((lead) => freelanceChannelSettings(settings, lead.channel).enabled);
   }
   async function approvedDue(owner: string, pane: Pane | null): Promise<FreelanceMessage[]> {
     const settings = settingsOf(pane);
-    return (await repository.listMessages(owner, { status: ["APPROVED"], limit: 100 })).filter((message) => settings.channels[message.channel].enabled).reverse();
+    return (await repository.listMessages(owner, { status: ["APPROVED"] })).filter((message) => freelanceChannelSettings(settings, message.channel).enabled).reverse();
   }
 
   const service = {
     settingsOf,
     // ---- briefs (the operator's requests, the agent's work items) -----------------------------
-    async createBrief(owner: string, pane: Pane | null, input: { text: string; leadId?: string | null; channels?: FreelanceChannel[] }) {
+    async createBrief(owner: string, pane: Pane | null, input: { text: string; leadId?: string | null; channels?: FreelanceChannel[]; /** R10-13: a brief Nous wrote. */ from?: "NOUS" }) {
       if (input.leadId) await leadOf(owner, input.leadId);
-      return record(owner, { paneId: pane?.id ?? null, leadId: input.leadId ?? null, type: "BRIEF", status: "PENDING", message: input.text, payload: { text: input.text, channels: input.channels ?? [] } });
+      return record(owner, { paneId: pane?.id ?? null, leadId: input.leadId ?? null, type: "BRIEF", status: "PENDING", message: input.text, payload: { text: input.text, channels: input.channels ?? [], ...(input.from ? { from: input.from } : {}) } });
     },
     // ---- leads --------------------------------------------------------------------------------
     listLeads: (owner: string, filter: Parameters<FreelanceCopilotRepository["listLeads"]>[1]) => repository.listLeads(owner, filter),
     getLead: leadOf,
     async leadDetail(owner: string, id: string) {
-      return { lead: await leadOf(owner, id), messages: (await repository.listMessages(owner, { leadId: id, limit: 100 })).reverse() };
+      return { lead: await leadOf(owner, id), messages: (await repository.listMessages(owner, { leadId: id })).reverse() };
     },
     /** A lead the agent found (or the operator added); the same platform id or URL on a channel returns the existing one. */
     async addLead(owner: string, pane: Pane | null, input: FreelanceLeadCreate, by: "AGENT" | "USER" = "AGENT") {
@@ -234,13 +256,21 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
         payload: { scamSignals } });
       return { message, scamSignals };
     },
-    async requestReview(owner: string, pane: Pane | null, input: { messageId: string; summary?: string }) {
+    async requestReview(owner: string, pane: Pane | null, input: { messageId: string; summary?: string; operatorOrder?: string }) {
+      const draft = await messageOf(owner, input.messageId);
+      const order = await operatorOrder(options.operatorMessages, owner, input.operatorOrder);
+      const overrides = await refuseForbidden(owner, `${(await leadOf(owner, draft.leadId)).title} ${input.summary ?? ""}`, draft.channel, [draft.id, draft.leadId], order);
+      // R12-4: a message an approved rule covers, or one written for a Nous brief, carries Approve as the card's recommended answer.
+      const vouched = (await repository.listRules(owner, ["APPROVED"])).some((rule) => freelanceRuleMatches(rule, draft)) ? "RULE"
+        : (await repository.listEvents(owner, { paneId: pane?.id ?? draft.paneId, types: ["BRIEF"] })).some((brief) => brief.payload.from === "NOUS"
+          && (brief.status === "TAKEN" || brief.leadId === draft.leadId)) ? "NOUS" : null;
       const message = await repository.updateMessage(owner, input.messageId, { reviewNote: null }, ["DRAFT", "FAILED"]).then((updated) => updated && repository.updateMessage(owner, input.messageId, { status: "IN_REVIEW" }));
       if (!message) throw new SpaceConflictError("Only a draft (or a failed message) can be sent for review.");
       const lead = await leadOf(owner, message.leadId);
       const wordingIssues = issuesOf(pane, lead, message);
-      await record(owner, { paneId: pane?.id ?? message.paneId, leadId: lead.id, messageId: message.id, type: "REVIEW_REQUESTED", message: `Review: ${input.summary ?? `${describe(message)} for "${lead.title}"`}`, payload: { wordingIssues } });
-      return { message, wordingIssues };
+      await record(owner, { paneId: pane?.id ?? message.paneId, leadId: lead.id, messageId: message.id, type: "REVIEW_REQUESTED", message: `Review: ${input.summary ?? `${describe(message)} for "${lead.title}"`}${overrides ? ` (${overrides})` : ""}`,
+        payload: { wordingIssues, ...(order ? { operatorOrder: order } : {}), ...(vouched ? { vouched } : {}) } });
+      return { message, wordingIssues, ...(overrides ? { overrides } : {}) };
     },
     /** The operator decides a message: approve, edit (their version is approved and learned), revise (back to the agent) or reject. */
     async decideReview(owner: string, pane: Pane | null, messageId: string, input: FreelanceMessageReviewDecision) {
@@ -263,6 +293,25 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
       const verb = { approve: "approved", edit: "edited and approved", revise: "sent back for changes", reject: "rejected" }[input.decision];
       await record(owner, { paneId: pane?.id ?? message.paneId, leadId: message.leadId, messageId: message.id, type: "REVIEW_DECIDED", message: `You ${verb} the ${describe(message)}${input.note ? `: ${input.note}` : ""}`,
         payload: { decision: input.decision, note: input.note ?? null } });
+      return message;
+    },
+    /**
+     * R24-3: the copilot closes its own message in review that went stale or a newer message replaced (`replacedBy`, newer and for the same
+     * lead), with evidence; its review card resolves.
+     */
+    async supersedeReview(owner: string, pane: Pane | null, input: { messageId: string; evidence: string; replacedBy?: string }) {
+      const current = await messageOf(owner, input.messageId);
+      if (input.replacedBy) {
+        const newer = await messageOf(owner, input.replacedBy);
+        if (newer.id === current.id || newer.leadId !== current.leadId || newer.createdAt <= current.createdAt) {
+          throw new SpaceConflictError(`${newer.id} is not a newer message for the same lead than ${current.id}.`);
+        }
+      }
+      const message = await repository.updateMessage(owner, input.messageId, { status: "SUPERSEDED", reviewNote: `Superseded: ${input.evidence}` }, ["IN_REVIEW"]);
+      if (!message) throw new SpaceConflictError(`Only a message in review can be superseded; ${current.id} is ${current.status.toLowerCase().replace("_", " ")}.`);
+      await record(owner, { paneId: pane?.id ?? message.paneId, leadId: message.leadId, messageId: message.id, type: "REVIEW_DECIDED",
+        message: `The copilot closed the ${describe(message)} in review as superseded: ${input.evidence}`,
+        payload: { decision: "superseded", note: input.evidence, replacedBy: input.replacedBy ?? null } });
       return message;
     },
     async waitForReview(owner: string, input: { messageId: string; waitMs: number }) {
@@ -320,11 +369,11 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
     // ---- platform accounts --------------------------------------------------------------------
     async listAccounts(owner: string): Promise<FreelanceAccount[]> {
       const stored = new Map((await repository.listAccounts(owner)).map((account) => [account.channel, account]));
-      return FREELANCE_CHANNELS.map((channel) => stored.get(channel) ?? { ownerUserId: owner, channel, status: "NOT_STARTED", email: FREELANCE_CHANNEL_ALIASES[channel], profileUrl: null, notes: null, updatedAt: now() });
+      return FREELANCE_CHANNELS.map((channel) => stored.get(channel) ?? { ownerUserId: owner, channel, status: "NOT_STARTED", email: freelanceChannelAlias(channel, freelanceSite().aliasDomain), profileUrl: null, notes: null, updatedAt: now() });
     },
     async updateAccount(owner: string, pane: Pane | null, input: FreelanceAccountUpdate, by: "AGENT" | "USER") {
       const { channel, ...patch } = input;
-      const account = await repository.upsertAccount(owner, channel, { ...patch, ...(patch.email === undefined && !(await repository.listAccounts(owner)).some((entry) => entry.channel === channel) ? { email: FREELANCE_CHANNEL_ALIASES[channel] } : {}) });
+      const account = await repository.upsertAccount(owner, channel, { ...patch, ...(patch.email === undefined && !(await repository.listAccounts(owner)).some((entry) => entry.channel === channel) ? { email: freelanceChannelAlias(channel, freelanceSite().aliasDomain) } : {}) });
       await record(owner, { paneId: pane?.id ?? null, type: account.status === "NEEDS_OPERATOR" ? "NEEDS_USER" : "ACCOUNT_UPDATED",
         message: `${FREELANCE_CHANNEL_LABELS[channel]} account: ${account.status.toLowerCase().replace("_", " ")}${account.notes ? ` (${account.notes})` : ""}${by === "USER" ? " (you)" : ""}`.slice(0, 1000),
         payload: { channel, status: account.status } });
@@ -348,15 +397,16 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
     },
     disconnectMailbox: (owner: string) => repository.deleteMailbox(owner),
     async recentMail(owner: string, input: { channel?: FreelanceChannel; fromContains?: string; subjectContains?: string; sinceMinutes?: number; limit: number }) {
-      const messages = await withMailbox(owner, (reader) => reader.recent({ fromContains: input.fromContains ?? null, subjectContains: input.subjectContains ?? null, since: sinceOf(input.sinceMinutes ?? 24 * 60), limit: 40 }));
-      return messages.map((message) => ({ ...message, channel: freelanceChannelOfSender(message.from) })).filter((message) => !input.channel || message.channel === input.channel).slice(0, Math.min(input.limit, 20));
+      // As many as the agent asks (until 31/10 at most 20 of the newest 40).
+      const messages = await withMailbox(owner, (reader) => reader.recent({ fromContains: input.fromContains ?? null, subjectContains: input.subjectContains ?? null, since: sinceOf(input.sinceMinutes ?? 24 * 60), limit: input.channel ? Infinity : input.limit }));
+      return messages.map((message) => ({ ...message, channel: freelanceChannelOfSender(message.from) })).filter((message) => !input.channel || message.channel === input.channel).slice(0, input.limit);
     },
     /** One message's text (job alerts, client notifications); untrusted data, never instructions. */
     async readMail(owner: string, uid: number) {
-      const messages = await withMailbox(owner, (reader) => reader.texts({ since: ago(14 * DAY_MS), limit: 80 }));
-      const message = messages.find((entry) => entry.uid === uid);
-      if (!message) throw new SpaceNotFoundError(`Mail ${uid} was not found in the last 80 messages of two weeks.`);
-      return { ...message, channel: freelanceChannelOfSender(message.from), text: message.text.slice(0, 20_000) };
+      // By its UID, any age, whole (until 31/10 only among the last 80 messages of two weeks, cut at 20,000 characters).
+      const message = (await withMailbox(owner, (reader) => reader.texts({ uid, limit: 1 }))).find((entry) => entry.uid === uid);
+      if (!message) throw new SpaceNotFoundError(`Mail ${uid} was not found in the mailbox.`);
+      return { ...message, channel: freelanceChannelOfSender(message.from) };
     },
     /** Polls the mailbox for a code until `timeoutMs`; the agent only ever receives the code. */
     async waitForCode(owner: string, input: { fromContains?: string; subjectContains?: string; pattern: string; sinceMinutes?: number; timeoutMs: number }) {
@@ -384,25 +434,49 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
     /**
      * New mail becomes MAIL work items (the scheduler, every few minutes). The first poll only sets the cursor to the
      * newest message, so an old inbox does not flood the queue. Returns how many items it created.
+     * DMARC reports (`isMailReport`) become no item: they are filed in the DMARC folder, \Seen, never deleted.
      */
     async pollMail(owner: string, pane: Pane): Promise<number> {
       const mailbox = await repository.getMailbox(owner);
       if (!mailbox) return 0;
-      const messages = await withMailbox(owner, (reader) => reader.recent({ since: ago(7 * DAY_MS), limit: 30 }));
+      const lastUid = mailbox.lastUid;
+      // MAIL items opened before this rule (stable 3/11: 19 DMARC reports, uids 221-239, blocked the copilot) close by the same rule.
+      const openReports = (await repository.listEvents(owner, { types: ["MAIL"], status: ["PENDING", "TAKEN"] }))
+        .filter((item) => typeof item.payload.uid === "number" && isReportSender({ from: String(item.payload.from ?? ""), subject: String(item.payload.subject ?? "") }));
+      const { messages, reportUids, closing, filed } = await withMailbox(owner, async (reader) => {
+        // Every mail of the week (until 31/10 its newest 30: a busier poll skipped the older new mail, the cursor jumping past it).
+        const messages = await reader.recent({ since: ago(7 * DAY_MS) });
+        const closing: FreelanceEvent[] = [];
+        for (const item of openReports) {
+          const uid = item.payload.uid as number;
+          const found = messages.find((message) => message.uid === uid) ?? (await reader.recent({ uid })).find((message) => message.uid === uid);
+          if (found?.report) closing.push(item);
+        }
+        const reportUids = [...new Set([...messages.filter((message) => message.report && lastUid !== null && (message.uid ?? 0) > lastUid).map((message) => message.uid!),
+          ...closing.map((item) => item.payload.uid as number)])];
+        // Domain reports for the deliverability reads (Mail Campaigns), never a client's mail: filed, not deleted.
+        const filed = !reportUids.length ? null : !reader.moveTo ? "left in the inbox (this mailbox reader cannot move mail)"
+          : await reader.moveTo(reportUids, REPORT_FOLDER).then(() => `moved to the ${REPORT_FOLDER} folder`,
+            (error: unknown) => `left in the inbox (the move failed: ${error instanceof Error ? error.message : String(error)})`);
+        return { messages, reportUids, closing, filed };
+      });
+      for (const item of closing) await repository.setEventStatus(owner, item.id, "DONE");
+      if (filed) await record(owner, { paneId: pane.id, type: "NOTE", message: `Skipped ${reportUids.length} DMARC report mail${reportUids.length === 1 ? "" : "s"} (domain reports, not client mail): ${filed}.`,
+        payload: { outcome: "skipped", uids: reportUids, itemIds: closing.map((item) => item.id) } });
       const newest = Math.max(0, ...messages.map((message) => message.uid ?? 0));
-      if (mailbox.lastUid === null) { if (newest) await repository.setMailboxCursor(owner, newest); return 0; }
-      const fresh = messages.filter((message) => (message.uid ?? 0) > mailbox.lastUid!).sort((left, right) => (left.uid ?? 0) - (right.uid ?? 0));
+      if (lastUid === null) { if (newest) await repository.setMailboxCursor(owner, newest); return 0; }
+      const fresh = messages.filter((message) => !message.report && (message.uid ?? 0) > lastUid).sort((left, right) => (left.uid ?? 0) - (right.uid ?? 0));
       for (const message of fresh) {
         const channel = freelanceChannelOfSender(message.from);
         await record(owner, { paneId: pane.id, type: "MAIL", status: "PENDING", message: `Mail${channel ? ` from ${FREELANCE_CHANNEL_LABELS[channel]}` : ""}: ${message.subject || "(no subject)"}`,
           payload: { uid: message.uid, from: message.from, subject: message.subject, receivedAt: message.receivedAt, channel, snippet: message.snippet.slice(0, 300) } });
       }
-      if (newest > mailbox.lastUid) await repository.setMailboxCursor(owner, newest);
+      if (newest > lastUid) await repository.setMailboxCursor(owner, newest);
       return fresh.length;
     },
     // ---- memory -------------------------------------------------------------------------------
     async recallMemory(owner: string, query: FreelanceMemoryQuery) {
-      const merged = [...new Map([...(await repository.listMemory(owner, { ...query, query: undefined, limit: 200 })).filter((memory) => memory.pinned), ...await repository.listMemory(owner, query)]
+      const merged = [...new Map([...(await repository.listMemory(owner, { ...query, query: undefined, limit: undefined })).filter((memory) => memory.pinned), ...await repository.listMemory(owner, query)]
         .map((memory) => [memory.id, memory])).values()];
       await repository.touchMemories(owner, merged.map((memory) => memory.id));
       return merged;
@@ -413,14 +487,22 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
     updateMemory: (owner: string, id: string, patch: { text?: string; pinned?: boolean }) => repository.updateMemory(owner, id, patch),
     forgetMemory: (owner: string, id: string) => repository.deleteMemory(owner, id),
     // ---- questions ----------------------------------------------------------------------------
-    async askQuestion(owner: string, pane: Pane, input: { question: string; options?: string[]; leadId?: string }) {
+    async askQuestion(owner: string, pane: Pane, input: { question: string; options?: string[]; leadId?: string; afterMemory?: boolean }) {
+      await refuseForbidden(owner, input.question);
+      // Plan clipboard:7L5KyWp3kQsP step 3: the operator's pinned Space Memory entries holding the question's words join the memories shown first.
+      const pinned = !input.afterMemory && options.operatorMemory ? await options.operatorMemory(input.question).catch(() => []) : [];
+      // R13-5 (Job's item 34 for Freelance): the copilot's own memories that may answer it come back first, nothing asked.
+      // Every memory a question word finds, up to the memory list's page of 200 (until 31/10 five a word).
+      const memoryHits = input.afterMemory ? [] : [...await questionMemoryHits((query) => repository.listMemory(owner, { query, kinds: ["PROFILE", "FACT", "PRICING", "CHANNEL_RULE", "LESSON", "PREFERENCE", "CLIENT"] }), input.question),
+        ...pinned.map((entry) => ({ id: entry.id, key: `${entry.rule ? "Operator rule" : "Operator fact"} (Space Memory): ${entry.title}`, text: entry.body }))];
+      if (memoryHits.length) return { questionId: null, memoryHits, note: MEMORY_HITS_NOTE };
       const questionId = `flq:${randomBytes(9).toString("base64url")}`;
       await record(owner, { paneId: pane.id, leadId: input.leadId ?? null, type: "QUESTION", message: `Needs you: ${input.question}`, payload: { questionId, question: input.question, options: input.options ?? [] } });
       return { questionId };
     },
     /** by NOUS: Nous, the mind of SpaceApp, answered for the operator (its answer is the agent's memory, not the operator's voice). */
     async answerQuestion(owner: string, pane: Pane | null, input: { questionId: string; answer: string }, by: "USER" | "NOUS" = "USER") {
-      const question = (await repository.listEvents(owner, { types: ["QUESTION"], limit: 300 })).find((event) => event.payload.questionId === input.questionId);
+      const question = (await repository.listEvents(owner, { types: ["QUESTION"] })).find((event) => event.payload.questionId === input.questionId);
       if (!question) throw new SpaceNotFoundError("The question was not found.");
       const memory = await repository.upsertMemory({ ownerUserId: owner, kind: "FACT", key: String(question.payload.question).toLowerCase().slice(0, 300), text: input.answer, channel: null, tags: ["question"], source: by === "NOUS" ? "AGENT" : "USER", pinned: false });
       await record(owner, { paneId: pane?.id ?? question.paneId, leadId: question.leadId, type: "ANSWERED", message: `${by === "NOUS" ? "Nous" : "You"} answered: ${input.answer.slice(0, 200)}`, payload: { questionId: input.questionId, answer: input.answer, memoryId: memory.id, answeredBy: by } });
@@ -429,7 +511,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
     async waitForAnswer(owner: string, input: { questionId: string; waitMs: number }) {
       const deadline = Date.now() + Math.min(input.waitMs, NEXT_MAX_WAIT_MS);
       for (;;) {
-        const answered = (await repository.listEvents(owner, { types: ["ANSWERED"], limit: 300 })).find((event) => event.payload.questionId === input.questionId);
+        const answered = (await repository.listEvents(owner, { types: ["ANSWERED"] })).find((event) => event.payload.questionId === input.questionId);
         if (answered) return { answered: true as const, answer: String(answered.payload.answer ?? "") };
         if (Date.now() >= deadline) return { answered: false as const, answer: null };
         await sleep(Math.min(NEXT_POLL_MS, Math.max(0, deadline - Date.now())));
@@ -450,12 +532,12 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
       return updated;
     },
     // ---- activity, pending items and runs ------------------------------------------------------
-    listEvents: (owner: string, filter: { paneId?: string; limit: number }) => repository.listEvents(owner, filter),
+    listEvents: (owner: string, filter: { paneId?: string; types?: string[]; limit?: number }) => repository.listEvents(owner, filter),
     async pendingItems(owner: string, paneId: string | null): Promise<FreelancePendingItem[]> {
       const [ready, reviews, questions, rules, accounts] = await Promise.all([
-        repository.listLeads(owner, { status: ["CLIENT_READY"], limit: 100 }),
-        repository.listMessages(owner, { status: ["IN_REVIEW"], limit: 100 }),
-        repository.listEvents(owner, { paneId, types: ["QUESTION", "ANSWERED"], limit: 300 }),
+        repository.listLeads(owner, { status: ["CLIENT_READY"] }),
+        repository.listMessages(owner, { status: ["IN_REVIEW"] }),
+        repository.listEvents(owner, { paneId, types: ["QUESTION", "ANSWERED"] }),
         repository.listRules(owner, ["PROPOSED"]),
         repository.listAccounts(owner)
       ]);
@@ -470,16 +552,20 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
         ...questions.filter((event) => event.type === "QUESTION" && !answered.has(String(event.payload.questionId))).map((event) => ({ kind: "QUESTION" as const, id: String(event.payload.questionId), message: event.message, payload: event.payload, createdAt: event.createdAt })),
         ...rules.map((rule) => ({ kind: "RULE" as const, id: rule.id, message: `Rule proposed: ${rule.name}`, payload: { rule }, createdAt: rule.createdAt })),
         ...accounts.filter((account) => account.status === "NEEDS_OPERATOR").map((account) => ({ kind: "ACCOUNT" as const, id: account.channel, message: `${FREELANCE_CHANNEL_LABELS[account.channel]} account needs you${account.notes ? `: ${account.notes}` : ""}`, payload: { account }, createdAt: account.updatedAt }))
-      ].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, 200);
+      ].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
     },
     followUpsDue,
     approvedDue,
+    /** The pane's work: its briefs and new mail in `status`, approved messages and follow-ups that are due. */
+    async backlog(owner: string, pane: Pane, status: Array<"PENDING" | "TAKEN"> = ["PENDING"]) {
+      const items = await repository.listEvents(owner, { types: ["BRIEF", "MAIL"], status });
+      const own = items.filter((item) => item.type !== "BRIEF" || !item.paneId || item.paneId === pane.id);
+      return own.length + (await approvedDue(owner, pane)).length + (await followUpsDue(owner, pane)).length;
+    },
     async runView(owner: string, pane: Pane): Promise<FreelanceRunView> {
       const run = await repository.getActiveRun(pane.id);
       const mine = run && run.ownerUserId === owner ? run : null;
-      const items = await repository.listEvents(owner, { types: ["BRIEF", "MAIL"], status: ["PENDING"], limit: 200 });
-      const own = items.filter((item) => item.type !== "BRIEF" || !item.paneId || item.paneId === pane.id);
-      return { run: mine, status: mine?.status ?? "IDLE", pending: await service.pendingItems(owner, pane.id), backlog: own.length + (await approvedDue(owner, pane)).length + (await followUpsDue(owner, pane)).length };
+      return { run: mine, status: mine?.status ?? "IDLE", pending: await service.pendingItems(owner, pane.id), backlog: await service.backlog(owner, pane) };
     },
     activeRun: (paneId: string) => repository.getActiveRun(paneId),
     async startRun(owner: string, paneId: string): Promise<{ run: FreelanceRun; kickoff: boolean }> {
@@ -528,7 +614,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
           if (item) {
             await bumpRun(owner, pane.id, "taken");
             const lead = item.leadId ? await repository.getLead(owner, item.leadId) : null;
-            const memories = await service.recallMemory(owner, { query: item.message.slice(0, 300), limit: 15 });
+            const memories = await service.recallMemory(owner, { query: item.message.slice(0, 300) });
             return { done: false as const, kind: item.type as "BRIEF" | "MAIL", item, lead, memories, autonomy: settings.autonomy };
           }
           const [approved] = await approvedDue(owner, pane);
@@ -537,8 +623,8 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
           if (followUp) {
             // Taken off the due list while the agent writes it; finishSend sets the next one.
             await repository.updateLead(owner, followUp.id, { nextActionAt: null });
-            return { done: false as const, kind: "FOLLOW_UP" as const, lead: followUp, messages: (await repository.listMessages(owner, { leadId: followUp.id, limit: 10 })).reverse(),
-              memories: await service.recallMemory(owner, { kinds: ["TEMPLATE", "CHANNEL_RULE", "LESSON"], channel: followUp.channel, limit: 10 }) };
+            return { done: false as const, kind: "FOLLOW_UP" as const, lead: followUp, messages: (await repository.listMessages(owner, { leadId: followUp.id })).reverse(),
+              memories: await service.recallMemory(owner, { kinds: ["TEMPLATE", "CHANNEL_RULE", "LESSON"], channel: followUp.channel }) };
           }
           await service.stopRun(owner, pane.id, "Run finished");
           return { done: true as const, reason: "QUEUE_EMPTY" as const };
@@ -549,7 +635,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
     },
     /** The agent closes a brief or mail: what it did, for the timeline. */
     async reportItem(owner: string, pane: Pane, input: { eventId: string; outcome: "done" | "needs_user" | "skipped"; summary: string; memoryIds?: string[] }) {
-      const item = (await repository.listEvents(owner, { types: ["BRIEF", "MAIL"], status: ["TAKEN", "PENDING"], limit: 500 })).find((event) => event.id === input.eventId);
+      const item = (await repository.listEvents(owner, { types: ["BRIEF", "MAIL"], status: ["TAKEN", "PENDING"] })).find((event) => event.id === input.eventId);
       if (!item) throw new SpaceNotFoundError(`Work item ${input.eventId} is not open.`);
       await repository.setEventStatus(owner, item.id, "DONE");
       if (input.memoryIds?.length) await repository.touchMemories(owner, input.memoryIds);
@@ -561,7 +647,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
       record(owner, { paneId: pane.id, leadId: input.leadId ?? null, type: input.needsUser ? "NEEDS_USER" : "NOTE", message: input.message }),
     // ---- funnel and digest ---------------------------------------------------------------------
     async funnel(owner: string): Promise<FreelanceFunnel> {
-      const [leads, sent] = await Promise.all([repository.listLeads(owner, { limit: 5000 }), repository.listMessages(owner, { status: ["SENT"], limit: 5000 })]);
+      const [leads, sent] = await Promise.all([repository.listLeads(owner, {}), repository.listMessages(owner, { status: ["SENT"] })]);
       const channels: FreelanceFunnel["channels"] = {};
       for (const id of FREELANCE_CHANNELS) channels[id] = { leads: 0, proposed: 0, talking: 0, clientReady: 0, won: 0, lost: 0, sent: 0 };
       for (const lead of leads) {

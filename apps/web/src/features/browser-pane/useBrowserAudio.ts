@@ -26,6 +26,12 @@ function publish(next: AudioState) {
   listeners.forEach(listener => listener.update(next));
 }
 
+// Tells the server which panes this Space tab plays, so it mutes every other browser at the source (browser-audio-mute.ts).
+function sendAudible() {
+  if (socket?.readyState !== 1 || typeof socket.send !== "function") return;
+  socket.send(JSON.stringify({ type: "audible", paneIds: [...new Set([...listeners.values()].map(listener => listener.paneId))] }));
+}
+
 function unlock() {
   if (!context || context.state === "closed") return;
   void context.resume().then(() => {
@@ -89,6 +95,7 @@ async function connect(listener: Listener) {
             context.onstatechange = () => publish(context?.state === "running" ? "playing" : "blocked");
           }
           publish(context.state === "running" ? "playing" : "blocked");
+          sendAudible();
           unlock();
         } catch { /* Ignore invalid control frames. */ }
         return;
@@ -119,7 +126,7 @@ async function connect(listener: Listener) {
 function reconcile() {
   // The managed browser host provides one mixed audio sink. Subscribe once per
   // Space tab, even when several Internet / YouTube panes are mounted.
-  if (owner && [...listeners.values()].some(listener => listener.paneId === owner?.paneId && listener.sessionId === owner?.sessionId)) return;
+  if (owner && [...listeners.values()].some(listener => listener.paneId === owner?.paneId && listener.sessionId === owner?.sessionId)) { sendAudible(); return; }
   stop();
   const next = listeners.values().next().value as Listener | undefined;
   if (!next) { publish("idle"); return; }

@@ -23,8 +23,9 @@ describe("Codex quotas and reset credits from Space Gateway", () => {
     const list = await createGatewayCodexUsageProvider({ repository: await repositoryWithAccounts(), now })();
     expect(list).toMatchObject({ source: "space-gateway", isStale: false, error: null, pagination: { totalItems: 2 } });
     expect(list.data[0]).toEqual({ id: `gw_account:${"1".repeat(32)}`, label: "Account 1", planType: "plus", fiveHourRemainingPercent: 75,
-      weeklyRemainingPercent: 90, fiveHourResetAt: "2030-01-10T03:00:00.000Z", weeklyResetAt: null, sampledAt: "2030-01-09T23:00:00.000Z" });
+      weeklyRemainingPercent: 90, fiveHourResetAt: "2030-01-10T03:00:00.000Z", weeklyResetAt: null, sampledAt: "2030-01-09T23:00:00.000Z", resetCredits: 2 });
     expect(list.data[1]!.fiveHourRemainingPercent).toBeNull();
+    expect(list.data[1]!.resetCredits).toBeNull();
     expect(JSON.stringify(list)).not.toContain("v1.secret");
   });
 

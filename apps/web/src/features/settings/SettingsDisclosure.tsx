@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, CircleHelp, type LucideIcon } from "../ui-theme/app-icons.js";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import "./settings-disclosure.css";
 
 /** Opens the section with this key; a new nonce opens it again (for example from a Dot pane). */
@@ -45,11 +46,14 @@ export const settingsScopeText: Record<SettingsScope, string> = {
   "New sessions": "New sessions only"
 };
 
+// Lower case without accents or the final sigma, so «ειδοποιησεις» finds «Ειδοποιήσεις» (English words fold the same way on both sides).
+const fold = (text: string) => text.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "").replace(/ς/g, "σ");
+
 /** True when every word of the search text appears in one of the texts. */
 export function settingsSearchMatches(query: string, texts: Array<string | undefined>): boolean {
-  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const words = fold(query).split(/\s+/).filter(Boolean);
   if (words.length === 0) return true;
-  const haystack = texts.filter(Boolean).join(" ").toLowerCase();
+  const haystack = fold(texts.filter(Boolean).join(" "));
   return words.every((word) => haystack.includes(word));
 }
 
@@ -68,11 +72,13 @@ export function SettingsGroup({ groupKey, title, description, children }: {
   children: ReactNode;
 }) {
   const id = useId();
+  const language = useUiLanguage();
+  const t = (text: string) => uiText(language, text);
   return (
     <section className="settings-group" data-settings-group={groupKey} aria-labelledby={`${id}-title`}>
       <header className="settings-group-header">
-        <h3 id={`${id}-title`}>{title}</h3>
-        <small>{description}</small>
+        <h3 id={`${id}-title`}>{t(title)}</h3>
+        <small>{t(description)}</small>
       </header>
       {children}
     </section>
@@ -96,6 +102,8 @@ export function SettingsDisclosure({ title, description, help, keywords, scope, 
   children: ReactNode;
 }) {
   const id = useId();
+  const language = useUiLanguage();
+  const t = (text: string) => uiText(language, text);
   const sections = useContext(SectionsContext);
   const [localOpen, setLocalOpen] = useState(initialOpen);
   const [visited, setVisited] = useState(initialOpen);
@@ -104,7 +112,8 @@ export function SettingsDisclosure({ title, description, help, keywords, scope, 
   const headerRef = useRef<HTMLHeadingElement>(null);
   const openedByUser = useRef(false);
   const requestNonce = sections?.request?.key === sectionKey ? sections?.request?.nonce : undefined;
-  const matches = settingsSearchMatches(sections?.query ?? "", [title, description, help, keywords]);
+  // Search finds the English words and the words shown in the operator's language.
+  const matches = settingsSearchMatches(sections?.query ?? "", [title, description, help, keywords, t(title), t(description), help && t(help)]);
   useEffect(() => {
     if (!sectionKey || requestNonce === undefined || !claimSettingsRequest(`section:${sectionKey}`, requestNonce)) return;
     setVisited(true);
@@ -119,22 +128,22 @@ export function SettingsDisclosure({ title, description, help, keywords, scope, 
   return (
     <section ref={sectionRef} className="settings-disclosure" data-open={open} data-section={sectionKey} hidden={hidden || !matches}>
       <h3 ref={headerRef}>
-        <button type="button" aria-label={title} aria-describedby={`${id}-description`} aria-expanded={open} aria-controls={id} onClick={() => {
+        <button type="button" aria-label={t(title)} aria-describedby={`${id}-description`} aria-expanded={open} aria-controls={id} onClick={() => {
           setVisited(true);
           openedByUser.current = !open;
           if (sections) sections.setActive(open ? null : id);
           else setLocalOpen(!open);
         }}>
           <Icon aria-hidden="true" />
-          <span><strong>{title}</strong><small id={`${id}-description`}>{description}</small></span>
+          <span><strong>{t(title)}</strong><small id={`${id}-description`}>{t(description)}</small></span>
           <ChevronRight aria-hidden="true" />
         </button>
       </h3>
       <div id={id} hidden={!open} className="settings-disclosure-content">
         {visited ? <>
           {/* Divs, not paragraphs: the Modern theme makes dock paragraphs inherit their colour. */}
-          {help ? <div className="settings-help"><CircleHelp aria-hidden="true" /><div>{help}</div></div> : null}
-          <div className="settings-scope">Affects: <strong>{settingsScopeText[scope]}</strong></div>
+          {help ? <div className="settings-help"><CircleHelp aria-hidden="true" /><div>{t(help)}</div></div> : null}
+          <div className="settings-scope">{t("Affects:")} <strong>{t(settingsScopeText[scope])}</strong></div>
           {children}
         </> : null}
       </div>

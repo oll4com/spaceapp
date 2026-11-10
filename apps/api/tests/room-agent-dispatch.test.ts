@@ -129,3 +129,22 @@ it("uses only the application's selected room browser and rejects a retargeted r
   expect(ambiguous.directCommand?.status).toBe("FAILED");
   expect(c.navigate).toHaveBeenCalledOnce();
 });
+it("reads a runtime cached as signed out fresh once before refusing a pane open (4/11 lab: sign-in outside Space's login flow)", async () => {
+  const store = new InMemorySpaceStore();
+  const room = store.createRoom({ name: "Stale login", kind: "AGENT_PROOF", initialPaneCount: 0 });
+  const now = new Date().toISOString();
+  const registry = (authState: "READY" | "LOGIN_REQUIRED") => agentRuntimeRegistrySchema.parse({ checkedAt: now, data: CLI_PANE_TYPES.map(type => ({
+    id: type.id, providerId: type.typeId, providerName: type.shortLabel, agentId: type.typeId, agentName: type.shortLabel,
+    displayName: type.displayName, capabilities: ["CLI"], adapterStatus: "ENABLED", authMode: "MANAGED", authState,
+    authReason: "Fixture", status: "ENABLED", statusReason: authState === "READY" ? "Fixture" : "Claude Code login is required.", canStartLogin: false, commandName: type.typeId, checkedAt: now
+  })) });
+  const base = { store, enabledRuntimeIds: async () => CLI_PANE_TYPES.map(type => type.id), harnessAvailable: async () => true };
+  const claude = [{ mode: "TERMINAL", terminalRuntimeId: "cli:claude" }] as Parameters<ReturnType<typeof createRoomPaneCommands>["resolve"]>[1];
+  const stale = vi.fn(async (fresh?: boolean) => registry(fresh ? "READY" : "LOGIN_REQUIRED"));
+  await expect(createRoomPaneCommands({ ...base, discover: stale }).resolve(room.id, claude)).resolves.toMatchObject([{ mode: "TERMINAL", terminalRuntimeId: "cli:claude" }]);
+  expect(stale.mock.calls.map(([fresh]) => fresh === true)).toEqual([false, true]);
+  await expect(createRoomPaneCommands({ ...base, discover: async () => registry("LOGIN_REQUIRED") }).resolve(room.id, claude)).rejects.toThrow("login is required");
+  const ready = vi.fn(async () => registry("READY"));
+  await createRoomPaneCommands({ ...base, discover: ready }).resolve(room.id, claude);
+  expect(ready).toHaveBeenCalledOnce();
+});

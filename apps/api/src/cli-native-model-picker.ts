@@ -10,6 +10,8 @@ type Screen = { text: string; revision: number };
 // readUndimmed: the same screen with faint cells blanked. Claude Code draws its
 // prompt suggestion as faint text in an empty composer; only that read can tell
 // it apart from a draft the user typed.
+/** Widens the pane's terminal for a native menu; returns how to give it back its size, or null when it cannot. */
+export type WidenPane = () => Promise<(() => Promise<unknown>) | null>;
 type NativeControl = { runtimeId: string; read: () => Promise<Screen>; write: (data: string) => Promise<unknown>; assertCurrent: () => Promise<void>; wait?: (ms: number) => Promise<void>; readUndimmed?: () => Promise<string> };
 /** Pane picks are namespaced so a persisted pick is never confused with the runtime's generic default id. */
 export const CLAUDE_PANE_MODEL_PREFIX = "claude:";
@@ -24,7 +26,8 @@ function nativeSettingsMenu(screen: string): boolean {
   // Claude's menu keeps its key hints when PgDn scrolls its title away.
   const lastPrompt = [...screen.matchAll(/^\s*(?:[│┃]\s*[❯›>]|[❯›>]|→)\s*(.*)$/gm)].at(-1);
   // Qoder's menu hints "s session only" (wrapped in a narrow pane); its acknowledgement "(this session only)" is no menu.
-  const menu = [...screen.matchAll(/Select (?:a )?model|Select thinking effort|Type to filter[\s\S]*?Tab to\s+edit|Edit\s+P\s*a\s*r\s*a\s*m\s*e\s*t\s*e\s*r\s*s[\s\S]*?Esc to go\s+back|Changes apply to this session only|Enter to set as default|\bs session\s+only|Tab switch · Enter (?:select|to list)/gi)].at(-1);
+  // A narrow Claude menu scrolled past its title and hints still shows "… +N models" or its effort line's "←/→ to adjust".
+  const menu = [...screen.matchAll(/Select (?:a )?model|Select thinking effort|Type to filter[\s\S]*?Tab to\s+edit|Edit\s+P\s*a\s*r\s*a\s*m\s*e\s*t\s*e\s*r\s*s[\s\S]*?Esc to go\s+back|Changes apply to this session only|Enter to set as default|\bs session\s+only|Tab switch · Enter (?:select|to list)|(?:…|\.\.\.)\s*\+\d+\s+models?\b|←\/→ to\s+adjust/gi)].at(-1);
   return Boolean(menu && (!lastPrompt || menu.index! + menu[0].length > lastPrompt.index! || /Select (?:a )?model|Select thinking effort/i.test(menu[0])));
 }
 
@@ -92,7 +95,8 @@ export async function prepareNativeCliSettings(input: NativeControl): Promise<Sc
   return screen;
 }
 
-async function cleanupNativeSettingsMenu(input: NativeControl): Promise<void> {
+/** Escapes a native settings menu left open; a prompt, approval or turn is never touched. */
+export async function cleanupNativeSettingsMenu(input: NativeControl): Promise<void> {
   const wait = input.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   for (let attempt = 0; attempt < 3; attempt++) {
     await input.assertCurrent();
@@ -154,6 +158,12 @@ export function nativeCliReasoningLevels(commandPath: string, model: Model): str
   return [];
 }
 
+// R41 (2/11: "CLI rejected the model selection" ×2): agy advertises claude-opus-4-6-thinking and claude-sonnet-4-6, never
+// "<family>-high". shortcut: kept per process from the last Gemini catalog read (the picker reads it first); without one, "<family>-<effort>".
+const geminiVariantIds = new Map<string, string>();
+/** agy's own label of each variant ("Claude Opus 5.5 (High)"), same keys: the wrapper starts agy on a label, not an id. */
+const geminiVariantLabels = new Map<string, string>();
+
 export function nativeCliCatalogModels(commandPath: string, raw: string): Model[] {
   // Qoder lists custom models as "Claude Opus 5.5 (API credits) (space-gateway-claude/claude-opus-5-5)": its -m takes
   // the provider/model part and its footer and menu show the name.
@@ -183,6 +193,9 @@ export function nativeCliCatalogModels(commandPath: string, raw: string): Model[
         ?? (model.displayName.match(/\b(Low|Medium|High|Thinking)\b/i)?.[1]?.toLowerCase());
       if (variantEffort) {
         const normalizedEffort = variantEffort === "thinking" ? "high" : variantEffort;
+        const key = `${id}\u0000${normalizedEffort}`;
+        if (!geminiVariantIds.get(key)?.endsWith(`-${normalizedEffort}`)) geminiVariantIds.set(key, model.id);
+        if (geminiVariantIds.get(key) === model.id) geminiVariantLabels.set(key, model.displayName);
         if (!efforts.includes(normalizedEffort)) efforts.push(normalizedEffort);
       }
       const previous = families.get(id);
@@ -501,6 +514,26 @@ export function createNativeCliModelCatalog(options: { run?: NativeCliModelCatal
   };
 }
 
+const isVersion = (part: string) => /^\d+(?:\.\d+)*$/.test(part);
+const geminiFamilyOf = (id: string) => id.split("-").filter(part => !isVersion(part)).join("-");
+const geminiVersionOf = (id: string) => id.split("-").filter(isVersion).flatMap(part => part.split(".").map(Number));
+const isNewer = (a: number[], b: number[]) => {
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) if ((a[index] ?? 0) !== (b[index] ?? 0)) return (a[index] ?? 0) > (b[index] ?? 0);
+  return false;
+};
+
+/** What a Gemini pane starts on: its model while the account still lists it, else the newest of its family (3/11: agy retired
+ * Claude Opus 4.6 for Opus 5.5, and the pane fell to agy's default Gemini Flash), with agy's label for the effort. null: no match. */
+export function geminiLaunchModel(models: readonly Model[], modelId: string, effort: string) {
+  const id = modelId.replace(/-(low|medium|high|thinking)$/, "");
+  const model = models.find(entry => entry.id === id) ?? models
+    .filter(entry => geminiFamilyOf(entry.id) === geminiFamilyOf(id))
+    .reduce<Model | undefined>((best, entry) => !best || isNewer(geminiVersionOf(entry.id), geminiVersionOf(best.id)) ? entry : best, undefined);
+  if (!model) return null;
+  const reasoningEffort = model.supportedReasoningEfforts.includes(effort) ? effort : model.defaultReasoningEffort;
+  return { modelId: model.id, reasoningEffort, label: geminiVariantLabels.get(`${model.id}\u0000${reasoningEffort}`) ?? null };
+}
+
 /** Room Agent and voice callers name models loosely ("opus", "Opus 5.5", "claude-opus-5-5"); an exact id wins. */
 export function findNativeCliModel(models: readonly Model[], requested: string, runtimeId = ""): Model | undefined {
   const wanted = requested.trim().toLowerCase();
@@ -655,6 +688,7 @@ export function claudeSwitchModelQuestion(screen: string): boolean {
 async function applyClaudeSessionModel(input: {
   model: Model; effort?: string; read: () => Promise<Screen>; write: (data: string) => Promise<unknown>;
   assertCurrent: () => Promise<void>; wait?: (ms: number) => Promise<void>; runtimeId: string; readUndimmed?: () => Promise<string>;
+  widen?: WidenPane;
 }): Promise<void> {
   const wait = input.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const levels: readonly string[] = CLAUDE_EFFORT_LEVELS;
@@ -679,6 +713,16 @@ async function applyClaudeSessionModel(input: {
   // A pane too small for the menu box never shows its rows together with its key hints.
   const tooSmall = () => new SpaceConflictError("The Claude model menu does not fit this pane. Enlarge the pane, then choose the model again.");
   let chosen: { withEffort: boolean; answers: number } | null = null;
+  // A pane too small for the menu is widened once for the pick (the menu redraws), then given back its own size.
+  let restore: (() => Promise<unknown>) | null = null;
+  const widened = async () => {
+    if (restore || !input.widen) return false;
+    restore = await input.widen();
+    if (!restore) return false;
+    pageDowns = 0; seekDown = true; actedOn = -1;
+    return true;
+  };
+  try {
   for (let attempt = 0; attempt < 60; attempt++) {
     await wait(250);
     await input.assertCurrent();
@@ -697,7 +741,11 @@ async function applyClaudeSessionModel(input: {
     }
     if (/unknown command|unrecognized command/i.test(after.text)) throw new SpaceConflictError("The CLI rejected the model selection. Check its model menu.");
     const menu = claudeModelMenu(after.text);
-    if (!menu?.rows.length) continue;
+    if (!menu?.rows.length) {
+      // 5/11 Bruno/Bob (52×12): PgDn scrolled the open menu past its title and its hints, no row parsed and the pick waited out.
+      if (!restore && nativeSettingsMenu(after.text)) { if (await widened()) continue; throw tooSmall(); }
+      continue;
+    }
     const target = menu.rows.find((row) => row.label.toLowerCase() === family);
     const highlighted = menu.rows.find((row) => row.highlighted);
     if (menu.hintsVisible) pageDowns = 0;
@@ -709,7 +757,9 @@ async function applyClaudeSessionModel(input: {
       // Rows outside a short pane's window are hidden: look below the window first, then above it.
       seekDown &&= menu.moreBelow;
       if (!seekDown && !menu.moreAbove) {
-        throw menu.hintsVisible ? new SpaceConflictError("This model is not available in this Claude account's model menu. Choose another model.") : tooSmall();
+        if (menu.hintsVisible) throw new SpaceConflictError("This model is not available in this Claude account's model menu. Choose another model.");
+        if (await widened()) continue;
+        throw tooSmall();
       }
       key = seekDown ? "\u001b[B" : "\u001b[A";
     } else if (menu.hintsVisible && !menu.sessionOnly) {
@@ -718,7 +768,10 @@ async function applyClaudeSessionModel(input: {
       key = target.number > highlighted.number ? "\u001b[B" : "\u001b[A";
     } else if (!menu.hintsVisible) {
       // The highlight, the effort line or "s to use this session only" is below the clipped bottom of the menu box.
-      if (++pageDowns > 2) throw tooSmall();
+      if (++pageDowns > 2) {
+        if (await widened()) continue;
+        throw tooSmall();
+      }
       key = "\u001b[6~";
     } else if (!highlighted || (effort && menu.effortSupported && !menu.effort)) {
       continue;
@@ -740,6 +793,10 @@ async function applyClaudeSessionModel(input: {
     throw new SpaceConflictError("Claude Code asked \"Switch model?\" and did not take the answer, so the switch was cancelled. Choose the model again.");
   }
   throw new SpaceConflictError("Claude Code has not confirmed the model change. Check its terminal for the model menu.");
+  } finally {
+    // Escape the menu at the wide size first (the caller's cleanup may not recognise it once narrowed again).
+    if (restore) { await cleanupNativeSettingsMenu(input).catch(() => undefined); await (restore as () => Promise<unknown>)(); }
+  }
 }
 
 async function applyNativeCliModel(input: {
@@ -751,6 +808,7 @@ async function applyNativeCliModel(input: {
   assertCurrent: () => Promise<void>;
   wait?: (ms: number) => Promise<void>;
   readUndimmed?: () => Promise<string>;
+  widen?: WidenPane;
 }): Promise<void> {
   if (!identifier.test(input.model.id)) throw new SpaceConflictError("The selected CLI model identifier is invalid.");
   if (input.runtimeId === "cli:claude") return applyClaudeSessionModel(input);
@@ -777,7 +835,10 @@ async function applyNativeCliModel(input: {
     targetModel = input.model.displayName;
   } else if (input.runtimeId === "cli:gemini") {
     const effort = input.effort ?? input.model.defaultReasoningEffort;
-    if (effort && ['low', 'medium', 'high'].includes(effort) && !/-(low|medium|high)$/.test(targetModel)) {
+    const advertised = effort ? geminiVariantIds.get(`${targetModel}\u0000${effort}`) : undefined;
+    if (advertised) {
+      targetModel = advertised;
+    } else if (effort && ['low', 'medium', 'high'].includes(effort) && !/-(low|medium|high)$/.test(targetModel)) {
       targetModel = `${targetModel}-${effort}`;
     }
   }

@@ -1,11 +1,30 @@
 import { describe, expect, it } from "vitest";
 import {
   VAULT_PASSWORD_DEFAULTS, VAULT_PASSWORD_DIGITS, VAULT_PASSWORD_LOWER, VAULT_PASSWORD_SYMBOLS, VAULT_PASSWORD_UPPER, VAULT_PATTERN_MAX_LENGTH, VaultPasswordPolicyError,
-  generateVaultPassword, vaultItemMetadataSchema, vaultPasswordPolicyForField, vaultPasswordPolicySchema, vaultPatternIsSafe, vaultUniformIndex
+  generateVaultPassword, vaultGeneratePolicySchema, vaultItemMetadataSchema, vaultPasswordPolicyForField, vaultPasswordPolicySchema, vaultPatternIsSafe, vaultPolicyConstraints, vaultUniformIndex
 } from "../src/index.js";
 
 const has = (value: string, set: string) => [...value].some((char) => set.includes(char));
 const only = (value: string, set: string) => [...value].every((char) => set.includes(char));
+
+describe("a site's stated rules (queue item 37)", () => {
+  it("merge with the field: the stricter length wins, NONE drops symbols, an 8-char floor and a policy nothing satisfies fail closed", () => {
+    const merged = vaultPolicyConstraints({ minLength: null, maxLength: 64 }, { minLength: 8, maxLength: 18, symbols: "NONE" });
+    expect(merged.field).toMatchObject({ minLength: 8, maxLength: 18 });
+    expect(generateVaultPassword(merged.field, merged.base)).toMatch(/^[A-Za-z0-9]{18}$/);
+    // The page's own smaller maximum still wins over the declared one.
+    expect(vaultPolicyConstraints({ maxLength: 12 }, { maxLength: 18 }).field.maxLength).toBe(12);
+    const own = vaultPolicyConstraints({}, { symbols: "!!_" });
+    expect(own.base.symbols).toBe("!_");
+    expect(generateVaultPassword(own.field, own.base)).toMatch(/[!_]/);
+    expect(vaultPolicyConstraints({}, undefined).base).toEqual(VAULT_PASSWORD_DEFAULTS);
+    expect(() => { const tight = vaultPolicyConstraints({ maxLength: 6 }, { minLength: 8 }); generateVaultPassword(tight.field, tight.base); }).toThrow(VaultPasswordPolicyError);
+    expect(vaultGeneratePolicySchema.safeParse({ minLength: 7 }).success).toBe(false);
+    expect(vaultGeneratePolicySchema.safeParse({ minLength: 20, maxLength: 10 }).success).toBe(false);
+    expect(vaultGeneratePolicySchema.safeParse({ symbols: "a b" }).success).toBe(false);
+    expect(vaultGeneratePolicySchema.safeParse({ symbols: "NONE", extra: 1 }).success).toBe(false);
+  });
+});
 
 describe("Vault password generator: policy", () => {
   it("defaults to 24 characters with every class", () => {

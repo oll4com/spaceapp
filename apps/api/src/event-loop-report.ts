@@ -1,18 +1,20 @@
 import { Session } from "node:inspector/promises";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
+import { takeSpawnCounts } from "./safe-child-process.js";
 
 const RESOLUTION_MS = 20;
 // The histogram records the time between timer ticks, so it includes the sampling resolution itself.
 const lateMs = (nanoseconds: number) => Math.max(0, Math.round(nanoseconds / 1e5 - RESOLUTION_MS * 10) / 10);
 
 interface ProfileNode { id: number; callFrame: { functionName: string; url: string; lineNumber: number }; children?: number[] }
+export interface HeapProfileNode { callFrame: ProfileNode["callFrame"]; selfSize: number; children?: HeapProfileNode[] }
 export interface CpuProfile { nodes: ProfileNode[]; samples?: number[]; timeDeltas?: number[] }
 
 // Frames name files relative to the checkout this module runs from (src/ and dist/ sit two levels below it), so stable,
 // dev and a public install all log "apps/api/dist/app.js:10" without naming a host path.
 const CHECKOUT_URL = new URL("../../../", import.meta.url).href;
 
-function frameLabel(node: ProfileNode): string {
+function frameLabel(node: Pick<ProfileNode, "callFrame">): string {
   const { functionName, url, lineNumber } = node.callFrame;
   const file = (url.startsWith(CHECKOUT_URL) ? url.slice(CHECKOUT_URL.length) : url).replace(/^file:\/\//, "");
   return `${functionName || "(anonymous)"}${file ? ` ${file}:${lineNumber + 1}` : ""}`;
@@ -72,11 +74,34 @@ export function summarizeCpuProfile(profile: CpuProfile, top = 6) {
 }
 
 /**
+ * Where the memory still held at the end of a sampled interval was allocated (V8's sampling heap profiler keeps only
+ * samples whose objects are alive): the allocating frame and its two callers, in MB. API audit 4/11: the heap grew
+ * 440 -> 1,400 MB before the 01:33 UTC heap-limit crash and nothing named what held it. Only code locations, never data.
+ */
+export function summarizeHeapProfile(head: HeapProfileNode, top = 6) {
+  const sites = new Map<string, number>();
+  let liveBytes = 0;
+  const pending: Array<{ node: HeapProfileNode; path: string[] }> = [{ node: head, path: [] }];
+  while (pending.length) {
+    const { node, path } = pending.pop()!;
+    const here = node.callFrame.functionName === "(root)" ? path : [frameLabel(node), ...path].slice(0, 3);
+    if (node.selfSize > 0) {
+      liveBytes += node.selfSize;
+      const site = here.join(" < ") || "(root)";
+      sites.set(site, (sites.get(site) ?? 0) + node.selfSize);
+    }
+    for (const child of node.children ?? []) pending.push({ node: child, path: here });
+  }
+  const mb = (bytes: number) => Math.round(bytes / 2 ** 20 * 10) / 10;
+  return { heapLiveMb: mb(liveBytes), heapTop: [...sites].sort((a, b) => b[1] - a[1]).slice(0, top).map(([site, bytes]) => ({ site, mb: mb(bytes) })) };
+}
+
+/**
  * One log line per interval with the API process's event-loop utilization and delay percentiles.
  * Slow requests are logged one by one; this tells whether the single Node thread itself was busy
  * (stable ran at 36-46% of a core with no such figure, 2026-10-24). The first interval, and the interval after one
  * that blocked the loop for `profileAfterBlockMs` (at most once per `profileEveryMs`), also run V8's sampling profiler
- * (10 ms) and log `event_loop.profile`: no other profiler reaches the API. A profiled interval ran at ~50% event-loop
+ * (10 ms) with the sampling heap profiler (128 KB) and log `event_loop.profile`: no other profiler reaches the API. A profiled interval ran at ~50% event-loop
  * utilization against ~4% without (dev, 2026-10-24), so it no longer runs every hour.
  */
 export function reportEventLoopLoad(
@@ -101,6 +126,7 @@ export function reportEventLoopLoad(
       await started.post("Profiler.enable");
       await started.post("Profiler.setSamplingInterval", { interval: 10_000 });
       await started.post("Profiler.start");
+      await started.post("HeapProfiler.startSampling", { samplingInterval: 128 * 1024 });
       session = started;
     } catch {
       profilerFailed = true;
@@ -113,7 +139,8 @@ export function reportEventLoopLoad(
     if (!running) return;
     try {
       const { profile } = await running.post("Profiler.stop");
-      log.info({ event: "event_loop.profile", ...summarizeCpuProfile(profile) }, "Event loop profile");
+      const heap = await running.post("HeapProfiler.stopSampling").then(({ profile: sampled }) => summarizeHeapProfile(sampled.head), () => null);
+      log.info({ event: "event_loop.profile", ...summarizeCpuProfile(profile), ...heap }, "Event loop profile");
     } catch {
       profilerFailed = true;
     } finally {
@@ -132,7 +159,8 @@ export function reportEventLoopLoad(
       utilization: Math.round(utilization * 1000) / 1000,
       delayP50Ms: lateMs(delay.percentile(50)),
       delayP99Ms: lateMs(delay.percentile(99)),
-      delayMaxMs: lateMs(delay.max)
+      delayMaxMs: lateMs(delay.max),
+      spawns: takeSpawnCounts()
     }, "Event loop load");
     delay.reset();
     void finishProfile().then(() => blocked ? startProfile() : undefined);

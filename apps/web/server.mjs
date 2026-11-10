@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { webSentryConfig } from "./sentry-config.mjs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
@@ -101,10 +102,13 @@ function safeContactEmail(value) {
 }
 
 function sendHomepageConfig(request, response) {
+  let release;
+  try { release = JSON.parse(readFileSync(path.join(distDir, "sentry-build.json"), "utf8")).release; } catch { /* Older builds have no stamp. */ }
+  const sentry = webSentryConfig(process.env, release);
   const body = `window.__SPACE_PUBLIC_CONFIG__=${JSON.stringify({
     discordUrl: safeDiscordInvite(process.env.SPACE_PUBLIC_DISCORD_URL),
     contactEmail: safeContactEmail(process.env.SPACE_PUBLIC_CONTACT_EMAIL)
-  })};\n`;
+  })};\n${sentry ? `window.__SPACE_SENTRY__=${JSON.stringify(sentry)};\n` : ""}`;
   response.writeHead(200, {
     "cache-control": "no-store",
     "content-length": Buffer.byteLength(body),
@@ -551,6 +555,13 @@ const server = http.createServer((request, response) => {
     return;
   }
 
+  // Hidden source maps must stay private even after a failed upload or with stale retained assets.
+  let decodedPath;
+  try { decodedPath = decodeURIComponent(requestUrl.pathname); } catch { decodedPath = requestUrl.pathname; }
+  if (/\.map(?:\.(?:gz|br))?$/i.test(decodedPath)) {
+    sendJson(response, 404, { error: { code: "NOT_FOUND", message: "The requested file does not exist." } });
+    return;
+  }
   const staticPath = resolveStaticPath(requestUrl.pathname);
   const staticFileExists = staticPath && existsSync(staticPath) && statSync(staticPath).isFile();
   if (isAssetPath(requestUrl.pathname) && (!staticFileExists || !isResolvedAssetPath(staticPath))) {

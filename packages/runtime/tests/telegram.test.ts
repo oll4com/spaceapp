@@ -176,6 +176,11 @@ describe("Telegram secret storage and pairing", () => {
     });
     expect(sent).toEqual([{ chatId: "998877", text: expect.stringContaining("Space") }]);
     expect((await persistence.getIntegration()).legacySuppressionActive).toBe(true);
+    // A direct line over Telegram's 4,096 goes whole, in parts (plan xCBrZwhCTzmC step 4: no silent cut at 3,900).
+    sent.length = 0;
+    await expect(manager.notify(`${"z".repeat(5_000)}END`)).resolves.toBe(true);
+    expect(sent.map((item) => item.text.length)).toEqual([3_900, 1_103]);
+    expect(sent.map((item) => item.text).join("")).toBe(`${"z".repeat(5_000)}END`);
   });
 
   it("can retry pairing activation after a transient database failure without losing the matched update", async () => {

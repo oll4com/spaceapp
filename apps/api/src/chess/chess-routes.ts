@@ -21,6 +21,7 @@ import {
   defaultSwissRounds,
   type ChessTournamentSettings,
 } from "./chess-tournament.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
  * Chess tournament API for the Benchmark page. Reads are open to signed-in
@@ -30,7 +31,7 @@ import {
  * blindly.
  */
 
-const DEFAULT_STATE_FILE = "/opt/spaceapp/var/chess-tournament.json";
+const DEFAULT_STATE_FILE = `${SPACE_INSTALL_ROOT}/var/chess-tournament.json`;
 export const MAX_CHESS_CONTESTANTS = 128;
 const PROVIDER_CHECK_TIMEOUT_MS = 60_000;
 const PROVIDER_CHECK_CONCURRENCY = 6;

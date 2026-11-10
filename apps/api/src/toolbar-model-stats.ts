@@ -1,18 +1,15 @@
-import { execFile } from "./safe-child-process.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { copyFile, open, readFile, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { promisify } from "node:util";
 import { toolbarModelStatsSchema } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
 import type { PaneCliSession, ToolbarModelStats, ToolbarModelStatsModel } from "@space/contracts";
 import { opencodeDirectParityRoot } from "./cli-parity.js";
 import { opencodeNativeSessionIdPattern, readOpenCodeNativeSessionId } from "./opencode-native-session.js";
+import { readSqliteRows } from "./sqlite-read.js";
+import { SPACE_AGENT_HOME } from "@space/contracts";
 
-const execFileAsync = promisify(execFile);
-const sqliteTimeoutMs = 5_000;
-const sqliteMaxBuffer = 2 * 1024 * 1024;
 const codexRolloutTailMaxBytes = 8 * 1024 * 1024;
 const codexStateDbCandidatesMax = 64;
 const modelStatsErrorsMax = 20;
@@ -77,17 +74,8 @@ export async function resolveOpenCodeDbPath(stateRoot: string): Promise<string |
 
 export async function runSqliteJson<T>(dbPath: string, sql: string): Promise<T[]> {
   try {
-    const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json", dbPath, sql], {
-      timeout: sqliteTimeoutMs,
-      maxBuffer: sqliteMaxBuffer
-    });
-    const parsed = JSON.parse(stdout) as unknown;
-    return Array.isArray(parsed) ? (parsed as T[]) : [];
-  } catch (error) {
-    const cause = error && typeof error === "object" && "code" in error && typeof error.code === "string"
-      ? error.code
-      : "UNKNOWN";
-    if (cause === "ETIMEDOUT" || cause === "ENOENT") throw error;
+    return readSqliteRows<T>(dbPath, sql);
+  } catch {
     return runSqliteSnapshotFallback(dbPath, sql);
   }
 }
@@ -100,12 +88,7 @@ export async function runSqliteSnapshotFallback<T>(dbPath: string, sql: string):
       const suffix = candidate.endsWith("-wal") ? "-wal" : candidate.endsWith("-shm") ? "-shm" : "";
       await copyFile(candidate, `${snapshotPath}${suffix}`).catch(() => undefined);
     }
-    const { stdout } = await execFileAsync("sqlite3", ["-json", snapshotPath, sql], {
-      timeout: sqliteTimeoutMs,
-      maxBuffer: sqliteMaxBuffer
-    });
-    const parsed = JSON.parse(stdout) as unknown;
-    return Array.isArray(parsed) ? (parsed as T[]) : [];
+    return readSqliteRows<T>(snapshotPath, sql, { readOnly: false });
   } catch {
     return [];
   } finally {
@@ -665,7 +648,7 @@ export function createToolbarModelStatsCollector(input: {
   now?: () => Date;
 }): ToolbarModelStatsCollector {
   const stateRoot = input.stateRoot ?? join(opencodeDirectParityRoot, "state");
-  const codexHome = input.codexHome ?? "/var/lib/spaceapp-user/.codex";
+  const codexHome = input.codexHome ?? `${SPACE_AGENT_HOME}/.codex`;
   const now = input.now ?? (() => new Date());
   return async ({ windowMinutes }) => {
     const errors: string[] = [];

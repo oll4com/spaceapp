@@ -4,7 +4,8 @@
  * only its model id. The key goes in the `x-goog-api-key` header, never in a URL, so it cannot reach a log line.
  */
 export const GOOGLE_AI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
-export const GOOGLE_AI_KEY_PATTERN = /^AIza[0-9A-Za-z_-]{35}$/;
+/** AI Studio's classic `AIza…` keys and its newer `AQ.…` keys (6/11: new keys come only in that form). */
+export const GOOGLE_AI_KEY_PATTERN = /^(?:AIza[0-9A-Za-z_-]{35}|AQ\.[0-9A-Za-z_.-]{20,200})$/;
 /** Gemini embedding models served on Google AI key accounts; every other model stays on the OpenAI keys. */
 export const GEMINI_EMBEDDING_MODELS = new Set(["gemini-embedding-001"]);
 export const GEMINI_TASK_TYPES = new Set(["RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY", "SEMANTIC_SIMILARITY", "CLASSIFICATION", "CLUSTERING"]);

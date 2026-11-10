@@ -11,6 +11,13 @@ import { DEMO_FIXED_AT } from "./demo-fixture.js";
 
 /** The optional modules the public mock has on: the public release's modules, without Freelance Copilot (1.1.6). */
 export const PUBLIC_MOCK_MODULES = ["games", "job-copilot", "mail-copilot", "marketing-copilot", "channels", "telegram", "waitlist", "desktop-updates"] as const;
+/** `?modules=a,b` keeps only those of the mock's modules (ARCH-003: a real-browser view of a pane whose module is off). */
+export function publicMockModules(search: string): string[] {
+  const asked = new URLSearchParams(search).get("modules");
+  if (asked === null) return [...PUBLIC_MOCK_MODULES];
+  const keep = new Set(asked.split(",").map((id) => id.trim()));
+  return PUBLIC_MOCK_MODULES.filter((id) => keep.has(id));
+}
 export const COPILOTS_ROOM_ID = "room:demo-copilots";
 export const MAIL_PANE_ID = "pane:demo-mail-copilot";
 export const JOB_PANE_ID = "pane:demo-job-copilot";
@@ -160,7 +167,7 @@ export class MockCopilots {
   private answer(method: string, args: unknown[]): unknown {
     switch (method) {
       // Operator-only surfaces of the maker's instance are not part of the public release: answer like a server without them.
-      case "roomShares": case "nous": case "nousMessages": case "nousOverview": case "nousDecisions": case "nousPaneBoard":
+      case "roomShares": case "nous": case "nousMessages": case "nousOperatorIndex": case "nousOverview": case "nousDecisions": case "nousPaneBoard":
         throw new SpaceApiError("Not available in the public release.", { status: 404, code: "NOT_FOUND" });
       // The demo shows a finished run; asking, steering or deleting needs real models.
       case "createCouncilRun": case "councilRunAction": case "deleteCouncilRun":
@@ -177,6 +184,7 @@ export class MockCopilots {
         subject: row.subject, snippet: row.snippet, receivedAt: at, unread: row.unread, starred: false, hasAttachment: false, messageCount: 1,
         labelIds: row.unread ? ["INBOX", "UNREAD"] : ["INBOX"] })), nextPageToken: null, errors: [] };
       case "mailThread": return { thread: mailThread(String(args[2])) };
+      case "mailThreadLabels": return { labels: [], history: [] };
       case "mailCopilotRun": return this.mailRun();
       case "startMailCopilotRun": return { ...this.mailRun(), kickoffSent: false };
       case "pauseMailCopilotRun": case "stopMailCopilotRun": return this.mailRun();

@@ -36,8 +36,20 @@ export function hashKey(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-export function header(request: FastifyRequest, name: string): string | null {
+/** NGW_MODE=nous keys sticky bindings by (tenant, session), so two tenants with the same session id never share one; "" otherwise. */
+export const stickyScope = (request: Pick<FastifyRequest, "ngwTenantId">) => request.ngwTenantId ? `${request.ngwTenantId}:` : "";
+
+export function header(request: Pick<FastifyRequest, "headers">, name: string): string | null {
   const value = request.headers[name];
   const first = Array.isArray(value) ? value[0] : value;
   return first?.trim() || null;
+}
+
+/**
+ * The caller's x-request-id as the request log's id, so a Space request and its gateway row share one id; null (the
+ * gateway makes its own) unless it is 1-120 visible ASCII characters, the request_id column's limit (OBS-006).
+ */
+export function clientRequestId(request: Pick<FastifyRequest, "headers">): string | null {
+  const value = header(request, "x-request-id");
+  return value && /^[\x21-\x7e]{1,120}$/.test(value) ? value : null;
 }

@@ -1,6 +1,8 @@
+import { captureWebError } from "./sentry-bootstrap.js";
 // Always-on, bounded reporting of uncaught browser errors to the API (plan 2.6).
 // Only the error name and same-origin bundle locations leave the browser: no
 // message, no stack text, no query strings, nothing the user typed or saw.
+// The message goes only to the desktop app's own log on this computer (`local`), which redacts it.
 
 export interface ClientErrorReport {
   kind: "error" | "rejection";
@@ -66,15 +68,23 @@ function fingerprint(report: ClientErrorReport): string {
  * one once per page load, at most CLIENT_ERROR_REPORT_LIMIT. Sending failures
  * are ignored so reporting can never cause more errors. Returns an uninstaller.
  */
+export function clientErrorMessage(error: unknown): string {
+  try {
+    const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+    return typeof message === "string" ? message.slice(0, 2000) : "";
+  } catch { return ""; }
+}
+
 export function installClientErrorReporter(options: {
   send: (report: ClientErrorReport) => Promise<unknown>;
+  local?: (report: ClientErrorReport, message: string) => void;
   target?: Pick<Window, "addEventListener" | "removeEventListener">;
   origin?: string;
 }): () => void {
   const target = options.target ?? window;
   const origin = options.origin ?? window.location.origin;
   const reported = new Map<string, ClientErrorReport>();
-  const report = (next: ClientErrorReport) => {
+  const report = (next: ClientErrorReport, error: unknown) => {
     const key = fingerprint(next);
     const known = reported.get(key);
     if (known) {
@@ -83,19 +93,28 @@ export function installClientErrorReporter(options: {
     }
     if (reported.size >= CLIENT_ERROR_REPORT_LIMIT) return;
     reported.set(key, next);
+    captureWebError(error);
+    try { options.local?.({ ...next }, clientErrorMessage(error)); } catch { /* Diagnostics must not break reporting. */ }
     void options.send({ ...next }).catch(() => undefined);
   };
   const onError = (event: Event) => {
     // Resource load failures (img/script tags) are not ErrorEvents and carry no stack.
     if (typeof ErrorEvent === "undefined" || !(event instanceof ErrorEvent)) return;
-    report(clientErrorReport("error", event.error, origin, { filename: event.filename, line: event.lineno, column: event.colno }));
+    report(clientErrorReport("error", event.error, origin, { filename: event.filename, line: event.lineno, column: event.colno }), event.error ?? event.message);
   };
   const onRejection = (event: Event) => {
-    report(clientErrorReport("rejection", (event as PromiseRejectionEvent).reason, origin));
+    const reason = (event as PromiseRejectionEvent).reason;
+    report(clientErrorReport("rejection", reason, origin), reason);
   };
+  const onSurfaceError = (event: Event) => {
+    const error: unknown = (event as CustomEvent<unknown>).detail;
+    report(clientErrorReport("error", error, origin), error);
+  };
+  target.addEventListener("space:surface-error", onSurfaceError);
   target.addEventListener("error", onError);
   target.addEventListener("unhandledrejection", onRejection);
   return () => {
+    target.removeEventListener("space:surface-error", onSurfaceError);
     target.removeEventListener("error", onError);
     target.removeEventListener("unhandledrejection", onRejection);
   };

@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { liveAudioProviderIdSchema, type LiveAudioProviderId } from "./schemas.js";
+import { type LiveAudioProviderId } from "./schemas.js";
+import { SPACE_INSTALL_ROOT } from "./host-paths.js";
 
 export const liveAudioTransportTypeSchema = z.enum(["webrtc", "websocket"]);
 export type LiveAudioTransportType = z.infer<typeof liveAudioTransportTypeSchema>;
@@ -46,6 +47,32 @@ export interface LiveAudioProviderDescriptor {
   credentialKeyFiles: string[];
 }
 
+// Voices checked against the live APIs on 2026-11-08 (Sonic voices are Cartesia ids; their names are not published here).
+const SONIC_VOICES: Omit<LiveAudioVoice, "providerId">[] = [
+  { id: "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc", label: "Sonic voice 1", gender: "female", description: "Cartesia Sonic 3" },
+  { id: "794f9389-aac1-45b6-b726-9d9369183238", label: "Sonic voice 2", gender: "female", description: "Cartesia Sonic 3" },
+  { id: "a167e0f3-df7e-4d52-a9c3-f949145efdab", label: "Sonic voice 3", gender: "male", description: "Cartesia Sonic 3" },
+  { id: "f786b574-daa5-4673-aa0c-cbe3e8534c02", label: "Sonic voice 4", gender: "male", description: "Cartesia Sonic 3" }
+];
+const MURF_VOICES: Omit<LiveAudioVoice, "providerId">[] = [
+  { id: "en-US-natalie", label: "Natalie", gender: "female", description: "Murf Falcon, EN-US" },
+  { id: "el-GR-stavros", label: "Stavros", gender: "male", description: "Murf Falcon, Greek" }
+];
+
+/** A grant cascade provider: speech to text, Space's voice delegate (tools), the grant's streaming voice. */
+function grantProvider(id: LiveAudioProviderId, displayName: string, description: string, credentialKeyFiles: string[], credentialEnvVars: string[],
+  models: [id: string, label: string, description: string, defaultVoice: string][], voices: LiveAudioVoice[]): LiveAudioProviderDescriptor {
+  return {
+    id, displayName, description, transport: "websocket", defaultModel: models[0]![0], defaultVoice: models[0]![3],
+    supportsWebRtc: false, supportsWebSocket: true, supportsVision: false, supportsTools: true, supportsInterruption: true,
+    credentialEnvVars, credentialKeyFiles, voices,
+    models: models.map(([modelId, label, modelDescription, defaultVoice]) => ({
+      id: modelId, label, description: modelDescription, providerId: id, defaultVoice, nativeAudio: false,
+      capabilities: { bidirectionalAudio: true, speechToSpeech: true, interruption: true, tools: true, vision: false }
+    }))
+  };
+}
+
 export const LIVE_AUDIO_PROVIDERS: Record<LiveAudioProviderId, LiveAudioProviderDescriptor> = {
   openai: {
     id: "openai",
@@ -60,7 +87,7 @@ export const LIVE_AUDIO_PROVIDERS: Record<LiveAudioProviderId, LiveAudioProvider
     supportsTools: true,
     supportsInterruption: true,
     credentialEnvVars: ["SPACE_VOICE_TRANSCRIPTION_KEY_FILE", "OPENAI_API_KEY"],
-    credentialKeyFiles: ["/opt/spaceapp/secrets/space-openai-voice.key"],
+    credentialKeyFiles: [`${SPACE_INSTALL_ROOT}/secrets/space-openai-voice.key`],
     models: [
       {
         id: "gpt-live-1",
@@ -157,8 +184,8 @@ export const LIVE_AUDIO_PROVIDERS: Record<LiveAudioProviderId, LiveAudioProvider
       "GOOGLE_API_KEY"
     ],
     credentialKeyFiles: [
-      "/opt/spaceapp/secrets/space-google-voice.key",
-      "/opt/spaceapp/secrets/space-gemini-voice.key"
+      `${SPACE_INSTALL_ROOT}/secrets/space-google-voice.key`,
+      `${SPACE_INSTALL_ROOT}/secrets/space-gemini-voice.key`
     ],
     models: [
       {
@@ -278,7 +305,7 @@ export const LIVE_AUDIO_PROVIDERS: Record<LiveAudioProviderId, LiveAudioProvider
       "AWS_SECRET_ACCESS_KEY"
     ],
     credentialKeyFiles: [
-      "/opt/spaceapp/secrets/space-aws-voice.key"
+      `${SPACE_INSTALL_ROOT}/secrets/space-aws-voice.key`
     ],
     models: [
       {
@@ -368,7 +395,7 @@ export const LIVE_AUDIO_PROVIDERS: Record<LiveAudioProviderId, LiveAudioProvider
     supportsTools: true,
     supportsInterruption: true,
     credentialEnvVars: [],
-    credentialKeyFiles: ["/opt/spaceapp/secrets/space-fish-audio.key"],
+    credentialKeyFiles: [`${SPACE_INSTALL_ROOT}/secrets/space-fish-audio.key`],
     models: [
       {
         id: "drama-3",
@@ -393,6 +420,33 @@ export const LIVE_AUDIO_PROVIDERS: Record<LiveAudioProviderId, LiveAudioProvider
       { id: "f3a2b90078d54a65af4b95f63bc7798e", label: "Sheila", providerId: "fish", gender: "female", description: "EN-US, female" }
     ]
   },
+  // Startup grants (operator 2026-11-08, plan clipboard:dwUAko_YB9yG): cascades through Space's grant bridge
+  // (apps/api/src/grant-voice-bridge.ts): the grant's speech to text, Space's voice delegate with tools, the grant's voice.
+  livekit: grantProvider("livekit", "LiveKit Inference", "LiveKit Inference speech to text (Deepgram Nova 3), Space's voice delegate with tools, and LiveKit Inference voices",
+    [`${SPACE_INSTALL_ROOT}/secrets/space-livekit.env`], ["SPACE_LIVEKIT_ENV_FILE"], [
+      ["livekit/cartesia-sonic-3", "Sonic 3 (LiveKit)", "Cartesia Sonic 3 through LiveKit Inference", SONIC_VOICES[0]!.id],
+      ["livekit/rime-arcana", "Rime Arcana (LiveKit)", "Rime Arcana through LiveKit Inference", "celeste"],
+      ["livekit/inworld-tts-1", "Inworld TTS 1 (LiveKit)", "Inworld TTS 1 through LiveKit Inference", "Ashley"]
+    ], [
+      ...SONIC_VOICES.map((voice) => ({ ...voice, providerId: "livekit" as const })),
+      ...[["celeste", "female"], ["luna", "female"], ["astra", "female"], ["orion", "male"]].map(([id, gender]) =>
+        ({ id: id!, label: `Rime ${id![0]!.toUpperCase()}${id!.slice(1)}`, providerId: "livekit" as const, gender: gender as "female" | "male", description: "Rime Arcana" })),
+      ...[["Ashley", "female"], ["Olivia", "female"], ["Dennis", "male"], ["Alex", "male"]].map(([id, gender]) =>
+        ({ id: id!, label: `Inworld ${id}`, providerId: "livekit" as const, gender: gender as "female" | "male", description: "Inworld TTS 1" }))
+    ]),
+  cartesia: grantProvider("cartesia", "Cartesia (Ink + Sonic 3)", "Cartesia Ink speech to text, Space's voice delegate with tools, and Cartesia Sonic 3",
+    [`${SPACE_INSTALL_ROOT}/secrets/space-cartesia.key`], ["SPACE_CARTESIA_KEY_FILE", "CARTESIA_API_KEY"], [
+      ["cartesia/sonic-3", "Sonic 3", "Cartesia Sonic 3 behind Cartesia Ink speech to text", SONIC_VOICES[0]!.id]
+    ], SONIC_VOICES.map((voice) => ({ ...voice, providerId: "cartesia" as const }))),
+  murf: grantProvider("murf", "Murf AI (Falcon)", "AssemblyAI (or LiveKit) speech to text, Space's voice delegate with tools, and Murf Falcon streaming voices",
+    [`${SPACE_INSTALL_ROOT}/secrets/space-murf.key`], ["SPACE_MURF_KEY_FILE", "MURF_API_KEY"], [
+      ["murf/falcon", "Falcon", "Murf Falcon streaming text to speech", MURF_VOICES[0]!.id]
+    ], MURF_VOICES.map((voice) => ({ ...voice, providerId: "murf" as const }))),
+  assemblyai: grantProvider("assemblyai", "AssemblyAI Universal-Streaming", "AssemblyAI Universal-Streaming speech to text, Space's voice delegate with tools, and a Murf or Sonic 3 voice",
+    [`${SPACE_INSTALL_ROOT}/secrets/space-assemblyai.key`], ["SPACE_ASSEMBLYAI_KEY_FILE", "ASSEMBLYAI_API_KEY"], [
+      ["assemblyai/universal-streaming-murf", "Universal-Streaming + Murf Falcon", "AssemblyAI speech to text with a Murf Falcon voice", MURF_VOICES[0]!.id],
+      ["assemblyai/universal-streaming-sonic", "Universal-Streaming + Sonic 3", "AssemblyAI speech to text with Cartesia Sonic 3 through LiveKit Inference", SONIC_VOICES[0]!.id]
+    ], [...MURF_VOICES, ...SONIC_VOICES].map((voice) => ({ ...voice, providerId: "assemblyai" as const }))),
   vercel: {
     id: "vercel",
     displayName: "Vercel AI Gateway",
@@ -412,8 +466,8 @@ export const LIVE_AUDIO_PROVIDERS: Record<LiveAudioProviderId, LiveAudioProvider
       "VERCEL_AI_GATEWAY_API_KEY"
     ],
     credentialKeyFiles: [
-      "/opt/spaceapp/secrets/space-vercel-voice.key",
-      "/opt/spaceapp/secrets/space-vercel-ai-gateway.key"
+      `${SPACE_INSTALL_ROOT}/secrets/space-vercel-voice.key`,
+      `${SPACE_INSTALL_ROOT}/secrets/space-vercel-ai-gateway.key`
     ],
     models: [
       {
@@ -510,6 +564,9 @@ export function getDefaultVoiceForProvider(providerId?: string | null): string {
   return getLiveAudioProvider(providerId).defaultVoice;
 }
 
+/** Providers that hear and speak through Space's bridge while Space's voice delegate answers (Fish and the startup grants). */
+export const CASCADE_LIVE_PROVIDERS: ReadonlySet<LiveAudioProviderId> = new Set<LiveAudioProviderId>(["fish", "livekit", "cartesia", "murf", "assemblyai"]);
+
 export function inferProviderFromModel(modelId?: string | null): LiveAudioProviderId {
   if (!modelId) return "openai";
   const trimmed = modelId.trim();
@@ -517,6 +574,7 @@ export function inferProviderFromModel(modelId?: string | null): LiveAudioProvid
   if (trimmed.startsWith("amazon.nova") || trimmed.startsWith("nova-")) return "amazon";
   if (trimmed === "local-qwen3-greek" || trimmed.startsWith("local-")) return "local";
   if (trimmed === "drama-3") return "fish";
+  for (const grant of ["livekit", "cartesia", "murf", "assemblyai"] as const) if (trimmed.startsWith(`${grant}/`)) return grant;
   if (trimmed.startsWith("openai/") || trimmed.includes("(Vercel)") || trimmed.startsWith("vercel/")) return "vercel";
   return "openai";
 }

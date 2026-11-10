@@ -1,4 +1,5 @@
-import { gatewayCompressionProvidersSchema } from "@space/contracts";
+import { GATEWAY_DEFAULT_PROVIDER_ORDER, GATEWAY_FREE_PLAN_PAUSE_REASON, gatewayCompressionProvidersSchema, gatewayPaceDay, gatewayProviderOrderOf, isGatewayFreePlan } from "@space/contracts";
+import { rollbackKeepingError } from "./rollback.js";
 import type {
   GatewayAccount, GatewayAccountStatus, GatewayApiKey, GatewayApiKeyLimit, GatewayCompressionMode, GatewayLimitType,
   GatewayLimitWindow, GatewayOutputPolicy, GatewayProvider, GatewayReasoningEffort, GatewayRequestLog, GatewayRequestLogFacets,
@@ -147,6 +148,49 @@ export interface GatewayUsageHistoryPoint {
   recordedAt: string;
 }
 
+/** The highest weekly (SECONDARY) sample of one account, quota and reset hour, read before that reset (later samples are stale). */
+export interface GatewayWeeklyPeak {
+  accountId: string;
+  quotaKey: string;
+  resetAt: string;
+  usedPercent: number;
+  lastSampleAt: string;
+}
+
+/** One account's daily rollup of one model: tokens (input with cache, plus output) and API value. */
+export interface GatewayAccountDayUsage {
+  day: string;
+  accountId: string;
+  model: string;
+  tokens: number;
+  costUsd: number;
+}
+
+/** One day (in the asked time zone) of one project's requests on one provider and account (token usage by process, plan clipboard:qH5emwVaV6yO). */
+export interface GatewayProjectDayUsage {
+  day: string;
+  /** The `x-space-project` header ("pane:<id>", "nous", "nous-operator", "nous-helper", ...); without one the pane its session ran under, else "key:<api key id>", else "client:<client>", else "". */
+  project: string;
+  provider: string;
+  /** "" without an account (an API key or a passed-through call). */
+  accountId: string;
+  model: string;
+  requests: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheCreationTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
+
+/** Requests (one request id) logged on one provider and then on another: a Space-pool fallback. */
+export interface GatewayProviderFallback {
+  fromProvider: string;
+  toProvider: string;
+  requests: number;
+  served: number;
+}
+
 export interface GatewayWarmupRecord {
   id: number;
   accountId: string;
@@ -280,6 +324,19 @@ export interface GatewayRequestStats {
   ttfb: { count: number; averageMs: number; minMs: number; maxMs: number };
 }
 
+/** A free key pool model's last check (space_gateway_model_checks): dead after a 410 or 404 until it answers 200 again. */
+export interface GatewayModelCheck {
+  provider: GatewayProvider;
+  model: string;
+  dead: boolean;
+  status: number;
+  reason: string | null;
+  deadSince: string | null;
+  checkedAt: string;
+}
+
+export interface GatewayProviderDailyUsage { provider: GatewayAccountRecord["provider"]; day: string; requests: number; inputTokens: number; outputTokens: number; reasoningTokens: number; costUsd: number }
+
 export interface GatewayRepository {
   getSettings(): Promise<GatewaySettings>;
   updateSettings(patch: GatewaySettingsUpdateRequest): Promise<GatewaySettings>;
@@ -349,8 +406,12 @@ export interface GatewayRepository {
   requestLogsAfter(afterId: string | null, limit: number): Promise<GatewayRequestLog[]>;
   /** Claude requests started between two times, to tell which Claude Code transcript messages went through the gateway. */
   claudeLogKeys(from: string, to: string): Promise<GatewayClaudeLogKey[]>;
+  /** Daily sums per provider and day since a day (YYYY-MM-DD), warm-ups left out: the free-token ledger (nous_msg:d9b67550). */
+  providerDailyUsage(sinceDay: string): Promise<GatewayProviderDailyUsage[]>;
   /** Recorded usage-window samples of one account since a time, oldest first. */
   usageHistory(accountId: string, since: string): Promise<GatewayUsageHistoryPoint[]>;
+  /** An account's 7-day used % at a time in the week resetting at `resetAt` (±1 h): its last sample until then, else the first after; null without one. */
+  weekUsedAt(accountId: string, at: string, resetAt: string): Promise<number | null>;
   /** The latest limit warm-up attempt of each account. */
   latestWarmups(): Promise<GatewayWarmupRecord[]>;
   /** Records a warm-up attempt; false when this account, window and reset already had one. */
@@ -361,7 +422,18 @@ export interface GatewayRepository {
   /** Counts, token totals and latency/TTFB over request logs since the given time. */
   requestStatsSince(since: string): Promise<GatewayRequestStats>;
   /** Daily rollups between two UTC dates (inclusive), grouped by day, model and account. */
-  usageReport(from: string, to: string): Promise<{ days: GatewayReportRowInput[]; models: GatewayReportRowInput[]; accounts: GatewayReportRowInput[] }>;
+  usageReport(from: string, to: string): Promise<{ days: GatewayReportRowInput[]; models: GatewayReportRowInput[]; accounts: GatewayReportRowInput[]; providers: GatewayReportRowInput[] }>;
+  /** Weekly peaks of the resets between two UTC dates (inclusive), by account, quota and reset hour. */
+  weeklyPeaks(from: string, to: string): Promise<GatewayWeeklyPeak[]>;
+  /**
+   * Request logs in [since, until) (warm-ups left out), by day in `timeZone`, project, provider and account; with `minutesOf`, only that
+   * project's rows, by UTC minute ("YYYY-MM-DDTHH:MM" in `day`), to share them among the Nous turns that ran then.
+   */
+  projectUsage(since: string, until: string, timeZone: string, minutesOf?: string): Promise<GatewayProjectDayUsage[]>;
+  /** Daily rollups of the accounts (not "no account") between two UTC dates (inclusive), by day, account and model. */
+  accountDailyUsage(from: string, to: string): Promise<GatewayAccountDayUsage[]>;
+  /** Space-pool fallbacks among the requests of two UTC dates (inclusive), by first and last provider. */
+  providerFallbacks(from: string, to: string): Promise<GatewayProviderFallback[]>;
   /** Adds compression results to the hourly rollups. */
   recordCompression(rows: GatewayCompressionRow[]): Promise<void>;
   /** Hourly compression rollups since the given time, oldest first. */
@@ -380,6 +452,8 @@ export interface GatewayRepository {
   findStickyBinding(keyHash: string, nowIso: string): Promise<GatewayStickyBinding | null>;
   /** Deletes expired bindings; returns rows removed. */
   pruneStickyBindings(nowIso: string): Promise<number>;
+  listModelChecks(): Promise<GatewayModelCheck[]>;
+  saveModelCheck(check: GatewayModelCheck): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -390,6 +464,8 @@ export const defaultGatewaySettings: Omit<GatewaySettings, "updatedAt"> = {
   planPriority: ["plus", "prolite", "pro"],
   stickyReallocationBudgetThresholdPercent: 95,
   exhaustionFloorPercent: 3,
+  claudeReservePercent: 20,
+  subscriptionRouting: "FILL_FIRST",
   compressionMode: "OFF",
   compressionProfile: "TOKEN",
   compressionCodeText: "ON",
@@ -403,6 +479,7 @@ export const defaultGatewaySettings: Omit<GatewaySettings, "updatedAt"> = {
   promptCacheTtlSeconds: 1800,
   importWithoutOverwrite: true,
   claudeApiKeyFallback: false,
+  providerOrder: GATEWAY_DEFAULT_PROVIDER_ORDER.map((entry) => ({ ...entry })),
   anthropicMonthlyBudgetUsd: null,
   anthropicCreditsUsd: null,
   warmupEnabled: false,
@@ -424,6 +501,8 @@ const settingsColumns: Record<keyof Omit<GatewaySettings, "updatedAt">, string> 
   planPriority: "plan_priority",
   stickyReallocationBudgetThresholdPercent: "sticky_reallocation_budget_threshold_percent",
   exhaustionFloorPercent: "exhaustion_floor_percent",
+  claudeReservePercent: "claude_reserve_percent",
+  subscriptionRouting: "subscription_routing",
   compressionMode: "compression_mode",
   compressionProfile: "compression_profile",
   compressionCodeText: "compression_code_text",
@@ -437,6 +516,7 @@ const settingsColumns: Record<keyof Omit<GatewaySettings, "updatedAt">, string> 
   promptCacheTtlSeconds: "prompt_cache_ttl_seconds",
   importWithoutOverwrite: "import_without_overwrite",
   claudeApiKeyFallback: "claude_api_key_fallback",
+  providerOrder: "provider_order",
   anthropicMonthlyBudgetUsd: "anthropic_monthly_budget_usd",
   anthropicCreditsUsd: "anthropic_credits_usd",
   warmupEnabled: "warmup_enabled",
@@ -480,6 +560,10 @@ function settingsRecord(row: Record<string, unknown>): GatewaySettings {
     planPriority: (row.plan_priority as string[] | null) ?? [],
     stickyReallocationBudgetThresholdPercent: Number(row.sticky_reallocation_budget_threshold_percent),
     exhaustionFloorPercent: Number(row.exhaustion_floor_percent),
+    // A database without migration 0296 yet reads as the default.
+    claudeReservePercent: row.claude_reserve_percent === undefined ? defaultGatewaySettings.claudeReservePercent : Number(row.claude_reserve_percent),
+    // A database without migration 0286 yet reads as the default.
+    subscriptionRouting: row.subscription_routing === "WEEKLY_PACE" ? "WEEKLY_PACE" : "FILL_FIRST",
     // Shadow was removed (migration 0172); a row read before that migration keeps what Shadow did.
     compressionMode: row.compression_mode === "ON" ? "ON" : "OFF",
     compressionProfile: row.compression_profile as GatewaySettings["compressionProfile"],
@@ -495,6 +579,8 @@ function settingsRecord(row: Record<string, unknown>): GatewaySettings {
     promptCacheTtlSeconds: row.prompt_cache_ttl_seconds === undefined ? defaultGatewaySettings.promptCacheTtlSeconds : Number(row.prompt_cache_ttl_seconds),
     importWithoutOverwrite: row.import_without_overwrite === undefined ? defaultGatewaySettings.importWithoutOverwrite : Boolean(row.import_without_overwrite),
     claudeApiKeyFallback: row.claude_api_key_fallback === undefined ? defaultGatewaySettings.claudeApiKeyFallback : Boolean(row.claude_api_key_fallback),
+    // A database without migration 0287 yet reads as the default order.
+    providerOrder: gatewayProviderOrderOf(row.provider_order),
     anthropicMonthlyBudgetUsd: num(row.anthropic_monthly_budget_usd),
     anthropicCreditsUsd: num(row.anthropic_credits_usd),
     warmupEnabled: row.warmup_enabled === undefined ? defaultGatewaySettings.warmupEnabled : Boolean(row.warmup_enabled),
@@ -638,6 +724,20 @@ function reportRow(row: Record<string, unknown>): GatewayReportRowInput {
 }
 
 /** One request's contribution to the daily savings rollup (warm-up requests are left out by the caller). */
+/**
+ * A request log row fitted to the CHECKs of space_gateway_request_logs and the daily sums. A batch is one INSERT, so text
+ * a client chose (its x-request-id, model, effort or tier) that is too long would otherwise drop every row of the batch,
+ * other clients' included, with their daily usage (OBS-006, 2026-11-03).
+ */
+export function fitRequestLogRow(row: GatewayRequestLogInsert): GatewayRequestLogInsert {
+  const fit = <T extends string | null | undefined>(value: T, max: number) => (typeof value === "string" ? value.slice(0, max) : value) as T;
+  return { ...row, requestId: fit(row.requestId, 120), model: fit(row.model, 160) || "unknown", planType: fit(row.planType, 40),
+    reasoningEffort: fit(row.reasoningEffort, 20), requestedServiceTier: fit(row.requestedServiceTier, 40), serviceTier: fit(row.serviceTier, 40),
+    transport: fit(row.transport, 40), upstreamTransport: fit(row.upstreamTransport, 40), status: fit(row.status, 40), errorCode: fit(row.errorCode, 120),
+    stickyKeySource: fit(row.stickyKeySource, 40), stickyKind: fit(row.stickyKind, 40), source: fit(row.source, 40),
+    upstreamRequestId: fit(row.upstreamRequestId, 120) };
+}
+
 export function savingsDailyKey(row: GatewayRequestLogInsert): { key: string; day: string; provider: string; model: string; client: string; project: string } {
   const day = row.requestedAt.slice(0, 10);
   const client = (row.clientName ?? "").slice(0, 80);
@@ -673,6 +773,25 @@ export function mergeKeyLimits(current: GatewayApiKeyLimit[], next: NonNullable<
   });
 }
 
+/**
+ * Reads each account's used % when its pace day began (plan clipboard:DotwYXVD2N3n), once per day: the gateway's router and the admin
+ * service both call it with the accounts they just listed. A failed read is tried again at the next call.
+ */
+export function createPaceDayStarts(repository: Pick<GatewayRepository, "weekUsedAt">) {
+  const known = new Map<string, { at: number; usedPercent: number }>();
+  return async (accounts: readonly GatewayAccount[], now: number) => {
+    await Promise.all(accounts.map(async ({ id, secondaryWindow: week }) => {
+      const resetAt = Date.parse(week.resetAt ?? "");
+      const day = gatewayPaceDay({ usedPercent: week.usedPercent, resetAt: Number.isFinite(resetAt) ? resetAt : null }, null, now);
+      const seen = known.get(id);
+      if (!day || (seen && Math.abs(seen.at - day.dayStartAt) < 3_600_000)) return;
+      const used = await repository.weekUsedAt(id, new Date(day.dayStartAt).toISOString(), week.resetAt!).catch(() => undefined);
+      if (used !== undefined) known.set(id, { at: day.dayStartAt, usedPercent: used ?? week.usedPercent! });
+    }));
+    return known;
+  };
+}
+
 function warmupRecord(row: Record<string, unknown>): GatewayWarmupRecord {
   return {
     id: Number(row.id), accountId: String(row.account_id), window: row.usage_window as GatewayWarmupRecord["window"], resetAt: iso(row.reset_at)!,
@@ -705,7 +824,7 @@ export class PostgresGatewayRepository implements GatewayRepository {
     const assignments = entries.map(([key], index) => `${settingsColumns[key]}=$${index + 1}`);
     const row = (await this.pool.query<Record<string, unknown>>(
       `UPDATE space_gateway_settings SET ${assignments.join(", ")}, updated_at=now() WHERE settings_id=1 RETURNING *`,
-      entries.map(([key, value]) => (key === "compressionProviders" ? JSON.stringify(value) : value)))).rows[0];
+      entries.map(([key, value]) => (key === "compressionProviders" || key === "providerOrder" ? JSON.stringify(value) : value)))).rows[0];
     return row ? settingsRecord(row) : this.getSettings();
   }
 
@@ -740,17 +859,20 @@ export class PostgresGatewayRepository implements GatewayRepository {
   }
 
   async upsertAccount(input: GatewayAccountInsert) {
+    const paidPlan = Boolean(input.planType && !isGatewayFreePlan(input.planType));
     const row = (await this.pool.query<Record<string, unknown>>(`INSERT INTO space_gateway_accounts(account_id,provider,label,email,
         external_account_id,plan_type,credentials_encrypted,credentials_expires_at,source,source_ref,last_refresh_at)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
       ON CONFLICT (provider, external_account_id) WHERE external_account_id IS NOT NULL DO UPDATE SET
         email=EXCLUDED.email, plan_type=COALESCE(EXCLUDED.plan_type, space_gateway_accounts.plan_type),
         credentials_encrypted=EXCLUDED.credentials_encrypted, credentials_expires_at=EXCLUDED.credentials_expires_at,
-        last_refresh_at=EXCLUDED.last_refresh_at, status=CASE WHEN space_gateway_accounts.status='PAUSED' THEN 'PAUSED' ELSE 'ACTIVE' END,
-        status_reason=CASE WHEN space_gateway_accounts.status='PAUSED' THEN space_gateway_accounts.status_reason ELSE NULL END, updated_at=now()
+        last_refresh_at=EXCLUDED.last_refresh_at,
+        status=CASE WHEN space_gateway_accounts.status='PAUSED' AND NOT (space_gateway_accounts.status_reason=$12 AND $13::boolean) THEN 'PAUSED' ELSE 'ACTIVE' END,
+        status_reason=CASE WHEN space_gateway_accounts.status='PAUSED' AND NOT (space_gateway_accounts.status_reason=$12 AND $13::boolean) THEN space_gateway_accounts.status_reason ELSE NULL END,
+        updated_at=now()
       RETURNING account_id`,
       [input.accountId, input.provider, input.label, input.email, input.externalAccountId, input.planType, input.credentialsEncrypted,
-        input.credentialsExpiresAt, input.source, input.sourceRef, input.lastRefreshAt])).rows[0]!;
+        input.credentialsExpiresAt, input.source, input.sourceRef, input.lastRefreshAt, GATEWAY_FREE_PLAN_PAUSE_REASON, paidPlan])).rows[0]!;
     return (await this.accountById(row.account_id as string))!;
   }
 
@@ -759,18 +881,21 @@ export class PostgresGatewayRepository implements GatewayRepository {
   }
 
   async replaceAccountSignIn(accountId: string, input: Omit<GatewayAccountInsert, "accountId" | "provider" | "label">) {
+    const paidPlan = Boolean(input.planType && !isGatewayFreePlan(input.planType));
     const row = (await this.pool.query<Record<string, unknown>>(`UPDATE space_gateway_accounts SET email=$2, external_account_id=$3,
         plan_type=COALESCE($4, plan_type), credentials_encrypted=$5, credentials_expires_at=$6, source=$7, source_ref=$8, last_refresh_at=$9,
-        status=CASE WHEN status='PAUSED' THEN 'PAUSED' ELSE 'ACTIVE' END, status_reason=CASE WHEN status='PAUSED' THEN status_reason ELSE NULL END,
+        status=CASE WHEN status='PAUSED' AND NOT (status_reason=$10 AND $11::boolean) THEN 'PAUSED' ELSE 'ACTIVE' END,
+        status_reason=CASE WHEN status='PAUSED' AND NOT (status_reason=$10 AND $11::boolean) THEN status_reason ELSE NULL END,
         blocked_until=NULL, updated_at=now()
       WHERE account_id=$1 RETURNING account_id`,
     [accountId, input.email, input.externalAccountId, input.planType, input.credentialsEncrypted, input.credentialsExpiresAt, input.source, input.sourceRef,
-      input.lastRefreshAt])).rows[0];
+      input.lastRefreshAt, GATEWAY_FREE_PLAN_PAUSE_REASON, paidPlan])).rows[0];
     return row ? this.accountById(accountId) : null;
   }
 
   async withAccountCredentialLock(accountId: string, update: (current: GatewayAccountRecord) => Promise<GatewayCredentialUpdate | null>) {
     const client = await this.pool.connect();
+    let rollbackFailed = false;
     try {
       await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 4920))", [accountId]);
@@ -795,10 +920,11 @@ export class PostgresGatewayRepository implements GatewayRepository {
       }
       await client.query("COMMIT");
     } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
+      const rollback = await rollbackKeepingError(client, error);
+      rollbackFailed = rollback.failed;
+      throw rollback.error;
     } finally {
-      (client as { release?: () => void }).release?.();
+      client.release?.(rollbackFailed || undefined);
     }
     return this.accountById(accountId);
   }
@@ -850,6 +976,7 @@ export class PostgresGatewayRepository implements GatewayRepository {
 
   async createApiKey(input: GatewayApiKeyInsert) {
     const client = await this.pool.connect();
+    let rollbackFailed = false;
     try {
       await client.query("BEGIN");
       // The output policy column (migration 0185) is written only when set, so a key can be created before the migration ran.
@@ -869,10 +996,11 @@ export class PostgresGatewayRepository implements GatewayRepository {
       }
       await client.query("COMMIT");
     } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
+      const rollback = await rollbackKeepingError(client, error);
+      rollbackFailed = rollback.failed;
+      throw rollback.error;
     } finally {
-      (client as { release?: () => void }).release?.();
+      client.release?.(rollbackFailed || undefined);
     }
     return (await this.keysWhere("WHERE key_id=$1", [input.keyId]))[0]!;
   }
@@ -881,6 +1009,7 @@ export class PostgresGatewayRepository implements GatewayRepository {
     const current = (await this.keysWhere("WHERE key_id=$1", [keyId]))[0];
     if (!current) return null;
     const client = await this.pool.connect();
+    let rollbackFailed = false;
     try {
       await client.query("BEGIN");
       const has = (field: keyof GatewayApiKeyPatch) => patch[field] !== undefined;
@@ -916,10 +1045,11 @@ export class PostgresGatewayRepository implements GatewayRepository {
       }
       await client.query("COMMIT");
     } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
+      const rollback = await rollbackKeepingError(client, error);
+      rollbackFailed = rollback.failed;
+      throw rollback.error;
     } finally {
-      (client as { release?: () => void }).release?.();
+      client.release?.(rollbackFailed || undefined);
     }
     return (await this.keysWhere("WHERE key_id=$1", [keyId]))[0] ?? null;
   }
@@ -975,6 +1105,7 @@ export class PostgresGatewayRepository implements GatewayRepository {
 
   async replaceAnthropicUsage(fromDay: string, rows: GatewayAnthropicUsageRow[]) {
     const client = await this.pool.connect();
+    let rollbackFailed = false;
     try {
       await client.query("BEGIN");
       await client.query(`DELETE FROM space_gateway_anthropic_usage WHERE day >= $1::date`, [fromDay]);
@@ -986,10 +1117,11 @@ export class PostgresGatewayRepository implements GatewayRepository {
       }
       await client.query("COMMIT");
     } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
+      const rollback = await rollbackKeepingError(client, error);
+      rollbackFailed = rollback.failed;
+      throw rollback.error;
     } finally {
-      client.release?.();
+      client.release?.(rollbackFailed || undefined);
     }
   }
 
@@ -1001,8 +1133,9 @@ export class PostgresGatewayRepository implements GatewayRepository {
       value: Number(row.value) }));
   }
 
-  async insertRequestLogs(rows: GatewayRequestLogInsert[]) {
-    if (rows.length === 0) return;
+  async insertRequestLogs(batch: GatewayRequestLogInsert[]) {
+    if (batch.length === 0) return;
+    const rows = batch.map(fitRequestLogRow);
     const columns = ["request_id", "requested_at", "provider", "account_id", "api_key_id", "model", "plan_type", "reasoning_effort",
       "requested_service_tier", "service_tier", "transport", "upstream_transport", "status", "error_code", "error_message", "latency_ms",
       "first_token_ms", "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens", "cost_usd", "compression_tokens_saved",
@@ -1082,6 +1215,15 @@ export class PostgresGatewayRepository implements GatewayRepository {
     return rows.map(requestLogRecord);
   }
 
+  async providerDailyUsage(sinceDay: string) {
+    const rows = (await this.pool.query<Record<string, unknown>>(`SELECT provider, day::text AS day, sum(requests) AS requests, sum(input_tokens) AS input_tokens,
+        sum(output_tokens) AS output_tokens, sum(COALESCE(reasoning_tokens, 0)) AS reasoning_tokens, sum(cost_usd) AS cost_usd
+      FROM space_gateway_usage_daily WHERE day >= $1::date GROUP BY provider, day ORDER BY day`, [sinceDay])).rows;
+    return rows.map((row): GatewayProviderDailyUsage => ({ provider: String(row.provider) as GatewayProviderDailyUsage["provider"], day: String(row.day).slice(0, 10),
+      requests: Number(row.requests), inputTokens: Number(row.input_tokens), outputTokens: Number(row.output_tokens), reasoningTokens: Number(row.reasoning_tokens),
+      costUsd: Math.round(Number(row.cost_usd) * 1e9) / 1e9 }));
+  }
+
   async claudeLogKeys(from: string, to: string) {
     const rows = (await this.pool.query<Record<string, unknown>>(`SELECT upstream_request_id, requested_at, model, input_tokens, output_tokens
       FROM space_gateway_request_logs WHERE provider = 'CLAUDE' AND requested_at BETWEEN $1 AND $2`, [from, to])).rows;
@@ -1148,6 +1290,18 @@ export class PostgresGatewayRepository implements GatewayRepository {
       usedPercent: Number(row.used_percent), resetAt: iso(row.reset_at), recordedAt: iso(row.recorded_at)! }));
   }
 
+  async weekUsedAt(accountId: string, at: string, resetAt: string) {
+    const week = `account_id = $1 AND quota_key = '' AND usage_window = 'SECONDARY'
+      AND reset_at BETWEEN $3::timestamptz - interval '1 hour' AND $3::timestamptz + interval '1 hour'`;
+    const row = (await this.pool.query<Record<string, unknown>>(`
+      (SELECT used_percent, 0 AS after FROM space_gateway_usage_history WHERE ${week}
+        AND recorded_at <= $2::timestamptz AND recorded_at > $3::timestamptz - interval '7 days 1 hour' ORDER BY recorded_at DESC, id DESC LIMIT 1)
+      UNION ALL
+      (SELECT used_percent, 1 AS after FROM space_gateway_usage_history WHERE ${week} AND recorded_at > $2::timestamptz ORDER BY recorded_at, id LIMIT 1)
+      ORDER BY after LIMIT 1`, [accountId, at, resetAt])).rows[0];
+    return row ? Number(row.used_percent) : null;
+  }
+
   async latestWarmups() {
     return (await this.pool.query<Record<string, unknown>>(`SELECT DISTINCT ON (account_id) * FROM space_gateway_warmups
       ORDER BY account_id, attempted_at DESC, id DESC`)).rows.map(warmupRecord);
@@ -1202,7 +1356,63 @@ export class PostgresGatewayRepository implements GatewayRepository {
         sum(output_tokens) AS output_tokens, sum(reasoning_tokens) AS reasoning_tokens, sum(reasoning_reported) AS reasoning_reported,
         sum(cost_usd) AS cost_usd, sum(compression_tokens_saved) AS compression_tokens_saved
       FROM space_gateway_usage_daily WHERE day BETWEEN $1::date AND $2::date GROUP BY 1 ORDER BY 1`, [from, to])).rows.map(reportRow);
-    return { days: await group("to_char(day, 'YYYY-MM-DD')"), models: await group("model"), accounts: await group("account_id") };
+    return { days: await group("to_char(day, 'YYYY-MM-DD')"), models: await group("model"), accounts: await group("account_id"), providers: await group("provider") };
+  }
+
+  async weeklyPeaks(from: string, to: string) {
+    const rows = (await this.pool.query<Record<string, unknown>>(`SELECT account_id, quota_key, max(reset_at) AS reset_at, max(used_percent) AS used_percent,
+        max(recorded_at) AS last_sample_at
+      FROM space_gateway_usage_history WHERE usage_window = 'SECONDARY' AND reset_at IS NOT NULL AND recorded_at <= reset_at
+        AND reset_at >= ($1::timestamp AT TIME ZONE 'UTC') AND reset_at < (($2::timestamp + interval '1 day') AT TIME ZONE 'UTC')
+      GROUP BY account_id, quota_key, date_trunc('hour', reset_at) ORDER BY 1, 2, 3`, [from, to])).rows;
+    return rows.map((row): GatewayWeeklyPeak => ({ accountId: String(row.account_id), quotaKey: String(row.quota_key ?? ""), resetAt: iso(row.reset_at)!,
+      usedPercent: Number(row.used_percent), lastSampleAt: iso(row.last_sample_at)! }));
+  }
+
+  async projectUsage(since: string, until: string, timeZone: string, minutesOf?: string) {
+    // An untagged request whose CLI session (sticky hash) also ran under exactly one pane tag, from `since` on, counts as that pane.
+    const rows = (await this.pool.query<Record<string, unknown>>(`WITH sessions AS (
+        SELECT sticky_key_hash, min(project) AS pane FROM space_gateway_request_logs
+        WHERE requested_at >= $1::timestamptz AND project LIKE 'pane:%' AND sticky_key_hash IS NOT NULL ${minutesOf === undefined ? "" : "AND false"}
+        GROUP BY 1 HAVING count(DISTINCT project) = 1)
+      SELECT ${minutesOf === undefined ? "to_char(l.requested_at AT TIME ZONE $3, 'YYYY-MM-DD')"
+        : "to_char(l.requested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI')"} AS day,
+        coalesce(nullif(l.project, ''), s.pane, 'key:' || l.api_key_id, 'client:' || nullif(l.client_name, ''), '') AS project, l.provider,
+        coalesce(l.account_id, '') AS account_id, l.model, count(*) AS requests,
+        coalesce(sum(l.input_tokens), 0) AS input_tokens, coalesce(sum(l.cached_input_tokens), 0) AS cached_input_tokens,
+        coalesce(sum(l.cache_creation_tokens), 0) AS cache_creation_tokens, coalesce(sum(l.output_tokens), 0) AS output_tokens, coalesce(sum(l.cost_usd), 0) AS cost_usd
+      FROM space_gateway_request_logs l LEFT JOIN sessions s ON nullif(l.project, '') IS NULL AND s.sticky_key_hash = l.sticky_key_hash
+      WHERE l.requested_at >= $1::timestamptz AND l.requested_at < $2::timestamptz AND l.source IS DISTINCT FROM 'limit_warmup'
+        ${minutesOf === undefined ? "" : "AND l.project = $3"}
+      GROUP BY 1, 2, 3, 4, 5`, [since, until, minutesOf ?? timeZone])).rows;
+    return rows.map((row): GatewayProjectDayUsage => ({ day: String(row.day), project: String(row.project), provider: String(row.provider), accountId: String(row.account_id),
+      model: String(row.model), requests: Number(row.requests), inputTokens: Number(row.input_tokens), cachedInputTokens: Number(row.cached_input_tokens),
+      cacheCreationTokens: Number(row.cache_creation_tokens), outputTokens: Number(row.output_tokens), costUsd: Number(row.cost_usd) }));
+  }
+
+  async accountDailyUsage(from: string, to: string) {
+    const rows = (await this.pool.query<Record<string, unknown>>(`SELECT to_char(day, 'YYYY-MM-DD') AS day, account_id, model,
+        sum(input_tokens + output_tokens) AS tokens, sum(cost_usd) AS cost_usd
+      FROM space_gateway_usage_daily WHERE day BETWEEN $1::date AND $2::date AND account_id <> '' GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`, [from, to])).rows;
+    return rows.map((row): GatewayAccountDayUsage => ({ day: String(row.day), accountId: String(row.account_id), model: String(row.model),
+      tokens: Number(row.tokens), costUsd: Number(row.cost_usd) }));
+  }
+
+  async providerFallbacks(from: string, to: string) {
+    // Only request ids with a refusal can have fallen back: the request_id index joins them back instead of grouping every request.
+    const rows = (await this.pool.query<Record<string, unknown>>(`WITH refused AS (
+        SELECT DISTINCT request_id FROM space_gateway_request_logs
+        WHERE requested_at >= ($1::timestamp AT TIME ZONE 'UTC') AND requested_at < (($2::timestamp + interval '1 day') AT TIME ZONE 'UTC') AND status <> 'success'),
+      chains AS (
+        SELECT array_agg(l.provider ORDER BY l.id) AS providers, (array_agg(l.status ORDER BY l.id DESC))[1] AS last_status
+        FROM space_gateway_request_logs l JOIN refused USING (request_id)
+        WHERE l.requested_at >= (($1::timestamp - interval '1 day') AT TIME ZONE 'UTC') AND l.requested_at < (($2::timestamp + interval '2 days') AT TIME ZONE 'UTC')
+        GROUP BY l.request_id HAVING count(DISTINCT l.provider) > 1)
+      SELECT providers[1] AS from_provider, providers[array_length(providers, 1)] AS to_provider, count(*) AS requests,
+        count(*) FILTER (WHERE last_status = 'success') AS served
+      FROM chains GROUP BY 1, 2 ORDER BY 3 DESC, 1, 2`, [from, to])).rows;
+    return rows.map((row): GatewayProviderFallback => ({ fromProvider: String(row.from_provider), toProvider: String(row.to_provider),
+      requests: Number(row.requests), served: Number(row.served) }));
   }
 
   async recordCompression(rows: GatewayCompressionRow[]) {
@@ -1308,22 +1518,38 @@ export class PostgresGatewayRepository implements GatewayRepository {
     return (await this.pool.query("DELETE FROM space_gateway_sticky_bindings WHERE expires_at IS NOT NULL AND expires_at <= $1", [nowIso])).rowCount ?? 0;
   }
 
+  async listModelChecks(): Promise<GatewayModelCheck[]> {
+    const { rows } = await this.pool.query("SELECT provider, model, dead, status, reason, dead_since, checked_at FROM space_gateway_model_checks ORDER BY provider, model");
+    return (rows as Record<string, unknown>[]).map((row) => ({ provider: row.provider as GatewayProvider, model: String(row.model), dead: Boolean(row.dead), status: Number(row.status),
+      reason: (row.reason as string | null) ?? null, deadSince: row.dead_since ? new Date(row.dead_since as string).toISOString() : null,
+      checkedAt: new Date(row.checked_at as string).toISOString() }));
+  }
+
+  async saveModelCheck(check: GatewayModelCheck) {
+    await this.pool.query(`INSERT INTO space_gateway_model_checks (provider, model, dead, status, reason, dead_since, checked_at) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (provider, model) DO UPDATE SET dead = EXCLUDED.dead, status = EXCLUDED.status, reason = EXCLUDED.reason, dead_since = EXCLUDED.dead_since,
+        checked_at = EXCLUDED.checked_at`, [check.provider, check.model, check.dead, check.status, check.reason, check.deadSince, check.checkedAt]);
+  }
+
   async dispose() { await (this.pool as PgPoolLike & { end?: () => Promise<void> }).end?.(); }
 }
 
 /** In-memory twin for tests and demo mode. */
 export class InMemoryGatewayRepository implements GatewayRepository {
   settings: GatewaySettings = { ...defaultGatewaySettings, planPriority: [...defaultGatewaySettings.planPriority],
-    lanAllowedSources: [...defaultGatewaySettings.lanAllowedSources], compressionProviders: {}, updatedAt: new Date(0).toISOString() };
+    lanAllowedSources: [...defaultGatewaySettings.lanAllowedSources], compressionProviders: {}, providerOrder: gatewayProviderOrderOf(null), updatedAt: new Date(0).toISOString() };
   accounts: GatewayAccountRecord[] = [];
   keys: GatewayApiKeyRecord[] = [];
   logs: GatewayRequestLog[] = [];
   private nextLogId = 1;
   private readonly upstreamRequestIds = new Map<string, string>();
+  readonly modelChecks = new Map<string, GatewayModelCheck>();
+  async listModelChecks() { return [...this.modelChecks.values()].map((check) => ({ ...check })); }
+  async saveModelCheck(check: GatewayModelCheck) { this.modelChecks.set(`${check.provider}\u0000${check.model}`, { ...check }); }
 
   async getSettings() {
     return { ...this.settings, planPriority: [...this.settings.planPriority], lanAllowedSources: [...this.settings.lanAllowedSources],
-      compressionProviders: copyProviders(this.settings.compressionProviders) };
+      compressionProviders: copyProviders(this.settings.compressionProviders), providerOrder: this.settings.providerOrder.map((entry) => ({ ...entry })) };
   }
   async updateSettings(patch: GatewaySettingsUpdateRequest) {
     const defined = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
@@ -1350,10 +1576,12 @@ export class InMemoryGatewayRepository implements GatewayRepository {
     const existing = input.externalAccountId
       ? this.accounts.find((account) => account.provider === input.provider && account.externalAccountId === input.externalAccountId) : undefined;
     if (existing) {
+      const keepPaused = existing.status === "PAUSED"
+        && !(existing.statusReason === GATEWAY_FREE_PLAN_PAUSE_REASON && input.planType && !isGatewayFreePlan(input.planType));
       Object.assign(existing, {
         email: input.email, planType: input.planType ?? existing.planType, credentialsEncrypted: input.credentialsEncrypted,
         credentialsExpiresAt: input.credentialsExpiresAt, lastRefreshAt: input.lastRefreshAt,
-        status: existing.status === "PAUSED" ? "PAUSED" : "ACTIVE", statusReason: existing.status === "PAUSED" ? existing.statusReason : null
+        status: keepPaused ? "PAUSED" : "ACTIVE", statusReason: keepPaused ? existing.statusReason : null
       });
       return { ...existing };
     }
@@ -1376,10 +1604,12 @@ export class InMemoryGatewayRepository implements GatewayRepository {
   async replaceAccountSignIn(accountId: string, input: Omit<GatewayAccountInsert, "accountId" | "provider" | "label">) {
     const account = this.accounts.find((item) => item.id === accountId);
     if (!account) return null;
+    const keepPaused = account.status === "PAUSED"
+      && !(account.statusReason === GATEWAY_FREE_PLAN_PAUSE_REASON && input.planType && !isGatewayFreePlan(input.planType));
     Object.assign(account, { email: input.email, externalAccountId: input.externalAccountId, planType: input.planType ?? account.planType,
       credentialsEncrypted: input.credentialsEncrypted, credentialsExpiresAt: input.credentialsExpiresAt, source: input.source, sourceRef: input.sourceRef,
-      lastRefreshAt: input.lastRefreshAt, blockedUntil: null, status: account.status === "PAUSED" ? "PAUSED" : "ACTIVE",
-      statusReason: account.status === "PAUSED" ? account.statusReason : null });
+      lastRefreshAt: input.lastRefreshAt, blockedUntil: null, status: keepPaused ? "PAUSED" : "ACTIVE",
+      statusReason: keepPaused ? account.statusReason : null });
     return { ...account };
   }
   async withAccountCredentialLock(accountId: string, update: (current: GatewayAccountRecord) => Promise<GatewayCredentialUpdate | null>) {
@@ -1613,6 +1843,18 @@ export class InMemoryGatewayRepository implements GatewayRepository {
     return this.logs.filter((log) => Number(log.id) > after && log.source !== "limit_warmup")
       .sort((left, right) => Number(left.id) - Number(right.id)).slice(0, Math.max(1, Math.min(limit, 5000))).map((log) => ({ ...log }));
   }
+  async providerDailyUsage(sinceDay: string) {
+    const sums = new Map<string, GatewayProviderDailyUsage>();
+    for (const log of this.logs) {
+      const day = log.requestedAt.slice(0, 10);
+      if (day < sinceDay || log.source === "limit_warmup") continue;
+      const key = `${log.provider}\0${day}`;
+      const row = sums.get(key) ?? { provider: log.provider, day, requests: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 };
+      row.requests++; row.inputTokens += log.inputTokens ?? 0; row.outputTokens += log.outputTokens ?? 0; row.reasoningTokens += log.reasoningTokens ?? 0; row.costUsd += log.costUsd ?? 0;
+      sums.set(key, row);
+    }
+    return [...sums.values()].sort((left, right) => left.day.localeCompare(right.day));
+  }
   async claudeLogKeys(from: string, to: string) {
     return this.logs.filter((log) => log.provider === "CLAUDE" && log.requestedAt >= from && log.requestedAt <= to)
       .map((log) => ({ upstreamRequestId: this.upstreamRequestIds.get(log.id) ?? null, requestedAt: log.requestedAt, model: log.model,
@@ -1622,6 +1864,12 @@ export class InMemoryGatewayRepository implements GatewayRepository {
   async usageHistory(accountId: string, since: string) {
     return this.history.filter((point) => point.accountId === accountId && point.recordedAt >= since)
       .map(({ accountId: _account, ...point }) => point).sort((a, b) => a.recordedAt.localeCompare(b.recordedAt));
+  }
+  async weekUsedAt(accountId: string, at: string, resetAt: string) {
+    const reset = Date.parse(resetAt);
+    const week = this.history.filter((point) => point.accountId === accountId && point.quotaKey === "" && point.window === "SECONDARY"
+      && point.resetAt != null && Math.abs(Date.parse(point.resetAt) - reset) <= 3_600_000).sort((a, b) => a.recordedAt.localeCompare(b.recordedAt));
+    return (week.filter((point) => point.recordedAt <= at).at(-1) ?? week.find((point) => point.recordedAt > at))?.usedPercent ?? null;
   }
   warmups: GatewayWarmupRecord[] = [];
   async latestWarmups() {
@@ -1686,7 +1934,71 @@ export class InMemoryGatewayRepository implements GatewayRepository {
       }
       return [...map.values()].sort((a, b) => a.key.localeCompare(b.key));
     };
-    return { days: group((log) => log.requestedAt.slice(0, 10)), models: group((log) => log.model), accounts: group((log) => log.accountId ?? "") };
+    return { days: group((log) => log.requestedAt.slice(0, 10)), models: group((log) => log.model), accounts: group((log) => log.accountId ?? ""),
+      providers: group((log) => log.provider) };
+  }
+  async weeklyPeaks(from: string, to: string) {
+    const peaks = new Map<string, GatewayWeeklyPeak>();
+    for (const point of this.history) {
+      if (point.window !== "SECONDARY" || !point.resetAt || point.recordedAt > point.resetAt || point.resetAt.slice(0, 10) < from || point.resetAt.slice(0, 10) > to) continue;
+      const key = `${point.accountId}\0${point.quotaKey}\0${point.resetAt.slice(0, 13)}`;
+      const peak = peaks.get(key);
+      peaks.set(key, { accountId: point.accountId, quotaKey: point.quotaKey, resetAt: peak && peak.resetAt > point.resetAt ? peak.resetAt : point.resetAt,
+        usedPercent: Math.max(peak?.usedPercent ?? 0, point.usedPercent), lastSampleAt: peak && peak.lastSampleAt > point.recordedAt ? peak.lastSampleAt : point.recordedAt });
+    }
+    return [...peaks.values()].sort((a, b) => a.accountId.localeCompare(b.accountId) || a.quotaKey.localeCompare(b.quotaKey) || a.resetAt.localeCompare(b.resetAt));
+  }
+  async projectUsage(since: string, until: string, timeZone: string, minutesOf?: string) {
+    const dayOf = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+    const usage = new Map<string, GatewayProjectDayUsage>();
+    const sessions = new Map<string, Set<string>>();
+    for (const log of this.logs) if (log.stickyKeyHash && log.project?.startsWith("pane:") && Date.parse(log.requestedAt) >= Date.parse(since))
+      sessions.set(log.stickyKeyHash, (sessions.get(log.stickyKeyHash) ?? new Set()).add(log.project));
+    const paneOf = (hash: string | null) => { const panes = hash ? sessions.get(hash) : undefined; return panes?.size === 1 ? [...panes][0]! : ""; };
+    for (const log of this.logs) {
+      if (log.source === "limit_warmup" || Date.parse(log.requestedAt) < Date.parse(since) || Date.parse(log.requestedAt) >= Date.parse(until)) continue;
+      if (minutesOf !== undefined && log.project !== minutesOf) continue;
+      const row = { day: minutesOf === undefined ? dayOf.format(new Date(log.requestedAt)) : new Date(log.requestedAt).toISOString().slice(0, 16), project: log.project || paneOf(log.stickyKeyHash) || (log.apiKeyId ? `key:${log.apiKeyId}` : log.clientName ? `client:${log.clientName}` : ""), provider: log.provider, accountId: log.accountId ?? "", model: log.model };
+      const key = `${row.day}\0${row.project}\0${row.provider}\0${row.accountId}\0${row.model}`;
+      const sum = usage.get(key) ?? { ...row, requests: 0, inputTokens: 0, cachedInputTokens: 0, cacheCreationTokens: 0, outputTokens: 0, costUsd: 0 };
+      sum.requests += 1;
+      sum.inputTokens += log.inputTokens ?? 0;
+      sum.cachedInputTokens += log.cachedInputTokens ?? 0;
+      sum.cacheCreationTokens += log.cacheCreationTokens ?? 0;
+      sum.outputTokens += log.outputTokens ?? 0;
+      sum.costUsd += log.costUsd ?? 0;
+      usage.set(key, sum);
+    }
+    return [...usage.values()];
+  }
+  async accountDailyUsage(from: string, to: string) {
+    const usage = new Map<string, GatewayAccountDayUsage>();
+    for (const log of this.logs) {
+      const day = log.requestedAt.slice(0, 10);
+      if (!log.accountId || day < from || day > to) continue;
+      const key = `${day}\0${log.accountId}\0${log.model}`;
+      const row = usage.get(key) ?? { day, accountId: log.accountId, model: log.model, tokens: 0, costUsd: 0 };
+      row.tokens += (log.inputTokens ?? 0) + (log.outputTokens ?? 0);
+      row.costUsd += log.costUsd ?? 0;
+      usage.set(key, row);
+    }
+    return [...usage.values()];
+  }
+  async providerFallbacks(from: string, to: string) {
+    const chains = new Map<string, GatewayRequestLog[]>();
+    for (const log of [...this.logs].sort((a, b) => Number(a.id) - Number(b.id))) chains.set(log.requestId, [...chains.get(log.requestId) ?? [], log]);
+    const pairs = new Map<string, GatewayProviderFallback>();
+    for (const chain of chains.values()) {
+      const refused = chain.some((log) => log.status !== "success" && log.requestedAt.slice(0, 10) >= from && log.requestedAt.slice(0, 10) <= to);
+      if (!refused || new Set(chain.map((log) => log.provider)).size < 2) continue;
+      const pair = { fromProvider: chain[0]!.provider, toProvider: chain.at(-1)!.provider };
+      const key = `${pair.fromProvider}\0${pair.toProvider}`;
+      const row = pairs.get(key) ?? { ...pair, requests: 0, served: 0 };
+      row.requests += 1;
+      if (chain.at(-1)!.status === "success") row.served += 1;
+      pairs.set(key, row);
+    }
+    return [...pairs.values()].sort((a, b) => b.requests - a.requests);
   }
   compression: GatewayCompressionRow[] = [];
   async recordCompression(rows: GatewayCompressionRow[]) {

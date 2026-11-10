@@ -1,3 +1,4 @@
+import { startWebSentry } from "./sentry-bootstrap.js";
 import { SurfaceErrorBoundary } from "./features/SurfaceErrorBoundary.js";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -10,6 +11,7 @@ import {
 } from "./app-diagnostics/app-diagnostics-bootstrap.js";
 
 enableStrictCspCompatibility();
+startWebSentry(window.__SPACE_SENTRY__);
 
 async function mount() {
   if (new URLSearchParams(window.location.search).get("spaceDebug") === "1") {
@@ -53,10 +55,11 @@ async function mount() {
     import("./live/LiveSpaceApp.js"),
     import("./ui-theme.js"),
     import("@space/icons"),
-    import("./features/instance-badge/InstanceBadge.js")
+    import("./features/instance-badge/InstanceBadge.js"),
+    import("./features/instance-badge/AppUpdateNotice.js")
   ]);
   await stylesReady;
-  const [{ LiveSpaceApp }, { readUiTheme, readUiBackground, readModernIconPack, readLiquidGlassTint, applyLiquidGlassTint }, { loadAppIconPack }, { InstanceBadge }] = await appModules;
+  const [{ LiveSpaceApp }, { readUiTheme, readUiBackground, readModernIconPack, readLiquidGlassTint, applyLiquidGlassTint }, { loadAppIconPack }, { InstanceBadge }, { AppUpdateNotice }] = await appModules;
   if (await diagnosticsAuth) {
     const diagnosticsStartup = startAppDiagnosticsBootstrap();
     await diagnosticsStartup.beforeMount;
@@ -76,18 +79,18 @@ async function mount() {
   }
   await iconPackReady;
   if (route === "app") {
-    // Uncaught errors are reported by name and bundle location only (no messages or user content).
+    // Uncaught errors reach the server by name and bundle location only (no messages or user content); the desktop app's local log also gets the message, redacted there.
     const [{ installClientErrorReporter }, { api }] = await Promise.all([
       import("./client-error-reporter.js"),
       import("./live-api.js")
     ]);
-    installClientErrorReporter({ send: (report) => {
-      // Keep the same sanitized evidence locally even when the server cannot be reached.
-      try { (window as any).spaceDesktop?.reportClientError?.(report); } catch { /* Diagnostics must not break reporting. */ }
-      return api.reportClientError(report);
-    } });
+    installClientErrorReporter({
+      // Kept locally even when the server cannot be reached.
+      local: (report, message) => (window as any).spaceDesktop?.reportClientError?.({ ...report, message }),
+      send: (report) => api.reportClientError(report)
+    });
   }
-  root.render(<StrictMode><SurfaceErrorBoundary><LiveSpaceApp /><InstanceBadge /></SurfaceErrorBoundary></StrictMode>);
+  root.render(<StrictMode><SurfaceErrorBoundary><LiveSpaceApp /><InstanceBadge /><AppUpdateNotice /></SurfaceErrorBoundary></StrictMode>);
   return route;
 }
 

@@ -16,6 +16,13 @@ import { fetchPublicUrl } from "../src/public-url-fetch.js";
 // Salary research reads public pages through fetchPublicUrl; here it answers trimmed copies of them, never the network.
 vi.mock("../src/public-url-fetch.js", async (importOriginal) => ({ ...await importOriginal<typeof import("../src/public-url-fetch.js")>(), fetchPublicUrl: vi.fn() }));
 
+// The attachment reader's compiled worker does not exist under vitest; run its source like job-apply.test.ts does.
+vi.mock("../src/attachment-readers.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../src/attachment-readers.js")>();
+  return { ...original, readAttachment: (input: Parameters<typeof original.readAttachment>[0], options: Parameters<typeof original.readAttachment>[1]) =>
+    original.readAttachment(input, { ...options, workerPath: new URL("../src/attachment-reader-worker.ts", import.meta.url).pathname }) };
+});
+
 vi.setConfig({ testTimeout: 30_000 });
 const temporaryRoots: string[] = [];
 afterEach(async () => {
@@ -42,7 +49,9 @@ async function fixture(extra: { jobApplyGoogle?: JobApplyGoogleAccess } = {}) {
   const config = getApiConfig({
     SPACE_CLI_ENABLED: "true", SPACE_CLI_COMMAND_PATH: root, SPACE_CLI_HOST_SOCKET: join(root, "pane-host.sock"), SPACE_CLI_CODEX_CREDENTIAL_SMOKE: "true",
     SPACE_CLI_WORKSPACE_ROOT: join(root, "workspaces"), SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true", SPACE_INTERNAL_API_TOKEN: "internal-token-for-job-apply-tests",
-    SPACE_ARTIFACT_ROOT: root, SPACE_CONNECTOR_KEY_FILE: join(root, "connector.key")
+    SPACE_ARTIFACT_ROOT: root, SPACE_CONNECTOR_KEY_FILE: join(root, "connector.key"),
+    // The test's own Space Memory (none unless a test writes it), never the operator's.
+    SPACE_MEMORY_MONTHLY_PATH: join(root, "space_memory_2026-11.md")
   });
   await writeFile(join(root, "connector.key"), "synthetic-connector-key-with-enough-length-0123456789\n");
   const store = new InMemorySpaceStore();
@@ -66,7 +75,7 @@ describe("job copilot persona", () => {
   it("writes the run loop, memory discipline, truthfulness and handoff rules into AGENTS.md and CLAUDE.md", () => {
     const agents = buildCliAgentBootstrapMarkdown({ roomId: "room:jobs0001", paneId: "pane:jobs0001", cliSessionId: "cli_session:1", runtimeId: "cli:claude", paneMode: "JOB_APPLY" });
     expect(agents).toContain("Job Copilot pane:");
-    for (const rule of ["job_next", "job_report", "memory_recall before asking", "fields_record on every step", "never solve other CAPTCHAs", "VERIFIED only with evidence"]) expect(agents).toContain(rule);
+    for (const rule of ["job_next", "job_report", "memory_recall before asking", "fields_record on every step", "Other unsupported security checks keep their handoff rules with space_job_handoff_wait", "VERIFIED only with evidence"]) expect(agents).toContain(rule);
     expect(buildCliAgentBootstrapMarkdown({ paneMode: "TERMINAL" })).not.toContain("Job Copilot pane:");
     const persona = buildJobCopilotPersonaMarkdown({ roomId: "room:jobs0001", paneId: "pane:jobs0001", runtimeId: "cli:claude" });
     expect(persona.startsWith("# Job Copilot")).toBe(true);
@@ -166,6 +175,47 @@ describe("job copilot first-run setup through the bridge", () => {
       expect(rows.map((row) => [row.company, row.status]).sort()).toEqual([["Quora", "SUBMITTED"], ["Snowflake", "SUBMITTED"]]);
       expect(rows.every((row) => row.paneId !== null)).toBe(true);
       expect((await app.inject({ method: "POST", url: "/api/cli/job-apply/applications/import-csv", headers: agent, payload: { csv: "id,company,board,role,geo,source,status,applied_date,notes\nT1,Quora,quberesearchandtechnologies,DevOps,HK,greenhouse,applied,2026-08-07,x" } })).json()).toEqual({ imported: 0, skipped: 0, duplicates: 1 });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("job copilot CV replace (operator rule 04bdf65c, 31/10)", () => {
+  it("replaces the CV only with replace: true, re-reads its text like Setup's Replace, logs a NOTE and an audit row, and refuses another owner's artifact", async () => {
+    const { app, store, room, headers, agent, root } = await fixture();
+    const textArtifact = async (roomId: string | null, name: string, text: string) => {
+      const created = await store.createArtifact({ roomId, paneId: null, kind: "EXPORT", mimeType: "text/plain",
+        storageUri: `space-artifact://agent-files/room_x/pane_y/session_z/2026-10-31/${name}`, sha256: name.padEnd(64, "0").slice(0, 64).replace(/[^0-9a-f]/g, "a"), byteSize: text.length, metadata: { originalFilename: name } });
+      const artifact = "artifact" in created ? created.artifact : created;
+      const path = localArtifactFilePath({ artifactRoot: root, artifact });
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, text);
+      return artifact.id;
+    };
+    try {
+      const v8 = await textArtifact(room.id, "cv-v8.txt", "CV v8: Node.js");
+      const v81 = await textArtifact(room.id, "cv-v81.txt", "CV v8.1: Node.js, OpenAI credentials");
+      const set = (payload: Record<string, unknown>) => app.inject({ method: "POST", url: "/api/cli/job-apply/profile/files", headers: agent, payload });
+      expect((await set({ cvArtifactId: v8 })).statusCode).toBe(200);
+      const refused = await set({ cvArtifactId: v81 });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().message ?? refused.body).toContain("replace: true");
+
+      const replaced = await set({ cvArtifactId: v81, replace: true });
+      expect(replaced.statusCode).toBe(200);
+      expect(replaced.json()).toMatchObject({ cvArtifactId: v81 });
+      expect((await app.inject({ method: "GET", url: "/api/cli/job-apply/profile/cv-text", headers: agent })).json().text).toContain("OpenAI credentials");
+      const events = (await app.inject({ method: "GET", url: "/api/job-apply/events?limit=20", headers })).json().events as Array<{ type: string; message: string }>;
+      expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: "NOTE", message: `Replaced CV ${v8} → ${v81}` })]));
+      const audits = (await store.listAuditEvents()).filter((event) => event.action === "job_apply.agent.profile_files");
+      expect(audits.map((event) => event.metadata)).toEqual(expect.arrayContaining([expect.objectContaining({ cvArtifactId: v81, replacedCvArtifactId: v8 })]));
+
+      // An artifact of another owner's room is never read into this profile.
+      const otherRoom = store.createRoom({ name: "Someone else" }, undefined, "user:someone-else");
+      const foreign = await textArtifact(otherRoom.id, "cv-foreign.txt", "Someone else's CV");
+      expect((await set({ cvArtifactId: foreign, replace: true })).statusCode).toBe(404);
+      expect((await app.inject({ method: "GET", url: "/api/cli/job-apply/profile/cv-text", headers: agent })).json().text).toContain("OpenAI credentials");
     } finally {
       await app.close();
     }
@@ -342,6 +392,69 @@ describe("job apply agent routes", () => {
 });
 
 describe("job copilot salary research (operator rule 2026-10-25)", () => {
+  it("shows the agent the memories holding a question's words before anything is asked; afterMemory asks (queue item 34)", async () => {
+    const { app, agent } = await fixture();
+    try {
+      for (const [key, text] of [["open to being on an on call rotation", "Yes"], ["years with terraform", "0"], ["favourite colour", "blue"]]) {
+        expect((await app.inject({ method: "POST", url: "/api/cli/job-apply/memory", headers: agent, payload: { kind: "ANSWER", key, text, source: "USER" } })).statusCode).toBe(200);
+      }
+      const started = await app.inject({ method: "POST", url: "/api/cli/job-apply/applications", headers: agent,
+        payload: { company: "Acme", role: "SRE", ats: "greenhouse", url: "https://boards.greenhouse.io/acme/jobs/9" } });
+      const id = started.json().application.id as string;
+      const ask = (payload: Record<string, unknown>) => app.inject({ method: "POST", url: `/api/cli/job-apply/applications/${id}/question`, headers: agent, payload });
+      const first = (await ask({ question: "Are you open to on-call duty?" })).json();
+      expect(first).toMatchObject({ questionId: null, answered: false, note: expect.stringContaining("afterMemory: true") });
+      expect(first.memoryHits.map((hit: { key: string }) => hit.key)).toEqual(["open to being on an on call rotation"]);
+      expect((await ask({ question: "Kafka, Snowflake or Terraform?" })).json().memoryHits.map((hit: { text: string }) => hit.text)).toEqual(["0"]);
+      // Nothing was asked: the posting is not parked for the operator.
+      const parked = async () => (await app.inject({ method: "GET", url: "/api/cli/job-apply/applications?status=NEEDS_USER", headers: agent })).json().applications.length;
+      expect(await parked()).toBe(0);
+      const asked = (await ask({ question: "Are you open to on-call duty?", afterMemory: true })).json();
+      expect(asked).toMatchObject({ answered: false, questionId: expect.stringMatching(/^jobq:/) });
+      expect(await parked()).toBe(1);
+      // A question no memory holds a word of is asked at once.
+      expect((await ask({ question: "Do you hold a Thai work permit?" })).json()).toMatchObject({ questionId: expect.stringMatching(/^jobq:/) });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("answers a question from the operator's rule instead of parking it: Job memory's grades rule and Space Memory (plan clipboard:7L5KyWp3kQsP step 3)", async () => {
+    const { app, agent, root } = await fixture();
+    try {
+      // jobq:Tcoa0D_0Vp3t (1/11 17:10 UTC): Heritage Holdings asked for the GPA and sat 9.5 h in Needs you while Job memory held the grades rule.
+      const rule = (await app.inject({ method: "POST", url: "/api/cli/job-apply/memory", headers: agent, payload: { kind: "LESSON", key: "grades",
+        text: "Never ask the operator for school or university grades or GPA; grades are never invented. Skip a posting that requires one.", source: "USER" } })).json().memory;
+      await writeFile(join(root, "space_memory_2026-11.md"), ["<!-- space-memory:id=space_memory:rulesal0001 -->", "## 2026-10-29 - Space canonical memory: Salary floor",
+        "- created_at=2026-10-29T08:00:00.000Z", "- Tags: operator-rule", "Never ask the operator about salary: expect at least EUR 36,000 gross a year.", "",
+        "<!-- space-memory:id=space_memory:factcty0001 -->", "## 2026-10-20 - Space canonical memory: Citizenship", "- created_at=2026-10-20T08:00:00.000Z",
+        "- Tags: operator-fact", "Citizenship: Greek, EU work permit, no visa sponsorship needed.", ""].join("\n"));
+      const started = await app.inject({ method: "POST", url: "/api/cli/job-apply/applications", headers: agent,
+        payload: { company: "Heritage Holdings", role: "Engineer", ats: "greenhouse", url: "https://boards.greenhouse.io/heritage/jobs/1" } });
+      const id = started.json().application.id as string;
+      const ask = (payload: Record<string, unknown>) => app.inject({ method: "POST", url: `/api/cli/job-apply/applications/${id}/question`, headers: agent, payload });
+      for (const question of ["Heritage Holdings asks for your GPA. What should I enter?", "What was your final grade (grade point average) for the BSc?"]) {
+        const refused = await ask({ question, afterMemory: true });
+        expect(refused.statusCode).toBe(409);
+        expect(refused.json().error.message).toContain(`Not raised: Job Copilot memory ${rule.id} forbids it`);
+      }
+      const parked = async () => (await app.inject({ method: "GET", url: "/api/cli/job-apply/applications?status=NEEDS_USER", headers: agent })).json().applications.length;
+      expect(await parked()).toBe(0);
+      // The operator's pinned Space Memory entries holding the question's words come first too, marked rule or fact.
+      const salary = (await ask({ question: "What are your expected salary requirements (gross a year)?" })).json();
+      expect(salary).toMatchObject({ questionId: null, memoryHits: [expect.objectContaining({ id: "space_memory:rulesal0001", source: "SPACE_MEMORY_OPERATOR_RULE" })] });
+      const visa = (await ask({ question: "Will you need visa sponsorship? What is your citizenship?" })).json();
+      expect(visa).toMatchObject({ questionId: null, memoryHits: [expect.objectContaining({ id: "space_memory:factcty0001", source: "SPACE_MEMORY_OPERATOR_FACT" })] });
+      // A question they hold too few words of is not shown them (the citizenship fact shares only "work" with a notice period).
+      expect((await ask({ question: "What is your notice period at work?" })).json()).toMatchObject({ questionId: expect.stringMatching(/^jobq:/) });
+      // The Space Memory rule never refuses a question: it is shown, and afterMemory asks.
+      expect((await ask({ question: "What are your expected salary requirements (gross a year)?", afterMemory: true })).json()).toMatchObject({ questionId: expect.stringMatching(/^jobq:/) });
+      expect(await parked()).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("answers the owner's percentage below the market and records why in the application's Activity", async () => {
     const pages: Record<string, string> = {
       "https://www.payscale.com/research/GR/Job=Senior_Software_Engineer/Salary": "payscale-gr-senior-software-engineer.html",
@@ -377,6 +490,16 @@ describe("job copilot salary research (operator rule 2026-10-25)", () => {
       expect(note?.message).toContain("answer EUR 31,000 a year / EUR 2,200 a month x14");
       expect(note?.payload.salaryResearch.market.sources.map((row: { source: string }) => row.source)).toEqual(["payscale", "paylab"]);
 
+      // Queue 29/10 (Tide Bulgaria asked the operator): no figures and no rule asks; the operator's salary rule in memory answers instead.
+      const sofia = async () => (await app.inject({ method: "POST", url: "/api/cli/job-apply/salary-research", headers: agent,
+        payload: { title: "Platform Engineer", seniority: "Staff", city: "Sofia", country: "Bulgaria", applicationId: application.id } })).json();
+      expect(await sofia()).toMatchObject({ recommended: null, confidence: "low", askOperator: true });
+      const rule = (await app.inject({ method: "POST", url: "/api/cli/job-apply/memory", headers: agent,
+        payload: { kind: "PREFERENCE", key: "salary floor", text: "Salary: answer the higher of the researched recommendation and EUR 36,000 a year, without asking.", source: "USER" } })).json();
+      expect(await sofia()).toMatchObject({ recommended: null, askOperator: false, salaryRules: [{ id: rule.memory.id, text: expect.stringContaining("EUR 36,000") }] });
+      const sofiaNote = (await app.inject({ method: "GET", url: `/api/job-apply/events?applicationId=${encodeURIComponent(application.id)}&limit=20`, headers })).json().events
+        .find((event: { message: string }) => event.message.includes("Sofia"));
+      expect(sofiaNote.message).toContain(`Confidence low. Answer by the salary rule in memory (${rule.memory.id}).`);
       expect((await app.inject({ method: "POST", url: "/api/cli/job-apply/salary-research", headers: agent, payload: { title: "Engineer", city: "Atlantis", country: "Atlantis" } })).statusCode).toBe(409);
       expect((await app.inject({ method: "POST", url: "/api/cli/job-apply/salary-research", headers: agent, payload: { title: "Engineer", country: "GR" } })).statusCode).toBe(422);
     } finally {

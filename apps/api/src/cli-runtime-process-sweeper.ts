@@ -2,11 +2,12 @@ import { execFile } from "./safe-child-process.js";
 import { promisify } from "node:util";
 import type { CliToggleRuntimeId } from "@space/contracts";
 import { findCliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const execFileAsync = promisify(execFile);
 
 const sweepCommand = "/usr/bin/sudo";
-const sweepExecutable = "/opt/spaceapp/bin/space-cli-process-sweep";
+const sweepExecutable = `${SPACE_INSTALL_ROOT}/bin/space-cli-process-sweep`;
 const sweepTimeoutMs = 60_000;
 
 export const cliProcessSweepExclusionPatterns: readonly RegExp[] = [

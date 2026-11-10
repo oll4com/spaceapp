@@ -1,10 +1,12 @@
 import { spawn } from "../safe-child-process.js";
 import { mkdir, readFile } from "node:fs/promises";
 import { createDecisionsService } from "../decisions-service.js";
+import { gatewayRequestIdHeader } from "../gateway-request-id.js";
 import { requestOpenRouterDoctrine } from "../openrouter-benchmark-models.js";
 import { generateNativeOpenCodeTitle, resolveNativeOpenCodeRuntime } from "../task-title-opencode.js";
 import type { SensorSnapshot } from "./protocol.js";
 import { MANEUVERS } from "./protocol.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
  * Model adapters for the Asteroids Agent Arena. Every model is reached through
@@ -23,11 +25,11 @@ import { MANEUVERS } from "./protocol.js";
  */
 export const CODEX_LB_BASE_URL = (process.env.SPACE_GATEWAY_BASE_URL?.trim() || process.env.SPACE_CODEX_LB_BASE_URL?.trim() || "http://127.0.0.1:4920/v1")
   .replace(/\/+$/, "").replace(/\/v1$/, "");
-const CODEX_KEY_FILE = process.env.SPACE_GATEWAY_KEY_FILE || process.env.SPACE_CODEX_LB_KEY_FILE || "/opt/spaceapp/secrets/space-gateway-internal.key";
-const BROKER = process.env.SPACE_CLI_VPN_BROKER || "/opt/spaceapp/bin/space-cli-vpn-broker";
-const WRAPPER_ROOT = "/opt/spaceapp/bin";
+const CODEX_KEY_FILE = process.env.SPACE_GATEWAY_KEY_FILE || process.env.SPACE_CODEX_LB_KEY_FILE || `${SPACE_INSTALL_ROOT}/secrets/space-gateway-internal.key`;
+const BROKER = process.env.SPACE_CLI_VPN_BROKER || `${SPACE_INSTALL_ROOT}/bin/space-cli-vpn-broker`;
+const WRAPPER_ROOT = `${SPACE_INSTALL_ROOT}/bin`;
 /** Empty directory the CLIs start in, so a headless turn never sees a project tree. */
-const AGENT_CHAT_WORKSPACE = process.env.SPACE_ASTEROIDS_CLI_WORKSPACE?.trim() || "/opt/spaceapp/var/asteroids-benchmark/workspace";
+const AGENT_CHAT_WORKSPACE = process.env.SPACE_ASTEROIDS_CLI_WORKSPACE?.trim() || `${SPACE_INSTALL_ROOT}/var/asteroids-benchmark/workspace`;
 /** agent-chat refuses prompts above 12000 characters. */
 export const AGENT_CHAT_PROMPT_LIMIT = 12_000;
 
@@ -122,6 +124,8 @@ export interface AgentRequest {
   snapshot: SensorSnapshot;
   signal: AbortSignal;
   claudeAccount?: string;
+  /** A Space id (request or Council run) the Gateway's request log row carries (OBS-006). */
+  traceId?: string;
 }
 
 export interface AgentReply {
@@ -184,7 +188,7 @@ async function requestCodex(request: TextRequest): Promise<AgentReply> {
   try {
     response = await fetch(`${CODEX_LB_BASE_URL}/v1/chat/completions`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", ...gatewayRequestIdHeader(request.traceId) },
       signal: request.signal,
       body: JSON.stringify({
         model: request.modelId.slice("codex/".length),

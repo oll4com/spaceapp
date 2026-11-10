@@ -2,13 +2,14 @@ import type { FastifyInstance } from "fastify";
 import { eventSchema, type AppStudioEvent, type Pane } from "@space/contracts";
 import { InMemoryAppStudioRepository, PostgresAppStudioRepository, type AppStudioRepository } from "@space/db";
 import { makeSpaceId, SpaceConflictError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
-import { submitCliPrompt } from "../cli-prompt-submit.js";
+import { persistAgentFile } from "../cli-agent-files.js";
+import { clearIdleClaudeSession, submitCliPrompt } from "../cli-prompt-submit.js";
 import type { CliTerminalManager } from "../cli-terminal.js";
 import { atEmptyPrompt } from "../room-agent-autopilot.js";
 import type { RoomPaneObservation } from "../room-pane-control.js";
 import type { NotificationService } from "../notifications/service.js";
 import { registerAppStudioRoutes, type AppStudioRouteDependencies } from "./routes.js";
-import { APP_STUDIO_KICKOFF, createAppStudioService, type AppStudioService } from "./service.js";
+import { APP_STUDIO_KICKOFF, APP_STUDIO_MAX_APK_BYTES, createAppStudioService, type AppStudioService } from "./service.js";
 
 export interface AppStudioWiring extends Omit<AppStudioRouteDependencies, "store"> {
   store: SpaceStore;
@@ -17,12 +18,14 @@ export interface AppStudioWiring extends Omit<AppStudioRouteDependencies, "store
   /** Tests pass an in-memory repository; otherwise Postgres when a database is configured. */
   repository?: AppStudioRepository;
   terminal: Pick<CliTerminalManager, "runSerializedTerminalMutation" | "sendInput" | "observeRoomScreenUndimmed">;
-  notifications: Pick<NotificationService, "raise" | "resolve">;
+  notifications: Pick<NotificationService, "raise" | "resolve" | "list">;
   artifactRoot: string;
   /** Tests replace the CLI kickoff. */
-  kickoff?: (pane: Pane) => Promise<void>;
+  kickoff?: (pane: Pane, fresh: boolean) => Promise<void>;
   /** The pane's terminal as the Room Agent reads it: a kickoff is typed only at an empty prompt. */
   inspect?(pane: Pane): Promise<RoomPaneObservation>;
+  /** Nous's inbox (a done brief with its proof per item). */
+  notice?(owner: string, key: string, line: string): unknown;
   log: { warn(details: unknown, message: string): void };
 }
 
@@ -48,18 +51,26 @@ export function registerAppStudio(app: FastifyInstance, deps: AppStudioWiring): 
     const session = await store.getActivePaneCliSession(pane.id);
     return session && session.purpose === "NORMAL" && session.isActive && session.status !== "EXITED" && session.status !== "ERROR" ? session : null;
   };
-  const send = deps.kickoff ?? (async (pane: Pane) => {
+  const send = deps.kickoff ?? (async (pane: Pane, fresh: boolean) => {
     const session = await activeSession(pane);
     if (!session) throw new SpaceConflictError("Open the App Studio terminal first: the pane has no running CLI session.");
     const traceId = `app-studio:${makeSpaceId("kickoff")}`;
     await terminal.runSerializedTerminalMutation(session.sessionId, async () => {
+      if (fresh) await clearIdleClaudeSession(terminal, session, traceId, traceId);
       await submitCliPrompt(terminal, session.sessionId, APP_STUDIO_KICKOFF, traceId, `${traceId}:kickoff`);
     });
   });
   const service = createAppStudioService({
-    repository, store, artifactRoot: deps.artifactRoot, notifications: deps.notifications,
+    repository, store, artifactRoot: deps.artifactRoot, notifications: deps.notifications, notice: deps.notice,
     kickoff: { ready: async (pane) => deps.kickoff !== undefined || (Boolean(await activeSession(pane))
       && (!deps.inspect || atEmptyPrompt(await deps.inspect(pane).catch(() => ({ state: "UNKNOWN" }) as unknown as RoomPaneObservation)))), send },
+    saveAgentFile: async (input) => {
+      const filed = await persistAgentFile({ store, artifactRoot: deps.artifactRoot, maxBytes: APP_STUDIO_MAX_APK_BYTES, roomId: input.roomId, paneId: input.paneId, cliSessionId: null,
+        runtimeId: "user", originalFilename: input.filename, declaredMimeType: "application/vnd.android.package-archive", sourcePath: input.sourcePath, traceId: makeSpaceId("trace"),
+        source: "USER_UPLOAD", folder: input.folder });
+      eventBus.publish(filed.event);
+      return filed.artifact;
+    },
     onArtifact: (event) => eventBus.publish(event),
     onEvent: (event: AppStudioEvent) => {
       void (async () => {
@@ -67,7 +78,9 @@ export function registerAppStudio(app: FastifyInstance, deps: AppStudioWiring): 
         if (!roomId) return;
         eventBus.publish(eventSchema.parse({
           id: makeSpaceId("event"), roomId, paneId: event.paneId, turnId: null, workflowId: null, traceId: `app-studio:${event.id}`,
-          type: "APP_STUDIO_UPDATED", message: event.message, payload: { eventId: event.id, type: event.type, status: event.status }, createdAt: event.updatedAt
+          // The stream's message holds 1,000 characters; a longer brief or summary failed the schema and the update never reached the dock (30/10).
+          type: "APP_STUDIO_UPDATED", message: event.message.length > 1000 ? `${event.message.slice(0, 999)}…` : event.message,
+          payload: { eventId: event.id, type: event.type, status: event.status }, createdAt: event.updatedAt
         }));
       })().catch((error: unknown) => deps.log.warn({ err: error }, "App Studio event listener failed"));
     }

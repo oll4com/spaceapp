@@ -3,6 +3,7 @@ import { nowIso, redactMemoryText, SpaceConflictError, type SpaceStore } from "@
 import { isCliPane } from "./pane-guards.js";
 import type { SpaceAgentAdapter } from "./space-agent.js";
 import type { NativeTaskExecution } from "./room-task-telemetry.js";
+import type { TerminalRun } from "./room-terminal-screen.js";
 
 export type RoomConfigureAction = Extract<SpaceAgentRoomActionRequest, { toolId: "room:configure_pane" }>["action"];
 export type RoomCommandAction = Extract<SpaceAgentRoomActionRequest, { toolId: "room:cli_command" }>["action"];
@@ -17,10 +18,14 @@ export interface RoomPaneObservation {
   checkedAt: string; tasks: NativeTaskExecution[];
   models?: Array<{ id: string; supportedReasoningEfforts: string[]; defaultReasoningEffort?: string }>;
   modes?: string[]; commands?: string[]; text?: string;
+  /** Asked with `styled`: the colour runs of `text`'s lines, or why they were left out. */
+  runs?: TerminalRun[][]; runsOmitted?: "TOO_LARGE";
   /** Identifies the question on screen; pass it back as expectedPromptFingerprint when answering. */
   promptFingerprint?: string;
   /** The CLI stopped at its account's usage limit (cliUsageLimited); nothing is typed into it until that changes. */
   usageLimited?: boolean;
+  /** Claude's latest turn was refused by Space Gateway's pace hold (429 PACE_CAP) and waits for `resumesAt` (claude-native-turns.ts). */
+  paceHold?: { taskId: string; at: string | null; resumesAt: string } | null;
   configuredModelId?: string | null;
   effectiveModelId?: string | null;
   modelVerificationStatus?: "VERIFIED" | "UNVERIFIED" | "UNKNOWN";
@@ -31,7 +36,7 @@ export interface RoomPaneObservation {
 }
 export interface RoomPaneController {
   catalog(roomId: string): Promise<{ types: RoomRuntimeType[]; unavailable: Array<{ id: string; reason: string }> }>;
-  inspect(pane: Pane, freshness?: { fresh?: boolean }): Promise<RoomPaneObservation>;
+  inspect(pane: Pane, freshness?: { fresh?: boolean; styled?: boolean }): Promise<RoomPaneObservation>;
   configure(pane: Pane, action: RoomConfigureAction, traceId: string): Promise<Record<string, unknown>>;
   command(pane: Pane, action: RoomCommandAction, traceId: string): Promise<Record<string, unknown>>;
   start(pane: Pane, traceId: string): Promise<Record<string, unknown>>;
@@ -45,14 +50,14 @@ export function createRoomPaneController(options: {
   isEnabled(runtimeId: string): Promise<boolean>;
   chatTypes(): Promise<RoomRuntimeType[]>;
   chatTasks?(pane: Pane): Promise<NativeTaskExecution[]>;
-  inspectCli(pane: Pane, freshness?: { fresh?: boolean }): Promise<RoomPaneObservation>;
+  inspectCli(pane: Pane, freshness?: { fresh?: boolean; styled?: boolean }): Promise<RoomPaneObservation>;
   configureCli(pane: Pane, action: RoomConfigureAction, traceId: string): Promise<Record<string, unknown>>;
   commandCli(pane: Pane, action: RoomCommandAction, traceId: string): Promise<Record<string, unknown>>;
   startCli(pane: Pane, traceId: string): Promise<Record<string, unknown>>;
   resumeCli(pane: Pane, taskId: string | undefined, traceId: string): Promise<Record<string, unknown>>;
   interruptCli(pane: Pane, traceId: string): Promise<Record<string, unknown>>;
 }): RoomPaneController {
-  async function inspect(pane: Pane, freshness?: { fresh?: boolean }): Promise<RoomPaneObservation> {
+  async function inspect(pane: Pane, freshness?: { fresh?: boolean; styled?: boolean }): Promise<RoomPaneObservation> {
     // Copilot panes host a CLI session too: they are controlled as CLIs, never as Chat panes.
     if (isCliPane(pane)) return options.inspectCli(pane, freshness);
     const session = pane.mode === "CHAT" ? await options.store.getActiveSpaceAgentSession(pane.id) : null;
@@ -85,7 +90,7 @@ export function createRoomPaneController(options: {
       checkedAt: nowIso(),
       tasks: nativeTasks.length ? nativeTasks : run ? [{ taskId: run.runId, title: messages.find((message) => message.runId === run.runId && message.role === "user")?.content ?? pane.title,
         status: run.status === "COMPLETED" ? "COMPLETED" : run.status === "INTERRUPTED" ? "INTERRUPTED" : run.status === "RUNNING" || run.status === "QUEUED" ? "RUNNING" : "UNKNOWN",
-        timing, modelsUsed }] : [],
+        timing, modelsUsed, ...(run.ledger ? { usage: run.ledger.usage } : {}) }] : [],
       text: redactMemoryText(messages.map((message) => message.content).join("\n")).slice(-24_000)
     };
   }

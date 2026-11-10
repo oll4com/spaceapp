@@ -153,12 +153,25 @@ export function renderPlanMap(map: PlanMap, zone = "UTC"): string {
   // A server-wide hold is listed once above, never per plan.
   const own = (node: PlanMapNode) => node.hold && node.hold.source !== "SERVER" ? node.hold : null;
   const linked = map.ordered.filter((node) => own(node) || node.dueAt || node.dependsOn.length);
-  if (linked.length) lines.push("Plans that wait, have a date or depend on another (dependency order):", ...linked.map((node) =>
-    `- [${node.id}] "${oneLine(node.title, 100)}" ${node.progress}%${own(node) ? ` · ${holdText(own(node)!, zone)}` : ""}${node.dueAt ? ` · due ${planMapTime(node.dueAt, zone)}${node.overdue ? " OVERDUE" : ""}` : ""}`
-    + `${node.dependsOn.length ? ` · needs: ${node.dependsOn.map((dep) => `[${dep}] "${oneLine(map.nodes.get(dep)!.title, 60)}"`).join(", ")}` : ""}`));
   const free = map.ordered.length - linked.length;
   if (free) lines.push(`${free} other plan${free === 1 ? "" : "s"} wait${free === 1 ? "s" : ""} on nothing recorded.`);
+  if (linked.length) lines.push(PLAN_MAP_ROWS, ...linked.map((node) =>
+    `- [${node.id}] "${oneLine(node.title, 100)}" ${node.progress}%${own(node) ? ` · ${holdText(own(node)!, zone)}` : ""}${node.dueAt ? ` · due ${planMapTime(node.dueAt, zone)}${node.overdue ? " OVERDUE" : ""}` : ""}`
+    + `${node.dependsOn.length ? ` · needs: ${node.dependsOn.map((dep) => `[${dep}] "${oneLine(map.nodes.get(dep)!.title, 60)}"`).join(", ")}` : ""}`));
   return lines.join("\n");
+}
+
+/** The heading of the plan map's per-plan rows (the picture above it stays whole; the rows are entries a turn keeps by relevance). */
+export const PLAN_MAP_ROWS = "Plans that wait, have a date or depend on another (dependency order):";
+/**
+ * The plan map as prompt parts (round 2, 1/11: the rows were 10.7k of its 17k characters in every turn): the holds, unblock-first and dates
+ * whole; the rows an `entries` part a turn that does not answer the operator keeps only the relevant ones of (space_world reads all).
+ */
+export function planMapParts(text: string, rank: number): Array<{ name: string; text: string; rank: number; readWith?: string; entries?: boolean }> {
+  const at = text.indexOf(`\n${PLAN_MAP_ROWS}\n`);
+  if (at < 0) return [{ name: "Plan map", text, rank }];
+  return [{ name: "Plan map", text: text.slice(0, at), rank },
+    { name: "Plan map: the plans that wait, have a date or depend on another", text: text.slice(at + 1), rank, entries: true, readWith: "space_world {\"section\": \"Plan map\"} reads every row" }];
 }
 
 /** Why a plan is not stalled: a wait on a date, another plan or the server is not Nous's to nudge (its root is). */

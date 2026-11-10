@@ -1,6 +1,8 @@
 import { councilEvidenceSchema, type CouncilEvidence } from "@space/contracts";
 import { CODEX_LB_BASE_URL, getCodexApiKey, ProviderFailure, runWithProviderSlot } from "../asteroids-arena/providers.js";
 import { extractJsonObject } from "../asteroids-arena/protocol.js";
+import { gatewayRequestIdHeader } from "../gateway-request-id.js";
+import { GATEWAY_CLAUDE_MODEL } from "../room-agent-model-resolver.js";
 import { buildSearchPrompt } from "./prompts.js";
 import { clip } from "./ranking.js";
 
@@ -75,19 +77,19 @@ export function parseSearchFindings(text: string, citations: ReadonlyArray<{ tit
 }
 
 /** One web search through Space Gateway's /v1/responses with the web_search tool; an empty result is tried once more. */
-export async function searchWebThroughGateway(query: string, question: string, signal: AbortSignal): Promise<CouncilEvidence[]> {
-  const found = await searchOnce(query, question, signal);
-  return found.length ? found : searchOnce(query, question, signal);
+export async function searchWebThroughGateway(query: string, question: string, signal: AbortSignal, traceId?: string): Promise<CouncilEvidence[]> {
+  const found = await searchOnce(query, question, signal, traceId);
+  return found.length ? found : searchOnce(query, question, signal, traceId);
 }
 
-function searchOnce(query: string, question: string, signal: AbortSignal): Promise<CouncilEvidence[]> {
+function searchOnce(query: string, question: string, signal: AbortSignal, traceId: string | undefined): Promise<CouncilEvidence[]> {
   return runWithProviderSlot("codex", async () => {
     const key = await getCodexApiKey();
     if (!key) throw new ProviderFailure("error", "The Space Gateway key is unavailable.");
     const response = await fetch(`${CODEX_LB_BASE_URL}/v1/responses`, {
       method: "POST",
       signal: AbortSignal.any([signal, AbortSignal.timeout(SEARCH_TIMEOUT_MS)]),
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", ...gatewayRequestIdHeader(traceId) },
       body: JSON.stringify({
         model: COUNCIL_SEARCH_MODEL,
         input: [{ role: "user", content: buildSearchPrompt(query, question) }],
@@ -97,8 +99,42 @@ function searchOnce(query: string, question: string, signal: AbortSignal): Promi
         store: false
       })
     });
-    if (!response.ok) throw new ProviderFailure(response.status === 429 ? "quota" : "error", `Web search HTTP ${response.status}`);
+    if (!response.ok) {
+      // R74: Space Gateway's own words say when a search can run again ("Rate limit exceeded. Try again in 300s").
+      const said = /"message"\s*:\s*"([^"]{1,200})"/.exec(await response.text().catch(() => ""))?.[1];
+      throw new ProviderFailure(response.status === 429 ? "quota" : "error", `Web search HTTP ${response.status}${said ? `: ${said}` : ""}`);
+    }
     const message = finalMessageFromResponsesStream(await response.text());
     return parseSearchFindings(message.text, message.citations);
   }, signal);
+}
+
+/**
+ * 2026-11-07 REVIEW (space_web_search 10 of 10 failed while every Codex week was spent to 11/11): the same search on Claude's subscription
+ * route (Space Gateway, the API's own key, Anthropic's server-side web_search; the pace cap applies). Nous uses it only while Codex is out.
+ */
+export async function searchWebThroughClaude(query: string, question: string, signal: AbortSignal, traceId?: string): Promise<CouncilEvidence[]> {
+  const key = await getCodexApiKey();
+  if (!key) throw new ProviderFailure("error", "The Space Gateway key is unavailable.");
+  const response = await fetch(`${CODEX_LB_BASE_URL}/v1/messages`, {
+    method: "POST",
+    signal: AbortSignal.any([signal, AbortSignal.timeout(SEARCH_TIMEOUT_MS)]),
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "anthropic-version": "2023-06-01", ...gatewayRequestIdHeader(traceId) },
+    body: JSON.stringify({ model: GATEWAY_CLAUDE_MODEL, max_tokens: 16_000, output_config: { effort: "low" }, messages: [{ role: "user", content: buildSearchPrompt(query, question) }],
+      tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 3 }] })
+  });
+  if (!response.ok) throw new ProviderFailure(response.status === 429 ? "quota" : "error", `Claude web search HTTP ${response.status}`);
+  return claudeSearchFindings(await response.json());
+}
+
+/** A Messages reply's findings: its text (the JSON the prompt asks for), else the web_search_result_location citations on its text blocks. */
+export function claudeSearchFindings(reply: unknown): CouncilEvidence[] {
+  let text = "";
+  const citations: Array<{ title: string; url: string; start: number; end: number }> = [];
+  for (const part of (reply as { content?: Array<{ type?: string; text?: string; citations?: Array<{ url?: string; title?: string }> }> })?.content ?? []) {
+    if (part.type !== "text") continue;
+    text += part.text ?? "";
+    for (const cited of part.citations ?? []) if (cited.url) citations.push({ title: cited.title ?? "", url: cited.url, start: text.length, end: text.length });
+  }
+  return parseSearchFindings(text, citations);
 }

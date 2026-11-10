@@ -26,8 +26,8 @@ export function encodeIco(images: ReadonlyArray<{ size: number; png: Uint8Array 
   return out;
 }
 
-/** The .ico of an image: drawn at every ICO_SIZES size on a canvas and packed as PNG-in-ICO. */
-export async function icoFromImage(source: Blob): Promise<Blob> {
+/** The .ico of an image: drawn at every ICO_SIZES size on a canvas and packed as PNG-in-ICO. `t` puts the two errors a person can meet in their language. */
+export async function icoFromImage(source: Blob, t: (text: string) => string = (text) => text): Promise<Blob> {
   const bitmap = await createImageBitmap(source);
   try {
     const images: Array<{ size: number; png: Uint8Array }> = [];
@@ -36,11 +36,11 @@ export async function icoFromImage(source: Blob): Promise<Blob> {
       canvas.width = size;
       canvas.height = size;
       const context = canvas.getContext("2d");
-      if (!context) throw new Error("This browser cannot draw the icon.");
+      if (!context) throw new Error(t("This browser cannot draw the icon."));
       context.imageSmoothingQuality = "high";
       context.drawImage(bitmap, 0, 0, size, size);
       const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
-      if (!png) throw new Error("This browser cannot encode the icon.");
+      if (!png) throw new Error(t("This browser cannot encode the icon."));
       images.push({ size, png: new Uint8Array(await png.arrayBuffer()) });
     }
     return new Blob([encodeIco(images)], { type: "image/x-icon" });

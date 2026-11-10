@@ -14,9 +14,8 @@ export const ROOM_WORK_TTL_MS = 60_000;
 /** The longest a worktree's git state is reused while its HEAD, index and refs stay unchanged (operator-approved 2026-10-24). */
 export const WORKTREE_MAX_AGE_MS = 5 * 60_000;
 const GIT_TIMEOUT_MS = 5_000;
-const MAX_FILES = 200;
 const ACTIVE_TICKETS = new Set(["AWAITING_APPROVAL", "QUEUED", "INTEGRATING", "VERIFYING", "DEPLOYING"]);
-// shortcut: files nearly every change touches and the queue's resolver combines; list more if they cause noise.
+// shortcut: files nearly every change touches and the queue's resolver combines (and the feature notes under docs/agents/); list more if they cause noise.
 const SHARED_BY_EVERYONE = new Set(["AGENTS.md", "package-lock.json", "docs/SPACEAPP_CAPABILITIES_SPEC.md", "SPACEAPP_CAPABILITIES.md"]);
 
 /** Names a version of the train's line other than the train's own ("for 1.1.6" while 1.1.5 is open); words alone are too broad. */
@@ -35,7 +34,7 @@ export interface RoomWorkPane {
   tickets: DeployQueueTicket[];
   task: string | null;
 }
-export interface RoomOverlap { title: string; detail: string; paneIds: string[] }
+export interface RoomOverlap { title: string; detail: string; paneIds: string[]; /** R10-6: the shared or conflicting files (the monitor's re-record gate). */ files?: string[] }
 export interface RoomWork { panes: RoomWorkPane[]; overlaps: RoomOverlap[]; lines: string[] }
 
 function list(items: string[], max = 8): string {
@@ -58,11 +57,14 @@ export function roomWorkOverlaps(panes: RoomWorkPane[], trains: ReleaseTrain[]):
       const [topA, panesA] = tops[i]!;
       const [topB, panesB] = tops[j]!;
       const other = new Set(panesB[0]!.files);
-      const shared = panesA[0]!.files.filter((file) => other.has(file) && !SHARED_BY_EVERYONE.has(file));
+      const shared = panesA[0]!.files.filter((file) => other.has(file) && !SHARED_BY_EVERYONE.has(file) && !file.startsWith("docs/agents/"));
       if (!shared.length) continue;
       const both = [...panesA, ...panesB];
-      overlaps.push({ title: `${names(panesA)} and ${names(panesB)} change the same files`.slice(0, 200), paneIds: both.map((pane) => pane.paneId),
-        detail: `Shared files: ${list(shared)}. Worktrees: ${basename(topA)} (${panesA[0]!.branch ?? "detached"}), ${basename(topB)} (${panesB[0]!.branch ?? "detached"}).` });
+      // W45 step 1: the panes' live tickets, so the one coordinating knows who merges first.
+      const tickets = both.flatMap((pane) => pane.tickets.filter((ticket) => ACTIVE_TICKETS.has(ticket.status)).map((ticket) => `${pane.name} ${ticket.id} ${ticket.status}`));
+      overlaps.push({ title: `${names(panesA)} and ${names(panesB)} change the same files`.slice(0, 200), paneIds: both.map((pane) => pane.paneId), files: shared,
+        detail: `Shared files: ${list(shared)}. Worktrees: ${basename(topA)} (${panesA[0]!.branch ?? "detached"}), ${basename(topB)} (${panesB[0]!.branch ?? "detached"}).`
+          + (tickets.length ? ` Tickets: ${tickets.join(", ")}.` : "") });
     }
   }
   for (const pane of panes) {
@@ -71,7 +73,7 @@ export function roomWorkOverlaps(panes: RoomWorkPane[], trains: ReleaseTrain[]):
     if (latest?.status !== "CONFLICT") continue;
     const files = new Set(latest.conflictFiles);
     const touching = panes.filter((other) => other.paneId !== pane.paneId && other.files.some((file) => files.has(file)));
-    overlaps.push({ title: `${pane.name}'s queue ticket ${latest.id} hit a merge conflict`.slice(0, 200), paneIds: [pane.paneId, ...touching.map((other) => other.paneId)],
+    overlaps.push({ title: `${pane.name}'s queue ticket ${latest.id} hit a merge conflict`.slice(0, 200), paneIds: [pane.paneId, ...touching.map((other) => other.paneId)], files: latest.conflictFiles,
       detail: `Conflicting files: ${list(latest.conflictFiles) || "not reported"}.${touching.length ? ` Also changed by ${names(touching)}.` : ""}` });
   }
   for (const train of trains.filter(isLiveTrain)) {
@@ -88,7 +90,7 @@ export function roomWorkOverlaps(panes: RoomWorkPane[], trains: ReleaseTrain[]):
 }
 
 /**
- * Where a pane works. Agents create their worktree after the pane starts (in /opt/spaceapp), so the launch directory says
+ * Where a pane works. Agents create their worktree after the pane starts (in <install root>), so the launch directory says
  * little: take the newer of the Space worktree the pane created and the worktree of its latest queue ticket.
  */
 export function paneWorktree(pane: Pick<Pane, "id" | "cwd">, tickets: DeployQueueTicket[], registry: WorktreeRecord[]): string | null {
@@ -137,7 +139,7 @@ async function readWorktree(git: WorktreeGit): Promise<Pick<RoomWorkPane, "top" 
     ...(committed?.code === 0 ? committed.stdout.split("\n").filter(Boolean) : []),
     ...(status?.code === 0 ? porcelainPaths(status.stdout) : [])
   ]);
-  return { top, branch: branch?.code === 0 ? branch.stdout.trim() || null : null, files: [...files].sort().slice(0, MAX_FILES) };
+  return { top, branch: branch?.code === 0 ? branch.stdout.trim() || null : null, files: [...files].sort() }; // every file (until 31/10 the first 200: an overlap past them was missed)
 }
 
 export function createRoomWork(deps: {

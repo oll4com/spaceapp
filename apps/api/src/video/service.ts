@@ -7,7 +7,7 @@ import {
   resolveVideoFormat, resolveVideoPaneMetadata,
   type Artifact, type CreateArtifactInput, type DesignAssetMadeBy, type DesignFormat, type Event as SpaceEvent, type Pane, type Room, type VideoAsset, type VideoAssetKind, type VideoEvent,
   type VideoEventType, type VideoJob, type VideoJobOp, type VideoPaneMetadata, type VideoPaneSettings, type VideoReframeMode, type VideoRequest, type VideoRequestCreateInput, type VideoRequester,
-  type VideoRequestStatus, type VideoSource, type VideoTechnique, type VideoTimeline, type VideoTtsEngine, type VideoView,
+  type VideoRequestStatus, type VideoSource, type VideoTechnique, type VideoTimeline, type VideoSttEngine, type VideoTtsEngine, type VideoView,
   makeNeedsYouAsk
 } from "@space/contracts";
 import type { VideoAssetFilter, VideoRepository, VideoRequestFilter } from "@space/db";
@@ -29,7 +29,9 @@ export const VIDEO_START_WAIT_MS = 10 * 60_000;
 const KICKOFF_GAP_MS = 60_000;
 const MEDIA_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 /** Finished jobs stay readable this long; a running job survives nothing (an API restart loses it, its events stay). */
+/** Technical: finished jobs live in this process's memory; what they made is saved as assets and the work dir's files stay 24 h. */
 const JOB_KEEP_MS = 60 * 60_000;
+/** Technical: the MCP answer's share; the whole transcript is the job's transcriptPath, which the agent reads with offsets. */
 const TRANSCRIPT_PREVIEW_CHARS = 20_000;
 const EXTENSIONS: Record<VideoAsset["mimeType"], string> = { "video/mp4": "mp4", "video/webm": "webm", "image/png": "png", "audio/mpeg": "mp3", "audio/wav": "wav" };
 const SOURCE_KINDS: readonly Artifact["kind"][] = ["VIDEO", "AUDIO", "IMAGE", "SCREENSHOT"];
@@ -95,7 +97,7 @@ type NoticeKind = "queued" | "approval" | "question" | "failed" | "ready";
 type JobRow = VideoJob & { ownerUserId: string; waiters: Array<() => void> };
 /** Which sources a worker op cuts from: a request's (its URL sources fetched first) or an explicit list. */
 export interface VideoSourceSelection { requestId?: string | null; sourceArtifactIds?: string[] }
-interface ResolvedSource { index: number; artifactId: string; path: string; label: string | null; kind: Artifact["kind"]; mimeType: string }
+export interface ResolvedSource { index: number; artifactId: string; path: string; label: string | null; kind: Artifact["kind"]; mimeType: string }
 
 const formatOrThrow = (formatId: string): DesignFormat => {
   const format = resolveVideoFormat(formatId);
@@ -129,7 +131,7 @@ export function createVideoService(options: VideoServiceOptions) {
 
   async function record(owner: string, pane: Pane | null, input: { requestId?: string | null; assetId?: string | null; type: VideoEventType; message: string; payload?: Record<string, unknown> }) {
     const event = await repository.createEvent({ ownerUserId: owner, paneId: pane?.id ?? null, requestId: input.requestId ?? null, assetId: input.assetId ?? null, type: input.type,
-      message: trimmed(input.message, 2000), payload: input.payload ?? {} });
+      message: input.message, payload: input.payload ?? {} });
     options.onEvent?.(event);
     return event;
   }
@@ -317,10 +319,9 @@ export function createVideoService(options: VideoServiceOptions) {
   }
   async function startOnce(owner: string, pane: Pane): Promise<boolean> {
     if (!options.kickoff || settingsOf(pane).paused) return false;
-    const working = (await repository.listRequests(owner, { videoPaneId: pane.id, status: ["TAKEN", "IN_PROGRESS"], limit: 20 }))
-      .some((request) => now() - Date.parse(request.updatedAt) < VIDEO_REQUEST_STALE_MS);
-    // The agent works through the queue until it is empty; a kickoff while it does would type into its turn.
-    if (working || now() - (lastKickoff.get(pane.id) ?? 0) < KICKOFF_GAP_MS || !(await options.kickoff.ready(pane))) return false;
+    // The empty prompt (ready) keeps a kickoff out of the editor's turn, never a TAKEN request's age: on 31/10 a request Cleo/Cody's designer
+    // parked (touched 17 minutes earlier) held a new one in the queue while it sat idle.
+    if (now() - (lastKickoff.get(pane.id) ?? 0) < KICKOFF_GAP_MS || !(await options.kickoff.ready(pane))) return false;
     lastKickoff.set(pane.id, now());
     await options.kickoff.send(pane);
     await record(owner, pane, { type: "RUN_STARTED", message: "Asked the editor to work through the request queue" });
@@ -353,7 +354,7 @@ export function createVideoService(options: VideoServiceOptions) {
     let started = 0;
     for (const owner of owners) {
       await reroute(owner);
-      const queued = await repository.listRequests(owner, { status: ["QUEUED"], limit: 50 });
+      const queued = await repository.listRequests(owner, { status: ["QUEUED"] });
       if (!queued.length) continue;
       const panes = (await videoPanes(owner)).filter((pane) => !settingsOf(pane).paused);
       const targets = panes.filter((pane) => queued.some((request) => request.videoPaneId === pane.id));
@@ -364,7 +365,7 @@ export function createVideoService(options: VideoServiceOptions) {
   }
   /** Work left on a Video pane that was closed goes to another open, unpaused Video pane of the owner, else back to the unassigned queue. */
   async function reroute(owner: string): Promise<void> {
-    const open = await repository.listRequests(owner, { status: ["QUEUED", "TAKEN", "IN_PROGRESS"], limit: 50 });
+    const open = await repository.listRequests(owner, { status: ["QUEUED", "TAKEN", "IN_PROGRESS"] });
     for (const request of open) {
       if (!request.videoPaneId || (request.status !== "QUEUED" && now() - Date.parse(request.updatedAt) < VIDEO_REQUEST_STALE_MS)) continue;
       const current = await paneOrNull(request.videoPaneId);
@@ -397,7 +398,7 @@ export function createVideoService(options: VideoServiceOptions) {
   }
   /** What a requester sees of a request: its state, the question, and the delivered outputs with what each shows and who made it. */
   async function view(owner: string, request: VideoRequest) {
-    const assets = request.resultAssetIds.length ? await repository.listAssets(owner, { ids: request.resultAssetIds, limit: 32 }) : [];
+    const assets = request.resultAssetIds.length ? await repository.listAssets(owner, { ids: request.resultAssetIds }) : [];
     return {
       request,
       assets: await Promise.all(assets.map(async (asset) => ({
@@ -408,7 +409,7 @@ export function createVideoService(options: VideoServiceOptions) {
     };
   }
   async function finish(owner: string, pane: Pane | null, request: VideoRequest, assetIds: string[], message: string | null, from: VideoRequestStatus[]) {
-    const assets = await repository.listAssets(owner, { ids: assetIds, limit: 32 });
+    const assets = await repository.listAssets(owner, { ids: assetIds });
     let note = message;
     if (request.callback?.kind === "MARKETING_POST") {
       try {
@@ -527,8 +528,9 @@ export function createVideoService(options: VideoServiceOptions) {
         // The proxy, contact sheet and frames follow in the same job: one wait for the agent.
         async (info, workDir) => ({ ...info, ...await options.engine!({ op: "proxy", workDir, toolsDir: options.toolsDir, sources, sourceIndex: input.sourceIndex ?? 0 }) }));
     },
-    transcribe(owner: string, pane: Pane, input: VideoSourceSelection & { sourceIndex?: number; language?: string | null }) {
-      return startJob(owner, pane, "transcribe", input.requestId, async () => ({ sources: sourceList((await resolveSources(owner, input)).sources), sourceIndex: input.sourceIndex ?? 0, language: input.language ?? null }),
+    transcribe(owner: string, pane: Pane, input: VideoSourceSelection & { sourceIndex?: number; language?: string | null; engine?: VideoSttEngine }) {
+      return startJob(owner, pane, "transcribe", input.requestId, async () => ({ sources: sourceList((await resolveSources(owner, input)).sources), sourceIndex: input.sourceIndex ?? 0, language: input.language ?? null,
+        ...(input.engine ? { engine: input.engine } : {}) }),
         async (result) => {
           const text = typeof result.transcriptPath === "string" ? await readFile(result.transcriptPath, "utf8").catch(() => "") : "";
           return { ...result, text: text.slice(0, TRANSCRIPT_PREVIEW_CHARS), truncated: text.length > TRANSCRIPT_PREVIEW_CHARS };
@@ -542,7 +544,7 @@ export function createVideoService(options: VideoServiceOptions) {
           silenceDb: input.silenceDb ?? -30, minSilenceSec: input.minSilenceSec ?? 0.5, sceneThreshold: input.sceneThreshold ?? 27 };
       });
     },
-    /** Narration spoken by Kokoro or Chatterbox, saved as a NARRATION asset (an AUDIO artifact) the timeline can use. */
+    /** Narration spoken by Kokoro, Chatterbox, Murf or a cloud grant (Cartesia, Fish Audio, LiveKit), saved as a NARRATION asset (an AUDIO artifact) the timeline can use. */
     tts(owner: string, pane: Pane, input: { text: string; engine?: VideoTtsEngine; voice?: string | null; language?: string; requestId?: string | null; label?: string | null; madeBy: DesignAssetMadeBy }) {
       const settings = settingsOf(pane).narration;
       return startJob(owner, pane, "tts", input.requestId, async () => ({ sources: [], text: input.text, engine: input.engine ?? settings.engine, voice: input.voice ?? settings.voice, language: input.language ?? settings.language, out: "narration.wav" }),
@@ -596,7 +598,7 @@ export function createVideoService(options: VideoServiceOptions) {
         return { sources: sourceList(sources), timeline: engineTimeline, outputs, wordsPath: input.wordsPath ?? null, analysisPath: input.analysisPath ?? null };
       }, async (result) => {
         const outputs = Array.isArray(result.outputs) ? result.outputs as Array<{ formatId: string; path: string; width: number; height: number; durationSec: number; thumbnailPath?: string | null }> : [];
-        const credits = timeline.music?.artifactId ? (await repository.listAssets(owner, { limit: 200, kinds: ["MUSIC"] })).find((asset) => asset.artifactId === timeline.music!.artifactId)?.credits ?? null : null;
+        const credits = timeline.music?.artifactId ? (await repository.listAssets(owner, { artifactIds: [timeline.music.artifactId], kinds: ["MUSIC"] }))[0]?.credits ?? null : null;
         const assets: VideoAsset[] = [];
         for (const output of outputs) {
           assets.push(await saveFile(owner, pane, { path: output.path, kind: "OUTPUT", formatId: output.formatId, width: output.width, height: output.height, durationSec: output.durationSec, thumbnailPath: output.thumbnailPath ?? null,
@@ -643,7 +645,7 @@ export function createVideoService(options: VideoServiceOptions) {
     async deleteFile(owner: string, pane: Pane, artifactId: string): Promise<{ removedAssets: number; keptInAgentFiles: boolean }> {
       const artifact = await ownedArtifact(owner, artifactId, ["VIDEO", "AUDIO"]);
       if (!options.deleteArtifact) throw new SpaceConflictError("Deleting files is not available on this runtime.");
-      const assets = await repository.listAssets(owner, { artifactIds: [artifact.id], limit: 500 });
+      const assets = await repository.listAssets(owner, { artifactIds: [artifact.id] });
       for (const asset of assets) await repository.deleteAsset(owner, asset.id);
       const posters = assets.map((asset) => asset.thumbnailArtifactId).filter((id): id is string => Boolean(id));
       for (const id of posters) {
@@ -754,7 +756,7 @@ export function createVideoService(options: VideoServiceOptions) {
     async deliver(owner: string, pane: Pane, requestId: string, input: { assetIds: string[]; message?: string | null }) {
       assertVideoPane(pane);
       const request = await requestOf(owner, requestId);
-      const assets = await repository.listAssets(owner, { ids: input.assetIds, limit: 32 });
+      const assets = await repository.listAssets(owner, { ids: input.assetIds });
       if (!input.assetIds.length || assets.length !== new Set(input.assetIds).size) throw new SpaceNotFoundError("Deliver assets of your library (space_video_assets).");
       if (settingsOf(pane).requestAutonomy === "APPROVAL") {
         const held = await transition(owner, requestId, ["TAKEN", "IN_PROGRESS", "DELIVERED"], { status: "NEEDS_APPROVAL", resultAssetIds: assets.map((asset) => asset.id), message: input.message ?? null });
@@ -774,7 +776,7 @@ export function createVideoService(options: VideoServiceOptions) {
       return finish(owner, pane, request, assetIds, input.message ?? request.message, ["QUEUED", "TAKEN", "IN_PROGRESS", "NEEDS_APPROVAL"]);
     },
     async fail(owner: string, pane: Pane, requestId: string, reason: string) {
-      const request = await transition(owner, requestId, ["TAKEN", "IN_PROGRESS", "NEEDS_APPROVAL"], { status: "FAILED", message: trimmed(reason, 2000) });
+      const request = await transition(owner, requestId, ["TAKEN", "IN_PROGRESS", "NEEDS_APPROVAL"], { status: "FAILED", message: reason });
       await record(owner, pane, { requestId, type: "FAILED", message: `Could not make it: ${trimmed(reason, 500)}` });
       await clearNotices(owner, requestId, ["question", "approval"]);
       await notice(owner, "failed", request, pane, `Video request failed (${pane.title})`, reason);
@@ -786,7 +788,7 @@ export function createVideoService(options: VideoServiceOptions) {
       await clearNotices(owner, requestId, ["queued", "question", "approval", "failed"]);
       return view(owner, request);
     },
-    events: (owner: string, filter: { paneId?: string; requestId?: string; limit: number }) => repository.listEvents(owner, filter),
+    events: (owner: string, filter: { paneId?: string; requestId?: string; limit?: number }) => repository.listEvents(owner, filter),
     formats: () => VIDEO_FORMATS.map((format) => ({ ...format, networkLabel: DESIGN_NETWORK_LABELS[format.network] })),
     sourceView
   };

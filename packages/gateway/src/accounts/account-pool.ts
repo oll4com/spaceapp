@@ -1,5 +1,5 @@
 import { GATEWAY_FREE_PLAN_PAUSE_REASON, isGatewayFreePlan, type GatewayProvider } from "@space/contracts";
-import type { GatewayAccountRecord, GatewayCredentialUpdate, GatewayRepository } from "@space/db";
+import { createPaceDayStarts, type GatewayAccountRecord, type GatewayCredentialUpdate, type GatewayRepository } from "@space/db";
 import {
   handlePermanentFailure, handleQuotaExceeded, handleRateLimit, permanentFailureCodes, type AccountState, type UpstreamError
 } from "../router/balancer.js";
@@ -67,6 +67,9 @@ export class AccountPool {
     now?: () => number;
   }) {}
 
+  private paceDayStarts: ReturnType<typeof createPaceDayStarts> | null = null;
+  private dayStarts = new Map<string, { at: number; usedPercent: number }>();
+
   private nowMs() { return (this.options.now ?? Date.now)(); }
 
   private state(accountId: string): RuntimeState {
@@ -120,6 +123,7 @@ export class AccountPool {
       const all = await this.options.repository.listAccounts();
       const own = all.filter((account) => account.provider === this.options.provider);
       this.cache = { at: now, accounts: await Promise.all(own.map((account) => this.pauseIfFree(account))) };
+      this.dayStarts = await (this.paceDayStarts ??= createPaceDayStarts(this.options.repository))(this.cache.accounts, now);
     }
     return this.cache.accounts;
   }
@@ -159,7 +163,8 @@ export class AccountPool {
       errorCount: runtime.errorCount,
       planType: account.planType,
       healthTier: runtime.healthTier,
-      accessTokenExpiresAt: toSeconds(account.credentialsExpiresAt)
+      accessTokenExpiresAt: toSeconds(account.credentialsExpiresAt),
+      weekDayStart: quotaKey ? null : this.dayStarts.get(account.id) ?? null
     };
   }
 
@@ -287,10 +292,10 @@ export class AccountPool {
    * Decrypted credentials, refreshed first when due. Only one holder refreshes an account at a time (storage
    * lock), and a holder that waited sees the token the other one stored instead of refreshing it again.
    */
-  async credentials(account: GatewayAccountRecord): Promise<StoredCredentials> {
+  async credentials(account: GatewayAccountRecord, options?: { allowFreePlan?: boolean }): Promise<StoredCredentials> {
     const cipher = this.options.cipher();
     if (!cipher) throw Object.assign(new Error("The gateway encryption key is missing."), { code: "credential_key_missing" });
-    if (isGatewayFreePlan(account.planType)) { await this.pauseIfFree(account); this.invalidate(); throw freePlanError(); }
+    if (!options?.allowFreePlan && isGatewayFreePlan(account.planType)) { await this.pauseIfFree(account); this.invalidate(); throw freePlanError(); }
     const current = JSON.parse(cipher.decrypt(account.credentialsEncrypted, account.id)) as StoredCredentials;
     if (!this.options.refresher.needsRefresh(account, current, this.nowMs())) return current;
     let result: StoredCredentials = current;
@@ -299,7 +304,7 @@ export class AccountPool {
       const latest = JSON.parse(cipher.decrypt(fresh.credentialsEncrypted, fresh.id)) as StoredCredentials;
       if (!this.options.refresher.needsRefresh(fresh, latest, this.nowMs())) { result = latest; return null; }
       try {
-        const { stored, update } = this.refreshedUpdate(cipher, fresh.id, await this.options.refresher.refresh(latest));
+        const { stored, update } = this.refreshedUpdate(cipher, fresh.id, await this.options.refresher.refresh(latest), fresh);
         result = stored;
         return update;
       } catch (error) {
@@ -321,8 +326,35 @@ export class AccountPool {
     }
     this.invalidate();
     // The refresh showed the plan is now free: the request goes to another account.
-    if (updated && isGatewayFreePlan(updated.planType)) { await this.pauseIfFree(updated); throw freePlanError(); }
+    if (updated && isGatewayFreePlan(updated.planType)) {
+      await this.pauseIfFree(updated);
+      if (!options?.allowFreePlan) throw freePlanError();
+    }
     return result;
+  }
+
+  /** Updates the stored plan after an upstream check; a free account is paused and a paid account paused only for being free becomes active. */
+  async recordPlanType(account: GatewayAccountRecord, planType: string | null): Promise<GatewayAccountRecord> {
+    if (!planType) return account;
+    if (isGatewayFreePlan(planType)) {
+      const updated = account.planType === planType ? account
+        : await this.options.repository.withAccountCredentialLock(account.id, async () => ({ planType })) ?? { ...account, planType };
+      const paused = await this.pauseIfFree(updated);
+      this.invalidate();
+      return paused;
+    }
+    const unpause = account.status === "PAUSED" && account.statusReason === GATEWAY_FREE_PLAN_PAUSE_REASON;
+    if (account.planType === planType && !unpause) return account;
+    const updated = await this.options.repository.withAccountCredentialLock(account.id, async (fresh) => {
+      const freshUnpause = fresh.status === "PAUSED" && fresh.statusReason === GATEWAY_FREE_PLAN_PAUSE_REASON;
+      return {
+        planType,
+        ...(freshUnpause ? { status: "ACTIVE", statusReason: null } : {})
+      };
+    });
+    if (unpause) this.state(account.id).status = null;
+    this.invalidate();
+    return updated ?? account;
   }
 
   /**
@@ -345,7 +377,7 @@ export class AccountPool {
       const latest = JSON.parse(cipher.decrypt(fresh.credentialsEncrypted, fresh.id)) as StoredCredentials;
       if (!latest.refreshToken) return null;
       try {
-        const { update } = this.refreshedUpdate(cipher, fresh.id, await this.options.refresher.refresh(latest));
+        const { update } = this.refreshedUpdate(cipher, fresh.id, await this.options.refresher.refresh(latest), fresh);
         outcome = "renewed";
         return fresh.status === "REAUTH_REQUIRED" ? { ...update, status: "ACTIVE", statusReason: null } : update;
       } catch (error) {
@@ -372,8 +404,11 @@ export class AccountPool {
   }
 
   /** What storage keeps after a refresh: the new credentials (encrypted), their expiry and the refresh time. */
-  private refreshedUpdate(cipher: CredentialCipher, accountId: string, refreshed: RefreshedCredentials): { stored: StoredCredentials; update: GatewayCredentialUpdate } {
+  private refreshedUpdate(cipher: CredentialCipher, accountId: string, refreshed: RefreshedCredentials, current?: GatewayAccountRecord):
+    { stored: StoredCredentials; update: GatewayCredentialUpdate } {
     const { planType, email, ...stored } = refreshed;
+    const unpauseFree = Boolean(planType && !isGatewayFreePlan(planType)
+      && current?.status === "PAUSED" && current.statusReason === GATEWAY_FREE_PLAN_PAUSE_REASON);
     return {
       stored,
       update: {
@@ -381,7 +416,8 @@ export class AccountPool {
         credentialsExpiresAt: stored.accessExpiresAtMs ? new Date(stored.accessExpiresAtMs).toISOString() : null,
         lastRefreshAt: new Date(this.nowMs()).toISOString(),
         ...(planType ? { planType } : {}),
-        ...(email ? { email } : {})
+        ...(email ? { email } : {}),
+        ...(unpauseFree ? { status: "ACTIVE", statusReason: null } : {})
       }
     };
   }

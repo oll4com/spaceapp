@@ -326,10 +326,28 @@ button.aiq-provider:focus-visible {
   white-space: nowrap;
 }
 
+/* "Left now" beside the 5h and Week bars, one under the other, in the column "At reset" uses below. */
 .aiq-provider-meters {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: 3.6rem minmax(0, 1fr);
+  align-items: center;
+  gap: 2px 6px;
+}
+
+.aiq-provider-meters > .quota-at-reset-label {
+  grid-column: 1;
+  grid-row: 1 / span 4;
+  align-self: start;
+}
+
+/* Every meter and its "resets" line stay in the second column; the dock's extra lines must never flow into the label column. */
+.aiq-provider-meters > :not(.quota-at-reset-label) {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.aiq-provider-meters .aiq-avg > span:first-child {
+  min-width: 2.4em;
 }
 
 .aiq-avg {
@@ -367,6 +385,12 @@ button.aiq-provider:focus-visible {
   font-variant-numeric: tabular-nums;
   text-align: right;
   color: var(--aiq-avg-color);
+}
+
+/* The Nous dock's card: each window's next reset under its meter (operator 6/11). */
+.aiq-avg-resets {
+  font-size: 0.6rem;
+  color: var(--aiq-muted);
 }
 
 .aiq-provider-body small {
@@ -701,4 +725,14 @@ button.aiq-provider:focus-visible {
 
 :is([data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .aiq-alert button {
   color: #14532d;
+}
+
+/* Any account or API budget under 5% turns the header's quota icon red (operator 2026-10-31). */
+.aiq-quota-low {
+  display: inline-flex;
+  color: #ff7582;
+}
+
+:is([data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .aiq-quota-low {
+  color: #c53030;
 }

@@ -1,4 +1,4 @@
-/* Nous's "needs you" banner and the Back pill: fixed above the workspace, on the app's theme tokens. Above every dock, the compact
+/* Nous's error banner and the Back pill: fixed above the workspace, on the app's theme tokens. Above every dock, the compact
    dock drawer (300) and fullscreen Nous (90), level with the toasts: at 95 the drawer hid the banner (2026-10-24). */
 .nous-focus-banner,
 .nous-focus-back {
@@ -22,21 +22,34 @@
 }
 /* Below the desktop title bar (z 99999) and a phone notch: at 0.75rem the title bar hid the banner's top half (2026-10-25). */
 .nous-focus-banner { top: calc(max(var(--desktop-titlebar-height, 0px), env(safe-area-inset-top, 0px)) + 0.75rem); flex-wrap: wrap; justify-content: flex-end; border-radius: 1rem; }
-.nous-focus-back { bottom: 1rem; padding: 0.3rem; }
+.nous-focus-back {
+  top: calc(max(var(--desktop-titlebar-height, 0px), env(safe-area-inset-top, 0px)) + 0.5rem);
+  padding: 0.25rem;
+  max-width: calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 1rem);
+}
+/* The way back names the card: one row (Back, the card's title, Stay), its question and answers below; operator 3/11 19:25 BKK: the rest
+   (text, steps) only on Details, scrolling inside a bounded box so the page's working area stays visible. */
+.nous-focus-back { flex-direction: column; align-items: stretch; }
+.nous-focus-row { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.nous-focus-back.has-reason { border-radius: 1rem; max-width: min(40rem, calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 1rem)); }
+.nous-focus-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nous-focus-card { flex: 1 1 100%; min-width: 0; padding: 0 0.25rem 0.15rem; }
+.nous-focus-back .nous-focus-card { padding: 0.15rem 0.5rem 0.35rem; }
+.nous-focus-card > p { margin: 0 0 0.35rem; overflow-wrap: anywhere; }
+.nous-focus-details[aria-expanded="true"] svg { transform: rotate(180deg); }
+.nous-focus-reason { max-height: min(40vh, 20rem); overflow: auto; padding: 0.35rem 0 0; }
+.nous-focus-reason p { margin: 0 0 0.35rem; white-space: pre-line; overflow-wrap: anywhere; }
+.nous-focus-question { font-weight: 600; }
+.nous-focus-answers { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.4rem; }
 .nous-focus-banner > svg { flex: 0 0 auto; width: 1.1rem; height: 1.1rem; color: var(--modern-accent, var(--room-accent, #61d2c3)); }
 .nous-focus-text { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
-.nous-focus-hold { color: var(--modern-muted, var(--room-muted, #a2a7ad)); }
-/* What the request needs: three lines on the banner, the whole text (scrolling) on the Back pill while the operator is there. */
-.nous-focus-ask { display: block; margin: 0.2rem 0 0; color: var(--modern-muted, var(--room-muted, #a2a7ad)); white-space: pre-line; overflow-wrap: anywhere; }
-.nous-focus-banner .nous-focus-ask { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.nous-focus-back.has-ask { flex-wrap: wrap; justify-content: flex-end; border-radius: 1rem; padding: 0.5rem; }
-.nous-focus-back .nous-focus-ask { flex: 1 1 100%; max-height: 30vh; overflow: auto; margin: 0 0.25rem 0.2rem; color: inherit; }
 .nous-focus-banner button,
 .nous-focus-back button {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  min-height: 2rem;
+  min-height: 48px;
+  min-width: 48px;
   padding: 0.25rem 0.7rem;
   border: 1px solid var(--modern-border, var(--room-border, #343638));
   border-radius: 999px;
@@ -47,6 +60,12 @@
 }
 .nous-focus-banner button.nous-focus-go,
 .nous-focus-back button.nous-focus-go { border-color: var(--modern-accent, var(--room-accent, #61d2c3)); background: var(--modern-accent, var(--room-accent, #61d2c3)); color: var(--modern-on-accent, #071b19); }
-.nous-focus-back button svg { width: 1rem; height: 1rem; }
+.nous-focus-back button svg { flex: 0 0 auto; width: 1rem; height: 1rem; }
+.nous-focus-back button[data-nous-focus="back"] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nous-focus-back button[data-nous-focus="back"] span { overflow: hidden; text-overflow: ellipsis; }
+/* The card answered or resolved during the visit: the bar says so (plan clipboard:ytwWl09xNH0Z, design §3.4); Back fills, it is his to press. */
+.nous-focus-done { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--needs-ok, #9ece6a); }
+.nous-focus-done svg { width: 1rem; height: 1rem; }
 .nous-focus-banner button:focus-visible,
 .nous-focus-back button:focus-visible { outline: 2px solid var(--modern-accent, var(--room-accent, #61d2c3)); outline-offset: 2px; }
+.nous-focus-card .ny-files { margin-bottom: 0.35rem; }

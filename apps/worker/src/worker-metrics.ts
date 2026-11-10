@@ -69,11 +69,12 @@ export interface WorkerMetricsListen {
 }
 
 /**
- * SPACE_WORKER_METRICS_PORT enables the endpoint (unset or 0 = disabled).
+ * SPACE_WORKER_METRICS_PORT enables the endpoint (unset or 0 = disabled); each memory worker reads its own port
+ * variable (SPACE_MEMORY_MAINTENANCE_METRICS_PORT, SPACE_MEMORY_MUTATION_METRICS_PORT).
  * SPACE_WORKER_METRICS_HOST may only name a loopback address.
  */
-export function resolveWorkerMetricsListen(env: NodeJS.ProcessEnv = process.env): WorkerMetricsListen | null {
-  const rawPort = env.SPACE_WORKER_METRICS_PORT?.trim();
+export function resolveWorkerMetricsListen(env: NodeJS.ProcessEnv = process.env, portVariable = "SPACE_WORKER_METRICS_PORT"): WorkerMetricsListen | null {
+  const rawPort = env[portVariable]?.trim();
   if (!rawPort || rawPort === "0") return null;
   if (!/^\d{1,5}$/.test(rawPort)) return null;
   const port = Number(rawPort);

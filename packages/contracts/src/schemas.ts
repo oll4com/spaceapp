@@ -1,5 +1,6 @@
+import type { SiteSignin } from "./site-signins.js";
 import { dotIdSchema } from "./dots.js";
-import { dotScheduleRecurrenceSchema, isValidTimeZone, nextDotScheduleRun } from "./dot-schedules.js";
+import { DOT_SCHEDULE_GRACE_MS, dotScheduleRecurrenceSchema, isValidTimeZone, nextDotScheduleRun } from "./dot-schedules.js";
 import { agentRunLedgerSchema, agentRunEvaluationSchema, agentRunMeasuredUsageSchema, agentRunCostSchema } from "./agent-run-ledger.js";
 import { autoRouteShadowSchema } from "./auto-routing.js";
 import { taskAcceptanceSchema } from "./task-acceptance.js";
@@ -11,6 +12,8 @@ import { roomMiniRouteSchema } from "./pane-catalog.js";
 import { nousSettingsSchema } from "./nous.js";
 import { brokerScopeSchema } from "./broker-scopes.js";
 import { patchSchema } from "./partial-update.js";
+import { historySettingsSchema } from "./history-period.js";
+import { uiLanguageSchema } from "./ui-language.js";
 import { MAX_ROOM_LIMIT, MAX_ROOMS } from "./room-names.js";
 import { taskMetadataSchema } from "./task-metadata.js";
 import { t3CodePaneMetadataSchema } from "./t3code.js";
@@ -18,8 +21,8 @@ import { jobApplyPaneMetadataSchema, jobCopilotAccountProfileIdSchema } from "./
 import { copilotLaunchSettingsSchema } from "./copilot.js";
 import { mailCopilotPaneMetadataSchema } from "./mail-copilot.js";
 import { marketingCopilotPaneMetadataSchema } from "./marketing-copilot.js";
-import { freelanceCopilotPaneMetadataSchema } from "./freelance-copilot.js";
-import { DESIGN_COLOR_PRESETS_MAX, designColorPresetSchema, designPaneMetadataSchema } from "./design.js";
+import { freelanceCopilotPaneMetadataSchema, freelanceEgressRouteSchema } from "./freelance-copilot.js";
+import { designColorPresetSchema, designPaneMetadataSchema } from "./design.js";
 import { appStudioPaneMetadataSchema } from "./app-studio.js";
 import { securityCopilotPaneMetadataSchema } from "./security-copilot.js";
 import { monitoringCopilotPaneMetadataSchema } from "./monitoring-copilot.js";
@@ -27,7 +30,18 @@ import { videoPaneMetadataSchema } from "./video.js";
 import { notificationSettingsSchema } from "./notifications.js";
 import { traceparentSchema } from "./observability.js";
 import { demoProjectIdSchema, demoVariantIdSchema } from "./demo-projects.js";
-import { atLeastOneField } from "./update-rules.js";
+import { atLeastOneField, atLeastOneOf } from "./update-rules.js";
+import { noRepeatedValues } from "./array-rules.js";
+import { toolIdMatchesAction } from "./tool-id-rules.js";
+import { boundedJsonRecord, jsonFitsWithin } from "./record-rules.js";
+import { noopExactlyWhenEmpty } from "./status-rules.js";
+import { fieldOnlyWhen } from "./field-rules.js";
+import { httpLinksOpenInNewTab, webUrlWithoutCredentials } from "./link-rules.js";
+import { operatorRunNeedsActor } from "./run-rules.js";
+import { deletionCountsAddUp } from "./deletion-rules.js";
+import { nonBlankText } from "./text-rules.js";
+import { planOnlyFields } from "./clipboard-rules.js";
+import { maximizedAndMinimized } from "./pane-rules.js";
 
 export const isoDateTimeSchema = z.string().datetime({ offset: true });
 export const idSchema = z.string().min(8).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -125,7 +139,7 @@ export const paginated = <T extends z.ZodType>(item: T) =>
   });
 
 export const integrationStatusSchema = z.enum(["VERIFIED", "DISABLED", "ERROR"]);
-export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS", "LIVE", "FILES", "DEMOS", "DATABASES", "T3CODE", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "APP_STUDIO", "VIDEO", "SECURITY_COPILOT", "MONITORING_COPILOT"]);
+export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS", "LIVE", "FILES", "DEMOS", "DATABASES", "T3CODE", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "APP_STUDIO", "VIDEO", "SECURITY_COPILOT", "MONITORING_COPILOT", "APPOINTMENTS"]);
 export const paneStatusSchema = z.enum(["IDLE", "QUEUED", "RUNNING", "BLOCKED", "ERROR", "COMPLETE", "CLOSED"]);
 export const paneTitleSourceSchema = z.enum(["auto", "manual", "ai"]);
 export const paneCategoryColors = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"] as const;
@@ -258,8 +272,8 @@ export const cliToggleRuntimeIds = [
 
 export const cliToggleRuntimeIdSchema = z.enum(cliToggleRuntimeIds);
 
-// CLI runtimes offered as native-chat providers (model picker). `cli:codex` and
-// `cli:opencode` are excluded because they already exist as native providers.
+// CLI runtimes offered as native-chat providers (model picker). Codex uses its measured
+// app-server route; OpenCode is offered here as well as through its separate HTTP route.
 export const cliChatTurnDefaultRuntimeIds = [
   "cli:claude",
   "cli:gemini",
@@ -371,7 +385,7 @@ export const activeAgentTurnsInputSchema = z
       .array(idSchema)
       .min(1)
       .max(6)
-      .refine((paneIds) => new Set(paneIds).size === paneIds.length, "Pane ids must be unique."),
+      .refine(...noRepeatedValues("Pane ids must be unique.")),
     cycle: z.number().int().min(0).max(3)
   })
   .strict();
@@ -428,7 +442,7 @@ export const reorderRoomsInputSchema = z.object({
     .array(idSchema)
     .min(1)
     .max(500)
-    .refine((roomIds) => new Set(roomIds).size === roomIds.length, "Room ids must be unique.")
+    .refine(...noRepeatedValues("Room ids must be unique."))
 });
 
 export const reorderPanesInputSchema = z.object({
@@ -436,7 +450,7 @@ export const reorderPanesInputSchema = z.object({
     .array(idSchema)
     .min(1)
     .max(500)
-    .refine((paneIds) => new Set(paneIds).size === paneIds.length, "Pane ids must be unique.")
+    .refine(...noRepeatedValues("Pane ids must be unique."))
 });
 
 export const vncTargetSchema = z
@@ -631,6 +645,7 @@ export const roomPaneBatchItemSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("LIVE") }).strict(),
   z.object({ mode: z.literal("FILES") }).strict(),
   z.object({ mode: z.literal("DATABASES") }).strict(),
+  z.object({ mode: z.literal("APPOINTMENTS") }).strict(),
   z
     .object({
       mode: z.literal("DEMOS"),
@@ -756,13 +771,16 @@ export function redactPersistedTranscriptContent(value: string): string {
     );
 }
 
+/** Business rule shared by the transcript content schemas: content is stored only already redacted (ARCH-002). */
+const redactedBeforePersistence = [
+  (value: string) => redactPersistedTranscriptContent(value) === value,
+  "Transcript chunks must be redacted before persistence."
+] as const;
+
 const persistedTranscriptContentSchema = z
   .string()
   .max(32 * 1024)
-  .refine(
-    (value) => redactPersistedTranscriptContent(value) === value,
-    "Transcript chunks must be redacted before persistence."
-  );
+  .refine(...redactedBeforePersistence);
 
 const booleanQueryValueSchema = z
   .union([z.boolean(), z.enum(["true", "false"])])
@@ -795,7 +813,7 @@ export const updatePaneInputSchema = z
     categoryColor: paneCategoryColorSchema.optional(),
     vncTarget: vncTargetSchema.nullable().optional()
   })
-  .refine((input) => !(input.isMaximized === true && input.isMinimized === true), {
+  .refine((input) => !maximizedAndMinimized(input), {
     message: "A pane cannot be maximized and minimized at the same time."
   });
 
@@ -950,10 +968,11 @@ export const updateAgentPaneBindingInputSchema = z
   })
   .refine(...atLeastOneField("Agent pane binding update must include at least one field."));
 
+// Agent messages are whole (operator 31/10 «Βγάλε όλα τα όρια»: until then 50,000 characters).
 export const agentPaneMessageSchema = z.object({
   id: z.string().min(1).max(200),
   role: agentPaneMessageRoleSchema,
-  content: z.string().max(50000),
+  content: z.string(),
   status: agentPaneMessageStatusSchema,
   createdAt: isoDateTimeSchema.nullable()
 });
@@ -1293,7 +1312,7 @@ export const roomAgentSessionSchema = z.object({
   providerId: z.string().min(1).max(120).nullable().optional(),
   modelId: z.string().min(1).max(120),
   reasoningEffort: z.string().min(1).max(30).nullable().optional(),
-  messages: z.array(roomAgentTimelineMessageSchema).max(500),
+  messages: z.array(roomAgentTimelineMessageSchema),
   /** The answer the Room Agent is writing right now; its frames arrive on the room-agent stream. */
   activeTurn: z.object({ messageId: idSchema, requestId: z.string().min(1).max(200), startedAt: isoDateTimeSchema }).nullable().optional(),
   activeMission: roomAgentMissionSchema.nullable(),
@@ -1323,7 +1342,7 @@ export const roomAgentSessionSchema = z.object({
   paneStrip: z.array(roomAgentPaneStripItemSchema).max(64).optional(),
   /** Room monitor switch and its newest events, newest first. */
   monitor: z.object({ enabled: z.boolean(), autopilot: z.boolean().optional() }).optional(),
-  events: z.array(roomAgentEventSchema).max(50).optional(),
+  events: z.array(roomAgentEventSchema).optional(),
   taskResults: z.array(roomAgentTaskResultSchema).max(64).optional(),
   missionSummary: roomAgentMissionSummarySchema.nullable().optional(),
   directCommand: z.object({
@@ -1558,7 +1577,7 @@ const roomAgentLayoutActionRequestSchema = z.object({
     if ((value.columnSpan !== undefined || value.isMaximized !== undefined || value.isMinimized !== undefined || value.focus) && !value.paneId) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: "Pane layout changes require a paneId." });
     }
-    if (value.isMaximized && value.isMinimized) context.addIssue({ code: z.ZodIssueCode.custom, message: "A pane cannot be minimized and maximized together." });
+    if (maximizedAndMinimized(value)) context.addIssue({ code: z.ZodIssueCode.custom, message: "A pane cannot be minimized and maximized together." });
   })
 });
 const roomAgentCliCommandActionRequestSchema = z.object({
@@ -1753,7 +1772,7 @@ export const agentPaneSessionSchema = z.object({
   latestRun: agentPaneTaskRunSchema.nullable().optional(),
   binding: agentPaneBindingSchema,
   threadId: z.string().min(1).max(200).nullable().default(null),
-  messages: z.array(agentPaneMessageSchema).max(500),
+  messages: z.array(agentPaneMessageSchema),
   runStatus: agentPaneRunStatusSchema,
   statusReason: z.string().min(1).max(1000),
   modelOptions: z.array(agentPaneModelOptionSchema).max(4000),
@@ -1822,15 +1841,7 @@ export const agentPaneSettingsInputSchema = z
     collaborationMode: collaborationModeSchema.optional(),
     fullAccessConfirmed: z.boolean().default(false)
   })
-  .refine(
-    (input) =>
-      input.title !== undefined ||
-      input.selectedModelConfigId !== undefined ||
-      input.selectedToolIds !== undefined ||
-      input.permissionMode !== undefined ||
-      input.collaborationMode !== undefined,
-    "Agent pane settings update must include at least one field."
-  );
+  .refine(...atLeastOneOf(["title", "selectedModelConfigId", "selectedToolIds", "permissionMode", "collaborationMode"], "Agent pane settings update must include at least one field."));
 
 export const agentRuntimeCapabilitySchema = z.enum(["WEB_CHAT", "CLI"]);
 export const agentRuntimeStatusSchema = z.enum(["ENABLED", "NOT_CONNECTED", "DISABLED", "ERROR"]);
@@ -2013,20 +2024,10 @@ export const updateCliRuntimeSettingInputSchema = z
   })
   .strict()
   .superRefine((input, context) => {
-    if (!input.enabled && !input.confirmationToken) {
-      context.addIssue({
-        code: "custom",
-        path: ["confirmationToken"],
-        message: "Disabling a CLI runtime requires a confirmation token."
-      });
-    }
-    if (input.enabled && input.confirmationToken) {
-      context.addIssue({
-        code: "custom",
-        path: ["confirmationToken"],
-        message: "Enabling a CLI runtime does not accept a confirmation token."
-      });
-    }
+    fieldOnlyWhen(context, {
+      when: !input.enabled, present: Boolean(input.confirmationToken), path: "confirmationToken",
+      required: "Disabling a CLI runtime requires a confirmation token.", forbidden: "Enabling a CLI runtime does not accept a confirmation token."
+    });
   });
 
 export const cliRuntimeCleanupResultSchema = z.object({
@@ -2522,10 +2523,7 @@ export const updatePaneCliTerminalControlLeaseInputSchema = z
     status: z.enum(["RELEASED", "EXPIRED", "REVOKED"]).optional(),
     ttlSeconds: z.number().int().min(5).max(300).optional()
   })
-  .refine(
-    (input) => input.status !== undefined || input.ttlSeconds !== undefined,
-    "CLI terminal control lease update must include a status or heartbeat lifetime."
-  );
+  .refine(...atLeastOneOf(["status", "ttlSeconds"], "CLI terminal control lease update must include a status or heartbeat lifetime."));
 
 export const paneCliTranscriptChunkSchema = z.object({
   chunkId: idSchema,
@@ -2569,10 +2567,7 @@ export const createPaneCliHostOutputInputSchema = z.object({
   stream: z.enum(["stdout", "stderr"]),
   // A host event can exceed a persisted transcript row. Stores split this batch
   // atomically and attach its replay cursor only to the final row.
-  content: z.string().max(8 * 1024 * 1024).refine(
-    (value) => redactPersistedTranscriptContent(value) === value,
-    "Transcript chunks must be redacted before persistence."
-  ),
+  content: z.string().max(8 * 1024 * 1024).refine(...redactedBeforePersistence),
   byteLength: z.number().int().min(0).max(32 * 1024 * 1024).optional()
 });
 
@@ -3874,18 +3869,7 @@ export const spaceAgentBrowserActionRequestSchema = z
     targetPaneId: idSchema,
     action: browserToolActionInputSchema
   })
-  .superRefine((input, context) => {
-    const expected = expectedBrowserToolIdForAction(input.action.type);
-    if (input.toolId !== expected) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["toolId"],
-        message: expected
-          ? `toolId ${input.toolId} does not match browser action type ${input.action.type}.`
-          : `Browser action type ${input.action.type} belongs to the operator's live view.`
-      });
-    }
-  });
+  .superRefine(toolIdMatchesAction("browser", expectedBrowserToolIdForAction));
 
 export const spaceAgentBrowserActionEnvelopeSchema = z.object({
   version: z.literal(1),
@@ -3925,6 +3909,11 @@ export const spaceAgentBrowserActionBridgeResponseSchema = z.object({
 });
 
 export const spaceCliBrowserSessionSummarySchema = z.object({
+  signin: z.custom<SiteSignin>().nullable().optional(),
+  /** The Google account the page's site wants (its sign-in recipe) and the account the tab runs in, in one line. */
+  signinAccount: z.string().max(1000).nullable().optional(),
+  /** Each tab with the Google account it runs in (operator nous_msg:05e5af9f81ec45caa1f50f1b), for an ADMIN's Google account panes. */
+  tabAccounts: z.array(z.object({ pageId: z.string().max(200), isActive: z.boolean(), google: z.string().max(400) })).max(100).optional(),
   sessionId: idSchema,
   paneId: idSchema,
   roomId: idSchema,
@@ -3960,7 +3949,9 @@ export const spaceCliBrowserSessionStartResponseSchema = z.object({
 });
 
 export const spaceCliBrowserActionBridgeRequestSchema = z.object({
-  actions: z.array(spaceAgentBrowserActionRequestSchema).min(1).max(3)
+  actions: z.array(spaceAgentBrowserActionRequestSchema).min(1).max(3),
+  /** The operator's explicit order (its Nous message id) to open a reset page at a site whose stored sign-in works (nous_msg:fe72e061). */
+  operatorOrder: z.string().regex(/^nous_msg:[A-Za-z0-9_-]{6,80}$/).optional()
 });
 
 export const spaceCliBrowserActionBridgeResponseSchema = spaceAgentBrowserActionBridgeResponseSchema;
@@ -3970,7 +3961,21 @@ const spaceCliBrowserJobCommandSchema = (type: "CAPTURE_STATUS" | "STOP_CAPTURE"
 const spaceCliBrowserArtifactCommandSchema = (type: "PIN_ARTIFACT" | "UNPIN_ARTIFACT") =>
   z.object({ type: z.literal(type), artifactId: idSchema }).strict();
 
+export const spaceTextCaptchaCommandSchema = z.object({
+  type: z.literal("TEXT_CAPTCHA"),
+  action: z.enum(["inspect", "answer"]).default("inspect"),
+  pageId: z.string().min(1).max(200).optional(),
+  checkpoint: z.string().uuid().optional(),
+  // Same text transport budget as browser:type; letters/digits only, never keys or scripts.
+  answer: z.string().min(1).max(4000).regex(/^[a-zA-Z0-9]+$/).optional()
+}).strict().superRefine((value, ctx) => {
+  if (value.action === "answer" ? !value.answer || !value.checkpoint : value.answer !== undefined || value.checkpoint !== undefined) {
+    ctx.addIssue({ code: "custom", message: "answer requires the latest checkpoint and letters/digits; inspect takes neither." });
+  }
+});
+
 export const spaceCliBrowserCommandSchema = z.discriminatedUnion("type", [
+  spaceTextCaptchaCommandSchema,
   z.object({
     type: z.literal("DEVTOOLS"),
     includeNetwork: z.boolean().default(true),
@@ -3998,6 +4003,9 @@ export const spaceCliBrowserCommandSchema = z.discriminatedUnion("type", [
   spaceCliBrowserArtifactCommandSchema("UNPIN_ARTIFACT"),
   z.object({
     type: z.literal("REQUEST_HANDOFF"),
+    triedStored: z.boolean().optional(),
+    /** The operator's explicit order (nous_msg id) for a reset or recovery handoff at a site whose stored sign-in works. */
+    operatorOrder: z.string().regex(/^nous_msg:[A-Za-z0-9_-]{6,80}$/).optional(),
     kind: z.enum(["CAPTCHA", "LOGIN", "MFA", "OTHER"]),
     reason: z.string().trim().min(1).max(500)
   }).strict(),
@@ -4012,7 +4020,18 @@ export const spaceCliBrowserCommandSchema = z.discriminatedUnion("type", [
     type: z.literal("SELECT_ACCOUNT"),
     profileId: z.string().trim().min(1).max(200).nullable(),
     signIn: z.boolean().optional()
-  }).strict()
+  }).strict(),
+  // The pane browser's network route (plan clipboard:iLvBs5eOMZjF): a running browser restarts on it.
+  z.object({ type: z.literal("SET_ROUTE"), route: freelanceEgressRouteSchema }).strict(),
+  // The pane's own files into the active tab's file input (31/10): it writes into the page and reads nothing back, so the pane
+  // holding a Vault fence may upload a CV after the password fill. No selector: a match count would be a read of the page.
+  z.object({
+    type: z.literal("UPLOAD_FILE"),
+    paths: z.array(z.string().trim().min(1).max(1024)).min(1).max(10),
+    index: z.number().int().min(0).max(99).optional()
+  }).strict(),
+  // A masked readout of the active tab (7/11 Oracle): path, title and visible messages, never a field; fenced pages too (browser-page-readout.ts).
+  z.object({ type: z.literal("PAGE_READOUT") }).strict()
 ]);
 
 export const spaceCliBrowserCommandRequestSchema = z.object({
@@ -4113,7 +4132,7 @@ export const spaceAgentMessageRecordSchema = z.object({
   sessionId: idSchema,
   runId: idSchema.nullable(),
   role: agentPaneMessageRoleSchema,
-  content: z.string().max(50000),
+  content: z.string(),
   status: agentPaneMessageStatusSchema,
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema
@@ -4135,7 +4154,7 @@ export const createSpaceAgentMessageInputSchema = spaceAgentMessageRecordSchema
 export const updateSpaceAgentMessageInputSchema = z
   .object({
     runId: idSchema.nullable().optional(),
-    content: z.string().max(50000).optional(),
+    content: z.string().optional(),
     status: agentPaneMessageStatusSchema.optional()
   })
   .refine(...atLeastOneField("Space agent message update must include at least one field."));
@@ -4314,7 +4333,7 @@ export const voiceModelVoiceSchema = z.enum([
 ]);
 export const voiceTranscriptionLanguageSchema = z.enum(["auto", "el", "en"]);
 export const voiceTranscriptionDelaySchema = z.enum(["minimal", "low", "medium", "high", "xhigh"]);
-export const liveAudioProviderIdSchema = z.enum(["openai", "google", "amazon", "local", "vercel", "fish"]);
+export const liveAudioProviderIdSchema = z.enum(["openai", "google", "amazon", "local", "vercel", "fish", "livekit", "cartesia", "murf", "assemblyai"]);
 
 export const voiceTranscriptionSettingsSchema = z.object({
   enabled: z.boolean(),
@@ -4377,7 +4396,7 @@ export const voiceRealtimeSessionRequestSchema = z.object({
 });
 
 export const voiceRealtimeSessionResponseSchema = z.object({
-  protocol: z.enum(["gpt-live", "openai-realtime", "openai-transcription", "gateway-realtime", "google-live", "fish-cascade"]).optional(),
+  protocol: z.enum(["gpt-live", "openai-realtime", "openai-transcription", "gateway-realtime", "google-live", "fish-cascade", "grant-cascade"]).optional(),
   answerSdp: voiceSessionDescriptionSchema.optional(),
   websocketUrl: z.string().optional(),
   sessionId: z.string().optional(),
@@ -4715,7 +4734,7 @@ export const codexThreadItemSchema = z.object({
   id: z.string().min(1).max(200),
   kind: z.enum(["metadata", "message", "event", "reasoning", "tool_call", "tool_result"]),
   role: z.enum(["user", "assistant", "system", "tool"]).nullable(),
-  content: z.string().max(50000),
+  content: z.string(),
   toolName: z.string().min(1).max(200).nullable().default(null),
   rawType: z.string().min(1).max(120).nullable().default(null),
   createdAt: isoDateTimeSchema.nullable()
@@ -4811,6 +4830,19 @@ export const codexEnvironmentSchema = z.object({
 });
 
 const nullableToolbarPercentSchema = z.number().min(0).max(100).nullable();
+// subscriptionQuotaAtReset's answer on the usage routes (plan clipboard:FDitYcI63D9R: the Nous app shows the pickers' figure).
+const quotaAtResetSchema = z.object({
+  scope: z.string().max(40).nullable(),
+  percent: z.number().min(0).max(100),
+  /** The share free now (quotaLeftAtReset, 7/11); optional so an API from before it still parses. */
+  now: z.number().min(0).max(100).optional(),
+  accounts: z.number().int().min(1),
+  resetAt: isoDateTimeSchema,
+  points: z.number(),
+  pace: z.enum(["AHEAD", "ON", "UNDER"]),
+  /** Codex weekly reset credits left in the pool: each one more fresh week (`quotaResetCredits`, operator 2/11 15:38 BKK). */
+  resetCredits: z.object({ credits: z.number().int().min(1), accounts: z.number().int().min(1), weekPercent: z.number().min(0) }).strict().optional()
+}).strict();
 const toolbarByteCountSchema = z.number().int().min(0);
 
 export const codexUsageAccountSchema = z
@@ -4822,7 +4854,9 @@ export const codexUsageAccountSchema = z
     fiveHourResetAt: isoDateTimeSchema.nullable().optional(),
     weeklyResetAt: isoDateTimeSchema.nullable().optional(),
     sampledAt: isoDateTimeSchema.nullable(),
-    planType: z.string().max(60).nullable().optional()
+    planType: z.string().max(60).nullable().optional(),
+    /** Weekly reset credits left (the "Resets N" button): each one is a fresh week for the account (operator 2/11 15:38 BKK). */
+    resetCredits: z.number().int().min(0).nullable().optional()
   })
   .strict();
 
@@ -4833,7 +4867,8 @@ export const codexUsageAccountListSchema = z
     source: z.string().min(1).max(160),
     isStale: z.boolean(),
     error: z.string().min(1).max(500).nullable(),
-    checkedAt: isoDateTimeSchema
+    checkedAt: isoDateTimeSchema,
+    atReset: z.array(quotaAtResetSchema).max(2).optional()
   })
   .strict();
 
@@ -4857,6 +4892,9 @@ export const antigravityUsageAccountSchema = z
     status: z.enum(["CONNECTED", "UNLICENSED", "EXPIRED", "ERROR"]),
     gemini: antigravityUsageGroupSchema,
     claude: antigravityUsageGroupSchema,
+    // Every quota group Google reports for a connected account, in Google's order ("gemini", "claude", then Google's own bucket id,
+    // e.g. "gemini-argon-wtu" for Gemini 4 Argon). Absent for an account Google did not answer for; a group Google drops is not listed.
+    groups: z.array(antigravityUsageGroupSchema.extend({ id: z.string().min(1).max(120) })).optional(),
     sampledAt: isoDateTimeSchema.nullable()
   })
   .strict();
@@ -4864,11 +4902,13 @@ export const antigravityUsageAccountSchema = z
 export const antigravityUsageAccountListSchema = z
   .object({
     data: z.array(antigravityUsageAccountSchema).max(100),
+    outOfRotation: z.array(antigravityUsageAccountSchema).max(100).optional(),
     pagination: paginationSchema,
     source: z.string().min(1).max(160),
     isStale: z.boolean(),
     error: z.string().min(1).max(500).nullable(),
-    checkedAt: isoDateTimeSchema
+    checkedAt: isoDateTimeSchema,
+    atReset: z.array(quotaAtResetSchema).max(2).optional()
   })
 
 // One Claude account Space Gateway routes to, as the gateway holds it: a limited account counts as
@@ -4890,7 +4930,8 @@ export const claudeUsageAccountSchema = z
     label: z.string().min(1).max(200),
     email: z.string().email().nullable(),
     plan: z.string().max(120).nullable(),
-    // GATEWAY: requests go through Space Gateway, which picks one of its pooled Claude accounts.
+    // GATEWAY: requests go through Space Gateway, which picks one of its pooled Claude accounts. NOT_CONNECTED with
+    // figures: the profile has no sign-in, and they are Space Gateway's sample of the account its .claude.json names.
     status: z.enum(["CONNECTED", "NOT_CONNECTED", "EXPIRED", "API_KEY", "GATEWAY", "ERROR"]),
     fiveHourRemainingPercent: nullableToolbarPercentSchema,
     fiveHourResetAt: isoDateTimeSchema.nullable(),
@@ -4928,7 +4969,8 @@ export const claudeUsageAccountListSchema = z
     source: z.string().min(1).max(160),
     isStale: z.boolean(),
     error: z.string().min(1).max(500).nullable(),
-    checkedAt: isoDateTimeSchema
+    checkedAt: isoDateTimeSchema,
+    atReset: z.array(quotaAtResetSchema).max(2).optional()
   })
   .strict();
 
@@ -5205,13 +5247,13 @@ export const systemAnalyticsModelsResponseSchema = z
   .object({
     range: systemAnalyticsRangeSchema,
     sampledAt: isoDateTimeSchema,
-    providers: z.array(systemAnalyticsProviderSchema).max(100),
-    models: z.array(systemAnalyticsModelSchema).max(500),
+    providers: z.array(systemAnalyticsProviderSchema),
+    models: z.array(systemAnalyticsModelSchema),
     backfill: systemAnalyticsBackfillSchema,
     route: systemAnalyticsTokenRouteSchema.optional(),
     /** Totals through Space Gateway and direct, whatever the filter. */
     routes: z.object({ gateway: systemAnalyticsTokenTotalsSchema, direct: systemAnalyticsTokenTotalsSchema }).strict().optional(),
-    accounts: z.array(systemAnalyticsTokenAccountSchema).max(200).optional(),
+    accounts: z.array(systemAnalyticsTokenAccountSchema).optional(),
     /** Tokens per time bucket over the period, through Space Gateway and direct (the route filter applies). */
     timeline: z.object({
       bucketSeconds: z.number().int().min(60).max(86_400),
@@ -5294,7 +5336,7 @@ export const systemAnalyticsResourcesResponseSchema = z
       })
       .strict(),
     series: z.array(systemAnalyticsSeriesSchema).max(12),
-    entities: z.array(systemAnalyticsResourceEntitySchema).max(500),
+    entities: z.array(systemAnalyticsResourceEntitySchema),
     backfill: systemAnalyticsBackfillSchema
   })
   .strict();
@@ -5322,7 +5364,7 @@ export const systemAnalyticsProcessSchema = z
 
 export const systemAnalyticsProcessesResponseSchema = z
   .object({
-    data: z.array(systemAnalyticsProcessSchema).max(200),
+    data: z.array(systemAnalyticsProcessSchema),
     pagination: paginationSchema,
     sampledAt: isoDateTimeSchema
   })
@@ -5370,7 +5412,7 @@ export const systemAnalyticsCliSessionsResponseSchema = z
         cleanupEligible: z.number().int().min(0)
       })
       .strict(),
-    sessions: z.array(systemAnalyticsCliSessionSchema).max(1000),
+    sessions: z.array(systemAnalyticsCliSessionSchema),
     backfill: systemAnalyticsBackfillSchema
   })
   .strict();
@@ -5425,7 +5467,7 @@ export const systemAnalyticsInstallsResponseSchema = z
         internal: z.number().int().min(0)
       })
       .strict(),
-    installs: z.array(systemAnalyticsInstallSchema).max(1000)
+    installs: z.array(systemAnalyticsInstallSchema)
   })
   .strict();
 
@@ -5606,16 +5648,7 @@ export const codexHistoryPurgePreviewResponseSchema = z
     checkedAt: isoDateTimeSchema
   })
   .strict()
-  .superRefine((response, context) => {
-    const hasTargets = hasCodexHistoryPurgeTargets(response.candidates);
-    if ((response.status === "READY") !== hasTargets) {
-      context.addIssue({
-        code: "custom",
-        path: ["status"],
-        message: "READY previews require candidates and NOOP previews require zero candidates."
-      });
-    }
-  });
+  .superRefine(noopExactlyWhenEmpty((response) => hasCodexHistoryPurgeTargets(response.candidates), "READY previews require candidates and NOOP previews require zero candidates."));
 
 export const codexHistoryPurgeExecuteRequestSchema = z
   .object({
@@ -5635,16 +5668,7 @@ export const codexHistoryPurgeResponseSchema = z
     completedAt: isoDateTimeSchema
   })
   .strict()
-  .superRefine((response, context) => {
-    const hasPurgedTargets = hasCodexHistoryPurgeTargets(response.purged);
-    if ((response.status === "COMPLETED") !== hasPurgedTargets) {
-      context.addIssue({
-        code: "custom",
-        path: ["status"],
-        message: "COMPLETED purges require removed history and NOOP purges require zero removals."
-      });
-    }
-  });
+  .superRefine(noopExactlyWhenEmpty((response) => hasCodexHistoryPurgeTargets(response.purged), "COMPLETED purges require removed history and NOOP purges require zero removals."));
 
 const cliSessionCleanupBytesSchema = z.number().int().min(0).max(1_000_000_000_000);
 const cliSessionCleanupCountSchema = codexHistoryPurgeCountSchema;
@@ -5709,7 +5733,8 @@ const cliSessionCleanupCountsSchema = z.object({
   totalBytes: cliSessionCleanupBytesSchema
 }).strict();
 
-const hasCliSessionCleanupTargets = (counts: z.infer<typeof cliSessionCleanupCountsSchema>): boolean =>
+// Previews count what cleanup would remove and cleanups what they removed: the same fields, only codex differs in its status.
+const hasCliSessionCleanupTargets = (counts: Omit<z.infer<typeof cliSessionCleanupCountsSchema>, "codex" | "totalBytes"> & { codex: { threads: number } }): boolean =>
   counts.opencode.sessions > 0 ||
   counts.opencode.mappingFiles > 0 ||
   counts.opencodeTmp.entries > 0 ||
@@ -5728,16 +5753,7 @@ export const cliSessionCleanupPreviewResponseSchema = z
     checkedAt: isoDateTimeSchema
   })
   .strict()
-  .superRefine((response, context) => {
-    const hasTargets = hasCliSessionCleanupTargets(response.counts);
-    if ((response.status === "READY") !== hasTargets) {
-      context.addIssue({
-        code: "custom",
-        path: ["status"],
-        message: "READY previews require targets and NOOP previews require zero targets."
-      });
-    }
-  });
+  .superRefine(noopExactlyWhenEmpty((response) => hasCliSessionCleanupTargets(response.counts), "READY previews require targets and NOOP previews require zero targets."));
 
 export const cliSessionCleanupExecuteRequestSchema = z.object({
   previewId: z.string().uuid(),
@@ -5775,23 +5791,7 @@ export const cliSessionCleanupResponseSchema = z
     completedAt: isoDateTimeSchema
   })
   .strict()
-  .superRefine((response, context) => {
-    const hasCleanedTargets =
-      response.cleaned.opencode.sessions > 0 ||
-      response.cleaned.opencode.mappingFiles > 0 ||
-      response.cleaned.opencodeTmp.entries > 0 ||
-      response.cleaned.codex.threads > 0 ||
-      response.cleaned.codexOrphans.rolloutFiles > 0 ||
-      response.cleaned.codexPaneHomes.dirs > 0 ||
-      response.cleaned.cliStores.some((store) => store.entries > 0);
-    if ((response.status === "NOOP") === hasCleanedTargets) {
-      context.addIssue({
-        code: "custom",
-        path: ["status"],
-        message: "NOOP cleanups require zero removals and non-NOOP cleanups require removals."
-      });
-    }
-  });
+  .superRefine(noopExactlyWhenEmpty((response) => hasCliSessionCleanupTargets(response.cleaned), "NOOP cleanups require zero removals and non-NOOP cleanups require removals."));
 
 export const systemServiceUnitSchema = z.object({
   unit: z.string().min(1).max(300),
@@ -6262,7 +6262,8 @@ export const eventSchema = z.object({
   workflowId: idSchema.nullable().default(null),
   traceId: requestIdSchema,
   type: eventTypeSchema,
-  message: z.string().min(1).max(1000),
+  // Technical: the shared event stream carries a 1,000-character preview; the record it names keeps the whole message.
+  message: z.preprocess((value) => typeof value === "string" && value.length > 1000 ? `${value.slice(0, 999)}…` : value, z.string().min(1).max(1000)),
   payload: z.record(z.string(), z.unknown()).default({}),
   createdAt: isoDateTimeSchema
 });
@@ -6635,18 +6636,7 @@ export const mcpToolPolicyDecisionSchema = z.object({
 export const mcpToolArgumentsSchema = z
   .record(z.string().min(1).max(120), z.unknown())
   .default({})
-  .superRefine((args, ctx) => {
-    if (Object.keys(args).length > 50) {
-      ctx.addIssue({ code: "custom", message: "MCP tool arguments support at most 50 top-level keys." });
-    }
-    try {
-      if (JSON.stringify(args).length > 8000) {
-        ctx.addIssue({ code: "custom", message: "MCP tool arguments must fit within 8000 JSON characters." });
-      }
-    } catch {
-      ctx.addIssue({ code: "custom", message: "MCP tool arguments must be JSON serializable." });
-    }
-  });
+  .superRefine(boundedJsonRecord("MCP tool arguments", "support"));
 
 export const createMcpToolExecutionInputSchema = z.object({
   roomId: idSchema.nullable().optional(),
@@ -6813,17 +6803,11 @@ export const deleteRoomMediaResponseSchema = z
     failedCount: z.number().int().min(0),
     failedArtifactIds: z.array(idSchema)
   })
-  .superRefine((result, context) => {
-    if (result.matchedCount !== result.deletedCount + result.failedCount) {
-      context.addIssue({ code: "custom", message: "Matched media count must equal deleted plus failed counts." });
-    }
-    if (result.failedCount !== result.failedArtifactIds.length) {
-      context.addIssue({ code: "custom", message: "Failed media count must equal the failed artifact ID count." });
-    }
-    if (result.ok !== (result.failedCount === 0)) {
-      context.addIssue({ code: "custom", message: "Room media deletion is successful only when no artifacts failed." });
-    }
-  });
+  .superRefine(deletionCountsAddUp({
+    matched: "Matched media count must equal deleted plus failed counts.",
+    failed: "Failed media count must equal the failed artifact ID count.",
+    ok: "Room media deletion is successful only when no artifacts failed."
+  }));
 
 export const deleteRoomAgentFilesResponseSchema = z
   .object({
@@ -6834,33 +6818,16 @@ export const deleteRoomAgentFilesResponseSchema = z
     failedCount: z.number().int().min(0),
     failedArtifactIds: z.array(idSchema)
   })
-  .superRefine((result, context) => {
-    if (result.matchedCount !== result.deletedCount + result.failedCount) {
-      context.addIssue({ code: "custom", message: "Matched agent files must equal deleted plus failed counts." });
-    }
-    if (result.failedCount !== result.failedArtifactIds.length) {
-      context.addIssue({ code: "custom", message: "Failed agent file count must equal the failed artifact ID count." });
-    }
-    if (result.ok !== (result.failedCount === 0)) {
-      context.addIssue({ code: "custom", message: "Room agent file deletion is successful only when no artifacts failed." });
-    }
-  });
+  .superRefine(deletionCountsAddUp({
+    matched: "Matched agent files must equal deleted plus failed counts.",
+    failed: "Failed agent file count must equal the failed artifact ID count.",
+    ok: "Room agent file deletion is successful only when no artifacts failed."
+  }));
 
 const artifactMetadataInputSchema = z
   .record(z.string().min(1).max(120), z.unknown())
   .default({})
-  .superRefine((metadata, ctx) => {
-    if (Object.keys(metadata).length > 50) {
-      ctx.addIssue({ code: "custom", message: "Artifact metadata supports at most 50 top-level keys." });
-    }
-    try {
-      if (JSON.stringify(metadata).length > 8000) {
-        ctx.addIssue({ code: "custom", message: "Artifact metadata must fit within 8000 JSON characters." });
-      }
-    } catch {
-      ctx.addIssue({ code: "custom", message: "Artifact metadata must be JSON serializable." });
-    }
-  });
+  .superRefine(boundedJsonRecord("Artifact metadata", "supports"));
 
 export const createArtifactInputSchema = z.object({
   roomId: idSchema.nullable().optional(),
@@ -6897,7 +6864,8 @@ export const updateArtifactRetentionInputSchema = z
 export const dummyTurnInputSchema = z.object({
   roomId: idSchema,
   paneId: idSchema,
-  prompt: z.string().trim().min(1).max(16000),
+  // Technical: a turn travels as one Temporal payload (2 MB; until 31/10 the prompt held 16,000 characters).
+  prompt: z.string().trim().min(1).max(1_000_000),
   artifactIds: z.array(idSchema).max(turnArtifactMaxCount).default([]),
   providerId: z.string().trim().max(120).nullable().optional(),
   providerSessionId: z.string().trim().min(1).max(200).optional(),
@@ -7119,12 +7087,13 @@ export const memoryVectorReadinessSchema = z.object({
   checkedAt: isoDateTimeSchema
 });
 
+// A memory's body is whole, any length (operator 31/10 «Βγάλε όλα τα όρια»: until then saves were cut at 10,000 characters).
 export const memoryEntrySchema = z.object({
   id: idSchema,
   scope: memoryScopeSchema,
   roomId: idSchema.nullable(),
   title: z.string().min(1).max(160),
-  body: z.string().min(1).max(10000),
+  body: z.string().min(1),
   provenance: z.string().min(1).max(500),
   createdAt: isoDateTimeSchema
 });
@@ -7465,7 +7434,7 @@ export const patchMemoryIssueInputSchema = z
 const memoryStateHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const memoryStateMetadataSchema = z
   .record(z.string().min(1).max(200), z.unknown())
-  .refine((value) => JSON.stringify(value).length <= 65_536, "Memory state metadata exceeds its aggregate bound.");
+  .refine(...jsonFitsWithin(65_536, "Memory state metadata exceeds its aggregate bound."));
 
 export const memoryCacheLinkSourceSchema = z.enum(["CANONICAL_SAVE", "EXACT_BACKFILL", "REPAIR"]);
 export const memoryCacheLinkSchema = z
@@ -7564,9 +7533,7 @@ export const memoryConsolidationRunSchema = z
     if (run.progressCompleted > run.progressTotal) {
       ctx.addIssue({ code: "custom", path: ["progressCompleted"], message: "Completed progress cannot exceed total progress." });
     }
-    if (run.triggerKind === "OPERATOR" && !run.actorUserId) {
-      ctx.addIssue({ code: "custom", path: ["actorUserId"], message: "Operator runs require an actor." });
-    }
+    operatorRunNeedsActor(run, ctx);
     if (run.status === "RUNNING" && !run.startedAt) {
       ctx.addIssue({ code: "custom", path: ["startedAt"], message: "Running consolidations require a start timestamp." });
     }
@@ -7588,11 +7555,7 @@ export const createMemoryConsolidationRunInputSchema = z
     actorUserId: idSchema.nullable().default(null)
   })
   .strict()
-  .superRefine((run, ctx) => {
-    if (run.triggerKind === "OPERATOR" && !run.actorUserId) {
-      ctx.addIssue({ code: "custom", path: ["actorUserId"], message: "Operator runs require an actor." });
-    }
-  });
+  .superRefine(operatorRunNeedsActor);
 
 export const updateMemoryConsolidationRunInputSchema = z
   .object({
@@ -7826,12 +7789,10 @@ function validateMemoryChangeSetState(
   changeSet: z.infer<z.ZodObject<typeof memoryChangeSetSummaryShape>>,
   ctx: z.RefinementCtx
 ): void {
-  if (changeSet.kind === "ROLLBACK" && !changeSet.rollbackOfChangeSetId) {
-    ctx.addIssue({ code: "custom", path: ["rollbackOfChangeSetId"], message: "Rollback change sets require a target." });
-  }
-  if (changeSet.kind !== "ROLLBACK" && changeSet.rollbackOfChangeSetId) {
-    ctx.addIssue({ code: "custom", path: ["rollbackOfChangeSetId"], message: "Only rollback change sets can target another change set." });
-  }
+  fieldOnlyWhen(ctx, {
+    when: changeSet.kind === "ROLLBACK", present: Boolean(changeSet.rollbackOfChangeSetId), path: "rollbackOfChangeSetId",
+    required: "Rollback change sets require a target.", forbidden: "Only rollback change sets can target another change set."
+  });
   if (["APPLIED", "ROLLED_BACK"].includes(changeSet.status) && (!changeSet.resultingSourceHash || !changeSet.appliedAt)) {
     ctx.addIssue({ code: "custom", path: ["status"], message: "Applied change sets require their resulting source hash and applied timestamp." });
   }
@@ -7870,12 +7831,10 @@ export const createMemoryChangeSetInputSchema = z
   })
   .strict()
   .superRefine((input, ctx) => {
-    if (input.kind === "ROLLBACK" && !input.rollbackOfChangeSetId) {
-      ctx.addIssue({ code: "custom", path: ["rollbackOfChangeSetId"], message: "Rollback change sets require a target." });
-    }
-    if (input.kind !== "ROLLBACK" && input.rollbackOfChangeSetId) {
-      ctx.addIssue({ code: "custom", path: ["rollbackOfChangeSetId"], message: "Only rollback change sets can target another change set." });
-    }
+    fieldOnlyWhen(ctx, {
+      when: input.kind === "ROLLBACK", present: Boolean(input.rollbackOfChangeSetId), path: "rollbackOfChangeSetId",
+      required: "Rollback change sets require a target.", forbidden: "Only rollback change sets can target another change set."
+    });
   });
 
 export const createMemoryRollbackInputSchema = z
@@ -7894,12 +7853,10 @@ export const updateMemoryChangeSetInputSchema = z
   })
   .strict()
   .superRefine((input, ctx) => {
-    if (input.status === "APPLIED" && !input.resultingSourceHash) {
-      ctx.addIssue({ code: "custom", path: ["resultingSourceHash"], message: "Applied change sets require the resulting source hash." });
-    }
-    if (input.status !== "APPLIED" && input.resultingSourceHash) {
-      ctx.addIssue({ code: "custom", path: ["resultingSourceHash"], message: "Only applied change sets can record a resulting source hash." });
-    }
+    fieldOnlyWhen(ctx, {
+      when: input.status === "APPLIED", present: Boolean(input.resultingSourceHash), path: "resultingSourceHash",
+      required: "Applied change sets require the resulting source hash.", forbidden: "Only applied change sets can record a resulting source hash."
+    });
     if (["FAILED", "REJECTED"].includes(input.status) && !input.statusReason) {
       ctx.addIssue({ code: "custom", path: ["statusReason"], message: `${input.status} change sets require a reason.` });
     }
@@ -7974,12 +7931,10 @@ export const memoryMutationRecoveryResultSchema = z
   })
   .strict()
   .superRefine((result, ctx) => {
-    if (result.status === "COMPLETE_APPLIED" && result.resultingSourceHash === null) {
-      ctx.addIssue({ code: "custom", path: ["resultingSourceHash"], message: "Applied recovery requires a result hash." });
-    }
-    if (result.status !== "COMPLETE_APPLIED" && result.resultingSourceHash !== null) {
-      ctx.addIssue({ code: "custom", path: ["resultingSourceHash"], message: "Only applied recovery records a result hash." });
-    }
+    fieldOnlyWhen(ctx, {
+      when: result.status === "COMPLETE_APPLIED", present: result.resultingSourceHash !== null, path: "resultingSourceHash",
+      required: "Applied recovery requires a result hash.", forbidden: "Only applied recovery records a result hash."
+    });
     if (result.status === "OPERATOR_REQUIRED" && result.reason === null) {
       ctx.addIssue({ code: "custom", path: ["reason"], message: "Operator-required recovery needs a reason." });
     }
@@ -8001,12 +7956,10 @@ export const memoryMutationWorkflowResultSchema = z
   })
   .strict()
   .superRefine((result, ctx) => {
-    if (result.status === "APPLIED" && result.resultingSourceHash === null) {
-      ctx.addIssue({ code: "custom", path: ["resultingSourceHash"], message: "Applied mutations require a result hash." });
-    }
-    if (result.status !== "APPLIED" && result.resultingSourceHash !== null) {
-      ctx.addIssue({ code: "custom", path: ["resultingSourceHash"], message: "Only applied mutations record a result hash." });
-    }
+    fieldOnlyWhen(ctx, {
+      when: result.status === "APPLIED", present: result.resultingSourceHash !== null, path: "resultingSourceHash",
+      required: "Applied mutations require a result hash.", forbidden: "Only applied mutations record a result hash."
+    });
     if (["FAILED", "OPERATOR_REQUIRED"].includes(result.status) && result.reason === null) {
       ctx.addIssue({ code: "custom", path: ["reason"], message: `${result.status} mutations require a reason.` });
     }
@@ -8017,17 +7970,15 @@ export const createMemoryEntryInputSchema = z
     scope: memoryScopeSchema.default("ROOM"),
     roomId: idSchema.nullable().optional(),
     title: z.string().trim().min(1).max(160),
-    body: z.string().trim().min(1).max(10000),
+    body: z.string().trim().min(1),
     provenance: z.string().trim().min(1).max(500),
     tags: memoryTagsSchema.optional()
   })
   .superRefine((input, ctx) => {
-    if (input.scope === "ROOM" && !input.roomId) {
-      ctx.addIssue({ code: "custom", path: ["roomId"], message: "ROOM memory requires roomId." });
-    }
-    if (input.scope !== "ROOM" && input.roomId) {
-      ctx.addIssue({ code: "custom", path: ["roomId"], message: "Only ROOM memory can include roomId." });
-    }
+    fieldOnlyWhen(ctx, {
+      when: input.scope === "ROOM", present: Boolean(input.roomId), path: "roomId",
+      required: "ROOM memory requires roomId.", forbidden: "Only ROOM memory can include roomId."
+    });
   });
 
 export const listMemoryQuerySchema = paginationRequestSchema
@@ -8061,14 +8012,7 @@ export function resolveClipboardSource(
   return incomingSource;
 }
 
-const nonBlankExactText = (maxCharacters: number) =>
-  z
-    .string()
-    .min(1)
-    .refine((text) => Array.from(text).length <= maxCharacters, {
-      message: `Clipboard text may contain at most ${maxCharacters} characters.`
-    })
-    .refine((text) => text.trim().length > 0, { message: "Clipboard text must contain a non-whitespace character." });
+const nonBlankExactText = (maxCharacters: number) => nonBlankText("Clipboard text", maxCharacters);
 
 export const spaceClipboardToolIdSchema = z.enum(["clipboard:list", "clipboard:get", "clipboard:save", "clipboard:save-plan"]);
 
@@ -8076,7 +8020,9 @@ export const spaceAgentClipboardListActionSchema = z.object({
   type: z.literal("list"),
   q: z.string().trim().min(1).max(500).optional(),
   source: clipboardSourceSchema.optional(),
-  pageSize: z.number().int().min(1).max(10).default(10)
+  // A page (the store's 100 at most) and which one: every item is reachable (until 31/10 the first 10, no page).
+  pageSize: z.number().int().min(1).max(100).default(10),
+  page: z.number().int().min(1).default(1)
 });
 
 export const spaceAgentClipboardGetActionSchema = z.object({
@@ -8127,16 +8073,7 @@ export const spaceAgentClipboardActionRequestSchema = z
     toolId: spaceClipboardToolIdSchema,
     action: spaceAgentClipboardActionInputSchema
   })
-  .superRefine((input, context) => {
-    const expected = expectedClipboardToolIdForAction(input.action.type);
-    if (input.toolId !== expected) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["toolId"],
-        message: `toolId ${input.toolId} does not match clipboard action type ${input.action.type}.`
-      });
-    }
-  });
+  .superRefine(toolIdMatchesAction("clipboard", expectedClipboardToolIdForAction));
 
 export const spaceAgentClipboardActionEnvelopeSchema = z.object({
   version: z.literal(1),
@@ -8154,7 +8091,8 @@ export const spaceAgentTaskListActionSchema = z.object({
   type: z.literal("list"),
   q: z.string().trim().min(1).max(500).optional(),
   status: taskStatusSchema.optional(),
-  pageSize: z.number().int().min(1).max(10).default(10)
+  pageSize: z.number().int().min(1).max(100).default(10),
+  page: z.number().int().min(1).default(1)
 });
 
 export const spaceAgentTaskGetActionSchema = z.object({
@@ -8175,9 +8113,7 @@ export const spaceAgentTaskUpdateActionSchema = z
     status: taskStatusSchema.optional(),
     objective: nonBlankExactText(taskObjectiveMaxCharacters).optional()
   })
-  .refine((input) => input.status !== undefined || input.objective !== undefined, {
-    message: "Task update must include status or objective."
-  });
+  .refine(...atLeastOneOf(["status", "objective"], "Task update must include status or objective."));
 
 export const spaceAgentTaskActionInputSchema = z.discriminatedUnion("type", [
   spaceAgentTaskListActionSchema,
@@ -8206,16 +8142,7 @@ export const spaceAgentTaskActionRequestSchema = z
     toolId: spaceTaskToolIdSchema,
     action: spaceAgentTaskActionInputSchema
   })
-  .superRefine((input, context) => {
-    const expected = expectedTaskToolIdForAction(input.action.type);
-    if (input.toolId !== expected) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["toolId"],
-        message: `toolId ${input.toolId} does not match task action type ${input.action.type}.`
-      });
-    }
-  });
+  .superRefine(toolIdMatchesAction("task", expectedTaskToolIdForAction));
 
 export const spaceAgentTaskActionEnvelopeSchema = z.object({
   version: z.literal(1),
@@ -8228,14 +8155,15 @@ export const spaceAgentMemorySearchActionSchema = z.object({
   type: z.literal("search"),
   q: z.string().trim().min(1).max(200),
   scope: memoryScopeSchema.default("ROOM"),
-  pageSize: z.number().int().min(1).max(5).default(5)
+  pageSize: z.number().int().min(1).max(100).default(5),
+  page: z.number().int().min(1).default(1)
 });
 
 export const spaceAgentMemorySaveActionSchema = z.object({
   type: z.literal("save"),
   scope: memoryScopeSchema.default("ROOM"),
   title: z.string().trim().min(1).max(160),
-  body: z.string().trim().min(1).max(10000),
+  body: z.string().trim().min(1),
   provenance: z.string().trim().min(1).max(500).default("space-agent-memory-action"),
   tags: memoryTagsSchema.optional()
 });
@@ -8259,16 +8187,7 @@ export const spaceAgentMemoryActionRequestSchema = z
     toolId: spaceMemoryToolIdSchema,
     action: spaceAgentMemoryActionInputSchema
   })
-  .superRefine((input, context) => {
-    const expected = expectedMemoryToolIdForAction(input.action.type);
-    if (input.toolId !== expected) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["toolId"],
-        message: `toolId ${input.toolId} does not match memory action type ${input.action.type}.`
-      });
-    }
-  });
+  .superRefine(toolIdMatchesAction("memory", expectedMemoryToolIdForAction));
 
 export const spaceAgentMemoryActionEnvelopeSchema = z.object({
   version: z.literal(1),
@@ -8297,7 +8216,8 @@ export const spaceAgentSkillListActionSchema = z.object({
   q: z.string().trim().min(1).max(120).optional(),
   status: integrationStatusSchema.optional(),
   includeDisabled: z.boolean().default(false),
-  pageSize: z.number().int().min(1).max(20).default(10)
+  pageSize: z.number().int().min(1).max(100).default(10),
+  page: z.number().int().min(1).default(1)
 });
 
 export const spaceAgentSkillReadActionSchema = z.object({
@@ -8324,16 +8244,7 @@ export const spaceAgentSkillActionRequestSchema = z
     toolId: spaceSkillToolIdSchema,
     action: spaceAgentSkillActionInputSchema
   })
-  .superRefine((input, context) => {
-    const expected = expectedSkillToolIdForAction(input.action.type);
-    if (input.toolId !== expected) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["toolId"],
-        message: `toolId ${input.toolId} does not match skill action type ${input.action.type}.`
-      });
-    }
-  });
+  .superRefine(toolIdMatchesAction("skill", expectedSkillToolIdForAction));
 
 export const spaceAgentSkillActionEnvelopeSchema = z.object({
   version: z.literal(1),
@@ -8510,18 +8421,7 @@ export const reviewDiffStatusSchema = z.enum(["ADDED", "MODIFIED", "DELETED", "R
 const reviewMetadataInputSchema = z
   .record(z.string().min(1).max(120), z.unknown())
   .default({})
-  .superRefine((metadata, ctx) => {
-    if (Object.keys(metadata).length > 50) {
-      ctx.addIssue({ code: "custom", message: "Review metadata supports at most 50 top-level keys." });
-    }
-    try {
-      if (JSON.stringify(metadata).length > 8000) {
-        ctx.addIssue({ code: "custom", message: "Review metadata must fit within 8000 JSON characters." });
-      }
-    } catch {
-      ctx.addIssue({ code: "custom", message: "Review metadata must be JSON serializable." });
-    }
-  });
+  .superRefine(boundedJsonRecord("Review metadata", "supports"));
 
 export const reviewCheckSchema = z.object({
   id: idSchema,
@@ -8792,7 +8692,7 @@ export const updateCodexGoalTaskInputSchema = z
     status: codexGoalStatusSchema.optional(),
     objective: z.string().trim().min(1).max(4000).optional()
   })
-  .refine((input) => input.status !== undefined || input.objective !== undefined, "Codex goal update must include status or objective.");
+  .refine(...atLeastOneOf(["status", "objective"], "Codex goal update must include status or objective."));
 
 export const authUserSchema = z.object({
   id: idSchema,
@@ -8823,6 +8723,8 @@ export const dateTimeSettingsSchema = z.object({
 
 export const voiceComposerSettingsSchema = z.object({
   enabled: z.boolean().default(true),
+  // "browser": the browser's own free speech recognition (operator 31/10); "relay": Space's paid voice providers, chosen explicitly.
+  engine: z.enum(["browser", "relay"]).default("browser"),
   provider: liveAudioProviderIdSchema.optional().default("google"),
   model: z.string().default("gemini-3.8-live"),
   voice: z.string().default("Aoede"),
@@ -8842,6 +8744,8 @@ export const voiceComposerSettingsSchema = z.object({
   terminalShortcutsButton: z.boolean().default(true),
   terminalVariablesButton: z.boolean().default(true),
   terminalPlansButton: z.boolean().default(true),
+  /** The right-click menu of CLI panes (Settings → CLI pane controls); the web sent it since 29/9 and the server dropped it until 1/11. */
+  terminalContextMenu: z.boolean().default(true),
   terminalAccountPicker: z.boolean().default(true),
   terminalLocalDraftButton: z.boolean().default(true),
   terminalLocalDraft: z.boolean().default(false),
@@ -9013,7 +8917,7 @@ export const userSettingsSchema = z.object({
   monitoringCopilot: monitoringCopilotLaunchSettingsSchema.nullable().optional(),
   video: videoLaunchSettingsSchema.nullable().optional(),
   /** The operator's own colour combinations in the Design Studio (the built-in ones are DESIGN_COLOR_PRESETS). */
-  designColorPresets: z.array(designColorPresetSchema).max(DESIGN_COLOR_PRESETS_MAX).optional(),
+  designColorPresets: z.array(designColorPresetSchema).optional(),
   /** Notification channels (in-app, toast, sound, desktop, Telegram) and per-source overrides. */
   notifications: notificationSettingsSchema.nullable().optional(),
   /** Nous, the mind of SpaceApp: on or off and its hourly turn limit. */
@@ -9021,6 +8925,12 @@ export const userSettingsSchema = z.object({
   /** A model dropped from YOUTUBE_SUMMARY_MODELS reads as the default instead of failing (and resetting) every setting. */
   youtubeSummaryModel: youtubeSummaryModelSchema.optional().catch(undefined),
   youtubeDownload: youtubeDownloadSettingsSchema.optional().catch(undefined),
+  /** How far back every history reaches (history-period.ts, at most 90 days); unset reads as 90. */
+  history: historySettingsSchema.optional().catch(undefined),
+  /** The interface language (ui-language.ts); unset follows Voice input's Greek, else English. */
+  uiLanguage: uiLanguageSchema.optional().catch(undefined),
+  /** The language Nous, agents and copilots write to the operator in (ui-language.ts); unset follows the interface language. */
+  agentLanguage: uiLanguageSchema.optional().catch(undefined),
   updatedAt: isoDateTimeSchema.optional()
 });
 
@@ -9094,11 +9004,15 @@ export const updateUserSettingsInputSchema = z.object({
   securityCopilot: securityCopilotLaunchSettingsSchema.nullable().optional(),
   monitoringCopilot: monitoringCopilotLaunchSettingsSchema.nullable().optional(),
   video: videoLaunchSettingsSchema.nullable().optional(),
-  designColorPresets: z.array(designColorPresetSchema).max(DESIGN_COLOR_PRESETS_MAX).optional(),
+  designColorPresets: z.array(designColorPresetSchema).optional(),
   notifications: notificationSettingsSchema.nullable().optional(),
   nous: nousSettingsSchema.nullable().optional(),
   youtubeSummaryModel: youtubeSummaryModelSchema.optional(),
-  youtubeDownload: youtubeDownloadSettingsSchema.optional()
+  youtubeDownload: youtubeDownloadSettingsSchema.optional(),
+  /** A period over 90 days, or not one of HISTORY_PERIOD_DAYS, is refused. */
+  history: historySettingsSchema.optional(),
+  uiLanguage: uiLanguageSchema.optional(),
+  agentLanguage: uiLanguageSchema.optional()
 }).strict();
 
 export const authMeSchema = z.object({
@@ -9312,7 +9226,7 @@ export function canonicalizeUserLinkUrl(value: string): string {
   } catch {
     throw new Error("Link URL must be an absolute HTTP or HTTPS URL.");
   }
-  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username || parsed.password) {
+  if (!webUrlWithoutCredentials(parsed, true)) {
     throw new Error("Link URL must use HTTP or HTTPS and must not contain credentials.");
   }
   parsed.hash = "";
@@ -9341,11 +9255,7 @@ export const userLinkSchema = z.object({
   sortOrder: z.number().int().min(0),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema
-}).strict().superRefine((link, context) => {
-  if (link.url.startsWith("http:") && link.openMode !== "NEW_TAB") {
-    context.addIssue({ code: "custom", path: ["openMode"], message: "HTTP links can only open in a new tab." });
-  }
-});
+}).strict().superRefine(httpLinksOpenInNewTab);
 
 export const createUserLinkRequestSchema = z.object({
   title: z.string().trim().min(1).max(160).optional(),
@@ -9364,11 +9274,7 @@ export const createUserLinkRequestSchema = z.object({
     }
   }
   return { ...data, title };
-}).superRefine((link, context) => {
-  if (link.url.startsWith("http:") && link.openMode !== "NEW_TAB") {
-    context.addIssue({ code: "custom", path: ["openMode"], message: "HTTP links can only open in a new tab." });
-  }
-});
+}).superRefine(httpLinksOpenInNewTab);
 
 export const updateUserLinkRequestSchema = z.object({
   title: z.string().trim().min(1).max(160).optional(),
@@ -9451,8 +9357,9 @@ export const planStepSchema = z.preprocess(
       status: planStepStatusSchema.default("PENDING"),
       progress: z.number().int().min(0).max(100).default(0),
       agent: z.string().trim().nullable().default(null),
-      notes: z.string().max(1000).nullable().default(null),
-      proof: z.string().max(1000).nullable().default(null),
+      // A step's notes and proof are whole since 31/10 (were 1,000): the steps are JSON, with no column bound.
+      notes: z.string().nullable().default(null),
+      proof: z.string().nullable().default(null),
       modelId: z.string().trim().min(1).max(160).optional(),
       reasoningEffort: z.string().trim().min(1).max(80).optional(),
       instructions: z.string().trim().min(1).max(16000).optional(),
@@ -9476,7 +9383,8 @@ export function renumberPlanSteps<T extends { id: string; order: number }>(steps
 const planStepsInputSchema = z.array(planStepSchema).max(100).transform(renumberPlanSteps);
 
 // Plan map (operator request 2026-10-25): the wait and dependency schemas live in plan-map.ts, a leaf module nous.ts can import too.
-const planDependsOnSchema = z.array(idSchema).max(30);
+// Any number of dependencies (until 31/10 at most 30); planDependencyProblem refuses self and loops.
+const planDependsOnSchema = z.array(idSchema);
 
 
 export const clipboardItemSchema = z
@@ -9522,33 +9430,7 @@ export const createClipboardItemRequestSchema = z
   })
   .strict()
   .superRefine((input, context) => {
-    if (input.source !== "PLAN" && input.title != null) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["title"],
-        message: "Clipboard item titles are allowed only for PLAN items."
-      });
-    }
-    if (input.source !== "PLAN" && (input.dependsOn != null || input.dueAt != null)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: [input.dependsOn != null ? "dependsOn" : "dueAt"], message: "Dependencies and due dates are allowed only for PLAN items." });
-    }
-    if (input.source === "PLAN" && (!input.minimumModel || input.minimumModel.trim().length === 0)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["minimumModel"],
-        message: "Minimum model is required for PLAN items."
-      });
-    }
-    if (input.source !== "PLAN" && input.minimumReasoning != null) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["minimumReasoning"], message: "Reasoning recommendations are allowed only for PLAN items." });
-    }
-    if (input.source !== "PLAN" && input.minimumModel != null) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["minimumModel"],
-        message: "Minimum model is allowed only for PLAN items."
-      });
-    }
+    planOnlyFields(input, context, { dependsOnAndDueAt: true });
   });
 
 export const saveAgentClipboardItemInputSchema = z
@@ -9602,30 +9484,7 @@ export const upsertClipboardItemInputSchema = z
         message: `Agent notes may contain at most ${agentClipboardNoteMaxCharacters} characters.`
       });
     }
-    if (input.source !== "PLAN" && input.title != null) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["title"],
-        message: "Clipboard item titles are allowed only for PLAN items."
-      });
-    }
-    if (input.source === "PLAN" && (!input.minimumModel || input.minimumModel.trim().length === 0)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["minimumModel"],
-        message: "Minimum model is required for PLAN items."
-      });
-    }
-    if (input.source !== "PLAN" && input.minimumReasoning != null) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["minimumReasoning"], message: "Reasoning recommendations are allowed only for PLAN items." });
-    }
-    if (input.source !== "PLAN" && input.minimumModel != null) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["minimumModel"],
-        message: "Minimum model is allowed only for PLAN items."
-      });
-    }
+    planOnlyFields(input, context, { dependsOnAndDueAt: false });
   });
 
 export const listClipboardItemsQuerySchema = z
@@ -9661,8 +9520,8 @@ export const updatePlanProgressRequestSchema = z
         status: planStepStatusSchema.optional(),
         progress: z.number().int().min(0).max(100).optional(),
         agent: z.string().trim().optional(),
-        notes: z.string().max(1000).optional(),
-        proof: z.string().max(1000).optional()
+        notes: z.string().optional(),
+        proof: z.string().optional()
       })
       .optional(),
     steps: z.array(planStepSchema).transform(renumberPlanSteps).optional(),
@@ -9782,10 +9641,7 @@ export const updateTaskItemInputSchema = z
     schedule: taskScheduleInputSchema.nullable().optional()
   })
   .strict()
-  .refine(
-    (input) => input.title !== undefined || input.objective !== undefined || input.status !== undefined || input.schedule !== undefined,
-    { message: "Task update must include title, objective, status, or schedule." }
-  );
+  .refine(...atLeastOneOf(["title", "objective", "status", "schedule"], "Task update must include title, objective, status, or schedule."));
 
 export const listTaskItemsQuerySchema = z
   .object({
@@ -9800,18 +9656,78 @@ export const listTaskItemsQuerySchema = z
 export const taskItemListResponseSchema = paginated(taskItemSchema);
 
 /**
+ * Task runs (operator 1/11 03:32 BKK, plan clipboard:GA__W4qBxSPR): one row per handled occurrence of a scheduled task. A typed run
+ * is RUNNING until the pane's own report decides it; typed is never success. Kept for good (class A).
+ */
+export const TASK_RUN_STATUSES = ["RUNNING", "SUCCEEDED", "FAILED", "WAITING", "NO_REPORT", "SKIPPED", "REMINDER"] as const;
+export const taskRunStatusSchema = z.enum(TASK_RUN_STATUSES);
+/** A typed run with no report at all for this long ends NO_REPORT. */
+export const TASK_RUN_NO_REPORT_MS = 6 * 3_600_000;
+/** What a pane report (pane_reports.status) decides about the task typed into it; null: still working. */
+export function taskRunStatusOfReport(status: string): "SUCCEEDED" | "FAILED" | "WAITING" | null {
+  if (status === "DONE") return "SUCCEEDED";
+  if (status === "FAILED" || status === "BLOCKED") return "FAILED";
+  return status === "NEEDS_YOU" || status === "NEEDS_DECISION" || status === "QUESTION" ? "WAITING" : null;
+}
+export const taskRunSchema = z.object({
+  id: z.string().regex(/^\d+$/),
+  taskId: idSchema,
+  taskTitle: z.string(),
+  roomId: idSchema.nullable(),
+  roomName: z.string().nullable(),
+  paneId: idSchema.nullable(),
+  paneName: z.string().nullable(),
+  dueAt: isoDateTimeSchema,
+  at: isoDateTimeSchema,
+  status: taskRunStatusSchema,
+  typed: z.boolean(),
+  detail: z.string(),
+  reportAt: isoDateTimeSchema.nullable(),
+  report: z.string().nullable()
+}).strict();
+export const listTaskRunsQuerySchema = z.object({
+  before: z.string().regex(/^\d+$/).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  status: taskRunStatusSchema.optional(),
+  taskId: idSchema.optional()
+}).strict();
+export const taskRunListResponseSchema = z.object({
+  runs: z.array(taskRunSchema),
+  hasMore: z.boolean(),
+  /** Every run of the owner (of the task when one is chosen) per status, whatever the status filter. */
+  counts: z.record(taskRunStatusSchema, z.number().int().min(0)),
+  tasks: z.array(z.object({ taskId: idSchema, title: z.string(), runs: z.number().int().min(0) }).strict())
+}).strict();
+export type TaskRunStatus = z.infer<typeof taskRunStatusSchema>;
+export type TaskRun = z.infer<typeof taskRunSchema>;
+export type ListTaskRunsQuery = z.infer<typeof listTaskRunsQuerySchema>;
+export type TaskRunListResponse = z.infer<typeof taskRunListResponseSchema>;
+
+/**
  * The next run of a task's schedule: none for an unscheduled, done or archived task. An unchanged schedule keeps
- * its pending run, so saving a task again does not shift an interval.
+ * its pending run, so saving a task again does not shift an interval. A changed or newly set daily or weekly schedule
+ * keeps the run it owes: its occurrence due in the last 12 hours (the scheduler's grace), after the task was made, on
+ * a day the task has not run (R71, 4/11: a time nudged 00:05 -> 00:10 while a draft held the pane, or a rebound task
+ * scheduled again, moved that day's run to tomorrow with no run recorded, and the Score counted the day missed).
  */
 export function taskScheduleNextRunAt(
   schedule: StoredTaskSchedule | null,
   status: TaskStatus,
   nowMs: number,
-  stored: TaskSchedule | null = null
+  stored: TaskSchedule | null = null,
+  task: { createdAt: string; lastRunAt: string | null } | null = null
 ): string | null {
   if (!schedule || status === "DONE" || status === "ARCHIVED") return null;
   const unchanged = stored && stored.timeZone === schedule.timeZone && JSON.stringify(stored.recurrence) === JSON.stringify(schedule.recurrence);
   if (unchanged && stored?.nextRunAt) return stored.nextRunAt;
+  // Only a schedule set or changed: reopening a done task resumes at its next occurrence.
+  if (task && !unchanged && (schedule.recurrence.kind === "DAILY" || schedule.recurrence.kind === "WEEKLY")) {
+    const owed = nextDotScheduleRun(schedule.recurrence, schedule.timeZone, nowMs - DOT_SCHEDULE_GRACE_MS);
+    const day = (ms: number) => new Date(ms).toLocaleDateString("en-CA", { timeZone: schedule.timeZone });
+    // shortcut: a run typed past local midnight counts for the day it was typed, not the day it was due; the run rows know that if it ever matters.
+    const ran = task.lastRunAt !== null && owed !== null && (Date.parse(task.lastRunAt) >= owed || day(Date.parse(task.lastRunAt)) === day(owed));
+    if (owed !== null && owed <= nowMs && owed >= Date.parse(task.createdAt) && !ran) return new Date(owed).toISOString();
+  }
   const next = nextDotScheduleRun(schedule.recurrence, schedule.timeZone, nowMs);
   return next === null ? null : new Date(next).toISOString();
 }
@@ -10588,16 +10504,7 @@ export const sharedChatSenderLabelMaxCharacters = 160;
 export const sharedChatListDefaultLimit = 100;
 export const sharedChatListMaxLimit = 200;
 
-const nonBlankChatText = (maxCharacters: number) =>
-  z
-    .string()
-    .min(1)
-    .refine((text) => Array.from(text).length <= maxCharacters, {
-      message: `Shared chat text may contain at most ${maxCharacters} characters.`
-    })
-    .refine((text) => text.trim().length > 0, {
-      message: "Shared chat text must contain a non-whitespace character."
-    });
+const nonBlankChatText = (maxCharacters: number) => nonBlankText("Shared chat text", maxCharacters);
 
 export const sharedChatMessageSchema = z
   .object({
@@ -10708,16 +10615,7 @@ export const spaceAgentChatActionRequestSchema = z
     toolId: spaceSharedChatToolIdSchema,
     action: spaceAgentChatActionInputSchema
   })
-  .superRefine((input, context) => {
-    const expected = expectedChatToolIdForAction(input.action.type);
-    if (input.toolId !== expected) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["toolId"],
-        message: `toolId ${input.toolId} does not match shared chat action type ${input.action.type}.`
-      });
-    }
-  });
+  .superRefine(toolIdMatchesAction("shared chat", expectedChatToolIdForAction));
 
 export const spaceAgentChatActionEnvelopeSchema = z.object({
   version: z.literal(1),
@@ -11116,7 +11014,9 @@ export const databaseExecuteSqlRequestSchema = z.object({
   database: z.string().optional(),
   schema: z.string().optional(),
   sql: z.string().min(1),
-  limit: z.number().int().min(1).max(5000).optional().default(500)
+  limit: z.number().int().min(1).max(5000).optional().default(500),
+  // The caller's own id for this query, so the cancel route can stop it while it runs.
+  sessionId: z.string().min(1).max(80).optional()
 });
 export type DatabaseExecuteSqlRequest = z.infer<typeof databaseExecuteSqlRequestSchema>;
 

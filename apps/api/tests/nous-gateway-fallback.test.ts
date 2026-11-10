@@ -38,6 +38,21 @@ describe("Nous turns and helpers through Space Gateway", () => {
     expect(onText.mock.calls).toEqual([[{ start: true }], [{ text: "Done." }]]);
   });
 
+  // OBS-006: with OTLP export on, the worker call is a CLIENT span whose traceparent the body carries (the worker's span is its child).
+  it("sends the turn's CLIENT span as the worker request's traceparent when spans are exported", async () => {
+    const recorded: Array<Record<string, unknown>> = [];
+    const spans = { record: (span: Record<string, unknown>) => { recorded.push(span); }, flush: async () => {}, close: async () => {}, stats: () => ({}) } as never;
+    post.mockResolvedValueOnce({ text: "Done.", isError: false });
+    await runOnWorker({ prompt: "p", traceId: "trace:0123456789abcdef01234567" }, new AbortController().signal, undefined, spans);
+    const sent = post.mock.calls[0]![2] as { traceparent?: string };
+    expect(sent.traceparent).toBe(`00-${recorded[0]!.traceId}-${recorded[0]!.spanId}-01`);
+    expect(recorded[0]).toMatchObject({ name: "api.worker_socket /nous-turn", parentSpanId: null, kind: 3, error: false,
+      attributes: { "space.route": "nous-turn", "space.outcome": "COMPLETED", "space.trace_id": "trace:0123456789abcdef01234567" } });
+    post.mockRejectedValueOnce(new Error(QUOTA));
+    await expect(runOnWorker({}, new AbortController().signal, undefined, spans)).rejects.toThrow(QUOTA);
+    expect(recorded[1]).toMatchObject({ error: true, attributes: { "space.outcome": "FAILED" } });
+  });
+
   it("reports gateway failures without replaying a turn on a direct account", async () => {
     for (const message of [QUOTA, "No answer within 10 minutes."]) {
       post.mockRejectedValueOnce(new Error(message));

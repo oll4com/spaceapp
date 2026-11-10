@@ -39,8 +39,10 @@ export interface SalaryResearchResult {
   skipped: SkippedSource[];
   recommended: { yearly: number; monthly: number; currency: string; belowPercent: number; rule: string } | null;
   confidence: "low" | "medium" | "high";
-  /** Low confidence: Job Copilot asks the operator instead of answering. */
+  /** Low confidence and no salary rule in memory: Job Copilot asks the operator instead of answering. */
   askOperator: boolean;
+  /** The operator's salary rules in Job Copilot memory (a floor, a currency): the answer follows them (Tide 29/10: asked although one set a floor). */
+  salaryRules?: Array<{ id: string; text: string }>;
   cached: boolean;
   researchedAt: string;
 }
@@ -420,5 +422,6 @@ export function salaryResearchNote(result: SalaryResearchResult): string {
   if (market) parts.push(`market median ${money(market.currency, market.yearly.median)} a year (${market.sources.map((row) => row.source).join(", ")});`);
   parts.push(recommended ? `answer ${money(recommended.currency, recommended.yearly)} a year / ${money(recommended.currency, recommended.monthly)} a month x${query.paymentsPerYear} (${recommended.rule}).` : "no figures found.");
   parts.push(`Confidence ${confidence}${result.askOperator ? ", asking the operator" : ""}.`);
+  if (result.salaryRules?.length) parts.push(`Answer by the salary rule in memory (${result.salaryRules.map((rule) => rule.id).join(", ")}).`);
   return parts.join(" ").slice(0, 1000);
 }

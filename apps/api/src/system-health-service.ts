@@ -7,7 +7,7 @@ import type {
   SystemHealthSnapshot,
 } from "@space/contracts";
 import type { SystemHealthRepository } from "@space/db";
-import { SystemHealthCollector } from "./system-health-collector.js";
+import { SystemHealthCollector, type HealthCollectorSample } from "./system-health-collector.js";
 
 export interface SystemHealthCheck {
   id: string;
@@ -44,9 +44,15 @@ export class SystemHealthMonitor {
   private timer: ReturnType<typeof setInterval> | null = null;
   private now: () => number;
   private lastSweep = 0;
+  private listeners = new Set<(sample: HealthCollectorSample) => void>();
   constructor(private options: SystemHealthOptions) {
     this.collector = options.collector ?? new SystemHealthCollector();
     this.now = options.now ?? Date.now;
+  }
+  /** Each retained 10 s sample, so a reader shares this /proc read instead of making its own (Nous's Load tab). */
+  onSample(listener: (sample: HealthCollectorSample) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
   start() {
     if (!this.timer) {
@@ -153,6 +159,7 @@ export class SystemHealthMonitor {
     if (this.retainInFlight) return this.retainInFlight;
     const request = (async () => {
       const sample = await this.collector.sample();
+      for (const listener of this.listeners) try { listener(sample); } catch { /* a reader never stops retention */ }
       await this.options.repository.insert([
         ...sample.metrics,
         ...this.requestMetrics(),

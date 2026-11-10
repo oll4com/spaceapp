@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import type { Pane, LiveAudioProviderId } from "@space/contracts";
 import {
+  CASCADE_LIVE_PROVIDERS,
   getAllLiveAudioProviders,
   getModelsForProvider,
   getVoicesForProvider,
@@ -29,6 +30,7 @@ import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { loadLivePaneConfig, saveLivePaneConfig, type LivePaneStoredConfig } from "./live-pane-config.js";
 import { createLiveRecorder, type LiveRecorderState } from "./live-recorder.js";
 import { readLivePaneDot } from "../agent-pane/dot-home-events.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 function extractTargetNames(toolCall?: LiveTranscriptItem["toolCall"]): string[] {
   if (!toolCall) return [];
@@ -193,9 +195,11 @@ function createMicLevelStore() {
 type MicLevelStore = ReturnType<typeof createMicLevelStore>;
 
 function LiveMicLevelMeter({ store }: { store: MicLevelStore }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const percent = useSyncExternalStore(store.subscribe, store.getSnapshot);
   return (
-    <div className="live-mic-level" role="meter" aria-label="Microphone level" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+    <div className="live-mic-level" role="meter" aria-label={t("Microphone level")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
       <div className="live-mic-level-fill" style={{ width: `${percent}%` }} />
     </div>
   );
@@ -212,6 +216,8 @@ function LiveClockTime({ timeZone }: { timeZone: string }) {
 }
 
 export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActionsReady }: LivePaneProps) {
+  const uiLanguage = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(uiLanguage, text, vars);
   const initialConfig = useRef<LivePaneStoredConfig | null>(null);
   if (!initialConfig.current) {
     initialConfig.current = loadLivePaneConfig(pane.id);
@@ -232,6 +238,9 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
   const initialProvider: LiveAudioProviderId =
     cfg.provider ?? (cfg.voiceModel ? inferProviderFromModel(cfg.voiceModel) : "openai");
   const [provider, setProvider] = useState<LiveAudioProviderId>(initialProvider);
+  const assistantName = provider === "google" ? "Gemini Live" : provider === "amazon" ? "Nova Sonic" : provider === "local" ? "Local Qwen"
+    : provider === "vercel" ? "GPT-Live (Vercel)" : provider === "fish" ? "Drama 3"
+    : CASCADE_LIVE_PROVIDERS.has(provider) ? getAllLiveAudioProviders().find((item) => item.id === provider)?.displayName ?? provider : "GPT-Live";
   const [voiceModel, setVoiceModel] = useState(
     cfg.voiceModel ?? getDefaultModelForProvider(initialProvider)
   );
@@ -1122,7 +1131,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
         }
       }
     } catch (err) {
-      if (!controller.signal.aborted) setError(err instanceof Error ? err.message : `${source} capture was not available.`);
+      if (!controller.signal.aborted) setError(err instanceof Error ? err.message : source === "camera" ? "Camera capture was not available." : "Screen capture was not available.");
     } finally {
       if (visualCaptureRef.current === controller) visualCaptureRef.current = null;
     }
@@ -1282,21 +1291,25 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
 
   const selectedDeviceLabel =
     (selectedDeviceId && audioDevices.find((d) => d.deviceId === selectedDeviceId)?.label) ||
-    "System Default Microphone";
+    t("System Default Microphone");
+  const zoneLabel = (value: string) => {
+    const option = TIME_ZONE_OPTIONS.find((candidate) => candidate.value === value);
+    return option ? t(option.label) : value;
+  };
 
   return (
     <section
       className="live-pane-root"
       data-mobile={mobile || undefined}
-      aria-label={`Live audio pane ${pane.title}`}
+      aria-label={t("Live audio pane {title}", { title: pane.title })}
       data-live-pane-id={pane.id}
       data-live-status={status}
       style={{ "--live-text-size": `${workspaceTextSize}px` } as CSSProperties}
     >
-      <aside className={`live-pane-sidebar ${settingsOpen ? "is-open" : ""}`} aria-label="Live settings" aria-hidden={!settingsOpen}>
+      <aside className={`live-pane-sidebar ${settingsOpen ? "is-open" : ""}`} aria-label={t("Live settings")} aria-hidden={!settingsOpen}>
         <div className="live-settings-header">
-          <span>Live settings</span>
-          <button type="button" className="live-settings-close" aria-label="Close live settings" title="Close live settings" onClick={closeSettings}>
+          <span>{t("Live settings")}</span>
+          <button type="button" className="live-settings-close" aria-label={t("Close live settings")} title={t("Close live settings")} onClick={closeSettings}>
             <span aria-hidden="true">×</span>
           </button>
         </div>
@@ -1304,35 +1317,35 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
           <div className="live-sidebar-section">
             <SpaceToggle
               className="live-pane-toggle"
-              label="Streaming mode"
+              label={t("Streaming mode")}
               checked={streamingMode}
               onChange={(checked) => changeStreamingMode(checked)}
               disabled={isLive}
             />
-            {streamingMode && <p className="live-form-hint">Uses public stream metrics, chat activity and approved Streaming memory. Personal memory and private tools are unavailable.</p>}
+            {streamingMode && <p className="live-form-hint">{t("Uses public stream metrics, chat activity and approved Streaming memory. Personal memory and private tools are unavailable.")}</p>}
           </div>
           {!streamingMode && (
           <div className="live-sidebar-section">
             <div className="live-section-header">
-              <span>Start from a prompt</span>
+              <span>{t("Start from a prompt")}</span>
               <a
                 href="#prompt-guide"
                 className="live-section-header-link"
                 onClick={(e) => {
                   e.preventDefault();
-                  alert("Live Prompt Guide:\nDefine personality, tone, language, and guidelines for tool usage.");
+                  alert(t("Live Prompt Guide:\nDefine personality, tone, language, and guidelines for tool usage."));
                 }}
               >
-                Prompting guide ^
+                {t("Prompting guide ^")}
               </a>
             </div>
             <textarea
               className="live-prompt-textarea"
-              placeholder="Start with a single prompt to define your agent, how it should speak, and what it should do, or edit the model prompts separately..."
+              placeholder={t("Start with a single prompt to define your agent, how it should speak, and what it should do, or edit the model prompts separately...")}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               disabled={isLive}
-              aria-label="Agent prompt"
+              aria-label={t("Agent prompt")}
             />
             <div className="live-sidebar-buttons-row">
               <button
@@ -1345,7 +1358,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                   )
                 }
               >
-                Templates
+                {t("Templates")}
               </button>
               <button
                 type="button"
@@ -1355,7 +1368,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                   setVoicePrompt("Speak naturally with a helpful, friendly cadence and pause for clarification.")
                 }
               >
-                Generate model prompts
+                {t("Generate model prompts")}
               </button>
             </div>
           </div>
@@ -1365,10 +1378,10 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
 
           <div className="live-sidebar-section">
             <div className="live-section-header">
-              <span>Audio &amp; time</span>
+              <span>{t("Audio & time")}</span>
             </div>
             <div className="live-form-group">
-              <label className="live-form-label" htmlFor="live-time-zone">Region time</label>
+              <label className="live-form-label" htmlFor="live-time-zone">{t("Region time")}</label>
               <select
                 id="live-time-zone"
                 className="live-select"
@@ -1377,47 +1390,47 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                 disabled={isLive}
               >
                 {TIME_ZONE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
+                  <option key={option.value} value={option.value}>{t(option.label)}</option>
                 ))}
               </select>
             </div>
             <div className="live-form-group">
-              <label className="live-form-label" htmlFor="live-microphone-input">Microphone</label>
+              <label className="live-form-label" htmlFor="live-microphone-input">{t("Microphone")}</label>
               <select
                 id="live-microphone-input"
                 className="live-select"
                 value={selectedDeviceId}
                 onChange={(e) => setSelectedDeviceId(e.target.value)}
                 disabled={isLive}
-                aria-label="Microphone input device"
+                aria-label={t("Microphone input device")}
               >
-                <option value="">System Default Microphone</option>
+                <option value="">{t("System Default Microphone")}</option>
                 {audioDevices.map((d, i) => (
-                  <option key={d.deviceId || String(i)} value={d.deviceId}>{d.label || `Microphone ${i + 1}`}</option>
+                  <option key={d.deviceId || String(i)} value={d.deviceId}>{d.label || t("Microphone {n}", { n: i + 1 })}</option>
                 ))}
               </select>
             </div>
             <SpaceToggle
               className="live-pane-toggle"
-              label="Voice-only mode"
+              label={t("Voice-only mode")}
               checked={voiceOnly}
               onChange={setVoiceOnly}
             />
             <SpaceToggle
               className="live-pane-toggle"
-              label="Show tool calls in chat"
+              label={t("Show tool calls in chat")}
               checked={showToolCalls}
               onChange={setShowToolCalls}
             />
             <SpaceToggle
               className="live-pane-toggle"
-              label="Record this session"
+              label={t("Record this session")}
               checked={recordSession}
               onChange={setRecordSession}
-              detail="Your voice, the assistant's voice and Real View go to Media when it stops (10 minutes at most)."
+              detail={t("Your voice, the assistant's voice and Real View go to Media when it stops (10 minutes at most).")}
             />
             <div className="live-toggle-row" style={{ marginTop: 6 }}>
-              <span className="live-toggle-label">Live statistics</span>
+              <span className="live-toggle-label">{t("Live statistics")}</span>
               <button
                 type="button"
                 className="live-btn-secondary"
@@ -1440,7 +1453,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                   window.dispatchEvent(new Event("space-live-rail-stats-toggle"));
                 }}
               >
-                📊 Show live stats
+                {t("📊 Show live stats")}
               </button>
             </div>
           </div>
@@ -1461,7 +1474,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
               tabIndex={0}
               aria-expanded={!voiceModelCollapsed}
             >
-              <span>Voice model</span>
+              <span>{t("Voice model")}</span>
               <span>{voiceModelCollapsed ? "+" : "^"}</span>
             </div>
 
@@ -1469,7 +1482,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
               <>
                 <div className="live-form-group">
                   <label className="live-form-label" htmlFor="live-voice-provider-select">
-                    Provider
+                    {t("Provider")}
                   </label>
                   <select
                     id="live-voice-provider-select"
@@ -1488,7 +1501,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
 
                 <div className="live-form-group">
                   <label className="live-form-label" htmlFor="live-voice-model-select">
-                    Model
+                    {t("Model")}
                   </label>
                   <select
                     id="live-voice-model-select"
@@ -1507,7 +1520,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
 
                 <div className="live-form-group">
                   <label className="live-form-label" htmlFor="live-voice-select">
-                    Voice
+                    {t("Voice")}
                   </label>
                   <select
                     id="live-voice-select"
@@ -1526,7 +1539,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
 
                 <div className="live-form-group">
                   <label className="live-form-label" htmlFor="live-language-select">
-                    Language
+                    {t("Language")}
                   </label>
                   <select
                     id="live-language-select"
@@ -1535,20 +1548,20 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                     onChange={(e) => setLanguage(e.target.value as "auto" | "el" | "en")}
                     disabled={isLive}
                   >
-                    <option value="auto">Auto: English first, then the language you speak</option>
-                    <option value="el">Greek only</option>
+                    <option value="auto">{t("Auto: English first, then the language you speak")}</option>
+                    <option value="el">{t("Greek only")}</option>
                   </select>
                 </div>
 
                 <div className="live-form-group">
                   <label className="live-form-label" htmlFor="live-opening-input">
-                    Opening
+                    {t("Opening")}
                   </label>
                   <input
                     id="live-opening-input"
                     type="text"
                     className="live-input"
-                    placeholder="Optional first words"
+                    placeholder={t("Optional first words")}
                     value={opening}
                     onChange={(e) => setOpening(e.target.value)}
                     disabled={isLive}
@@ -1557,13 +1570,13 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
 
                 <div className="live-form-group">
                   <label className="live-form-label" htmlFor="live-voice-prompt">
-                    Prompt
+                    {t("Prompt")}
                   </label>
                   <textarea
                     id="live-voice-prompt"
                     className="live-prompt-textarea"
                     style={{ minHeight: "60px" }}
-                    placeholder="+ Add custom voice instructions"
+                    placeholder={t("+ Add custom voice instructions")}
                     value={voicePrompt}
                     onChange={(e) => setVoicePrompt(e.target.value)}
                     disabled={isLive}
@@ -1589,7 +1602,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
               tabIndex={0}
               aria-expanded={!memoryControlCollapsed}
             >
-              <span>Space Control & Memory</span>
+              <span>{t("Space Control & Memory")}</span>
               <span>{memoryControlCollapsed ? "+" : "^"}</span>
             </div>
 
@@ -1597,28 +1610,28 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
               <>
                 <SpaceToggle
                   className="live-pane-toggle"
-                  label="Space Control MCP Tools"
+                  label={t("Space Control MCP Tools")}
                   checked={enableMcpTools}
                   onChange={setEnableMcpTools}
                   disabled={isLive}
                 />
                 <SpaceToggle
                   className="live-pane-toggle"
-                  label="Extended Profile Memory"
+                  label={t("Extended Profile Memory")}
                   checked={enableProfileMemory}
                   onChange={setEnableProfileMemory}
                   disabled={isLive}
                 />
                 <SpaceToggle
                   className="live-pane-toggle"
-                  label="Space Memory Access"
+                  label={t("Space Memory Access")}
                   checked={spaceMemoryEnabled}
                   onChange={setSpaceMemoryEnabled}
                   disabled={isLive}
                 />
 
                 <div className="live-form-group">
-                  <label className="live-form-label">Functions</label>
+                  <label className="live-form-label">{t("Functions")}</label>
                   <div className="live-functions-box">
                     {spaceMemoryEnabled && (
                       <div className="live-function-item">
@@ -1631,9 +1644,9 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                       className="live-btn-secondary"
                       style={{ marginTop: "4px" }}
                       disabled={isLive}
-                      onClick={() => alert("Space Memory tool is natively configured and active.")}
+                      onClick={() => alert(t("Space Memory tool is natively configured and active."))}
                     >
-                      + Add function
+                      {t("+ Add function")}
                     </button>
                   </div>
                 </div>
@@ -1641,7 +1654,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
             )}
           </div>}
 
-          {provider !== "google" && provider !== "local" && provider !== "fish" && (
+          {provider !== "google" && provider !== "local" && !CASCADE_LIVE_PROVIDERS.has(provider) && (
             <>
               <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle, #30363d)", margin: "4px 0" }} />
 
@@ -1659,7 +1672,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                   tabIndex={0}
                   aria-expanded={!delegatedModelCollapsed}
                 >
-                  <span>Delegated model</span>
+                  <span>{t("Delegated model")}</span>
                   <span>{delegatedModelCollapsed ? "+" : "^"}</span>
                 </div>
 
@@ -1667,7 +1680,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                   <>
                     <div className="live-form-group">
                       <label className="live-form-label" htmlFor="live-delegated-type">
-                        Type
+                        {t("Type")}
                       </label>
                       <input
                         id="live-delegated-type"
@@ -1680,7 +1693,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
 
                     <div className="live-form-group" ref={modelPickerRef}>
                       <label className="live-form-label" htmlFor="live-delegated-model">
-                        Model
+                        {t("Model")}
                       </label>
                       <div className="live-model-picker-container">
                         <button
@@ -1706,7 +1719,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                               <input
                                 type="text"
                                 className="live-model-search-input"
-                                placeholder="Select a model..."
+                                placeholder={t("Select a model...")}
                                 value={modelSearch}
                                 onChange={(e) => setModelSearch(e.target.value)}
                                 autoFocus
@@ -1744,11 +1757,11 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                                   }}
                                 >
                                   <span className="live-model-check"></span>
-                                  <span className="live-model-name">Use &quot;{modelSearch.trim()}&quot;</span>
+                                  <span className="live-model-name">{t('Use "{model}"', { model: modelSearch.trim() })}</span>
                                 </div>
                               )}
                               {filteredModels.length === 0 && !modelSearch.trim() && (
-                                <div className="live-model-empty">No models available</div>
+                                <div className="live-model-empty">{t("No models available")}</div>
                               )}
                             </div>
                           </div>
@@ -1758,7 +1771,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
 
                     <div className="live-form-group">
                       <label className="live-form-label" htmlFor="live-reasoning-effort">
-                        Reasoning effort
+                        {t("Reasoning effort")}
                       </label>
                       <select
                         id="live-reasoning-effort"
@@ -1777,7 +1790,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
 
                     <SpaceToggle
                       className="live-pane-toggle"
-                      label="Web search"
+                      label={t("Web search")}
                       checked={webSearch}
                       onChange={setWebSearch}
                       disabled={isLive}
@@ -1785,13 +1798,13 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
 
                     <div className="live-form-group">
                       <label className="live-form-label" htmlFor="live-delegated-prompt">
-                        Prompt
+                        {t("Prompt")}
                       </label>
                       <textarea
                         id="live-delegated-prompt"
                         className="live-prompt-textarea"
                         style={{ minHeight: "60px" }}
-                        placeholder="+ Add delegated model prompt"
+                        placeholder={t("+ Add delegated model prompt")}
                         value={delegatedPrompt}
                         onChange={(e) => setDelegatedPrompt(e.target.value)}
                         disabled={isLive}
@@ -1819,34 +1832,34 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
               tabIndex={0}
               aria-expanded={!personalMemoryCollapsed}
             >
-              <span>Personal Memory</span>
+              <span>{t("Personal Memory")}</span>
               <span>{personalMemoryCollapsed ? "+" : "^"}</span>
             </div>
             {!personalMemoryCollapsed && (
               <>
-                <div className="live-functions-box" aria-label="Personal memory entries">
+                <div className="live-functions-box" aria-label={t("Personal memory entries")}>
                   {personalMemories.map((item) => (
                     <div className="live-function-item" key={item.id}>
                       <span title={item.value}>
                         <span className="live-function-tag" style={{ marginRight: 6, textTransform: "uppercase", fontSize: 9 }}>
-                          {item.category || "profile"}
+                          {t(item.category || "profile")}
                         </span>
                         <strong>{item.key}</strong>: {item.value}
                       </span>
                       <button
                         type="button"
                         className="live-btn-secondary"
-                        aria-label={`Delete personal memory ${item.key}`}
+                        aria-label={t("Delete personal memory {key}", { key: item.key })}
                         onClick={() => void deletePersonalMemory(item)}
                         disabled={isLive}
                       >
-                        Delete
+                        {t("Delete")}
                       </button>
                     </div>
                   ))}
                 </div>
                 <div className="live-form-group">
-                  <label className="live-form-label" htmlFor="live-memory-category">Category</label>
+                  <label className="live-form-label" htmlFor="live-memory-category">{t("Category")}</label>
                   <select
                     id="live-memory-category"
                     className="live-select"
@@ -1854,38 +1867,38 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                     onChange={(e) => setNewMemoryCategory(e.target.value as any)}
                     disabled={isLive}
                   >
-                    <option value="core">Core (Tier 1 - Always loaded)</option>
-                    <option value="profile">Profile (Tier 2 - Extended)</option>
-                    <option value="preference">Preference</option>
-                    <option value="fact">Fact</option>
-                    <option value="instruction">Instruction</option>
-                    <option value="note">Note</option>
+                    <option value="core">{t("Core (Tier 1 - Always loaded)")}</option>
+                    <option value="profile">{t("Profile (Tier 2 - Extended)")}</option>
+                    <option value="preference">{t("Preference")}</option>
+                    <option value="fact">{t("Fact")}</option>
+                    <option value="instruction">{t("Instruction")}</option>
+                    <option value="note">{t("Note")}</option>
                   </select>
                 </div>
                 <div className="live-form-group">
-                  <label className="live-form-label" htmlFor="live-memory-key">Key</label>
+                  <label className="live-form-label" htmlFor="live-memory-key">{t("Key")}</label>
                   <input
                     id="live-memory-key"
                     className="live-input"
                     value={newMemoryKey}
                     onChange={(e) => setNewMemoryKey(e.target.value)}
-                    placeholder="e.g. favoriteLanguage"
+                    placeholder={t("e.g. favoriteLanguage")}
                     disabled={isLive}
                   />
                 </div>
                 <div className="live-form-group">
-                  <label className="live-form-label" htmlFor="live-memory-value">Value</label>
+                  <label className="live-form-label" htmlFor="live-memory-value">{t("Value")}</label>
                   <input
                     id="live-memory-value"
                     className="live-input"
                     value={newMemoryValue}
                     onChange={(e) => setNewMemoryValue(e.target.value)}
-                    placeholder="e.g. Greek"
+                    placeholder={t("e.g. Greek")}
                     disabled={isLive}
                   />
                 </div>
                 <button type="button" className="live-btn-secondary" onClick={() => void savePersonalMemory()} disabled={isLive || !newMemoryKey.trim() || !newMemoryValue.trim()}>
-                  Save memory
+                  {t("Save memory")}
                 </button>
               </>
             )}
@@ -1913,46 +1926,51 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
             >
               {error && (
                 <div className="live-error-banner" role="alert">
-                  <strong>Error:</strong> {error}
+                  <strong>{t("Error:")}</strong> {t(error)}
                 </div>
               )}
               {recording && recording.status !== "idle" && recording.status !== "recording" && (
                 <div className="live-recording-notice" role="status">
-                  {recording.status === "saving" ? "Saving the recording…"
-                    : recording.status === "error" ? `Recording: ${recording.reason ?? "failed."}`
-                    : recording.videoRequestId ? "Video requested · the Video pane delivers it as Media of this room."
+                  {recording.status === "saving" ? t("Saving the recording…")
+                    : recording.status === "error" ? t("Recording: {reason}", { reason: recording.reason ? t(recording.reason) : t("failed.") })
+                    : recording.videoRequestId ? t("Video requested · the Video pane delivers it as Media of this room.")
                     : <>
-                        {recording.video ? "Recording saved" : "Recording saved (audio only: Real View was off)"} ·
-                        <button type="button" onClick={() => { void recorderRef.current?.makeVideo().catch((err) => setError(err instanceof Error ? err.message : "The video request failed.")); }}>Make a video from it</button>
+                        {recording.video ? t("Recording saved") : t("Recording saved (audio only: Real View was off)")} ·
+                        <button type="button" onClick={() => { void recorderRef.current?.makeVideo().catch((err) => setError(err instanceof Error ? err.message : "The video request failed.")); }}>{t("Make a video from it")}</button>
                       </>}
                 </div>
               )}
               {realViewOpen && (
-                <div className="live-real-view" role="group" aria-label="Real View">
-                  <strong>Real View</strong>
-                  <span className="sr-only" role="status">{realView?.status === "live" ? `Sharing your ${realView.source} with Live.`
-                    : realView?.status === "stopped" || realView?.status === "error" ? realView.reason ?? "Real View stopped." : ""}</span>
+                <div className="live-real-view" role="group" aria-label={t("Real View")}>
+                  <strong>{t("Real View")}</strong>
+                  <span className="sr-only" role="status">{realView?.status === "live" ? t("Sharing your {source} with Live.", { source: t(realView.source === "screen" ? "screen" : "camera") })
+                    : realView?.status === "stopped" || realView?.status === "error" ? t(realView.reason ?? "Real View stopped.") : ""}</span>
                   <span className="live-real-view-status" aria-live="off">
-                    {!isLive ? "Start the Live conversation to share a view."
-                      : !realViewSupported && realView?.status !== "live" ? "Real View needs a Gemini Live voice model. Use Camera or Share screen for a single image."
-                      : realView?.status === "live" ? `Sharing ${realView.source} · ${realView.lastFrameAt
-                        ? `last frame ${Math.max(0, Math.round((realViewClock - realView.lastFrameAt) / 1000))} s ago` : "waiting for the first frame"} · ${realView.framesSent} sent, ${realView.framesSkipped} skipped`
-                      : realView?.status === "starting" ? `Choose what to share in the browser…`
-                      : realView?.reason ? realView.reason : "Not sharing."}
+                    {!isLive ? t("Start the Live conversation to share a view.")
+                      : !realViewSupported && realView?.status !== "live" ? t("Real View needs a Gemini Live voice model. Use Camera or Share screen for a single image.")
+                      : realView?.status === "live" ? t("Sharing {source} · {frame} · {sent} sent, {skipped} skipped", {
+                        source: t(realView.source === "screen" ? "screen" : "camera"),
+                        frame: realView.lastFrameAt
+                          ? t("last frame {seconds} s ago", { seconds: Math.max(0, Math.round((realViewClock - realView.lastFrameAt) / 1000)) }) : t("waiting for the first frame"),
+                        sent: realView.framesSent,
+                        skipped: realView.framesSkipped
+                      })
+                      : realView?.status === "starting" ? t("Choose what to share in the browser…")
+                      : realView?.reason ? t(realView.reason) : t("Not sharing.")}
                   </span>
-                  {(["screen", "camera"] as const).map((source) => (
+                  {(getSpaceRuntime().platform.displayMediaSupported ? ["screen", "camera"] as const : ["camera"] as const).map((source) => (
                     <button key={source} type="button" className="live-btn-secondary" disabled={!isLive || !realViewSupported}
                       aria-pressed={realView?.status === "live" && realView.source === source} onClick={() => startRealView(source)}>
-                      {source === "screen" ? "Screen" : "Camera"}
+                      {source === "screen" ? t("Screen") : t("Camera")}
                     </button>
                   ))}
-                  <button type="button" className="live-btn-secondary" disabled={realView?.status !== "live" && realView?.status !== "starting"} onClick={stopRealView}>Stop</button>
+                  <button type="button" className="live-btn-secondary" disabled={realView?.status !== "live" && realView?.status !== "starting"} onClick={stopRealView}>{t("Stop")}</button>
                 </div>
               )}
 
               {isLive && micSilent && (
                 <div className="live-mic-warning" role="alert">
-                  <strong>No audio detected</strong> from {selectedDeviceLabel}. Check the microphone permission or mute switch.
+                  <strong>{t("No audio detected")}</strong> {t("from {device}. Check the microphone permission or mute switch.", { device: selectedDeviceLabel })}
                 </div>
               )}
 
@@ -1960,7 +1978,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                 <div className="live-active-tool-banner" role="status" aria-live="polite">
                   <span className="live-active-tool-icon">⚡</span>
                   <span className="live-active-tool-text">
-                    <strong>Tool executing:</strong> {activeRunningTool.name}
+                    <strong>{t("Tool executing:")}</strong> {activeRunningTool.name}
                   </span>
                   {(() => {
                     const targets = extractTargetNames(activeRunningTool);
@@ -1979,7 +1997,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                 </div>
               )}
 
-              <section className={`live-session-card ${isLive ? "is-live" : ""}`} aria-label="Live controls">
+              <section className={`live-session-card ${isLive ? "is-live" : ""}`} aria-label={t("Live controls")}>
                 <div className="live-session-card-header">
                   <div className="live-session-header-left">
                     {isCompactLayout && (
@@ -1992,9 +2010,9 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                         } ${status === "thinking" || status === "connecting" ? "is-thinking" : ""}`}
                         data-live-status={status}
                         onClick={() => void handleToggleSession()}
-                        aria-label={isLive ? "End session" : "Start session"}
+                        aria-label={isLive ? t("End session") : t("Start session")}
                         disabled={status === "connecting"}
-                        title={isLive ? "Click to end Live session" : "Click to start Live session"}
+                        title={isLive ? t("Click to end Live session") : t("Click to start Live session")}
                       >
                         <LiveOrb status={status} />
                       </button>
@@ -2002,24 +2020,16 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                     <div className="live-session-title-group">
                       <div className="live-session-card-title">
                         {streamingMode
-                          ? "Streaming Live"
+                          ? t("Streaming Live")
                           : voiceOnly
-                          ? "Voice-only mode"
-                          : provider === "google"
-                          ? "Talk to Gemini Live"
-                          : provider === "amazon"
-                          ? "Talk to Nova Sonic"
-                          : provider === "local"
-                          ? "Talk to Local Qwen"
-                          : provider === "vercel"
-                          ? "Talk to GPT-Live (Vercel)"
-                          : provider === "fish"
-                          ? "Talk to Drama 3"
-                          : "Talk to GPT-Live"}
-                        {recording?.status === "recording" && <span className="live-recording-dot" role="status" aria-label="Recording this session" title="Recording this session" />}
+                          ? t("Voice-only mode")
+                          : t("Talk to {name}", {
+                            name: assistantName
+                          })}
+                        {recording?.status === "recording" && <span className="live-recording-dot" role="status" aria-label={t("Recording this session")} title={t("Recording this session")} />}
                       </div>
                       <div className="live-session-card-subtitle">
-                        <LiveClockTime timeZone={timeZone} /> · {TIME_ZONE_OPTIONS.find((option) => option.value === timeZone)?.label || timeZone}
+                        <LiveClockTime timeZone={timeZone} /> · {zoneLabel(timeZone)}
                       </div>
                     </div>
                   </div>
@@ -2028,8 +2038,8 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                         type="button"
                         className={`live-icon-btn ${voiceOnly ? "is-voice-only-active is-active" : ""}`}
                         onClick={() => setVoiceOnly((prev) => !prev)}
-                        aria-label={voiceOnly ? "Disable voice-only mode" : "Enable voice-only mode"}
-                        title={voiceOnly ? "Voice-only mode enabled (click to disable)" : "Enable voice-only mode"}
+                        aria-label={voiceOnly ? t("Disable voice-only mode") : t("Enable voice-only mode")}
+                        title={voiceOnly ? t("Voice-only mode enabled (click to disable)") : t("Enable voice-only mode")}
                       >
                         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                           <path d="M2 10v4" />
@@ -2044,8 +2054,8 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                         type="button"
                         className={`live-icon-btn ${muted ? "is-muted" : ""}`}
                         onClick={handleMuteToggle}
-                        aria-label={muted ? "Unmute microphone" : "Mute microphone"}
-                        title={muted ? "Unmute microphone" : "Mute microphone"}
+                        aria-label={muted ? t("Unmute microphone") : t("Mute microphone")}
+                        title={muted ? t("Unmute microphone") : t("Mute microphone")}
                         disabled={!isLive}
                       >
                         {muted ? (
@@ -2069,8 +2079,8 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                         type="button"
                         className="live-icon-btn"
                         onClick={() => void handleClearConversationAndLogs()}
-                        aria-label="Clear conversation and logs"
-                        title="Clear conversation transcript and disk logs"
+                        aria-label={t("Clear conversation and logs")}
+                        title={t("Clear conversation transcript and disk logs")}
                       >
                         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M3 6h18" />
@@ -2084,9 +2094,9 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                         ref={settingsButtonRef}
                         type="button"
                         className="live-icon-btn live-settings-open"
-                        aria-label="Open live settings"
+                        aria-label={t("Open live settings")}
                         aria-expanded={settingsOpen}
-                        title="Settings"
+                        title={t("Settings")}
                         onClick={() => setSettingsOpen(true)}
                       >
                         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="m19.4 15 .1.1a2 2 0 0 1-2.8 2.8l-.1-.1a2 2 0 0 0-3.4 1.4V19a2 2 0 0 1-4 0v-.2a2 2 0 0 0-3.4-1.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A2 2 0 0 0 3.4 11H3a2 2 0 0 1 0-4h.2a2 2 0 0 0 1.4-3.4l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A2 2 0 0 0 11 2.6V2a2 2 0 0 1 4 0v.2a2 2 0 0 0 3.4 1.4l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A2 2 0 0 0 20.6 10h.2a2 2 0 0 1 0 4h-.2a2 2 0 0 0-1.2 1Z"/></svg>
@@ -2105,9 +2115,9 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                         } ${status === "thinking" || status === "connecting" ? "is-thinking" : ""}`}
                         data-live-status={status}
                         onClick={() => void handleToggleSession()}
-                        aria-label={isLive ? "End session" : "Start session"}
+                        aria-label={isLive ? t("End session") : t("Start session")}
                         disabled={status === "connecting"}
-                        title={isLive ? "Click to end Live session" : "Click to start Live session"}
+                        title={isLive ? t("Click to end Live session") : t("Click to start Live session")}
                       >
                         <LiveOrb status={status} />
                       </button>
@@ -2129,7 +2139,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                   {pendingInputs.length > 0 && (
                     <div style={{ display: "flex", justifyContent: "center", margin: "6px 0" }}>
                       <button type="button" className="live-btn-secondary live-send-inputs" onClick={sendPendingInputs} disabled={!isLive}>
-                        Send {pendingInputs.length} input{pendingInputs.length === 1 ? "" : "s"}
+                        {t(pendingInputs.length === 1 ? "Send {count} input" : "Send {count} inputs", { count: pendingInputs.length })}
                       </button>
                     </div>
                   )}
@@ -2142,16 +2152,16 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                 </section>
 
                 {visibleTranscripts.length > 0 && (
-                  <div className="live-transcript-feed" role="log" aria-label="Chat transcript">
+                  <div className="live-transcript-feed" role="log" aria-label={t("Chat transcript")}>
                     {visibleTranscripts.map((item) => (
                       <div key={item.id} className={`live-transcript-bubble ${item.role}`}>
                         <div className="live-transcript-text">
                           {item.toolCall || item.id.startsWith("tool_") ? (
                             <details className="live-tool-call-badge">
-                              <summary>Tool details</summary>
+                              <summary>{t("Tool details")}</summary>
                               <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 600, flexWrap: "wrap" }}>
                                 <span>⚡</span>
-                                <span>{item.toolCall?.name ?? "Control tool"}</span>
+                                <span>{item.toolCall?.name ?? t("Control tool")}</span>
                                 {(() => {
                                   const targets = extractTargetNames(item.toolCall);
                                   if (targets.length === 0) return null;
@@ -2166,11 +2176,11 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                                     </span>
                                   );
                                 })()}
-                                {item.toolCall?.status === "running" && <span style={{ color: "#e3b341", fontSize: "11px" }}>● Running</span>}
-                                {item.toolCall?.status === "done" && <span style={{ color: "#3fb950", fontSize: "11px" }}>✓ Done</span>}
-                                {item.toolCall?.status === "error" && <span style={{ color: "#f85149", fontSize: "11px" }}>✗ Error</span>}
+                                {item.toolCall?.status === "running" && <span style={{ color: "#e3b341", fontSize: "11px" }}>{t("● Running")}</span>}
+                                {item.toolCall?.status === "done" && <span style={{ color: "#3fb950", fontSize: "11px" }}>{t("✓ Done")}</span>}
+                                {item.toolCall?.status === "error" && <span style={{ color: "#f85149", fontSize: "11px" }}>{t("✗ Error")}</span>}
                               </div>
-                              {item.toolCall?.query && <div style={{ fontSize: "11px", opacity: 0.8 }}>Arguments: {item.toolCall?.query}</div>}
+                              {item.toolCall?.query && <div style={{ fontSize: "11px", opacity: 0.8 }}>{t("Arguments: {query}", { query: String(item.toolCall?.query) })}</div>}
                               {item.toolCall?.resultSummary && <div style={{ fontSize: "11px", color: "#7ee787" }}>{item.toolCall?.resultSummary ?? item.text}</div>}
                             </details>
                           ) : (
@@ -2178,7 +2188,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                           )}
                         </div>
                         <div className="live-transcript-meta">
-                          {item.toolCall ? "Space Control MCP" : item.role === "user" ? "You" : item.role === "assistant" ? (provider === "google" ? "Gemini Live" : provider === "amazon" ? "Nova Sonic" : provider === "local" ? "Local Qwen" : provider === "vercel" ? "GPT-Live (Vercel)" : provider === "fish" ? "Drama 3" : "GPT-Live") : "System"} • {item.timestamp}
+                          {item.toolCall ? "Space Control MCP" : item.role === "user" ? t("You") : item.role === "assistant" ? assistantName : t("System")} • {item.timestamp}
                         </div>
                       </div>
                     ))}

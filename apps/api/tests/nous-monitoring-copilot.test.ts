@@ -2,7 +2,7 @@
 // collector answers), sees and answers its questions, lists its held self-healing changes for the operator (never "Always approve"),
 // and controls its run through the same routes the pane uses.
 import { describe, expect, it } from "vitest";
-import { nousDecisionKind, type NousDecision } from "@space/contracts";
+import { monitoringCollectorDefaults, nousDecisionKind, type NousDecision } from "@space/contracts";
 import { InMemoryMonitoringCopilotRepository } from "@space/db";
 import { InMemorySpaceStore } from "@space/runtime";
 import { copilotDeps } from "../src/nous/wiring.js";
@@ -20,6 +20,7 @@ function fixture() {
   const room = store.createRoom({ name: "Monitoring", initialPaneCount: 0 }, "trace:room", "user:operator");
   const pane = store.createPane({ roomId: room.id, title: "Monitoring Copilot", mode: "MONITORING_COPILOT", terminalRuntimeId: "cli:claude" });
   const monitoring = createMonitoringCopilotService({ repository: new InMemoryMonitoringCopilotRepository(), collector,
+    collectorConfig: { network: null, defaults: monitoringCollectorDefaults("192.168.10.5") },
     store: { updateMonitoringCopilotMetadata: (id, metadata) => store.updateMonitoringCopilotMetadata(id, metadata), listRooms: () => [{ id: room.id, ownerUserId: "user:operator" }], listPanes: (roomId, includeClosed) => store.listPanes(roomId, includeClosed) } });
   const deps = copilotDeps({ copilots: { monitoring }, store } as never, async (_owner, mode) => mode === "MONITORING_COPILOT" ? [pane] : [])!;
   return { store, pane, monitoring, deps };

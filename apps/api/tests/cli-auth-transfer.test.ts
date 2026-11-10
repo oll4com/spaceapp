@@ -141,6 +141,26 @@ describe("CLI login transfer", () => {
       agent.close();
     }
   });
+
+  it("asks the badge again while the agent's pool answers busy, instead of reading a signed-in CLI as signed out", async () => {
+    // c13 lab 9/11: a discovery probes every CLI at once, the agent runs 4 and answers the rest busy (exit 75).
+    const root = await mkdtemp("/tmp/space-public-busy-");
+    let asked = 0;
+    const agent = createServer((socket) => {
+      socket.setEncoding("utf8").on("data", () => undefined).on("end", () => {
+        asked += 1;
+        socket.end(JSON.stringify(asked <= 2 ? { exitCode: 75, stdout: "FAILED busy\n" } : { exitCode: 0, stdout: "READY\n" }));
+      });
+    });
+    await new Promise<void>((resolve) => agent.listen(join(root, "credentials.sock"), resolve));
+    try {
+      const host = createPublicCredentialHost({ publicDistribution: true, cliEnabled: true, cliHostSocketPath: join(root, "host.sock") })!;
+      expect(await host.status("/usr/local/bin/codex-vscode-parity")).toBe("READY");
+      expect(asked).toBe(3);
+    } finally {
+      agent.close();
+    }
+  });
 });
 
 describe("Nous on a public install (operator decision 2026-10-27, B+C3)", () => {

@@ -30,7 +30,7 @@ import {
   type StreamingPlatformAccountRecord
 } from "@space/db";
 import type { StreamingBotPlatform, StreamingBotSettings } from "@space/contracts";
-import type { SpaceStore } from "@space/runtime";
+import { redactSecretText, type SpaceStore } from "@space/runtime";
 
 export interface StreamingBotRuntimeOptions {
   streamingRepository: PostgresStreamingRepository;
@@ -71,7 +71,7 @@ export class StreamingBotLoop {
     try {
       await this.options.runCycle();
     } catch (error) {
-      this.options.log?.({ status: "FAILED", error: error instanceof Error ? error.message : String(error) });
+      this.options.log?.({ status: "FAILED", error: redactSecretText(error instanceof Error ? error.message : String(error)) });
     } finally {
       this.running = false;
     }

@@ -428,6 +428,8 @@ export interface CodexAppServerSocketStartTurnInput {
   model?: string;
   reasoningEffort?: CodexReasoningEffort;
   clientUserMessageId: string;
+  /** Original Space HTTP request, carried by the native per-turn Responses metadata. */
+  sourceRequestId?: string;
   outputSchema?: Record<string, unknown>;
   /** Local fence, evaluated after the connection handshake immediately before send. */
   beforeSend?: () => Promise<void>;
@@ -2424,6 +2426,9 @@ export function createCodexAppServerSocketControlService(
       if (input.model !== undefined) params.model = requiredSocketIdentifier(input.model, "model");
       if (reasoningEffort !== undefined) params.effort = reasoningEffort;
       if (input.outputSchema !== undefined) params.outputSchema = input.outputSchema;
+      if (typeof input.sourceRequestId === "string" && /^[\x21-\x7e]{1,120}$/.test(input.sourceRequestId)) {
+        params.responsesapiClientMetadataPatch = { space_request_id: input.sourceRequestId };
+      }
       await input.beforeSend?.();
       return parseStartedSocketTurn(await client.request("turn/start", params));
     })

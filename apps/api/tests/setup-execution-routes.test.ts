@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { InMemorySpaceStore, SetupExecutionCoordinator } from "@space/runtime";
+import { InMemorySpaceStore } from "@space/runtime";
 import type { SetupActionAdapter } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { cookieName, createCsrfToken, csrfHeaderName, signSession } from "../src/auth.js";

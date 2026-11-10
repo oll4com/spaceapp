@@ -1,14 +1,64 @@
 import { describe, expect, it } from "vitest";
 import { defaultUserSettings, updateUserSettingsInputSchema, userSettingsSchema } from "../src/schemas.js";
-import { nousLowSpendSettingsSchema, nousSettingsInputSchema, nousSettingsSchema } from "../src/nous.js";
+import { NOUS_TURN_KINDS, nousModelMatchesProvider, nousProvider, nousSettingsWithProvider, nousLowSpendSettingsSchema, nousSettingsInputSchema, nousSettingsSchema } from "../src/nous.js";
 
 describe("userSettingsSchema & updateUserSettingsInputSchema", () => {
+  it("uses Astra high for new choices while preserving saved Opus and inferring its provider", () => {
+    const fresh = nousSettingsWithProvider(nousSettingsSchema.parse({}));
+    expect(fresh.provider).toBe("codex");
+    for (const kind of NOUS_TURN_KINDS) expect(fresh.models[kind]).toEqual({ model: "gpt-6-astra", effort: "high" });
+    expect(fresh.lowSpend.models.inbox).toEqual({ model: "gpt-6.1-sol", effort: "medium" });
+    const stored = nousSettingsSchema.parse({ models: { operator: { model: "claude-opus-5-5", effort: "xhigh" } } });
+    expect(nousProvider(stored)).toBe("claude");
+    expect(nousSettingsWithProvider(stored).models.operator).toEqual({ model: "claude-opus-5-5", effort: "xhigh" });
+    expect(nousSettingsInputSchema.parse({ provider: "codex" })).toEqual({ provider: "codex" });
+    expect(nousSettingsInputSchema.safeParse({ provider: "anything" }).success).toBe(false);
+  });
+
+  it("keeps Gemini and Claude low-spend choices on their own pools", () => {
+    const gemini = nousSettingsWithProvider(nousSettingsSchema.parse({ provider: "gemini", models: { operator: { model: "gemini-4-argon", effort: "high" } } }));
+    expect(gemini.models.operator).toEqual({ model: "gemini-4-argon", effort: "none" });
+    expect(gemini.lowSpend.models.inbox).toEqual({ model: "gemini-3.8-flash-medium", effort: "none" });
+    expect(gemini.lowSpend.criticalModels.helper).toEqual({ model: "gemini-3.8-flash-low", effort: "none" });
+    const spaceWithGemini = nousSettingsWithProvider(nousSettingsSchema.parse({
+      provider: "space",
+      models: { operator: { model: "gemini:gemini-4-argon-high", effort: "high" } },
+      lowSpend: {
+        models: { inbox: { model: "gemini:gemini-4-argon-high", effort: "high" } },
+        criticalModels: { inbox: { model: "gemini:gemini-4-argon-high", effort: "medium" } }
+      }
+    }));
+    expect(spaceWithGemini.models.operator).toEqual({ model: "gemini:gemini-4-argon-high", effort: "none" });
+    expect(spaceWithGemini.lowSpend.models.inbox).toEqual({ model: "gemini:gemini-4-argon-high", effort: "none" });
+    expect(spaceWithGemini.lowSpend.criticalModels.inbox).toEqual({ model: "gemini:gemini-4-argon-high", effort: "none" });
+    const claude = nousSettingsWithProvider(nousSettingsSchema.parse({ provider: "claude" }));
+    expect(claude.lowSpend.criticalModels.inbox).toEqual({ model: "claude-haiku-5-5", effort: "medium" });
+    expect(nousModelMatchesProvider("gemini-3.8-flash-high", "gemini")).toBe(true);
+    expect(nousModelMatchesProvider("gpt-6-astra", "gemini")).toBe(false);
+    expect(nousModelMatchesProvider("claude-opus-5-5", "claude")).toBe(true);
+    expect(nousModelMatchesProvider("gpt-6-astra", "claude")).toBe(false);
+  });
+
   it("defaults existing Nous JSON to automatic low-spend settings without a migration", () => {
     const legacy = nousSettingsSchema.parse({ enabled: true, lowTokenAutomatic: false });
     expect(legacy.lowSpend).toMatchObject({ mode: "AUTO", cheaperModel: true, minMaxAccountsWithRoom: 2, roomRemainingPercent: 10, lowBudgetRemainingPercent: 40,
       criticalBudgetRemainingPercent: 20, maxTurnsPerHour: 6, models: { inbox: { model: "claude-sonnet-5-5", effort: "medium" } },
       criticalModels: { inbox: { model: "claude-haiku-5-5", effort: "medium" }, standing: { model: "claude-haiku-5-5", effort: "medium" }, helper: { model: "claude-haiku-5-5", effort: "medium" } } });
     expect(nousSettingsInputSchema.parse({ maxTurnsPerHour: 5 })).not.toHaveProperty("lowSpend");
+  });
+
+  it("keeps legacy dock tabs on, saves explicit choices and never accepts a Conversation switch", () => {
+    expect(nousSettingsSchema.parse({})).not.toHaveProperty("dockTabs");
+    expect(nousSettingsInputSchema.parse({ maxTurnsPerHour: 5 })).not.toHaveProperty("dockTabs");
+    const dockTabs = { done: false, quotas: true };
+    expect(nousSettingsInputSchema.parse({ dockTabs })).toEqual({ dockTabs });
+    expect(userSettingsSchema.parse({ nous: { dockTabs } }).nous?.dockTabs).toEqual(dockTabs);
+    // The Nous app's appointments and signature tabs (nous_msg:b4fb6958): its Tabs switches no longer get a 422.
+    const appTabs = { appointments: false, signature: true };
+    expect(nousSettingsInputSchema.parse({ dockTabs: appTabs })).toEqual({ dockTabs: appTabs });
+    expect(nousSettingsInputSchema.safeParse({ dockTabs: { appointments: "off" } }).success).toBe(false);
+    expect(nousSettingsInputSchema.safeParse({ dockTabs: { conversation: false } }).success).toBe(false);
+    expect(nousSettingsInputSchema.safeParse({ dockTabs: { done: "off" } }).success).toBe(false);
   });
 
   it("preserves an explicit cheaper-model opt-out without patching the configured models", () => {
@@ -197,5 +247,11 @@ describe("userSettingsSchema & updateUserSettingsInputSchema", () => {
       .toEqual(["clear", "plan_progress"]);
     expect(() => updateUserSettingsInputSchema.parse({ voice: { terminalHiddenShortcuts: ["Bad Id"] } })).toThrow();
     expect(() => updateUserSettingsInputSchema.parse({ voice: { terminalHiddenShortcuts: Array.from({ length: 65 }, () => "clear") } })).toThrow();
+  });
+
+  it("keeps the CLI panes' right-click menu choice the web sends (terminalContextMenu)", () => {
+    expect(defaultUserSettings.voice.terminalContextMenu).toBe(true);
+    expect(userSettingsSchema.parse({ voice: { terminalContextMenu: false } }).voice.terminalContextMenu).toBe(false);
+    expect(updateUserSettingsInputSchema.parse({ voice: { terminalContextMenu: false } }).voice).toEqual({ terminalContextMenu: false });
   });
 });

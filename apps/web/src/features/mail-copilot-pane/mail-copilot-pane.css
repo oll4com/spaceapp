@@ -206,6 +206,18 @@
 .mc-thread-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--jc-muted); font-size: 12px; }
 .mc-account-tag { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px 2px 6px; border-radius: 10px; background: color-mix(in srgb, var(--jc-text) 7%, transparent); }
 .mc-account-tag > span { width: 8px; height: 8px; border-radius: 50%; }
+/* A conversation's own labels: chips in the list row, chips with an x in the open conversation, and when each came and went. */
+.mc-label-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 0; padding: 0; list-style: none; min-width: 0; }
+.mc-label-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 1px 8px; border-radius: 10px; font-size: 11.5px; line-height: 18px;
+  color: var(--jc-text); background: color-mix(in srgb, var(--jc-accent, #6db7aa) 18%, transparent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-label-chip svg { width: 12px; height: 12px; flex: none; }
+.mc-label-chip button { display: inline-grid; place-items: center; width: 18px; height: 18px; margin-right: -4px; padding: 0; border: 0; border-radius: 50%; background: none; color: inherit; cursor: pointer; }
+.mc-label-chip button:hover, .mc-label-chip button:focus-visible { background: color-mix(in srgb, var(--jc-text) 14%, transparent); }
+.mc-label-history { font-size: 12px; color: var(--jc-muted); }
+.mc-label-history summary { cursor: pointer; width: fit-content; }
+.mc-label-history ul { display: grid; gap: 4px; margin: 6px 0 2px; padding: 0; list-style: none; }
+.mc-label-history li { display: flex; flex-wrap: wrap; gap: 2px 10px; color: var(--jc-text); }
+.mc-label-history p { margin: 6px 0 2px; }
 .mc-messages { display: flex; flex-direction: column; gap: 10px; padding: 8px 12px 24px; }
 .mc-message { border-radius: 14px; background: color-mix(in srgb, var(--jc-text) 5%, var(--jc-bg)); overflow: hidden; }
 .mc-message.unread .mc-message-from strong { font-weight: 700; }
@@ -270,3 +282,163 @@
 .mc-fix-sheet strong { display: flex; align-items: center; gap: 8px; }
 .mc-fix-sheet textarea { width: 100%; resize: vertical; }
 .mc-fix-request .mc-fix-line { margin: 4px 0 0; overflow-wrap: anywhere; }
+
+/* Mail Campaigns tab (plan clipboard:IJ2ovfLg1Lbw step 9; redesigned 2/11): campaigns, the mails the operator reads before approving, lists,
+   templates, senders. Buttons carry .mc-pane .mc-camp (0,3,0): the room theme's ".space-shell[data-room-theme] button" (0,2,1) paints them otherwise. */
+.mc-camp { --mc-camp-radius: 12px; container-type: inline-size; display: flex; flex-direction: column; gap: 12px; padding: 12px; color: var(--jc-text); }
+.mc-camp-muted { color: var(--jc-muted); }
+.mc-camp-empty { margin: 24px 8px; color: var(--jc-muted); text-align: center; }
+.mc-camp-alert { margin: 0; padding: 8px 12px; border-radius: 10px; background: color-mix(in srgb, var(--jc-warn) 14%, transparent); color: var(--jc-text); }
+.mc-camp-section { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+/* Segmented view switch. */
+.mc-camp-nav { display: flex; gap: 2px; padding: 3px; border-radius: 12px; background: color-mix(in srgb, var(--jc-text) 6%, transparent); }
+.mc-pane .mc-camp .mc-camp-nav-tab { flex: 1 1 0; min-width: 0; min-height: 0; height: 32px; padding: 0 10px; border: 0; border-radius: 9px; background: transparent; color: var(--jc-muted);
+  font: inherit; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: background-color 120ms ease-out, color 120ms ease-out; }
+.mc-pane .mc-camp .mc-camp-nav-tab:hover { color: var(--jc-text); }
+.mc-pane .mc-camp .mc-camp-nav-tab[aria-selected="true"] { background: var(--jc-raised); color: var(--jc-text); box-shadow: 0 1px 3px rgb(0 0 0 / 0.25); }
+
+/* Bars and buttons. */
+.mc-camp-bar { display: flex; align-items: center; gap: 6px; min-height: 36px; }
+.mc-camp-bar-title { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 650; }
+.mc-camp-bar-spacer, .mc-camp-bar-title { flex: 1 1 auto; }
+.mc-camp-count { min-width: 20px; padding: 0 6px; border-radius: 10px; background: color-mix(in srgb, var(--jc-text) 10%, transparent); color: var(--jc-muted); font-size: 11px; line-height: 20px; text-align: center; font-variant-numeric: tabular-nums; }
+.mc-pane .mc-camp .mc-camp-icon { display: grid; place-items: center; flex: none; width: 34px; height: 34px; min-height: 0; padding: 0; border: 0; border-radius: 50%;
+  background: transparent; color: var(--jc-muted); cursor: pointer; }
+.mc-pane .mc-camp .mc-camp-icon:hover:not(:disabled) { background: color-mix(in srgb, var(--jc-text) 8%, transparent); color: var(--jc-text); }
+.mc-pane .mc-camp .mc-camp-icon:disabled { opacity: 0.35; cursor: default; }
+.mc-camp-icon svg { width: 18px; height: 18px; }
+.mc-pane .mc-camp .mc-camp-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 0; height: 34px; padding: 0 14px; border: 1px solid var(--jc-border);
+  border-radius: 17px; background: transparent; color: var(--jc-text); font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.mc-pane .mc-camp .mc-camp-button:hover:not(:disabled) { background: color-mix(in srgb, var(--jc-text) 7%, transparent); }
+.mc-pane .mc-camp .mc-camp-button:disabled { opacity: 0.45; cursor: default; }
+.mc-pane .mc-camp .mc-camp-button.primary { border-color: transparent; background: var(--jc-accent); color: var(--jc-on-accent, #0b1412); }
+.mc-pane .mc-camp .mc-camp-button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--jc-accent) 88%, #fff); }
+.mc-pane .mc-camp .mc-camp-button.danger { color: var(--jc-bad); }
+.mc-camp-button svg { width: 15px; height: 15px; }
+.mc-pane .mc-camp :is(.mc-camp-icon, .mc-camp-button, .mc-camp-card, .mc-camp-mail-row, .mc-camp-nav-tab):focus-visible { outline: 2px solid var(--jc-accent); outline-offset: 1px; }
+
+/* Status badges and check chips. */
+.mc-camp-status, .mc-camp-check { --tone: var(--jc-muted); display: inline-flex; align-items: center; gap: 6px; width: fit-content; padding: 2px 9px; border-radius: 999px;
+  background: color-mix(in srgb, var(--tone) 15%, transparent); color: var(--tone); font-size: 11px; font-weight: 650; white-space: nowrap; }
+.mc-camp-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.mc-camp-status[data-status="neutral"]::before { display: none; }
+:is(.mc-camp-status, .mc-camp-check):is([data-status="in_review"]) { --tone: var(--jc-accent); }
+:is(.mc-camp-status, .mc-camp-check):is([data-status="approved"], [data-status="pass"], [data-health="valid"]) { --tone: var(--jc-ok); }
+:is(.mc-camp-status, .mc-camp-check):is([data-status="sending"]) { --tone: var(--jc-info, #8ab4f8); }
+:is(.mc-camp-status, .mc-camp-check):is([data-status="paused"], [data-status="warn"], [data-health="risky"]) { --tone: var(--jc-warn); }
+:is(.mc-camp-status, .mc-camp-check):is([data-status="stopped"], [data-status="fail"], [data-health="invalid"], [data-health="bounced"], [data-health="complained"]) { --tone: var(--jc-bad); }
+
+/* Cards: campaigns, lists, templates, senders. */
+.mc-camp-cards, .mc-camp-rows, .mc-camp-mails, .mc-camp-check-list { list-style: none; margin: 0; padding: 0; }
+.mc-camp-cards { display: grid; gap: 8px; }
+.mc-pane .mc-camp .mc-camp-card { display: grid; gap: 6px; width: 100%; min-height: 0; padding: 12px 14px; border: 1px solid var(--jc-border); border-radius: var(--mc-camp-radius);
+  background: var(--jc-raised); color: var(--jc-text); font: inherit; text-align: left; cursor: pointer; transition: border-color 120ms ease-out, background-color 120ms ease-out; }
+.mc-pane .mc-camp button.mc-camp-card:hover { border-color: color-mix(in srgb, var(--jc-accent) 55%, var(--jc-border)); }
+.mc-pane .mc-camp .mc-camp-card[data-status="in_review"] { border-color: color-mix(in srgb, var(--jc-accent) 45%, var(--jc-border)); box-shadow: inset 3px 0 0 var(--jc-accent); }
+.mc-camp-card-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+.mc-camp-card-top time { color: var(--jc-muted); font-size: 11.5px; white-space: nowrap; }
+.mc-camp-card-name { font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+.mc-camp-card-goal { display: -webkit-box; overflow: hidden; color: var(--jc-muted); -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.mc-camp-card-meta { color: var(--jc-muted); font-size: 12px; }
+
+/* Campaign detail. */
+.mc-camp-head { display: grid; gap: 6px; }
+.mc-camp-head h3 { margin: 0; font-size: 18px; font-weight: 650; line-height: 1.3; text-wrap: balance; overflow-wrap: anywhere; }
+.mc-camp-head p { margin: 0; color: var(--jc-muted); }
+.mc-camp-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 0; }
+.mc-camp-tiles > div { display: grid; align-content: start; gap: 4px; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--jc-text) 5%, transparent); }
+.mc-camp-tiles > div.wide { grid-column: 1 / -1; }
+.mc-camp-tiles dt { color: var(--jc-muted); font-size: 11px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; }
+.mc-camp-tiles dd { margin: 0; overflow-wrap: anywhere; }
+.mc-camp-tile-number { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.mc-camp-fold { border: 1px solid var(--jc-border); border-radius: 10px; }
+.mc-camp-fold > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 9px 12px; cursor: pointer; }
+.mc-camp-fold-title { font-weight: 600; }
+.mc-camp-checks { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.mc-camp-check-list { display: grid; gap: 8px; padding: 0 12px 12px; }
+.mc-camp-check-list p { margin: 4px 0 0; }
+
+/* Your decision: stays at the bottom of the panel while the mails scroll. */
+.mc-camp-decide { position: sticky; bottom: -12px; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 -12px -12px; padding: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--jc-accent) 40%, var(--jc-border)); background: color-mix(in srgb, var(--jc-bg) 92%, transparent); backdrop-filter: blur(8px); }
+.mc-camp-decide-text { flex: 1 1 220px; display: grid; gap: 6px; margin: 0; }
+.mc-camp-decide-actions { display: flex; gap: 8px; margin-left: auto; }
+.mc-camp-decide > .mc-camp-alert { flex-basis: 100%; }
+.mc-camp-progress { display: block; height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--jc-accent) var(--read, 0%), color-mix(in srgb, var(--jc-text) 12%, transparent) var(--read, 0%)); }
+
+/* Reader: recipients beside the mail on a wide rail, above it on a narrow one. */
+.mc-camp-reader { display: grid; gap: 12px; align-items: start; }
+@container (min-width: 760px) { .mc-camp-reader { grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); } .mc-camp-reader-list { position: sticky; top: 0; } .mc-camp-reader .mc-camp-mails { max-height: 60vh; } }
+.mc-camp-reader-list { display: grid; gap: 8px; min-width: 0; }
+.mc-camp-reader h4 { margin: 0; font-size: 13px; }
+.mc-camp-reader-list > p { margin: 0; }
+.mc-camp-search { display: flex; align-items: center; gap: 8px; min-width: 0; height: 36px; padding: 0 12px; border-radius: 18px; background: color-mix(in srgb, var(--jc-text) 7%, transparent); }
+.mc-camp-search:focus-within { box-shadow: 0 0 0 2px color-mix(in srgb, var(--jc-accent) 45%, transparent); }
+.mc-camp-search svg { flex: none; width: 15px; height: 15px; color: var(--jc-muted); }
+.mc-pane .mc-camp .mc-camp-search input { flex: 1 1 auto; min-width: 0; height: 100%; padding: 0; border: 0; background: transparent; box-shadow: none; color: var(--jc-text); font: inherit; outline: none; }
+.mc-camp-mails { display: grid; gap: 2px; max-height: 220px; overflow: auto; }
+.mc-pane .mc-camp .mc-camp-mail-row { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 10px; width: 100%; min-height: 0; padding: 6px 8px; border: 0;
+  border-radius: 10px; background: transparent; color: var(--jc-text); font: inherit; text-align: left; cursor: pointer; }
+.mc-pane .mc-camp .mc-camp-mail-row:hover { background: color-mix(in srgb, var(--jc-text) 6%, transparent); }
+.mc-pane .mc-camp .mc-camp-mail-row[aria-current="true"] { background: color-mix(in srgb, var(--jc-accent) 16%, transparent); }
+.mc-camp-mail-row .mc-avatar.checked { background: color-mix(in srgb, var(--jc-ok) 30%, var(--jc-bg)); color: var(--jc-ok); }
+.mc-camp-mail-row .mc-avatar.checked svg { width: 15px; height: 15px; }
+.mc-camp-mail-copy, .mc-camp-row-copy { display: grid; min-width: 0; }
+.mc-camp-mail-to, .mc-camp-mail-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-camp-mail-to { font-weight: 600; }
+.mc-camp-mail-sub { color: var(--jc-muted); font-size: 12px; }
+.mc-camp-pager { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mc-camp-pager > .mc-camp-muted { white-space: nowrap; }
+
+/* One mail, as the recipient gets it. */
+.mc-camp-mail { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--jc-border); border-radius: var(--mc-camp-radius); background: var(--jc-raised); }
+.mc-camp-preview { display: grid; gap: 10px; min-width: 0; }
+.mc-camp-inbox { display: grid; gap: 4px; }
+.mc-camp-inbox-label { color: var(--jc-muted); font-size: 11px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; }
+.mc-camp-inbox-row { display: flex; align-items: baseline; gap: 12px; min-width: 0; padding: 8px 12px; border-radius: 8px; background: color-mix(in srgb, var(--jc-text) 5%, transparent); }
+.mc-camp-inbox-from { flex: 0 1 30%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-camp-inbox-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-camp-mail-subject { margin: 4px 0 0; font-size: 18px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.mc-camp-mail-from { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; align-items: start; }
+.mc-camp-mail-from dl { display: grid; gap: 2px; margin: 0; }
+.mc-camp-mail-from dl > div { display: flex; gap: 6px; min-width: 0; }
+.mc-camp-mail-from dt { flex: none; min-width: 64px; color: var(--jc-muted); font-size: 12px; line-height: 1.6; }
+.mc-camp-mail-from dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.mc-camp-paper-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.mc-camp-segment { display: inline-flex; gap: 2px; padding: 3px; border-radius: 10px; background: color-mix(in srgb, var(--jc-text) 7%, transparent); }
+.mc-pane .mc-camp .mc-camp-segment button { min-height: 0; height: 28px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent; color: var(--jc-muted); font: inherit; font-weight: 600; cursor: pointer; }
+.mc-pane .mc-camp .mc-camp-segment button[aria-selected="true"] { background: var(--jc-bg); color: var(--jc-text); box-shadow: 0 1px 2px rgb(0 0 0 / 0.25); }
+/* The mail on white paper, as inboxes show it; tall enough for a whole mail, the rest scrolls inside it. */
+.mc-camp-paper { display: block; box-sizing: border-box; width: 100%; height: max(480px, 72vh); margin: 0; border: 0; border-radius: 10px; background: #fff; color: #202124; }
+.mc-camp-paper-text { height: auto; min-height: 160px; padding: 16px 18px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: Arial, sans-serif; font-size: 14px; line-height: 1.55; }
+.mc-camp-full { box-sizing: border-box; width: min(960px, 96vw); height: 94vh; max-width: none; max-height: none; padding: 0; border: 1px solid var(--jc-border); border-radius: 14px;
+  background: var(--jc-bg); color: var(--jc-text); box-shadow: 0 24px 64px rgb(0 0 0 / 0.5); }
+.mc-camp-full[open] { display: flex; flex-direction: column; }
+.mc-camp-full::backdrop { background: rgb(0 0 0 / 0.55); }
+.mc-camp-full-head { display: flex; align-items: flex-start; gap: 10px; padding: 12px 12px 12px 16px; border-bottom: 1px solid var(--jc-border); }
+.mc-camp-full-title { display: grid; flex: 1 1 auto; gap: 8px; min-width: 0; }
+.mc-camp-full .mc-camp-paper { flex: 1 1 auto; height: auto; min-height: 0; border-radius: 0 0 14px 14px; }
+.mc-camp-full .mc-camp-paper-text { overflow: auto; }
+
+/* Lists: a health bar per list. */
+.mc-camp-health { display: grid; gap: 6px; min-width: 0; font-size: 12px; }
+.mc-camp-health-bar { display: flex; height: 6px; overflow: hidden; border-radius: 3px; background: color-mix(in srgb, var(--jc-text) 10%, transparent); }
+.mc-camp-health-bar > span { --tone: var(--jc-muted); background: var(--tone); }
+.mc-camp-health-bar > [data-health="valid"] { --tone: var(--jc-ok); }
+.mc-camp-health-bar > [data-health="risky"] { --tone: var(--jc-warn); }
+.mc-camp-health-bar > :is([data-health="invalid"], [data-health="bounced"], [data-health="complained"]) { --tone: var(--jc-bad); }
+.mc-camp-filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.mc-camp-filters select { height: 36px; border-radius: 18px; padding: 0 12px; }
+.mc-camp-filters .mc-camp-search { flex: 1 1 200px; }
+.mc-camp-rows { display: grid; }
+.mc-camp-rows > li { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--jc-border); }
+.mc-camp-row-copy > span { overflow-wrap: anywhere; }
+
+/* Senders. */
+.mc-camp-sender { cursor: default; }
+.mc-camp-sender-who { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+.mc-camp-sender-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding-top: 8px; border-top: 1px solid var(--jc-border); }
+.mc-camp-inline { display: inline-flex; align-items: center; gap: 8px; color: var(--jc-muted); }
+.mc-camp-inline select { height: 32px; border-radius: 16px; padding: 0 10px; }
+@media (prefers-reduced-motion: reduce) { .mc-pane .mc-camp :is(.mc-camp-card, .mc-camp-nav-tab) { transition: none; } }

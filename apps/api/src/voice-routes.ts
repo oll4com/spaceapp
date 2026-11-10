@@ -4,7 +4,7 @@ import type { FastifyInstance, RouteShorthandOptions } from "fastify";
 import { WebSocket as WsClient } from "ws";
 import { z } from "zod";
 import {
-  type AuthUser, inferProviderFromModel, type LiveAudioProviderId, openAiModelsResponseSchema, type Room,
+  type AuthUser, getLiveAudioProvider, inferProviderFromModel, type LiveAudioProviderId, openAiModelsResponseSchema, type Room,
   voiceRealtimeDelegateRequestSchema, voiceRealtimeDelegateResponseSchema, voiceRealtimeSessionRequestSchema
 } from "@space/contracts";
 import { SpaceFeatureDisabledError, type SpaceStore } from "@space/runtime";
@@ -25,6 +25,8 @@ import {
   fetchOpenAiModels, getLiveAudioProvidersStatus, getLocalVoiceProviderStatus
 } from "./voice-transcription.js";
 import { bridgeFishVoice } from "./fish-voice-bridge.js";
+import { bridgeGrantVoice } from "./grant-voice-bridge.js";
+import { isGrantLiveProvider, type GrantVoicePlan } from "./voice-grants.js";
 import { relayVoiceSockets, voiceProxyLimits, VoiceProxyTickets } from "./voice-ws-proxy.js";
 
 /**
@@ -44,6 +46,9 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
 }) {
   const { config, decisionsService, store, routeOptions: defaultRouteRateLimitOptions,
     websocketRouteOptions: defaultWebsocketRateLimitOptions, assertRoomAccess, setupOwnerVoiceRuntime, setupVoiceCredentials } = options;
+  // Every voice delegation of the window (until 31/10 summed from the newest 500 audit events of any kind: the total ran short).
+  const voiceDelegations = async (sinceMs: number) => store.listAuditEventsSince
+    ? store.listAuditEventsSince({ actions: ["voice.realtime.delegate"], since: new Date(sinceMs - 1).toISOString() }) : store.listAuditEvents();
   app.get("/api/voice/transcription/settings", defaultRouteRateLimitOptions, async () => buildVoiceTranscriptionSettings(config));
   app.get("/api/voice/local/status", defaultRouteRateLimitOptions, async () => getLocalVoiceProviderStatus(config));
   app.post("/api/voice/local/sessions", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -102,7 +107,9 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
           ? "local-qwen3-greek"
           : provider === "fish"
             ? "drama-3"
-            : config.voiceTranscriptionModel || "gpt-live-1";
+            : isGrantLiveProvider(provider)
+              ? getLiveAudioProvider(provider).defaultModel
+              : config.voiceTranscriptionModel || "gpt-live-1";
     const model = input.model?.trim() || defaultModel;
     try {
       const result = await setupOwnerVoiceRuntime.call(request.user.id, {
@@ -126,7 +133,7 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
 
       // If the provider returned an external WebSocket URL (Google, Vercel, Amazon),
       // create a proxy session so the browser connects to Space API which relays to the provider.
-      if (result.websocketUrl && (provider === "google" || provider === "vercel" || provider === "amazon" || provider === "fish")) {
+      if (result.websocketUrl && (provider === "google" || provider === "vercel" || provider === "amazon" || provider === "fish" || isGrantLiveProvider(provider))) {
         const proxySessionId = pendingVoiceWsSessions.create({
           ownerId: request.user.id,
           // Bind the one-shot ticket to the browser's validated Origin.  On
@@ -187,7 +194,7 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
     const dailyBudget = config.liveModelPolicy.dailyBudgetUsd;
     if (dailyBudget != null) {
       const sinceMs = Date.now() - 24 * 60 * 60 * 1000;
-      const summary = summarizeVoiceDelegationCosts(await store.listAuditEvents(), request.user.id, sinceMs);
+      const summary = summarizeVoiceDelegationCosts(await voiceDelegations(sinceMs), request.user.id, sinceMs);
       if (isVoiceDailyBudgetExceeded(summary, dailyBudget)) {
         return sendApiError(reply, 429, "VOICE_DAILY_BUDGET_EXCEEDED", "The configured daily voice delegation budget has been reached.");
       }
@@ -220,7 +227,7 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
     }
     const sinceRaw = typeof (request.query as { since?: unknown })?.since === "string" ? (request.query as { since: string }).since : null;
     const sinceMs = sinceRaw ? Date.parse(sinceRaw) : Date.now() - 24 * 60 * 60 * 1000;
-    const events = await store.listAuditEvents();
+    const events = await voiceDelegations(Number.isFinite(sinceMs) ? sinceMs : Date.now() - 24 * 60 * 60 * 1000);
     const summary = summarizeVoiceDelegationCosts(events, request.user.id, Number.isFinite(sinceMs) ? sinceMs : Date.now() - 24 * 60 * 60 * 1000);
     return { since: new Date(Number.isFinite(sinceMs) ? sinceMs : Date.now() - 24 * 60 * 60 * 1000).toISOString(), ...summary,
       dailyBudgetUsd: config.liveModelPolicy.dailyBudgetUsd,
@@ -258,6 +265,14 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
     }
     if (session.provider === "fish") {
       const stop = bridgeFishVoice(clientSocket, { apiKey: session.token ?? "", onClose: (metadata) => {
+        activeVoiceProxies.delete(stop);
+        request.log.info({ sessionId, provider: session.provider, ...metadata, event: "voice_ws_proxy_closed" }, "Voice relay closed");
+      } });
+      activeVoiceProxies.add(stop);
+      return;
+    }
+    if (session.provider && isGrantLiveProvider(session.provider)) {
+      const stop = bridgeGrantVoice(clientSocket, { plan: JSON.parse(session.token ?? "{}") as GrantVoicePlan, onClose: (metadata) => {
         activeVoiceProxies.delete(stop);
         request.log.info({ sessionId, provider: session.provider, ...metadata, event: "voice_ws_proxy_closed" }, "Voice relay closed");
       } });

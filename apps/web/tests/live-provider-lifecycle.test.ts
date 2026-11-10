@@ -25,7 +25,7 @@ function openAIHarness() {
   return { sent: channel.send, channel, inspectRoomMission, emitTrack, open: () => handlers.get("open")?.({}), receive: (data: object) => handlers.get("message")?.({ data: JSON.stringify(data) }) };
 }
 
-function harness(protocol: "google-live" | "gateway-realtime" | "fish-cascade") {
+function harness(protocol: "google-live" | "gateway-realtime" | "fish-cascade" | "grant-cascade") {
   const processors: any[] = [];
   const contexts: any[] = [];
   const taps: any[] = [];
@@ -802,5 +802,33 @@ describe("Fish Audio (Drama 3) provider", () => {
       expect(statuses).toContain("speaking");
       expect(statuses.at(-1)).toBe("listening");
     } finally { session.close(); }
+  });
+});
+
+describe("startup voice grant providers", () => {
+  it("opens Murf AI through the grant bridge with its model and voice and explains a provider failure", async () => {
+    const h = harness("grant-cascade");
+    h.delegateVoiceIntent.mockResolvedValueOnce({ toolCall: null, message: "Καλημέρα." });
+    const errors: string[] = [];
+    const session = await openLiveConversationSession({ provider: "murf", model: "murf/falcon", voice: "el-GR-stavros", getCommandRoom: () => "room:a" },
+      { onError: (message) => errors.push(message) });
+    const json = () => h.sockets[0]!.send.mock.calls.map(([data]) => data).filter((data): data is string => typeof data === "string").map((data) => JSON.parse(data));
+    try {
+      expect(h.createVoiceRealtimeCall).toHaveBeenCalledWith(expect.objectContaining({ provider: "murf", model: "murf/falcon" }));
+      h.open(); await h.receive({ type: "session_started" });
+      await h.receive({ type: "committed", user_turn: true, text: "Γεια" });
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      expect(json()).toContainEqual({ type: "say", text: "Καλημέρα.", voice: "el-GR-stavros" });
+      await h.receive({ type: "tts_done", reason: "murf_402" });
+      expect(errors).toEqual(["Murf AI has no characters left on this key."]);
+      h.sockets[0]!.onclose?.({ reason: "assemblyai_1008" });
+      expect(errors.at(-1)).toBe("AssemblyAI is at its session limit. Try again in a minute.");
+    } finally { session.close(); }
+  });
+
+  it("refuses a Fish protocol answer for a grant provider", async () => {
+    harness("fish-cascade");
+    await expect(openLiveConversationSession({ provider: "livekit", model: "livekit/rime-arcana", getCommandRoom: () => "room:a" }))
+      .rejects.toThrow("LiveKit Inference returned an incompatible voice protocol.");
   });
 });

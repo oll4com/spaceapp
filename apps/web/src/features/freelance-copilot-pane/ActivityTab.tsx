@@ -2,6 +2,8 @@ import { useState } from "react";
 import { FREELANCE_CHANNEL_LABELS, type FreelanceAccount, type FreelanceEvent, type FreelancePendingItem, type FreelanceRule } from "@space/contracts";
 import { api } from "../../api.js";
 import { AlertTriangle, Check, CheckCircle2, CircleHelp, ExternalLink, FileText, Mail, Pause, Pencil, Play, Rocket, Send, ShieldCheck, Square, UserCheck, X } from "../ui-theme/app-icons.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
+import { MESSAGE_KIND_LABEL } from "./LeadsTab.js";
 
 const EVENT_ICON: Partial<Record<FreelanceEvent["type"], typeof Check>> = {
   BRIEF: Pencil, MAIL: Mail, LEAD_ADDED: FileText, MESSAGE_DRAFTED: FileText, MESSAGE_RECEIVED: Mail, REVIEW_REQUESTED: CircleHelp, REVIEW_DECIDED: CheckCircle2, SENDING: Send, SENT: Send,
@@ -14,6 +16,7 @@ const EVENT_TONE: Partial<Record<FreelanceEvent["type"], string>> = {
 };
 
 function useAction(onDone: () => void) {
+  const language = useUiLanguage();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const run = async (action: () => Promise<unknown>) => {
@@ -24,7 +27,7 @@ function useAction(onDone: () => void) {
       await action();
       onDone();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The action failed.");
+      setError(caught instanceof Error ? caught.message : uiText(language, "The action failed."));
       setBusy(false);
     }
   };
@@ -32,18 +35,20 @@ function useAction(onDone: () => void) {
 }
 
 function QuestionCard({ item, paneId, onDone }: { item: FreelancePendingItem; paneId: string; onDone(): void }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [answer, setAnswer] = useState("");
   const { busy, error, run } = useAction(onDone);
   const options = Array.isArray(item.payload.options) ? item.payload.options.filter((option): option is string => typeof option === "string") : [];
   const submit = (value: string) => { if (value.trim()) void run(() => api.answerFreelanceQuestion(paneId, { questionId: item.id, answer: value.trim() })); };
   return (
-    <section className="jc-pending" aria-label="The copilot asks">
-      <header><CircleHelp aria-hidden="true" /> <strong>The copilot asks</strong></header>
+    <section className="jc-pending" aria-label={t("The copilot asks")}>
+      <header><CircleHelp aria-hidden="true" /> <strong>{t("The copilot asks")}</strong></header>
       <p>{typeof item.payload.question === "string" ? item.payload.question : item.message}</p>
       {options.length ? <div className="jc-pending-options">{options.map((option) => <button key={option} type="button" className="jc-chip" disabled={busy} onClick={() => submit(option)}>{option}</button>)}</div> : null}
       <form className="jc-pending-answer" onSubmit={(event) => { event.preventDefault(); submit(answer); }}>
-        <input value={answer} placeholder="Type the answer; the copilot remembers it" aria-label="Answer" disabled={busy} onChange={(event) => setAnswer(event.target.value)} />
-        <button type="submit" className="jc-button primary" disabled={busy || !answer.trim()}>Answer</button>
+        <input value={answer} placeholder={t("Type the answer; the copilot remembers it")} aria-label={t("Answer")} disabled={busy} onChange={(event) => setAnswer(event.target.value)} />
+        <button type="submit" className="jc-button primary" disabled={busy || !answer.trim()}>{t("Answer")}</button>
       </form>
       {error ? <p className="jc-message" role="alert">{error}</p> : null}
     </section>
@@ -51,16 +56,18 @@ function QuestionCard({ item, paneId, onDone }: { item: FreelancePendingItem; pa
 }
 
 function RuleCard({ item, paneId, onDone }: { item: FreelancePendingItem; paneId: string; onDone(): void }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const { busy, error, run } = useAction(onDone);
   const rule = item.payload.rule as FreelanceRule;
   return (
-    <section className="jc-pending" aria-label="A rule proposal">
-      <header><ShieldCheck aria-hidden="true" /> <strong>Rule proposed</strong></header>
-      <p><strong>{rule.name}</strong>: the copilot may send {rule.kinds.length ? rule.kinds.map((kind) => kind.toLowerCase().replace("_", "-")).join(", ") : "any message"} on {FREELANCE_CHANNEL_LABELS[rule.channel]} without asking, within the daily cap.</p>
+    <section className="jc-pending" aria-label={t("A rule proposal")}>
+      <header><ShieldCheck aria-hidden="true" /> <strong>{t("Rule proposed")}</strong></header>
+      <p><strong>{rule.name}</strong>: {t("the copilot may send {kinds} on {platform} without asking, within the daily cap.", { kinds: rule.kinds.length ? rule.kinds.map((kind) => t(MESSAGE_KIND_LABEL[kind])).join(", ") : t("any message"), platform: FREELANCE_CHANNEL_LABELS[rule.channel] })}</p>
       {rule.evidence.length ? <ul className="mk-evidence">{rule.evidence.map((line) => <li key={line}>{line}</li>)}</ul> : null}
       <div className="jc-actions">
-        <button type="button" className="jc-button primary" disabled={busy} onClick={() => void run(() => api.decideFreelanceRule(paneId, rule.id, "approve"))}><Check aria-hidden="true" /> Approve</button>
-        <button type="button" className="jc-button ghost danger" disabled={busy} onClick={() => void run(() => api.decideFreelanceRule(paneId, rule.id, "reject"))}><X aria-hidden="true" /> Decline</button>
+        <button type="button" className="jc-button primary" disabled={busy} onClick={() => void run(() => api.decideFreelanceRule(paneId, rule.id, "approve"))}><Check aria-hidden="true" /> {t("Approve")}</button>
+        <button type="button" className="jc-button ghost danger" disabled={busy} onClick={() => void run(() => api.decideFreelanceRule(paneId, rule.id, "reject"))}><X aria-hidden="true" /> {t("Decline")}</button>
       </div>
       {error ? <p className="jc-message" role="alert">{error}</p> : null}
     </section>
@@ -76,28 +83,30 @@ export function ActivityTab({ paneId, events, pending, onChanged, onOpenLeads, o
   onOpenLeads(): void;
   onOpenSetup(): void;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const inLeads = pending.filter((item) => item.kind === "REVIEW" || item.kind === "CLIENT_READY").length;
   return (
     <div className="jc-activity" role="tabpanel" id="jc-panel-activity" aria-labelledby="jc-tab-activity">
       {inLeads ? (
-        <section className="jc-pending" aria-label="Clients and messages for you">
-          <header><UserCheck aria-hidden="true" /> <strong>{inLeads} client{inLeads === 1 ? "" : "s"} or message{inLeads === 1 ? "" : "s"} wait for you</strong></header>
-          <div className="jc-actions"><button type="button" className="jc-button primary" onClick={onOpenLeads}>Open Leads</button></div>
+        <section className="jc-pending" aria-label={t("Clients and messages for you")}>
+          <header><UserCheck aria-hidden="true" /> <strong>{t(inLeads === 1 ? "{count} client or message waits for you" : "{count} clients or messages wait for you", { count: inLeads })}</strong></header>
+          <div className="jc-actions"><button type="button" className="jc-button primary" onClick={onOpenLeads}>{t("Open Leads")}</button></div>
         </section>
       ) : null}
       {pending.map((item) => item.kind === "QUESTION" ? <QuestionCard key={item.id} item={item} paneId={paneId} onDone={onChanged} />
         : item.kind === "RULE" ? <RuleCard key={item.id} item={item} paneId={paneId} onDone={onChanged} />
         : item.kind === "ACCOUNT" ? (
-          <section key={item.id} className="jc-pending" aria-label="An account needs you">
-            <header><AlertTriangle aria-hidden="true" /> <strong>{FREELANCE_CHANNEL_LABELS[(item.payload.account as FreelanceAccount).channel]} account needs you</strong></header>
+          <section key={item.id} className="jc-pending" aria-label={t("An account needs you")}>
+            <header><AlertTriangle aria-hidden="true" /> <strong>{t("{platform} account needs you", { platform: FREELANCE_CHANNEL_LABELS[(item.payload.account as FreelanceAccount).channel] })}</strong></header>
             <p>{(item.payload.account as FreelanceAccount).notes ?? item.message}</p>
-            <div className="jc-actions"><button type="button" className="jc-button" onClick={onOpenSetup}>Open Setup</button></div>
+            <div className="jc-actions"><button type="button" className="jc-button" onClick={onOpenSetup}>{t("Open Setup")}</button></div>
           </section>
         ) : null)}
       {events.length === 0 ? (
-        <div className="jc-empty"><strong>No activity yet</strong><span>Every lead, proposal, client message, question and handoff lands here.</span></div>
+        <div className="jc-empty"><strong>{t("No activity yet")}</strong><span>{t("Every lead, proposal, client message, question and handoff lands here.")}</span></div>
       ) : (
-        <ol className="jc-timeline" aria-label="Activity">
+        <ol className="jc-timeline" aria-label={t("Activity")}>
           {events.map((event) => {
             const Icon = EVENT_ICON[event.type] ?? FileText;
             const url = typeof event.payload.url === "string" ? event.payload.url : null;
@@ -107,7 +116,7 @@ export function ActivityTab({ paneId, events, pending, onChanged, onOpenLeads, o
                 <div className="jc-event-body">
                   <p>{event.message}</p>
                   <div className="jc-event-meta">
-                    {url ? <a className="jc-event-link" href={url} target="_blank" rel="noreferrer noopener"><ExternalLink aria-hidden="true" /> Open</a> : null}
+                    {url ? <a className="jc-event-link" href={url} target="_blank" rel="noreferrer noopener"><ExternalLink aria-hidden="true" /> {t("Open")}</a> : null}
                     <span className="jc-muted" title={event.createdAt}>{new Date(event.createdAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })}</span>
                   </div>
                 </div>

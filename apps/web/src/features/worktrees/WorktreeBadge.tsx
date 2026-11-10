@@ -5,6 +5,8 @@ import { mergeWorktree, removeWorktree } from "./worktree-client.js";
 import "./worktree.css";
 
 const NON_CRITICAL_INITIAL_DELAY_MS = 4_000;
+/** The server caches /api/worktrees/item for 60 s (WORKTREE_ITEM_CACHE_TTL_MS): polling faster only re-read its cache (api audit 2026-11-08: 777 calls/h). */
+export const WORKTREE_BADGE_POLL_MS = 60_000;
 
 export interface WorktreeBadgeProps {
   branch?: string;
@@ -85,10 +87,10 @@ export function WorktreeBadge({
       if (cancelled || started) return;
       started = true;
       void checkStatus();
-      // Periodic polling (every 7.5s) when window/tab is visible
+      // Periodic polling when the tab is visible; focus and visibility still read at once
       timer = window.setInterval(() => {
         if (document.visibilityState !== "hidden") void checkStatus();
-      }, 7500);
+      }, WORKTREE_BADGE_POLL_MS);
     };
     const runImmediately = /\bjsdom\b/i.test(navigator.userAgent);
     if (runImmediately) {

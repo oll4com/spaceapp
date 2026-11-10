@@ -4,6 +4,7 @@ import { api } from "../../api.js";
 import { AgentAccountField, useCopilotAccounts } from "../copilot-kit/AgentAccountField.js";
 import { copilotAgentLabel, loadPaneAccountProfileId, type CopilotRuntimeOption } from "../copilot-kit/copilot-runtimes.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 type SetupStep = "devices" | "notifications" | "agent";
 const STEP_LABELS: Record<SetupStep, string> = { devices: "Devices", notifications: "Notifications", agent: "Agent" };
@@ -19,6 +20,8 @@ export function SetupTab({ pane, settings, runtimeOptions, switching, accountRev
   onSwitchAgent(runtimeId: string, accountProfileId?: string): void;
   onSetDefault(): void;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [step, setStep] = useState<SetupStep>("devices");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -46,36 +49,36 @@ export function SetupTab({ pane, settings, runtimeOptions, switching, accountRev
     onSettingsChange(next);
     try {
       onSettingsChange((await api.updateAppStudioSettings(pane.id, next)).metadata);
-      setMessage(`${label} saved.`);
+      setMessage(t("{label} saved.", { label: t(label) }));
     } catch (error) {
       onSettingsChange(settings);
-      setMessage(error instanceof Error ? error.message : `${label} could not be saved.`);
+      setMessage(error instanceof Error ? error.message : t("{label} could not be saved.", { label: t(label) }));
     } finally {
       setBusy(false);
     }
   }
   function toggleDevice(id: string, on: boolean) {
     const devices = on ? APP_STUDIO_DEVICES.map((device) => device.id).filter((entry) => entry === id || current.devices.includes(entry)) : current.devices.filter((entry) => entry !== id);
-    if (!devices.length) { setMessage("Keep at least one device."); return; }
+    if (!devices.length) { setMessage(t("Keep at least one device.")); return; }
     void patch("Devices", { devices });
   }
 
   return (
     <div className="jc-setup" role="tabpanel" id="jc-panel-setup" aria-labelledby="jc-tab-setup">
-      <nav className="jc-steps" aria-label="Setup steps">
+      <nav className="jc-steps" aria-label={t("Setup steps")}>
         {(["devices", "notifications", "agent"] as const).map((id, index) => (
           <button key={id} type="button" className={`jc-step${step === id ? " selected" : ""}`} aria-current={step === id ? "step" : undefined} onClick={() => setStep(id)}>
-            <span className="jc-step-index">{index + 1}</span>{STEP_LABELS[id]}
+            <span className="jc-step-index">{index + 1}</span>{t(STEP_LABELS[id])}
           </button>
         ))}
       </nav>
 
       {step === "devices" ? (
         <div className="jc-form">
-          <p className="jc-muted">The phones every preview captures unless the app builder names others. These ten cover most phones in use today.</p>
+          <p className="jc-muted">{t("The devices every preview captures unless the app builder names others. The ten phones cover most phones in use today; the tablet comes in portrait and landscape.")}</p>
           {(["ANDROID", "IOS"] as const).map((platform) => (
-            <section key={platform} className="jc-form-section" aria-label={platform === "IOS" ? "iPhone" : "Android"}>
-              <h4>{platform === "IOS" ? "iPhone" : "Android"}</h4>
+            <section key={platform} className="jc-form-section" aria-label={platform === "IOS" ? t("iPhone") : t("Android")}>
+              <h4>{platform === "IOS" ? t("iPhone") : t("Android")}</h4>
               {APP_STUDIO_DEVICES.filter((device) => device.platform === platform).map((device) => (
                 <SpaceToggle key={device.id} label={device.label} detail={`${device.width}×${device.height}`} checked={current.devices.includes(device.id)} disabled={busy}
                   onChange={(checked) => toggleDevice(device.id, checked)} />
@@ -87,12 +90,12 @@ export function SetupTab({ pane, settings, runtimeOptions, switching, accountRev
 
       {step === "notifications" ? (
         <div className="jc-form">
-          <SpaceToggle label="Paused" detail="The app builder takes no new brief while paused." checked={current.paused} disabled={busy} onChange={(checked) => void patch("Paused", { paused: checked })} />
-          <SpaceToggle label="Needs-you notifications" detail="Questions from the app builder and briefs it could not finish." checked={current.notifications.needsYou} disabled={busy}
+          <SpaceToggle label={t("Paused")} detail={t("The app builder takes no new brief while paused.")} checked={current.paused} disabled={busy} onChange={(checked) => void patch("Paused", { paused: checked })} />
+          <SpaceToggle label={t("Needs-you notifications")} detail={t("Questions from the app builder and briefs it could not finish.")} checked={current.notifications.needsYou} disabled={busy}
             onChange={(checked) => void patch("Notifications", { notifications: { ...current.notifications, needsYou: checked } })} />
-          <SpaceToggle label="Done notifications" detail="A notification for every finished brief." checked={current.notifications.done} disabled={busy}
+          <SpaceToggle label={t("Done notifications")} detail={t("A notification for every finished brief.")} checked={current.notifications.done} disabled={busy}
             onChange={(checked) => void patch("Notifications", { notifications: { ...current.notifications, done: checked } })} />
-          <SpaceToggle label="Telegram" detail="These notifications also go to the paired Telegram bot (Settings → Telegram)." checked={current.notifications.telegram} disabled={busy}
+          <SpaceToggle label="Telegram" detail={t("These notifications also go to the paired Telegram bot (Settings → Telegram).")} checked={current.notifications.telegram} disabled={busy}
             onChange={(checked) => void patch("Notifications", { notifications: { ...current.notifications, telegram: checked } })} />
         </div>
       ) : null}
@@ -100,26 +103,28 @@ export function SetupTab({ pane, settings, runtimeOptions, switching, accountRev
       {step === "agent" ? (
         <div className="jc-form">
           <label className="jc-field">
-            <span>App builder</span>
+            <span>{t("App builder")}</span>
             <select value={runtimeId ?? ""} disabled={switching} onChange={(event) => { const next = event.target.value; if (next && next !== runtimeId) onSwitchAgent(next); }}>
-              {!runtimeId ? <option value="">Choose a CLI…</option> : null}
+              {!runtimeId ? <option value="">{t("Choose a CLI…")}</option> : null}
               {runtimeOptions.map(({ runtime, ready, recommended }) => (
-                <option key={runtime.id} value={runtime.id} disabled={!ready}>{runtime.displayName}{recommended ? " (recommended)" : ""}{ready ? "" : ` — ${runtime.statusReason}`}</option>
+                <option key={runtime.id} value={runtime.id} disabled={!ready}>{runtime.displayName}{recommended ? ` (${t("recommended")})` : ""}{ready ? "" : ` — ${runtime.statusReason}`}</option>
               ))}
             </select>
           </label>
           {runtimeId ? <AgentAccountField runtimeId={runtimeId} runtimeLabel={runtimeLabel} accounts={cliAccounts} value={paneAccount} disabled={switching} onChange={(profileId) => onSwitchAgent(runtimeId, profileId)} /> : null}
-          <p className="jc-muted">Switching the app builder or its account restarts this pane's CLI session; the app's project folder stays. Claude Code is recommended.</p>
+          <p className="jc-muted">{t("Switching the app builder or its account restarts this pane's CLI session; the app's project folder stays. Claude Code is recommended.")}</p>
           <div className="jc-default-agent">
             <p className="jc-muted" role="status">
               {launch && !launch.askOnLaunch
-                ? `New App Studio panes open with ${copilotAgentLabel(launch.runtimeId, runtimeOptions.find((option) => option.runtime.id === launch.runtimeId)?.runtime)}${launch.accountProfileId ? ` (${launch.accountProfileId} account)` : ""} without asking.`
-                : "New App Studio panes ask which app builder to use."} Change it in Settings → App Studio.
+                ? launch.accountProfileId
+                  ? t("New App Studio panes open with {agent} ({account} account) without asking.", { agent: copilotAgentLabel(launch.runtimeId, runtimeOptions.find((option) => option.runtime.id === launch.runtimeId)?.runtime), account: launch.accountProfileId })
+                  : t("New App Studio panes open with {agent} without asking.", { agent: copilotAgentLabel(launch.runtimeId, runtimeOptions.find((option) => option.runtime.id === launch.runtimeId)?.runtime) })
+                : t("New App Studio panes ask which app builder to use.")} {t("Change it in Settings → App Studio.")}
             </p>
             <button type="button" className="jc-button" disabled={!runtimeId || switching || isDefault} onClick={() => {
               onSetDefault();
               if (runtimeId) setLaunch({ runtimeId, accountProfileId: paneAccount, askOnLaunch: false });
-            }}>{isDefault ? "This is your default app builder" : "Set as default"}</button>
+            }}>{isDefault ? t("This is your default app builder") : t("Set as default")}</button>
           </div>
         </div>
       ) : null}

@@ -1,5 +1,5 @@
 /**
- * What a headless Claude Code turn of Nous prints, read the same way wherever it runs: stable's worker (`/nous-turn`) and, on a
+ * What a headless Nous turn prints (Claude's result format, also normalized by the other providers), read in the worker and, on a
  * public install, the CLI container's credential agent (plan clipboard:1NF6u6gcCwtj, operator decision 2026-10-27).
  */
 
@@ -10,7 +10,7 @@ export interface NousTurnResult {
   text: string;
   isError: boolean;
   turns: number | null;
-  /** What Claude Code reported the run cost (total_cost_usd) and used per model (modelUsage); null when absent. */
+  /** Reported cost and token usage per model; null when the provider does not report them. */
   costUsd: number | null;
   tokens: Record<string, unknown> | null;
 }
@@ -27,11 +27,13 @@ const OVERSIZED_RESULT = "Claude Code's answer exceeded the output limit.";
 export function parseNousTurnOutput(stdout: string): NousTurnResult {
   const line = stdout.trim().split("\n").reverse().find((entry) => entry.trim().startsWith("{"));
   if (!line) throw new Error(stdout.trim().slice(0, 180) || "Claude Code gave no answer.");
-  const parsed = JSON.parse(line) as { result?: unknown; is_error?: unknown; num_turns?: unknown; subtype?: unknown; total_cost_usd?: unknown; modelUsage?: unknown };
+  const parsed = JSON.parse(line) as { type?: unknown; provider?: unknown; result?: unknown; is_error?: unknown; num_turns?: unknown; subtype?: unknown; total_cost_usd?: unknown; modelUsage?: unknown };
+  if (!parsed || parsed.type !== "result") throw new Error("The CLI stopped before returning a result.");
+  const provider = ({ codex: "Codex", gemini: "Gemini", openrouter: "OpenRouter", deepseek: "DeepSeek" } as Record<string, string>)[String(parsed.provider)] ?? "Claude Code";
   const text = typeof parsed.result === "string" ? parsed.result : "";
   const isError = parsed.is_error === true || (typeof parsed.subtype === "string" && parsed.subtype !== "success");
   const usage = parsed.modelUsage && typeof parsed.modelUsage === "object" && !Array.isArray(parsed.modelUsage) ? parsed.modelUsage as Record<string, unknown> : null;
-  return { text: text || (isError ? `Claude Code stopped (${String(parsed.subtype ?? "error")}).` : ""), isError, turns: typeof parsed.num_turns === "number" ? parsed.num_turns : null,
+  return { text: text || (isError ? `${provider} stopped (${String(parsed.subtype ?? "error")}).` : ""), isError, turns: typeof parsed.num_turns === "number" ? parsed.num_turns : null,
     costUsd: typeof parsed.total_cost_usd === "number" && Number.isFinite(parsed.total_cost_usd) && parsed.total_cost_usd >= 0 ? parsed.total_cost_usd : null,
     tokens: usage && JSON.stringify(usage).length <= MAX_USAGE_JSON_CHARS ? usage : null };
 }
@@ -107,8 +109,8 @@ export function createNousTurnReader(stream: boolean, onEvent?: (event: NousTurn
   const lines = splitNousStreamLines(NOUS_TURN_MAX_OUTPUT_BYTES, (line) => {
     if (!line.trim()) return;
     tail = (tail + line).slice(-2_048);
-    if (line.trim().startsWith("{")) lastJsonLine = line;
     const event = readNousStreamLine(line);
+    if (event && "result" in event) lastJsonLine = line;
     if (event && !("result" in event)) onEvent?.(event);
   });
   return {
@@ -123,7 +125,10 @@ export function createNousTurnReader(stream: boolean, onEvent?: (event: NousTurn
       // Streamed, the result record went through before the launcher's quota check: its message on stderr must still reach the API.
       if (code !== 0 && NOUS_QUOTA_STOP.test(stderr)) throw new Error(stderr.split("\n").map((value) => value.trim()).find((value) => NOUS_QUOTA_STOP.test(value))!.slice(0, 300));
       try {
-        return parseNousTurnOutput(stream ? lastJsonLine ?? tail : stdout);
+        const result = parseNousTurnOutput(stream ? lastJsonLine ?? tail : stdout);
+        // A completion printed before a crash/kill is not a successful turn.
+        if (code !== 0 && !result.isError) throw new Error(`The CLI exited with code ${code ?? "unknown"}.`);
+        return result;
       } catch {
         // sudo's own warnings (its timestamp directory on a read-only /run) say nothing about the turn.
         const line = `${stderr}\n${stream ? tail : stdout}`.split("\n").map((value) => value.trim()).find((value) => value && !/^sudo: unable to (?:mkdir|open)/.test(value));

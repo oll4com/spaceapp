@@ -1,0 +1,98 @@
+/* Load (plan clipboard:f4SH36t3fJ6c): the graph on top in a narrow dock, beside its numbers when the dock is wide. */
+.nous-load { container-type: inline-size; display: flex; flex-direction: column; gap: 0.7rem; min-width: 0; padding-bottom: 0.4rem; }
+.nous-load-main { display: grid; gap: 0.6rem; }
+.nous-load-graph {
+  position: relative; height: 9.5rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius); overflow: hidden;
+  background: radial-gradient(120% 90% at 100% 0%, var(--dock-accent-soft), transparent 70%), var(--dock-surface);
+}
+.nous-load-canvas { display: block; width: 100%; height: 100%; color: var(--dock-accent); }
+.nous-load-now { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.nous-load-percent { margin: 0; display: flex; align-items: baseline; gap: 0.1rem; color: var(--dock-text); font-size: 2.4rem; font-weight: 650; line-height: 1; font-variant-numeric: tabular-nums; }
+.nous-load-percent > span:last-child { font-size: 1.1rem; color: var(--dock-muted); font-weight: 500; }
+.nous-load-headroom { margin: 0.2rem 0 0; font-size: 0.75rem; color: var(--dock-success); }
+.nous-load-limit { margin: 0.2rem 0 0; font-size: 0.75rem; color: var(--dock-warning); overflow-wrap: anywhere; }
+
+.nous-load-parts { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; }
+.nous-load-parts li { display: grid; grid-template-columns: 5.6rem minmax(0, 1fr) 2.6rem; align-items: center; gap: 0.2rem 0.5rem; font-size: 0.74rem; }
+.nous-load-part-label { color: var(--dock-text); }
+.nous-load-part-value { text-align: right; color: var(--dock-text); font-variant-numeric: tabular-nums; }
+.nous-load-part-detail { grid-column: 2 / -1; color: var(--dock-muted); font-size: 0.68rem; overflow-wrap: anywhere; }
+.nous-load-bar { position: relative; height: 0.36rem; border-radius: 999px; background: color-mix(in srgb, var(--dock-text) 9%, transparent); overflow: hidden; }
+.nous-load-bar > span {
+  position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: linear-gradient(90deg, var(--dock-accent), var(--dock-success));
+  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.nous-load-averages { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.4rem; }
+.nous-load-average { padding: 0.45rem 0.55rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius-sm); background: var(--dock-surface); }
+.nous-load-average dt { color: var(--dock-muted); font-size: 0.68rem; }
+.nous-load-average dd { margin: 0.1rem 0 0; display: flex; align-items: baseline; gap: 0.4rem; }
+.nous-load-average strong { color: var(--dock-text); font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+.nous-load-trend { font-size: 0.68rem; font-variant-numeric: tabular-nums; }
+.nous-load-trend.is-up { color: var(--dock-success); }
+.nous-load-trend.is-down { color: var(--dock-warning); }
+.nous-load-trend.is-flat { color: var(--dock-muted); }
+.nous-load-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.3rem 0.8rem; color: var(--dock-muted); font-size: 0.68rem; }
+
+/* Score (plan clipboard:1NF6u6gcCwtj; compact 5/11): the score and its changes, the still graph, one list of slim rows that open on click. */
+.nous-score-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 0.3rem 0.8rem; }
+.nous-score-value.is-negative { color: var(--dock-danger); }
+.nous-score-value.is-positive { color: var(--dock-success); }
+.nous-score-changes { margin: 0; display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.nous-score-change {
+  padding: 0.12rem 0.5rem; border: 1px solid var(--dock-border); border-radius: 999px; color: var(--dock-muted);
+  font-size: 0.72rem; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.nous-score-change small { color: var(--dock-muted); font-size: 0.64rem; }
+.nous-score-change.is-up { color: var(--dock-success); border-color: color-mix(in srgb, var(--dock-success) 45%, transparent); }
+.nous-score-change.is-down { color: var(--dock-danger); border-color: color-mix(in srgb, var(--dock-danger) 45%, transparent); }
+.nous-score .nous-load-graph { height: 7.5rem; }
+.nous-score.is-negative .nous-load-canvas { color: var(--dock-danger); }
+.nous-score-tiles { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.05rem; }
+.nous-score-tiles > li { border-radius: var(--dock-radius-sm); }
+.nous-score-tiles > li.is-open { background: var(--dock-soft); }
+.nous-score-tile {
+  display: grid; grid-template-columns: minmax(0, 1fr) max-content 2.5rem; align-items: center; gap: 0.15rem 0.5rem; width: 100%;
+  padding: 0.28rem 0.35rem 0.3rem; border: 1px solid transparent; border-radius: var(--dock-radius-sm); background: none; color: inherit; font: inherit;
+  font-size: 0.75rem; text-align: left; cursor: pointer;
+}
+/* The bar is a thin line under its row, so it stays at every dock width. */
+.nous-score-tile .nous-load-bar { grid-column: 1 / -1; height: 0.2rem; }
+.nous-score-tile:hover, .nous-score-tile:focus-visible { border-color: var(--dock-border); background: var(--dock-soft); }
+.nous-score-tile .nous-load-part-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nous-score-tile .nous-load-part-value { font-weight: 600; }
+.nous-score-share { color: var(--dock-muted); font-size: 0.66rem; text-align: right; font-variant-numeric: tabular-nums; }
+.nous-load-bar.is-negative > span { background: linear-gradient(90deg, var(--dock-warning), var(--dock-danger)); }
+.nous-load-bar.is-positive > span { background: var(--dock-success); }
+.nous-load-part-value.is-negative { color: var(--dock-danger); }
+.nous-load-part-value.is-positive { color: var(--dock-success); }
+.nous-score-more { display: grid; gap: 0.3rem; padding: 0 0.35rem 0.45rem; }
+.nous-score-more > .nous-load-part-detail { margin: 0; }
+.nous-score-items { margin: 0; padding: 0.2rem 0 0; list-style: none; display: grid; gap: 0.35rem; max-height: min(45vh, 20rem); overflow-y: auto; }
+.nous-score-items li { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: 0.1rem 0.5rem; font-size: 0.72rem; }
+.nous-score-item-label { color: var(--dock-text); overflow-wrap: anywhere; }
+.nous-score-item-label small { color: var(--dock-muted); }
+.nous-score-items .nous-load-part-detail { grid-column: 1 / -1; }
+
+@container (min-width: 36rem) {
+  .nous-load-main { grid-template-columns: minmax(0, 1fr) 11rem; align-items: center; }
+  .nous-score .nous-load-graph { height: 9.5rem; }
+  .nous-load-graph { height: 12rem; }
+  .nous-load-averages { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) { .nous-load-bar > span { transition: none; } }
+
+/* Token usage inside Quotas (plan clipboard:qH5emwVaV6yO). */
+.nous-token-usage { margin-top: 1rem; }
+.nous-token-usage h3, .nous-token-usage h4 { margin: 0.75rem 0 0.35rem; }
+.nous-token-risers { list-style: none; margin: 0; padding: 0; }
+.nous-token-risers li { display: flex; justify-content: space-between; gap: 1rem; padding: 0.15rem 0; }
+.nous-token-risers li span:first-child { min-width: 0; overflow-wrap: anywhere; }
+
+/* Token usage rows: name and value on one line, the bar and the detail full width below, so nothing wraps into the bar (operator 5/11). */
+.nous-token-usage .nous-load-parts li { grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; }
+.nous-token-usage .nous-load-part-label { grid-column: 1; min-width: 0; overflow-wrap: anywhere; }
+.nous-token-usage .nous-load-part-value { grid-column: 2; }
+.nous-token-usage .nous-load-bar { grid-column: 1 / -1; height: 0.32rem; margin: 0.1rem 0; }
+.nous-token-usage .nous-load-part-detail { grid-column: 1 / -1; }
+.nous-token-usage .nous-load-parts .nous-load-parts { grid-column: 1 / -1; margin: 0.15rem 0 0.2rem 0.8rem; padding-left: 0.5rem; border-left: 1px solid var(--dock-border, currentColor); gap: 0.25rem; }

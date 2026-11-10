@@ -4,6 +4,7 @@ import { SpaceRuntimeProvider } from "../src/runtime/SpaceRuntime.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { VoiceInputProvider, useVoiceInput } from "../src/features/voice-input/VoiceInputProvider.js";
 import { noteVoiceRelayClose, resetVoiceProviderAvailability } from "../src/voice-relay-close.js";
+import { browserSpeechLang } from "../src/features/voice-input/browser-speech.js";
 
 const realtime = vi.hoisted(() => ({ open: vi.fn() }));
 
@@ -18,6 +19,7 @@ const mockHandle = (): MockHandle => ({ startCapture: vi.fn(async () => {}), com
 function useGoogleVoice() {
   window.localStorage.setItem("space.voiceTranscription.settings", JSON.stringify({
     enabled: true,
+    engine: "relay",
     provider: "google",
     model: "gemini-3.8-live",
     voice: "Aoede",
@@ -54,6 +56,7 @@ describe("VoiceInputProvider", () => {
     window.localStorage.clear();
     window.localStorage.setItem("space.voiceTranscription.settings", JSON.stringify({
       enabled: true,
+      engine: "relay",
       provider: "openai",
       model: "gpt-transcribe",
       voice: "alloy",
@@ -322,7 +325,7 @@ describe("VoiceInputProvider", () => {
   });
 
   it("does not pre-warm when the prewarm preference is disabled", async () => {
-    window.localStorage.setItem("space.voiceTranscription.settings", JSON.stringify({ prewarm: false }));
+    window.localStorage.setItem("space.voiceTranscription.settings", JSON.stringify({ engine: "relay", prewarm: false }));
     realtime.open.mockResolvedValue(mockHandle());
 
     render(
@@ -376,5 +379,103 @@ describe("VoiceInputProvider", () => {
       if (originalVisibilityState) Object.defineProperty(document, "visibilityState", originalVisibilityState);
       else Reflect.deleteProperty(document, "visibilityState");
     }
+  });
+});
+
+describe("VoiceInputProvider with the browser's free speech recognition (operator 31/10)", () => {
+  class FakeRecognition {
+    static last: FakeRecognition | null = null;
+    lang = "";
+    continuous = false;
+    interimResults = false;
+    onresult: ((event: { results: Array<Array<{ transcript: string }> & { isFinal: boolean }> }) => void) | null = null;
+    onerror: ((event: { error: string }) => void) | null = null;
+    onend: (() => void) | null = null;
+    start = vi.fn();
+    stop = vi.fn(() => this.onend?.());
+    abort = vi.fn();
+    constructor() { FakeRecognition.last = this; }
+    hear(...parts: Array<[string, boolean]>) {
+      this.onresult?.({ results: parts.map(([transcript, isFinal]) => Object.assign([{ transcript }], { isFinal })) });
+    }
+  }
+  const renderHarness = (onA = vi.fn()) => {
+    render(
+      <SpaceRuntimeProvider runtime={liveRuntime}>
+        <VoiceInputProvider><Harness onA={onA} onB={vi.fn()} /></VoiceInputProvider>
+      </SpaceRuntimeProvider>
+    );
+    return onA;
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem("space.voiceTranscription.settings", JSON.stringify({ enabled: true, language: "el" }));
+    realtime.open.mockReset();
+    FakeRecognition.last = null;
+    // No provider key on this server: the free engine needs none.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      enabled: false, statusReason: "No voice transcription provider credentials configured on Space.", defaultModel: "gpt-live-1",
+      modelOptions: ["gpt-live-1"], defaultLanguage: "auto", languageOptions: ["auto", "el", "en"], defaultDelay: "low",
+      delayOptions: ["low"], maxBytes: 26214400, maxDurationMs: 300000, updatedAt: "2026-10-31T00:00:00.000Z"
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("is the default: dictates Greek in the browser, sends on stop and never opens the paid relay", async () => {
+    vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+    const onA = renderHarness();
+    fireEvent.click(screen.getByRole("button", { name: "Ensure settings" }));
+    await waitFor(() => expect(screen.getByTestId("settings-state").textContent).toBe("enabled"));
+    fireEvent.click(screen.getByRole("button", { name: "Start A" }));
+    await waitFor(() => expect(screen.getByTestId("voice-state").textContent).toBe("a:recording"));
+    const recognition = FakeRecognition.last!;
+    expect(recognition).toMatchObject({ lang: "el-GR", continuous: true, interimResults: true });
+    expect(recognition.start).toHaveBeenCalledOnce();
+
+    act(() => recognition.hear(["Γεια σου", true], [" Nous", false]));
+    expect(screen.getByTestId("voice-preview").textContent).toBe("Γεια σου Nous");
+    // Starting again drops the first take (cancel) and listens afresh.
+    fireEvent.click(screen.getByRole("button", { name: "Start A" }));
+    await waitFor(() => expect(FakeRecognition.last).not.toBe(recognition));
+    expect(recognition.abort).toHaveBeenCalledOnce();
+
+    const second = FakeRecognition.last!;
+    act(() => second.hear(["open the plan", true]));
+    act(() => second.stop());
+    await waitFor(() => expect(onA).toHaveBeenCalledWith("open the plan"));
+    expect(realtime.open).not.toHaveBeenCalled();
+  });
+
+  it("maps Auto to Greek when the browser lists Greek, else English", () => {
+    expect(browserSpeechLang("auto", ["en-US", "el"])).toBe("el-GR");
+    expect(browserSpeechLang("auto", ["en-GB"])).toBe("en-US");
+    expect(browserSpeechLang("en", ["el-GR"])).toBe("en-US");
+  });
+
+  it("explains a browser without speech recognition instead of falling back to a paid provider", async () => {
+    renderHarness();
+    fireEvent.click(screen.getByRole("button", { name: "Ensure settings" }));
+    await waitFor(() => expect(screen.getByTestId("settings-state").textContent).not.toBe("loading"));
+    fireEvent.click(screen.getByRole("button", { name: "Start A" }));
+    await waitFor(() => expect(screen.getByTestId("voice-error").textContent).toContain("This browser has no speech recognition"));
+    expect(screen.getByTestId("voice-state").textContent).toBe("a:idle");
+    expect(realtime.open).not.toHaveBeenCalled();
+  });
+
+  it("names a denied microphone and ignores a take with no speech", async () => {
+    vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+    const onA = renderHarness();
+    fireEvent.click(screen.getByRole("button", { name: "Start A" }));
+    await waitFor(() => expect(screen.getByTestId("voice-state").textContent).toBe("a:recording"));
+    act(() => { FakeRecognition.last!.onerror?.({ error: "no-speech" }); FakeRecognition.last!.onend?.(); });
+    await waitFor(() => expect(screen.getByTestId("voice-state").textContent).toBe("none:idle"));
+    expect(onA).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Start A" }));
+    await waitFor(() => expect(screen.getByTestId("voice-state").textContent).toBe("a:recording"));
+    act(() => { FakeRecognition.last!.onerror?.({ error: "not-allowed" }); FakeRecognition.last!.onend?.(); });
+    await waitFor(() => expect(screen.getByTestId("voice-error").textContent).toBe("Microphone permission was not granted."));
+    expect(onA).not.toHaveBeenCalled();
   });
 });

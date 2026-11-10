@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { atLeastOneField } from "./update-rules.js";
 
 export const dotIdSchema = z.string().regex(/^dot:[a-f0-9]{32}$/);
 export const dotAppearanceSchema = z.object({
@@ -31,7 +32,7 @@ export const dotProfileSchema = z.object({
   createdAt: z.iso.datetime(), updatedAt: z.iso.datetime()
 }).strict();
 export const updateDotProfileSchema = dotProfileSchema.pick({ name: true, appearance: true, preferences: true, workLimits: true })
-  .partial().strict().refine(input => Object.keys(input).length > 0, "Provide a profile change.");
+  .partial().strict().refine(...atLeastOneField("Provide a profile change."));
 export const dotResourceSchema = z.enum(["sessions", "tasks", "goals", "memory", "schedules", "receipts", "activity"]);
 export type DotProfile = z.infer<typeof dotProfileSchema>;
 export type DotPermissionMode = z.infer<typeof dotPermissionModeSchema>;

@@ -1,10 +1,13 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { isAgentFileArtifact, type Artifact, type Room } from "@space/contracts";
 import {
+  BookOpen,
   CornerLeftUp,
   Download,
   Eye,
   File,
+  FileCode,
   FileText,
   FileVideo,
   Filter,
@@ -25,9 +28,13 @@ import {
 } from "../ui-theme/app-icons.js";
 import { api } from "../../api.js";
 import { agentFileName } from "./agent-files-api.js";
+import { SignatureRequests, SignButton } from "./SignatureRequests.js";
 import { ARTIFACTS_UPDATED_EVENT, dispatchArtifactsUpdated, isArtifactsUpdatedDetail } from "../../artifact-events.js";
 import { setArtifactDragData } from "../artifacts/artifact-drag.js";
 import { FileInfoDialog } from "../file-info/FileInfoDialog.js";
+import { ChatMarkdown } from "../agent-pane/ChatMarkdown.js";
+import { useNousUiState } from "../nous/nous-ui-state.js";
+import { useUiText } from "../ui-language/ui-language.js";
 import {
   DATE_TIME_SETTINGS_UPDATED_EVENT,
   formatAppDateTime
@@ -113,19 +120,6 @@ const PAGE_STEP = 40;
 
 function bytesToHex(bytes: ArrayBuffer): string {
   return Array.from(new Uint8Array(bytes), (value) => value.toString(16).padStart(2, "0")).join("");
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const dataUrl = reader.result as string;
-      const base64 = dataUrl.split(",")[1] ?? "";
-      resolve(base64);
-    };
-    reader.onerror = () => reject(new Error("Failed to encode file for download"));
-    reader.readAsDataURL(blob);
-  });
 }
 
 function windowsAgentFileSavePicker(entry: AgentFileEntry): AgentFileSavePicker | null {
@@ -575,6 +569,14 @@ function kindIcon(kind: AgentFilePreviewKind) {
 
 /** Downloads an Agent File after checking its size, type and SHA-256 against the record. */
 async function saveAgentFile(entry: AgentFileEntry): Promise<void> {
+  const spaceNative = (window as unknown as { SpaceNative?: { downloadUrl?: (url: string, name: string, mime: string) => boolean } }).SpaceNative;
+  if (typeof spaceNative?.downloadUrl === "function") {
+    // The native downloader supplies the session cookie. File bytes never cross the JavaScript bridge.
+    if (!spaceNative.downloadUrl(api.agentFileDownloadUrl(entry.artifact.id), entry.filename, entry.artifact.mimeType)) {
+      throw new Error("The Android download could not be started. Please try again.");
+    }
+    return;
+  }
   const savePicker = windowsAgentFileSavePicker(entry);
   let fileHandle: AgentFileHandle | null = null;
   if (savePicker) {
@@ -627,13 +629,6 @@ async function saveAgentFile(entry: AgentFileEntry): Promise<void> {
     return;
   }
 
-  const spaceNative = (window as unknown as { SpaceNative?: { saveFile?: (b64: string, name: string, mime: string) => boolean } }).SpaceNative;
-  if (typeof spaceNative?.saveFile === "function") {
-    const base64 = await blobToBase64(blob);
-    const saved = spaceNative.saveFile(base64, entry.filename, entry.artifact.mimeType);
-    if (saved) return;
-  }
-
   const objectUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = objectUrl;
@@ -650,35 +645,8 @@ export function AgentFilePreviewDialog({ artifact, paneTitles, onClose }: {
   onClose: () => void;
 }) {
   const entry = useMemo(() => agentFileEntry(artifact, paneTitles), [artifact, paneTitles]);
-  const [textPreview, setTextPreview] = useState<string | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
-  const previewUrl = api.agentFilePreviewUrl(entry.artifact.id);
-
-  useEffect(() => {
-    setTextPreview(null);
-    setPreviewError(null);
-    if (entry.previewKind !== "TEXT") return;
-    let live = true;
-    fetch(previewUrl, { credentials: "same-origin", headers: { accept: "text/plain" } })
-      .then((response) => {
-        if (!response.ok) throw new Error(`Preview failed (${response.status})`);
-        return response.text();
-      })
-      .then(
-        (content) => { if (live) setTextPreview(content); },
-        (previewLoadError: unknown) => { if (live) setPreviewError(previewLoadError instanceof Error ? previewLoadError.message : "Preview failed"); }
-      );
-    return () => { live = false; };
-  }, [entry.previewKind, previewUrl]);
-
-  // The dock's own Escape handler stops the event first; outside the dock this one closes the preview.
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   async function download() {
     setDownloading(true);
@@ -692,25 +660,105 @@ export function AgentFilePreviewDialog({ artifact, paneTitles, onClose }: {
     }
   }
 
+  return (
+    <FilePreviewDialog
+      filename={entry.filename}
+      meta={`${entry.provenance} · ${entry.timestamp} · ${entry.size}`}
+      kind={entry.previewKind}
+      url={api.agentFilePreviewUrl(entry.artifact.id)}
+      closeLabel="Close Agent File preview"
+      notice={downloadError ? <DockNotice onDismiss={() => setDownloadError(null)}>{downloadError}</DockNotice> : null}
+      actions={<>
+        {entry.previewKind === "PDF" ? <SignButton artifactId={entry.artifact.id} filename={entry.filename} /> : null}
+        <DockIconButton
+          label={`Download ${entry.filename}`}
+          title={`Download and verify ${entry.filename}`}
+          icon={Download}
+          busy={downloading}
+          disabled={downloading}
+          onClick={() => void download()}
+        />
+      </>}
+      onClose={onClose}
+    />
+  );
+}
+
+export type FilePreviewKind = AgentFilePreviewKind;
+
+/** Text files the Reading view lays out as a document (operator nous_msg:c70b18e1); code, logs and data stay raw. */
+const READABLE_TEXT = /\.(?:md|markdown|txt)$/i;
+const isTextView = (value: unknown): value is "raw" | "reading" => value === "raw" || value === "reading";
+
+/** One file preview for Agent Files and Nous's attachments: `url` serves the file (TEXT: its text) for `kind`. */
+export function FilePreviewDialog({ filename, meta, kind, url, closeLabel, actions, notice, onClose }: {
+  filename: string;
+  meta: string;
+  kind: FilePreviewKind;
+  url: string;
+  closeLabel: string;
+  actions?: ReactNode;
+  notice?: ReactNode;
+  onClose: () => void;
+}) {
+  const [fullscreen, setFullscreen] = useState(false);
+  const [textPreview, setTextPreview] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  // Remembered on this device for every later preview, Agent Files and Nous alike, until switched back.
+  const [textView, setTextView] = useNousUiState<"raw" | "reading">("filePreviewTextView", "raw", isTextView);
+  const t = useUiText();
+  const readable = kind === "TEXT" && READABLE_TEXT.test(filename);
+  const reading = readable && textView === "reading";
+  const returnFocus = useRef(document.activeElement as HTMLElement | null);
+
+  useEffect(() => () => {
+    if (returnFocus.current?.isConnected) returnFocus.current.focus({ preventScroll: true });
+  }, []);
+
+  useEffect(() => {
+    setTextPreview(null);
+    setPreviewError(null);
+    if (kind !== "TEXT") return;
+    let live = true;
+    fetch(url, { credentials: "same-origin", headers: { accept: "text/plain" } })
+      .then((response) => {
+        if (!response.ok) throw new Error(`Preview failed (${response.status})`);
+        return response.text();
+      })
+      .then(
+        (content) => { if (live) setTextPreview(content); },
+        (previewLoadError: unknown) => { if (live) setPreviewError(previewLoadError instanceof Error ? previewLoadError.message : "Preview failed"); }
+      );
+    return () => { live = false; };
+  }, [kind, url]);
+
+  // The dock's own Escape handler stops the event first; outside the dock this one closes the preview.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   function previewBody() {
-    if (entry.previewKind === "IMAGE") {
-      return <img src={previewUrl} alt={`Preview of ${entry.filename}`} />;
+    if (kind === "IMAGE") {
+      return <img src={url} alt={`Preview of ${filename}`} />;
     }
-    if (entry.previewKind === "VIDEO") {
-      return <video src={previewUrl} controls playsInline preload="metadata" aria-label={`Preview of ${entry.filename}`} />;
+    if (kind === "VIDEO") {
+      return <video src={url} controls playsInline preload="metadata" aria-label={`Preview of ${filename}`} />;
     }
-    if (entry.previewKind === "AUDIO") {
-      return <audio src={previewUrl} controls preload="metadata" aria-label={`Preview of ${entry.filename}`} />;
+    if (kind === "AUDIO") {
+      return <audio src={url} controls preload="metadata" aria-label={`Preview of ${filename}`} />;
     }
-    if (entry.previewKind === "PDF") {
-      return <iframe src={previewUrl} title={`Preview of ${entry.filename}`} />;
+    if (kind === "PDF") {
+      return <iframe src={url} title={`Preview of ${filename}`} />;
     }
-    if (entry.previewKind === "DOCX") {
-      return <iframe src={previewUrl} title={`Preview of ${entry.filename}`} sandbox="" />;
+    if (kind === "DOCX") {
+      return <iframe src={url} title={`Preview of ${filename}`} sandbox="" />;
     }
-    if (entry.previewKind === "TEXT") {
+    if (kind === "TEXT") {
       if (previewError) return <div className="agent-files-preview-note is-error" role="alert">{previewError}</div>;
       if (textPreview === null) return <div className="agent-files-preview-note" role="status">Loading preview…</div>;
+      if (reading) return <article className="agent-files-reading-view"><ChatMarkdown content={textPreview} /></article>;
       return <pre className="agent-files-text-preview">{textPreview}</pre>;
     }
     return (
@@ -724,29 +772,37 @@ export function AgentFilePreviewDialog({ artifact, paneTitles, onClose }: {
 
   return (
     <div
-      className="attachment-modal agent-files-modal"
+      className={`attachment-modal agent-files-modal${fullscreen ? " is-fullscreen" : ""}`}
       role="dialog"
       aria-modal="true"
-      aria-label={`Preview ${entry.filename}`}
+      aria-label={`Preview ${filename}`}
       onClick={onClose}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        if (event.key === "Escape") { event.preventDefault(); onClose(); }
+        if (event.key !== "Tab") return;
+        const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), a[href], iframe, video[controls], audio[controls]')];
+        const first = controls[0], last = controls.at(-1);
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }}
     >
-      <div className="attachment-modal-body agent-files-modal-body is-preview" onClick={(event) => event.stopPropagation()}>
+      <div className={`attachment-modal-body agent-files-modal-body is-preview${fullscreen ? " is-fullscreen" : ""}`} onClick={(event) => event.stopPropagation()}>
         <div className="agent-files-modal-head">
           <div className="agent-files-modal-heading">
-            <span className="dock-kit-card-title" data-sensitive-masked="manual" title={entry.filename}>{entry.filename}</span>
-            <span className="dock-kit-meta-text">{entry.provenance} · {entry.timestamp} · {entry.size}</span>
-            {downloadError ? <DockNotice onDismiss={() => setDownloadError(null)}>{downloadError}</DockNotice> : null}
+            <span className="dock-kit-card-title" data-sensitive-masked="manual" title={filename}>{filename}</span>
+            <span className="dock-kit-meta-text">{meta}</span>
+            {notice}
           </div>
           <div className="agent-files-modal-actions">
-            <DockIconButton
-              label={`Download ${entry.filename}`}
-              title={`Download and verify ${entry.filename}`}
-              icon={Download}
-              busy={downloading}
-              disabled={downloading}
-              onClick={() => void download()}
-            />
-            <DockIconButton label="Close Agent File preview" icon={X} autoFocus onClick={onClose} />
+            {readable ? <DockIconButton
+              label={t(reading ? "Show original text" : "Show reading view")}
+              icon={reading ? FileCode : BookOpen}
+              onClick={() => setTextView(reading ? "raw" : "reading")}
+            /> : null}
+            {actions}
+            <DockFullscreenButton name="file preview" active={fullscreen} onToggle={() => setFullscreen((current) => !current)} />
+            <DockIconButton label={closeLabel} icon={X} autoFocus onClick={onClose} />
           </div>
         </div>
         <div className="agent-files-modal-preview">{previewBody()}</div>
@@ -1686,6 +1742,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
         {error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null}
         {loadError && entries.length ? <DockNotice onDismiss={() => setLoadError(null)}>{loadError}</DockNotice> : null}
         {uploading ? <DockNotice tone="info">Uploading files…</DockNotice> : null}
+        <SignatureRequests refreshKey={refreshKey} />
 
         {!activeRoom ? (
           <DockState kind="empty" icon={AgentFiles} title="Select a room to view its Agent Files." />
@@ -1841,7 +1898,15 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
           onChange={(event) => void uploadFiles(Array.from(event.target.files ?? []))}
         />
 
-        {selected ? <AgentFilePreviewDialog artifact={selected.artifact} paneTitles={paneTitles} onClose={closePreview} /> : null}
+        {selected ? createPortal(
+          <div className="dock-kit-scope"
+            data-ui-theme={document.querySelector<HTMLElement>(".space-shell")?.dataset.uiTheme ?? document.body.dataset.uiTheme}
+            data-interface-theme={document.documentElement.dataset.interfaceTheme}
+            data-room-theme={document.querySelector<HTMLElement>(".space-shell")?.dataset.roomTheme ?? document.body.dataset.roomTheme}
+            data-color-mode={document.querySelector<HTMLElement>(".space-shell")?.dataset.colorMode ?? document.body.dataset.colorMode}>
+            <AgentFilePreviewDialog artifact={selected.artifact} paneTitles={paneTitles} onClose={closePreview} />
+          </div>, document.body
+        ) : null}
 
         {detailsEntry ? <FileInfoDialog artifactId={detailsEntry.artifact.id} filename={detailsEntry.filename} onClose={() => setDetailsEntry(null)} /> : null}
 

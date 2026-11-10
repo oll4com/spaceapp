@@ -1,6 +1,7 @@
+import { modelUnavailable } from "../model-unavailable.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
-  NOUS_PANE_BOARD_DETAIL_MAX, NOUS_PANE_BOARD_LINE_MAX, nousPaneSummaryModelAnswerSchema,
+  heldForNous, NOUS_PANE_BOARD_DETAIL_MAX, NOUS_PANE_BOARD_LINE_MAX, nousPaneSummaryModelAnswerSchema,
   type ClipboardItem, type NousDecision, type NousPaneBoard, type NousPaneBoardPane, type NousPaneBoardSettings, type NousPaneSummary, type NousPaneWaitsOn,
   type Pane, type Room, type SpaceNotification, type TaskItem
 } from "@space/contracts";
@@ -34,9 +35,17 @@ export interface PaneBoardSnapshot {
   tasks?: TaskItem[];
   /** Per copilot pane, the work waiting on the copilot itself: approved posts due, pending briefs, queued postings or mails (Ask Last step 8). */
   copilotWork?: Record<string, number>;
+  /** Operator 31/10: per brief-taking pane idle at its prompt with briefs waiting, "N briefs waiting since HH:MM UTC" (copilot-brief-watch.ts). */
+  briefsWaiting?: Record<string, string>;
+  /** Nous on with "May send to third parties" (coversApproval): copilot reviews and Mail campaigns wait on Nous, never on the operator. */
+  nousApprovals?: boolean;
 }
+/** A copilot item "May send to third parties" puts in Nous's hands: the same kinds `isNousApproval` holds as cards (operator 2/11 15:08 BKK). */
+export const nousApprovalItem = (item: Pick<NousCopilotItem, "copilot" | "kind">) =>
+  (item.kind === "REVIEW" && ["MAIL", "MARKETING", "FREELANCE", "JOB"].includes(item.copilot)) || (item.copilot === "MAIL" && (item.kind === "CAMPAIGN" || item.kind === "CAMPAIGN_PAUSED"));
 
-export type PaneSummaryRunner = (input: { model: string; prompt: string }, signal: AbortSignal) => Promise<string>;
+/** traceId: one per run, on the worker's worker.socket_request line and on this run's failure log (OBS-006). */
+export type PaneSummaryRunner = (input: { model: string; prompt: string; traceId?: string }, signal: AbortSignal) => Promise<string>;
 
 export interface PaneBoardDeps {
   repository: NousPaneSummariesRepository;
@@ -75,6 +84,8 @@ export interface BoardPaneInput {
   notifications: SpaceNotification[]; decisions: NousDecision[]; copilotItems: NousCopilotItem[];
   /** Work waiting on the copilot itself (0 for other panes). */
   waitingWork: number;
+  /** "N briefs waiting since HH:MM UTC" while the pane sits idle at its prompt with briefs its copilot did not start (31/10). */
+  briefsWaiting?: string | null;
 }
 
 /** The owner's panes in board order: rooms by their order, panes as the room lists them; agents' proof rooms left out. */
@@ -89,16 +100,19 @@ export function boardPanes(snapshot: PaneBoardSnapshot, options: { showClosed: b
   const copilotPane = (item: NousCopilotItem) => item.paneId ?? firstOfMode.get(COPILOT_MODES[item.copilot] ?? "") ?? null;
   return panes.map(({ room, pane, sample }) => ({
     room, pane,
-    state: pane.isClosed ? "closed" : sample.activity[pane.id] ?? "idle",
+    // R11-5: a CLI whose model shows unavailable is not "working", whatever its activity reads.
+    state: pane.isClosed ? "closed" : modelUnavailable(pane.id) ? "model unavailable" : sample.activity[pane.id] ?? "idle",
     model: sample.details[pane.id]?.modelId ?? pane.modelId ?? null,
     report: reports.get(pane.id) ?? null,
     plan: snapshot.plans.find((plan) => plan.paneId === pane.id) ?? null,
     check: checks.get(pane.id) ?? null,
     // Only what waits for the operator: INFO notices (new mail, a learned rule) stay off the board (operator request 2026-10-21).
-    notifications: snapshot.notifications.filter((item) => item.paneId === pane.id && live(item) && item.severity !== "INFO"),
+    // A card held for Nous waits on Nous, not on the operator (operator 2/11 15:08 BKK).
+    notifications: snapshot.notifications.filter((item) => item.paneId === pane.id && live(item) && item.severity !== "INFO" && !heldForNous(item)),
     decisions: snapshot.decisions.filter((decision) => decision.status === "OPEN" && decision.refs.paneId === pane.id),
-    copilotItems: snapshot.copilotItems.filter((item) => copilotPane(item) === pane.id),
-    waitingWork: snapshot.copilotWork?.[pane.id] ?? 0
+    copilotItems: snapshot.copilotItems.filter((item) => copilotPane(item) === pane.id && !(snapshot.nousApprovals && nousApprovalItem(item))),
+    waitingWork: snapshot.copilotWork?.[pane.id] ?? 0,
+    briefsWaiting: snapshot.briefsWaiting?.[pane.id] ?? null
   }));
 }
 
@@ -116,7 +130,7 @@ export function paneFingerprint(input: BoardPaneInput, lastModel: NousPaneSummar
     input.copilotItems.map((item) => `${item.copilot}:${item.kind}:${item.id}`).sort(),
     input.plan ? [input.plan.id, input.plan.progressPercentage, nextPlanStep(input.plan)] : null,
     input.check ? [input.check.verdict, input.check.note, input.check.nextCheckAt] : null,
-    input.waitingWork
+    input.waitingWork, input.briefsWaiting ?? null
   ];
   return { fingerprint: createHash("sha1").update(JSON.stringify(data)).digest("hex").slice(0, 16), reportId };
 }
@@ -139,13 +153,21 @@ function keptOpenBy(input: Pick<BoardPaneInput, "pane" | "state">, tasks: TaskIt
   const task = tasks.find((entry) => entry.paneId === input.pane.id && entry.schedule);
   return task ? { id: task.id, title: clip(task.title, 120) } : null;
 }
-const STATE_LINES: Record<string, string> = { working: "Working", waiting: "Waiting for input", done: "Finished its turn", idle: "Idle", closed: "Closed" };
+const STATE_LINES: Record<string, string> = { working: "Working", waiting: "Waiting for input", done: "Finished its turn", idle: "Idle", closed: "Closed",
+  "model unavailable": "Model unavailable (gateway)" };
 
 /**
  * Ask Last step 8 (27/10 22:35 BKK: a Marketing pane's line said "waiting for approval" 3 hours after the posts were approved, from the
  * agent's last report): work waiting on the copilot itself, with nothing waiting for the operator, waits on Nothing and the line names it.
  */
 export function withCopilotWork<T extends Pick<NousPaneSummary, "line" | "waitsOn" | "needsOperator" | "until">>(input: BoardPaneInput, summary: T): T {
+  // R11-5: the line says the model is unavailable instead of whatever the last report or summary said it was doing.
+  if (input.state === "model unavailable") {
+    const model = modelUnavailable(input.pane.id)?.model;
+    return { ...summary, waitsOn: "NONE", needsOperator: false, until: null, line: clip(`Model unavailable (gateway)${model ? `: ${model}` : ""}; its work waits`, NOUS_PANE_BOARD_LINE_MAX) };
+  }
+  // Operator 31/10 (Alex/Emma idle 7 h while briefs waited): never "working" or a stale report; Nous gets it going.
+  if (input.briefsWaiting) return { ...summary, waitsOn: "NOUS", needsOperator: false, until: null, line: clip(`${input.briefsWaiting}, idle at its prompt`, NOUS_PANE_BOARD_LINE_MAX) };
   const operatorWaits = input.notifications.some((item) => item.severity !== "INFO") || input.decisions.length > 0 || input.copilotItems.length > 0
     || input.check?.verdict === "WAITING_OPERATOR";
   if (!input.waitingWork || operatorWaits) return summary;
@@ -316,13 +338,14 @@ export function createPaneBoard(deps: PaneBoardDeps) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), RUN_TIMEOUT_MS);
       options.signal?.addEventListener("abort", () => controller.abort(), { once: true });
+      const traceId = `trace:${randomUUID().replace(/-/g, "").slice(0, 24)}`;
       let text: string;
       try {
-        text = await deps.run!({ model: settings.model, prompt }, controller.signal);
+        text = await deps.run!({ model: settings.model, prompt, traceId }, controller.signal);
       } catch (error) {
         miss(owner);
         const message = error instanceof Error ? error.message : String(error);
-        deps.log?.warn({ owner, panes: batch.length, err: message }, "Pane board summary run failed; Space's own lines stand in.");
+        deps.log?.warn({ owner, traceId, panes: batch.length, err: message }, "Pane board summary run failed; Space's own lines stand in.");
         await storeFallbacks(owner, batch, lastAny);
         return { called: true, summarized: 0, paused: "UNAVAILABLE", error: message };
       } finally {

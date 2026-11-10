@@ -8,8 +8,11 @@ const secret = "test-secret-with-enough-length";
 const apps: Array<Awaited<ReturnType<typeof createApp>>> = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 
+// Never the host's sudo update-all or its detection: the route check below calls every action's routes (cli-update too).
+const cliUpdateAllRunner = { detect: () => Promise.reject(new Error("no CLI detection in tests")), updateAll: () => Promise.reject(new Error("no CLI update in tests")) };
+const serverOpsRunner = { run: () => Promise.reject(new Error("no host operations in tests")), cleanWorktrees: () => Promise.reject(new Error("no worktree cleanup in tests")) };
 async function app(store = new InMemorySpaceStore()) {
-  const created = await createApp({ store, auth: { sessionSecret: secret, devLogin: true, secureCookies: false } });
+  const created = await createApp({ store, auth: { sessionSecret: secret, devLogin: true, secureCookies: false }, cliUpdateAllRunner, serverOpsRunner });
   apps.push(created);
   return created;
 }
@@ -24,7 +27,17 @@ describe("broker-scoped agent sessions (hardening step 4)", () => {
     const api = await app();
     const headers = brokerSession("ADMIN_ACTION:user-appearance-get");
     expect((await api.inject({ method: "GET", url: "/api/auth/csrf", headers })).statusCode).toBe(200);
-    expect((await api.inject({ method: "GET", url: "/api/user-settings", headers })).statusCode).toBe(200);
+    const read = await api.inject({ method: "GET", url: "/api/user-settings", headers });
+    expect(read.statusCode).toBe(200);
+    // Operator 1/11 23:09 BKK: his language is set for him on his order (like the theme) and an admin action reads his real choice;
+    // a proof's browser still reads the UI in English (plan clipboard:32etNsBgtbI- step 3), so its fixed steps find their controls.
+    expect(read.json().uiLanguage).toBeUndefined();
+    expect((await api.inject({ method: "PATCH", url: "/api/user-settings", headers: brokerSession("ADMIN_ACTION:user-appearance"), payload: { uiLanguage: "el" } })).statusCode).toBe(200);
+    expect((await api.inject({ method: "GET", url: "/api/user-settings", headers })).json().uiLanguage).toBe("el");
+    expect((await api.inject({ method: "GET", url: "/api/user-settings", headers: brokerSession("UI_PROOF") })).json().uiLanguage).toBe("en");
+    // Operator 2/11 09:51 BKK: the agents' language is his too, and a proof reads it as it is (its content is what a proof checks).
+    expect((await api.inject({ method: "PATCH", url: "/api/user-settings", headers: brokerSession("ADMIN_ACTION:user-appearance"), payload: { uiLanguage: "en", agentLanguage: "el" } })).statusCode).toBe(200);
+    expect((await api.inject({ method: "GET", url: "/api/user-settings", headers: brokerSession("UI_PROOF") })).json()).toMatchObject({ uiLanguage: "en", agentLanguage: "el" });
     for (const [method, url] of [["PATCH", "/api/user-settings"], ["GET", "/api/rooms"], ["GET", "/api/admin/users"], ["POST", "/api/admin/releases/promote"]] as const) {
       const denied = await api.inject({ method, url, headers, payload: method === "GET" ? undefined : {} });
       expect(denied.statusCode, `${method} ${url}`).toBe(403);

@@ -578,3 +578,19 @@
   color: var(--room-muted, #a7a59e);
   line-height: 1.2;
 }
+
+/* Nous's Space provider: its routes in the Gateway's order (plan clipboard:52W5YTibb65k). */
+.nous-space-routes {
+  min-width: 0;
+  margin: 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.2rem;
+  color: var(--room-text, #f4efe5);
+  font-size: 0.72rem;
+}
+
+.nous-space-routes small {
+  color: var(--room-muted, #a7a59e);
+  overflow-wrap: anywhere;
+}

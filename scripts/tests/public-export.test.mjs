@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import test from "node:test";
 import {
   applyPublicOverlay,
@@ -11,6 +11,8 @@ import {
   documentLinkProblems,
   createPublicExport,
   isPublicExportPath,
+  runtimeScriptData,
+  runtimeScripts,
   publicRootPackage,
   publicRepositoryOwnedFiles,
   runCli,
@@ -131,10 +133,12 @@ test("public path policy exports application tests except the reviewed private-o
   // Third-party licence texts ship with the code that carries them (Claude review 1.1.7 F5).
   assert.equal(isPublicExportPath("THIRD_PARTY_LICENSES/google-material-symbols.txt"), true);
   assert.equal(isPublicExportPath("packages/runtime/tests/store.test.ts"), true);
-  assert.equal(isPublicExportPath("apps/api/tests/cli-runtimes.test.ts"), false);
+  assert.equal(isPublicExportPath("apps/api/tests/cli-runtimes-host.test.ts"), false);
   assert.equal(isPublicExportPath("apps/web/tests/public-deployment-config.test.ts"), false);
   assert.equal(isPublicExportPath("scripts/tests/private-ops.test.mjs"), false);
-  assert.equal(isPublicExportPath("packages/db/tests/new-feature-repository-postgres.test.ts"), false);
+  // *-postgres tests ship: public CI pulls the compose file's PostgreSQL image, and without it they skip.
+  assert.equal(isPublicExportPath("packages/db/tests/new-feature-repository-postgres.test.ts"), true);
+  assert.equal(isPublicExportPath("packages/db/tests/task-titles-postgres.integration.test.ts"), false);
   assert.equal(isPublicExportPath("apps/api/tests/postgres-free.test.ts"), true);
   assert.equal(isPublicExportPath("apps/api/tests/constant-time-token.test.ts"), true);
   assert.equal(isPublicExportPath("apps/api/tests/route-rate-limits.test.ts"), true);
@@ -157,6 +161,8 @@ test("public path policy exports application tests except the reviewed private-o
   assert.equal(isPublicExportPath("SUPPORT.md"), true);
   for (const path of [
     ".trivyignore",
+    ".gitleaks.toml",
+    ".gitleaksignore",
     "scripts/container-image-size-budget.mjs",
     "scripts/release-version.mjs",
     "scripts/tests/portable-backup-restore.test.mjs",
@@ -515,4 +521,44 @@ test("public code names no lab host (1.1.7 review snapshot: lab VM names in publ
   };
   for (const dir of ["deploy", "scripts", "packages", "apps", ".github"]) if (existsSync(join(root, dir))) await walk(join(root, dir));
   assert.deepEqual(offenders, []);
+});
+
+test("1.2.0 c4 public suite gaps: the worker preload ships, private imports and the launcher stay out, renamed alert keys follow their line", () => {
+  for (const path of ["scripts/test-support/worktree-source-loader.mjs", "scripts/test-support/worktree-source-hooks.mjs"]) assert.equal(isPublicExportPath(path), true, path);
+  assert.equal(sanitizePublicText(`"alert: vmn plesk" ${["VM", "100"].join("")} Plesk`), '"alert: public-host plesk" public-host Plesk');
+  assert.equal(sanitizePublicText("rfc822msgid%3Amc.x.send.b%40oll4.com&x"), "rfc822msgid%3Amc.x.send.b%40example.invalid&x");
+  const credits = applyPublicOverlay("apps/api/tests/nous-reset-credits.test.ts", [
+    'import { codexResetKey as scriptKey, codexResetView } from "../../../scripts/space-admin-action.mjs";',
+    "    expect(codexResetKey(a, b)).toBe(key);", "    expect(scriptKey(a, b)).toBe(key);", "    expect(codexResetView(used, now)).toMatchObject({});", ""].join("\n"));
+  assert.equal(credits, "    expect(codexResetKey(a, b)).toBe(key);\n");
+  assert.match(applyPublicOverlay("apps/worker/tests/support/child-process-env-scan.mjs",
+    '.concat(readdirSync(resolve(root, "packages")).map((pkg) => `packages/${pkg}/src`));'), /\.filter\(\(pkg\) => pkg !== "run-spaceapp"\)\.map\(/);
+});
+
+test("1.2.0 c9: every repository script a workspace's npm scripts run is exported", async () => {
+  const root = resolve(import.meta.dirname, "../..");
+  const manifests = ["package.json", ...["apps", "packages"].flatMap((dir) => readdirSync(join(root, dir)).map((name) => `${dir}/${name}/package.json`))];
+  const missing = [];
+  for (const manifest of manifests.filter((path) => existsSync(join(root, path)))) {
+    const commands = Object.values(JSON.parse(await readFile(join(root, manifest), "utf8")).scripts ?? {}).join("\n");
+    for (const [ref] of commands.matchAll(/(?:\.\.\/)*scripts\/[\w./-]+\.mjs/g)) {
+      const path = relative(root, resolve(root, manifest, "..", ref));
+      if (path.startsWith("scripts/") && !isPublicExportPath(path)) missing.push(`${manifest}: ${path}`);
+    }
+  }
+  assert.deepEqual(missing, []);
+});
+
+// 1.2.0 (operator 5/11, plan clipboard:NtXOwLkXVN1x): the export dropped space-progress, space-task and the Design, Video,
+// App Studio, media capture and copilot scripts that shipped code runs or tells panes to run.
+test("1.2.0: every script agent-bootstrap.ts tells panes to run, and every script the API and worker load, is exported with what it imports", () => {
+  const root = resolve(import.meta.dirname, "../..");
+  const scripts = runtimeScripts(root);
+  assert.ok(scripts.includes("scripts/space-progress.mjs") && scripts.includes("scripts/space-design-render.mjs"), "the scan found the known scripts");
+  // Each data folder's own file, and every file the tree holds under it.
+  const data = [...runtimeScriptData].flatMap(([dir, file]) => [`${dir}/${file}`, ...(existsSync(join(root, dir))
+    ? readdirSync(join(root, dir), { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile())
+      .map((entry) => relative(root, join(entry.parentPath, entry.name)))
+    : [])]);
+  assert.deepEqual([...scripts, ...data].filter((path) => !isPublicExportPath(path)), []);
 });

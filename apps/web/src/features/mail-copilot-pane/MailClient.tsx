@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { MAIL_SYSTEM_LABELS, mailCopilotConsentUrl, type MailAccountSummary, type MailComposeInput, type MailMessage, type MailThreadAction, type MailThreadSummary } from "@space/contracts";
+import { MAIL_SYSTEM_LABELS, mailCopilotConsentUrl, type MailAccountSummary, type MailActionLogEntry, type MailComposeInput, type MailMessage, type MailThreadAction, type MailThreadLabel, type MailThreadLabels, type MailThreadSummary } from "@space/contracts";
 import { api } from "../../api.js";
 // The icon pack has no reply/forward glyphs: Undo2 reads as reply, ChevronRight as forward, Mail as the inbox.
 import { Archive, ArrowLeft, Bot, Check, ChevronDown, ChevronRight, ChevronUp, Folder, Mail, Paperclip, Pencil, RefreshCw, Search, Send, Star, Trash2, Undo2, X } from "../ui-theme/app-icons.js";
 import { useCopilotLayout } from "../copilot-kit/copilot-layout.js";
 import type { MailboxState } from "./useMailbox.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
+import { formatUserTime } from "../date-time-settings/date-time-settings.js";
 
 const SYSTEM_LABEL_ICONS: Partial<Record<string, typeof Mail>> = { INBOX: Mail, STARRED: Star, SENT: Send, DRAFT: Pencil, TRASH: Trash2, ALL: Archive };
 const ACCOUNT_COLORS = ["#6db7aa", "#8fb8f0", "#f0c36b", "#d49cf0", "#f08a8a", "#9adf9a"];
@@ -22,6 +24,13 @@ export function mailTime(iso: string | null, now = Date.now()): string {
   const days = (now - at.getTime()) / 86_400_000;
   if (days < 7) return at.toLocaleDateString([], { weekday: "short" });
   return at.toLocaleDateString([], { month: "short", day: "numeric", ...(at.getFullYear() !== new Date(now).getFullYear() ? { year: "numeric" } : {}) });
+}
+
+/** Who put a label on or took it off, and where Space saw it (the thread's "Label history"). */
+export function labelChangeBy(row: Pick<MailActionLogEntry, "actor" | "source" | "ruleId">): string {
+  if (row.actor === "SPACE") return "Job Copilot";
+  if (row.actor === "AGENT") return row.ruleId ? "Mail Copilot, by a rule" : "Mail Copilot";
+  return row.source === "GMAIL" ? "You, in Gmail" : row.source === "BACKFILL" ? "Found in Gmail" : "You, in this pane";
 }
 
 export function participantLabel(participant: { name: string; address: string }): string {
@@ -42,7 +51,7 @@ export function senderInitial(participant: { name: string; address: string }): s
   return (participant.name || participant.address).replace(/^["'\s]+/, "").charAt(0).toUpperCase() || "?";
 }
 
-function SenderAvatar({ participant, account, accountTone, size = "md", checked = false }: { participant: { name: string; address: string }; account?: string; accountTone?: string; size?: "md" | "sm"; checked?: boolean }) {
+export function SenderAvatar({ participant, account, accountTone, size = "md", checked = false }: { participant: { name: string; address: string }; account?: string; accountTone?: string; size?: "md" | "sm"; checked?: boolean }) {
   return (
     <span className={`mc-avatar${size === "sm" ? " sm" : ""}${checked ? " checked" : ""}`} style={{ "--avatar-hue": senderHue(participant) } as CSSProperties} aria-hidden="true">
       {checked ? <Check /> : senderInitial(participant)}
@@ -93,6 +102,8 @@ export function Composer({ mode, accounts, defaultAccount, signature, paneId, on
   onClose(): void;
   onSent(result: { messageId: string; threadId: string }): void;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const fieldId = useId();
   const [draft, setDraft] = useState(() => composeDraft(mode, defaultAccount, signature));
   const [to, setTo] = useState(draft.to.join(", "));
@@ -140,24 +151,24 @@ export function Composer({ mode, accounts, defaultAccount, signature, paneId, on
   return (
     <form className="mc-composer" aria-label={title} onSubmit={(event) => void submit(event)}>
       <header className="mc-composer-head">
-        <button type="button" className="jc-icon-button" aria-label="Close composer" title="Close" onClick={onClose}><X aria-hidden="true" /></button>
+        <button type="button" className="jc-icon-button" aria-label={t("Close composer")} title={t("Close")} onClick={onClose}><X aria-hidden="true" /></button>
         <strong>{title}</strong>
-        <button type="button" className="jc-button ghost" disabled={busy !== null || !senders.length} onClick={() => void saveDraft()}>{busy === "draft" ? "Saving…" : "Save draft"}</button>
-        <button type="submit" className="jc-button primary mc-send" disabled={busy !== null || !senders.length}><Send aria-hidden="true" /> {busy === "send" ? "Sending…" : "Send"}</button>
+        <button type="button" className="jc-button ghost" disabled={busy !== null || !senders.length} onClick={() => void saveDraft()}>{busy === "draft" ? t("Saving…") : t("Save draft")}</button>
+        <button type="submit" className="jc-button primary mc-send" disabled={busy !== null || !senders.length}><Send aria-hidden="true" /> {busy === "send" ? t("Sending…") : t("Send")}</button>
       </header>
-      {!senders.length ? <p className="jc-muted mc-composer-hint">Sending needs full Gmail access on an account.</p> : null}
+      {!senders.length ? <p className="jc-muted mc-composer-hint">{t("Sending needs full Gmail access on an account.")}</p> : null}
       {error ? <p className="jc-message" role="alert">{error}</p> : null}
       {/* Rows are divs: the shell styles every input inside a <label> as a boxed field. */}
       <div className="mc-composer-fields">
-        <div className="mc-composer-row"><label htmlFor={`${fieldId}-from`}>From</label>
-          <select id={`${fieldId}-from`} value={draft.account} aria-label="From account" disabled={mode.kind !== "new" || busy !== null} onChange={(event) => setDraft({ ...draft, account: event.target.value })}>
+        <div className="mc-composer-row"><label htmlFor={`${fieldId}-from`}>{t("From")}</label>
+          <select id={`${fieldId}-from`} value={draft.account} aria-label={t("From account")} disabled={mode.kind !== "new" || busy !== null} onChange={(event) => setDraft({ ...draft, account: event.target.value })}>
             {senders.map((account) => <option key={account.email} value={account.email}>{account.email}</option>)}
             {!senders.some((account) => account.email === draft.account) ? <option value={draft.account}>{draft.account}</option> : null}
           </select>
         </div>
-        <div className="mc-composer-row"><label htmlFor={`${fieldId}-to`}>To</label>
-          <input id={`${fieldId}-to`} value={to} aria-label="To" placeholder="name@example.com, other@example.com" disabled={busy !== null} onChange={(event) => setTo(event.target.value)} />
-          {!showCc ? <button type="button" className="mc-cc-toggle" onClick={() => setShowCc(true)}>Cc / Bcc</button> : null}
+        <div className="mc-composer-row"><label htmlFor={`${fieldId}-to`}>{t("To")}</label>
+          <input id={`${fieldId}-to`} value={to} aria-label={t("To")} placeholder="name@example.com, other@example.com" disabled={busy !== null} onChange={(event) => setTo(event.target.value)} />
+          {!showCc ? <button type="button" className="mc-cc-toggle" onClick={() => setShowCc(true)}>{t("Cc / Bcc")}</button> : null}
         </div>
         {showCc ? (
           <>
@@ -166,10 +177,10 @@ export function Composer({ mode, accounts, defaultAccount, signature, paneId, on
           </>
         ) : null}
         <div className="mc-composer-row">
-          <input value={draft.subject} aria-label="Subject" placeholder="Subject" disabled={busy !== null} onChange={(event) => setDraft({ ...draft, subject: event.target.value })} />
+          <input value={draft.subject} aria-label={t("Subject")} placeholder={t("Subject")} disabled={busy !== null} onChange={(event) => setDraft({ ...draft, subject: event.target.value })} />
         </div>
       </div>
-      <textarea className="mc-composer-body" value={draft.text} aria-label="Message" placeholder="Write your message" rows={12} disabled={busy !== null} onChange={(event) => setDraft({ ...draft, text: event.target.value })} />
+      <textarea className="mc-composer-body" value={draft.text} aria-label={t("Message")} placeholder={t("Write your message")} rows={12} disabled={busy !== null} onChange={(event) => setDraft({ ...draft, text: event.target.value })} />
     </form>
   );
 }
@@ -177,6 +188,8 @@ export function Composer({ mode, accounts, defaultAccount, signature, paneId, on
 function MessageCard({ message, expanded, onToggle, onReply, onForward, paneId, onLoadImages }: {
   message: MailMessage; expanded: boolean; onToggle(): void; onReply(all: boolean): void; onForward(): void; paneId: string; onLoadImages(): void;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   return (
     <article className={`mc-message${expanded ? " expanded" : ""}${message.unread ? " unread" : ""}`} aria-label={`Message from ${participantLabel(message.from)}`}>
       <header className="mc-message-head" onClick={onToggle}>
@@ -194,9 +207,9 @@ function MessageCard({ message, expanded, onToggle, onReply, onForward, paneId, 
             <iframe className="mc-message-html" title={`Message from ${participantLabel(message.from)}`} sandbox="" referrerPolicy="no-referrer"
               srcDoc={`<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><style>body{margin:12px;font:14px/1.5 system-ui,sans-serif;color:#1c1c1c;background:#fff;word-break:break-word}img{max-width:100%;height:auto}img[data-blocked-src]{display:none}blockquote{border-left:3px solid #ccc;margin:8px 0;padding-left:10px;color:#555}pre{white-space:pre-wrap}</style></head><body>${message.html}</body></html>`} />
           ) : <pre className="mc-message-text">{message.text}</pre>}
-          {message.blockedImages ? <p className="mc-message-note jc-muted">Remote images are not loaded. <button type="button" className="jc-button ghost" onClick={onLoadImages}>Load images</button></p> : null}
+          {message.blockedImages ? <p className="mc-message-note jc-muted">Remote images are not loaded. <button type="button" className="jc-button ghost" onClick={onLoadImages}>{t("Load images")}</button></p> : null}
           {message.attachments.filter((attachment) => !attachment.contentId || attachment.filename).length ? (
-            <ul className="mc-attachments" aria-label="Attachments">
+            <ul className="mc-attachments" aria-label={t("Attachments")}>
               {message.attachments.map((attachment) => (
                 <li key={attachment.attachmentId}>
                   <a className="jc-button" href={api.mailAttachmentUrl(paneId, message.account, message.messageId, attachment.attachmentId)} download={attachment.filename}>
@@ -247,6 +260,8 @@ const rowKey = (row: Pick<MailThreadSummary, "account" | "threadId">) => `${row.
  * sender avatar selects its conversation; the selection bar then acts on all of them at once.
  */
 export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }: { paneId: string; mailbox: MailboxState; signature: string | null; stacked: boolean }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const { accounts, labels, threads, thread, selection, selectedThreadId } = mailbox;
   const [compose, setCompose] = useState<ComposeMode | null>(null);
   // Which messages are open; a conversation starts with only its newest message expanded.
@@ -262,6 +277,23 @@ export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }:
   const [busyThread, setBusyThread] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [undo, setUndo] = useState<Undo | null>(null);
+  // The open conversation's labels and their history; a reply for another conversation is never shown.
+  const [labelInfo, setLabelInfo] = useState<MailThreadLabels & { key: string } | null>(null);
+  const { patchThread } = mailbox;
+  const loadThreadLabels = useCallback(async (account: string, threadId: string) => {
+    try {
+      const info = await api.mailThreadLabels(paneId, account, threadId);
+      setLabelInfo({ ...info, key: `${account}:${threadId}` });
+      patchThread(threadId, { labels: info.labels });
+    } catch {
+      // The chips fall back to the list row's labels.
+    }
+  }, [paneId, patchThread]);
+  const openAccount = thread?.account;
+  const openThreadId = thread?.threadId;
+  useEffect(() => {
+    if (openAccount && openThreadId) void loadThreadLabels(openAccount, openThreadId);
+  }, [openAccount, openThreadId, loadThreadLabels]);
   const [swipe, setSwipe] = useState<{ threadId: string; dx: number } | null>(null);
   const gesture = useRef<{ threadId: string; x: number; y: number; width: number; horizontal: boolean | null; pointerId: number } | null>(null);
   const swipedRef = useRef(false);
@@ -350,9 +382,10 @@ export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }:
     for (const row of rows) {
       setBusyThread(row.threadId);
       try {
-        await api.modifyMailThread(paneId, row.threadId, { account: row.account, action, ...(labelIds ? { labelIds } : {}) });
+        const result = await api.modifyMailThread(paneId, row.threadId, { account: row.account, action, ...(labelIds ? { labelIds } : {}) });
         done.push(row);
-        if (leaves) mailbox.removeThread(row.threadId);
+        if (result.labels) mailbox.patchThread(row.threadId, { labels: result.labels });
+        if (leaves) mailbox.removeThread(row.threadId, action === "move");
         else if (action === "star" || action === "unstar") mailbox.patchThread(row.threadId, { starred: action === "star" });
         else if (action === "read" || action === "unread") mailbox.patchThread(row.threadId, { unread: action === "unread" });
       } catch (caught) {
@@ -364,8 +397,30 @@ export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }:
     if (!done.length) return;
     if (leaves) setChecked((current) => new Set([...current].filter((key) => !done.some((row) => rowKey(row) === key))));
     if (action === "archive" || action === "trash") setUndo({ rows: done, action, at: Date.now() });
-    if (leaves && action !== "untrash" && action !== "unarchive" && done.some((row) => row.threadId === selectedThreadId)) void mailbox.openThread(null);
-  }, [busyThread, mailbox, paneId, selectedThreadId, selection.labelId]);
+    // A moved conversation stays open, so its new label and the history line show at once.
+    if (action === "move" && labelIds?.length && !failure) setNotice(uiText(language, "Moved to {label}", { label: labels.find((label) => label.id === labelIds[0])?.name ?? labelIds[0]! }));
+    const opened = done.find((row) => row.threadId === selectedThreadId);
+    if (opened && (action === "move" || action === "label" || action === "unlabel")) void loadThreadLabels(opened.account, opened.threadId);
+    if (leaves && action !== "untrash" && action !== "unarchive" && action !== "move" && opened) void mailbox.openThread(null);
+  }, [busyThread, labels, language, loadThreadLabels, mailbox, paneId, selectedThreadId, selection.labelId]);
+
+  // The x on a label chip of the open conversation takes that label off (recorded in its label history).
+  const removeLabel = async (label: MailThreadLabel) => {
+    if (!thread || busyThread) return;
+    setNotice(null);
+    setBusyThread(thread.threadId);
+    try {
+      const result = await api.modifyMailThread(paneId, thread.threadId, { account: thread.account, action: "unlabel", labelIds: [label.id] });
+      if (result.labels) patchThread(thread.threadId, { labels: result.labels });
+      // Shown under that label, the conversation is no longer in it.
+      if (selection.labelId === label.name || selection.labelId === label.id) mailbox.removeThread(thread.threadId, true);
+      await loadThreadLabels(thread.account, thread.threadId);
+    } catch (caught) {
+      setNotice(caught instanceof Error ? caught.message : t("The label could not be removed."));
+    } finally {
+      setBusyThread(null);
+    }
+  };
 
   // "Send to AI": the copilot checks and fixes what a mail needs; an optional note says what to look at.
   const [fixFor, setFixFor] = useState<MailThreadSummary | null>(null);
@@ -438,10 +493,12 @@ export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }:
   };
 
   const selectedRow = threads.find((row) => row.threadId === selectedThreadId) ?? null;
+  const openLabelInfo = thread && labelInfo?.key === `${thread.account}:${thread.threadId}` ? labelInfo : null;
+  const threadLabels = openLabelInfo?.labels ?? selectedRow?.labels ?? [];
   const showList = !stacked || (!thread && !compose && !mailbox.loadingThread);
   const showThread = !stacked || (Boolean(thread) || mailbox.loadingThread) && !compose;
   const labelName = labels.find((label) => label.id === selection.labelId)?.name ?? MAIL_SYSTEM_LABELS.find((label) => label.id === selection.labelId)?.name ?? selection.labelId;
-  const accountLabel = selection.account === "all" ? "All inboxes" : selection.account;
+  const accountLabel = selection.account === "all" ? t("All inboxes") : selection.account;
   const userLabels = labels.filter((label) => label.type === "user");
   const activeUserLabel = userLabels.find((label) => label.id === selection.labelId);
   const RemoveIcon = removeAction === "archive" ? Archive : Trash2;
@@ -452,16 +509,16 @@ export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }:
     const starred = rows.every((row) => row.starred);
     return (
       <span className="mc-thread-bar-actions">
-        {selection.labelId === "INBOX" ? <button type="button" className="jc-icon-button" aria-label={`Archive ${scope}`} title="Archive" onClick={() => void act(rows, "archive")}><Archive aria-hidden="true" /></button> : null}
+        {selection.labelId === "INBOX" ? <button type="button" className="jc-icon-button" aria-label={`Archive ${scope}`} title={t("Archive")} onClick={() => void act(rows, "archive")}><Archive aria-hidden="true" /></button> : null}
         {selection.labelId === "TRASH"
-          ? <button type="button" className="jc-icon-button" aria-label={`Restore ${scope}`} title="Restore" onClick={() => void act(rows, "untrash")}><Undo2 aria-hidden="true" /></button>
-          : <button type="button" className="jc-icon-button" aria-label={`Trash ${scope}`} title="Move to trash" onClick={() => void act(rows, "trash")}><Trash2 aria-hidden="true" /></button>}
+          ? <button type="button" className="jc-icon-button" aria-label={`Restore ${scope}`} title={t("Restore")} onClick={() => void act(rows, "untrash")}><Undo2 aria-hidden="true" /></button>
+          : <button type="button" className="jc-icon-button" aria-label={`Trash ${scope}`} title={t("Move to trash")} onClick={() => void act(rows, "trash")}><Trash2 aria-hidden="true" /></button>}
         {rows.length === 1 ? <button type="button" className="jc-icon-button" aria-label={`Send ${scope} to AI`} title="Send to AI: the copilot checks and fixes what this mail needs" onClick={() => { setFixFor(rows[0]!); setFixNote(""); }}><Bot aria-hidden="true" /></button> : null}
         {selection.labelId !== "TRASH" && labels.some((label) => label.type === "user") ? (
-          <label className="jc-icon-button mc-move" title="Move to a label">
+          <label className="jc-icon-button mc-move" title={t("Move to a label")}>
             <Folder aria-hidden="true" />
             <select aria-label={scope === "selected" ? "Move selected to" : "Move to"} value="" onChange={(event) => { if (event.target.value) void act(rows, "move", [event.target.value]); }}>
-              <option value="" disabled>Move to…</option>
+              <option value="" disabled>{t("Move to…")}</option>
               {labels.filter((label) => label.type === "user" && label.id !== selection.labelId).map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}
             </select>
           </label>
@@ -481,8 +538,8 @@ export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }:
         <div className="mc-list-column">
           <div className="mc-topbar">
             {checkedRows.length ? (
-              <div className="mc-bulkbar" role="toolbar" aria-label="Selected conversations">
-                <button type="button" className="jc-icon-button" aria-label="Clear selection" title="Clear selection" onClick={() => setChecked(new Set())}><X aria-hidden="true" /></button>
+              <div className="mc-bulkbar" role="toolbar" aria-label={t("Selected conversations")}>
+                <button type="button" className="jc-icon-button" aria-label={t("Clear selection")} title={t("Clear selection")} onClick={() => setChecked(new Set())}><X aria-hidden="true" /></button>
                 <strong>{checkedRows.length} selected</strong>
                 {checkedRows.length < threads.length ? <button type="button" className="jc-button ghost" onClick={() => setChecked(new Set(threads.map(rowKey)))}>Select all</button> : null}
                 <span className="mc-thread-bar-spacer" />
@@ -490,25 +547,25 @@ export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }:
               </div>
             ) : <form className="mc-search" role="search" onSubmit={(event) => { event.preventDefault(); mailbox.setSelection({ query: search.trim() }); }}>
               <Search aria-hidden="true" />
-              <input type="search" value={search} placeholder={selection.account === "all" ? "Search all inboxes" : `Search ${selection.account}`} aria-label="Search mail"
+              <input type="search" value={search} placeholder={selection.account === "all" ? t("Search all inboxes") : `Search ${selection.account}`} aria-label="Search mail"
                 onChange={(event) => setSearch(event.target.value)}
                 onBlur={() => { if (!search.trim() && selection.query) mailbox.setSelection({ query: "" }); }} />
-              <button type="button" className="mc-search-button" aria-label="Refresh" title="Refresh" disabled={mailbox.loading} onClick={() => void mailbox.refresh()}>
+              <button type="button" className="mc-search-button" aria-label={t("Refresh")} title={t("Refresh")} disabled={mailbox.loading} onClick={() => void mailbox.refresh()}>
                 <RefreshCw aria-hidden="true" className={mailbox.loading ? "mc-spin" : undefined} />
               </button>
               <label className="mc-account-switch" title={accountLabel}>
                 {selection.account === "all"
                   ? <span className="mc-avatar sm mc-avatar-all" aria-hidden="true"><Mail /></span>
                   : <span className="mc-avatar sm" style={{ "--avatar-hue": senderHue({ name: "", address: selection.account }) } as CSSProperties} aria-hidden="true">{senderInitial({ name: "", address: selection.account })}</span>}
-                <select aria-label="Account" value={selection.account} onChange={(event) => mailbox.setSelection({ account: event.target.value })}>
-                  <option value="all">All inboxes</option>
+                <select aria-label={t("Account")} value={selection.account} onChange={(event) => mailbox.setSelection({ account: event.target.value })}>
+                  <option value="all">{t("All inboxes")}</option>
                   {usable.map((account) => <option key={account.email} value={account.email}>{account.email}{account.unread ? ` (${account.unread})` : ""}</option>)}
                 </select>
               </label>
             </form>}
           </div>
           <div className="mc-label-bar">
-            <div className="mc-labels" role="tablist" aria-label="Labels">
+            <div className="mc-labels" role="tablist" aria-label={t("Labels")}>
               {labels.filter((label) => label.type === "system").map((label) => {
                 const Icon = SYSTEM_LABEL_ICONS[label.id] ?? Mail;
                 const active = label.id === selection.labelId;
@@ -521,10 +578,10 @@ export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }:
             </div>
             {/* The account's own labels: a picker that stays visible, since the chip row scrolls without a scrollbar. */}
             {userLabels.length ? (
-              <label className={`mc-label mc-label-picker${activeUserLabel ? " selected" : ""}`} title="Show a label">
-                <Folder aria-hidden="true" /> {activeUserLabel?.name ?? "Labels"}<ChevronDown aria-hidden="true" />
-                <select aria-label="Show label" value={activeUserLabel?.id ?? ""} onChange={(event) => { if (event.target.value) mailbox.setSelection({ labelId: event.target.value }); }}>
-                  <option value="" disabled>Labels…</option>
+              <label className={`mc-label mc-label-picker${activeUserLabel ? " selected" : ""}`} title={t("Show a label")}>
+                <Folder aria-hidden="true" /> {activeUserLabel?.name ?? t("Labels")}<ChevronDown aria-hidden="true" />
+                <select aria-label={t("Show label")} value={activeUserLabel?.id ?? ""} onChange={(event) => { if (event.target.value) mailbox.setSelection({ labelId: event.target.value }); }}>
+                  <option value="" disabled>{t("Labels…")}</option>
                   {userLabels.map((label) => <option key={label.id} value={label.id}>{label.name}{label.unread ? ` (${label.unread})` : ""}</option>)}
                 </select>
               </label>
@@ -534,12 +591,12 @@ export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }:
           {mailbox.errors.map((entry) => <p key={entry.account} className="jc-message mc-banner" role="status">{entry.account}: {entry.message}</p>)}
           <div className="mc-threads" ref={listRef} role="list" aria-label={`${labelName} conversations`} aria-busy={mailbox.loading}>
             {mailbox.loading && threads.length === 0 ? (
-              <div className="mc-skeleton" role="status" aria-label="Loading mail…">
+              <div className="mc-skeleton" role="status" aria-label={t("Loading mail…")}>
                 {Array.from({ length: 6 }, (_, index) => <span key={index} className="mc-skeleton-row"><span /><span /></span>)}
               </div>
             ) : null}
             {!mailbox.loading && threads.length === 0 ? (
-              <div className="jc-empty mc-empty"><Mail aria-hidden="true" /><strong>Nothing here</strong><span>{selection.query ? "No conversation matches the search." : `${labelName} is empty.`}</span></div>
+              <div className="jc-empty mc-empty"><Mail aria-hidden="true" /><strong>{t("Nothing here")}</strong><span>{selection.query ? "No conversation matches the search." : `${labelName} is empty.`}</span></div>
             ) : null}
             {threads.map((row) => {
               const dx = swipe?.threadId === row.threadId ? swipe.dx : 0;
@@ -552,34 +609,39 @@ export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }:
                   onPointerUp={(event) => onRowPointerEnd(row, event)} onPointerCancel={(event) => onRowPointerEnd(row, event)}>
                   {dx ? (
                     <span className={`mc-swipe-reveal ${removeAction}${armed ? " armed" : ""}`} data-side={dx > 0 ? "start" : "end"} aria-hidden="true">
-                      <RemoveIcon /> {removeAction === "archive" ? "Archive" : "Trash"}
+                      <RemoveIcon /> {removeAction === "archive" ? t("Archive") : t("Trash")}
                     </span>
                   ) : null}
                   <div className="mc-thread-body" style={dx ? { transform: `translateX(${dx}px)` } : undefined}>
-                    <button type="button" className="mc-thread-main" onClick={() => void open(row)} aria-label={`${row.unread ? "Unread: " : ""}${participantLabel(row.from)}: ${row.subject || "(no subject)"}`}>
+                    <button type="button" className="mc-thread-main" onClick={() => void open(row)} aria-label={`${row.unread ? "Unread: " : ""}${participantLabel(row.from)}: ${row.subject || t("(no subject)")}`}>
                       <SenderAvatar participant={row.from} account={row.account} accountTone={usable.length > 1 ? accountColor(row.account, usable) : undefined} checked={isChecked} />
                       <span className="mc-thread-copy">
                         <span className="mc-thread-line">
                           <strong className="mc-thread-from">{participantLabel(row.from)}{row.messageCount > 1 ? <small> {row.messageCount}</small> : null}</strong>
                           <time dateTime={row.receivedAt ?? undefined}>{mailTime(row.receivedAt)}</time>
                         </span>
-                        <span className="mc-thread-subject">{row.subject || "(no subject)"}{row.hasAttachment ? <Paperclip className="mc-thread-clip" aria-label="Has attachment" /> : null}</span>
+                        <span className="mc-thread-subject">{row.subject || t("(no subject)")}{row.hasAttachment ? <Paperclip className="mc-thread-clip" aria-label="Has attachment" /> : null}</span>
                         <span className="mc-thread-snippet">{row.snippet}</span>
+                        {row.labels?.some((label) => label.name !== selection.labelId) ? (
+                          <span className="mc-label-chips">
+                            {row.labels.filter((label) => label.name !== selection.labelId).map((label) => <span key={label.id} className="mc-label-chip">{label.name}</span>)}
+                          </span>
+                        ) : null}
                       </span>
                     </button>
                     {/* Sits over the avatar: tapping it picks the conversation instead of opening it, like Gmail. */}
-                    <button type="button" className="mc-select" aria-pressed={isChecked} aria-label={`Select ${participantLabel(row.from)}: ${row.subject || "(no subject)"}`}
+                    <button type="button" className="mc-select" aria-pressed={isChecked} aria-label={`Select ${participantLabel(row.from)}: ${row.subject || t("(no subject)")}`}
                       title={isChecked ? "Deselect" : "Select"} onClick={() => toggleChecked(row)} />
                     <button type="button" className={`mc-star${row.starred ? " on" : ""}`} aria-label={row.starred ? "Unstar" : "Star"} aria-pressed={row.starred} disabled={busyThread === row.threadId}
                       onClick={() => void act(row, row.starred ? "unstar" : "star")}><Star aria-hidden="true" /></button>
                     <span className="mc-thread-actions">
                       {selection.labelId === "TRASH" ? (
-                        <button type="button" className="jc-icon-button" aria-label="Restore" title="Restore" disabled={busyThread === row.threadId} onClick={() => void act(row, "untrash")}><Undo2 aria-hidden="true" /></button>
+                        <button type="button" className="jc-icon-button" aria-label={t("Restore")} title={t("Restore")} disabled={busyThread === row.threadId} onClick={() => void act(row, "untrash")}><Undo2 aria-hidden="true" /></button>
                       ) : (
                         <>
-                          {selection.labelId === "INBOX" ? <button type="button" className="jc-icon-button" aria-label="Archive" title="Archive" disabled={busyThread === row.threadId} onClick={() => void act(row, "archive")}><Archive aria-hidden="true" /></button> : null}
-                          <button type="button" className="jc-icon-button" aria-label="Trash" title="Move to trash" disabled={busyThread === row.threadId} onClick={() => void act(row, "trash")}><Trash2 aria-hidden="true" /></button>
-                          <button type="button" className="jc-icon-button" aria-label="Send to AI" title="Send to AI: the copilot checks and fixes what this mail needs" onClick={() => { setFixFor(row); setFixNote(""); }}><Bot aria-hidden="true" /></button>
+                          {selection.labelId === "INBOX" ? <button type="button" className="jc-icon-button" aria-label={t("Archive")} title={t("Archive")} disabled={busyThread === row.threadId} onClick={() => void act(row, "archive")}><Archive aria-hidden="true" /></button> : null}
+                          <button type="button" className="jc-icon-button" aria-label={t("Trash")} title={t("Move to trash")} disabled={busyThread === row.threadId} onClick={() => void act(row, "trash")}><Trash2 aria-hidden="true" /></button>
+                          <button type="button" className="jc-icon-button" aria-label={t("Send to AI")} title="Send to AI: the copilot checks and fixes what this mail needs" onClick={() => { setFixFor(row); setFixNote(""); }}><Bot aria-hidden="true" /></button>
                           <button type="button" className="jc-icon-button" aria-label={row.unread ? "Mark as read" : "Mark as unread"} title={row.unread ? "Mark as read" : "Mark as unread"} disabled={busyThread === row.threadId}
                             onClick={() => void act(row, row.unread ? "read" : "unread")}><Mail aria-hidden="true" /></button>
                         </>
@@ -595,15 +657,15 @@ export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }:
           </div>
           <button type="button" className="mc-fab" disabled={!usable.some((account) => account.access === "full")} onClick={() => setCompose({ kind: "new" })}
             title={usable.some((account) => account.access === "full") ? "New message" : "Sending needs full Gmail access on an account"}>
-            <Pencil aria-hidden="true" /> <span>Compose</span>
+            <Pencil aria-hidden="true" /> <span>{t("Compose")}</span>
           </button>
         </div>
       ) : null}
 
       {!stacked ? (
-        <div className="mc-splitter" role="separator" aria-orientation="vertical" aria-label="Resize the conversation list" tabIndex={0}
+        <div className="mc-splitter" role="separator" aria-orientation="vertical" aria-label={t("Resize the conversation list")} tabIndex={0}
           aria-valuemin={LIST_MIN} aria-valuenow={Math.round(listWidth ?? 0) || undefined} data-dragging={resizing ? "true" : undefined}
-          title="Drag to resize · double-click to reset"
+          title={t("Drag to resize · double-click to reset")}
           onPointerDown={onSplitterDown} onPointerMove={onSplitterMove} onPointerUp={onSplitterEnd} onPointerCancel={onSplitterEnd} onKeyDown={onSplitterKey}
           onDoubleClick={() => { setListWidth(null); saveListWidth(null); }} />
       ) : null}
@@ -613,24 +675,50 @@ export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }:
             onSent={() => { setCompose(null); setNotice("Sent."); void mailbox.refresh(); }} />
         </div>
       ) : showThread ? (
-        <div className="mc-thread-column" aria-label="Conversation">
+        <div className="mc-thread-column" aria-label={t("Conversation")} data-thread-id={thread?.threadId} data-thread-account={thread?.account}>
           {thread || stacked ? (
             <div className="mc-thread-bar">
-              {stacked ? <button type="button" className="jc-icon-button mc-back" aria-label="Back" title="Back to the list" onClick={() => void mailbox.openThread(null)}><ArrowLeft aria-hidden="true" /></button> : null}
+              {stacked ? <button type="button" className="jc-icon-button mc-back" aria-label={t("Back")} title={t("Back to the list")} onClick={() => void mailbox.openThread(null)}><ArrowLeft aria-hidden="true" /></button> : null}
               <span className="mc-thread-bar-spacer" />
               {selectedRow && thread ? threadActions([selectedRow], "conversation") : null}
             </div>
           ) : null}
-          {mailbox.loadingThread && !thread ? <div className="mc-skeleton" role="status" aria-label="Loading conversation…"><span className="mc-skeleton-row"><span /><span /></span><span className="mc-skeleton-row"><span /><span /></span></div> : null}
-          {!thread && !mailbox.loadingThread ? <div className="jc-empty mc-empty"><Mail aria-hidden="true" /><strong>Pick a conversation</strong><span>Its messages open here.</span></div> : null}
+          {mailbox.loadingThread && !thread ? <div className="mc-skeleton" role="status" aria-label={t("Loading conversation…")}><span className="mc-skeleton-row"><span /><span /></span><span className="mc-skeleton-row"><span /><span /></span></div> : null}
+          {!thread && !mailbox.loadingThread ? <div className="jc-empty mc-empty"><Mail aria-hidden="true" /><strong>{t("Pick a conversation")}</strong><span>Its messages open here.</span></div> : null}
           {thread ? (
             <>
               <header className="mc-thread-head">
-                <h2>{thread.subject || "(no subject)"}</h2>
+                <h2>{thread.subject || t("(no subject)")}</h2>
                 <span className="mc-thread-meta">
                   {usable.length > 1 ? <span className="mc-account-tag"><span style={{ background: accountColor(thread.account, usable) }} aria-hidden="true" />{thread.account}</span> : null}
                   <span>{thread.messages.length} message{thread.messages.length === 1 ? "" : "s"}</span>
                 </span>
+                {threadLabels.length ? (
+                  <ul className="mc-label-chips" aria-label={t("Labels of this conversation")}>
+                    {threadLabels.map((label) => (
+                      <li key={label.id} className="mc-label-chip">
+                        <Folder aria-hidden="true" /> {label.name}
+                        <button type="button" aria-label={t("Remove label {label}", { label: label.name })} title={t("Remove label {label}", { label: label.name })}
+                          disabled={busyThread === thread.threadId} onClick={() => void removeLabel(label)}><X aria-hidden="true" /></button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {openLabelInfo ? (
+                  <details className="mc-label-history">
+                    <summary>{t("Label history")} ({openLabelInfo.history.length})</summary>
+                    {openLabelInfo.history.length ? (
+                      <ul>
+                        {openLabelInfo.history.map((row) => (
+                          <li key={row.id}>
+                            <span>{t(row.action === "UNLABEL" ? "Removed from {labels}" : "Added to {labels}", { labels: row.labelNames.join(", ") })}</span>
+                            <span className="jc-muted">{t(labelChangeBy(row))} · <time dateTime={row.occurredAt}>{formatUserTime(row.occurredAt, { withDate: true })}</time></span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : <p className="jc-muted">{t("No label changes recorded for this conversation yet.")}</p>}
+                  </details>
+                ) : null}
               </header>
               <div className="mc-messages">
                 {thread.messages.map((message) => (
@@ -645,27 +733,27 @@ export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }:
         </div>
       ) : null}
       {fixFor ? (
-        <form className="mc-fix-sheet" aria-label="Send to AI" onSubmit={(event) => { event.preventDefault(); void sendToAi(); }}
+        <form className="mc-fix-sheet" aria-label={t("Send to AI")} onSubmit={(event) => { event.preventDefault(); void sendToAi(); }}
           onKeyDown={(event) => { if (event.key === "Escape") setFixFor(null); }}>
-          <strong><Bot aria-hidden="true" /> Send to AI</strong>
-          <span className="jc-muted">{fixFor.subject || "(no subject)"} · {fixFor.account}</span>
+          <strong><Bot aria-hidden="true" /> {t("Send to AI")}</strong>
+          <span className="jc-muted">{fixFor.subject || t("(no subject)")} · {fixFor.account}</span>
           <textarea rows={2} value={fixNote} autoFocus disabled={fixBusy} placeholder="What should the copilot check or fix? (optional)" aria-label="What should the copilot check or fix?"
             onChange={(event) => setFixNote(event.target.value)} />
           <div className="jc-actions">
-            <button type="submit" className="jc-button primary" disabled={fixBusy}>{fixBusy ? "Sending…" : "Send"}</button>
-            <button type="button" className="jc-button ghost" disabled={fixBusy} onClick={() => setFixFor(null)}>Cancel</button>
+            <button type="submit" className="jc-button primary" disabled={fixBusy}>{fixBusy ? t("Sending…") : t("Send")}</button>
+            <button type="button" className="jc-button ghost" disabled={fixBusy} onClick={() => setFixFor(null)}>{t("Cancel")}</button>
           </div>
         </form>
       ) : null}
       {undo ? (
         <div className="mc-snackbar" role="status">
           <span>{undo.action === "archive" ? "Archived" : "Moved to trash"}{undo.rows.length > 1 ? ` · ${undo.rows.length} conversations` : ""}</span>
-          <button type="button" onClick={() => void undoLast()}>Undo</button>
+          <button type="button" onClick={() => void undoLast()}>{t("Undo")}</button>
         </div>
       ) : null}
       {!usable.length ? (
-        <div className="jc-empty mc-no-accounts"><strong>No Gmail account yet</strong><span>Allow a Google account in Setup → Accounts.</span>
-          <a className="jc-button primary" href={mailCopilotConsentUrl()}>Allow a Google account</a></div>
+        <div className="jc-empty mc-no-accounts"><strong>{t("No Gmail account yet")}</strong><span>{t("Allow a Google account in Setup → Accounts.")}</span>
+          <a className="jc-button primary" href={mailCopilotConsentUrl()}>{t("Allow a Google account")}</a></div>
       ) : null}
     </div>
   );

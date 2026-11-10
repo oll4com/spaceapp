@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Fastify from "fastify";
 import { readFile, realpath, stat } from "node:fs/promises";
-import { createDesktopLatestHandler, readDesktopRelease } from "../src/desktop-release.js";
+import { createDesktopLatestHandler, clientSentryConfig, readDesktopRelease } from "../src/desktop-release.js";
+import { registerDesktopReleaseRoutes } from "../src/desktop-release-routes.js";
 
 vi.mock("node:fs/promises", () => ({ readFile: vi.fn(), realpath: vi.fn(), stat: vi.fn() }));
 const directory = "/release";
@@ -93,4 +94,27 @@ describe("desktop release metadata", () => {
     expect(result.appImageUrl).toContain("x86_64.AppImage");
     expect(result.download7zUrl).toBeNull();
   });
+});
+
+it("gives each desktop or Android app its own valid public DSN only when the server sets one", () => {
+  expect(clientSentryConfig("desktop", {})).toEqual({ dsn: null, environment: "stable" });
+  expect(clientSentryConfig("desktop", { SENTRY_DSN_DESKTOP: "https://key:secret@example.invalid/3" }).dsn).toBeNull();
+  expect(clientSentryConfig("desktop", { SENTRY_DSN_DESKTOP: " https://public@example.invalid/3 ", SPACE_INSTANCE: "dev" }))
+    .toEqual({ dsn: "https://public@example.invalid/3", environment: "dev" });
+  const env = { SENTRY_DSN_ANDROID: "https://a@example.invalid/4", SENTRY_DSN_NOUS_ANDROID: "https://n@example.invalid/5" };
+  expect([clientSentryConfig("spaceapp", env).dsn, clientSentryConfig("nous", env).dsn]).toEqual(["https://a@example.invalid/4", "https://n@example.invalid/5"]);
+  expect(clientSentryConfig("desktop", env).dsn).toBeNull();
+  const publicInstall = { SPACE_PUBLIC_DISTRIBUTION: "true", SENTRY_DSN_DESKTOP: "https://own@example.invalid/6" };
+  expect(clientSentryConfig("desktop", publicInstall)).toEqual({ dsn: null, environment: "public" });
+  expect(clientSentryConfig("desktop", { ...publicInstall, SPACE_ERROR_REPORTS: "own" }).dsn).toBe("https://own@example.invalid/6");
+});
+
+it("answers the Android apps' DSN route only for a known app", async () => {
+  const app = Fastify();
+  registerDesktopReleaseRoutes(app, { routeOptions: {} });
+  try {
+    const nous = await app.inject("/api/mobile/sentry/nous");
+    expect([nous.statusCode, nous.headers["cache-control"], nous.json()]).toEqual([200, "no-store", { dsn: null, environment: "stable" }]);
+    for (const name of ["desktop", "toString", "other"]) expect((await app.inject(`/api/mobile/sentry/${name}`)).statusCode).toBe(404);
+  } finally { await app.close(); }
 });

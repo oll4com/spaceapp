@@ -8,13 +8,15 @@ import { outputPolicyText, requestOutputPolicy, withAnthropicOutputPolicy } from
 import { effectiveCompression, requestCompressionMode } from "../../compression/provider-settings.js";
 import { compressionDetail, compressionRows, compressionSignalRows } from "../../compression/recorder.js";
 import { gatewayError, gatewayErrors, type GatewayErrorEnvelope } from "../../errors.js";
+import { sameToken } from "../../admin/codex-sign-in.js";
+import { isLoopback } from "../../lan-access.js";
 import { assertModelAllowed, checkKeyLimits, PolicyRejection } from "../../policy.js";
 import { claudeCostUsd } from "../../pricing/pricing.js";
 import { StickyStore } from "../../accounts/sticky-store.js";
 import { requestOrigin } from "../../client-detect.js";
-import { hashKey, header, readBounded } from "../../proxy-util.js";
+import { clientRequestId, hashKey, header, readBounded, stickyScope } from "../../proxy-util.js";
 import type { RequestLogWriter } from "../../request-log-writer.js";
-import { permanentFailureCodes, selectAccount, USAGE_LIMIT_REACHED, type SelectionResult, type UpstreamError } from "../../router/balancer.js";
+import { NOUS_OPERATOR_PROJECT, PACE_CAP, permanentFailureCodes, selectAccount, USAGE_LIMIT_REACHED, type SelectionResult, type UpstreamError } from "../../router/balancer.js";
 import type { GatewayRouteHelpers } from "../../server.js";
 import { apiBudgetMessage, DAILY_ALLOWANCE_REACHED, MONTHLY_BUDGET_REACHED, type createApiBudgetPacer } from "./api-budget.js";
 import { claudeCreditsExhausted, isClaudeApiKeyAccount, isClaudeCodeRequest } from "./api-key.js";
@@ -32,6 +34,8 @@ const WEEK_MINUTES = 7 * 24 * 60;
 
 export interface ClaudeProxyOptions {
   pool: AccountPool;
+  /** Panes on an open operator request: never held by the pace cap (admin/priority-panes.ts). */
+  priorityPanes?: { has(project: string | null): boolean; list(): string[] };
   logs: RequestLogWriter;
   settings: () => Promise<GatewaySettings>;
   upstreamBaseUrl?: string;
@@ -46,6 +50,8 @@ export interface ClaudeProxyOptions {
   sticky?: StickyStore;
   /** The API-key account's pace to the monthly budget; without it only the keys' own caps apply. */
   apiBudget?: Pick<ReturnType<typeof createApiBudgetPacer>, "read" | "record">;
+  /** /pools/space's "Claude API key" route (opencode-claude:) reaches the API-key account only with this in-process token, from loopback. */
+  internalToken?: string | null;
 }
 
 type FailureKind = "rate_limit" | "transient" | "permanent" | "surface";
@@ -156,24 +162,35 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
    * request after one of them resets. A conversation never binds to the key: its prompt cache is not worth staying.
    * Claude Code never reaches the key (`keyAllowed` false): it gets the subscription pool's own limit answer.
    */
-  async function pickAccount(settings: GatewaySettings, scope: Set<string> | null, tried: Set<string>, stickyHash: string | null, keyAllowed: boolean) {
+  async function pickAccount(settings: GatewaySettings, scope: Set<string> | null, tried: Set<string>, stickyHash: string | null, keyAllowed: boolean, priority = false,
+    keyOnly = false, paceCap = false) {
     const candidates = (await options.pool.accounts()).filter((account) => (!scope || scope.has(account.id)) && !tried.has(account.id));
-    const accounts = candidates.filter((account) => !isClaudeApiKeyAccount(account));
+    // keyOnly: the Space provider's "Claude API key" route, the operator's own choice in the Gateway order, so no subscription and no fallback switch.
+    const accounts = keyOnly ? [] : candidates.filter((account) => !isClaudeApiKeyAccount(account));
     const states = accounts.map((candidate) => options.pool.toBalancerState(candidate));
     const pooled = accounts.filter((candidate) => candidate.status !== "PAUSED" && candidate.status !== "DEACTIVATED").length;
     const stickyId = stickyHash ? await stickyAccounts.get(stickyHash) : undefined;
     const stickyState = stickyId ? states.find((state) => state.accountId === stickyId) : undefined;
-    if (stickyState) {
-      const check = selectAccount([stickyState], { now: now() / 1000, routingStrategy: "SINGLE_ACCOUNT", allowUsageExhaustionError: false });
+    const fillFirst = settings.subscriptionRouting === "FILL_FIRST";
+    // Fill-first reselects at request boundaries: a sticky later-reset account must not keep taking traffic
+    // after an earlier-reset subscription recovers. The deterministic policy keeps the chosen account until it fills.
+    if (stickyState && !fillFirst) {
+      // A session already running on this account continues: the pace cap only holds back new work (paceCapApplies).
+      const check = selectAccount([stickyState], { now: now() / 1000, routingStrategy: "SINGLE_ACCOUNT", allowUsageExhaustionError: false, paceCap: false });
       const used = Math.max(stickyState.usedPercent ?? 0, stickyState.secondaryUsedPercent ?? 0);
       if (check.account && used < settings.stickyReallocationBudgetThresholdPercent) {
         return { account: accounts.find((candidate) => candidate.id === stickyState.accountId), result: null, pooled, fallback: false };
       }
     }
-    const result = selectAccount(states, { now: now() / 1000, routingStrategy: settings.routingStrategy, preferEarlierReset: settings.preferEarlierReset, weeklyPace: true });
+    // Operator 7/11 19:22 BKK (nous_msg:3d047588): no pace cap; nothing is held by PACE_CAP (the weekly 100% limit stays).
+    const result = selectAccount(states, { now: now() / 1000, routingStrategy: settings.routingStrategy, preferEarlierReset: settings.preferEarlierReset, weeklyPace: true,
+      exhaustionFloorPercent: settings.exhaustionFloorPercent, paceCap, weekRunway: true,
+      fillFirst: fillFirst ? { reserve: pooled < 2 ? null : priority ? "PRIORITY" : "NORMAL", reservePercent: settings.claudeReservePercent } : null,
+      accountNames: Object.fromEntries(accounts.map((candidate) => [candidate.id, candidate.alias ?? candidate.label])) });
     for (const state of states) options.pool.absorb(state);
     const account = result.account ? accounts.find((candidate) => candidate.id === result.account!.accountId) : undefined;
-    if (account || !settings.claudeApiKeyFallback || !keyAllowed) return { account, result, pooled, fallback: false };
+    // A pace hold is no shortage: the pay-per-token key never takes the work the subscriptions hold back.
+    if (account || (!keyOnly && !settings.claudeApiKeyFallback) || !keyAllowed || result.errorCode === PACE_CAP) return { account, result, pooled, fallback: false };
     const keys = candidates.filter(isClaudeApiKeyAccount);
     const pace = keys.length ? await options.apiBudget?.read() : null;
     if (pace?.stop) return { account: undefined, result: { account: null, errorCode: pace.stop, errorMessage: apiBudgetMessage(pace) } as SelectionResult, pooled, fallback: false };
@@ -188,7 +205,7 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     if (!(await helpers.authenticate(request, reply))) return reply;
     const key = request.gatewayApiKey!;
     const startedAt = now();
-    const requestId = header(request, "x-request-id") ?? `req_${randomUUID().replace(/-/g, "")}`;
+    const requestId = clientRequestId(request) ?? `req_${randomUUID().replace(/-/g, "")}`;
     const input = request.body;
     if (!input || typeof input !== "object" || Array.isArray(input)) {
       return reply.code(400).send(anthropicError(gatewayError("invalid_request", "The request body must be a JSON object.", "invalid_request_error")));
@@ -211,6 +228,9 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     const compressionMode = requestCompressionMode(effective, key.compressionOverride, header(request, "x-space-gateway-compression"));
     const origin = requestOrigin(request);
     const keyAllowed = !isClaudeCodeRequest(request.headers);
+    const internal = header(request, "x-space-internal-token");
+    const keyOnly = header(request, "x-space-gateway-route") === "CLAUDE_API_KEY" && isLoopback(request.socket.remoteAddress)
+      && sameToken(internal, options.internalToken ?? null);
     const outputPolicy = requestOutputPolicy({ policy: effective.outputPolicy, key, clientName: origin.clientName,
       headerValue: header(request, "x-space-gateway-output-policy") });
     let compressionSaved: number | null = null;
@@ -218,7 +238,7 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     let detail: GatewayRequestLogInsert["compressionDetail"] = null;
     let outgoing = body;
     const sticky = stickySource(request, body);
-    const stickyHash = sticky ? hashKey(`claude:${sticky.raw}`) : null;
+    const stickyHash = sticky ? hashKey(`claude:${stickyScope(request)}${sticky.raw}`) : null;
     if (compressionMode !== "OFF" && options.compression) {
       try {
         const outcome = await compressAnthropicBodyAsync(body, { run: options.compression.run, cache: options.compression.cache,
@@ -269,14 +289,14 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     let upstreamRequestId: string | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const { account, result, pooled, fallback }: Awaited<ReturnType<typeof pickAccount>> = retryWith ? { ...retryWith, result: null, pooled: 0 }
-        : await pickAccount(settings, scope, tried, stickyHash, keyAllowed);
+        : await pickAccount(settings, scope, tried, stickyHash, keyAllowed, origin.project === NOUS_OPERATOR_PROJECT, keyOnly, false);
       retryWith = null;
       if (!account) {
         if (attempt === 0 && result) {
-          const budget = result.errorCode === MONTHLY_BUDGET_REACHED || result.errorCode === DAILY_ALLOWANCE_REACHED;
+          const budget = result.errorCode === MONTHLY_BUDGET_REACHED || result.errorCode === DAILY_ALLOWANCE_REACHED || result.errorCode === PACE_CAP;
           const limited = budget || result.errorCode === USAGE_LIMIT_REACHED;
           const status = limited ? 429 : 503;
-          const message = budget ? result.errorMessage! : limited ? claudePoolLimitMessage(pooled, result.resetsAt, now() / 1000)
+          const message = budget || result.reserved ? result.errorMessage! : limited ? claudePoolLimitMessage(pooled, result.resetsAt, now() / 1000)
             : result.errorMessage ?? gatewayErrors.noAccounts().error.message;
           options.logs.add({ ...baseLog(), status: "error", errorCode: result.errorCode ?? "no_accounts", errorMessage: message, latencyMs: now() - startedAt });
           return reply.code(status).send(anthropicError(gatewayError(result.errorCode ?? "no_accounts", message,

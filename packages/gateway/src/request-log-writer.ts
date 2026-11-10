@@ -6,10 +6,11 @@ export class RequestLogWriter {
   private timer: NodeJS.Timeout | null = null;
   private flushing: Promise<void> = Promise.resolve();
 
-  constructor(private readonly repository: GatewayRepository, private readonly options: { batchSize?: number; intervalMs?: number; onError?: (error: unknown) => void } = {}) {}
+  constructor(private readonly repository: GatewayRepository, private readonly options: { batchSize?: number; intervalMs?: number; onError?: (error: unknown) => void;
+    transform?: (row: GatewayRequestLogInsert) => GatewayRequestLogInsert } = {}) {}
 
   add(row: GatewayRequestLogInsert) {
-    this.pending.push(row);
+    this.pending.push(this.options.transform ? this.options.transform(row) : row);
     if (this.pending.length >= (this.options.batchSize ?? 100)) void this.flush();
     else if (!this.timer) {
       this.timer = setTimeout(() => { this.timer = null; void this.flush(); }, this.options.intervalMs ?? 1000);

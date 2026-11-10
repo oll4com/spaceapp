@@ -1,37 +1,12 @@
 import type { DeployQueueReport, DeployQueueTicket, NousDecision } from "@space/contracts";
 
 /**
- * Nous's workbench (operator request 2026-10-21, plan clipboard:GZNzxm7FNwjM): the hourly limits of its own tools and the Space
- * reads it used to ask panes for (merge queue, its decisions with their outcome).
+ * Nous's workbench (operator request 2026-10-21, plan clipboard:GZNzxm7FNwjM): the Space reads it used to ask panes for (merge queue, its
+ * decisions with their outcome). No tool has an hourly cap (operator 2026-10-27 «δεν θελω να υπαρχει όριο», 31/10 16:07 BKK «Βγάλε όλα τα όρια»).
  */
-// Operator rule 2026-10-27 «δεν θελω να υπαρχει όριο»: the read tools and its own folder have no hourly cap (a web search stopped at 30
-// in the middle of a research the operator asked for); only new Agent Files (the operator's Agent Files rule) and draft clears keep one.
-export const NOUS_WORKBENCH_LIMITS: Readonly<Record<string, number>> = { space_agent_files_add: 20, space_clear_pane_draft: 30 };
-const HOUR_MS = 3_600_000;
-
-/** Calls per owner and tool in the last hour (in memory: an API restart starts the count again). */
-export function createNousLimiter(limits: Readonly<Record<string, number>> = NOUS_WORKBENCH_LIMITS, now: () => number = Date.now) {
-  const calls = new Map<string, number[]>();
-  return {
-    /** Null when the call may run (and it is counted), else why not. */
-    take(owner: string, tool: string): string | null {
-      const limit = limits[tool];
-      if (limit === undefined) return null;
-      const key = `${owner}\u0000${tool}`;
-      const recent = (calls.get(key) ?? []).filter((at) => now() - at < HOUR_MS);
-      if (recent.length >= limit) {
-        calls.set(key, recent);
-        return `${tool} ran ${limit} times in the last hour, its limit; it frees up in ${Math.ceil((recent[0]! + HOUR_MS - now()) / 60_000)} minutes.`;
-      }
-      calls.set(key, [...recent, now()]);
-      return null;
-    }
-  };
-}
-
 const ticketLine = (ticket: DeployQueueTicket) => `- ${ticket.id} ${ticket.status}${ticket.statusSince ? ` since ${ticket.statusSince.slice(5, 16)}` : ""} · ${ticket.branch}`
-  + `${ticket.submitter?.paneTitle ? ` · ${ticket.submitter.paneTitle}${ticket.submitter.roomName ? ` (${ticket.submitter.roomName})` : ""}` : ""} · "${ticket.summary.slice(0, 160)}"`
-  + `${ticket.note && ticket.status !== "DEPLOYED" ? `\n  note: ${ticket.note.replace(/\s+/g, " ").slice(0, 300)}` : ""}`;
+  + `${ticket.submitter?.paneTitle ? ` · ${ticket.submitter.paneTitle}${ticket.submitter.roomName ? ` (${ticket.submitter.roomName})` : ""}` : ""} · "${ticket.summary}"`
+  + `${ticket.note && ticket.status !== "DEPLOYED" ? `\n  note: ${ticket.note.replace(/\s+/g, " ")}` : ""}`;
 
 /** space_queue_status: each merge queue's state with its active and recent tickets, or one ticket in full. */
 export function nousQueueText(queues: Array<{ name: string; report: DeployQueueReport | null }>, ticketId?: string): string {
@@ -53,14 +28,17 @@ export function nousQueueText(queues: Array<{ name: string; report: DeployQueueR
   return queues.map(({ name, report }) => {
     if (!report?.available) return `${name} queue: not readable here.`;
     const batch = report.current ? `; batch ${report.current.batchId} ${report.current.phase} (${report.current.ticketIds.join(", ")})` : "";
-    return [`${name} queue: daemon ${report.daemonRunning ? "running" : "NOT running"}${report.paused ? `, PAUSED since ${report.paused.at} (${report.paused.reason.slice(0, 200)})` : ""}${batch}.`,
-      `Active (${report.active.length}):`, ...report.active.map(ticketLine), `Recent:`, ...report.recent.slice(0, 15).map(ticketLine)].join("\n");
+    return [`${name} queue: daemon ${report.daemonRunning ? "running" : "NOT running"}${report.paused ? `, PAUSED since ${report.paused.at} (${report.paused.reason})` : ""}${batch}.`,
+      `Active (${report.active.length}):`, ...report.active.map(ticketLine), `Recent:`, ...report.recent.map(ticketLine)].join("\n");
   }).join("\n\n");
 }
 
+/** An outcome space_settle_decision wrote: Nous marked the approved decision done with proof, or void (goal 84ba917a). */
+export const SETTLED_DECISION_OUTCOME = /^(?:Done|Void) \(marked by Nous\): /;
+
 /** An approved action whose run failed or did not happen: the outcome the server recorded says so. */
 export const decisionActionFailed = (decision: NousDecision) => decision.status === "APPROVED" && decision.action !== null
-  && (decision.outcome === null || /^(?:Failed|Not answered|Not run)\b|\b(?:failed|refused|error)\b/i.test(decision.outcome));
+  && (decision.outcome === null || (!SETTLED_DECISION_OUTCOME.test(decision.outcome) && /^(?:Failed|Not answered|Not run)\b|\b(?:failed|refused|error)\b/i.test(decision.outcome)));
 
 /** space_nous_decisions: Nous's own decisions of the last days with the answer and what the server did, failed approved actions first. */
 export function nousDecisionsText(decisions: NousDecision[], options: { status?: NousDecision["status"]; days: number; now: number }): string {
@@ -71,6 +49,6 @@ export function nousDecisionsText(decisions: NousDecision[], options: { status?:
   const failed = listed.filter(decisionActionFailed).length;
   return [`${listed.length} decisions in the last ${options.days} days${failed ? `; ${failed} approved action${failed === 1 ? "" : "s"} FAILED: act on ${failed === 1 ? "it" : "them"} first` : ""}.`,
     ...listed.map((decision) => `- ${decisionActionFailed(decision) ? "ACTION FAILED · " : ""}${decision.id} · ${decision.status} · ${decision.category} · ${decision.createdAt.slice(0, 16)} · ${decision.title}`
-      + `${decision.action ? ` · action ${decision.action.type}` : ""}${decision.answer ? `\n  answer: ${decision.answer.replace(/\s+/g, " ").slice(0, 300)}` : ""}`
-      + `${decision.outcome ? `\n  outcome: ${decision.outcome.replace(/\s+/g, " ").slice(0, 400)}` : ""}`)].join("\n");
+      + `${decision.action ? ` · action ${decision.action.type}` : ""}${decision.answer ? `\n  answer: ${decision.answer.replace(/\s+/g, " ")}` : ""}`
+      + `${decision.outcome ? `\n  outcome: ${decision.outcome.replace(/\s+/g, " ")}` : ""}`)].join("\n");
 }

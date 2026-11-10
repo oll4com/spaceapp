@@ -1,3 +1,4 @@
+import { sentryWebBuild } from "./vite.sentry.js";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import { retainOpenTabAssets } from "./vite.asset-retention.js";
@@ -17,11 +18,14 @@ export function manualChunkForModule(moduleId: string): string | undefined {
   return undefined;
 }
 
-export default defineConfig({
-  plugins: [react(), demoBundleBoundaryPlugin(), retainOpenTabAssets()],
+export default defineConfig(async ({ command }) => {
+  const sentry = await sentryWebBuild(process.env, command);
+  return {
+  plugins: [react(), demoBundleBoundaryPlugin(), retainOpenTabAssets(), ...sentry.plugins],
   // The icon package ships as source; the alias keeps worktrees (which share live node_modules) resolving this checkout.
   resolve: { alias: [{ find: /^@space\/icons$/, replacement: fileURLToPath(new URL("../../packages/icons/src/app-icons.tsx", import.meta.url)) }] },
   build: {
+    sourcemap: sentry.sourcemap,
     emptyOutDir: false,
     cssCodeSplit: true,
     rollupOptions: {
@@ -42,6 +46,8 @@ export default defineConfig({
     }
   },
   test: {
+    // Node 26 enables its own Web Storage globals; use jsdom storage in browser tests.
+    execArgv: ["--no-experimental-webstorage"],
     environment: "jsdom",
     globals: true,
     // public-host runs many agents at once. With the default one worker per core, a full web run
@@ -57,4 +63,5 @@ export default defineConfig({
     // this checkout's source (the API suite does the same); builds keep resolving the built package.
     alias: [{ find: /^@space\/contracts$/, replacement: fileURLToPath(new URL("../../packages/contracts/src/index.ts", import.meta.url)) }]
   }
+  };
 });

@@ -11,7 +11,7 @@ import { createNousTools, type NousToolDeps } from "../src/nous/tools.js";
 const ctx = { owner: "user:operator", turnId: "nous_turn:t1", callId: "toolu_1", traceId: "trace:1" };
 const andy = { id: "pane:andy0001", roomId: "room:dino0001", paneName: "Andy", title: "Andy", mode: "TERMINAL", terminalRuntimeId: "cli:claude", isClosed: false } as unknown as Pane;
 const busy: NousLoadState = { level: "BUSY", reasons: ["CPU 80%"], cpuPercent: 80, load1: 15, load5: 14, cores: 20, memAvailableBytes: 17 * 1024 ** 3,
-  memTotalBytes: 40 * 1024 ** 3, swapPercent: 37, samples: 30, topCpu: [], topMemory: [], sampledAt: "2026-10-17T13:30:00.000Z" };
+  memTotalBytes: 40 * 1024 ** 3, swapPercent: 37, host: { percent: 37, host: "pve", at: null, error: null }, samples: 30, topCpu: [], topMemory: [], sampledAt: "2026-10-17T13:30:00.000Z" };
 
 describe("Nous under load", () => {
   it("is told, in its persona and on the world's server line, to send new work with when \"calm\" and to answer, stop and close at once", () => {

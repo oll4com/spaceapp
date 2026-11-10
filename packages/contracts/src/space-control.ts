@@ -1,5 +1,6 @@
 import { dotIdSchema } from "./dots.js";
 import { z } from "zod";
+import { jsonFitsWithin } from "./record-rules.js";
 
 export const SPACE_CONTROL_VERSION = "space-control-v1";
 const paneCategoryColorSchema = z.enum(["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"]).nullable();
@@ -10,11 +11,12 @@ export const controlScreenshotViewports = ["desktop", "desktop-hd", "desktop-4k"
 export const controlCaptureAspects = { "16:9": "desktop-hd", "1:1": "square", "4:5": "portrait", "9:16": "story", full: "desktop" } as const;
 // The engine's DOCKS (plus "none": the dock closed), SETTINGS_SECTIONS and HEALTH_SECTIONS (scripts/tests/space-media-capture.test.mjs keeps them equal).
 export const controlCaptureDocks = ["rooms", "notifications", "room-agent", "shared-chat", "media", "streaming", "source-control", "agent-files",
-  "clipboard", "tasks", "links", "settings", "health", "cli", "agent-sessions", "nous", "nous-fullscreen", "none"] as const;
+  "clipboard", "tasks", "links", "settings", "health", "cli", "agent-sessions", "nous", "nous-fullscreen", "nous-load", "nous-quotas", "nous-task-runs", "nous-goals", "nous-needs-you", "nous-startup", "nous-funding" /* alias of nous-startup since 7/11 */, "nous-jobs", "nous-crypto", "nous-marketing", "nous-score", "nous-requests", "none"] as const;
 export const controlCaptureSettingsSections = ["appearance", "docks", "panes", "widgets", "notifications", "dots", "plugins", "agent-capabilities",
   "default-provider", "voice-input", "releases", "cli-pane-controls", "date-time", "image-previews", "prompt-variables", "room-cache", "git-worktrees",
-  "diagnostics", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot"] as const;
-export const controlCaptureHealthSections = ["overview", "topology", "performance", "processes", "services", "ai", "alerts", "usage"] as const;
+  "diagnostics", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "nous", "history"] as const;
+export const controlCaptureHealthSections = ["overview", "topology", "performance", "processes", "services", "ai", "alerts", "usage",
+  "ai-antigravity", "ai-codex", "ai-claude", "ai-api"] as const;
 const captureView = { dock: z.enum(controlCaptureDocks).optional(), settings: z.enum(controlCaptureSettingsSections).optional(),
   health: z.enum(controlCaptureHealthSections).optional() };
 /** What a capture shows: a pane (optionally cropped), a dock or a Settings/Health section, and a recorded tour for a video. */
@@ -23,14 +25,16 @@ const controlCaptureFields = {
   crop: z.enum(["pane", "dock"]).optional(),
   // Owner only, never Dots: resize the room's CLI PTYs to the grids the capture shows; the fit holds (Nous 2026-10-23).
   fitTerminals: z.boolean().optional(),
+  // The capture page's UI language for this run only (plan clipboard:32etNsBgtbI-); no account's saved Settings change.
+  language: z.enum(["en", "el"]).optional(),
   ...captureView,
   video: z.object({ steps: z.array(z.object({ ...captureView, dwellMs: z.number().int().min(500).max(30_000).default(3000) }).strict()).min(1).max(20) })
     .strict().refine((video) => video.steps.reduce((total, step) => total + step.dwellMs, 0) <= 180_000, "A video lasts at most 180 seconds.").optional()
 };
 const text = z.string().trim().min(1).max(100_000);
 export const controlTargetSchema = z.object({
-  paneIds: z.array(id).min(1).max(64).optional(),
-  paneNames: z.array(id).min(1).max(64).optional(),
+  paneIds: z.array(id).min(1).optional(),
+  paneNames: z.array(id).min(1).optional(),
   runtimeId: id.optional(),
   state: z.enum(["OPEN", "CLOSED", "STOPPED", "RUNNING", "ALL"]).default("ALL")
 }).strict();
@@ -39,7 +43,7 @@ export const controlPlacementSchema = z.object({ paneId: id, x: z.number().min(0
 }).strict().refine(p => p.x + p.width <= 100, "Pane exceeds canvas width.");
 export const controlLayoutSchema = z.object({ mode: z.enum(["GRID", "CUSTOM"]),
   columns: z.number().int().min(0).max(4).nullable().optional().default(2),
-  placements: z.array(controlPlacementSchema).max(64).default([])
+  placements: z.array(controlPlacementSchema).default([])
 }).strict().superRefine((v,c) => {
   if (new Set(v.placements.map(p=>p.paneId)).size !== v.placements.length)
     c.addIssue({code:"custom",message:"Duplicate pane placement."});
@@ -100,7 +104,7 @@ export const controlExecuteSchema = z.object({roomId:id, requestId:id,
   waitForCompletion:z.boolean().optional(),
   dryRun:z.boolean().optional(),
   userExplicitlyAuthorized:z.boolean().optional(),
-  actions:z.array(controlActionSchema).min(1).max(32)
+  actions:z.array(controlActionSchema).min(1)
 }).strict().superRefine((v,c) => {
   const audits = v.actions.filter(a => a.kind === "pane" && a.operation === "visual_audit");
   if (audits.length && (v.actions.length !== 1 || v.expectedRevision))
@@ -111,7 +115,7 @@ export const controlExecuteSchema = z.object({roomId:id, requestId:id,
     if (a.operation !== "visual_audit" && a.captureScreenshot !== undefined)
       c.addIssue({code:"custom",message:"captureScreenshot is only valid for visual_audit."});
   }
-}).refine(v=>JSON.stringify(v).length<=500_000,"Control request is too large.");
+}).refine(...jsonFitsWithin(500_000,"Control request is too large."));
 export const controlInspectSections = [
   "STATE", "CONTENT", "MODELS", "QUOTA", "RUNTIMES", "VPN", "CLIPBOARD",
   "FILES", "MEDIA", "SKILLS", "SETTINGS", "ROOMS",
@@ -119,7 +123,9 @@ export const controlInspectSections = [
 ] as const;
 export const controlInspectSchema = z.object({roomId:id.optional(),
   section:z.enum(controlInspectSections).default("STATE"),
-  paneId:id.optional(), query:z.string().max(500).optional(), offset:z.number().int().min(0).default(0), limit:z.number().int().min(1).max(100).default(25)
+  paneId:id.optional(), query:z.string().max(500).optional(), offset:z.number().int().min(0).default(0), limit:z.number().int().min(1).max(100).default(25),
+  /** CONTENT only: each terminal line's colour runs too (`runs`, or `runsOmitted: "TOO_LARGE"`); `text` is unchanged. */
+  styled:z.boolean().optional()
 }).strict();
 export const controlResultSchema=z.object({index:z.number().int().min(0), paneId:id.optional(),
   status:z.enum(["COMPLETED","PENDING","FAILED","CANCELLED","UNKNOWN"]), detail:z.string().max(2000), error:z.string().max(2000).optional(), evidence:z.record(z.string(),z.unknown()).default({})});
@@ -134,6 +140,8 @@ export const controlScheduleSchema=z.object({dotId:dotIdSchema.nullable().option
   stopVersions:z.record(z.string(),z.number().int().min(0)).default({}),
   condition:z.enum(["AT_TIME","AFTER_TURN"]).default("AT_TIME"),
   parentOperationId:id.optional(),
+  /** OBS-006: the HTTP request that deferred this prompt; the prompt sent when it fires names it, as an undeferred one does. */
+  sourceRequestId:z.string().min(1).max(200).optional(),
   operationId:id.optional(),createdAt:z.string(),reason:z.string().nullable().default(null)});
 export const controlWatchAuditEntrySchema = z.object({
   timestamp: z.string(),
@@ -200,7 +208,7 @@ export type ControlWatch=z.infer<typeof controlWatchSchema>;
 export type ControlWatchAuditEntry=z.infer<typeof controlWatchAuditEntrySchema>;
 export type ControlWatchPaneDetails=z.infer<typeof controlWatchPaneDetailsSchema>;
 
-export const roomControlActionSchema=z.object({type:z.literal("CONTROL"),actions:z.array(controlActionSchema).min(1).max(32)}).strict();
+export const roomControlActionSchema=z.object({type:z.literal("CONTROL"),actions:z.array(controlActionSchema).min(1)}).strict(); // any number of actions a batch (until 31/10 32)
 export const controlToolSchemas = {
   space_capabilities: z.object({roomId:id.optional()}).strict(),
   space_inspect:controlInspectSchema,
@@ -596,6 +604,7 @@ export const controlActionCatalog: ControlActionCatalogItem[] = [
       dock: { type: "string", required: false, description: "Dock to open, e.g. media, tasks, settings; none: no dock open" },
       settings: { type: "string", required: false, description: "Settings section to open, e.g. appearance" },
       health: { type: "string", required: false, description: "Health section to open, e.g. usage" },
+      language: { type: "string", required: false, description: "en or el: the capture page's UI language for this run; no saved Settings change" },
       video: { type: "object", required: false, description: "{steps:[{dock?,settings?,health?,dwellMs}]}: record an MP4 (at most 20 steps, 180 s)" },
       fitTerminals: { type: "boolean", required: false, description: "Room owner only, never Dots: first resize the room's CLI terminals to the columns the capture shows (the fit holds until a controlling client resizes)" }
     },

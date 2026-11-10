@@ -19,7 +19,7 @@ function pane(id: string, order: number, overrides: Partial<Pane> = {}): Pane {
 }
 
 const details: Record<string, DashboardActivityDetail> = {
-  "pane:bob": { status: "waiting", reason: "Permission prompt", since: at, source: "native", modelId: "claude-opus-5-5" },
+  "pane:bob": { status: "waiting", reason: "Permission prompt", since: at, source: "native", modelId: "claude-opus-5-5", sessionId: "cli_session:bob" },
   "pane:dana": { status: "working", since: at, source: "native" },
   "pane:emma": { status: "done", since: at, source: "screen" }
 };
@@ -60,7 +60,7 @@ describe("room agent snapshot", () => {
     expect(headline).toContain("waiting 1 (Bob: Permission prompt)");
     expect(headline).toContain("working 1 (Dana)");
     const compact = formatRoomPaneLines(snapshot, "compact");
-    expect(compact[0]).toMatch(/^- Bob \[paneId=pane:bob; TERMINAL cli:claude; model=claude-opus-5-5; minimized\]: WAITING \(Permission prompt\)/);
+    expect(compact[0]).toMatch(/^- Bob \[paneId=pane:bob; TERMINAL cli:claude; session=cli_session:bob; model=claude-opus-5-5; minimized\]: WAITING \(Permission prompt\)/);
     expect(compact[0]).toContain('task "Fix login redirect" — Fixes the redirect loop');
     expect(compact.every((line) => line.length < 420)).toBe(true);
     const full = formatRoomPaneLines(snapshot, "full").join("\n");

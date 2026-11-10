@@ -17,7 +17,7 @@ import {
 describe("Live Audio Registry and Schemas", () => {
   it("registers all required providers with correct metadata", () => {
     const providers = getAllLiveAudioProviders();
-    expect(providers.map((p) => p.id)).toEqual(["openai", "google", "amazon", "local", "fish", "vercel"]);
+    expect(providers.map((p) => p.id)).toEqual(["openai", "google", "amazon", "local", "fish", "livekit", "cartesia", "murf", "assemblyai", "vercel"]);
 
     const openai = getLiveAudioProvider("openai");
     expect(openai.displayName).toBe("OpenAI");
@@ -58,6 +58,14 @@ describe("Live Audio Registry and Schemas", () => {
     expect(fish.defaultModel).toBe("drama-3");
     expect(fish.voices.map((v) => v.id)).toContain(fish.defaultVoice);
     expect(inferProviderFromModel("drama-3")).toBe("fish");
+
+    for (const id of ["livekit", "cartesia", "murf", "assemblyai"] as const) {
+      const grant = getLiveAudioProvider(id);
+      expect(grant.supportsTools).toBe(true);
+      expect(inferProviderFromModel(grant.defaultModel)).toBe(id);
+      for (const model of grant.models) expect(grant.voices.map((v) => v.id)).toContain(model.defaultVoice);
+      expect(validateLiveAudioConfig({ provider: id, model: grant.defaultModel }).valid).toBe(true);
+    }
   });
 
   it("lists verified model IDs for each provider", () => {

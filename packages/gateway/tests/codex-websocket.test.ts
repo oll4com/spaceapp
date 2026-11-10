@@ -60,7 +60,7 @@ async function setup(script: Script, options: { handshake?: (request: IncomingMe
       lastRefreshAt: new Date().toISOString() });
     await repository.saveUsageWindows(accountId, [{ window: "PRIMARY", usedPercent: used, resetAt: null, windowMinutes: 300 }]);
   }
-  await repository.updateSettings({ planPriority: [], routingStrategy: "USAGE_WEIGHTED" });
+  await repository.updateSettings({ planPriority: [], routingStrategy: "USAGE_WEIGHTED", subscriptionRouting: "WEEKLY_PACE" });
   const { plainKey, keyHash, keyPrefix } = generateGatewayApiKey();
   await repository.createApiKey({ keyId: `gw_key:${"c".repeat(32)}`, name: "CLI", keyHash, keyPrefix, trafficClass: "INTERACTIVE", allowedModels: [],
     enforcedModel: null, allowedReasoningEfforts: [], enforcedReasoningEffort: null, accountIds: [], compressionOverride: null, limits: [], expiresAt: null, createdBy: null });
@@ -76,7 +76,9 @@ async function setup(script: Script, options: { handshake?: (request: IncomingMe
       .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("");
     return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
   }) as unknown as typeof fetch;
+  const apiLog: Array<{ reqId: string; event: string }> = [];
   const server = createGatewayServer({ repository, version: "test", credentialKeyPresent: () => true,
+    requestLog: (record) => apiLog.push(record),
     live: { inFlightByAccount: () => pool.inFlight(), activeWebSockets: () => registry.active(), relayTasks: () => registry.relays() },
     routes: (app, helpers) => registerCodexProxyRoutes(app, helpers, { pool, logs, settings: () => repository.getSettings(), fetchImpl,
       upstreamBaseUrl: `http://127.0.0.1:${upstreamPort}/backend-api`, webSockets: registry, upstreamWebSocketHealth: health }) });
@@ -110,13 +112,56 @@ async function setup(script: Script, options: { handshake?: (request: IncomingMe
       socket.on("open", () => { resolve(101); socket.terminate(); });
       socket.on("error", () => undefined);
     });
-  return { repository, logs, registry, health, connections, connect, handshake, httpCalls, fetchImpl, server, port, plainKey,
+  return { repository, logs, registry, health, connections, connect, handshake, httpCalls, fetchImpl, server, port, plainKey, apiLog,
     advance: (ms: number) => { clock += ms; } };
 }
 
 const reply = (connection: UpstreamConnection, ...frames: Json[]) => { for (const frame of frames) connection.socket.send(JSON.stringify(frame)); };
 
 describe("Codex over a client WebSocket", () => {
+  it("keeps the validated CLI connection id on every response row and the Gateway API log (OBS-006)", async () => {
+    const gateway = await setup((connection) => reply(connection, events.created("resp_trace"), events.completed("resp_trace")));
+    for (const supplied of ["req:codex-pane-ws", "x".repeat(121), undefined]) {
+      const client = await gateway.connect("/backend-api/codex/responses", supplied ? { "x-request-id": supplied } : {});
+      const id = client.acceptHeaders()["x-request-id"];
+      if (supplied === "req:codex-pane-ws") expect(id).toBe(supplied);
+      else expect(id).toMatch(/^req_[0-9a-f]{32}$/);
+      for (let turn = 0; turn < 2; turn += 1) {
+        const done = client.next("response.completed");
+        client.create({ input: "PRIVATE_PROMPT" });
+        await done;
+      }
+      await gateway.logs.flush();
+      const rows = await gateway.repository.listRequestLogs({ limit: 20 });
+      expect(rows.filter((row) => row.requestId === id)).toHaveLength(2);
+      expect(gateway.apiLog.at(-1)?.reqId).toBe(id);
+      expect(gateway.connections.at(-1)?.headers["x-request-id"]).toBe(id);
+      client.socket.close();
+      await client.closed;
+    }
+    expect(JSON.stringify(gateway.apiLog)).not.toMatch(/PRIVATE_PROMPT|authorization|Bearer/);
+  });
+  it("binds each native turn frame separately and never carries a prior frame tag forward", async () => {
+    const gateway = await setup(connection => reply(connection, events.created("resp_trace"), events.completed("resp_trace")));
+    const client = await gateway.connect("/backend-api/codex/responses", { "x-request-id": "req:connection" });
+    const sources = ["req:first", undefined, "req:third", "x".repeat(121), "has space"];
+    for (const [index, source] of sources.entries()) {
+      const done = client.next("response.completed");
+      client.create({ client_metadata: { "x-codex-turn-metadata": JSON.stringify({ turn_id: `native-${index}`, space_request_id: source, other: "PRIVATE_METADATA" }) } });
+      await done;
+    }
+    await gateway.logs.flush();
+    expect((await gateway.repository.listRequestLogs({ limit: 10 })).map(row => row.requestId).reverse())
+      .toEqual(["req:first", "req:connection", "req:third", "req:connection", "req:connection"]);
+    expect(gateway.apiLog.filter(row => row.event === "gateway.model_request")).toEqual([
+      { event: "gateway.model_request", reqId: "req:first", transportRequestId: "req:connection", nativeTurnId: "native-0" },
+      { event: "gateway.model_request", reqId: "req:third", transportRequestId: "req:connection", nativeTurnId: "native-2" }
+    ]);
+    expect(client.acceptHeaders()["x-request-id"]).toBe("req:connection");
+    expect(gateway.connections[0]?.headers["x-request-id"]).toBe("req:connection");
+    expect(JSON.stringify(gateway.apiLog)).not.toMatch(/PRIVATE|has space|authorization/);
+  });
+
   it("relays a response from the least-used account and keeps one upstream socket for later turns", async () => {
     let turn = 0;
     const gateway = await setup((connection) => { turn += 1; reply(connection, events.created(`resp_${turn}`), events.delta("Hello"), events.completed(`resp_${turn}`)); });

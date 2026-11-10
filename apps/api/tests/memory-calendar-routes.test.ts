@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { MemoryGraphSnapshot } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
-import { createCsrfToken, signSession } from "../src/auth.js";
+import { signSession } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
 
 const sessionSecret = "test-secret-with-enough-length";

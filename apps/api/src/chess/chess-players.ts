@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { CODEX_LB_BASE_URL, codexAuthHeaders, getCodexApiKey } from "../benchmark-routes.js";
+import { gatewayRequestIdHeader } from "../gateway-request-id.js";
 import { loadOpenRouterBenchmarkModels, requestOpenRouterDoctrine } from "../openrouter-benchmark-models.js";
 import { nativeOpenCodeModelCatalog } from "../task-title-opencode.js";
 import {
@@ -12,6 +13,7 @@ import {
   type ChessCliModel,
   type ChessCliProviderSpec,
 } from "./chess-cli.js";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
  * Chess contestants are model x reasoning level pairs taken from the live
@@ -65,6 +67,8 @@ export interface ChessMoveRequest {
   system: string;
   prompt: string;
   signal: AbortSignal;
+  /** "<tournament>:<game>", on the worker's worker.socket_request line and Space Gateway's request log row (OBS-006). */
+  traceId?: string;
 }
 
 export interface ChessMoveReply {
@@ -97,7 +101,7 @@ export function isCliProvider(providerId: string): boolean {
   return CLI_PROVIDER_IDS.has(providerId);
 }
 
-const CODEX_MODELS_CACHE_FILE = "/var/lib/spaceapp-user/.codex/models_cache.json";
+const CODEX_MODELS_CACHE_FILE = `${SPACE_AGENT_HOME}/.codex/models_cache.json`;
 const CATALOG_CACHE_MS = 60_000;
 const CONTESTANT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,199}@[A-Za-z0-9._-]{1,40}$/;
 const REASONING_ORDER = ["default", "auto", "disabled", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
@@ -235,7 +239,7 @@ export function cliModelArgument(player: ChessContestant): string {
 }
 
 const CLI_CATALOG_DEADLINE_MS = 8_000;
-const LAST_GOOD_CATALOG_DIR = "/opt/spaceapp/var";
+const LAST_GOOD_CATALOG_DIR = `${SPACE_INSTALL_ROOT}/var`;
 
 /** The catalog the CLI models executor last saved (`<key>-models.last-good.json`), if any. */
 async function lastGoodCliCatalog(providerId: string, directory: string): Promise<string | null> {
@@ -351,7 +355,7 @@ async function requestCodexMove(request: ChessMoveRequest): Promise<ChessMoveRep
   const { contestant: player } = request;
   const response = await fetch(`${CODEX_LB_BASE_URL}/v1/chat/completions`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", ...gatewayRequestIdHeader(request.traceId) },
     signal: request.signal,
     body: JSON.stringify({
       model: player.modelId.slice("codex/".length),
@@ -421,6 +425,7 @@ export function createChessMoveRequester(options: ChessMoveRequesterOptions = {}
       // agent-chat has no system channel: the instructions lead the prompt.
       prompt: `${request.system}\n\n${request.prompt}`,
       signal: request.signal,
+      ...(request.traceId ? { traceId: request.traceId } : {}),
     });
     return { text };
   };

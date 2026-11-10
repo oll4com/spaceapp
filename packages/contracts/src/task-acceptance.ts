@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { jsonFitsWithin } from "./record-rules.js";
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 function boundedJson(value: unknown): value is JsonValue {
@@ -35,8 +36,7 @@ export const taskAcceptanceCheckSchema = z.discriminatedUnion("kind", [
 export const taskAcceptanceSchema = z.object({
   version: z.literal(1), checks: z.array(taskAcceptanceCheckSchema).min(1).max(16)
 }).strict().refine(value => new Set(value.checks.map(check => check.id)).size === value.checks.length,
-  "Acceptance check IDs must be unique.").refine(value => JSON.stringify(value).length <= 8000,
-  "Acceptance checks exceed the 8000-character limit.");
+  "Acceptance check IDs must be unique.").refine(...jsonFitsWithin(8000, "Acceptance checks exceed the 8000-character limit."));
 
 export const taskValidationEvidenceSchema = z.object({
   scope: z.literal("DECLARED_CHECKS_ONLY"),

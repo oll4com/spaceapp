@@ -23,6 +23,7 @@ import {
 } from "../ui-theme/app-icons.js";
 import type { FileItem } from "@space/contracts";
 import { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export interface FileListViewProps {
   entries: FileItem[];
@@ -111,6 +112,8 @@ export function FileListView({
   onFilesDropped,
   onNavigateUp
 }: FileListViewProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [sortField, setSortField] = useState<"name" | "size" | "permissions" | "mtime" | "birthtime">("name");
@@ -174,7 +177,7 @@ export function FileListView({
     setContextMenu(null);
     try {
       await navigator.clipboard.writeText(entry.path);
-      setCopiedNotice(`Copied: ${entry.path}`);
+      setCopiedNotice(t("Copied: {path}", { path: entry.path }));
       setTimeout(() => setCopiedNotice(null), 2500);
     } catch {
       try {
@@ -184,7 +187,7 @@ export function FileListView({
         input.select();
         document.execCommand("copy");
         document.body.removeChild(input);
-        setCopiedNotice(`Copied: ${entry.path}`);
+        setCopiedNotice(t("Copied: {path}", { path: entry.path }));
         setTimeout(() => setCopiedNotice(null), 2500);
       } catch {
         // ignore
@@ -230,7 +233,7 @@ export function FileListView({
   const hiddenCount = sortedEntries.length - visibleEntries.length;
   const showMore = hiddenCount > 0 && (
     <button type="button" className="fm-action-btn" style={{ padding: "4px 12px" }} onClick={() => setRowLimit((n) => n + ROW_PAGE)}>
-      Show {Math.min(ROW_PAGE, hiddenCount)} more ({hiddenCount} hidden, search to filter)
+      {t("Show {count} more ({hidden} hidden, search to filter)", { count: Math.min(ROW_PAGE, hiddenCount), hidden: hiddenCount })}
     </button>
   );
 
@@ -263,7 +266,7 @@ export function FileListView({
     >
       {isDragOver && (
         <div className="fm-drag-overlay">
-          Drop files here to upload to {currentPath}
+          {t("Drop files here to upload to {path}", { path: currentPath })}
         </div>
       )}
 
@@ -274,35 +277,35 @@ export function FileListView({
               <tr>
                 <th style={{ width: "30%", cursor: "pointer" }} onClick={() => handleSort("name")}>
                   <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <span>Name</span>
+                    <span>{t("Name")}</span>
                     {sortField === "name" && (sortDirection === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
                   </div>
                 </th>
                 <th style={{ width: "12%", cursor: "pointer" }} onClick={() => handleSort("size")}>
                   <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <span>Size</span>
+                    <span>{t("Size")}</span>
                     {sortField === "size" && (sortDirection === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
                   </div>
                 </th>
                 <th style={{ width: "12%", cursor: "pointer" }} onClick={() => handleSort("permissions")}>
                   <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <span>Permissions</span>
+                    <span>{t("Permissions")}</span>
                     {sortField === "permissions" && (sortDirection === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
                   </div>
                 </th>
                 <th style={{ width: "16%", cursor: "pointer" }} onClick={() => handleSort("mtime")}>
                   <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <span>Modified</span>
+                    <span>{t("Modified")}</span>
                     {sortField === "mtime" && (sortDirection === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
                   </div>
                 </th>
                 <th style={{ width: "16%", cursor: "pointer" }} onClick={() => handleSort("birthtime")}>
                   <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <span>Created</span>
+                    <span>{t("Created")}</span>
                     {sortField === "birthtime" && (sortDirection === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
                   </div>
                 </th>
-                <th style={{ width: "14%", textAlign: "right" }}>Actions</th>
+                <th style={{ width: "14%", textAlign: "right" }}>{t("Actions")}</th>
               </tr>
             </thead>
             <tbody ref={tableBodyRef}>
@@ -318,7 +321,7 @@ export function FileListView({
                   <td colSpan={6} style={{ color: "var(--modern-accent, #61d2c3)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }} onClick={onNavigateUp}>
                       <CornerLeftUp size={16} />
-                      <span style={{ fontWeight: 600 }}>.. (Parent Directory)</span>
+                      <span style={{ fontWeight: 600 }}>{t(".. (Parent Directory)")}</span>
                     </div>
                   </td>
                 </tr>
@@ -327,7 +330,7 @@ export function FileListView({
               {sortedEntries.length === 0 && (
                 <tr>
                   <td colSpan={6} style={{ textAlign: "center", padding: "32px", color: "var(--modern-muted)" }}>
-                    This folder is empty
+                    {t("This folder is empty")}
                   </td>
                 </tr>
               )}
@@ -358,7 +361,7 @@ export function FileListView({
                         ? "-"
                         : formatBytes(entry.size ?? 0)}
                     </td>
-                    <td className="fm-item-permissions" title={`Octal: ${entry.octalPermissions}`}>
+                    <td className="fm-item-permissions" title={t("Octal: {value}", { value: entry.octalPermissions })}>
                       {entry.permissions}
                     </td>
                     <td className="fm-item-mtime">{formatDate(entry.mtime)}</td>
@@ -368,7 +371,7 @@ export function FileListView({
                         <button
                           type="button"
                           className="fm-action-btn"
-                          title="Edit file"
+                          title={t("Edit file")}
                           onClick={(e) => {
                             e.stopPropagation();
                             onEditEntry(entry);
@@ -382,7 +385,7 @@ export function FileListView({
                         <button
                           type="button"
                           className="fm-action-btn"
-                          title="Preview file"
+                          title={t("Preview file")}
                           onClick={(e) => {
                             e.stopPropagation();
                             onPreviewEntry(entry);
@@ -396,7 +399,7 @@ export function FileListView({
                         <button
                           type="button"
                           className="fm-action-btn"
-                          title="Rename"
+                          title={t("Rename")}
                           onClick={(e) => {
                             e.stopPropagation();
                             onRenameEntry(entry);
@@ -410,7 +413,7 @@ export function FileListView({
                         <button
                           type="button"
                           className="fm-action-btn"
-                          title="Change permissions (chmod)"
+                          title={t("Change permissions (chmod)")}
                           onClick={(e) => {
                             e.stopPropagation();
                             onChmodEntry(entry);
@@ -424,7 +427,7 @@ export function FileListView({
                         <button
                           type="button"
                           className="fm-action-btn"
-                          title="Download file"
+                          title={t("Download file")}
                           onClick={(e) => {
                             e.stopPropagation();
                             onDownloadEntry(entry);
@@ -438,7 +441,7 @@ export function FileListView({
                         <button
                           type="button"
                           className="fm-action-btn delete"
-                          title="Delete"
+                          title={t("Delete")}
                           onClick={(e) => {
                             e.stopPropagation();
                             onDeleteEntry(entry);
@@ -465,7 +468,7 @@ export function FileListView({
             <div className="fm-grid-card" onClick={onNavigateUp}>
               <CornerLeftUp size={32} color="var(--modern-accent)" />
               <div className="fm-grid-name">..</div>
-              <div className="fm-grid-meta">Parent</div>
+              <div className="fm-grid-meta">{t("Parent")}</div>
             </div>
           )}
 
@@ -491,7 +494,7 @@ export function FileListView({
               </div>
               <div className="fm-grid-meta">
                 {entry.isDirectory
-                  ? "Folder"
+                  ? t("Folder")
                   : formatBytes(entry.size ?? 0)}
               </div>
             </div>
@@ -501,7 +504,7 @@ export function FileListView({
 
           {sortedEntries.length === 0 && (
             <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "32px", color: "var(--modern-muted)" }}>
-              This folder is empty
+              {t("This folder is empty")}
             </div>
           )}
         </div>
@@ -534,7 +537,7 @@ export function FileListView({
             onClick={() => void handleCopyPath(contextMenu.entry)}
           >
             <Copy size={14} color="var(--modern-accent, #61d2c3)" />
-            <span>Copy Path</span>
+            <span>{t("Copy Path")}</span>
           </button>
 
           <div className="fm-context-menu-separator" />
@@ -549,7 +552,7 @@ export function FileListView({
             }}
           >
             {contextMenu.entry.isDirectory ? <Folder size={14} color="#ffd43b" /> : <Eye size={14} />}
-            <span>{contextMenu.entry.isDirectory ? "Open Folder" : "Preview"}</span>
+            <span>{contextMenu.entry.isDirectory ? t("Open Folder") : t("Preview")}</span>
           </button>
 
           {/* Download (if file) */}
@@ -563,7 +566,7 @@ export function FileListView({
               }}
             >
               <Download size={14} />
-              <span>Download</span>
+              <span>{t("Download")}</span>
             </button>
           )}
 
@@ -582,7 +585,7 @@ export function FileListView({
                   }}
                 >
                   <Pencil size={14} />
-                  <span>Edit</span>
+                  <span>{t("Edit")}</span>
                 </button>
               )}
 
@@ -595,7 +598,7 @@ export function FileListView({
                 }}
               >
                 <TextCursorInput size={14} />
-                <span>Rename</span>
+                <span>{t("Rename")}</span>
               </button>
 
               <button
@@ -607,7 +610,7 @@ export function FileListView({
                 }}
               >
                 <Lock size={14} color="var(--modern-warning, #efc56c)" />
-                <span>Permissions</span>
+                <span>{t("Permissions")}</span>
               </button>
 
               <div className="fm-context-menu-separator" />
@@ -621,7 +624,7 @@ export function FileListView({
                 }}
               >
                 <Trash2 size={14} color="var(--modern-danger, #e05252)" />
-                <span>Delete</span>
+                <span>{t("Delete")}</span>
               </button>
             </>
           )}

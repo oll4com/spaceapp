@@ -1,12 +1,13 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { WORKTREES_ROOT } from "../worktrees/worktree-service.js";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // What a Space CLI pane, and so a T3 agent, can write
 // (codex-pane-host.service and space-t3code.service ReadWritePaths).
-export const T3_WRITABLE_ROOTS = ["/srv", "/var/lib/spaceapp-user"];
+export const T3_WRITABLE_ROOTS = ["/srv", SPACE_AGENT_HOME];
 // The live checkout is never a T3 project: its own worktrees are.
-const LIVE_CHECKOUT = "/opt/spaceapp";
+const LIVE_CHECKOUT = SPACE_INSTALL_ROOT;
 
 const strictlyInside = (root: string, path: string) => {
   const rel = relative(root, path);

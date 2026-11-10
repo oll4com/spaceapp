@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
  * OpenRouter model catalog for the Asteroids AI Benchmark provider toggle.
@@ -12,9 +13,9 @@ import { readFile } from "node:fs/promises";
  */
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
-const DEFAULT_TOKEN_FILE = "/var/lib/spaceapp-user/.config/opencode/openrouter.token";
-const DEFAULT_CATALOG_FILE = "/opt/spaceapp/var/openrouter-models.last-good.json";
-const DEFAULT_VERIFIED_FILE = "/opt/spaceapp/var/openrouter-models.verified.json";
+const DEFAULT_TOKEN_FILE = `${SPACE_AGENT_HOME}/.config/opencode/openrouter.token`;
+const DEFAULT_CATALOG_FILE = `${SPACE_INSTALL_ROOT}/var/openrouter-models.last-good.json`;
+const DEFAULT_VERIFIED_FILE = `${SPACE_INSTALL_ROOT}/var/openrouter-models.verified.json`;
 
 const CATALOG_TIMEOUT_MS = 3000;
 const CREDITS_TIMEOUT_MS = 2500;

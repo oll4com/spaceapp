@@ -13,12 +13,12 @@ const query:ListMemoryQuery={page:1,pageSize:25,sortOrder:'desc',q:'durable reco
 function fixture(){
  let entries=[{...entry}];const indexed=new Map<string,string>();
  const embed=vi.fn(async(texts:string[])=>texts.map(()=>Array(1536).fill(.1)));
- const repository={list:async()=>[...indexed].map(([id,inputHash])=>({id,inputHash})),upsert:vi.fn(async(row:{id:string;hash:string})=>{indexed.set(row.id,row.hash);}),search:async()=>[...indexed].map(([id,inputHash])=>({id,inputHash,similarity:.8})),close:async()=>{}};
+ const repository={list:async()=>[...indexed].map(([id,inputHash])=>({id,inputHash})),upsert:vi.fn(async(row:{id:string;hash:string})=>{indexed.set(row.id,row.hash);}),remove:vi.fn(async(ids:string[])=>{for(const id of ids)indexed.delete(id);}),search:async()=>[...indexed].map(([id,inputHash])=>({id,inputHash,similarity:.8})),close:async()=>{}};
  const service=new CanonicalMemorySearch({canonical:{list:async(q)=>{const scoped=entries.filter(e=>(!q.scope||e.scope===q.scope)&&(!q.roomId||e.roomId===q.roomId));return q.q?searchMemoryDocuments(scoped,q.q):scoped;},save:async()=>entry},repository,provider:'test',model:'test',ready:async()=>true,embed});
  return {service,embed,repository,setEntries:(v:MemoryEntry[])=>{entries=v;}};
 }
 describe('canonical semantic index',()=>{
- it('keeps late keyword evidence when the same record also has a semantic hit',async()=>{
+ it('keeps late keyword evidence when the same record also has a semantic hit, whole',async()=>{
   const root=await mkdtemp(join(tmpdir(),'space-hybrid-evidence-'));
   try {
    const paths={indexPath:join(root,'gemini_history.md'),monthlyPath:join(root,'gemini_history_2026-09.md')};
@@ -26,16 +26,24 @@ describe('canonical semantic index',()=>{
    await writeFile(paths.monthlyPath,`## 2026-09-05 - Long source\n\n${'Unrelated context. '.repeat(1200)}LateNeedle verified /external/recovery-copy.\n`);
    const canonical=createCanonicalSpaceMemoryBridge(paths);
    const all=await canonical.list({page:1,pageSize:25,sortOrder:'desc',searchMode:'keyword'});
-   expect(all[0]?.body).not.toContain('LateNeedle');
+   // Bodies are whole since 31/10 (plan clipboard:xCBrZwhCTzmC step 3): the late evidence is in the listed record itself.
+   expect(all[0]?.body).toContain('LateNeedle');
    const record=all[0]!;
    const service=new CanonicalMemorySearch({canonical,provider:'test',model:'test',ready:async()=>true,embed:async()=>[],
     repository:{list:async()=>[],upsert:async()=>{},close:async()=>{},search:async()=>[{id:record.id,inputHash:canonicalEmbeddingHash(record),similarity:.9}]}});
    const results=await service.search({...query,scope:'SYSTEM',roomId:undefined,q:'LateNeedle verified'},[]);
    expect(results).toHaveLength(1);
    expect(results[0]?.body).toContain('LateNeedle verified /external/recovery-copy.');
-   expect(results[0]?.body.length).toBeLessThanOrEqual(10000);
    expect(await service.search({...query,q:'LateNeedle verified'},[])).toEqual([]);
   } finally {await rm(root,{recursive:true,force:true});}
+ });
+ it('returns every keyword match and asks the vectors with the noise floor, not a top 100 (31/10)',async()=>{
+  const many=Array.from({length:150},(_,i)=>({...entry,id:`memory:m${i}`,title:`Recovery ${i}`,body:'durable recovery copy'}));
+  const search=vi.fn(async()=>[]);
+  const service=new CanonicalMemorySearch({canonical:{list:async(q)=>q.q?searchMemoryDocuments(many,q.q):many,save:async()=>entry},
+   repository:{list:async()=>[],upsert:async()=>{},remove:async()=>{},close:async()=>{},search},provider:'test',model:'test',ready:async()=>true,embed:async()=>[]});
+  expect(await service.search(query,[])).toHaveLength(150);
+  expect(search).toHaveBeenCalledWith([],'test','test',many.map(e=>e.id),0.4);
  });
  it('indexes once, skips unchanged records, and never serves stale/deleted/other-room vectors',async()=>{
   const f=fixture();expect((await f.service.sync()).updated).toBe(1);expect((await f.service.sync()).updated).toBe(0);expect(f.embed).toHaveBeenCalledTimes(1);
@@ -45,6 +53,15 @@ describe('canonical semantic index',()=>{
   expect((await f.service.coverage()).indexed).toBe(0);
   expect((await f.service.sync()).updated).toBe(1);expect((await f.service.coverage()).indexed).toBe(1);
   f.setEntries([]);expect(await f.service.search(query,[])).toEqual([]);
+ });
+ it('removes the vectors of entries that left the canonical list, never on an empty read (DATA-004)',async()=>{
+  const f=fixture();const other={...entry,id:'memory:other',title:'Other'};f.setEntries([entry,other]);
+  expect((await f.service.sync()).updated).toBe(2);
+  f.setEntries([]);await f.service.sync();expect(f.repository.remove).not.toHaveBeenCalled();
+  f.setEntries([other]);await f.service.sync();
+  expect(f.repository.remove).toHaveBeenCalledExactlyOnceWith([entry.id]);
+  expect((await f.repository.list()).map(row=>row.id)).toEqual([other.id]);
+  expect(f.embed).toHaveBeenCalledTimes(1);
  });
  it('retries after provider failure and reports a sanitized failure',async()=>{
   const f=fixture();f.embed.mockRejectedValueOnce(new Error('secret provider response'));

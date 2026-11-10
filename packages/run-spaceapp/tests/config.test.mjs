@@ -16,6 +16,7 @@ import {
   resolveInstallAccessMode,
   resolveInstallProfile,
   resolveSpaceAppHome,
+  renderRuntimeEnv,
   saveConfig
 } from "../src/index.mjs";
 
@@ -153,6 +154,26 @@ test("config persists atomically with owner-only POSIX permissions", async () =>
 
   assert.deepEqual(await loadConfig(root), config);
   await assertOwnerOnlyFile(join(root, "config.json"));
+});
+
+test("an install that opted in before install ids existed gets one beside its opt-in; one that never opted in gets none (item 47)", async () => {
+  // The collector links every event but the old "install" ping by its install id: without one, the daily active pings never count.
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-telemetry-id-"));
+  await saveConfig(root, { ...createDefaultConfig({ version: "1.1.5" }), telemetry: true });
+  const { config } = await prepareInstallation(root, { version: "1.1.9" });
+  assert.match(config.installId, /^[A-Za-z0-9_-]{8,64}$/);
+  await commitInstallation(root, config);
+  assert.equal((await loadConfig(root)).installId, config.installId);
+  // Core gets it as SPACE_INSTALL_ID through the runtime env, so its next ping carries it; the next run keeps the same id.
+  assert.match(renderRuntimeEnv(config), new RegExp(`^SPACEAPP_INSTALL_ID=${config.installId}$`, "m"));
+  assert.equal((await prepareInstallation(root, { version: "1.1.9" })).config.installId, config.installId);
+
+  const optedOut = await mkdtemp(join(tmpdir(), "spaceapp-telemetry-off-"));
+  await saveConfig(optedOut, createDefaultConfig({ version: "1.1.5" }));
+  const off = (await prepareInstallation(optedOut, { version: "1.1.9" })).config;
+  assert.equal(off.telemetry, false);
+  assert.equal(off.installId, undefined);
+  assert.match(renderRuntimeEnv(off), /^SPACEAPP_INSTALL_ID=$/m);
 });
 
 test("workspace registration accepts only existing absolute directories and avoids duplicates", async () => {

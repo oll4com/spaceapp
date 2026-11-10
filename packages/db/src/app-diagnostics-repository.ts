@@ -1166,8 +1166,9 @@ export class PostgresAppDiagnosticsRepository implements AppDiagnosticsRepositor
       await client.query("COMMIT");
       return result;
     } catch (error) {
-      rollbackFailed = await rollbackKeepingError(client);
-      throw error;
+      const rollback = await rollbackKeepingError(client, error);
+      rollbackFailed = rollback.failed;
+      throw rollback.error;
     } finally {
       client.release?.(rollbackFailed || undefined);
     }

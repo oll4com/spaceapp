@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { defaultMarketingCopilotPaneMetadata, marketingWordingIssues, type MarketingCopilotPaneMetadata, type Pane } from "@space/contracts";
 import { InMemoryMarketingCopilotRepository } from "@space/db";
 import { createMarketingCopilotService } from "../src/marketing-copilot/service.js";
+import { PaneCloseRefusedError } from "../src/pane-guards.js";
 
 const owner = "user:operator";
 
@@ -77,6 +78,23 @@ describe("Marketing Copilot publication gate", () => {
     await expect(service.beginPublish(owner, pane({ autonomy: "FULL", paused: true }), x.id)).rejects.toThrow(/MARKETING_PAUSED/);
   });
 
+  it("publishes approved replies with the channel's post limit full and never counts them toward it (nous_msg:89c59e6c)", async () => {
+    const { service } = setup();
+    const target = pane();
+    const approved = async (kind: "POST" | "REPLY") => {
+      const { post } = await service.createPost(owner, target, { channel: "REDDIT", kind, body, assets: [] });
+      await service.requestReview(owner, target, { postId: post.id });
+      await service.decideReview(owner, target, post.id, { decision: "approve" });
+      return post;
+    };
+    const publish = async (id: string) => { await service.beginPublish(owner, target, id); return service.finishPublish(owner, target, { postId: id, url: `https://www.reddit.com/r/selfhosted/comments/${id.slice(-6)}` }); };
+    expect((await publish((await approved("POST")).id)).status).toBe("PUBLISHED");
+    const post = await approved("POST");
+    await expect(service.beginPublish(owner, target, post.id)).rejects.toThrow(/MARKETING_LIMIT: Reddit allows 1 post\(s\) per 7 day\(s\)/);
+    for (let reply = 0; reply < 3; reply += 1) expect((await publish((await approved("REPLY")).id)).status).toBe("PUBLISHED");
+    await expect(service.beginPublish(owner, target, post.id)).rejects.toThrow(/the next slot opens at 2026-10-21T10:00:00.000Z/);
+  });
+
   it("never lets unqualified absolute claims out without the operator's approval", async () => {
     const { service } = setup();
     const target = pane({ autonomy: "FULL" });
@@ -138,6 +156,45 @@ describe("Marketing Copilot reviews, briefs and runs", () => {
     expect((await service.finishPublish(owner, target, { postId: third.id, url: "https://x.com/spaceapp/status/1847" })).status).toBe("PUBLISHED");
     await expect(service.updatePost(owner, third.id, { body: "Too late." })).rejects.toThrow(/Only a draft/);
     await expect(service.decideReview(owner, target, third.id, { decision: "reject" })).rejects.toThrow(/no longer waiting/);
+  });
+
+  it("keeps a copilot pane open while it owns an approved post still scheduled, naming the next one (operator rule 9/11)", async () => {
+    const { service, advance } = setup();
+    const target = pane();
+    const approved = async (scheduledAt: string, title: string) => {
+      const { post } = await service.createPost(owner, target, { channel: "LINKEDIN", kind: "POST", title, body, assets: [], scheduledAt });
+      await service.requestReview(owner, target, { postId: post.id });
+      return service.decideReview(owner, target, post.id, { decision: "approve" });
+    };
+    await approved("2026-10-16T09:00:00.000Z", "Later");
+    const next = await approved("2026-10-14T12:00:00.000Z", "Rooms you host");
+    const refusal = await service.assertMayClose(owner, target.id).catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(PaneCloseRefusedError);
+    expect((refusal as PaneCloseRefusedError).message).toMatch(new RegExp(`2 approved posts scheduled, the next ${next.id} "Rooms you host" on LinkedIn at 2026-10-14 12:00 UTC`));
+    expect((refusal as PaneCloseRefusedError).details).toMatchObject({ nextPostId: next.id, scheduledPosts: 2 });
+    // Another pane's posts never hold this one; once every time has passed, it closes.
+    await expect(service.assertMayClose(owner, "pane:other0001")).resolves.toBeUndefined();
+    advance(3 * 86_400_000);
+    await expect(service.assertMayClose(owner, target.id)).resolves.toBeUndefined();
+  });
+
+  it("marks a review written for a Nous brief, or covered by an approved rule, so its card recommends Approve (R12-4)", async () => {
+    const { service, repository } = setup();
+    const target = pane();
+    await service.startRun(owner, target.id);
+    const review = async (channel: "X" | "LINKEDIN") => {
+      const { post } = await service.createPost(owner, target, { channel, kind: "POST", body, assets: [] });
+      await service.requestReview(owner, target, { postId: post.id });
+      return (await repository.listEvents(owner, { postId: post.id, types: ["REVIEW_REQUESTED"], limit: 1 }))[0]!.payload.vouched ?? null;
+    };
+    expect(await review("X")).toBeNull();
+    await service.createBrief(owner, target, { text: "A thread for 0.2.5", from: "NOUS" });
+    const brief = await service.nextItem(owner, target, { waitMs: 0 });
+    expect(await review("X")).toBe("NOUS");
+    await service.reportBrief(owner, target, { eventId: (brief as { item: { id: string } }).item.id, outcome: "drafted", summary: "Drafted" });
+    expect(await review("X")).toBeNull();
+    await service.proposeRule(owner, target, { name: "LinkedIn posts", channel: "LINKEDIN", kinds: ["POST"], evidence: [] }, "USER");
+    expect(await review("LINKEDIN")).toBe("RULE");
   });
 
   it("serves briefs first, then approved posts that are due, and finishes when nothing is left", async () => {

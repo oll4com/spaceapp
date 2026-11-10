@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import fsPromises, { chmod, mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -129,13 +130,14 @@ async function restoreFixture() {
   ].join("\n") + "\n");
   for (const name of ["psql", "pg_dump", "pg_restore"]) await chmod(join(shims, name), 0o755);
   let run = 0;
-  return async (extraEnv = {}) => {
+  return async (extraEnv = {}, prepare = async () => {}) => {
     const dataRoot = join(work, `live-${run++}`);
     const memoryRoot = join(dataRoot, "memory");
     await mkdir(memoryRoot, { recursive: true });
     await writeFile(join(dataRoot, "current.txt"), "live");
     await writeFile(join(memoryRoot, "current.json"), "live");
     await writeFile(log, "");
+    await prepare(dataRoot);
     const env = { PATH: `${shims}:${process.env.PATH}`, SPACE_DATABASE_URL: "postgresql://spaceapp:pw@postgres:5432/spaceapp", ...extraEnv };
     const result = restorePortableBackup({
       env, stdout: { write() {} }, inputRoot: root, backupId: "spaceapp-backup-20261016T120000000Z", confirmation: "RESTORE", dataRoot, memoryRoot
@@ -170,13 +172,56 @@ test("a database that fails after another restored puts every database back as i
   const failed = await restore({ FAIL_DB: "temporal" });
   await assert.rejects(failed.result, (error) => error instanceof RestoreUnchangedError && /put back as it was before the restore/.test(error.message));
   const log = (await failed.log()).trim().split("\n");
-  // The app database restored, Temporal failed, then the app database came back from its pre-restore copy.
+  // The app database restored, Temporal failed.
   assert.match(log[0], /^spaceapp .*database\.dump$/);
   assert.match(log[1], /^temporal .*temporal\.dump$/);
-  assert.match(log[2], /^spaceapp .*--single-transaction.*\.spaceapp-restore-rollback\/spaceapp\.dump$/);
-  assert.equal(log.length, 3);
+  // Then both came back from their pre-restore copies: Temporal's schema was emptied before its restore failed.
+  assert.match(log[2], /^temporal .*--single-transaction.*\.spaceapp-restore-rollback\/temporal\.dump$/);
+  assert.match(log[3], /^spaceapp .*--single-transaction.*\.spaceapp-restore-rollback\/spaceapp\.dump$/);
+  assert.equal(log.length, 4);
   assert.deepEqual((await readdir(failed.dataRoot)).sort(), ["current.txt", "memory"]);
   assert.deepEqual(await readdir(failed.memoryRoot), ["current.json"]);
+});
+
+test("the database whose restore fails is put back too: its schema was emptied before pg_restore (1.1.9 in-app review, Codex #1)", async () => {
+  const restore = await restoreFixture();
+  const failed = await restore({ FAIL_DB: "spaceapp" });
+  await assert.rejects(failed.result, (error) => error instanceof RestoreUnchangedError && /put back as it was before the restore/.test(error.message));
+  const log = (await failed.log()).trim().split("\n");
+  assert.match(log[0], /^spaceapp .*database\.dump$/);
+  assert.match(log[1], /^spaceapp .*--single-transaction.*\.spaceapp-restore-rollback\/spaceapp\.dump$/);
+  assert.equal(log.length, 2);
+});
+
+test("a file swap that fails part way puts every moved file back (1.1.9 in-app review, Codex #2)", async () => {
+  const restore = await restoreFixture();
+  const originalRename = fsPromises.rename;
+  let moves = 0;
+  fsPromises.rename = async (from, to) => {
+    if (String(to).includes("/.spaceapp-restore-previous/") && ++moves === 2) throw Object.assign(new Error("injected rename EIO"), { code: "EIO" });
+    return originalRename(from, to);
+  };
+  syncBuiltinESMExports();
+  let failed;
+  try {
+    failed = await restore({}, (dataRoot) => writeFile(join(dataRoot, "current2.txt"), "live too"));
+    await assert.rejects(failed.result, (error) => error instanceof RestoreUnchangedError && /injected rename EIO/.test(error.message));
+  } finally {
+    fsPromises.rename = originalRename;
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual((await readdir(failed.dataRoot)).sort(), ["current.txt", "current2.txt", "memory"]);
+  assert.equal(await readFile(join(failed.dataRoot, "current.txt"), "utf8"), "live");
+  assert.deepEqual(await readdir(failed.memoryRoot), ["current.json"]);
+
+  // Files a failed restore could not put back are never deleted by the next restore.
+  const blocked = await restore({}, async (dataRoot) => {
+    await mkdir(join(dataRoot, ".spaceapp-restore-previous"));
+    await writeFile(join(dataRoot, ".spaceapp-restore-previous", "kept.txt"), "only copy");
+  });
+  await assert.rejects(blocked.result, (error) => error instanceof RestoreUnchangedError && /could not put back/.test(error.message));
+  assert.equal(await readFile(join(blocked.dataRoot, ".spaceapp-restore-previous", "kept.txt"), "utf8"), "only copy");
+  assert.equal((await blocked.log()).trim(), "");
 });
 
 test("a rollback that fails keeps the pre-restore copies and prints how to put them back", async () => {

@@ -22,6 +22,10 @@ export interface FreelanceCopilotRouteDependencies {
   kickoff?(pane: Pane, run: FreelanceRun): Promise<void>;
 }
 
+/** A Start on a quiet queue means "go find work"; the agent searches the platforms only when a brief asks. */
+const START_SEARCH_BRIEF = "Find new work: search every enabled platform you are signed in to for new posts, at a person's reading pace, under each channel's CHANNEL_RULE pace and the caps. "
+  + "Add and score the leads, and draft proposals for QUALIFIED leads scored 70+. Before sign-in read space_site_signin_get; save every confirmed success with space_site_signin_record. Only unresolved login/MFA goes to space_browser_request_handoff after trying the stored method.";
+
 // Not strict: the lead and message routes carry their own id next to the pane id.
 const paneParamsSchema = z.object({ id: z.string().regex(/^pane:[A-Za-z0-9_-]{6,80}$/) });
 const paneIdQuerySchema = z.object({ paneId: z.string().regex(/^pane:[A-Za-z0-9_-]{6,80}$/).optional() }).strict();
@@ -73,13 +77,14 @@ export function registerFreelanceCopilotRoutes(app: FastifyInstance, service: Fr
     const pane = await paneOf(request);
     const owner = await deps.authenticatedOwner(request);
     const started = await service.startRun(owner, pane.id);
+    const searchBrief = await service.backlog(owner, pane, ["PENDING", "TAKEN"]) ? null : await service.createBrief(owner, pane, { text: START_SEARCH_BRIEF });
     let kickoffSent = false;
     if (started.kickoff && deps.kickoff) {
       await deps.kickoff(pane, started.run);
       await service.markKickoff(owner, started.run.id);
       kickoffSent = true;
     }
-    await deps.audit(request, "freelance_copilot.run.start", pane.id, { runId: started.run.id, kickoffSent });
+    await deps.audit(request, "freelance_copilot.run.start", pane.id, { runId: started.run.id, kickoffSent, searchBriefId: searchBrief?.id ?? null });
     return { ...(await service.runView(owner, pane)), kickoffSent };
   });
   for (const action of ["pause", "stop"] as const) {
@@ -109,7 +114,7 @@ export function registerFreelanceCopilotRoutes(app: FastifyInstance, service: Fr
   // ---- leads -------------------------------------------------------------------------------------
   app.get("/api/freelance-copilot/leads", routeOptions, async (request) => {
     const owner = await deps.authenticatedOwner(request);
-    const raw = parseQuery(z.object({ status: z.string().max(200).optional(), channel: freelanceChannelSchema.optional(), limit: z.coerce.number().int().min(1).max(500).default(200) }).strict(), request.query ?? {});
+    const raw = parseQuery(z.object({ status: z.string().max(200).optional(), channel: freelanceChannelSchema.optional(), limit: z.coerce.number().int().min(1).optional() }).strict(), request.query ?? {});
     return { leads: await service.listLeads(owner, { status: list(raw.status)?.map((entry) => freelanceLeadStatusSchema.parse(entry)), channel: raw.channel, limit: raw.limit }) };
   });
   app.get("/api/freelance-copilot/leads/:id", routeOptions, async (request) => {

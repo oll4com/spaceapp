@@ -33,11 +33,18 @@ import {
   ServerCog,
   Sparkles,
   Users,
-  Youtube
+  Youtube,
+  History,
+  Languages,
+  PenLine
 } from "../ui-theme/app-icons.js";
 import { VoiceSettingsCard } from "../voice-input/VoiceSettingsCard.js";
 import { YouTubeSettingsCard } from "../browser-pane/YouTubeSummarySettingsCard.js";
 import { RoomLimitSettingsCard } from "../rooms-dock/RoomLimitSettingsCard.js";
+import { HistoryPeriodSettingsCard } from "../history-period/HistoryPeriodSettingsCard.js";
+import { UiLanguageSettingsCard } from "../ui-language/UiLanguageSettingsCard.js";
+import { SignatureLibrary } from "../agent-files/SignatureLibrary.js";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import type { ModernAppearance, ModernIconPack, UiBackground, UiTheme } from "../../ui-theme.js";
 import { SettingsDisclosure, SettingsGroup, SettingsSearchable, SettingsSections } from "./SettingsDisclosure.js";
 import type { EnvironmentPresetCard } from "./EnvironmentPresetCard.js";
@@ -68,6 +75,7 @@ import type { SecurityCopilotSettingsCard } from "../security-copilot-pane/Secur
 import type { MonitoringCopilotSettingsCard } from "../monitoring-copilot-pane/MonitoringCopilotSettingsCard.js";
 import { NotificationSettingsCard } from "../notifications/NotificationSettingsCard.js";
 import { NousSettingsCard } from "../nous/NousSettingsCard.js";
+import { useSettingsSectionRequest } from "./settings-section-request.js";
 
 // The Settings dock (and the Workspace "Advanced settings" page): a search field, then
 // sections grouped by what they change, each with plain-language help.
@@ -102,7 +110,12 @@ export interface AgentSettingsCards {
   MonitoringCopilot: typeof MonitoringCopilotSettingsCard;
 }
 
-export const settingsCardLoadingFallback = <div className="empty-mini" role="status">Loading settings…</div>;
+function SettingsCardLoading() {
+  const language = useUiLanguage();
+  return <div className="empty-mini" role="status">{uiText(language, "Loading settings…")}</div>;
+}
+
+export const settingsCardLoadingFallback = <SettingsCardLoading />;
 
 const AGENT_PANE_SETTINGS_EVENT = "space:agent-pane-settings-updated";
 
@@ -211,6 +224,8 @@ export function AgentSettingsDock({
     SecurityCopilot: LazySecurityCopilotSettingsCard,
     MonitoringCopilot: LazyMonitoringCopilotSettingsCard
   } = cards;
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [providerPending, setProviderPending] = useState(false);
   const [providerError, setProviderError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -230,7 +245,7 @@ export function AgentSettingsDock({
       onProviderSettingsRefresh(updated);
       dispatchAgentPaneSettingsUpdated(null);
     } catch (err) {
-      setProviderError(err instanceof Error ? err.message : "Default provider update failed");
+      setProviderError(err instanceof Error ? err.message : t("Default provider update failed"));
     } finally {
       setProviderPending(false);
     }
@@ -238,37 +253,39 @@ export function AgentSettingsDock({
 
   const isAdmin = auth?.user?.role === "ADMIN";
   const canManageInstallation = isAdmin || auth?.user?.role === "OPERATOR";
+  const sectionRequest = useSettingsSectionRequest();
+  const dotsRequest = dotSettingsRequest ? { key: "dots", nonce: dotSettingsRequest.nonce } : null;
 
   return (
     <div ref={dockRef} className={`dock-panel agent-settings-dock basic-settings-dock${isFullscreen ? " is-fullscreen" : ""}`}
       data-searching={query.trim() ? "true" : undefined} role={isFullscreen ? "dialog" : undefined}
-      aria-modal={isFullscreen || undefined} aria-label={isFullscreen ? "Settings" : undefined}>
+      aria-modal={isFullscreen || undefined} aria-label={isFullscreen ? t("Settings") : undefined}>
       {/* The shell header already names this dock (Settings or Advanced settings); fullscreen covers it. */}
-      <SettingsSections request={dotSettingsRequest ? { key: "dots", nonce: dotSettingsRequest.nonce } : null} query={query} revealOnOpen>
+      <SettingsSections request={(sectionRequest?.nonce ?? 0) > (dotsRequest?.nonce ?? 0) ? sectionRequest : dotsRequest} query={query} revealOnOpen>
       <div className="settings-dock-toolbar">
-        {isFullscreen ? <h2 className="settings-dock-fullscreen-title">Settings</h2> : null}
+        {isFullscreen ? <h2 className="settings-dock-fullscreen-title">{t("Settings")}</h2> : null}
         <div className="settings-search">
           <Search aria-hidden="true" />
-          <input type="search" name="settings-search" aria-label="Search settings" placeholder="Search settings"
+          <input type="search" name="settings-search" aria-label={t("Search settings")} placeholder={t("Search settings")}
             value={query} onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => { if (event.key === "Escape" && query) { event.stopPropagation(); setQuery(""); } }} />
         </div>
         {inWorkspaceMenu ? null : <DockFullscreenButton name="settings" active={isFullscreen} onToggle={() => setIsFullscreen((value) => !value)} />}
       </div>
       {isFullscreen ? (
-        <nav className="settings-dock-nav" aria-label="Settings groups">
+        <nav className="settings-dock-nav" aria-label={t("Settings groups")}>
           {settingsGroups.map((group) => (
             <button key={group.key} type="button" onClick={() => {
               dockRef.current?.querySelector(`[data-settings-group="${group.key}"]`)?.scrollIntoView?.({ block: "start" });
-            }}>{group.title}</button>
+            }}>{t(group.title)}</button>
           ))}
         </nav>
       ) : null}
       <div className="settings-dock-body">
-      <div className="settings-search-empty" role="status">No settings match “{query.trim()}”. Try another word.</div>
+      <div className="settings-search-empty" role="status">{t("No settings match “{query}”. Try another word.", { query: query.trim() })}</div>
 
       <SettingsGroup groupKey="workspace" title="Workspace" description="What you see in your rooms.">
-        <SettingsSearchable keywords="workspace environment custom max everything all tools docks panes widgets clis">
+        <SettingsSearchable keywords={`workspace environment custom max everything all tools docks panes widgets clis ${t("Workspace environment")}`}>
           <RecoverableSurface fallback={settingsCardLoadingFallback}>
             <LazyEnvironmentPresetCard
               isAdmin={isAdmin}
@@ -335,6 +352,24 @@ export function AgentSettingsDock({
           <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyDateTimeSettingsCard userId={auth?.user?.id} /></RecoverableSurface>
         </SettingsDisclosure>
 
+        <SettingsDisclosure sectionKey="language" title="Language" description="Space's interface language, and the language Nous and agents write to you in." scope="Your account" icon={Languages}
+          help="Two choices, English or Greek (Ελληνικά). Interface language: Space's own labels, buttons and menus. Agent language: Nous's replies, the steps in the Nous conversation, Needs you cards, decisions and notifications. Until you choose, the interface follows Voice input's language when that is Greek, and the agents follow the interface."
+          keywords="language greek ελληνικά english γλώσσα translate needs you cards locale interface agent agents nous replies">
+          <UiLanguageSettingsCard />
+        </SettingsDisclosure>
+
+        <SettingsDisclosure title="Signatures" description="Your saved hand signatures for signing documents." scope="Your account" icon={PenLine}
+          help="Save one or more hand signatures, name them and choose the default. When you sign a PDF in Agent Files you pick which one goes on each spot, or draw a new one. Each saved signature is also a PNG in Agent Files › Signatures."
+          keywords="signature signatures sign υπογραφή υπογραφές pdf document default draw">
+          <SignatureLibrary />
+        </SettingsDisclosure>
+
+        <SettingsDisclosure sectionKey="history" title="History" description="How far back every history goes." scope="Your account" icon={History}
+          help="Choose how far back histories such as Task runs go: 7, 14, 30, 60 or 90 days (90 is the most). Entries older than this are removed."
+          keywords="history period retention days months log task runs keep older">
+          <HistoryPeriodSettingsCard />
+        </SettingsDisclosure>
+
         <SettingsDisclosure title="Notifications" description="Pop-ups, sounds, desktop and Telegram for every pane." scope="Your account" icon={Bell}
           help="Notifications tell you when mail arrives, a copilot needs you, or something finishes. Choose the channels (pop-up toasts, sound, desktop notifications in this browser, Telegram) and turn a source down on its own; turning notifications off hides the pop-ups only, the Notification Center still collects them."
           keywords="toast alerts messages notices quiet silence desktop telegram sound mail copilot notification center">
@@ -363,10 +398,10 @@ export function AgentSettingsDock({
       </SettingsGroup>
 
       <SettingsGroup groupKey="assistants" title="Assistants & AI" description="How your AI helpers and agents work.">
-        {canManageInstallation ? <SettingsDisclosure sectionKey="nous" title="Nous" description="The mind of SpaceApp: work on your behalf, promote and approve Warm changes." scope="Your account" icon={Nous}
-          help="Work on my behalf turns Nous on: it answers panes and copilots in every room and brings you only releases, irreversible actions, third parties and direction. The next two let it promote dev to stable and approve Warm changes without asking you; the last one, on this device, lets it bring you to a pane that needs you. The Nous dock shows the same switches."
-          keywords="nous mind work on my behalf promote dev stable warm approve autonomy focus bring me panes">
-          <NousSettingsCard />
+        {canManageInstallation ? <SettingsDisclosure sectionKey="nous" title="Nous" description="The mind of SpaceApp: its provider and model, work on your behalf, promote and approve Warm changes." scope="Your account" icon={Nous}
+          help="Provider and models come first: the provider Nous runs on (Space, every provider in the Gateway order, or Codex, Claude, Gemini, OpenAI API, OpenRouter, DeepSeek alone), then the model and effort for each kind of turn. Work on my behalf turns Nous on: it answers panes and copilots in every room and brings you only releases, irreversible actions, third parties and direction. The next two let it promote dev to stable and approve Warm changes without asking you; the last one, on this device, lets it bring you to a pane that needs you. The Nous dock shows the same switches."
+          keywords="nous mind provider model effort codex openai claude anthropic gemini antigravity openrouter deepseek work on my behalf promote dev stable warm approve autonomy focus bring me panes">
+          <NousSettingsCard sharedMemoryAdmin={isAdmin} />
         </SettingsDisclosure> : null}
 
         <SettingsDisclosure sectionKey="dots" title="Dots" description="Your six assistants: models, permissions and reminders." scope="Your account" icon={Bot}
@@ -383,8 +418,7 @@ export function AgentSettingsDock({
           <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyJobCopilotSettingsCard /></RecoverableSurface>
         </SettingsDisclosure>
         <SettingsDisclosure sectionKey="mail-copilot" title="Mail Copilot" description="The agent and account new Mail Copilot panes open with." scope="Your account" icon={Mail}
-          help="Mail Copilot shows your Gmail accounts and handles mail with an AI coding agent.
-Choose that agent and its account once and every new Mail Copilot pane, on every device, opens with it; turn on asking to pick each time."
+          help="Mail Copilot shows your Gmail accounts and handles mail with an AI coding agent. Choose that agent and its account once and every new Mail Copilot pane, on every device, opens with it; turn on asking to pick each time."
           keywords="mail copilot gmail email inbox agent claude codex account default ask launch">
           <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyMailCopilotSettingsCard /></RecoverableSurface>
         </SettingsDisclosure>
@@ -432,22 +466,22 @@ Choose that agent and its account once and every new Mail Copilot pane, on every
         {canManageCliRuntimes ? <SettingsDisclosure hidden={!adminMode} title="Default provider" description="The AI service new chats start with." scope="New sessions" icon={ServerCog}
           help="New chats and agents start with this AI service. Chats that already exist keep the one they use."
           keywords="ai service openai model chat agent">
-          <section className="agent-settings-card settings-flat-card settings-provider-card" aria-label="Global provider settings">
+          <section className="agent-settings-card settings-flat-card settings-provider-card" aria-label={t("Global provider settings")}>
             <label className="provider-default-select settings-flat-row">
               <span className="settings-flat-row-copy">
-                <strong>Provider</strong>
+                <strong>{t("Provider")}</strong>
                 <small>
-                  {!isCodexEnabled ? "Codex is turned off, so the provider can't be changed."
-                    : defaultProvider ? `Route: ${providerRouteLabel(defaultProvider)}` : "Loading providers…"}
+                  {!isCodexEnabled ? t("Codex is turned off, so the provider can't be changed.")
+                    : defaultProvider ? t("Route: {route}", { route: providerRouteLabel(defaultProvider) }) : t("Loading providers…")}
                 </small>
               </span>
               <select
-                aria-label="Default provider"
+                aria-label={t("Default provider")}
                 name="settings-default-provider"
                 value={providerSettings?.defaultProviderId ?? ""}
                 onChange={(event) => void selectDefaultProvider(event.target.value)}
                 disabled={!isCodexEnabled || providerPending || providers.length === 0}
-                title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
+                title={!isCodexEnabled ? t("Enable Codex in Settings") : undefined}
               >
                 {providers.length ? (
                   providers.map((provider) => (
@@ -456,12 +490,12 @@ Choose that agent and its account once and every new Mail Copilot pane, on every
                     </option>
                   ))
                 ) : (
-                  <option value="">No providers</option>
+                  <option value="">{t("No providers")}</option>
                 )}
               </select>
             </label>
             {providerError ? (
-              <DockNotice onDismiss={() => setProviderError(null)}>The default provider could not be changed: {providerError}</DockNotice>
+              <DockNotice onDismiss={() => setProviderError(null)}>{t("The default provider could not be changed: {error}", { error: providerError })}</DockNotice>
             ) : null}
           </section>
         </SettingsDisclosure> : null}
@@ -480,18 +514,18 @@ Choose that agent and its account once and every new Mail Copilot pane, on every
       </SettingsGroup>
 
       <SettingsGroup groupKey="connections" title="Accounts & connections" description="Sign-in and outside services.">
-        {adminMode && canManageCliRuntimes ? <SettingsSearchable keywords="setup wizard install connect tools accounts first time">
+        {adminMode && canManageCliRuntimes ? <SettingsSearchable keywords={`setup wizard install connect tools accounts first time ${t("Setup wizard")}`}>
           <div className="settings-setup-shortcut">
             <Compass aria-hidden="true" />
             <span>
-              <strong>Setup wizard</strong>
-              <small>Connect AI tools and accounts step by step. You can stop and come back at any time.</small>
+              <strong>{t("Setup wizard")}</strong>
+              <small>{t("Connect AI tools and accounts step by step. You can stop and come back at any time.")}</small>
             </span>
-            <button type="button" aria-label="Open setup wizard" onClick={onOpenSetup}>Open</button>
+            <button type="button" aria-label={t("Open setup wizard")} onClick={onOpenSetup}>{t("Open")}</button>
           </div>
         </SettingsSearchable> : null}
 
-        <SettingsDisclosure title="Account & Google" description="Sign in with your Google account." scope="Your account" icon={Users}
+        <SettingsDisclosure sectionKey="account" title="Account & Google" description="Sign in with your Google account." scope="Your account" icon={Users}
           help="Link your Google account to sign in with one click. Your rooms and settings stay the same. Admins can also turn on Google sign-in for everyone here."
           keywords="google sign in login sso account email devices phone mobile app nous revoke">
           <RecoverableSurface fallback={settingsCardLoadingFallback}>

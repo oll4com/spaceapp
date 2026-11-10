@@ -13,7 +13,7 @@ export interface CouncilRepository {
   /** Throws CouncilActiveRunError when the owner already has an active run. */
   create(run: CouncilRun): Promise<CouncilRun>;
   get(owner: string, id: string): Promise<CouncilRun | null>;
-  list(owner: string, limit: number): Promise<CouncilRunSummary[]>;
+  list(owner: string, limit?: number): Promise<CouncilRunSummary[]>;
   /** Writes the whole run; throws CouncilActiveRunError when it would become a second active run. */
   save(run: CouncilRun): Promise<CouncilRun>;
   delete(owner: string, id: string): Promise<boolean>;
@@ -35,7 +35,7 @@ export class InMemoryCouncilRepository implements CouncilRepository {
   }
   async create(run: CouncilRun) { this.assertSingleActive(run); this.runs.set(run.id, structuredClone(run)); return structuredClone(run); }
   async get(owner: string, id: string) { const run = this.runs.get(id); return run && run.ownerUserId === owner ? structuredClone(run) : null; }
-  async list(owner: string, limit: number) {
+  async list(owner: string, limit?: number) {
     return [...this.runs.values()].filter((run) => run.ownerUserId === owner).sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, limit).map(summaryOf);
   }
   async save(run: CouncilRun) { this.assertSingleActive(run); this.runs.set(run.id, structuredClone(run)); return structuredClone(run); }
@@ -88,10 +88,10 @@ export class PostgresCouncilRepository implements CouncilRepository {
     const result = await this.pool.query<Row>(`SELECT ${columns} FROM council_runs WHERE owner_user_id = $1 AND id = $2`, [owner, id]);
     return result.rows[0] ? fromRow(result.rows[0]) : null;
   }
-  async list(owner: string, limit: number) {
+  async list(owner: string, limit?: number) {
     const result = await this.pool.query<Pick<Row, "id" | "question" | "status" | "stage" | "createdAt" | "updatedAt">>(
       `SELECT id, question, status, stage, created_at AS "createdAt", updated_at AS "updatedAt" FROM council_runs WHERE owner_user_id = $1
-       ORDER BY created_at DESC, id DESC LIMIT $2`, [owner, limit]);
+       ORDER BY created_at DESC, id DESC LIMIT $2`, [owner, limit ?? null]);
     return result.rows.map((row) => ({ ...row, createdAt: iso(row.createdAt), updatedAt: iso(row.updatedAt) }));
   }
   async save(run: CouncilRun) {

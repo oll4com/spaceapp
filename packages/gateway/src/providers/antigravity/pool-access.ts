@@ -15,8 +15,9 @@ type Json = Record<string, unknown>;
 export function createAntigravityPoolAccess(options: { pool: AccountPool; repository: GatewayRepository; sticky: StickyStore; now: () => number }) {
   const { pool, sticky, now } = options;
 
-  async function pick(group: AntigravityQuotaGroup, tried: Set<string>, stickyHash: string | null, settings: GatewaySettings): Promise<GatewayAccountRecord | undefined> {
-    const accounts = (await pool.accounts()).filter((account) => !tried.has(account.id));
+  async function pick(group: AntigravityQuotaGroup, tried: Set<string>, stickyHash: string | null, settings: GatewaySettings,
+    scope: ReadonlySet<string> | null = null): Promise<GatewayAccountRecord | undefined> {
+    const accounts = (await pool.accounts()).filter((account) => !tried.has(account.id) && (!scope || scope.has(account.id)));
     const states = accounts.map((account) => pool.toBalancerState(account, group));
     const stickyId = stickyHash ? await sticky.get(stickyHash) : undefined;
     const stickyState = stickyId ? states.find((state) => state.accountId === stickyId) : undefined;

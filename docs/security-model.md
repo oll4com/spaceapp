@@ -42,6 +42,12 @@ account.
   (PostgreSQL, Temporal, codex-lb, headroom) are pinned by digest in the compose
   template. CLIs installed on first use come from per-provider npm lockfiles
   in the CLI image, the Cursor agent from a checksum-pinned archive.
+  From run-spaceapp 1.2.0 the release also signs each image's build provenance
+  with Sigstore (a GitHub artifact attestation from the release workflow,
+  stored beside the image) and verifies it names this repository, the release
+  workflow and the release commit. Anyone can check it with
+  `gh attestation verify oci://ghcr.io/oll4com/spaceapp-core:<version> --repo oll4com/spaceapp`.
+  The launcher still checks the unsigned statements described above.
 
 ## Default protections
 

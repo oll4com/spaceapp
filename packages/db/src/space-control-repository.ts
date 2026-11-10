@@ -1,5 +1,9 @@
 import { createDedicatedSpacePgPool, createSpacePgPool, type PgPoolLike } from "./space-store.js";
 export interface ControlRecord {kind:"operation"|"layout"|"snapshot"|"schedule"|"grant"|"pane_state"|"watch"|"audit"|"settings_snapshot"|"release_train"|"nous_held"|"cli_composer_submission"; actorId:string; key:string; roomId:string; version:number; value:unknown}
+/** A release train is product-wide, not part of a room: its row keeps no room (NULL), so a room's ON DELETE CASCADE cannot take it
+ * (stable 2026-10-28 lost run-spaceapp 1.1.9 with its captain's old room; migration 0260). It reads back with an empty roomId. */
+export const roomlessControlKinds: ReadonlySet<ControlRecord["kind"]> = new Set(["release_train"]);
+const storedRoom = (r: ControlRecord): string | null => roomlessControlKinds.has(r.kind) ? null : r.roomId;
 export interface ControlRepository {
   get(kind:ControlRecord["kind"],actorId:string,key:string):Promise<ControlRecord|null>;
   list(kind:ControlRecord["kind"],actorId:string|null,roomId?:string):Promise<ControlRecord[]>;
@@ -58,7 +62,7 @@ export class InMemoryControlRepository implements ControlRepository {
   async get(kind:ControlRecord["kind"],actorId:string,key:string){return structuredClone(this.records.get(this.key(kind,actorId,key))??null);}
   async list(kind:ControlRecord["kind"],actorId:string|null,roomId?:string){return structuredClone([...this.records.values()].filter(r=>r.kind===kind && (actorId===null||r.actorId===actorId)&&(!roomId||r.roomId===roomId)));}
   async listActive(kind:ControlRecord["kind"],statuses:readonly string[]){return structuredClone([...this.records.values()].filter(r=>r.kind===kind&&statuses.includes(controlRecordStatus(r.value)??"")).slice(0,1000));}
-  async write(record:ControlRecord,expectedVersion:number){const key=this.key(record.kind,record.actorId,record.key);if((this.records.get(key)?.version??0)!==expectedVersion)return false;this.records.set(key,structuredClone({...record,version:expectedVersion+1}));return true;}
+  async write(record:ControlRecord,expectedVersion:number){const key=this.key(record.kind,record.actorId,record.key);if((this.records.get(key)?.version??0)!==expectedVersion)return false;this.records.set(key,structuredClone({...record,roomId:storedRoom(record)??"",version:expectedVersion+1}));return true;}
   async dispose(){}
 }
 export class PostgresControlRepository implements ControlRepository {
@@ -101,15 +105,15 @@ export class PostgresControlRepository implements ControlRepository {
       client.release?.();
     }
   }
-  private row(r:{kind:ControlRecord["kind"];actor_id:string;record_key:string;room_id:string;version:number;value:unknown;dot_id?:string|null}):ControlRecord{return {kind:r.kind,actorId:r.actor_id,key:r.record_key,roomId:r.room_id,version:r.version,value:r.dot_id && r.value && typeof r.value === "object" && !Array.isArray(r.value) ? {...r.value,dotId:r.dot_id} : r.value};}
+  private row(r:{kind:ControlRecord["kind"];actor_id:string;record_key:string;room_id:string|null;version:number;value:unknown;dot_id?:string|null}):ControlRecord{return {kind:r.kind,actorId:r.actor_id,key:r.record_key,roomId:r.room_id??"",version:r.version,value:r.dot_id && r.value && typeof r.value === "object" && !Array.isArray(r.value) ? {...r.value,dotId:r.dot_id} : r.value};}
   async get(kind:ControlRecord["kind"],actorId:string,key:string){const r=await this.pool.query<any>("SELECT * FROM space_control_records WHERE kind=$1 AND actor_id=$2 AND record_key=$3",[kind,actorId,key]);return r.rows[0]?this.row(r.rows[0]):null;}
   async list(kind:ControlRecord["kind"],actorId:string|null,roomId?:string){const r=await this.pool.query<any>("SELECT * FROM space_control_records WHERE kind=$1 AND ($2::text IS NULL OR actor_id=$2) AND ($3::text IS NULL OR room_id=$3) ORDER BY updated_at DESC LIMIT 1000",[kind,actorId,roomId??null]);return r.rows.map(row=>this.row(row));}
   /** Status filter runs in SQL, so settled history is neither transferred nor parsed by the control tick. */
   async listActive(kind:ControlRecord["kind"],statuses:readonly string[]){const r=await this.pool.query<any>("SELECT kind,actor_id,record_key,room_id,version,value,dot_id FROM space_control_records WHERE kind=$1 AND value->>'status'=ANY($2::text[]) ORDER BY updated_at DESC LIMIT 1000",[kind,[...statuses]]);return r.rows.map(row=>this.row(row));}
   /** Identity is (kind, actor, key); room_id follows the latest write so a pane record stays writable after the pane moves rooms. */
   async write(r:ControlRecord,expectedVersion:number){
-    const out=expectedVersion===0?await this.pool.query("INSERT INTO space_control_records(kind,actor_id,record_key,room_id,value) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT DO NOTHING RETURNING version",[r.kind,r.actorId,r.key,r.roomId,JSON.stringify(r.value)]):
-      await this.pool.query("UPDATE space_control_records SET value=$5::jsonb,room_id=$4,version=version+1,updated_at=now() WHERE kind=$1 AND actor_id=$2 AND record_key=$3 AND version=$6 RETURNING version",[r.kind,r.actorId,r.key,r.roomId,JSON.stringify(r.value),expectedVersion]);
+    const out=expectedVersion===0?await this.pool.query("INSERT INTO space_control_records(kind,actor_id,record_key,room_id,value) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT DO NOTHING RETURNING version",[r.kind,r.actorId,r.key,storedRoom(r),JSON.stringify(r.value)]):
+      await this.pool.query("UPDATE space_control_records SET value=$5::jsonb,room_id=$4,version=version+1,updated_at=now() WHERE kind=$1 AND actor_id=$2 AND record_key=$3 AND version=$6 RETURNING version",[r.kind,r.actorId,r.key,storedRoom(r),JSON.stringify(r.value),expectedVersion]);
     return out.rows.length===1;
   }
   async dispose(){await (this.pool as PgPoolLike & {end?:()=>Promise<void>}).end?.();if(this.lockPool!==this.pool)await (this.lockPool as PgPoolLike & {end?:()=>Promise<void>}).end?.();}

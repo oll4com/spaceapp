@@ -1,15 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { isImportedJobApplication, type Pane } from "@space/contracts";
 import { api } from "../../api.js";
-import { dispatchBrowserPaneActionEvent } from "../browser-pane/events.js";
 import { ActivityTab } from "./ActivityTab.js";
 import { loadDefaultAccountProfileId } from "./AgentAccountField.js";
 import { jobCopilotAccountFor, jobCopilotAgentLabel, jobCopilotRuntimeOptions, loadPaneAccountProfileId, saveJobCopilotLaunch } from "./agent-runtimes.js";
 import { CommandBar } from "./CommandBar.js";
 import { CopilotRail, RAIL_TAB_ICONS, type CopilotRailTab, type CopilotRailTabDefinition } from "./CopilotRail.js";
 import { FieldsTab } from "./FieldsTab.js";
-import { HandoffOverlay } from "./HandoffOverlay.js";
-import { HeldBrowserStrip } from "../copilot-kit/HandoffOverlay.js";
+import { CopilotBrowserControlHint } from "../copilot-kit/browser-control-hint.js";
 import { browserVisible, resolveActiveTab, tabsForLayout } from "./layout.js";
 import { useCopilotLayout } from "../copilot-kit/copilot-layout.js";
 import { MemoryTab } from "./MemoryTab.js";
@@ -17,9 +15,13 @@ import { BookmarksTab } from "../marketing-copilot-pane/BookmarksTab.js";
 import { QueueTab } from "./QueueTab.js";
 import { SetupWizard } from "./SetupWizard.js";
 import { StartOver } from "./StartOver.js";
-import { handoffPostingFor, runProgress, todayCounts, useJobApplyData } from "./useJobApply.js";
-import { useBrowserControlHeld, useLiveHandoff } from "../copilot-kit/live-handoff.js";
+import { runProgress, todayCounts, useJobApplyData } from "./useJobApply.js";
+import { useLiveHandoff } from "../copilot-kit/live-handoff.js";
+import { onPaneTarget } from "../notifications/pane-target.js";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
+import { useNousReviewing } from "../copilot-kit/nous-reviewing.js";
 import "./job-copilot-pane.css";
+import { CopilotNotice } from "../copilot-kit/CopilotNotice.js";
 
 export interface JobCopilotPaneProps {
   pane: Pane;
@@ -75,6 +77,8 @@ const TAB_LABELS: Record<CopilotRailTab, string> = { browser: "Browser", activit
  */
 export function JobCopilotPane({ pane, isVisible, terminal, browser }: JobCopilotPaneProps) {
   const data = useJobApplyData(pane, isVisible);
+  const language = useUiLanguage();
+  const t = useCallback((text: string, vars?: Record<string, string | number>) => uiText(language, text, vars), [language]);
   const paneRef = useRef<HTMLDivElement | null>(null);
   const layout = useCopilotLayout(paneRef);
   const [rail, setRail] = useState<RailPreference>(() => readRailPreference(pane.id));
@@ -90,12 +94,14 @@ export function JobCopilotPane({ pane, isVisible, terminal, browser }: JobCopilo
   const counts = useMemo(() => todayCounts(data.applications, data.run?.queue), [data.applications, data.run?.queue]);
   const runtimeOptions = useMemo(() => jobCopilotRuntimeOptions(data.runtimes), [data.runtimes]);
   const handoff = useLiveHandoff(data.handoff);
-  const controlHeld = useBrowserControlHeld(pane.id);
+  const browserControlHint = useMemo(() => ({ reason: handoff?.reason ?? null }), [handoff?.reason]);
   const paused = data.settings?.settings.paused ?? false;
-  const handoffPosting = useMemo(() => (handoff ? handoffPostingFor(handoff.reason, data.applications, data.run?.current) : null), [handoff, data.applications, data.run]);
   const runState = data.run?.status ?? "IDLE";
   const progress = useMemo(() => runProgress(data.run), [data.run]);
-  const pending = data.run?.pending ?? [];
+  // Reviews Nous decides under "May send" are not the operator's: no count, badge or tab switch (Activity shows them as "Nous reviewing").
+  const nousReviewing = useNousReviewing();
+  const allPending = useMemo(() => data.run?.pending ?? [], [data.run]);
+  const pending = useMemo(() => nousReviewing ? allPending.filter((item) => item.kind !== "REVIEW") : allPending, [allPending, nousReviewing]);
   const selectedApplication = useMemo(() => data.applications.find((application) => application.id === selectedApplicationId) ?? null, [data.applications, selectedApplicationId]);
   // Without a pick the Fields tab follows the work: the current posting, the one waiting for the operator,
   // then the latest one Space worked (the tracker lists the most recently updated first; imported history has no fields).
@@ -103,6 +109,13 @@ export function JobCopilotPane({ pane, isVisible, terminal, browser }: JobCopilo
     ?? data.applications.find((application) => application.id === pending[0]?.applicationId)
     ?? data.applications.find((application) => application.status !== "QUEUED" && !isImportedJobApplication(application)) ?? null, [data.applications, data.run, pending, selectedApplication]);
   const lastPendingRef = useRef<string | null>(null);
+
+  // Go to pane must open an existing question too, including on the first load of a phone's stacked rail.
+  useEffect(() => {
+    return onPaneTarget(pane.id, (target) => {
+      setRail((current) => ({ ...current, collapsed: false, tab: /^(?:browser$|url:|tab:)/.test(target) ? "browser" : "activity" }));
+    });
+  }, [pane.id]);
 
   // A new question or review opens the Activity tab; the notification itself comes through Space notifications.
   useEffect(() => {
@@ -155,11 +168,11 @@ export function JobCopilotPane({ pane, isVisible, terminal, browser }: JobCopilo
       setRail((current) => ({ ...current, collapsed: false, tab: "terminal" }));
       void data.refresh();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "The copilot agent could not be switched.");
+      setNotice(error instanceof Error ? error.message : t("The copilot agent could not be switched."));
     } finally {
       setSwitching(false);
     }
-  }, [data, pane.id, pane.terminalRuntimeId, switching]);
+  }, [data, pane.id, pane.terminalRuntimeId, switching, t]);
   /** A fresh conversation on the same agent and account; the previous one stays in the task history. */
   const startNewSession = useCallback(async () => {
     const runtimeId = pane.terminalRuntimeId;
@@ -171,13 +184,13 @@ export function JobCopilotPane({ pane, isVisible, terminal, browser }: JobCopilo
       await api.createCliSession(pane.id, { runtimeId, forceRestart: true, includeTranscript: false, ...(account ? { accountProfileId: account } : {}) });
       setTerminalKey((key) => key + 1);
       setRail((current) => ({ ...current, collapsed: false, tab: "terminal" }));
-      setNotice("Started a new session. The previous conversation stays in the task history.");
+      setNotice(t("Started a new session. The previous conversation stays in the task history."));
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "A new session could not be started.");
+      setNotice(error instanceof Error ? error.message : t("A new session could not be started."));
     } finally {
       setSwitching(false);
     }
-  }, [pane.id, pane.terminalRuntimeId, switching]);
+  }, [pane.id, pane.terminalRuntimeId, switching, t]);
   const [accountRevision, setAccountRevision] = useState(0);
   // Setup → Agent reloads the pane's account after every switch.
   useEffect(() => { if (!switching) setAccountRevision((revision) => revision + 1); }, [switching]);
@@ -191,11 +204,13 @@ export function JobCopilotPane({ pane, isVisible, terminal, browser }: JobCopilo
       const accountProfileId = await loadPaneAccountProfileId(pane.id, runtimeId);
       await saveJobCopilotLaunch({ runtimeId, accountProfileId, askOnLaunch: false });
       const option = runtimeOptions.find((entry) => entry.runtime.id === runtimeId);
-      setNotice(`New Job Copilot panes open with ${jobCopilotAgentLabel(runtimeId, option?.runtime)}${accountProfileId ? ` (${accountProfileId} account)` : ""} from now on.`);
+      const agent = jobCopilotAgentLabel(runtimeId, option?.runtime);
+      setNotice(accountProfileId ? t("New Job Copilot panes open with {agent} ({account} account) from now on.", { agent, account: accountProfileId })
+        : t("New Job Copilot panes open with {agent} from now on.", { agent }));
     } catch (error) {
-      setNotice(error instanceof Error ? `The default agent could not be saved: ${error.message}` : "The default agent could not be saved.");
+      setNotice(error instanceof Error ? t("The default agent could not be saved: {error}", { error: error.message }) : t("The default agent could not be saved."));
     }
-  }, [pane.id, pane.terminalRuntimeId, runtimeOptions]);
+  }, [pane.id, pane.terminalRuntimeId, runtimeOptions, t]);
 
   const runAction = useCallback(async (action: "start" | "pause" | "stop") => {
     if (runBusy) return;
@@ -207,19 +222,12 @@ export function JobCopilotPane({ pane, isVisible, terminal, browser }: JobCopilo
       if (action === "start") setRail((current) => ({ ...current, collapsed: false, tab: layout === "stacked" ? "browser" : current.tab === "setup" ? "activity" : current.tab }));
       void data.refresh();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "The run could not be changed.");
+      setNotice(error instanceof Error ? error.message : t("The run could not be changed."));
     } finally {
       setRunBusy(false);
     }
-  }, [data, layout, pane.id, runBusy]);
+  }, [data, layout, pane.id, runBusy, t]);
 
-  const takeControl = useCallback(() => {
-    dispatchBrowserPaneActionEvent({ paneId: pane.id, action: "handoff", roomId: pane.roomId });
-  }, [pane.id, pane.roomId]);
-  const returnToAgent = useCallback(() => {
-    dispatchBrowserPaneActionEvent({ paneId: pane.id, action: "release", roomId: pane.roomId });
-    void data.refresh();
-  }, [data, pane.id, pane.roomId]);
 
   const selectTab = useCallback((tab: CopilotRailTab) => setRail((current) => ({ ...current, tab, collapsed: false })), []);
   const toggleRail = useCallback(() => setRail((current) => ({ ...current, collapsed: !current.collapsed })), []);
@@ -251,18 +259,16 @@ export function JobCopilotPane({ pane, isVisible, terminal, browser }: JobCopilo
         railOpen={railOpen} switching={switching} needsYou={pending.length} runBusy={runBusy} onRun={(action) => void runAction(action)}
         onSwitchRuntime={(runtimeId) => void switchAgent(runtimeId)} onNewSession={() => void startNewSession()} onSetDefault={() => void setAsDefault()}
         onTogglePaused={(checked) => void togglePaused(checked)} onToggleRail={toggleRail} />
-      {notice || data.error ? <div className="jc-notice" role="status">{notice ?? data.error}</div> : null}
+      <CopilotNotice text={notice || (data.error ? t(data.error) : null)} loaded={Boolean(data.settings)} />
       <div className="jc-body">
-        <section className="jc-browser" aria-label="Live browser" data-active={browserShown ? "true" : "false"} aria-hidden={browserShown ? undefined : "true"}>
-          {browser}
-          {handoff ? <HandoffOverlay handoff={handoff} posting={handoffPosting} onTakeControl={takeControl} onReturnToAgent={returnToAgent} />
-            : controlHeld ? <HeldBrowserStrip onReturnToAgent={returnToAgent} /> : null}
+        <section className="jc-browser" aria-label={t("Live browser")} data-active={browserShown ? "true" : "false"} aria-hidden={browserShown ? undefined : "true"}>
+          <CopilotBrowserControlHint.Provider value={browserControlHint}>{browser}</CopilotBrowserControlHint.Provider>
         </section>
-        <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label="Resize the copilot rail" aria-hidden={rail.collapsed ? "true" : undefined}
+        <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label={t("Resize the copilot rail")} aria-hidden={rail.collapsed ? "true" : undefined}
           onPointerDown={onResizeStart} onPointerMove={onResizeMove} onPointerUp={onResizeEnd} onPointerCancel={onResizeEnd} onDoubleClick={() => setRail((current) => ({ ...current, width: RAIL_DEFAULT_WIDTH }))} />
-        <CopilotRail tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
+        <CopilotRail firstRead={{ text: notice || (data.error ? t(data.error) : null), loaded: Boolean(data.settings) }} tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
           {railOpen && activeTab === "activity" ? (
-            <ActivityTab events={data.events} pending={pending} applications={data.applications} stats={data.stats} selectedId={selectedApplicationId} onSelect={setSelectedApplicationId} onChanged={() => void data.refresh()} />
+            <ActivityTab nousReviewing={nousReviewing} events={data.events} pending={allPending} applications={data.applications} stats={data.stats} selectedId={selectedApplicationId} onSelect={setSelectedApplicationId} onChanged={() => void data.refresh()} />
           ) : null}
           {railOpen && activeTab === "fields" ? <FieldsTab paneId={pane.id} application={fieldsApplication} /> : null}
           {railOpen && activeTab === "memory" ? <MemoryTab paneId={pane.id} /> : null}
@@ -277,7 +283,7 @@ export function JobCopilotPane({ pane, isVisible, terminal, browser }: JobCopilo
               onSwitchAgent={(runtimeId, accountProfileId) => void switchAgent(runtimeId, accountProfileId)} onSetDefault={() => void setAsDefault()}
               footer={<StartOver campaignStartedAt={data.profile.campaignStartedAt} stats={data.stats} applications={data.applications} onDone={() => void data.refresh()} />} />
           ) : null}
-          {railOpen && activeTab === "setup" && (!data.profile || !data.settings) ? <p className="jc-muted jc-panel-loading" role="status">Loading setup…</p> : null}
+          {railOpen && activeTab === "setup" && (!data.profile || !data.settings) ? <p className="jc-muted jc-panel-loading" role="status">{t("Loading setup…")}</p> : null}
           <div key={terminalKey} className="jc-panel-terminal" role="tabpanel" id="jc-panel-terminal" aria-labelledby="jc-tab-terminal" data-active={railOpen && activeTab === "terminal" ? "true" : "false"}>
             {terminal}
           </div>

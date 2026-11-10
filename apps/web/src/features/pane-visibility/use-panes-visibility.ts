@@ -155,6 +155,13 @@ export const NON_CLI_PANE_DEFINITIONS: PaneItemConfig[] = [
     label: "Monitoring Copilot",
     description: "An agent that watches your servers and sites: it explains the alerts, failing probes and AI Guardian messages and answers your questions about the fleet.",
     icon: modeIcons.MONITORING_COPILOT
+  },
+  {
+    id: "appointments",
+    actionId: "add-appointments",
+    label: "Appointments",
+    description: "Your calls, interviews, webinars and deadlines by day, with reminders before each.",
+    icon: modeIcons.APPOINTMENTS
   }
 ];
 
@@ -181,7 +188,8 @@ export const ACTION_TO_PANE_TYPE: Record<string, NonCliPaneType> = {
   "add-app-studio": "app-studio",
   "add-video": "video",
   "add-security": "security",
-  "add-monitoring": "monitoring"
+  "add-monitoring": "monitoring",
+  "add-appointments": "appointments"
 };
 
 export const PANE_TYPE_TO_ACTION: Record<NonCliPaneType, string> = {
@@ -203,7 +211,8 @@ export const PANE_TYPE_TO_ACTION: Record<NonCliPaneType, string> = {
   "app-studio": "add-app-studio",
   video: "add-video",
   security: "add-security",
-  monitoring: "add-monitoring"
+  monitoring: "add-monitoring",
+  appointments: "add-appointments"
 };
 
 export type { NonCliPaneType, PaneItemConfig } from "./pane-visibility-types.js";

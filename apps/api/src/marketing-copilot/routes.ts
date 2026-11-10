@@ -25,6 +25,10 @@ export interface MarketingCopilotRouteDependencies {
   kickoff?(pane: Pane, run: MarketingRun): Promise<void>;
 }
 
+/** A Start on a quiet queue means "make the next posts"; the agent drafts only when a brief asks. */
+const START_DRAFT_BRIEF = "Plan the next posts: draft one post for each enabled channel whose limit has room, grounded in space_marketing_facts and FACT memories, under each channel's CHANNEL_RULE "
+  + "and its effective autonomy (reviews go to the operator). Skip what was published or is in review already. Before sign-in read space_site_signin_get; save every confirmed success with space_site_signin_record. Only unresolved login/MFA goes to space_browser_request_handoff after trying the stored method.";
+
 // Not strict: the post routes carry a postId next to the pane id.
 const paneParamsSchema = z.object({ id: z.string().regex(/^pane:[A-Za-z0-9_-]{6,80}$/) });
 
@@ -70,13 +74,14 @@ export function registerMarketingCopilotRoutes(app: FastifyInstance, service: Ma
     const pane = await paneOf(request);
     const owner = await deps.authenticatedOwner(request);
     const started = await service.startRun(owner, pane.id);
+    const draftBrief = await service.backlog(owner, pane, ["PENDING", "TAKEN"]) ? null : await service.createBrief(owner, pane, { text: START_DRAFT_BRIEF });
     let kickoffSent = false;
     if (started.kickoff && deps.kickoff) {
       await deps.kickoff(pane, started.run);
       await service.markKickoff(owner, started.run.id);
       kickoffSent = true;
     }
-    await deps.audit(request, "marketing_copilot.run.start", pane.id, { runId: started.run.id, kickoffSent });
+    await deps.audit(request, "marketing_copilot.run.start", pane.id, { runId: started.run.id, kickoffSent, draftBriefId: draftBrief?.id ?? null });
     return { ...(await service.runView(owner, pane)), kickoffSent };
   });
   for (const action of ["pause", "stop"] as const) {

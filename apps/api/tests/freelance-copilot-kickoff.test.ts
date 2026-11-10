@@ -42,4 +42,29 @@ describe("freelance copilot kickoff", () => {
       await app.close();
     }
   });
+
+  it("puts \"Checked first\" on a NEEDS_USER card, naming the account page (goal ee5a573e)", async () => {
+    const app = Fastify();
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Freelance", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Fiona", mode: "FREELANCE_COPILOT", terminalRuntimeId: "cli:claude" });
+    const raise = vi.fn(async () => null);
+    const service = registerFreelanceCopilot(app, {
+      store, eventBus: new SpaceEventBus(), databaseUrl: null, repository: new InMemoryFreelanceCopilotRepository(),
+      crypto: { seal: (value: string) => value, open: (value: string) => value }, mailboxes: { open: vi.fn() },
+      terminal: {} as never, notifications: { raise, resolve: vi.fn() } as never, roomOwner: async () => "user:operator", scheduler: false,
+      routeOptions: {}, log: { warn: vi.fn() }, parseBody: (schema, body) => schema.parse(body), parseQuery: (schema, query) => schema.parse(query),
+      authenticatedOwner: async () => "user:operator", assertPaneAccess: async () => undefined, audit: async () => undefined
+    });
+    await app.ready();
+    try {
+      await service.updateAccount("user:operator", pane as Pane, { channel: "CONTRA", status: "NEEDS_OPERATOR" }, "AGENT");
+      await vi.waitFor(() => expect(raise).toHaveBeenCalled());
+      const [card] = raise.mock.calls[0] as unknown as [{ kind: string; body: string }];
+      expect(card.kind).toBe("NEEDS_USER");
+      expect(card.body).toContain("\n\nChecked first:\n• Account page: Contra (NEEDS_OPERATOR), opened by Fiona\n• Rules and settings: ");
+    } finally {
+      await app.close();
+    }
+  });
 });

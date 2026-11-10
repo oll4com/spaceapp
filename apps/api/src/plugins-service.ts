@@ -9,8 +9,15 @@ import {
   type AgentPluginConfig
 } from "@space/contracts";
 import { parseSkillFrontmatter } from "@space/runtime";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
-const PLUGINS_DIR = "/opt/spaceapp/var/plugins";
+const PLUGINS_DIR = `${SPACE_INSTALL_ROOT}/var/plugins`;
+
+/** The plugins folder of a service built without one: SPACE_PLUGINS_DIR when set (the API tests give each test its own),
+ * else the install's var folder. Read at each use, so the shared service follows it. */
+export function pluginsStorageRoot(): string {
+  return process.env.SPACE_PLUGINS_DIR || PLUGINS_DIR;
+}
 
 export const DEFAULT_PLUGIN_CATALOG: PluginCatalogItem[] = [
   {
@@ -18,7 +25,7 @@ export const DEFAULT_PLUGIN_CATALOG: PluginCatalogItem[] = [
     overview: "Personal Gitea connection for repository discovery, diffs, staging, commits and synchronization.",
     category: "developer", icon: "GitBranch", authType: "api_key",
     authFields: [
-      { key: "serverUrl", label: "Server URL", type: "url", required: false, placeholder: "https://example.invalid", description: "The Gitea server for your account." },
+      { key: "serverUrl", label: "Server URL", type: "url", required: false, placeholder: "https://gitea.example.com", description: "The Gitea server for your account." },
       { key: "token", label: "Personal Access Token", type: "password", required: true, placeholder: "", description: "Token with repository access. Permissions are checked for each selected repository." }
     ],
     preview: false, defaultEnabled: true, websiteUrl: "https://about.gitea.com", docsUrl: "https://docs.gitea.com", githubUrl: null,
@@ -514,15 +521,15 @@ export async function nestedBundleSkills(root: string): Promise<Array<{ path: st
 }
 
 const SKILL_DIRS = [
-  "/var/lib/spaceapp-user/.codex/skills",
-  "/var/lib/spaceapp-user/.agents/skills",
+  `${SPACE_AGENT_HOME}/.codex/skills`,
+  `${SPACE_AGENT_HOME}/.agents/skills`,
   "/var/lib/spaceapp-cli/.codex/skills",
   "/var/lib/spaceapp-cli/.agents/skills"
 ];
 
 function findSkillSourceDir(folder: string): string | null {
   const candidates = [
-    join("/opt/spaceapp/agent-skills", folder),
+    join(`${SPACE_INSTALL_ROOT}/agent-skills`, folder),
     join("/app/agent-skills", folder),
     join(process.cwd(), "agent-skills", folder)
   ];
@@ -549,15 +556,16 @@ export interface StoredPluginConnection {
 
 export class PluginsService {
   constructor(
-    private readonly storageDirectory = PLUGINS_DIR,
+    private readonly storageDirectory?: string,
     private readonly syncSkills = true,
     private readonly skillDirs: readonly string[] = SKILL_DIRS
   ) {}
-  private get connectionsFile() { return join(this.storageDirectory, "connections.json"); }
-  private get agentConfigsFile() { return join(this.storageDirectory, "agent-configs.json"); }
+  private get root() { return this.storageDirectory ?? pluginsStorageRoot(); }
+  private get connectionsFile() { return join(this.root, "connections.json"); }
+  private get agentConfigsFile() { return join(this.root, "agent-configs.json"); }
   private async ensureDir(): Promise<void> {
-    if (!existsSync(this.storageDirectory)) {
-      await mkdir(this.storageDirectory, { recursive: true });
+    if (!existsSync(this.root)) {
+      await mkdir(this.root, { recursive: true });
     }
   }
 

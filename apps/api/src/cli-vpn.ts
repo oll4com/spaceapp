@@ -10,9 +10,10 @@ import {
   type CliVpnProfileId,
   type CliVpnConnection
 } from "@space/contracts";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const brokerCommand = "/usr/bin/sudo";
-const brokerExecutable = "/opt/spaceapp/bin/space-cli-vpn-broker";
+const brokerExecutable = `${SPACE_INSTALL_ROOT}/bin/space-cli-vpn-broker`;
 const cliVpnManagedRuntimeIds = [...cliToggleRuntimeIds, "cli:harness"] as const;
 const cliVpnManagedRuntimeIdSchema = z.enum(cliVpnManagedRuntimeIds);
 export type CliVpnManagedRuntimeId = z.infer<typeof cliVpnManagedRuntimeIdSchema>;

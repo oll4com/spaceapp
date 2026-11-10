@@ -32,11 +32,14 @@ const running = runningCliSession;
  * A rail-tab CLI pane's session as its terminal opens one (POST /api/panes/:id/cli/session as the owner: workspace, persona, account).
  * The copilot's account lives in its CLI session (never in the pane row): it starts on the one its last session used.
  */
-export async function openPaneCliSession(deps: { invoke: CopilotInvoke; store: Pick<SpaceStore, "listPaneCliSessions"> }, owner: string, pane: Pane): Promise<string | null> {
+export async function openPaneCliSession(deps: { invoke: CopilotInvoke; store: Pick<SpaceStore, "listPaneCliSessions">; gatewayAccount?: PaneCliStartDeps["gatewayAccount"] },
+  owner: string, pane: Pane): Promise<string | null> {
   if (!pane.terminalRuntimeId) throw new Error(`${paneLabel(pane)} has no CLI agent chosen: the operator picks one in its Setup.`);
   // shortcut: a balanced CLI on Auto restarts on its last account (naming it ends Auto); pass accountMode if that matters.
   const last = (await deps.store.listPaneCliSessions(pane.id, 1))[0];
-  const account = last?.runtimeId === pane.terminalRuntimeId ? last.accountProfileId : null;
+  // Operator P0 1/11 (Nous 03:20 BKK): the always-on Mail Copilot's start_agent came up on the API key; it starts on Space Gateway.
+  const gateway = pane.mode === "MAIL_COPILOT" ? await deps.gatewayAccount?.(pane).catch(() => null) : null;
+  const account = gateway ?? (last?.runtimeId === pane.terminalRuntimeId ? last.accountProfileId : null);
   await deps.invoke(owner, "POST", `/api/panes/${encodeURIComponent(pane.id)}/cli/session`, { runtimeId: pane.terminalRuntimeId, includeTranscript: false, ...(account ? { accountProfileId: account } : {}) });
   return account;
 }
@@ -48,6 +51,8 @@ export interface PaneCliStartDeps {
   start(pane: Pane): Promise<unknown>;
   /** Whether the CLI host runs a process for this session record. */
   hostRunning(session: PaneCliSession): Promise<boolean>;
+  /** The gateway profile a pane's CLI starts on: set while Space Gateway serves its CLI and the operator pinned no direct account there. */
+  gatewayAccount?(pane: Pane): Promise<string | null>;
 }
 
 /**
@@ -63,7 +68,7 @@ export async function startPaneCli(deps: PaneCliStartDeps, owner: string, pane: 
   return deps.start(pane);
 }
 
-export function createCopilotControl(deps: { invoke: CopilotInvoke; store: Pick<SpaceStore, "getActivePaneCliSession" | "listPaneCliSessions">; start?: PaneCliStartDeps["start"]; hostRunning?: PaneCliStartDeps["hostRunning"] }) {
+export function createCopilotControl(deps: { invoke: CopilotInvoke; store: Pick<SpaceStore, "getActivePaneCliSession" | "listPaneCliSessions">; start?: PaneCliStartDeps["start"]; hostRunning?: PaneCliStartDeps["hostRunning"]; gatewayAccount?: PaneCliStartDeps["gatewayAccount"] }) {
   return async function control(owner: string, pane: Pane, action: CopilotControlAction): Promise<string> {
     const prefix = routePrefix[pane.mode];
     const name = paneLabel(pane);

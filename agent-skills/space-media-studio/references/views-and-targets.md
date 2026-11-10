@@ -41,12 +41,18 @@ over the SpaceApp night gradient, headline above it. Each shot gets `shot-<viewp
 
 `appearance`, `docks`, `panes`, `widgets`, `notifications`, `dots`, `plugins`, `agent-capabilities`, `default-provider`,
 `voice-input`, `releases`, `cli-pane-controls`, `date-time`, `image-previews`, `prompt-variables`, `room-cache`,
-`git-worktrees`, `diagnostics`, `job-copilot`, `mail-copilot`, `marketing-copilot`, `freelance-copilot`.
+`git-worktrees`, `diagnostics`, `job-copilot`, `mail-copilot`, `marketing-copilot`, `freelance-copilot`, `nous`.
 Account & Google, Backup & migration, GitHub & Gitea and Telegram are left out: they show credentials.
 
 ## Health sections (`--health`)
 
 `overview`, `topology`, `performance`, `processes`, `services`, `ai` (AI & Sessions), `alerts`, `usage` (Token usage).
+
+## Space Gateway tabs (`--gateway`, ADMIN)
+
+`dashboard`, `reports`, `routing` (the provider order of the Space provider), `compression`, `settings`. The Gateway opens
+full screen over the room. Accounts, API keys and Request logs are left out: they show account e-mails, key prefixes and
+request details.
 
 ## Mock showcase scenes (`--instance mock --scene <chapter>:<step>`)
 

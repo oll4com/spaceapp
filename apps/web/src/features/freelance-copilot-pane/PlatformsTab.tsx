@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { FREELANCE_CHANNELS, FREELANCE_CHANNEL_LABELS, type FreelanceAccount, type FreelanceFunnel, type FreelanceLead, type FreelanceLeadStatus } from "@space/contracts";
 import { api } from "../../api.js";
 import { ExternalLink } from "../ui-theme/app-icons.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { LeadRow } from "./LeadsTab.js";
 import { ACCOUNT_STATUS_LABEL } from "./SetupTab.js";
 
@@ -10,6 +11,8 @@ const ORDER: FreelanceLeadStatus[] = ["CLIENT_READY", "TALKING", "PROPOSED", "QU
 
 /** Platforms: per site, the account, its numbers and every job with its proposals and messages. */
 export function PlatformsTab({ paneId, leads, funnel, onChanged }: { paneId: string; leads: FreelanceLead[]; funnel: FreelanceFunnel | null; onChanged(): void }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [accounts, setAccounts] = useState<FreelanceAccount[]>([]);
   useEffect(() => {
     let cancelled = false;
@@ -25,18 +28,18 @@ export function PlatformsTab({ paneId, leads, funnel, onChanged }: { paneId: str
         const entries = leads.filter((lead) => lead.channel === channel).sort((a, b) => ORDER.indexOf(a.status) - ORDER.indexOf(b.status));
         return (
           <section key={channel} className="mk-group" aria-label={label}>
-            <h4>{label} <span className="jc-tag">{ACCOUNT_STATUS_LABEL[account?.status ?? "NOT_STARTED"]}</span>
-              {account?.profileUrl ? <a className="jc-event-link" href={account.profileUrl} target="_blank" rel="noreferrer noopener"><ExternalLink aria-hidden="true" /> Profile</a> : null}</h4>
+            <h4>{label} <span className="jc-tag">{t(ACCOUNT_STATUS_LABEL[account?.status ?? "NOT_STARTED"])}</span>
+              {account?.profileUrl ? <a className="jc-event-link" href={account.profileUrl} target="_blank" rel="noreferrer noopener"><ExternalLink aria-hidden="true" /> {t("Profile")}</a> : null}</h4>
             {account?.email ? <p className="jc-muted">{account.email}</p> : null}
             {account?.notes ? <p className="jc-muted">{account.notes}</p> : null}
             {counts ? (
               <p className="fl-funnel">
-                <span><strong>{entries.length}</strong> jobs</span><span><strong>{counts.sent}</strong> sent</span><span><strong>{counts.talking}</strong> conversations</span>
-                <span><strong>{counts.won}</strong> won</span><span><strong>{counts.lost}</strong> lost</span>
+                <span><strong>{entries.length}</strong> {t("jobs")}</span><span><strong>{counts.sent}</strong> {t("sent")}</span><span><strong>{counts.talking}</strong> {t("conversations")}</span>
+                <span><strong>{counts.won}</strong> {t("won")}</span><span><strong>{counts.lost}</strong> {t("lost")}</span>
               </p>
             ) : null}
             {entries.length ? <ul className="mk-post-list">{entries.map((lead) => <LeadRow key={lead.id} lead={lead} paneId={paneId} onChanged={onChanged} />)}</ul>
-              : <p className="jc-muted">No jobs or proposals yet.</p>}
+              : <p className="jc-muted">{t("No jobs or proposals yet.")}</p>}
           </section>
         );
       })}

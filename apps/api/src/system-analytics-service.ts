@@ -43,7 +43,8 @@ import type {
 import { costUsd, geminiCostUsd } from "@space/gateway";
 import type { SpaceStore } from "@space/runtime";
 import {
-  GEMINI_GATEWAY_CURSOR, ingestClaudeTranscripts, ingestGatewayLogs, parseCodexHistory, readClaudeTokenUsage, readCodexHistory,
+  GEMINI_GATEWAY_CURSOR, ingestAutohandSessions, ingestClaudeTranscripts, ingestCopilotSessions, ingestDeepseekSessions, ingestGatewayLogs, ingestGrokSessions, ingestKimiSessions, ingestQwenSessions, parseCodexHistory, readClaudeTokenUsage, readCodexHistory, readDeepseekHistory,
+  readAutohandHistory, readCopilotHistory, readGrokHistory, readKimiHistory, readQwenHistory,
   type ClaudeSessionOwner, type TokenUsageSourceOptions
 } from "./token-usage-sources.js";
 
@@ -59,6 +60,7 @@ import {
   runSqliteJson,
   type OpenCodeDbRow
 } from "./toolbar-model-stats.js";
+import { SPACE_AGENT_HOME } from "@space/contracts";
 
 const execFileAsync = promisify(execFile);
 const kib = 1024;
@@ -199,12 +201,13 @@ export interface SystemAnalyticsServiceOptions {
   hermesHome?: string;
   coreCount?: number;
   /** Space Gateway requests and Claude Code transcripts for the token usage page; absent in tests that do not need them. */
-  tokenUsage?: Pick<TokenUsageSourceOptions, "gateway" | "gatewayAccounts"> & Partial<Pick<TokenUsageSourceOptions, "readClaude" | "readCodexHistory">>;
+  tokenUsage?: Pick<TokenUsageSourceOptions, "gateway" | "gatewayAccounts"> & Partial<Pick<TokenUsageSourceOptions, "readClaude" | "readCodexHistory" | "readDeepseekHistory" | "readQwenHistory" | "readGrokHistory" | "readCopilotHistory" | "readAutohandHistory" | "readKimiHistory">>;
 }
 
 /** Calls a CLI made through Space Gateway name this provider (Codex `model_provider`, OpenCode/Hermes/OMP configs). */
 const GATEWAY_PROVIDER_ID = "space-gateway";
-const claudeIngestIntervalMs = 60_000;
+// Native history helpers share the existing import cadence; the Token usage page lags at most 5 minutes.
+const claudeIngestIntervalMs = 5 * 60_000;
 // Each new version reads the month of CLI files once more (v2: GPT-6.1 Sol got a price; v3: large Codex rollouts keep
 // their session_meta, so their gateway route is known; v4: every Codex thread of the month, not the latest 200; v5: whole
 // rollouts, not their last 8 MB; v6: rollouts space-api cannot read, through the helper).
@@ -603,9 +606,9 @@ export class SystemAnalyticsService {
     this.readProcessTable = options.readProcessTable ?? readSystemAnalyticsProcessTable;
     this.readMeminfo = options.readMeminfo ?? (() => readFile("/proc/meminfo", "utf8"));
     this.readProcStat = options.readProcStat ?? (() => readFile("/proc/stat", "utf8"));
-    this.stateRoot = options.stateRoot ?? "/var/lib/spaceapp-user/.codex/space-opencode/state";
-    this.codexHome = options.codexHome ?? "/var/lib/spaceapp-user/.codex";
-    this.hermesHome = options.hermesHome ?? "/var/lib/spaceapp-user/.hermes";
+    this.stateRoot = options.stateRoot ?? `${SPACE_AGENT_HOME}/.codex/space-opencode/state`;
+    this.codexHome = options.codexHome ?? `${SPACE_AGENT_HOME}/.codex`;
+    this.hermesHome = options.hermesHome ?? `${SPACE_AGENT_HOME}/.hermes`;
     this.coreCount = Math.max(Math.trunc(options.coreCount ?? cpus().length), 1);
     this.tokenSources = options.tokenUsage ? {
       repository: this.repository,
@@ -613,6 +616,12 @@ export class SystemAnalyticsService {
       gatewayAccounts: options.tokenUsage.gatewayAccounts,
       readClaude: options.tokenUsage.readClaude ?? readClaudeTokenUsage,
       readCodexHistory: options.tokenUsage.readCodexHistory ?? readCodexHistory,
+      readDeepseekHistory: options.tokenUsage.readDeepseekHistory ?? readDeepseekHistory,
+      readQwenHistory: options.tokenUsage.readQwenHistory ?? readQwenHistory,
+      readGrokHistory: options.tokenUsage.readGrokHistory ?? readGrokHistory,
+      readCopilotHistory: options.tokenUsage.readCopilotHistory ?? readCopilotHistory,
+      readAutohandHistory: options.tokenUsage.readAutohandHistory ?? readAutohandHistory,
+      readKimiHistory: options.tokenUsage.readKimiHistory ?? readKimiHistory,
       claudeSessionOwner: (claudeSessionId, at) => this.claudeSessionOwner(claudeSessionId, at),
       now: this.now
     } : null;
@@ -1428,7 +1437,7 @@ export class SystemAnalyticsService {
     });
   }
 
-  /** Space Gateway requests every ingest, Claude Code messages at most once a minute; one import at a time. */
+  /** Space Gateway requests every ingest, the CLIs' own histories at most every 5 minutes; one import at a time. */
   async ingestTokenSources(): Promise<void> {
     const sources = this.tokenSources;
     if (!sources || this.disposed) return;
@@ -1438,6 +1447,12 @@ export class SystemAnalyticsService {
       if (this.now().getTime() - this.lastClaudeIngestAt < claudeIngestIntervalMs) return;
       this.lastClaudeIngestAt = this.now().getTime();
       await ingestClaudeTranscripts(sources).catch(() => 0);
+      await ingestDeepseekSessions(sources).catch(() => 0);
+      await ingestQwenSessions(sources).catch(() => 0);
+      await ingestGrokSessions(sources).catch(() => 0);
+      await ingestCopilotSessions(sources).catch(() => 0);
+      await ingestAutohandSessions(sources).catch(() => 0);
+      await ingestKimiSessions(sources).catch(() => 0);
     })();
     this.tokenSourcesInFlight = request;
     try {
@@ -1749,7 +1764,7 @@ export class SystemAnalyticsService {
       right.completedTurns - left.completedTurns ||
       left.providerId.localeCompare(right.providerId) ||
       left.modelId.localeCompare(right.modelId)
-    ).slice(0, 500);
+    );
     const providerMap = new Map<string, SystemAnalyticsProvider>();
     for (const model of models) {
       const provider = providerMap.get(model.providerId) ?? {
@@ -1793,7 +1808,11 @@ export class SystemAnalyticsService {
   /** Tokens per account (gateway account or direct CLI profile), largest first, with each account's models. */
   private async tokenAccounts(groups: SystemAnalyticsModelEventGroup[]): Promise<SystemAnalyticsTokenAccount[]> {
     const providerNames: Record<string, string> = { CLAUDE: "Claude", ANTHROPIC_API: "Claude API", CODEX: "Codex", ANTIGRAVITY: "Google",
-      GOOGLE_AI: "Google AI", OPENAI_API: "OpenAI API", COPILOT: "Copilot", DEEPSEEK: "DeepSeek", OPENROUTER: "OpenRouter", KIMI: "Kimi", QWEN: "Qwen" };
+      GOOGLE_AI: "Google AI", OPENAI_API: "OpenAI API", COPILOT: "Copilot", DEEPSEEK: "DeepSeek", OPENROUTER: "OpenRouter", KIMI: "Kimi", QWEN: "Qwen",
+      GROQ: "Groq", NVIDIA: "NVIDIA", CLOUDFLARE_AI: "Cloudflare Workers AI", ADAPTION: "Adaption Labs", AMD_TOKEN_LAB: "AMD Token Lab",
+      INCEPTION: "Inception Labs", JINA: "Jina AI", MIXEDBREAD: "Mixedbread", AGENTROUTER: "AgentRouter", FREEAI: "Free.ai", AZURE_OPENAI: "Azure OpenAI",
+      ZAI: "Z.AI", SILICONFLOW: "SiliconFlow", OVH: "OVHcloud AI Endpoints", MISTRAL: "Mistral",
+      BEDROCK: "Claude on Bedrock", VERTEX: "Claude on Vertex AI" };
     const gatewayAccounts = await this.tokenSources?.gatewayAccounts().catch(() => []) ?? [];
     const labels = new Map(gatewayAccounts.map((account) => [account.id, `${account.label} · ${providerNames[account.provider] ?? account.provider}`]));
     // Each subscription account's weekly pace (plan clipboard:nUloPOH3blDT): used % minus the share of its week passed.
@@ -1821,9 +1840,9 @@ export class SystemAnalyticsService {
       }
       return {
         accountKey, label: tokenAccountLabel(accountKey, labels), route: entry.route, weeklyPace: paces.get(accountKey) ?? null, ...tokenTotals(entry.groups),
-        models: [...models.values()].sort((left, right) => right.tokensIn + right.tokensOut - left.tokensIn - left.tokensOut).slice(0, 50)
+        models: [...models.values()].sort((left, right) => right.tokensIn + right.tokensOut - left.tokensIn - left.tokensOut)
       };
-    }).sort((left, right) => right.tokensIn + right.tokensOut - left.tokensIn - left.tokensOut).slice(0, 200);
+    }).sort((left, right) => right.tokensIn + right.tokensOut - left.tokensIn - left.tokensOut);
   }
 
   private downsampleSeries(series: SystemAnalyticsSeries): SystemAnalyticsSeries {
@@ -2011,7 +2030,7 @@ export class SystemAnalyticsService {
       right.rssBytes - left.rssBytes ||
       right.cpuOneCorePercent - left.cpuOneCorePercent ||
       (left.paneTitle ?? left.runtimeName ?? left.entityId).localeCompare(right.paneTitle ?? right.runtimeName ?? right.entityId)
-    ).slice(0, 500);
+    );
   }
 
   async resources(range: SystemAnalyticsRange): Promise<SystemAnalyticsResourcesResponse> {
@@ -2211,7 +2230,7 @@ export class SystemAnalyticsService {
         detached: sessions.filter((session) => session.status === "RUNNING" && session.attachmentCount === 0).length,
         cleanupEligible: sessions.filter((session) => session.cleanupEligible).length
       },
-      sessions: sessions.slice(0, 1000),
+      sessions,
       backfill
     });
   }
@@ -2231,6 +2250,7 @@ export class SystemAnalyticsService {
       cpuUsagePercent: resources.current.cpuUsagePercent,
       memoryUsagePercent: resources.current.memoryUsagePercent,
       swapUsagePercent: resources.current.swapUsagePercent,
+      // The overview tile shows the top 10 by memory; Resources lists every entity.
       topEntities: resources.entities.slice(0, 10),
       backfill: models.backfill
     });

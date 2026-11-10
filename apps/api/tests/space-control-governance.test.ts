@@ -258,6 +258,13 @@ describe("Space Control Governance & Security", () => {
     expect(c.store.getRoom(c.room.id).name).toBe("Governance test");
   });
 
+  it("passes space_screenshot's language to the capture adapter (dev 1/11: it was dropped)", async () => {
+    const captureScreenshot = vi.fn(async (_a: unknown, roomId: string) => ({ roomId, authenticated: true, captureSource: "AUTHENTICATED_APP", artifactId: "artifact:x" }));
+    const c = fixture({ captureScreenshot });
+    await c.service.screenshot(actor, c.room.id, { dock: "nous-needs-you", viewport: "mobile", language: "el" } as never);
+    expect(captureScreenshot).toHaveBeenCalledWith(actor, c.room.id, expect.objectContaining({ language: "el", dock: "nous-needs-you" }));
+  });
+
   it("does not count unexecuted readiness probes as PASS", async () => {
     const c = fixture();
     const result = await c.service.testMcpTools(actor, c.room.id, { tools: ["space_screenshot", "voice_youtube_search"] });

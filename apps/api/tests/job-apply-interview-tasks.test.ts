@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { NotificationRaiseInput, SpaceNotification } from "@space/contracts";
-import { InMemorySpaceStore } from "@space/runtime";
+import type { Appointment, JobApplyEventInput, NotificationRaiseInput, SpaceNotification } from "@space/contracts";
+import { InMemorySpaceNotificationsRepository } from "@space/db";
+import { InMemorySpaceStore, SpaceEventBus } from "@space/runtime";
+import { createNotificationService } from "../src/notifications/service.js";
 import {
-  closeInterviewTask, parseDeadline, recordInterviewTask, remindInterviews, renderInterviewReminder, setInterviewDeadline, siblingDeadline, taskDeadline, type InterviewRequest, type PassMail
+  closeInterviewTask, completeAppointment, parseDeadline, recordInterviewTask, remindInterviews, renderInterviewReminder, setInterviewDeadline, siblingDeadline, taskDeadline, type InterviewRequest, type PassMail
 } from "../src/job-apply/interview-tasks.js";
 import { classifyApplicationMail } from "../src/job-apply/mail-triage.js";
 
@@ -35,7 +37,16 @@ describe("deadline parser", () => {
     ["a time without its zone is not a deadline", "Please complete it by 3 Nov 2026 09:31 AM.", "2026-10-27T04:00:00.000Z", null],
     ["the employer's promise is not a deadline", "We'll get back to you within 5 days.", "2026-10-27T04:00:00.000Z", null],
     ["a date before the mail is a quoted header", "On 20 Oct 2026 09:00 UTC, the deadline was set.", "2026-10-27T04:00:00.000Z", null],
-    ["business days are not counted", "Please complete the test within 5 business days.", "2026-10-27T04:00:00.000Z", null]
+    // 31/10 (Criteria's "complete within 48 hours" for Lendable, mail 30/10 17:53 UTC): hours count from the mail.
+    ["within 48 hours of the mail (Criteria)", "Please complete the assessment within 48 hours.", "2026-10-30T17:53:00.000Z", "2026-11-01T17:53:00.000Z"],
+    ["48 hrs written short", "You have 48 hrs to complete the test.", "2026-10-30T17:53:00.000Z", "2026-11-01T17:53:00.000Z"],
+    ["a 48-hour window", "You have a 48-hour window to complete it.", "2026-10-30T17:53:00.000Z", "2026-11-01T17:53:00.000Z"],
+    ["business days are not counted", "Please complete the test within 5 business days.", "2026-10-27T04:00:00.000Z", null],
+    // 5/11 (Flosum's Hireflix video interview, sent 13:42 UTC): the link's validity counts from the mail.
+    ["a link valid for 48 hours (Flosum via Hireflix)", "The next step is a short video interview. Please note the link is valid for 48 hours.", "2026-11-05T13:42:00.000Z", "2026-11-07T13:42:00.000Z"],
+    ["a link that expires after 2 days", "Your interview link expires after 2 days.", "2026-11-05T13:42:00.000Z", "2026-11-07T13:42:00.000Z"],
+    ["48h to record", "You have 48h to record your answers.", "2026-11-05T13:42:00.000Z", "2026-11-07T13:42:00.000Z"],
+    ["a recruiter's resend states no deadline (Flosum)", "Thank you for letting me know, and no need to apologize. I've just resent the Hireflix video interview invitation to your email.", "2026-11-05T13:39:59.000Z", null]
   ] as const)("%s", (_name, text, sentAt, expected) => {
     expect(parseDeadline(text, sentAt)).toBe(expected);
   });
@@ -107,6 +118,18 @@ describe("test and interview tasks", () => {
     expect(corrected?.objective).not.toContain("Deadline stated in:");
   });
 
+  it("takes Flosum's deadline from the Hireflix invite of the pass, in the operator's zone", async () => {
+    const store = bangkokStore();
+    const flosum = { id: "jobapp:flosum", company: "Flosum", role: "Senior Node.js Developer" };
+    const resend = request({ threadId: "1a19f9ebbd072df4", subject: "Re: Senior Node.js Developer (Romania) - Flosum", from: "Nicole Suico <nicole@flosum.com>",
+      text: "I've just resent the Hireflix video interview invitation to your email.", sentAt: "2026-11-05T13:39:59.000Z", application: flosum });
+    const hireflix: PassMail = { threadId: "1a1abf22d07df18f", company: "Flosum", sentAt: "2026-11-05T13:42:00.000Z", from: "Flosum via Hireflix <users@hireflix.com>",
+      subject: "Nikolaos, great news! You're moving forward to the next step", text: "The next step is a short video interview. Please note the link is valid for 48 hours." };
+    const task = await recordInterviewTask(store, owner, resend, siblingDeadline(resend, [hireflix]));
+    expect(taskDeadline(task)).toBe("2026-11-07T13:42:00.000Z");
+    expect(task.title).toBe("Interview: Re: Senior Node.js Developer (Romania) - Flosum, Sat 7 Nov 20:42 GMT+7");
+  });
+
   it("files a 'completed' receipt as a confirmation, never an invitation that mentions completing", () => {
     const now = Date.parse("2026-10-27T05:00:00.000Z");
     const mail = (text: string) => classifyApplicationMail({ from: "HackerRank <support@hackerrankforwork.com>", subject: "HackerRank", text, receivedAt: "2026-10-27T04:00:00.000Z" }, now);
@@ -153,5 +176,44 @@ describe("daily test and interview reminder", () => {
     expect(raised[0]!.body).toContain("due Tue 3 Nov 11:01 GMT+7");
     expect(await remindInterviews({ store, notifications, sent }, owner, at("2026-10-28T03:01:00.000Z"))).toBe(true);
     expect(raised.at(-1)!.dedupeKey).toBe("job-apply:interviews:2026-10-28");
+  });
+});
+
+describe("an appointment marked completed", () => {
+  // Operator 4/11 (nous_msg:dc24e81ea2c9, after the Axis Global interview): Completed updates the systems the appointment came from.
+  it("closes its interview task and the cards about it, refreshes today's list and writes the step on the thread's application", async () => {
+    const store = bangkokStore();
+    const axis = await recordInterviewTask(store, owner, request({ subject: "Axis Global interview", text: "Your interview is scheduled for 3:00 PM GMT+7 on Wednesday, November 4, 2026.",
+      sentAt: "2026-11-02T03:00:00.000Z" }));
+    const other = await recordInterviewTask(store, owner, request({ threadId: "19other", subject: "Other assessment", text: "Please complete the assessment by 10 November 2026 11:59 PM GMT+7." }));
+    const plain = await store.upsertTaskItem({ ownerUserId: owner, title: "Call the bank", objective: "Call the bank", status: "OPEN", source: "AGENT" });
+    const notifications = createNotificationService({ repository: new InMemorySpaceNotificationsRepository(() => "2026-11-04T05:00:00.000Z"), eventBus: new SpaceEventBus(),
+      now: () => "2026-11-04T05:00:00.000Z", userSettings: async () => ({ dateTime: { timeZone: "UTC" }, notifications: { quietHours: { enabled: false, start: "23:00", end: "09:00" } } }) as never,
+      recordRoomEvent: async () => { throw new Error("roomless"); } });
+    const card = (source: SpaceNotification["source"], kind: string, dedupeKey: string, extra: Partial<NotificationRaiseInput> = {}) => notifications.raise({ ownerUserId: owner, roomId: null,
+      paneId: null, source, kind, severity: "ATTENTION", title: kind, body: "", link: {}, dedupeKey, payload: {}, telegram: null, ...extra });
+    await card("JOB_COPILOT", "INTERVIEW_REMINDER", "job-apply:interviews:2026-11-04", { title: "Tests and interviews: 2 open", payload: { taskIds: [axis.id, other.id] } });
+    await card("NOUS", "APPOINTMENT_REMINDER", "appointment:axis:1", { payload: { appointmentId: "appointment:axis" } });
+    await card("MAIL_COPILOT", "NEEDS_YOU", "mail:thread", { link: { target: `thread:ntheogr@gmail.com:${request().threadId}` } });
+    await card("NOUS", "APPOINTMENT_REMINDER", "appointment:other:1", { payload: { appointmentId: "appointment:other" } });
+    const logged: JobApplyEventInput[] = [];
+    const deps = { store, notifications, now: () => new Date("2026-11-04T05:00:00.000Z"), jobApply: {
+      listEvents: async () => [{ applicationId: "jobapp:otherApp01", payload: { threadId: "19other" } }, { applicationId: "jobapp:wI9JU9mjj2V-", payload: { category: "ACTION_NEEDED", threadId: request().threadId } }],
+      logEvent: async (_owner: string, input: JobApplyEventInput) => { logged.push(input); } } };
+    const appointment = (id: string, sourceRef: string): Appointment => ({ id, ownerUserId: owner, title: "Interview: Axis Global interview", startsAt: "2026-11-04T08:00:00.000Z", endsAt: null,
+      timeZone: "Asia/Bangkok", kind: "INTERVIEW", location: null, notes: null, sourceRef, status: "DONE", format: null, timing: null, deadlineAt: null, remindersSent: [1440], createdAt: "", updatedAt: "" });
+
+    expect(await completeAppointment(deps, owner, appointment("appointment:axis", axis.id))).toEqual({ taskId: axis.id, applicationId: "jobapp:wI9JU9mjj2V-", closed: 2 });
+    expect((await store.getTaskItem(owner, axis.id))!.status).toBe("DONE");
+    expect((await store.getTaskItem(owner, other.id))!.status).toBe("OPEN");
+    expect(logged).toEqual([expect.objectContaining({ applicationId: "jobapp:wI9JU9mjj2V-", type: "NOTE", message: "Completed: Interview: Axis Global interview",
+      payload: expect.objectContaining({ category: "APPOINTMENT_DONE", appointmentId: "appointment:axis", threadId: request().threadId, taskId: axis.id }) })]);
+    const waiting = await notifications.waiting(owner);
+    expect(waiting.map((item) => item.dedupeKey).sort()).toEqual(["appointment:other:1", "job-apply:interviews:2026-11-04"]);
+    expect(waiting.find((item) => item.kind === "INTERVIEW_REMINDER")).toMatchObject({ title: "Tests and interviews: 1 open", payload: { taskIds: [other.id] } });
+
+    // A plain task's appointment changes no task and names no application.
+    expect(await completeAppointment(deps, owner, appointment("appointment:plain", plain.id))).toEqual({ taskId: null, applicationId: null, closed: 0 });
+    expect((await store.getTaskItem(owner, plain.id))!.status).toBe("OPEN");
   });
 });

@@ -56,6 +56,76 @@ describe("BrowserCanvas geometry", () => {
 });
 
 describe("BrowserCanvas input surface", () => {
+  it.each([["touch", 0], ["mouse", 0], ["touch", 140], ["mouse", 140]] as const)("keeps a bottom %s on its target when focus closes the keyboard (client shift %i)", async (pointerType, clientShift) => {
+    const ref = createRef<BrowserCanvasHandle>();
+    const onInput = vi.fn();
+    const visualViewport = { width: 411, height: 480, offsetTop: 140, offsetLeft: 0, scale: 1 };
+    vi.stubGlobal("devicePixelRatio", 3.5);
+    vi.stubGlobal("innerWidth", 411);
+    vi.stubGlobal("innerHeight", 891);
+    vi.stubGlobal("visualViewport", visualViewport);
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 780, height: 1688, close: vi.fn() })));
+    const context = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ setTransform: vi.fn(), fillRect: vi.fn(), drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+    const view = render(<BrowserCanvas ref={ref} ariaLabel="Keyboard resize target" interactive viewportSize={{ width: 390, height: 844 }} onInput={onInput} />);
+    const canvas = screen.getByRole("img", { name: "Keyboard resize target" }) as HTMLCanvasElement;
+    const focus = vi.spyOn(canvas, "focus");
+    const rect = (height: number) => ({ left: 12, top: 280, width: 387, height, right: 399, bottom: 280 + height, x: 12, y: 280, toJSON: () => null });
+    const bounds = vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue(rect(180));
+    // Focusing the non-editable canvas can blur the keyboard's input and restore the larger pane.
+    canvas.addEventListener("focus", () => {
+      visualViewport.height = 891;
+      visualViewport.offsetTop = 0;
+      bounds.mockReturnValue(rect(420));
+    });
+    try {
+      await act(async () => ref.current?.present(new Blob(["remote mobile frame"])));
+      // Client coordinates and bounds share the layout-viewport origin. Neither DPR nor offsetTop is added.
+      const clientY = 280 + 180 * 820 / 844;
+      fireEvent.pointerDown(canvas, { pointerType, pointerId: 7, clientX: 205.5, clientY, button: 0, buttons: 1 });
+      fireEvent.pointerMove(canvas, { pointerType, pointerId: 7, clientX: 205.5, clientY: clientY - clientShift, button: 0, buttons: 1 });
+      fireEvent.pointerUp(canvas, { pointerType, pointerId: 7, clientX: 205.5, clientY: clientY - clientShift, button: 0, buttons: 0 });
+      expect(document.activeElement).toBe(canvas);
+      expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+      expect(visualViewport).toMatchObject({ height: 891, offsetTop: 0 });
+      const points = onInput.mock.calls.flatMap(([input]) => input.type === "TOUCH" ? input.touchPoints : [input]);
+      expect(points).toHaveLength(pointerType === "touch" ? 2 : 3);
+      for (const point of points) {
+        expect(point.x).toBeCloseTo(195, 6);
+        expect(point.y).toBeCloseTo(820, 6);
+      }
+    } finally { view.unmount(); context.mockRestore(); vi.unstubAllGlobals(); }
+  });
+
+  it.each(["touch", "mouse"])("maps a bottom %s on a DPR 2 mobile frame to CSS coordinates", async (pointerType) => {
+    const ref = createRef<BrowserCanvasHandle>();
+    const onInput = vi.fn();
+    vi.stubGlobal("devicePixelRatio", 2);
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 780, height: 1688, close: vi.fn() })));
+    const context = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ setTransform: vi.fn(), fillRect: vi.fn(), drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+    const view = render(<BrowserCanvas ref={ref} ariaLabel="Mobile bottom target" interactive viewportSize={{ width: 390, height: 844 }} onInput={onInput} />);
+    const canvas = screen.getByRole("img", { name: "Mobile bottom target" }) as HTMLCanvasElement;
+    // The portrait frame is letterboxed inside a wider canvas, as in the copilot rail.
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({ left: 20, top: 270, width: 600, height: 422, right: 620, bottom: 692, x: 20, y: 270, toJSON: () => null });
+    try {
+      await act(async () => ref.current?.present(new Blob(["DPR 2 frame"])));
+      fireEvent.pointerDown(canvas, { pointerType, pointerId: 7, clientX: 320, clientY: 680, button: 0, buttons: 1 });
+      fireEvent.pointerUp(canvas, { pointerType, pointerId: 7, clientX: 320, clientY: 680, button: 0, buttons: 0 });
+      expect(canvas.width).toBe(1200);
+      expect(canvas.height).toBe(844);
+      if (pointerType === "touch") {
+        expect(onInput.mock.calls.map(([input]) => input)).toEqual([
+          expect.objectContaining({ type: "TOUCH", eventType: "touchStart", touchPoints: [expect.objectContaining({ x: 195, y: 820 })] }),
+          expect.objectContaining({ type: "TOUCH", eventType: "touchEnd", touchPoints: [] })
+        ]);
+      } else {
+        expect(onInput.mock.calls.map(([input]) => input)).toEqual([
+          expect.objectContaining({ type: "POINTER", eventType: "mousePressed", x: 195, y: 820 }),
+          expect.objectContaining({ type: "POINTER", eventType: "mouseReleased", x: 195, y: 820 })
+        ]);
+      }
+    } finally { view.unmount(); context.mockRestore(); vi.unstubAllGlobals(); }
+  });
+
   it("sends the Enter character needed to submit remote password forms", () => {
     const onInput = vi.fn();
     render(<BrowserCanvas ariaLabel="Password form" interactive viewportSize={{ width: 800, height: 600 }} onInput={onInput} />);

@@ -1,24 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GatewayAccountRecord } from "@space/db";
 import { emailsOutOfRotation } from "../src/gateway/account-rotation.js";
 import {
+  antigravityUserAgent,
   extractEmailFromIdToken,
   parseAntigravityQuotaSummary,
-  createAntigravityUsageAccountProvider,
-  discoverAntigravityProfiles
+  createAntigravityUsageAccountProvider
 } from "../src/antigravity-usage-services.js";
 
 describe("antigravity usage services", () => {
-  it("extracts email safely from jwt id_token", () => {
+  it("extracts email safely from jwt id_token or Antigravity 1.5.x id_token_email", () => {
     const claims = { email: "user@example.com", sub: "12345" };
     const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
     const fakeJwt = `header.${payload}.sig`;
     expect(extractEmailFromIdToken(fakeJwt)).toBe("user@example.com");
     expect(extractEmailFromIdToken("invalid.token")).toBe(null);
     expect(extractEmailFromIdToken(null)).toBe(null);
+    expect(extractEmailFromIdToken(undefined, "ntheogr@gmail.com")).toBe("ntheogr@gmail.com");
+    expect(extractEmailFromIdToken("invalid.token", "mesgnud@gmail.com")).toBe("mesgnud@gmail.com");
   });
 
   it("parses quota summary into Gemini and Claude model groups", () => {
@@ -84,6 +86,24 @@ describe("antigravity usage services", () => {
       weeklyRemainingPercent: 100,
       weeklyResetAt: "2026-09-22T11:00:00Z"
     });
+
+    const nowMs = Date.parse("2026-11-08T06:00:00Z");
+    const proFallback = parseAntigravityQuotaSummary(
+      { groups: [mockSummary.groups[1]] },
+      { buckets: [{ modelId: "gemini-3.8-flash-tiered", remainingFraction: 0.962, resetTime: "2026-11-08T09:55:53Z" }] },
+      nowMs
+    );
+    expect(proFallback.gemini.fiveHourRemainingPercent).toBe(96.2);
+    expect(proFallback.gemini.fiveHourResetAt).toBe("2026-11-08T09:55:53Z");
+    expect(proFallback.gemini.weeklyRemainingPercent).toBeNull();
+
+    const freeFallback = parseAntigravityQuotaSummary(
+      { groups: [{ displayName: "Claude and GPT models", buckets: [{ bucketId: "3p-weekly", window: "weekly", remainingFraction: 0 }] }] },
+      { buckets: [{ modelId: "gemini-2.5-flash", remainingFraction: 0, resetTime: "2026-11-14T14:54:03Z" }] },
+      nowMs
+    );
+    expect(freeFallback.gemini.weeklyRemainingPercent).toBe(0);
+    expect(freeFallback.gemini.weeklyResetAt).toBe("2026-11-14T14:54:03Z");
   });
 
   async function collectOne(loadCodeAssist: Record<string, unknown>, check: (acc: Awaited<ReturnType<ReturnType<typeof createAntigravityUsageAccountProvider>>>["data"][number]) => void,
@@ -93,10 +113,6 @@ describe("antigravity usage services", () => {
       const p1Dir = join(tempDir, "space-gemini", "profiles", "in1", "home", ".gemini", "antigravity-cli");
       await mkdir(p1Dir, { recursive: true });
 
-      const claims = { email: "indgmopai1@gmail.com" };
-      const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
-      const idToken = `header.${payload}.sig`;
-
       await writeFile(
         join(p1Dir, "antigravity-oauth-token"),
         JSON.stringify({
@@ -105,7 +121,8 @@ describe("antigravity usage services", () => {
             expiry: new Date(Date.now() + 3600_000).toISOString(),
             refresh_token: "mock-refresh"
           },
-          id_token: idToken
+          auth_method: "GOOGLE_LOGIN",
+          id_token_email: "indgmopai1@gmail.com"
         }),
         "utf8"
       );
@@ -152,7 +169,7 @@ describe("antigravity usage services", () => {
 
       const provider = createAntigravityUsageAccountProvider({
         codexHome: tempDir,
-        fetchImpl: mockFetch as any,
+        fetchImpl: mockFetch as unknown as typeof fetch,
         profileLabels: async () => new Map([["in1", "Indgmopai 1"]]),
         hiddenEmails
       });
@@ -168,6 +185,36 @@ describe("antigravity usage services", () => {
       await rm(tempDir, { recursive: true, force: true });
     }
   }
+
+  it("lists every group Google reports by its bucket id, Argon apart from Gemini, a disabled bucket as no limit", () => {
+    const bucket = (bucketId: string, window: string, remainingFraction: number, extra = {}) =>
+      ({ bucketId, window, remainingFraction, resetTime: "2026-11-15T06:00:00Z", ...extra });
+    const parsed = parseAntigravityQuotaSummary({
+      groups: [
+        { displayName: "Gemini 4 Argon", buckets: [bucket("gemini-argon-wtu-weekly", "weekly", 0.4)] },
+        { displayName: "Gemini Models", buckets: [bucket("gemini-weekly", "weekly", 0.9), bucket("gemini-5h", "5h", 0.5)] },
+        { displayName: "Claude and GPT models", buckets: [bucket("3p-weekly", "weekly", 0), bucket("3p-5h", "5h", 1, { disabled: true })] }
+      ]
+    });
+    expect(parsed.groups.map((g) => [g.id, g.displayName, g.fiveHourRemainingPercent, g.weeklyRemainingPercent])).toEqual([
+      ["gemini-argon-wtu", "Gemini 4 Argon", null, 40],
+      ["gemini", "Gemini Models", 50, 90],
+      ["claude", "Claude and GPT models", null, 0]
+    ]);
+    expect(parsed.gemini.weeklyRemainingPercent).toBe(90);
+    expect(parseAntigravityQuotaSummary({ groups: [] }).groups).toEqual([]);
+  });
+
+  it("names the installed Antigravity CLI version as the client", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agy-ua-"));
+    try {
+      expect(await antigravityUserAgent(dir)).toBe("antigravity/cli/1.5.3");
+      await symlink("1.6.0", join(dir, "current"));
+      expect(await antigravityUserAgent(dir)).toBe("antigravity/cli/1.6.0");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 
   it("discovers profiles and collects usage with mock fetch", async () => {
     await collectOne({
@@ -204,7 +251,7 @@ describe("antigravity usage services", () => {
       }));
       const provider = createAntigravityUsageAccountProvider({
         codexHome: tempDir,
-        fetchImpl: mockFetch as any,
+        fetchImpl: mockFetch as unknown as typeof fetch,
         fetchTimeoutMs: 10
       });
 

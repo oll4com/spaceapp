@@ -53,9 +53,13 @@ const mockCalendarData: MemoryCalendarResponseEnvelope = {
 describe("MemoryCalendarView", () => {
   beforeEach(() => {
     installSpaceRuntime(liveRuntime);
+    // The view opens on today's month; the fixture's memories are in October 2026 (only Date is faked, timers stay real).
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-15T12:00:00Z"));
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 

@@ -6,13 +6,14 @@ import { registerApiKeyAccountRoutes } from "../src/admin/api-key-accounts.js";
 import { claudeAccountActions } from "../src/admin/claude-sign-in.js";
 import { generateGatewayApiKey } from "../src/api-keys.js";
 import { createCredentialCipher } from "../src/credential-cipher.js";
-import { CLAUDE_API_KEY_PATTERN, claudeCreditsExhausted, isClaudeApiKeyAccount } from "../src/providers/claude/api-key.js";
+import { CLAUDE_API_KEY_PATTERN, claudeCreditsExhausted, isClaudeApiKeyAccount, isClaudeCodeRequest } from "../src/providers/claude/api-key.js";
 import { apiBudgetPace, DAILY_ALLOWANCE_REACHED, MONTHLY_BUDGET_REACHED } from "../src/providers/claude/api-budget.js";
 import { registerClaudeProxyRoutes, type ClaudeProxyOptions } from "../src/providers/claude/claude-proxy.js";
 import { createClaudeRefresher } from "../src/providers/claude/credentials.js";
 import { buildClaudeUpstreamHeaders } from "../src/providers/claude/headers.js";
 import { startClaudeUsagePoller } from "../src/providers/claude/usage-refresh.js";
 import { RequestLogWriter } from "../src/request-log-writer.js";
+import { createPriorityPanes } from "../src/admin/priority-panes.js";
 import { createGatewayServer } from "../src/server.js";
 
 /**
@@ -34,7 +35,8 @@ const limited = (resetSeconds: number) => json({ type: "error", error: { type: "
 
 interface Call { auth: string; url: string; betas: string | undefined; body: Record<string, unknown>; headers: Record<string, string> }
 
-async function setup(upstream: (call: Call) => Response, options: { fallback?: boolean; withKey?: boolean; apiBudget?: ClaudeProxyOptions["apiBudget"] } = {}) {
+async function setup(upstream: (call: Call) => Response, options: { fallback?: boolean; withKey?: boolean; apiBudget?: ClaudeProxyOptions["apiBudget"]; internalToken?: string;
+  priorityPanes?: ClaudeProxyOptions["priorityPanes"] } = {}) {
   const repository = new InMemoryGatewayRepository();
   let clock = startMs;
   const now = () => clock;
@@ -51,7 +53,7 @@ async function setup(upstream: (call: Call) => Response, options: { fallback?: b
       credentialsEncrypted: cipher.encrypt(JSON.stringify(credentials), keyAccount), credentialsExpiresAt: null, source: "API_KEY", sourceRef: "space-claude",
       lastRefreshAt: new Date(startMs).toISOString() });
   }
-  await repository.updateSettings({ routingStrategy: "USAGE_WEIGHTED", claudeApiKeyFallback: options.fallback ?? false });
+  await repository.updateSettings({ routingStrategy: "USAGE_WEIGHTED", subscriptionRouting: "WEEKLY_PACE", claudeApiKeyFallback: options.fallback ?? false });
   const { plainKey, keyHash, keyPrefix } = generateGatewayApiKey();
   await repository.createApiKey({ keyId: `gw_key:${"c".repeat(32)}`, name: "Claude Code", keyHash, keyPrefix, trafficClass: "INTERACTIVE", allowedModels: [],
     enforcedModel: null, allowedReasoningEfforts: [], enforcedReasoningEffort: null, accountIds: [], compressionOverride: null, limits: [],
@@ -68,7 +70,8 @@ async function setup(upstream: (call: Call) => Response, options: { fallback?: b
   }) as unknown as typeof fetch;
   const server = createGatewayServer({ repository, version: "test", credentialKeyPresent: () => true, now: () => new Date(now()),
     routes: (app, helpers) => {
-      registerClaudeProxyRoutes(app, helpers, { pool, logs, settings: () => repository.getSettings(), fetchImpl, now, upstreamBaseUrl: "https://claude.test", apiBudget: options.apiBudget });
+      registerClaudeProxyRoutes(app, helpers, { pool, logs, settings: () => repository.getSettings(), fetchImpl, now, upstreamBaseUrl: "https://claude.test", apiBudget: options.apiBudget,
+        internalToken: options.internalToken, priorityPanes: options.priorityPanes });
     } });
   const post = (payload: Record<string, unknown>, headers: Record<string, string> = {}, url = "/v1/messages") => server.app.inject({
     method: "POST", url, payload, headers: { "x-api-key": plainKey, "anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219", ...headers }
@@ -96,6 +99,12 @@ describe("Claude API key account", () => {
     expect(claudeCreditsExhausted(400, "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.")).toBe(true);
     expect(claudeCreditsExhausted(400, "max_tokens: must be greater than 0")).toBe(false);
     expect(claudeCreditsExhausted(429, "credit balance")).toBe(false);
+  });
+
+  it("counts every Nous project as Claude Code whatever its user agent, so the key never serves Nous (operator rule 27/10)", () => {
+    for (const project of ["nous", "nous-operator", "nous-helper"]) expect(isClaudeCodeRequest({ "user-agent": "node", "x-space-project": project })).toBe(true);
+    expect(isClaudeCodeRequest({ "user-agent": "opencode/1.2.3" })).toBe(false);
+    expect(isClaudeCodeRequest({ "user-agent": "opencode/1.2.3", "x-space-project": "pane:abc" })).toBe(false);
   });
 
   it("sends the key as x-api-key without the OAuth beta that subscription tokens carry", () => {
@@ -176,6 +185,65 @@ describe("Claude API key fallback", () => {
     expect(calls[2]!.auth).toMatch(/^token-claude-/);
   });
 
+  // Plan clipboard:DotwYXVD2N3n step 6: a pace hold is no shortage; with the fallback on, the held work still never reaches the paid key.
+  it("serves background work past today's share on the subscriptions, never on the key, for any client (no pace cap: operator 7/11 19:22 BKK)", async () => {
+    const { post, calls, pool } = await setup((call) => message(call.auth.startsWith("key:") ? "msg_key" : "msg_sub"), { fallback: true });
+    const day = 86_400, now = startMs / 1000;
+    const original = pool.toBalancerState.bind(pool);
+    vi.spyOn(pool, "toBalancerState").mockImplementation((account) => ({ ...original(account), secondaryUsedPercent: 75, secondaryResetAt: now + 3.5 * day,
+      weekDayStart: { at: (now - day / 2) * 1000, usedPercent: 60 } }));
+    const body = { model: "claude-sonnet-4-5", max_tokens: 10, messages: [{ role: "user", content: "hi" }] };
+    for (const agent of ["opencode/1.2.0", "oh-my-pi/1.4.0", "space-client/1.0"]) {
+      expect((await post(body, { "user-agent": agent, "x-space-project": "pane:finn0001" })).json(), agent).toMatchObject({ id: "msg_sub" });
+    }
+    expect(calls.some((call) => call.auth.startsWith("key:"))).toBe(false);
+  });
+
+  // Plan clipboard:DotwYXVD2N3n, 6/11: Nous's emergency spends the account with room, never the one short of its week, and never the key.
+  it("never serves Claude Code from the key during the pace cap emergency, while an account short of its week is set aside", async () => {
+    const priorityPanes = createPriorityPanes({ now: () => startMs });
+    priorityPanes.set([], { all: true, paneIds: [], until: startMs + 3_600_000 });
+    const { post, calls, pool } = await setup((call) => message(call.auth.startsWith("key:") ? "msg_key" : "msg_sub"), { fallback: true, priorityPanes });
+    const day = 86_400, now = startMs / 1000;
+    let bLimited = false;
+    const original = pool.toBalancerState.bind(pool);
+    // a: ntheo on 6/11 (92% of its week 5.6 days before its reset, 37% used today); b: lab, with room.
+    vi.spyOn(pool, "toBalancerState").mockImplementation((account) => {
+      const state = original(account);
+      if (account.id === accountA) return { ...state, secondaryUsedPercent: 92, secondaryResetAt: now + 5.58 * day, weekDayStart: { at: (now - 0.42 * day) * 1000, usedPercent: 55 } };
+      if (account.id === accountB) return { ...state, secondaryUsedPercent: 39, secondaryResetAt: now + 6.38 * day,
+        ...(bLimited ? { status: "RATE_LIMITED" as const, resetAt: now + 3_600 } : {}) };
+      return state;
+    });
+    const body = { model: "claude-sonnet-4-5", max_tokens: 10, messages: [{ role: "user", content: "hi" }] };
+    const claudeCode = { "user-agent": "claude-cli/2.1.307 (external, sdk-cli)", "x-space-project": "pane:finn0001" };
+    expect((await post(body, claudeCode)).json()).toMatchObject({ id: "msg_sub" });
+    expect((await post(body, { ...claudeCode, "x-space-project": "nous-operator" })).json()).toMatchObject({ id: "msg_sub" });
+    expect(calls.map((call) => call.auth)).toEqual(["token-claude-b", "token-claude-b"]);
+    // b at its 5-hour limit: emergency work runs on a (short, under 95% of its week; operator 7/11 18:25 BKK), never on the key.
+    bLimited = true;
+    for (const agent of ["claude-cli/2.1.307 (external, sdk-cli)", "opencode/1.2.0"]) {
+      expect((await post(body, { ...claudeCode, "user-agent": agent })).json(), agent).toMatchObject({ id: "msg_sub" });
+    }
+    expect((await post(body, { ...claudeCode, "x-space-project": "nous-operator" })).json()).toMatchObject({ id: "msg_sub" });
+    expect(calls.map((call) => call.auth)).toEqual(["token-claude-b", "token-claude-b", "token-claude-a", "token-claude-a", "token-claude-a"]);
+  });
+
+  it("serves /pools/space's API-key route from the key with room on the accounts and the fallback off, only with the internal token, never for Claude Code", async () => {
+    const { post, calls } = await setup((call) => message(call.auth.startsWith("key:") ? "msg_key" : "msg_sub"), { internalToken: "internal-secret" });
+    const body = { model: "claude-sonnet-4-5", max_tokens: 10, messages: [{ role: "user", content: "hi" }] };
+    const route = { "x-space-gateway-route": "CLAUDE_API_KEY", "user-agent": "space-client/1.0" };
+    expect((await post(body, { ...route, "x-space-internal-token": "guessed" })).json()).toMatchObject({ id: "msg_sub" });
+    expect((await post(body, { ...route, "x-space-internal-token": "internal-secret" })).json()).toMatchObject({ id: "msg_key" });
+    expect(calls.at(-1)!.auth).toBe(`key:${apiKey}`);
+    expect(calls.at(-1)!.headers).not.toHaveProperty("x-space-internal-token");
+    expect(calls.at(-1)!.headers).not.toHaveProperty("x-space-gateway-route");
+    const before = calls.length;
+    const claudeCode = await post(body, { ...route, "x-space-internal-token": "internal-secret", "user-agent": "claude-cli/2.1.307 (external, sdk-cli)" });
+    expect(claudeCode.statusCode).not.toBe(200);
+    expect(calls.length).toBe(before);
+  });
+
   // Operator rule 2026-10-27: the API key's credits serve only clients outside Claude Code.
   it("never serves Claude Code from the key, while other clients keep it", async () => {
     const { post, calls, logs, repository, limitAccounts, advance } = await setup((call) => message(call.auth.startsWith("key:") ? "msg_key" : "msg_sub"), { fallback: true });
@@ -191,14 +259,14 @@ describe("Claude API key fallback", () => {
     }
     expect(calls.filter((call) => call.auth.startsWith("key:"))).toEqual([]);
     // Oh My Pi sends Claude Code's session header; its user agent keeps it on the key.
-    const served = await post(body, { "user-agent": "oh-my-pi/1.4.0", "x-claude-code-session-id": "5f2c1f9e-7a1b-4c1d-9e2f-0a1b2c3d4e5f", "x-space-project": "nous" });
+    const served = await post(body, { "user-agent": "oh-my-pi/1.4.0", "x-claude-code-session-id": "5f2c1f9e-7a1b-4c1d-9e2f-0a1b2c3d4e5f", "x-space-project": "pane:omp00001" });
     expect(served.json()).toMatchObject({ id: "msg_key" });
     expect(calls.at(-1)!.auth).toBe(`key:${apiKey}`);
     // The gateway's own tags stay in the gateway: they are logged, never sent upstream.
     expect(calls.at(-1)!.headers).not.toHaveProperty("x-space-project");
     await logs.flush();
     const [log] = await repository.listRequestLogs({ limit: 1 });
-    expect(log).toMatchObject({ accountId: keyAccount, clientName: "Oh My Pi", project: "nous" });
+    expect(log).toMatchObject({ accountId: keyAccount, clientName: "Oh My Pi", project: "pane:omp00001" });
   });
 
   it("takes the key out of routing when Anthropic reports used-up credits, and passes the answer on", async () => {
@@ -238,14 +306,16 @@ describe("Claude API key paced to the monthly budget", () => {
     gatewayEstimateUsd: reported ? 0 : usd, gatewayBilledUsd: 0, models: [] });
   const at = (iso: string) => Date.parse(iso);
 
-  it("is off without a budget, shares what the month has left over the days left and stops at the month's budget", () => {
+  it("is off without a budget, shows what the month has left over the days left and stops only at the month's budget", () => {
     const days = [day("2026-10-01", 300, true), day("2026-10-26", 92.21), day("2026-10-27", 10)];
     expect(apiBudgetPace(null, days, at("2026-10-27T16:00:00Z"))).toBeNull();
     expect(apiBudgetPace(0, days, at("2026-10-27T16:00:00Z"))).toBeNull();
     // $392.21 by the end of 26/10: $107.79 for 27-31/10, $21.56 a day; $10 spent today.
     expect(apiBudgetPace(500, days, at("2026-10-27T16:00:00Z"))).toEqual({ budgetUsd: 500, monthSpentUsd: 402.21, remainingUsd: 97.79, daysLeft: 5,
       allowanceTodayUsd: 21.56, todaySpentUsd: 10, stop: null });
-    expect(apiBudgetPace(500, days, at("2026-10-27T16:00:00Z"), 11.56)?.stop).toBe(DAILY_ALLOWANCE_REACHED);
+    // Today's share is shown, never a stop (operator 5/11): $21.56 spent of $21.56 still serves; only the month's budget stops.
+    expect(apiBudgetPace(500, days, at("2026-10-27T16:00:00Z"), 11.56)).toMatchObject({ todaySpentUsd: 21.56, allowanceTodayUsd: 21.56, stop: null });
+    expect(apiBudgetPace(500, days, at("2026-10-27T16:00:00Z"), 97.79)?.stop).toBe(MONTHLY_BUDGET_REACHED);
     expect(apiBudgetPace(400, days, at("2026-10-27T16:00:00Z"))?.stop).toBe(MONTHLY_BUDGET_REACHED);
     // Last month's days never count.
     expect(apiBudgetPace(500, [day("2026-09-30", 499, true)], at("2026-10-01T00:10:00Z"))).toMatchObject({ monthSpentUsd: 0, daysLeft: 31, stop: null });

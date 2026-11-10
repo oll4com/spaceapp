@@ -120,7 +120,8 @@ describe("council web search parsing", () => {
 
 function fakeCouncil(options: { failOnce?: string; holdModel?: string; hold?: Promise<void>; onStatus?: Parameters<typeof createCouncilService>[0]["onStatus"]; planReply?: string } = {}) {
   const repository = new InMemoryCouncilRepository();
-  const calls: Array<{ modelId: string; prompt: string }> = [];
+  const calls: Array<{ modelId: string; prompt: string; runId: string }> = [];
+  const searches: Array<{ query: string; runId: string | undefined }> = [];
   const savedPlans: Array<Parameters<Parameters<typeof createCouncilService>[0]["savePlan"]>[1]> = [];
   const models: CouncilModel[] = [
     { id: "codex/gpt-6-astra", displayName: "GPT-6 Astra", providerId: "codex", available: true, note: null },
@@ -139,9 +140,12 @@ function fakeCouncil(options: { failOnce?: string; holdModel?: string; hold?: Pr
     catalog: async () => models,
     savePlan: async (_owner, plan) => { savedPlans.push(plan); return { id: "clipboard_plan1" }; },
     personalData: async (_owner, _question, memoryQueries) => `PROFILE:\nName: Nikos\nSkills: TypeScript${memoryQueries.length ? "\nSPACE MEMORY: found" : ""}`,
-    searchWeb: async (query) => [{ title: `About ${query}`, url: `https://example.com/${encodeURIComponent(query)}`, finding: "A fact." }],
-    async callModel({ modelId, prompt, signal }) {
-      calls.push({ modelId, prompt });
+    searchWeb: async (query, _question, _signal, runId) => {
+      searches.push({ query, runId });
+      return [{ title: `About ${query}`, url: `https://example.com/${encodeURIComponent(query)}`, finding: "A fact." }];
+    },
+    async callModel({ modelId, prompt, signal, runId }) {
+      calls.push({ modelId, prompt, runId });
       if (prompt.includes("Prepare the plan now")) {
         if (!prompt.includes("THE OPERATOR'S ANSWERS")) return '{"questions":["Which city do you live in?"]}';
         if (!prompt.includes("memory was already searched")) return '{"plan":{},"memoryQueries":["skills"]}';
@@ -178,14 +182,14 @@ function fakeCouncil(options: { failOnce?: string; holdModel?: string; hold?: Pr
       throw new Error(`unexpected prompt: ${prompt.slice(0, 60)}`);
     }
   });
-  return { service, repository, calls, savedPlans };
+  return { service, repository, calls, searches, savedPlans };
 }
 
 describe("council run", () => {
   const owner = "user:operator";
 
   it("asks, plans with the operator's memory, waits for approval, then answers, merges anonymously, reviews and finishes", async () => {
-    const { service, calls } = fakeCouncil({ failOnce: "opencode/free" });
+    const { service, calls, searches } = fakeCouncil({ failOnce: "opencode/free" });
     const created = await service.create(owner, { question: "Πώς μπορώ να βγάλω 100 ευρώ σε μία μέρα;" });
     expect(created.coordinatorModelId).toBe("codex/gpt-6-astra");
     await service.settled(created.id);
@@ -193,6 +197,8 @@ describe("council run", () => {
     expect(asked.status).toBe("NEEDS_INPUT");
     expect(asked.qa[0]?.questions).toEqual([{ id: "q1", text: "Which city do you live in?" }]);
     expect(calls[0]?.prompt).toContain("Name: Nikos");
+    // OBS-006: every model call names its run, which a CLI member's worker.socket_request line carries as traceId.
+    expect(calls.every((call) => call.runId === created.id)).toBe(true);
 
     await service.answer(owner, created.id, { q1: "Athens" });
     await service.settled(created.id);
@@ -210,6 +216,8 @@ describe("council run", () => {
     const done = await service.get(owner, created.id);
     expect(done.status).toBe("COMPLETED");
     expect(done.evidence).toHaveLength(1);
+    // OBS-006: the web search names its run, which Space Gateway's request log row then carries as its request id.
+    expect(searches).toEqual([{ query: "gig work Athens", runId: created.id }]);
     expect(done.answers.map((answer) => answer.status)).toEqual(["DONE", "DONE", "FAILED"]);
     expect(done.rounds).toHaveLength(1);
     expect(done.rounds[0]?.ranking.slice(0, 3).map((entry) => entry.positionId)).toEqual(["P1", "P2", "P3"]);

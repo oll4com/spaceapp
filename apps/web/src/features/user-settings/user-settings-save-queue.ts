@@ -6,6 +6,9 @@ import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 // back into them, which would form a dependency cycle.
 let pendingPatch: UpdateUserSettingsInput = {};
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+// A cut or refused write is tried again this many times (a newer value of a key wins); otherwise the next load brought back the server's old copy.
+const RETRY_DELAYS_MS = [1_000, 5_000, 20_000];
+let failures = 0;
 
 export async function flushPendingUserSettings(): Promise<void> {
   if (debounceTimer !== null) {
@@ -20,8 +23,22 @@ export async function flushPendingUserSettings(): Promise<void> {
     if (runtime?.api?.updateUserSettings) {
       await runtime.api.updateUserSettings(patchToSend);
     }
+    failures = 0;
   } catch (err) {
     console.error("Failed to sync user settings to server:", err);
+    const delayMs = RETRY_DELAYS_MS[failures];
+    if (delayMs === undefined) {
+      failures = 0;
+      return;
+    }
+    failures += 1;
+    pendingPatch = { ...patchToSend, ...pendingPatch };
+    if (debounceTimer === null) {
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        void flushPendingUserSettings();
+      }, delayMs);
+    }
   }
 }
 

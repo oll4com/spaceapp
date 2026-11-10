@@ -7,8 +7,9 @@ import {
   memoryMaintenanceWorkerOptions
 } from "./memory-maintenance-config.js";
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
-import { otlpSpanExporterFromEnv } from "@space/runtime";
+import { otlpSpanExporterFromEnv, redactSecretText } from "@space/runtime";
 import { createActivityObservabilityInterceptors } from "./activity-observability.js";
+import { resolveWorkerMetricsListen, startWorkerMetricsServer } from "./worker-metrics.js";
 import { reloadWhenServicesCommitChanges } from "./deployed-code-reload.js";
 
 const service = "space-memory-maintenance-worker";
@@ -40,6 +41,9 @@ if (!memoryMaintenanceEnabled(process.env)) {
       taskQueue: MEMORY_MAINTENANCE_TASK_QUEUE,
       activityConcurrency: memoryMaintenanceWorkerOptions.maxConcurrentActivityTaskExecutions
     }));
+    // Its activity counters on their own loopback endpoint, like the main worker's (OBS-007); a bind failure never stops the worker.
+    const metricsListen = resolveWorkerMetricsListen(process.env, "SPACE_MEMORY_MAINTENANCE_METRICS_PORT");
+    if (metricsListen) console.log(JSON.stringify({ service, metricsEndpoint: (await startWorkerMetricsServer(metricsListen)) ? "LISTENING" : "UNAVAILABLE", port: metricsListen.port }));
     const stopReloadWatch = reloadWhenServicesCommitChanges(worker, { log: (message) => console.log(JSON.stringify({ service, status: "reloading", message })) });
     await worker.run();
     stopReloadWatch();
@@ -48,7 +52,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
     console.error(JSON.stringify({
       service,
       status: "failed",
-      error: error instanceof Error ? error.message : "Unknown maintenance worker failure."
+      error: error instanceof Error ? redactSecretText(error.message) : "Unknown maintenance worker failure."
     }));
     process.exitCode = 1;
   }

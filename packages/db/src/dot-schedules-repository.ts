@@ -41,7 +41,7 @@ export class PostgresDotSchedulesRepository implements DotSchedulesRepository {
   }
   list(owner: string, dotId: string) {
     return this.rows(`${select} s WHERE s.owner_user_id=$1 AND s.dot_id=$2 AND EXISTS (SELECT 1 FROM rooms r WHERE r.id=s.room_id AND r.owner_user_id=$1)
-      ORDER BY (s.status IN ('ACTIVE','PENDING_CONFIRMATION','PAUSED')) DESC, s.next_run_at NULLS LAST, s.updated_at DESC LIMIT 50`, [owner, dotId]);
+      ORDER BY (s.status IN ('ACTIVE','PENDING_CONFIRMATION','PAUSED')) DESC, s.next_run_at NULLS LAST, s.updated_at DESC`, [owner, dotId]);
   }
   due(nowIso: string, limit: number) {
     return this.rows(`${select} WHERE status='ACTIVE' AND next_run_at <= $1 ORDER BY next_run_at LIMIT $2`, [nowIso, Math.min(50, Math.max(1, limit))]);

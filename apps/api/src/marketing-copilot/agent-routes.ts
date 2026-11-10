@@ -1,3 +1,4 @@
+import { siteSigninFor, siteSigninsFor } from "../site-signins.js";
 import { operatorHands } from "../owner-clock.js";
 import type {} from "../request-context.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -86,8 +87,9 @@ export function registerMarketingCopilotAgentRoutes(app: FastifyInstance, servic
   handle("get", "state", async ({ owner, pane }) => {
     const settings = service.settingsOf(pane);
     return {
-      paneId: pane.id, settings,
-      channels: Object.fromEntries(MARKETING_CHANNELS.map((id) => [id, { ...settings.channels[id], effectiveAutonomy: effectiveMarketingAutonomy(settings, id) }])),
+      paneId: pane.id, settings, siteSignins: await siteSigninsFor(deps.store)?.list(owner) ?? [],
+      channels: Object.fromEntries(await Promise.all(MARKETING_CHANNELS.map(async (id) => [id, { ...settings.channels[id], effectiveAutonomy: effectiveMarketingAutonomy(settings, id),
+        signin: await siteSigninFor(deps.store, owner, ({X:"x.com",LINKEDIN:"linkedin.com",REDDIT:"reddit.com",HACKER_NEWS:"news.ycombinator.com",PRODUCT_HUNT:"producthunt.com",DEVTO:"dev.to",YOUTUBE:"youtube.com",GITHUB:"github.com",BLOG:null})[id]) }]))),
       run: await service.runView(owner, pane), campaigns: await service.listCampaigns(owner, ["ACTIVE", "PROPOSED"]), bookmarks: await service.listBookmarks(owner)
     };
   });
@@ -114,8 +116,10 @@ export function registerMarketingCopilotAgentRoutes(app: FastifyInstance, servic
   handle("get", "posts/:id", async ({ owner }, request) => ({ post: await service.getPost(owner, parseQuery(postParamsSchema, request.params).id) }));
   handle("post", "posts", async ({ owner, pane }, request) => service.createPost(owner, pane, parseBody(marketingPostCreateSchema, request.body ?? {})));
   handle("patch", "posts/:id", async ({ owner }, request) => service.updatePost(owner, parseQuery(postParamsSchema, request.params).id, parseBody(marketingPostUpdateSchema, request.body ?? {})));
-  handle("post", "review", async ({ owner, pane }, request) => service.requestReview(owner, pane, parseBody(z.object({ postId: marketingPostIdSchema, summary: z.string().trim().min(1).max(1000).optional() }).strict(), request.body ?? {})));
+  handle("post", "review", async ({ owner, pane }, request) => service.requestReview(owner, pane, parseBody(z.object({ postId: marketingPostIdSchema, summary: z.string().trim().min(1).max(1000).optional(), operatorOrder: z.string().regex(/^nous_msg:[A-Za-z0-9_-]{6,80}$/).optional() }).strict(), request.body ?? {})));
   handle("post", "review/wait", async ({ owner }, request) => service.waitForReview(owner, parseBody(z.object({ postId: marketingPostIdSchema, waitMs }).strict(), request.body ?? {})));
+  handle("post", "review/supersede", async ({ owner, pane }, request) => ({ post: await service.supersedeReview(owner, pane, parseBody(z.object({ postId: marketingPostIdSchema,
+    evidence: z.string().trim().min(10).max(1000), replacedBy: marketingPostIdSchema.optional() }).strict(), request.body ?? {})) }));
 
   handle("post", "publish/begin", async ({ owner, pane }, request) => {
     const post = await service.beginPublish(owner, pane, parseBody(marketingPublishBeginSchema, request.body ?? {}).postId);

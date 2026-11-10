@@ -1,3 +1,8 @@
+/** Helpers that return words for the screen take the pane's `t`; without one they speak English, as before. */
+export type AccountText = (text: string, vars?: Record<string, string | number>) => string;
+// No ui-language import here: live-api.ts uses this file and ui-language.ts imports api.ts (a cycle).
+export const accountTextEnglish: AccountText = (text, vars) => vars ? text.replace(/\{(\w+)\}/g, (slot, key: string) => key in vars ? String(vars[key]) : slot) : text;
+
 /**
  * CONNECTED is verified with Google; SIGNED_IN means the shared profile holds a Google
  * session (Gemini accounts, read locally); UNKNOWN is not evidence either way.
@@ -44,15 +49,15 @@ function canonicalEmail(email: string): string {
 }
 
 /** Where a row comes from; an older server sends no label, and its display name already says it. */
-function entryDetail(profiles: BrowserAccountProfile[]): string {
-  const gemini = profiles.filter(profile => !isLinkedGoogleAccount(profile.profileId) && profile.label).map(profile => `Gemini ${profile.label}`);
+function entryDetail(profiles: BrowserAccountProfile[], t: AccountText): string {
+  const gemini = profiles.filter(profile => !isLinkedGoogleAccount(profile.profileId) && profile.label).map(profile => t("Gemini {label}", { label: profile.label! }));
   const linked = profiles.some(profile => isLinkedGoogleAccount(profile.profileId));
-  if (linked && !gemini.length) return "Linked Google account";
-  return [...gemini, ...(linked ? ["Linked"] : [])].join(" · ");
+  if (linked && !gemini.length) return t("Linked Google account");
+  return [...gemini, ...(linked ? [t("Linked")] : [])].join(" · ");
 }
 
 /** Shared accounts first (linked Google accounts, then Gemini accounts), then the private pane profile. */
-export function accountMenuEntries(accounts: YouTubeAccounts): AccountMenuEntry[] {
+export function accountMenuEntries(accounts: YouTubeAccounts, t: AccountText = accountTextEnglish): AccountMenuEntry[] {
   const ordered = [
     ...accounts.profiles.filter(profile => isLinkedGoogleAccount(profile.profileId)),
     ...accounts.profiles.filter(profile => !isLinkedGoogleAccount(profile.profileId) && profile.profileId !== privatePaneProfileId)
@@ -67,10 +72,10 @@ export function accountMenuEntries(accounts: YouTubeAccounts): AccountMenuEntry[
     if (email) byEmail.set(email, entry);
     shared.push(entry);
   }
-  for (const entry of shared) entry.detail = entryDetail(entry.profiles);
+  for (const entry of shared) entry.detail = entryDetail(entry.profiles, t);
   return [
     ...shared,
-    { key: privatePaneProfileId, group: "private", title: "Private pane profile", detail: "Only this pane · not shared",
+    { key: privatePaneProfileId, group: "private", title: t("Private pane profile"), detail: t("Only this pane · not shared"),
       profiles: [{ profileId: privatePaneProfileId, displayName: "Private pane profile" }] }
   ];
 }
@@ -103,29 +108,29 @@ export function accountEntryTarget(entry: AccountMenuEntry, effectiveId: string)
   return (entry.profiles.find(profile => signedIn(profile.browserStatus)) ?? current).profileId;
 }
 
-export function accountEntryForProfile(accounts: YouTubeAccounts, profileId: string): AccountMenuEntry | undefined {
-  return accountMenuEntries(accounts).find(entry => isAccountEntrySelected(entry, profileId));
+export function accountEntryForProfile(accounts: YouTubeAccounts, profileId: string, t: AccountText = accountTextEnglish): AccountMenuEntry | undefined {
+  return accountMenuEntries(accounts, t).find(entry => isAccountEntrySelected(entry, profileId));
 }
 
 /** Short selector label; UNKNOWN stays silent because it is not evidence either way. */
-export function browserAccountStatusLabel(status: BrowserAccountStatus | undefined): string | null {
-  if (signedIn(status)) return "Signed in";
-  if (status === "NOT_CONNECTED") return "Sign-in needed";
-  if (status === "REAUTHENTICATION_REQUIRED") return "Sign in again";
+export function browserAccountStatusLabel(status: BrowserAccountStatus | undefined, t: AccountText = accountTextEnglish): string | null {
+  if (signedIn(status)) return t("Signed in");
+  if (status === "NOT_CONNECTED") return t("Sign-in needed");
+  if (status === "REAUTHENTICATION_REQUIRED") return t("Sign in again");
   return null;
 }
 
-export function browserAccountStatusHint(status: BrowserAccountStatus | undefined): string | null {
-  if (status === "CONNECTED") return "Verified with Google";
-  if (status === "SIGNED_IN") return "A Google session is saved in this account's browser profile";
-  if (status === "NOT_CONNECTED") return "No Google session in this account's browser profile yet";
-  if (status === "REAUTHENTICATION_REQUIRED") return "Google asks to sign in to this account again";
+export function browserAccountStatusHint(status: BrowserAccountStatus | undefined, t: AccountText = accountTextEnglish): string | null {
+  if (status === "CONNECTED") return t("Verified with Google");
+  if (status === "SIGNED_IN") return t("A Google session is saved in this account's browser profile");
+  if (status === "NOT_CONNECTED") return t("No Google session in this account's browser profile yet");
+  if (status === "REAUTHENTICATION_REQUIRED") return t("Google asks to sign in to this account again");
   return null;
 }
 
 /** Accessible row name: account, status, then where it comes from. */
-export function accountMenuLabel(entry: AccountMenuEntry, effectiveId: string): string {
-  const status = browserAccountStatusLabel(accountEntryProfile(entry, effectiveId).browserStatus);
+export function accountMenuLabel(entry: AccountMenuEntry, effectiveId: string, t: AccountText = accountTextEnglish): string {
+  const status = browserAccountStatusLabel(accountEntryProfile(entry, effectiveId).browserStatus, t);
   return [entry.title, status, entry.group === "shared" ? entry.detail : null].filter(Boolean).join(" · ");
 }
 

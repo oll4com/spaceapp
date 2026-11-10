@@ -82,10 +82,11 @@ export class SetupConnectionCheckRunManager {
     connectionIds: string[],
     actorUserId: string
   ): Promise<SetupConnectionCheckRunAdmission> {
-    const operation = this.admissionQueue.then(
-      () => this.admitExclusive(scope, connectionIds, actorUserId),
-      () => this.admitExclusive(scope, connectionIds, actorUserId)
-    );
+    return this.exclusive(() => this.admitExclusive(scope, connectionIds, actorUserId));
+  }
+
+  private exclusive<T>(task: () => Promise<T>): Promise<T> {
+    const operation = this.admissionQueue.then(task, task);
     this.admissionQueue = operation.then(() => undefined, () => undefined);
     return operation;
   }
@@ -96,8 +97,12 @@ export class SetupConnectionCheckRunManager {
     actorUserId: string
   ): Promise<SetupConnectionCheckRunAdmission> {
     const actorId = idSchema.parse(actorUserId);
-    const active = (await this.options.store.listSetupConnectionCheckRuns(500)).find((run) =>
-      run.status === "RUNNING" &&
+    const runs = await this.options.store.listSetupConnectionCheckRuns(500);
+    for (const run of runs) {
+      if (run.status === "RUNNING" && !this.running.has(run.id)) await this.finishOrphanedRun(run);
+    }
+    const active = runs.find((run) =>
+      run.status === "RUNNING" && this.running.has(run.id) &&
       (scope === "ALL"
         ? run.scope === "ALL"
         : run.connectionIds.includes(connectionIds[0]!))
@@ -129,6 +134,23 @@ export class SetupConnectionCheckRunManager {
     await this.options.store.updateSetupConnectionCheckRun(run.id, {
       status: "COMPLETED",
       completedCount: current.totalCount,
+      finishedAt: this.now().toISOString()
+    });
+  }
+
+  // DATA-001: only this process runs checks, so a RUNNING row it does not run was left by an API that stopped mid-check (restart,
+  // deploy) or by a run whose bookkeeping threw. Its unfinished connections get the failed-check result and the run completes,
+  // so it no longer answers every new check as "already running" or holds the progress stream open. Callers hold the admission queue.
+  private async finishOrphanedRun(run: SetupConnectionCheckRun): Promise<SetupConnectionCheckRun> {
+    const finished = new Set((await this.options.store.listSetupConnectionCheckEvents(run.id, 0, 1_000))
+      .filter((event) => event.state === "COMPLETED")
+      .map((event) => event.connectionId));
+    for (const connectionId of run.connectionIds) {
+      if (!finished.has(connectionId)) await this.completeConnection(run.id, connectionId, null);
+    }
+    return this.options.store.updateSetupConnectionCheckRun(run.id, {
+      status: "COMPLETED",
+      completedCount: run.totalCount,
       finishedAt: this.now().toISOString()
     });
   }
@@ -338,7 +360,13 @@ export class SetupConnectionCheckRunManager {
     if (!Number.isInteger(afterSequence) || afterSequence < 0 || afterSequence > 1_000_000_000) {
       throw new Error("Setup connection check replay cursor is invalid.");
     }
-    const run = await this.requireRun(parsedRunId);
+    let run = await this.requireRun(parsedRunId);
+    if (run.status === "RUNNING" && !this.running.has(run.id)) {
+      run = await this.exclusive(async () => {
+        const current = await this.requireRun(parsedRunId);
+        return current.status === "RUNNING" && !this.running.has(current.id) ? this.finishOrphanedRun(current) : current;
+      });
+    }
     const [events, overview] = await Promise.all([
       this.options.store.listSetupConnectionCheckEvents(run.id, afterSequence, 1_000),
       this.getRunOverview(run.id)

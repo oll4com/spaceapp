@@ -675,3 +675,26 @@ describe("OpenCode live model settings routes", () => {
     await new Promise<void>((resolve) => mock.server.close(() => resolve()));
   });
 });
+
+describe("OpenCode prompts without model control (2026-10-30 REVIEW)", () => {
+  it("types a Space Control prompt into an OpenCode pane whose server control is unavailable instead of failing on model control", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "space-opencode-state-"));
+    const store = new InMemorySpaceStore();
+    store.upsertUser({ id: "user:admin", email: "admin@space.local", role: "ADMIN" } as never);
+    const { room, pane } = paneCliSessionFixture(store, "typed");
+    await writeFile(join(stateRoot, "opencode-vscode-parity"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    // The terminal is where the text is typed: reaching it is the proof (no OpenCode server answers in this test).
+    const cliHostClient = { health: async () => ({ ok: true, sessions: [] }), inspect: async () => null, close: async () => undefined,
+      attach: async () => { throw new Error("typing into the OpenCode terminal"); } };
+    const app = await createApp({ store, config: getApiConfig({ SPACE_CLI_ENABLED: "true", SPACE_CLI_COMMAND_PATH: stateRoot, SPACE_CLI_WORKSPACE_ROOT: stateRoot, SPACE_CLI_OPENCODE_CREDENTIAL_SMOKE: "true" }), cliHostClient: cliHostClient as never,
+      auth: { sessionSecret, devLogin: false, secureCookies: false }, opencodeStateRoot: stateRoot });
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/control/v1/commands", headers: authHeaders("ADMIN"),
+        payload: { roomId: room.id, requestId: "request:opencode-typed", actions: [{ kind: "pane", operation: "prompt", target: { paneIds: [pane.id] }, text: "Hi" }] } });
+      expect(response.json().results[0].detail).toContain("typing into the OpenCode terminal");
+    } finally {
+      await app.close();
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+});

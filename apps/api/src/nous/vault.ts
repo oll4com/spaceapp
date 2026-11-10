@@ -24,10 +24,13 @@ export const NOUS_VAULT_FILL_DESCRIPTION = "Fill a Vault item into a browser pan
   + "Space types the values itself; you never see or send a value, username, URL or selector. The answer is {status, auditId, reason}: FILLED or SUBMITTED, "
   + "BLOCKED (agent access is off, the item is not delegated, or no login form), ORIGIN_MISMATCH (the page is not the item's site). "
   + "reason FIELD_NOT_FOUND_AFTER_RELOAD: the page was reloaded first (a session had run code in it) and the field was gone; redo the steps that showed it with navigate, click, type and press only, then fill again.";
-export const NOUS_VAULT_LIST_DESCRIPTION = "The Vault items the operator lets agents and you use: handles, labels, exact sites and fields, never a value. BLOCKED while agent access is off.";
+export const NOUS_VAULT_LIST_DESCRIPTION = "The Vault items the operator lets agents and you use: handles, labels, exact sites and fields, never a value, and loginPage when the login form is "
+  + "on its own page (open that page in the pane before space_vault_fill, not the bare site). BLOCKED while agent access is off. "
+  + "Logins agents saved, created or changed are listed and fillable at once with the Vault locked: never ask or remind the operator to unlock or open the Vault for them.";
 export const NOUS_VAULT_SAVE_DESCRIPTION = "Save a login you created (site, username or email, the password you chose, a label) into the operator's Vault. "
   + "It is sealed at once and fillable as soon as space_vault_list shows it, without the operator's unlock. A login that reached the operator (a site's mail with their credentials) may be saved too; "
-  + "a password that is not a website login goes to space_vault_key_save.";
+  + "a password that is not a website login goes to space_vault_key_save. loginPage: the login form's page on the login's own site; {handle, loginPage} alone sets it "
+  + "on a saved login (null clears it), with no value changed and no unlock.";
 export const NOUS_VAULT_KEY_LIST_DESCRIPTION = "The operator's kept passwords and keys for agents (servers, VMs, SSH and admin accounts, API keys): ids and labels, never a value. "
   + "Look here before asking the operator for one; q narrows by words of the label. A pane writes one where it is needed with its space_vault_key_install {id}. BLOCKED while agent access is off.";
 export const NOUS_VAULT_KEY_SAVE_DESCRIPTION = "Keep a password or key that reached you or the operator (a mail you read, the operator's message, a service) in the Vault, so every agent finds it "

@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptio
 import { z } from "zod";
 import {
   gatewayAccountUpdateRequestSchema, gatewayAnthropicAdminKeySaveRequestSchema, gatewayApiKeyCreateRequestSchema, gatewayApiKeyUpdateRequestSchema, gatewayDashboardRangeSchema, gatewayHistorySeriesSchema,
-  gatewayLogStatusCategorySchema, gatewayProviderSchema, gatewayRequestLogFilterSchema, gatewaySettingsUpdateRequestSchema, type GatewayRequestLogFilter
+  gatewayLogStatusCategorySchema, gatewayProviderSchema, gatewayRequestLogFilterSchema, gatewaySettingsUpdateRequestSchema, type GatewayRequestLogFilter, GATEWAY_API_KEY_PROVIDERS
 } from "@space/contracts";
 import type { AuditRecorder } from "../request-audit.js";
 import { sendApiError } from "../http-errors.js";
@@ -58,6 +58,8 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
   service: GatewayAdminService;
   recordAudit: AuditRecorder;
   routeOptions: Pick<RouteShorthandOptions, "config">;
+  /** A kept Vault key, read by the server (the Vault agent's key-take: agent access on, audited); the caller never sees it. */
+  vaultKey?: (request: FastifyRequest, id: string) => Promise<{ value: string; used(): Promise<unknown> } | { reason: string }>;
 }) {
   const { service, recordAudit, routeOptions } = options;
   const writeOptions = { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } };
@@ -235,17 +237,25 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
   app.post("/api/admin/gateway/api-key/add", writeOptions, async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
     const input = z.object({
-      provider: z.enum(["OPENAI_API", "OPENROUTER", "DEEPSEEK", "CLAUDE", "GOOGLE_AI"]),
-      apiKey: z.string().trim().min(20).max(400).optional(),
+      provider: z.enum(GATEWAY_API_KEY_PROVIDERS),
+      // A Vertex service-account JSON is about 2.4 KB and Bedrock's short-term keys run long; the gateway checks each provider's own shape.
+      apiKey: z.string().trim().min(20).max(8000).optional(),
       useSpaceKey: z.boolean().optional(),
-      label: z.string().trim().min(1).max(80).optional()
-    }).strict().refine((value) => Boolean(value.apiKey) !== Boolean(value.useSpaceKey), "Give an API key or choose the Space key.")
-      .refine((value) => !value.useSpaceKey || value.provider === "OPENAI_API" || value.provider === "CLAUDE", "Only the OpenAI and Claude keys exist on this server.")
+      label: z.string().trim().min(1).max(80).optional(),
+      vaultKeyId: z.string().regex(/^vault_key:[A-Za-z0-9_-]{8,64}$/).optional()
+    }).strict().refine((value) => [value.apiKey, value.useSpaceKey, value.vaultKeyId].filter(Boolean).length === 1, "Give an API key or a Vault key, or choose the Space key.")
+      .refine((value) => !value.useSpaceKey || value.provider !== "GOOGLE_AI", "This server's Google key serves Live voice, not Space Gateway.")
       .parse(request.body);
-    const result = await service.addOpenAiApiKey(input);
+    const { vaultKeyId, ...body } = input;
+    const kept = vaultKeyId ? await options.vaultKey?.(request, vaultKeyId) ?? { reason: "VAULT_UNAVAILABLE" } : null;
+    if (kept && "reason" in kept) return sendApiError(reply, 409, "VAULT_KEY_UNAVAILABLE", `The Vault did not hand over ${vaultKeyId} (${kept.reason}).`);
+    const result = await service.addOpenAiApiKey(kept ? { ...body, apiKey: kept.value } : body);
     const account = connected(result.body);
     if (account) await recordAudit(request, { action: "admin.gateway.account.add", targetType: "gateway_account", targetId: account.id ?? null,
-      metadata: { provider: input.provider, method: input.useSpaceKey ? "space-key" : "api-key" } });
+      metadata: { provider: input.provider, method: input.useSpaceKey ? "space-key" : vaultKeyId ? "vault-key" : "api-key", ...(vaultKeyId ? { vaultKeyId } : {}) } });
+    if (account && kept) await kept.used();
+    // The caller never saw the Vault key: a provider error that quotes it must not show it either.
+    if (kept) return relay(reply, { ...result, body: JSON.parse(JSON.stringify(result.body ?? null).split(kept.value).join("[vault key]")) });
     return relay(reply, result);
   });
 
@@ -261,7 +271,21 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
   app.post("/api/admin/gateway/accounts/:accountId/usage", writeOptions, async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
     const { accountId } = accountParamsSchema.parse(request.params);
-    return relay(reply, await service.gatewayAdmin(`/__space-gateway/admin/accounts/${accountId}/usage`));
+    const result = await service.gatewayAdmin(`/__space-gateway/admin/accounts/${accountId}/usage`);
+    // A refresh also reads the pools' model lists again.
+    if (result.status === 200) void service.poolModels(true).catch(() => undefined);
+    return relay(reply, result);
+  });
+
+  app.get("/api/admin/gateway/pool-models", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    return service.poolModels();
+  });
+
+  // The free-token ledger: granted, spent and left per free or granted pool (nous_msg:d9b67550).
+  app.get("/api/admin/gateway/free-ledger", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    return service.freeLedger();
   });
 
   app.post("/api/admin/gateway/accounts/:accountId/test", writeOptions, async (request, reply) => {

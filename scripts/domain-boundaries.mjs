@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
+import ts from 'typescript-api';
 
 // Source dependencies include type-only imports: these are architectural
 // coupling even where TypeScript erases the runtime edge.

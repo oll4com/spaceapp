@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { browserSelectStateSchema, type BrowserFrame, type BrowserSelectState } from "@space/contracts";
 import { api } from "../../api.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { fitViewportIntoRect, type BrowserCanvasInput, type BrowserViewportSize } from "./BrowserCanvas.js";
 
 /** The `select_state` answer: an open dropdown, or null (closed, nothing focused, or a Browser Host from before it). */
@@ -67,6 +68,8 @@ export function BrowserSelectList({ state, viewport, onChoose, onDismiss }: {
   onChoose(index: number): void;
   onDismiss(): void;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const idBase = useId();
   const ref = useRef<HTMLDivElement | null>(null);
   const enabled = state.labels.map((_, index) => index).filter((index) => !state.disabled.includes(index));
@@ -119,7 +122,7 @@ export function BrowserSelectList({ state, viewport, onChoose, onDismiss }: {
       ref={ref}
       className="browser-select-overlay"
       role="listbox"
-      aria-label="Dropdown options"
+      aria-label={t("Dropdown options")}
       tabIndex={-1}
       aria-activedescendant={active >= 0 ? `${idBase}-${active}` : undefined}
       style={place ?? { visibility: "hidden" }}
@@ -143,7 +146,7 @@ export function BrowserSelectList({ state, viewport, onChoose, onDismiss }: {
           </div>
         );
       })}
-      {state.truncated ? <div className="browser-select-overlay-more">More options not shown: close this list and use the arrow keys.</div> : null}
+      {state.truncated ? <div className="browser-select-overlay-more">{t("More options not shown: close this list and use the arrow keys.")}</div> : null}
     </div>
   );
 }

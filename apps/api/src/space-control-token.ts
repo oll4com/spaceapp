@@ -4,6 +4,8 @@ import { agentTokenLive, agentTokenTtlMs } from "./cli-browser-bridge.js";
 const claimsSchema=z.object({roomId:z.string().min(1).max(200),paneId:z.string().min(1).max(200),cliSessionId:z.string().min(1).max(200),iat:z.number().int().positive().optional(),exp:z.number().int().positive()}).strict();
 const prefix="spacecontrol.v1";
 export const controlTokenHeader="x-space-control-token";
+// Space Control's in-process calls (controlInvoke) carry it, so a route tells them from the operator's own hands (R10-2).
+export const spaceControlInvokeHeader="x-space-control-invoke";
 const signature=(secret:string,payload:string)=>createHmac("sha256",`space-control:${secret}`).update(payload).digest();
 export function issueControlToken(secret:string|null,context:{roomId?:string|null;paneId?:string|null;cliSessionId?:string|null;purpose?:string|null}){
  if(!secret||context.purpose==="LOGIN"||!context.roomId||!context.paneId||!context.cliSessionId)return null;

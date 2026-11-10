@@ -3,7 +3,7 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
-import { execFile, spawn } from "../src/safe-child-process.js";
+import { execFile, spawn, spawnLabel, takeSpawnCounts } from "../src/safe-child-process.js";
 
 // 1.1.5 internal review (2026-10-16): about 60 API spawns set no env and inherited Space's credentials.
 const printSecret = ["-e", "process.stdout.write(process.env.SPACE_SESSION_SECRET ?? 'absent')"];
@@ -32,8 +32,24 @@ it("hides Space credentials from children that pass no env and keeps an explicit
 it("keeps every API module on the safe wrapper", () => {
   const src = fileURLToPath(new URL("../src", import.meta.url));
   const files = (readdirSync(src, { recursive: true }) as string[])
-    .filter((file) => file.endsWith(".ts") && !file.includes("__tests__") && !file.includes(".test.") && !file.endsWith("safe-child-process.ts"));
+    .filter((file) => file.endsWith(".ts") && !file.includes("__tests__") && !file.includes(".test.") && !file.endsWith("safe-child-process.ts"))
+    // Browser Host code (its changes wait for the guarded restart): its spawn's env is checked by apps/worker/tests/child-process-env.test.ts.
+    .filter((file) => file !== "browser-sandbox.ts");
   const offenders = files.filter((file) => /^import \{(?!\s*type\b)[^}]*\} from "node:child_process";/m.test(readFileSync(join(src, file), "utf8")) ||
     /from "node:child_process";/.test(readFileSync(join(src, file), "utf8").replace(/^import type [^\n]*\n/gm, "")));
   expect(offenders.map((file) => relative(src, join(src, file)))).toEqual([]);
+});
+
+// API audit 4/11: ~3 git ancestor checks a second held stable's main thread; the load line now names what the API spawns.
+it("counts spawns per program through the git umask and sudo wrappers", async () => {
+  expect(spawnLabel("/bin/sh", ["-c", 'umask 002 && exec git "$@"', "git", "--no-optional-locks", "-c", "safe.directory=*", "-C", "/opt/spaceapp",
+    "merge-base", "--is-ancestor", "b059db7d6cced471a4006392d730509aff4a6fab", "dev"])).toBe("git merge-base dev");
+  expect(spawnLabel("/usr/bin/sudo", ["-n", "-u", "spaceapp-user", "--", "/opt/spaceapp/bin/gemini-vscode-parity", "native-turns", "pane:Ab12Cd34", "7"]))
+    .toBe("gemini-vscode-parity native-turns");
+  expect(spawnLabel("sudo", ["-n", "-l"])).toBe("sudo");
+  takeSpawnCounts();
+  await promisify(execFile)(process.execPath, ["-e", ""]);
+  await promisify(execFile)(process.execPath, ["-e", ""]);
+  expect(takeSpawnCounts()).toEqual({ [process.execPath.split("/").at(-1)!]: 2 });
+  expect(takeSpawnCounts()).toEqual({});
 });

@@ -93,7 +93,7 @@ export function distroFindings(inventory: SecurityInventory, kev: Map<string, Ke
     if (entry.advisory) {
       // One finding per advisory: the shortest package name (kernel over kernel-core) with every CVE of its lines.
       const existing = drafts.get(entry.advisory);
-      const aliases = [...new Set([...(existing?.advisory.aliases ?? []), ...entry.cves])].slice(0, 40);
+      const aliases = [...new Set([...(existing?.advisory.aliases ?? []), ...entry.cves])];
       if (existing && existing.package.length <= entry.package.length) { existing.advisory.aliases = aliases; continue; }
       drafts.set(entry.advisory, { advisoryId: entry.advisory, package: entry.package, installedVersion: installed(inventory, entry.package), fixedVersion: entry.version ?? null, priority: "P3",
         advisory: advisory({ id: entry.advisory, aliases, sources: ["DISTRO"], title: `${{ ALMALINUX: "AlmaLinux", WINDOWS: "Windows", MACOS: "macOS" }[inventory.os.family as string] ?? "Distro"} security update for ${entry.package}`, severity: entry.severity }) });
@@ -103,7 +103,7 @@ export function distroFindings(inventory: SecurityInventory, kev: Map<string, Ke
     const id = `DEBSEC:${source}`;
     if (drafts.has(id)) continue;
     drafts.set(id, { advisoryId: id, package: source, installedVersion: installed(inventory, entry.package), fixedVersion: entry.version ?? null, priority: "P3",
-      advisory: advisory({ id, aliases: (debianCves.get(source) ?? []).slice(0, 40), sources: ["DISTRO"], title: `Debian security update for ${source}`, severity: entry.severity }) });
+      advisory: advisory({ id, aliases: (debianCves.get(source) ?? []), sources: ["DISTRO"], title: `Debian security update for ${source}`, severity: entry.severity }) });
   }
   // KEV and the priority only once every line's CVEs are in.
   return [...drafts.values()].map((draft) => { const enriched = withKev(draft.advisory, kev); return { ...draft, advisory: enriched, priority: priorityOf(enriched) }; });
@@ -128,10 +128,10 @@ export function productFindings(inventory: SecurityInventory, cves: NvdCve[], ke
     const worst = group.reduce<SecuritySeverity>((max, cve) => rank[cve.severity] > rank[max] ? cve.severity : max, "UNKNOWN");
     const fixes = group.map((cve) => fixedFor(cve.ranges, cpe, item.version));
     const fixed = fixes.includes(null) ? null : (fixes as string[]).sort(compareVersions).at(-1)!;
-    const enriched = advisory({ id: `NVD:${item.product}`, aliases: [...(kevHit ? [kevHit.cveID] : []), ...ids.filter((cve) => cve !== kevHit?.cveID)].slice(0, 40),
+    const enriched = advisory({ id: `NVD:${item.product}`, aliases: [...(kevHit ? [kevHit.cveID] : []), ...ids.filter((cve) => cve !== kevHit?.cveID)],
       sources: kevHit ? ["NVD", "KEV"] : ["NVD"], kev: Boolean(kevHit), kevAddedAt: kevHit?.dateAdded ?? null,
       title: `${item.product} ${item.version} has ${group.length} known CVE${group.length === 1 ? "" : "s"}${fixed ? `; ${fixed} fixes ${group.length === 1 ? "it" : "them all"}` : ""} (worst ${ids[0]})`,
-      severity: worst, cvss: group[0]!.cvss, publishedAt: group[0]!.published, references: ids.slice(0, 5).map((cve) => `https://nvd.nist.gov/vuln/detail/${cve}`) });
+      severity: worst, cvss: group[0]!.cvss, publishedAt: group[0]!.published, references: ids.map((cve) => `https://nvd.nist.gov/vuln/detail/${cve}`) });
     drafts.push({ advisoryId: enriched.id, advisory: enriched, package: item.path ? `${item.product}:${item.path}` : item.product, installedVersion: item.version,
       fixedVersion: fixed, priority: priorityOf(enriched) });
   }
@@ -153,10 +153,10 @@ export function imageFindings(inventory: SecurityInventory, kev: Map<string, Kev
     const worst = vulns[0]!;
     const count = (severity: SecuritySeverity) => new Set(vulns.filter((vuln) => vuln.severity === severity).map((vuln) => vuln.id)).size;
     const link = (id: string) => /^CVE-/.test(id) ? `https://nvd.nist.gov/vuln/detail/${id}` : /^GHSA-/.test(id) ? `https://github.com/advisories/${id}` : null;
-    const enriched = advisory({ id: "IMAGE", aliases: [...(kevHit ? [kevHit.cveID] : []), ...ids.filter((id) => id !== kevHit?.cveID)].slice(0, 40),
+    const enriched = advisory({ id: "IMAGE", aliases: [...(kevHit ? [kevHit.cveID] : []), ...ids.filter((id) => id !== kevHit?.cveID)],
       sources: kevHit ? ["IMAGE", "KEV"] : ["IMAGE"], kev: Boolean(kevHit), kevAddedAt: kevHit?.dateAdded ?? null, severity: worst.severity,
       title: `${image.ref}: ${ids.length} fixable (${count("CRITICAL")} critical, ${count("HIGH")} high); worst ${worst.id} in ${worst.pkg} ${worst.installed}, fixed in ${worst.fixed}`.slice(0, 300),
-      references: ids.slice(0, 5).map(link).filter((url): url is string => Boolean(url)) });
+      references: ids.map(link).filter((url): url is string => Boolean(url)) });
     drafts.push({ advisoryId: "IMAGE", advisory: enriched, package: `image:${image.ref}`.slice(0, 200), installedVersion: image.id.slice(7, 19), fixedVersion: null,
       priority: priorityOf(enriched) });
   }
@@ -196,7 +196,7 @@ export function lifecycleFindings(inventory: SecurityInventory, nowMs: number): 
 export function libraryFindings(hits: Array<{ library: SecurityInventory["libraries"][number]; vuln: OsvVuln }>, kev: Map<string, KevEntry>): FindingDraft[] {
   return hits.map(({ library, vuln }) => {
     const cve = vuln.aliases.find((alias) => /^CVE-/.test(alias));
-    const enriched = withKev(advisory({ id: vuln.id, aliases: vuln.aliases.slice(0, 40), sources: ["OSV"], title: `${library.ecosystem} ${library.name} ${library.version} is affected by ${cve ?? vuln.id}`,
+    const enriched = withKev(advisory({ id: vuln.id, aliases: vuln.aliases, sources: ["OSV"], title: `${library.ecosystem} ${library.name} ${library.version} is affected by ${cve ?? vuln.id}`,
       severity: vuln.severity, cvss: vuln.cvss, publishedAt: vuln.published, references: [`https://osv.dev/vulnerability/${vuln.id}`] }), kev);
     return { advisoryId: vuln.id, advisory: enriched, package: `${library.ecosystem}:${library.name}`, installedVersion: library.version, fixedVersion: vuln.fixed, priority: priorityOf(enriched) };
   });
@@ -204,7 +204,7 @@ export function libraryFindings(hits: Array<{ library: SecurityInventory["librar
 
 /** CVE ids Shodan's InternetDB lists for a public address the host serves. */
 export function exposureFindings(ip: string, vulns: string[], kev: Map<string, KevEntry>): FindingDraft[] {
-  return vulns.filter((id) => /^CVE-\d{4}-\d{4,8}$/.test(id)).slice(0, 100).map((id) => {
+  return vulns.filter((id) => /^CVE-\d{4}-\d{4,8}$/.test(id)).map((id) => {
     const enriched = withKev(advisory({ id, sources: ["INTERNETDB"], title: `Seen from the internet on ${ip}: ${id}`, severity: "UNKNOWN", references: [`https://nvd.nist.gov/vuln/detail/${id}`] }), kev);
     return { advisoryId: id, advisory: enriched, package: `exposed:${ip}`, installedVersion: "", fixedVersion: null, priority: priorityOf(enriched) };
   });
@@ -225,10 +225,10 @@ export function newsFindings(inventory: SecurityInventory, items: NewsItem[], ke
       if (!product && !pkg) continue;
       const id = item.cves[0] ?? `NEWS-${Buffer.from(item.link).toString("base64url").slice(-16)}`;
       const exploited = EXPLOITED.test(item.title);
-      const enriched = withKev(advisory({ id, aliases: item.cves.slice(1, 40), sources: ["NEWS"], title: `${item.feed}: ${item.cves.slice(0, 3).join(", ") || "an advisory"} names ${keyword}${exploited ? " (exploited)" : ""}`,
+      const enriched = withKev(advisory({ id, aliases: item.cves.slice(1), sources: ["NEWS"], title: `${item.feed}: ${item.cves.slice(0, 3).join(", ") || "an advisory"} names ${keyword}${exploited ? " (exploited)" : ""}`,
         severity: SERIOUS.test(item.title) ? "CRITICAL" : "UNKNOWN", publishedAt: item.publishedAt,
         // A headline's link is text a third party may write (a forum thread's slug): only an allowlisted vendor page, else the CVE's NVD page.
-        references: securityAdvisoryUrlAllowed(item.link) ? [item.link] : item.cves.slice(0, 3).map((cve) => `https://nvd.nist.gov/vuln/detail/${cve}`) }), kev);
+        references: securityAdvisoryUrlAllowed(item.link) ? [item.link] : item.cves.map((cve) => `https://nvd.nist.gov/vuln/detail/${cve}`) }), kev);
       drafts.push({ advisoryId: id, advisory: enriched, package: product ? product.product : pkg!.name, installedVersion: product?.version ?? pkg!.version, fixedVersion: null,
         priority: priorityOf(enriched, exploited) === "P2" ? "P3" : priorityOf(enriched, exploited) });
     }
@@ -243,7 +243,7 @@ const tag = (block: string, name: string) => { const match = new RegExp(`<${name
 /** RSS items or Atom entries: title, link, date and the CVE ids in title and link. */
 export function parseFeed(feed: string, xml: string): NewsItem[] {
   const blocks = [...xml.matchAll(/<(item|entry)\b[\s\S]*?<\/\1>/gi)].map((match) => match[0]);
-  return blocks.slice(0, 200).map((block) => {
+  return blocks.map((block) => {
     const title = (tag(block, "title") ?? "").replace(/\s+/g, " ").slice(0, 300);
     const link = tag(block, "link") || /<link\b[^>]*href="([^"]+)"/i.exec(block)?.[1] || "";
     const date = tag(block, "pubDate") ?? tag(block, "updated") ?? tag(block, "published") ?? tag(block, "dc:date");
@@ -275,6 +275,6 @@ export function parseOsvVuln(raw: unknown, packageName: string): OsvVuln | null 
   const severity: SecuritySeverity = label === "CRITICAL" || label === "HIGH" || label === "LOW" ? label : label === "MODERATE" || label === "MEDIUM" ? "MEDIUM" : "UNKNOWN";
   const fixed = (vuln.affected ?? []).filter((entry) => entry.package?.name === packageName).flatMap((entry) => entry.ranges ?? []).flatMap((range) => range.events ?? [])
     .map((event) => event.fixed).find((value): value is string => typeof value === "string") ?? null;
-  return { id: vuln.id, aliases: Array.isArray(vuln.aliases) ? vuln.aliases.filter((alias) => typeof alias === "string").slice(0, 40) : [], severity, cvss: null, fixed,
+  return { id: vuln.id, aliases: Array.isArray(vuln.aliases) ? vuln.aliases.filter((alias) => typeof alias === "string") : [], severity, cvss: null, fixed,
     published: typeof vuln.published === "string" ? vuln.published : null };
 }

@@ -67,6 +67,8 @@ export interface CliHostAttachInput {
   identity: CliHostIdentity;
   spawn?: CliHostSpawnSpec;
   afterSequence?: number;
+  /** The API's request or trace id; the host writes it on its cli_host_request log line (OBS-001). */
+  traceId?: string;
 }
 
 export interface CliHostAttachResult {

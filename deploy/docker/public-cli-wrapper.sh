@@ -156,6 +156,21 @@ case "${1:-}" in
     ensure_runtime_dirs
     exec node /app/deploy/docker/opencode-standalone.mjs "${1#opencode-}"
     ;;
+  agent-tools|agent-chat)
+    # Nous (core has no Claude Code): one headless turn on the owner's own Claude login, the request on stdin.
+    if [ "$runtime_name" != "claude" ]; then
+      echo "This action is only for Claude Code." >&2
+      exit 64
+    fi
+    if ! credential_ready; then
+      echo "Claude Code is not signed in." >&2
+      exit 77
+    fi
+    ensure_runtime_dirs
+    # stdout is the turn's stream: an install message goes to stderr.
+    ensure_optional_provider >&2
+    exec node /app/deploy/docker/claude-agent.mjs "${1#agent-}" "$command_name"
+    ;;
   inspect-env)
     printf 'runtime=%s\nhome=isolated\ncredential=%s\n' \
       "$runtime_name" "$(credential_ready && printf present || printf absent)"
@@ -191,6 +206,11 @@ esac
 
 ensure_runtime_dirs
 ensure_optional_provider
+# Interactive Claude Code opens on its first-run screens (theme, folder trust) until .claude.json says they ran; only a login import
+# marked them, so a pane on an API key or an in-container login waited there for a person (1.2.0 lab vm218, 2/11).
+if [ "$runtime_name" = claude ] && ! grep -qs '"hasCompletedOnboarding": true' "$HOME/.claude.json"; then
+  node /app/deploy/docker/credential-install.mjs --onboarded "$HOME/.claude.json" "${SPACE_CLI_WORKSPACE_ROOT:-/workspaces}" || true
+fi
 # OpenCode 2 starts a per-user background service unless a command runs --standalone (help and version need neither).
 # A pane (a fresh or resumed TUI) attaches to the one shared server below with --server: two --standalone servers on this
 # provider store fail ("Standalone server exited before reporting readiness", two panes started together, Linux lab, 2026-10-20).

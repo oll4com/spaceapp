@@ -7,11 +7,11 @@ import { z } from "zod";
 import {
   deriveDelegationKey, deriveVaultKey, newVaultHandle, openVaultEnvelope, openWithVaultPrivateKey, sealToVaultPublicKey, sealVaultEnvelope,
   signVaultCertificate, vaultBase64url, vaultCanonicalJson, vaultDelegationCertificateSchema, vaultDelegationOperatorMessage,
-  vaultKeyFromSeed, vaultPublicKeyOf, vaultRandomBytes, vaultSymmetricEnvelopeSchema, vaultTransportEnvelopeSchema, generateVaultPassword,
+  vaultKeyFromSeed, vaultPublicKeyOf, vaultRandomBytes, vaultSymmetricEnvelopeSchema, vaultTransportEnvelopeSchema, generateVaultPassword, VAULT_PASSWORD_DEFAULTS,
   vaultSignupGrantCertificateSchema, vaultSignupGrantOperatorMessage, vaultSignupGrantRequestSchema, VAULT_SIGNUP_GRANT_LIMITS,
   vaultSignupSite, vaultUnlockChallengeMessage, vaultUseCapabilitySchema, verifyVaultCertificate, verifyVaultMessage, wipeVaultBytes, VAULT_FIELD_ROLES,
   VAULT_BROKER_API_MAX_BYTES, VAULT_DELEGATION_TECHNICAL_MAX_ITEMS,
-  VaultCryptoError, canonicalVaultOrigin, type VaultUseClaims
+  VaultCryptoError, canonicalVaultOrigin, vaultOriginCovers, type VaultUseClaims
 } from "@space/contracts";
 
 // The Vault fill broker (ADR-012), the only process that holds the ARK. It runs as the space-vault user from a root-owned
@@ -90,7 +90,9 @@ const schemas = {
     ownerUserId: owner, vaultId, certificate: vaultSignupGrantCertificateSchema, origin: z.string().max(300), paneId: z.string().min(1).max(200),
     roles: z.array(z.enum(["NEW_PASSWORD", "CONFIRM_PASSWORD"])).min(1).max(2), inboxPublicKey: key, replyPublicKey: key,
     /** The page field's length limits, so the generated password fits it (numbers only: no page pattern runs here). */
-    field: z.object({ minLength: z.number().int().min(1).max(128).nullable(), maxLength: z.number().int().min(1).max(512).nullable() }).strict().optional()
+    field: z.object({ minLength: z.number().int().min(1).max(128).nullable(), maxLength: z.number().int().min(1).max(512).nullable(),
+      /** The site's stated rules a host merged in (queue item 37): its only symbols ("" none) and whether every class must appear. */
+      symbols: z.string().max(32).regex(/^[\x21-\x7e]*$/).optional(), requireEachClass: z.boolean().optional() }).strict().optional()
   }).strict(),
   signupRevoke: z.object({ ownerUserId: owner, vaultId, grantId: z.string().regex(/^vault_grant:[A-Za-z0-9_-]{16,64}$/) }).strict(),
   autoGrant: z.object({ ownerUserId: owner, vaultId, certificate: vaultDelegationCertificateSchema, origin: z.string().max(300) }).strict(),
@@ -261,7 +263,7 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
       if (delegation.ownerUserId !== input.ownerUserId || delegation.vaultId !== input.vaultId) throw new VaultBrokerRefusal("CERTIFICATE_REFUSED");
       if (delegation.generation < (floors[floorKey(input)] ?? 0)) throw new VaultBrokerRefusal("GENERATION_RETIRED");
       const item = delegation.items.find((entry) => entry.handle === input.handle);
-      if (!item || input.fields.some((field) => !item.fields.includes(field)) || !item.origins.includes(input.origin) || (input.submit && !item.submit)) {
+      if (!item || input.fields.some((field) => !item.fields.includes(field)) || !vaultOriginCovers(item.origins, input.origin) || (input.submit && !item.submit)) {
         throw new VaultBrokerRefusal("NOT_DELEGATED");
       }
       const issuedAt = now();
@@ -330,7 +332,9 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
       const count = `${grant.grantId}|${day}`;
       if ((signups.uses[count] ?? 0) >= grant.dailyCap) throw new VaultBrokerRefusal("DAILY_CAP");
       let generated: string;
-      try { generated = generateVaultPassword(input.field ?? {}); } catch { throw new VaultBrokerRefusal("POLICY_UNSATISFIABLE"); }
+      const { symbols, requireEachClass, ...lengths } = input.field ?? {};
+      const base = { ...VAULT_PASSWORD_DEFAULTS, ...(symbols !== undefined ? { symbols } : {}), ...(requireEachClass !== undefined ? { requireEachClass } : {}) };
+      try { generated = generateVaultPassword(lengths, base); } catch { throw new VaultBrokerRefusal("POLICY_UNSATISFIABLE"); }
       // The use counts before anything leaves, so a failure later never gives a free extra one; older days are dropped.
       saveSignups({ ...signups, uses: { ...Object.fromEntries(Object.entries(signups.uses).filter(([entry]) => entry.endsWith(`|${day}`))), [count]: (signups.uses[count] ?? 0) + 1 } });
       const password = new TextEncoder().encode(generated);

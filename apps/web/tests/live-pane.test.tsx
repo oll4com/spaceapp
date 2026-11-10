@@ -93,6 +93,7 @@ describe("LivePane component", () => {
   });
 
   it("opens Real View controls from the pane header and keeps them off until Live runs", () => {
+    vi.spyOn(liveRuntime.platform, "displayMediaSupported", "get").mockReturnValue(true);
     render(<LivePane pane={mockPane} />);
     expect(screen.queryByRole("group", { name: "Real View" })).toBeNull();
     act(() => { window.dispatchEvent(new CustomEvent("space-live-pane-action", { detail: { paneId: mockPane.id, action: "real-view" } })); });
@@ -101,6 +102,14 @@ describe("LivePane component", () => {
     expect((screen.getByRole("button", { name: "Screen" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Camera" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Stop" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("offers no Screen source where the page cannot share the screen (SpaceApp Android)", () => {
+    vi.spyOn(liveRuntime.platform, "displayMediaSupported", "get").mockReturnValue(false);
+    render(<LivePane pane={mockPane} />);
+    act(() => { window.dispatchEvent(new CustomEvent("space-live-pane-action", { detail: { paneId: mockPane.id, action: "real-view" } })); });
+    expect(screen.queryByRole("button", { name: "Screen" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Camera" })).toBeDefined();
   });
 
   it("opens as the Live surface with settings collapsed", () => {

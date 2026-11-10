@@ -3,7 +3,7 @@ import { Writable } from "node:stream";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import { InMemoryAppDeviceSessionRepository } from "@space/db";
-import { appSignInRedirect, parseAppSignInBinding } from "../src/app-signin.js";
+import { appSignInRedirect, createAppSignIn, parseAppSignInBinding } from "../src/app-signin.js";
 import { renewSessionIfDue, signSessionWithTtl, signSession, signedSessionPayload } from "../src/auth.js";
 import { createDesktopAuthHandoffStore } from "../src/desktop-auth-handoffs.js";
 import { createApp } from "../src/app.js";
@@ -108,6 +108,22 @@ describe("Nous Android app sign-in", () => {
     expect((await app.inject({ method: "GET", url: "/api/auth/devices", headers: asSession(body.token) })).statusCode).toBe(200);
   });
 
+  it("signs SpaceApp Android in at its own redirect URI; its code never redeems as another app", async () => {
+    const owner = linkedOwner();
+    const { verifier, challenge } = pkce();
+    const { callback } = await signIn(startPath(challenge, appState(), "spaceapp"), owner.token);
+    const location = callback.headers.location as string;
+    expect(location.startsWith("com.oll4.spaceapp:/oauth2redirect?")).toBe(true);
+    const code = new URL(location).searchParams.get("code")!;
+    expect((await redeem({ app: "nous", code, codeVerifier: verifier, deviceName: "Pixel 9" })).json()).toEqual({ authenticated: false });
+    // The mismatch burned it; a fresh sign-in redeems as spaceapp.
+    expect((await redeem({ app: "spaceapp", code, codeVerifier: verifier, deviceName: "Pixel 9" })).json()).toEqual({ authenticated: false });
+    const again = pkce();
+    const next = await signIn(startPath(again.challenge, appState(), "spaceapp"), owner.token);
+    const redeemed = await redeem({ app: "spaceapp", code: new URL(next.callback.headers.location as string).searchParams.get("code")!, codeVerifier: again.verifier, deviceName: "Pixel 9" });
+    expect(signedSessionPayload(redeemed.json().token, secret)!.app).toBe("spaceapp");
+  });
+
   it("burns the code on a wrong verifier, and the right one fails after it", async () => {
     const owner = linkedOwner();
     const { verifier, challenge } = pkce();
@@ -173,6 +189,16 @@ describe("Nous Android app sign-in", () => {
     expect(answers[10]).toBe(429);
   });
 
+  it("limits the app step-up routes to 10 per 15 minutes per address, before any session check", async () => {
+    for (const url of ["/api/auth/app/step-up/start", "/api/auth/app/step-up"]) {
+      const remoteAddress = `203.0.113.${url.endsWith("start") ? 31 : 32}`;
+      const codes: number[] = [];
+      for (let attempt = 0; attempt < 11; attempt += 1) codes.push((await app.inject({ method: "POST", url, remoteAddress, payload: {} })).statusCode);
+      expect(codes.slice(0, 10).every(code => code === 401), `${url}: ${codes.join(",")}`).toBe(true);
+      expect(codes[10], url).toBe(429);
+    }
+  });
+
   it("gives an app code only to the operator's account while multi-user is off", async () => {
     const user = linkedOwner("USER");
     const { challenge } = pkce();
@@ -205,5 +231,25 @@ describe("Nous Android app sign-in", () => {
     expect(parseAppSignInBinding({ app: "nous", challenge, state: "s".repeat(20), redirect: "https://evil.example" } as never)).toEqual(binding);
     expect(new InMemoryAppDeviceSessionRepository()).toBeTruthy();
     expect(signSession({ id: "user:x", email: "x@example.test", role: "ADMIN" }, secret, Date.now(), { app: "nous" })).toMatch(/\./);
+  });
+});
+
+// C3 (internal MASVS review, plan clipboard:kTV3y2lwO-99 step 7): the instance keys are the installation's, so exposed keys revoke every user's
+// paired phones (each pairs again), not only the rotating admin's; Google sign-in rows stay.
+describe("a compromised rotation's revoke", () => {
+  it("revokes every owner's live paired phones and leaves sign-in rows", async () => {
+    const repository = new InMemoryAppDeviceSessionRepository();
+    const revokedHashes: string[] = [];
+    const signIn = createAppSignIn({ store: new InMemorySpaceStore(), repository, revocations: { revokeSessionHash: async (hash: string) => { revokedHashes.push(hash); } },
+      sessionSecret: secret, routeOptions: {}, persistRevocation: (pending) => pending });
+    const expiresAt = new Date(Date.now() + 86400_000).toISOString();
+    for (const [id, owner, char] of [["appdev:admin001", "user:operator", "a"], ["appdev:member01", "user:member", "b"]] as const) {
+      await repository.createPaired({ id, ownerUserId: owner, app: "nous", deviceName: id, sidSha256: char.repeat(64), expiresAt, noisePublic: char.toUpperCase().repeat(43),
+        decidePublicSpki: null, decideSecurityLevel: null, requestedScopes: ["read"] });
+    }
+    await repository.create({ id: "appdev:signin01", ownerUserId: "user:member", app: "nous", deviceName: "Sign-in", sidSha256: "c".repeat(64), expiresAt });
+    expect((await signIn.revokePaired()).map((row) => row.id).sort()).toEqual(["appdev:admin001", "appdev:member01"]);
+    expect(revokedHashes.sort()).toEqual(["a".repeat(64), "b".repeat(64)]);
+    expect((await repository.list("user:member")).find((row) => row.id === "appdev:signin01")?.revokedAt).toBeNull();
   });
 });

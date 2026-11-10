@@ -5,6 +5,7 @@ import { z } from "zod";
 import { systemAnalyticsInstallsResponseSchema, type SystemAnalyticsInstall, type SystemAnalyticsInstallsResponse } from "@space/contracts";
 import { sendApiError } from "./http-errors.js";
 import { browserFromUserAgent, createFirstAnswerWatch, INSTALL_TELEMETRY_FIELDS, type InstallTelemetryFields } from "./install-telemetry.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /** What the browser adds to the daily active event: only what the server cannot know. */
 const installActivitySchema = z.object({
@@ -14,7 +15,7 @@ const installActivitySchema = z.object({
 }).strict();
 
 /** Where a host job copies the collector's log; only the operator's own instance has it. */
-export const INSTALL_PINGS_PATH = "/opt/spaceapp/var/inventory/install-pings.log";
+export const INSTALL_PINGS_PATH = `${SPACE_INSTALL_ROOT}/var/inventory/install-pings.log`;
 
 type Ping = Record<string, unknown> & { t: string; uid: string; event?: string };
 
@@ -99,7 +100,7 @@ export function summarizeInstallPings(log: string, now = Date.now()): Omit<Syste
       active7d: external.filter((row) => row.lastActiveAt && Date.parse(row.lastActiveAt) >= weekAgo).length,
       internal: installs.length - external.length
     },
-    installs: installs.slice(0, 1000)
+    installs
   };
 }
 

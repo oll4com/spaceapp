@@ -245,6 +245,22 @@ describe("UnifiedCliTaskRegistry", () => {
     });
   });
 
+  it("resolves a task whose prompt left the transcript window after a long turn (ADAPTER-013)", async () => {
+    const store = new InMemorySpaceStore();
+    const { pane, session } = appendTask(store, { runtimeId: "cli:omp", providerId: "omp", title: "Long turn",
+      firstUserMessage: "Remember the word OMPR5652", response: "Retrying (1/10)" });
+    // A retry spinner fills the newest 200 chunks; then the stop's Escape and /quit are the only input left in them.
+    const chunk = (sequence: number, stream: "stdin" | "stdout", content: string) =>
+      store.appendPaneCliTranscriptChunk({ sessionId: session.sessionId, paneId: pane.id, roomId: pane.roomId, sequence, stream, content });
+    for (let i = 2; i < 260; i++) chunk(i, "stdout", `Retrying (${i}/10)`);
+    chunk(260, "stdin", "\u001b");
+    chunk(261, "stdin", "/quit\r");
+    expect((store.listPaneCliTranscriptChunks(session.sessionId)).some((c) => c.content.includes("OMPR5652"))).toBe(false);
+    await expect(new UnifiedCliTaskRegistry(store).getTask(session.sessionId)).resolves.toMatchObject({
+      firstUserMessage: "Remember the word OMPR5652"
+    });
+  });
+
   it("keeps different logical tasks with identical titles separate and filters by current runtime", async () => {
     const store = new InMemorySpaceStore();
     appendTask(store, {

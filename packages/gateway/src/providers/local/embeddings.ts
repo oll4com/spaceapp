@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { childProcessEnv } from "@space/runtime";
 import models from "./local-embedding-models.json" with { type: "json" };
 
 /**
@@ -67,7 +68,8 @@ class ModelWorker {
       this.failAll(new LocalModelUnavailable(`The local embedding model ${this.name} is not installed or failed to start.`));
       return;
     }
-    const child = spawn(this.args.python, ["-I", this.args.script, ...this.args.argv], { stdio: ["pipe", "pipe", "pipe"] });
+    // The gateway runs with the install root's .env; the model worker reads only its files and texts, never Space credentials (review F8).
+    const child = spawn(this.args.python, ["-I", this.args.script, ...this.args.argv], { env: childProcessEnv(), stdio: ["pipe", "pipe", "pipe"] });
     this.child = child;
     this.ready = false;
     let lastError = "";

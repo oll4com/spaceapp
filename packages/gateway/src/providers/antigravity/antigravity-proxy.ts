@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { GatewaySettings } from "@space/contracts";
 import type { GatewayAccountRecord, GatewayCompressionRow, GatewayCompressionSignalRow, GatewayRepository, GatewayRequestLogInsert } from "@space/db";
@@ -11,7 +10,7 @@ import { effectiveCompression, requestCompressionMode, type EffectiveCompression
 import { compressionDetail, compressionRows, compressionSignalRows } from "../../compression/recorder.js";
 import type { TokenizerKind } from "../../compression/tokenizer.js";
 import { geminiCostUsd } from "../../pricing/pricing.js";
-import { hashKey, header, readBounded } from "../../proxy-util.js";
+import { hashKey, header, readBounded, stickyScope } from "../../proxy-util.js";
 import type { RequestLogWriter } from "../../request-log-writer.js";
 import { CODE_ASSIST_BASE_URL, quotaGroupForModel } from "./code-assist.js";
 import { ANTIGRAVITY_CLIENT_ID } from "./oauth.js";
@@ -22,8 +21,9 @@ import { CodeAssistStreamInspector, type GeminiUsage } from "./stream.js";
  * Antigravity through Space Gateway. The CLI is pointed here with `CLOUD_CODE_URL=http://127.0.0.1:4920/antigravity`.
  * Model calls (`generateContent`, `streamGenerateContent`) go to a pooled account chosen by the model's quota group,
  * with the request's `project` rewritten to that account's Code Assist project, and move to another account when one
- * runs out of quota before any content reached the client. Every other call (settings, trajectories, experiments,
- * quota) goes upstream unchanged with the client's own sign-in, because it belongs to that account.
+ * runs out of quota before any content reached the client. A pooled client's model list (`fetchAvailableModels`) comes
+ * from a pool account too. Every other call (settings, trajectories, experiments, quota) goes upstream unchanged with
+ * the client's own sign-in, because it belongs to that account.
  * Only clients signed in to Antigravity as one of the pool's Google accounts are balanced; any other signed-in client
  * passes straight through with its own sign-in, so routing Antigravity here never breaks a profile outside the pool.
  * Balanced model calls get context compression of their tool results (`compressGeminiBodyAsync`) while it is ON.
@@ -47,6 +47,11 @@ export interface AntigravityProxyOptions {
   sticky?: StickyStore;
   /** Google token -> identity; defaults to Google's tokeninfo endpoint. */
   verifyIdentity?: (accessToken: string) => Promise<{ subject: string | null; email: string | null; clientId: string | null } | null>;
+  /**
+   * NGW_MODE=nous (K5-profile): Gemini through the tenant key. `POST /v1internal:{generateContent,streamGenerateContent}` take the
+   * tenant's key instead of a Google sign-in and run only the balanced path, on the accounts of the tenant's pool.
+   */
+  tenant?: { authenticate(request: FastifyRequest, reply: FastifyReply): Promise<boolean> };
   /** Context compression (the Headroom rewrite); absent means requests are never compressed. */
   compression?: { run: AsyncBlockRunner; cache?: CompressionCache; rawBlocks?: RawBlockRegistry; record: (rows: GatewayCompressionRow[]) => Promise<void>;
     recordSignals?: (rows: GatewayCompressionSignalRow[]) => Promise<void> };
@@ -75,7 +80,7 @@ function forwardHeaders(inbound: Record<string, string | string[] | undefined>, 
   for (const [key, raw] of Object.entries(inbound)) {
     if (raw === undefined) continue;
     const lowered = key.toLowerCase();
-    if (hopByHop.has(lowered) || lowered.startsWith("x-forwarded-") || lowered.startsWith("x-space-gateway-")) continue;
+    if (hopByHop.has(lowered) || lowered === "x-space-project" || lowered.startsWith("x-forwarded-") || lowered.startsWith("x-space-gateway-")) continue;
     headers[lowered] = Array.isArray(raw) ? raw.join(", ") : raw;
   }
   if (accessToken) headers.authorization = `Bearer ${accessToken}`;
@@ -112,6 +117,22 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     return allowed;
   }
 
+  /** A pool account's model list (its project and sign-in), or null so the client's own list goes through. */
+  async function poolModels(request: FastifyRequest, upstreamPath: string, raw: Buffer): Promise<string | null> {
+    try {
+      const settings = await options.settings();
+      const account = await pick("claude", new Set(), null, settings) ?? await pick("gemini", new Set(), null, settings);
+      if (!account) return null;
+      const credentials = await options.pool.credentials(account);
+      const body = JSON.parse(raw.toString("utf8")) as Json;
+      const upstream = await fetchImpl(`${baseUrl}${upstreamPath}`, { method: "POST", headers: forwardHeaders(request.headers, credentials.accessToken),
+        body: JSON.stringify({ ...body, project: credentials.upstreamAccountId ?? body.project }), signal: AbortSignal.timeout(60_000) });
+      return upstream.ok ? await upstream.text() : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function passthrough(request: FastifyRequest, reply: FastifyReply, upstreamPath: string, body: Buffer | undefined, logCall = false) {
     const startedAt = now();
     let upstream: Response;
@@ -124,6 +145,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     reply.hijack();
     const headers: Record<string, string> = {};
     upstream.headers.forEach((value, name) => { if (!hopByHop.has(name) && name !== "content-encoding") headers[name] = value; });
+    headers["x-request-id"] = request.id;
     reply.raw.writeHead(upstream.status, headers);
     const inspector = logCall ? new CodeAssistStreamInspector() : null;
     let firstTokenAt: number | null = null;
@@ -145,7 +167,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
       const usage = inspector.usage;
       const failed = !upstream.ok || (inspector.errorStatus !== null && !inspector.outputStarted);
       options.logs.add({
-        requestId: `req_${randomUUID().replace(/-/g, "")}`, requestedAt: new Date(startedAt).toISOString(), provider: "ANTIGRAVITY", accountId: null,
+        requestId: request.id, requestedAt: new Date(startedAt).toISOString(), provider: "ANTIGRAVITY", accountId: null,
         apiKeyId: null, model, reasoningEffort: null, serviceTier: null, transport: "http", status: failed ? "error" : "success",
         errorCode: failed ? `http_${inspector.errorStatus ?? upstream.status}` : null, latencyMs: now() - startedAt,
         firstTokenMs: firstTokenAt === null ? null : firstTokenAt - startedAt, inputTokens: usage?.promptTokens ?? null,
@@ -165,9 +187,9 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     const result: { outgoing: Json; saved: number | null; measured: { before: number; after: number } | null;
       detail: GatewayRequestLogInsert["compressionDetail"] } = { outgoing: body, saved: null, measured: null, detail: null };
     const effective = effectiveCompression(settings, "ANTIGRAVITY");
-    // Antigravity calls carry the client's own Google sign-in, not a gateway key: there is no key override.
-    const compressionMode = requestCompressionMode(effective, null, header(request, "x-space-gateway-compression"));
-    const outputPolicy = requestOutputPolicy({ policy: effective.outputPolicy, key: null, clientName: requestOrigin(request).clientName,
+    // Antigravity calls carry the client's own Google sign-in, not a gateway key: there is no key override (a tenant call has one).
+    const compressionMode = requestCompressionMode(effective, request.gatewayApiKey?.compressionOverride, header(request, "x-space-gateway-compression"));
+    const outputPolicy = requestOutputPolicy({ policy: effective.outputPolicy, key: request.gatewayApiKey ?? null, clientName: requestOrigin(request).clientName,
       headerValue: header(request, "x-space-gateway-output-policy") });
     if (compressionMode !== "OFF" && options.compression) await compressInto(result, body, model, sessionKey, compressionMode, effective, startedAt);
     const policyText = outputPolicyText(outputPolicy);
@@ -203,31 +225,68 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
   }
 
   async function handle(request: FastifyRequest, reply: FastifyReply) {
-    const token = bearer(request);
-    if (!token) return reply.code(401).send({ error: { code: 401, message: "Antigravity is not signed in.", status: "UNAUTHENTICATED" } });
-    const upstreamPath = request.url.replace(/^\/antigravity/, "") || "/";
+    const tenantCall = Boolean(options.tenant) && !request.url.startsWith("/antigravity");
+    if (tenantCall && !(await options.tenant!.authenticate(request, reply))) return reply;
+    const token = tenantCall ? "" : bearer(request);
+    if (token === null) return reply.code(401).send({ error: { code: 401, message: "Antigravity is not signed in.", status: "UNAUTHENTICATED" } });
+    // Antigravity sends no headers of its own: a pane's CLI names its pane in the base URL (/antigravity/project/pane:<id>, set by
+    // deploy/gemini-vscode-parity), which tags its request logs like the x-space-project header does.
+    const tagged = /^\/antigravity\/project\/(pane:[A-Za-z0-9_-]{1,64})(?=\/|$)/.exec(request.url);
+    if (tagged && !request.headers["x-space-project"]) request.headers["x-space-project"] = tagged[1];
+    const upstreamPath = request.url.replace(tagged ? tagged[0] : /^\/antigravity/, "") || "/";
     const raw = Buffer.isBuffer(request.body) ? request.body : undefined;
     const method = /^\/v1internal:([A-Za-z]+)/.exec(upstreamPath)?.[1] ?? "";
+    // Nous always means the selected Gateway provider pool, never the sign-in's direct account. Other clients retain
+    // their existing passthrough behavior. This private header is stripped before a request leaves the gateway.
+    const requirePool = tenantCall || header(request, "x-space-gateway-require-pool") === "true";
+    if (requirePool && (request.method !== "POST" || !MODEL_METHODS.has(method) || !raw)) {
+      return reply.code(400).send({ error: { code: 400, message: "A pooled Antigravity model request is required.", status: "INVALID_ARGUMENT" } });
+    }
+    // A Nous turn's cancellation/deadline closes this response. Stop its upstream generation and retries too;
+    // ordinary CLI clients retain their existing lifetime. IncomingMessage's normal `close` is not a disconnect.
+    const disconnect = requirePool ? new AbortController() : null;
+    if (disconnect) {
+      const stop = () => { if (!reply.raw.writableEnded) disconnect.abort(); };
+      const cleanup = () => { request.raw.removeListener("aborted", stop); reply.raw.removeListener("close", stop); };
+      request.raw.once("aborted", stop);
+      reply.raw.once("close", stop);
+      reply.raw.once("finish", cleanup);
+      if (request.raw.aborted || reply.raw.destroyed) stop();
+    }
+    // Google rolls models out per account (3/11: a profile's own free sign-in still listed Claude Opus 4.6 while the pro pool
+    // that serves its calls had retired it for 5.5), so a pooled client lists what the pool serves.
+    if (request.method === "POST" && method === "fetchAvailableModels" && raw && !requirePool && await pooled(token)) {
+      const listed = await poolModels(request, upstreamPath, raw);
+      if (listed) return reply.code(200).header("content-type", "application/json").send(listed);
+    }
     if (request.method !== "POST" || !MODEL_METHODS.has(method) || !raw) return passthrough(request, reply, upstreamPath, raw);
     // A model call on an account outside the pool goes through as it is, but is logged so its tokens still count.
-    if (!(await pooled(token))) return passthrough(request, reply, upstreamPath, raw, true);
+    if (!tenantCall && !(await pooled(token))) {
+      if (requirePool) return reply.code(403).send({ error: { code: 403, message: "This sign-in does not belong to Space Gateway's Antigravity pool.", status: "PERMISSION_DENIED" } });
+      return passthrough(request, reply, upstreamPath, raw, true);
+    }
+    if (disconnect?.signal.aborted) return reply;
 
     let body: Json;
-    try { body = JSON.parse(raw.toString("utf8")) as Json; } catch { return passthrough(request, reply, upstreamPath, raw); }
+    try { body = JSON.parse(raw.toString("utf8")) as Json; } catch {
+      if (requirePool) return reply.code(400).send({ error: { code: 400, message: "Invalid Antigravity model request.", status: "INVALID_ARGUMENT" } });
+      return passthrough(request, reply, upstreamPath, raw);
+    }
     const startedAt = now();
-    const requestId = `req_${randomUUID().replace(/-/g, "")}`;
+    const requestId = request.id;
     const model = typeof body.model === "string" ? body.model : null;
     const group = quotaGroupForModel(model);
     const inner = body.request && typeof body.request === "object" ? body.request as Json : {};
     const sessionId = typeof inner.sessionId === "string" ? inner.sessionId : null;
-    const stickyHash = sessionId ? hashKey(`antigravity:${sessionId}`) : null;
+    const stickyHash = sessionId ? hashKey(`antigravity:${stickyScope(request)}${sessionId}`) : null;
+    const scope = request.gatewayApiKey?.accountScopeEnabled ? new Set(request.gatewayApiKey.accountIds) : null;
     const settings = await options.settings();
     const compressed = await compressRequest(body, model, stickyHash, request, settings, startedAt);
     const tried = new Set<string>();
     const origin = requestOrigin(request);
     const log = (account: GatewayAccountRecord | null, status: "success" | "error", errorCode: string | null, usage: GeminiUsage | null, extra: { firstTokenMs?: number | null; model?: string | null; errorMessage?: string | null } = {}) =>
       options.logs.add({
-        requestId, requestedAt: new Date(startedAt).toISOString(), provider: "ANTIGRAVITY", accountId: account?.id ?? null, apiKeyId: null,
+        requestId, requestedAt: new Date(startedAt).toISOString(), provider: "ANTIGRAVITY", accountId: account?.id ?? null, apiKeyId: request.gatewayApiKey?.id ?? null,
         model: extra.model ?? model ?? "unknown", reasoningEffort: null, serviceTier: null, transport: "http", upstreamTransport: "http", status, errorCode,
         errorMessage: extra.errorMessage ?? null, latencyMs: now() - startedAt, firstTokenMs: extra.firstTokenMs ?? null,
         inputTokens: usage?.promptTokens ?? null, cachedInputTokens: usage?.cachedTokens ?? null, outputTokens: usage?.outputTokens ?? null,
@@ -241,7 +300,9 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     /** An account whose rejected access token was just refreshed: the request tries it once more. */
     let retryWith: GatewayAccountRecord | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const account = retryWith ?? await pick(group, tried, stickyHash, settings);
+      if (disconnect?.signal.aborted) { log(null, "error", "client_closed", null); return reply; }
+      const account = retryWith ?? await pick(group, tried, stickyHash, settings, scope);
+      if (disconnect?.signal.aborted) { log(null, "error", "client_closed", null); return reply; }
       if (retryWith) attempt -= 1;
       retryWith = null;
       if (!account) break;
@@ -254,18 +315,25 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
         lastError = { status: 401, body: JSON.stringify({ error: { code: 401, message: error instanceof Error ? error.message : "Account sign-in is unavailable.", status: "UNAUTHENTICATED" } }), headers: null };
         continue;
       }
+      if (disconnect?.signal.aborted) { log(account, "error", "client_closed", null); return reply; }
       const outgoing = JSON.stringify({ ...compressed.outgoing, project: credentials.upstreamAccountId ?? body.project });
       let upstream: Response;
       try {
         upstream = await fetchImpl(`${baseUrl}${upstreamPath}`, { method: "POST", body: outgoing, headers: forwardHeaders(request.headers, credentials.accessToken),
-          signal: AbortSignal.timeout(600_000) });
+          signal: disconnect ? AbortSignal.any([disconnect.signal, AbortSignal.timeout(600_000)]) : AbortSignal.timeout(600_000) });
       } catch {
+        if (disconnect?.signal.aborted) { log(account, "error", "client_closed", null); return reply; }
         options.pool.markTransientError(account.id);
         lastError = { status: 502, body: JSON.stringify({ error: { code: 502, message: "Code Assist is unreachable.", status: "UNAVAILABLE" } }), headers: null };
         continue;
       }
       if (!upstream.ok) {
-        const text = await readBounded(upstream);
+        let text;
+        try { text = await readBounded(upstream); } catch (error) {
+          if (disconnect?.signal.aborted) { log(account, "error", "client_closed", null); return reply; }
+          throw error;
+        }
+        if (disconnect?.signal.aborted) { log(account, "error", "client_closed", null); return reply; }
         lastError = { status: upstream.status, body: text, headers: upstream.headers };
         if (await recordFailure(account, upstream.status, text)) continue;
         break;
@@ -281,6 +349,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
         reply.hijack();
         const headers: Record<string, string> = {};
         upstream.headers.forEach((value, name) => { if (!hopByHop.has(name) && name !== "content-encoding") headers[name] = value; });
+        headers["x-request-id"] = requestId;
         reply.raw.writeHead(upstream.status, headers);
         for (const chunk of held) reply.raw.write(chunk);
         held.length = 0;
@@ -300,11 +369,13 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
           if (inspector.outputStarted) commit();
         }
       } catch {
+        if (disconnect?.signal.aborted) { log(account, "error", "client_closed", inspector.usage); return reply; }
         if (!committed) { options.pool.markTransientError(account.id); continue; }
         reply.raw.end();
         log(account, "error", "stream_incomplete", inspector.usage, { firstTokenMs: firstTokenAt === null ? null : firstTokenAt - startedAt, model: inspector.model });
         return reply;
       }
+      if (disconnect?.signal.aborted) { log(account, "error", "client_closed", inspector.usage); return reply; }
       if (movedOn) continue;
       inspector.end();
       if (!committed) commit();
@@ -337,5 +408,6 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     scope.removeAllContentTypeParsers();
     scope.addContentTypeParser("*", { parseAs: "buffer", bodyLimit: 32 * 1024 * 1024 }, (_request, payload, done) => done(null, payload));
     scope.all("/antigravity/*", handle);
+    if (options.tenant) for (const method of ["generateContent", "streamGenerateContent"]) scope.post(`/v1internal::${method}`, handle);
   });
 }

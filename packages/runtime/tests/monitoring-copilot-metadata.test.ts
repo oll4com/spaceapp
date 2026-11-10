@@ -9,7 +9,7 @@ it("persists Monitoring Copilot pane settings through ordinary updates, reads a 
   expect(pane.terminalRuntimeId).toBe("cli:claude");
   expect(resolveMonitoringCopilotPaneMetadata(pane.monitoringCopilotMetadata)).toEqual(defaultMonitoringCopilotPaneMetadata());
   const metadata = defaultMonitoringCopilotPaneMetadata();
-  metadata.settings.collector.lokiUrl = "http://192.0.2.202:3100";
+  metadata.settings.collector.lokiUrl = "http://192.168.50.20:3100";
   metadata.settings.notifications.warning = false;
   expect(store.updateMonitoringCopilotMetadata(pane.id, metadata).monitoringCopilotMetadata).toEqual(metadata);
   store.updatePane(pane.id, { title: "Renamed" });

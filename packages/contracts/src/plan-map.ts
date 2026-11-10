@@ -9,7 +9,8 @@ export const planWaitsOnKindSchema = z.enum(["OPERATOR", "DATE", "PROMOTE", "THI
 export type PlanWaitsOnKind = z.infer<typeof planWaitsOnKindSchema>;
 export const planWaitsOnSchema = z.object({
   kind: planWaitsOnKindSchema,
-  what: z.string().trim().min(1).max(200),
+  // Whole since 31/10 (was 200): what a plan or goal waits on is stored as JSON, with no column bound.
+  what: z.string().trim().min(1),
   until: z.string().datetime({ offset: true }).nullable().default(null)
 }).strict();
 export type PlanWaitsOn = z.infer<typeof planWaitsOnSchema>;

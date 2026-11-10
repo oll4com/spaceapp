@@ -4,12 +4,13 @@ import { extractLinks, matches, sourceToText, type MailboxMessageSummary, type M
 // holds the token, scans the newest messages and hands the agent codes, links and short snippets,
 // exactly as with an IMAP mailbox.
 const gmailApi = "https://gmail.googleapis.com/gmail/v1/users/me";
-/** Newest messages looked at per read (IMAP scans the newest 80 of the inbox); `since` narrows further. */
-const SCAN_LIMIT = 30;
+/** Technical: Gmail lists at most 500 message ids a page. */
+const GMAIL_PAGE = 500;
 const MAX_RAW_CHARS = 2_000_000;
 
 export class GmailMailboxError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
+  /** `rateLimited`: Gmail's rate or quota limit, still answered after the retries. */
+  constructor(readonly status: number, message: string, readonly rateLimited = false) { super(message); }
 }
 
 function header(headers: unknown, name: string): string {
@@ -44,7 +45,7 @@ export function gmailScanQuery(since?: string | null): string {
   return ["-in:sent", "-in:drafts", "-in:chats", ...(Number.isFinite(at) ? [`after:${Math.floor(at / 1000) - 60}`] : [])].join(" ");
 }
 
-export function openGmailMailbox(input: { accessToken: string; fetchImpl?: typeof fetch; scanLimit?: number }): MailboxReader {
+export function openGmailMailbox(input: { accessToken: string; fetchImpl?: typeof fetch }): MailboxReader {
   const fetchImpl = input.fetchImpl ?? fetch;
   async function get(path: string): Promise<Record<string, unknown>> {
     const response = await fetchImpl(`${gmailApi}${path}`, {
@@ -59,10 +60,19 @@ export function openGmailMailbox(input: { accessToken: string; fetchImpl?: typeo
     return body;
   }
   type Entry = { receivedAtMs: number; summary: MailboxMessageSummary };
-  async function scan(filter: MailboxSearchFilter & { limit: number }): Promise<Entry[]> {
-    const query = new URLSearchParams({ q: gmailScanQuery(filter.since), maxResults: String(input.scanLimit ?? SCAN_LIMIT) });
-    const list = await get(`/messages?${query}`);
-    const ids = ((list.messages as Array<{ id?: unknown }> | undefined) ?? []).map((message) => message.id).filter((id): id is string => typeof id === "string");
+  async function scan(filter: MailboxSearchFilter & { limit?: number }): Promise<Entry[]> {
+    const limit = filter.limit ?? Infinity;
+    // Gmail searches the whole mailbox for the sender and subject, page by page, until `limit` messages are found (until 31/10 the
+    // newest 30 messages were read and filtered here, so an older match was never seen).
+    const words = (field: string, value: string | null | undefined) => value?.trim() ? [`${field}:"${value.trim().replace(/"/g, "")}"`] : [];
+    const q = [gmailScanQuery(filter.since), ...words("from", filter.fromContains), ...words("subject", filter.subjectContains)].join(" ");
+    const ids: string[] = [];
+    for (let pageToken: string | undefined; ids.length < limit; ) {
+      const list = await get(`/messages?${new URLSearchParams({ q, maxResults: String(Math.min(GMAIL_PAGE, limit - ids.length)), ...(pageToken ? { pageToken } : {}) })}`);
+      ids.push(...((list.messages as Array<{ id?: unknown }> | undefined) ?? []).map((message) => message.id).filter((id): id is string => typeof id === "string"));
+      pageToken = typeof list.nextPageToken === "string" ? list.nextPageToken : undefined;
+      if (!pageToken) break;
+    }
     const since = filter.since ? Date.parse(filter.since) : Number.NaN;
     const entries = await mapLimited(ids, 5, async (id): Promise<Entry> => {
       const message = await get(`/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`);
@@ -75,7 +85,7 @@ export function openGmailMailbox(input: { accessToken: string; fetchImpl?: typeo
       } };
     });
     return entries.filter((entry) => (!Number.isFinite(since) || entry.receivedAtMs >= since) && matches(entry.summary, filter))
-      .sort((left, right) => right.receivedAtMs - left.receivedAtMs).slice(0, filter.limit);
+      .sort((left, right) => right.receivedAtMs - left.receivedAtMs).slice(0, filter.limit ?? undefined);
   }
   return {
     async recent(filter) {
@@ -94,17 +104,71 @@ export function openGmailMailbox(input: { accessToken: string; fetchImpl?: typeo
 }
 
 export interface GmailSearchHit { messageId: string; from: string; subject: string; snippet: string; receivedAt: string | null }
+/** The hits a search could read, and how many message reads still failed after their retries (with the last error). */
+export interface GmailSearchResult { hits: GmailSearchHit[]; failed: number; failedError: GmailMailboxError | null }
 
-/** Every message matching a Gmail search (pages of 100, at most `max`), with sender, subject, snippet and receipt time. */
-export async function searchGmail(input: { accessToken: string; query: string; max: number; fetchImpl?: typeof fetch }): Promise<GmailSearchHit[]> {
+// Gmail's per-user quota (15,000 units a minute; a list or a get costs 5) is shared with every Space job on the account:
+// a search paces itself at 100 units a second and waits out a rate limit (31/10: a burst of gets answered 403
+// "Quota exceeded ... per minute per user" and the whole account's search was lost).
+const GMAIL_UNIT_COST = 5;
+const GMAIL_UNITS_PER_SECOND = 100;
+const GMAIL_RETRIES = 4;
+const GMAIL_MAX_WAIT_MS = 60_000;
+
+/** A 429, or a 403 whose error names a rate or quota limit (not a permission error). */
+export function gmailRateLimited(status: number, body: unknown): boolean {
+  if (status === 429) return true;
+  if (status !== 403) return false;
+  const error = (body as { error?: { errors?: Array<{ reason?: unknown }>; message?: unknown; status?: unknown } } | null)?.error;
+  return Boolean(error?.errors?.some((item) => /rateLimitExceeded|userRateLimitExceeded|quotaExceeded/.test(String(item?.reason ?? "")))
+    || /quota exceeded|rate limit/i.test(String(error?.message ?? "")) || error?.status === "RESOURCE_EXHAUSTED");
+}
+/** Retry-After in seconds or as an HTTP date, in milliseconds from `nowMs`. */
+function retryAfterMs(value: string | null, nowMs: number): number | null {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.max(0, at - nowMs) : null;
+}
+const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Every message matching a Gmail search (pages of 100, at most `max`), with sender, subject, snippet and receipt time.
+ * Requests are paced per search and a rate-limited one is retried (Retry-After, else 2, 4, 8, 16 s). A listing page that
+ * still fails throws; a message that still fails is counted in `failed`, so the caller knows the hits are incomplete.
+ */
+export async function searchGmail(input: { accessToken: string; query: string; max: number; fetchImpl?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>; unitsPerSecond?: number }): Promise<GmailSearchResult> {
   const fetchImpl = input.fetchImpl ?? fetch;
+  const sleep = input.sleep ?? realSleep;
+  const spacingMs = GMAIL_UNIT_COST * 1000 / (input.unitsPerSecond ?? GMAIL_UNITS_PER_SECOND);
+  let nextSlot = 0;
+  async function paced(): Promise<void> {
+    const now = Date.now();
+    const at = Math.max(now, nextSlot);
+    nextSlot = at + spacingMs;
+    if (at > now) await sleep(at - now);
+  }
   async function get(path: string): Promise<Record<string, unknown>> {
-    const response = await fetchImpl(`${gmailApi}${path}`, {
-      headers: { authorization: `Bearer ${input.accessToken}`, accept: "application/json" }, signal: AbortSignal.timeout(20_000)
-    });
-    const body = await response.json().catch(() => ({})) as Record<string, unknown>;
-    if (!response.ok) throw new GmailMailboxError(response.status, response.status === 401 ? "Google access to Gmail expired." : `Gmail request failed (${response.status}).`);
-    return body;
+    for (let attempt = 0; ; attempt += 1) {
+      await paced();
+      const response = await fetchImpl(`${gmailApi}${path}`, {
+        headers: { authorization: `Bearer ${input.accessToken}`, accept: "application/json" }, signal: AbortSignal.timeout(20_000)
+      });
+      const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (response.ok) return body;
+      if (gmailRateLimited(response.status, body) && attempt < GMAIL_RETRIES) {
+        const wait = retryAfterMs(response.headers.get("retry-after"), Date.now()) ?? 2000 * 2 ** attempt;
+        const until = Date.now() + Math.min(wait, GMAIL_MAX_WAIT_MS);
+        nextSlot = Math.max(nextSlot, until);  // the other reads of this search wait too
+        await sleep(until - Date.now());
+        continue;
+      }
+      const limited = gmailRateLimited(response.status, body);
+      throw new GmailMailboxError(response.status, response.status === 401 ? "Google access to Gmail expired."
+        : limited ? `Gmail rate limit (${response.status}) after ${GMAIL_RETRIES} retries.` : `Gmail request failed (${response.status}).`, limited);
+    }
   }
   const ids: string[] = [];
   let pageToken: string | undefined;
@@ -114,13 +178,23 @@ export async function searchGmail(input: { accessToken: string; query: string; m
     for (const message of (page.messages as Array<{ id?: unknown }> | undefined) ?? []) if (typeof message.id === "string") ids.push(message.id);
     pageToken = typeof page.nextPageToken === "string" ? page.nextPageToken : undefined;
   } while (pageToken && ids.length < input.max);
-  return mapLimited(ids, 8, async (id): Promise<GmailSearchHit> => {
-    const message = await get(`/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`);
-    const headers = (message.payload as { headers?: unknown } | undefined)?.headers;
-    const received = Number(message.internalDate);
-    return { messageId: id, from: header(headers, "from"), subject: header(headers, "subject"),
-      snippet: decodeEntities(typeof message.snippet === "string" ? message.snippet : ""), receivedAt: Number.isFinite(received) && received > 0 ? new Date(received).toISOString() : null };
+  let failed = 0;
+  let failedError: GmailMailboxError | null = null;
+  const read = await mapLimited(ids, 4, async (id): Promise<GmailSearchHit | null> => {
+    try {
+      const message = await get(`/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`);
+      const headers = (message.payload as { headers?: unknown } | undefined)?.headers;
+      const received = Number(message.internalDate);
+      return { messageId: id, from: header(headers, "from"), subject: header(headers, "subject"),
+        snippet: decodeEntities(typeof message.snippet === "string" ? message.snippet : ""), receivedAt: Number.isFinite(received) && received > 0 ? new Date(received).toISOString() : null };
+    } catch (error) {
+      if (error instanceof GmailMailboxError && error.status === 401) throw error;
+      failed += 1;
+      failedError = error instanceof GmailMailboxError ? error : new GmailMailboxError(0, error instanceof Error ? error.message : "Gmail request failed.");
+      return null;
+    }
   });
+  return { hits: read.filter((hit): hit is GmailSearchHit => hit !== null), failed, failedError };
 }
 
 /** Confirmation mail of applicant tracking systems and job boards, or any subject about an application (one Gmail OR group). */

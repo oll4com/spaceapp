@@ -1,11 +1,12 @@
-import { readFile, writeFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, writeFile, readdir, readlink } from "node:fs/promises";
+import { basename, join } from "node:path";
 import {
   antigravityUsageAccountListSchema,
   type AntigravityUsageAccount,
   type AntigravityUsageAccountList,
   type AntigravityUsageGroup
 } from "@space/contracts";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export const ANTIGRAVITY_CLIENT_ID =
   process.env.ANTIGRAVITY_CLIENT_ID ?? "";
@@ -13,12 +14,21 @@ export const ANTIGRAVITY_CLIENT_SECRET =
   process.env.ANTIGRAVITY_CLIENT_SECRET ?? "";
 export const ANTIGRAVITY_QUOTA_URL =
   "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
+export const ANTIGRAVITY_USER_QUOTA_URL =
+  "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
 export const ANTIGRAVITY_LOAD_CODE_ASSIST_URL =
   "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
 export const GOOGLE_OAUTH_TOKEN_URL =
   "https://oauth2.googleapis.com/token";
 
 const usageCacheTtlMs = 60_000;
+
+// Google lists quota groups only to the clients it knows (8/11: "Antigravity/1.2.3" got the Claude · GPT group alone, the installed
+// CLI's "antigravity/cli/1.5.3" also Gemini and Gemini 4 Argon), so Space names the Antigravity CLI it runs, following its updates.
+export async function antigravityUserAgent(versionsDir = `${SPACE_INSTALL_ROOT}/var/cli-versions/gemini`): Promise<string> {
+  const version = basename(await readlink(join(versionsDir, "current")).catch(() => ""));
+  return `antigravity/cli/${/^\d+\.\d+\.\d+$/.test(version) ? version : "1.5.3"}`;
+}
 const usageStaleFallbackMs = 10 * 60_000;
 export const ANTIGRAVITY_FETCH_TIMEOUT_MS = 5_000;
 
@@ -27,20 +37,24 @@ export interface AntigravityProfileLocation {
   tokenPath: string;
 }
 
-export function extractEmailFromIdToken(idToken: string | null | undefined): string | null {
-  if (!idToken || typeof idToken !== "string") return null;
-  const parts = idToken.split(".");
-  const rawPayload = parts[1];
-  if (!rawPayload) return null;
-  try {
-    let payload = rawPayload.replace(/-/g, "+").replace(/_/g, "/");
-    while (payload.length % 4 !== 0) payload += "=";
-    const decoded = Buffer.from(payload, "base64").toString("utf8");
-    const claims = JSON.parse(decoded) as { email?: string };
-    return typeof claims.email === "string" && claims.email.includes("@") ? claims.email : null;
-  } catch {
-    return null;
+export function extractEmailFromIdToken(
+  idToken: string | null | undefined,
+  idTokenEmail?: string | null | undefined
+): string | null {
+  if (idToken && typeof idToken === "string") {
+    const parts = idToken.split(".");
+    const rawPayload = parts[1];
+    if (rawPayload) {
+      try {
+        let payload = rawPayload.replace(/-/g, "+").replace(/_/g, "/");
+        while (payload.length % 4 !== 0) payload += "=";
+        const decoded = Buffer.from(payload, "base64").toString("utf8");
+        const claims = JSON.parse(decoded) as { email?: string };
+        if (typeof claims.email === "string" && claims.email.includes("@")) return claims.email;
+      } catch {}
+    }
   }
+  return typeof idTokenEmail === "string" && idTokenEmail.includes("@") ? idTokenEmail.trim() : null;
 }
 
 function toPercent(fraction: unknown): number | null {
@@ -48,9 +62,14 @@ function toPercent(fraction: unknown): number | null {
   return Math.min(Math.max(Math.round(fraction * 1000) / 10, 0), 100);
 }
 
-export function parseAntigravityQuotaSummary(data: unknown): {
+export function parseAntigravityQuotaSummary(
+  data: unknown,
+  userQuotaData?: unknown,
+  nowMs = Date.now()
+): {
   gemini: AntigravityUsageGroup;
   claude: AntigravityUsageGroup;
+  groups: Array<AntigravityUsageGroup & { id: string }>;
 } {
   const emptyGroup = (displayName: string, description?: string): AntigravityUsageGroup => ({
     displayName,
@@ -66,8 +85,9 @@ export function parseAntigravityQuotaSummary(data: unknown): {
 
   const extractGroup = (groupData: Record<string, unknown> | undefined, defaultName: string): AntigravityUsageGroup => {
     if (!groupData) return emptyGroup(defaultName);
+    // A disabled bucket (Google's "Disabled", e.g. a plan without a 5-hour limit) does not limit the group.
     const buckets = Array.isArray(groupData.buckets)
-      ? (groupData.buckets as Array<Record<string, unknown>>)
+      ? (groupData.buckets as Array<Record<string, unknown>>).filter((b) => b?.disabled !== true)
       : [];
     const b5h = buckets.find(
       (b) => b.window === "5h" || (typeof b.bucketId === "string" && b.bucketId.includes("5h"))
@@ -76,8 +96,9 @@ export function parseAntigravityQuotaSummary(data: unknown): {
       (b) => b.window === "weekly" || (typeof b.bucketId === "string" && b.bucketId.includes("weekly"))
     );
     return {
-      displayName: typeof groupData.displayName === "string" ? groupData.displayName : defaultName,
-      description: typeof groupData.description === "string" ? groupData.description : null,
+      // The schema's bounds, so one long text from Google cannot fail the whole list.
+      displayName: (typeof groupData.displayName === "string" && groupData.displayName.trim() ? groupData.displayName : defaultName).slice(0, 120),
+      description: typeof groupData.description === "string" ? groupData.description.slice(0, 500) : null,
       fiveHourRemainingPercent: toPercent(b5h?.remainingFraction),
       fiveHourResetAt: typeof b5h?.resetTime === "string" ? b5h.resetTime : null,
       weeklyRemainingPercent: toPercent(bWeekly?.remainingFraction),
@@ -85,13 +106,20 @@ export function parseAntigravityQuotaSummary(data: unknown): {
     };
   };
 
-  const geminiGroupData = groups.find((g) => {
-    const name = String(g.displayName ?? "").toLowerCase();
-    const buckets = Array.isArray(g.buckets) ? (g.buckets as Array<Record<string, unknown>>) : [];
-    return name.includes("gemini") || buckets.some((b) => String(b.bucketId ?? "").includes("gemini"));
-  });
+  // A group's id is its buckets' id without the window ("gemini-argon-wtu-weekly" → "gemini-argon-wtu").
+  const groupKey = (g: Record<string, unknown>): string => {
+    const bucket = (Array.isArray(g.buckets) ? (g.buckets as Array<Record<string, unknown>>) : [])[0];
+    const id = String(bucket?.bucketId ?? "");
+    const window = String(bucket?.window ?? "");
+    const key = window && id.endsWith(`-${window}`) ? id.slice(0, -window.length - 1) : id.replace(/-[^-]*$/, "");
+    return (key || String(g.displayName ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "group").slice(0, 120);
+  };
 
-  const claudeGroupData = groups.find((g) => {
+  // "Gemini 4 Argon" also names Gemini: only the family group counts as Gemini.
+  const geminiGroupData = groups.find((g) => groupKey(g) === "gemini")
+    ?? groups.find((g) => /^gemini models?$/i.test(String(g.displayName ?? "").trim()));
+
+  const claudeGroupData = groups.find((g) => groupKey(g) === "3p") ?? groups.find((g) => {
     const name = String(g.displayName ?? "").toLowerCase();
     const buckets = Array.isArray(g.buckets) ? (g.buckets as Array<Record<string, unknown>>) : [];
     return (
@@ -101,14 +129,45 @@ export function parseAntigravityQuotaSummary(data: unknown): {
     );
   });
 
-  return {
-    gemini: extractGroup(geminiGroupData, "Gemini Models"),
-    claude: extractGroup(claudeGroupData, "Claude and GPT models")
-  };
+  const gemini = extractGroup(geminiGroupData, "Gemini Models");
+  const claude = extractGroup(claudeGroupData, "Claude and GPT models");
+
+  // retrieveUserQuotaSummary no longer lists the Gemini group; retrieveUserQuota reports each Gemini model's bucket.
+  if (gemini.fiveHourRemainingPercent === null && gemini.weeklyRemainingPercent === null && userQuotaData && typeof userQuotaData === "object") {
+    const rawBuckets = Array.isArray((userQuotaData as Record<string, unknown>).buckets)
+      ? ((userQuotaData as Record<string, unknown>).buckets as Array<Record<string, unknown>>)
+      : [];
+    const geminiBuckets = rawBuckets.filter((b) => /^gemini/i.test(String(b?.modelId ?? "")) && toPercent(b?.remainingFraction) !== null);
+    const weeklyOnly = claude.fiveHourRemainingPercent === null && claude.weeklyRemainingPercent !== null;
+    const isWeekly = (b: Record<string, unknown>) =>
+      b.window === "weekly" || weeklyOnly || (typeof b.resetTime === "string" && Date.parse(b.resetTime) - nowMs > 6 * 3_600_000);
+    const tightestBucket = (items: Array<Record<string, unknown>>) =>
+      items.reduce<Record<string, unknown> | undefined>(
+        (best, cur) => (!best || (toPercent(cur.remainingFraction) ?? 100) < (toPercent(best.remainingFraction) ?? 100) ? cur : best),
+        undefined
+      );
+    const b5h = tightestBucket(geminiBuckets.filter((b) => !isWeekly(b)));
+    const bWeekly = tightestBucket(geminiBuckets.filter(isWeekly));
+    if (b5h) {
+      gemini.fiveHourRemainingPercent = toPercent(b5h.remainingFraction);
+      gemini.fiveHourResetAt = typeof b5h.resetTime === "string" ? b5h.resetTime : null;
+    }
+    if (bWeekly) {
+      gemini.weeklyRemainingPercent = toPercent(bWeekly.remainingFraction);
+      gemini.weeklyResetAt = typeof bWeekly.resetTime === "string" ? bWeekly.resetTime : null;
+    }
+  }
+
+  const hasData = (group: AntigravityUsageGroup) => group.fiveHourRemainingPercent !== null || group.weeklyRemainingPercent !== null;
+  const listed = groups.map((g) => g === geminiGroupData ? { id: "gemini", ...gemini }
+    : g === claudeGroupData ? { id: "claude", ...claude }
+    : { id: groupKey(g), ...extractGroup(g, groupKey(g)) });
+  if (!geminiGroupData && hasData(gemini)) listed.unshift({ id: "gemini", ...gemini });
+  return { gemini, claude, groups: listed };
 }
 
 export async function discoverAntigravityProfiles(
-  codexHome: string = "/var/lib/spaceapp-user/.codex"
+  codexHome: string = `${SPACE_AGENT_HOME}/.codex`
 ): Promise<AntigravityProfileLocation[]> {
   const locations: AntigravityProfileLocation[] = [];
   const geminiRoot = join(codexHome, "space-gemini");
@@ -148,7 +207,7 @@ export function createAntigravityUsageAccountProvider(
 ): () => Promise<AntigravityUsageAccountList> {
   const fetchImpl = options.fetchImpl ?? ((url, init) => fetch(url, init));
   const now = options.now ?? (() => new Date());
-  const codexHome = options.codexHome ?? "/var/lib/spaceapp-user/.codex";
+  const codexHome = options.codexHome ?? `${SPACE_AGENT_HOME}/.codex`;
   const fetchTimeoutMs = options.fetchTimeoutMs ?? ANTIGRAVITY_FETCH_TIMEOUT_MS;
 
   let collectFailed = false;
@@ -183,7 +242,7 @@ export function createAntigravityUsageAccountProvider(
       return null;
     }
 
-    const email = extractEmailFromIdToken(tokenData?.id_token);
+    const email = extractEmailFromIdToken(tokenData?.id_token, tokenData?.id_token_email);
     let accessToken: string | null = tokenData?.token?.access_token ?? null;
     const refreshToken: string | null = tokenData?.token?.refresh_token ?? null;
     const expiryStr: string | null = tokenData?.token?.expiry ?? null;
@@ -246,6 +305,7 @@ export function createAntigravityUsageAccountProvider(
     }
 
     try {
+      const userAgent = await antigravityUserAgent();
       // Step 1: Call loadCodeAssist to discover the correct project and account tier.
       // This is required because retrieveUserQuotaSummary returns 403 for free-tier
       // accounts when called without a project, but succeeds when the correct project
@@ -259,7 +319,7 @@ export function createAntigravityUsageAccountProvider(
           headers: {
             Authorization: `Bearer ${accessToken}`,
             "Content-Type": "application/json",
-            "User-Agent": "Antigravity/1.2.3"
+            "User-Agent": userAgent
           },
           body: JSON.stringify({
             metadata: { ideType: "IDE_UNSPECIFIED", platform: "PLATFORM_UNSPECIFIED", pluginType: "PLUGIN_UNSPECIFIED" }
@@ -289,7 +349,7 @@ export function createAntigravityUsageAccountProvider(
         headers: {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
-          "User-Agent": "Antigravity/1.2.3"
+          "User-Agent": userAgent
         },
         body: JSON.stringify({ project: quotaProject })
       });
@@ -321,7 +381,22 @@ export function createAntigravityUsageAccountProvider(
       }
 
       const quotaData = await quotaResp.json();
-      const parsedGroups = parseAntigravityQuotaSummary(quotaData);
+      let parsedGroups = parseAntigravityQuotaSummary(quotaData);
+      if (parsedGroups.gemini.fiveHourRemainingPercent === null && parsedGroups.gemini.weeklyRemainingPercent === null) {
+        const userQuotaResp = await fetchWithTimeout(ANTIGRAVITY_USER_QUOTA_URL, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+            "User-Agent": userAgent
+          },
+          body: JSON.stringify({ project: quotaProject })
+        }).catch(() => null);
+        if (userQuotaResp?.ok) {
+          const userQuotaData = await userQuotaResp.json().catch(() => null);
+          parsedGroups = parseAntigravityQuotaSummary(quotaData, userQuotaData, now().getTime());
+        }
+      }
 
       return {
         id: loc.profileId,
@@ -331,6 +406,7 @@ export function createAntigravityUsageAccountProvider(
         status: "CONNECTED",
         gemini: parsedGroups.gemini,
         claude: parsedGroups.claude,
+        groups: parsedGroups.groups,
         sampledAt: now().toISOString()
       };
     } catch {
@@ -433,10 +509,12 @@ export function createAntigravityUsageAccountProvider(
     const list = await current();
     const hidden = options.hiddenEmails ? await options.hiddenEmails().catch(() => new Set<string>()) : new Set<string>();
     if (hidden.size === 0) return list;
-    const data = list.data.filter((account) => !account.email || !hidden.has(account.email.trim().toLowerCase()));
+    const isHidden = (account: AntigravityUsageAccount) => Boolean(account.email && hidden.has(account.email.trim().toLowerCase()));
+    const data = list.data.filter((account) => !isHidden(account));
     if (data.length === list.data.length) return list;
+    const outOfRotation = list.data.filter(isHidden);
     return antigravityUsageAccountListSchema.parse({
-      ...list, data, pagination: { ...list.pagination, totalItems: data.length, totalPages: data.length ? 1 : 0 }
+      ...list, data, outOfRotation, pagination: { ...list.pagination, totalItems: data.length, totalPages: data.length ? 1 : 0 }
     });
   };
 }

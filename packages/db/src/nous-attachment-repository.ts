@@ -39,8 +39,7 @@ export interface NousAttachmentRepository {
   listForMessages(owner: string, messageIds: string[]): Promise<NousAttachmentRecord[]>;
   /** Removes rows and returns them, so their files can be deleted too. */
   remove(owner: string, id: string): Promise<NousAttachmentRecord | null>;
-  removeAll(owner: string): Promise<NousAttachmentRecord[]>;
-  /** Files never sent with a message, uploaded before `before`; a sent file stays until its conversation is cleared. */
+  /** Files never sent with a message, uploaded before `before`; a sent file stays with its message (Clear conversation keeps both). */
   removeUnsent(before: string): Promise<NousAttachmentRecord[]>;
   dispose(): Promise<void>;
 }
@@ -95,11 +94,6 @@ export class InMemoryNousAttachmentRepository implements NousAttachmentRepositor
     this.rows.delete(id);
     return row;
   }
-  async removeAll(owner: string) {
-    const removed = [...this.rows.values()].filter((row) => row.ownerUserId === owner);
-    for (const row of removed) this.rows.delete(row.id);
-    return removed;
-  }
   async removeUnsent(before: string) {
     const removed = [...this.rows.values()].filter((row) => !row.messageId && row.createdAt < before);
     for (const row of removed) this.rows.delete(row.id);
@@ -147,10 +141,6 @@ export class PostgresNousAttachmentRepository implements NousAttachmentRepositor
   async remove(owner: string, id: string) {
     const result = await this.pool.query<Row>(`DELETE FROM nous_attachments WHERE owner_user_id = $1 AND id = $2 RETURNING ${columns}`, [owner, id]);
     return result.rows[0] ? recordOf(result.rows[0]) : null;
-  }
-  async removeAll(owner: string) {
-    const result = await this.pool.query<Row>(`DELETE FROM nous_attachments WHERE owner_user_id = $1 RETURNING ${columns}`, [owner]);
-    return result.rows.map(recordOf);
   }
   async removeUnsent(before: string) {
     const result = await this.pool.query<Row>(`DELETE FROM nous_attachments WHERE message_id IS NULL AND created_at < $1 RETURNING ${columns}`, [before]);

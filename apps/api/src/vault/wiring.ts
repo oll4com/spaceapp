@@ -1,9 +1,12 @@
+import type { SiteSigninsRepository } from "@space/db";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AuthUser, Pane, VaultHostFillResult, VaultHostTarget } from "@space/contracts";
 import { PostgresVaultRepository } from "@space/db";
+import type { BrowserControlActivity } from "../browser-control-activity.js";
 import { cookieName, verifySession } from "../auth.js";
-import type { ConnectorCrypto } from "../dot-connectors.js";
+import { connectorSealContext, type ConnectorCrypto } from "../dot-connectors.js";
 import { parseBody, parseQuery } from "../route-parsing.js";
+import { registerSiteSignins } from "../site-signins.js";
 import { GitControlError } from "../source-control/errors.js";
 import { createVaultAgent, registerVaultAgentRoutes, type VaultAgent } from "./agent.js";
 import { VaultBrokerUnavailableError, createSocketVaultBroker, type VaultBroker } from "./broker-client.js";
@@ -21,6 +24,7 @@ const noBroker: VaultBroker = { transportKey: unavailable, delegationKey: unavai
   signupGrant: unavailable, signup: unavailable, signupRevoke: unavailable, signupAutoGrant: unavailable, delegatePending: unavailable };
 
 export function registerVault(app: FastifyInstance, deps: {
+  siteSignins?: SiteSigninsRepository;
   config: { databaseUrl?: string | null; instance: string; internalApiToken?: string | null; agentTokenSecret?: string | null };
   auth: { sessionSecret: string };
   store: {
@@ -33,8 +37,10 @@ export function registerVault(app: FastifyInstance, deps: {
   };
   /** The Google account a pane's browser opens with (its id), or null. */
   paneAccount?(owner: string, pane: Pane): Promise<string | null>;
+  controlActivity?: Pick<BrowserControlActivity, "agentFor">;
   /** Whether an agent session scripted this document in the page's own world (the CDP proxy's marks); absent: every fill reloads. */
   documentDirty?(paneId: string, targetId: string, document: string | null): boolean | Promise<boolean>;
+  documentDirtiedBy?(paneId: string, targetId: string, document: string | null): string | null | Promise<string | null>;
   /** The Browser Host's sealed fill (absent where no Browser Host runs). */
   browser?: {
     vaultTarget?(pane: Pane): Promise<VaultHostTarget>;
@@ -45,8 +51,13 @@ export function registerVault(app: FastifyInstance, deps: {
   overrides?: VaultOverrides;
   /** Seals the API keys the operator hands to agents (plan clipboard:-qvpC_Q0rAVg). */
   crypto: ConnectorCrypto;
+  /** A key just saved (an agent's key-save, the dock's Add key): Space Gateway takes the free ones (gatewayKeyJoiner). */
+  keySaved?(owner: string, key: { label: string; value: string }): void;
+  /** The kept keys, opened, at start and every six hours: Space Gateway takes the free ones that never joined (gatewayVaultKeyReconciler). */
+  reconcileKeys?(keys: Array<{ owner: string; id: string; label: string; value: string }>): Promise<unknown>;
 }): VaultModule {
   const { config, overrides = {}, browser } = deps;
+  const siteSignins = deps.siteSignins ?? registerSiteSignins(app, deps.store, config.databaseUrl);
   const repository = overrides.repository !== undefined ? overrides.repository
     : config.databaseUrl ? PostgresVaultRepository.fromConnectionString(config.databaseUrl) : null;
   if (repository && overrides.repository === undefined) {
@@ -54,6 +65,22 @@ export function registerVault(app: FastifyInstance, deps: {
     const prune = setInterval(() => void (repository as PostgresVaultRepository).pruneNonces().catch((error) => app.log.warn({ err: error }, "Vault nonce pruning failed.")), 6 * 3_600_000);
     prune.unref();
     app.addHook("onClose", async () => { clearInterval(prune); await (repository as PostgresVaultRepository).dispose(); });
+    if (deps.reconcileKeys) {
+      const reconcile = async () => {
+        const sealed = await (repository as PostgresVaultRepository).listKeptKeySeals();
+        const keys = sealed.flatMap((key) => {
+          try { return [{ owner: key.owner, id: key.id, label: key.label, value: deps.crypto.open(key.valueSealed, connectorSealContext("vault-handoff-key", key.owner, key.id)) }]; }
+          catch { return []; }
+        });
+        await deps.reconcileKeys!(keys);
+      };
+      const run = () => void reconcile().catch((error) => app.log.warn({ err: error }, "Vault keys could not be reconciled with Space Gateway."));
+      // After start (the gateway may still be starting), then every six hours.
+      const first = setTimeout(run, 90_000);
+      const every = setInterval(run, 6 * 3_600_000);
+      first.unref(); every.unref();
+      app.addHook("onClose", async () => { clearTimeout(first); clearInterval(every); });
+    }
   }
   const broker = overrides.broker ?? (config.instance === "stable" ? createSocketVaultBroker() : noBroker);
   // A fill's protection lifts once the Browser Host shows its page is gone (its tab closed, or the tab shows another page).
@@ -79,7 +106,7 @@ export function registerVault(app: FastifyInstance, deps: {
     fencedTargets: (paneId) => protection.fencedTargets(paneId)
   });
   registerVaultRoutes(app, {
-    repository, parseBody, parseQuery, broker, crypto: deps.crypto,
+    repository, parseBody, parseQuery, broker, crypto: deps.crypto, keySaved: deps.keySaved,
     routeOptions: deps.routeOptions,
     strictRouteOptions: { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
     owner: async (request) => {
@@ -89,9 +116,22 @@ export function registerVault(app: FastifyInstance, deps: {
       return (await deps.store.upsertUser(request.user)).id;
     }
   });
-  const agent = createVaultAgent({ repository, broker, protection, browser, paneOwner, crypto: deps.crypto, listPanes: async (roomId) => deps.store.listPanes(roomId),
-    googleAccounts: deps.store.listGoogleAccounts ? async (owner) => deps.store.listGoogleAccounts!(owner) : undefined, paneAccount: deps.paneAccount, documentDirty: deps.documentDirty });
+  const agent = createVaultAgent({ siteSignins, repository, broker, protection, browser, paneOwner, crypto: deps.crypto, keySaved: deps.keySaved, listPanes: async (roomId) => deps.store.listPanes(roomId), controlActivity: deps.controlActivity,
+    googleAccounts: deps.store.listGoogleAccounts ? async (owner) => deps.store.listGoogleAccounts!(owner) : undefined, paneAccount: deps.paneAccount, documentDirty: deps.documentDirty, documentDirtiedBy: deps.documentDirtiedBy });
   return { repository, protection, broker, agent };
+}
+
+/**
+ * `space-admin-action gateway-api-key-add --vault-key` (nous_msg:71a41c2e): a kept key for Space Gateway, read through the Vault
+ * agent's own key-take (agent access on, audited as pane `space-admin-action`), so the value never reaches the caller.
+ */
+export function vaultKeyReader(store: Pick<Parameters<typeof registerVault>[1]["store"], "upsertUser">, vault: () => VaultModule) {
+  return async (request: FastifyRequest, id: string) => {
+    const owner = (await store.upsertUser(request.user!)).id;
+    const call = (path: "key-take" | "key-used") => vault().agent.call({ owner, paneId: "space-admin-action", roomId: "", path, body: { id }, traceId: String(request.id) });
+    const taken = await call("key-take");
+    return taken.status === "TAKEN" && typeof taken.value === "string" ? { value: taken.value, used: () => call("key-used") } : { reason: String(taken.reason ?? taken.status) };
+  };
 }
 
 /** Agent routes on the CLI bridge: the owner is the pane's explicit owner, else the room's, from the verified token only. */

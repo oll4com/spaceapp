@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  cliEgressRouteIdSchema, createPaneInputSchema, defaultFreelanceCopilotPaneMetadata, effectiveFreelanceAutonomy, FREELANCE_CHANNELS, FREELANCE_EGRESS_ROUTES, freelanceChannelEgress,
+  cliEgressRouteIdSchema, createPaneInputSchema, defaultFreelanceCopilotPaneMetadata, effectiveFreelanceAutonomy, FREELANCE_CHANNELS, FREELANCE_EGRESS_ROUTES, FREELANCE_SETTINGS_CHANNELS, freelanceChannelEgress,
+  freelanceChannelSchema, freelanceChannelSettings,
   freelanceChannelOfSender, freelanceCopilotPaneMetadataSchema, freelanceEgressPac,
   freelanceScamSignals, freelanceUrlMatchesChannel, freelanceWordingIssues, NOTIFICATION_SOURCES, resolveFreelanceCopilotPaneMetadata, roomPaneBatchItemSchema, userSettingsSchema
 } from "../src/index.js";
@@ -10,12 +11,21 @@ describe("Freelance Copilot contracts", () => {
     const metadata = defaultFreelanceCopilotPaneMetadata();
     expect(metadata.settings).toMatchObject({ autonomy: "FULL", paused: false, rateFloorHourly: 35, followUps: true, browserEgress: "thailand",
       connectsBudget: { perDay: 120, perMonth: 2000 }, notifications: { needsYou: true, clientReady: true, telegram: true } });
-    expect(Object.keys(metadata.settings.channels)).toEqual([...FREELANCE_CHANNELS]);
-    expect(FREELANCE_CHANNELS.every((channel) => metadata.settings.channels[channel].enabled && metadata.settings.channels[channel].autonomyCap === "FULL")).toBe(true);
+    expect(Object.keys(metadata.settings.channels)).toEqual([...FREELANCE_SETTINGS_CHANNELS]);
+    expect(FREELANCE_CHANNELS.every((channel) => freelanceChannelSettings(metadata.settings, channel).enabled && freelanceChannelSettings(metadata.settings, channel).autonomyCap === "FULL")).toBe(true);
     expect(resolveFreelanceCopilotPaneMetadata(null)).toEqual(metadata);
     // Defaults are fresh objects: changing one pane's settings never changes another's.
     metadata.settings.channels.UPWORK.dailyCap = 1;
     expect(defaultFreelanceCopilotPaneMetadata().settings.channels.UPWORK.dailyCap).toBe(20);
+  });
+
+  it("takes Guru and PeoplePerHour as channels on their defaults (2/11, Cleo/Dana's GURU lead was refused)", () => {
+    expect(freelanceChannelSchema.parse("GURU")).toBe("GURU");
+    expect(freelanceChannelSchema.parse("PEOPLEPERHOUR")).toBe("PEOPLEPERHOUR");
+    const { settings } = defaultFreelanceCopilotPaneMetadata();
+    expect(freelanceChannelSettings(settings, "GURU")).toMatchObject({ enabled: true, autonomyCap: "FULL" });
+    expect(effectiveFreelanceAutonomy(settings, "PEOPLEPERHOUR")).toBe("FULL");
+    expect(freelanceUrlMatchesChannel("https://www.guru.com/work/detail/123", "GURU")).toBe(true);
   });
 
   it("validates the metadata strictly and applies the lower of pane and channel autonomy", () => {
@@ -30,7 +40,7 @@ describe("Freelance Copilot contracts", () => {
   it("flags off-platform contact, outside links, unqualified claims and bids under the floor before a contract", () => {
     const base = { channel: "UPWORK" as const, contracted: false };
     expect(freelanceWordingIssues("I built SpaceApp (https://spaceapp.dev) and https://github.com/oll4com/spaceapp; see https://www.upwork.com/freelancers/x.", base)).toEqual([]);
-    expect(freelanceWordingIssues("Write me at dev@example.invalid", base)).toContain("email-address");
+    expect(freelanceWordingIssues("Write me at dev@brand.example", base)).toContain("email-address");
     expect(freelanceWordingIssues("Call +66 81 234 5678", base)).toContain("phone-number");
     expect(freelanceWordingIssues("Ping me on Telegram", base)).toContain("messenger");
     // "Telegram bot" is the product of offer (a); every way to reach us off the platform stays refused.
@@ -40,8 +50,11 @@ describe("Freelance Copilot contracts", () => {
     expect(freelanceWordingIssues("Telegram bot demo: t.me/nickdev_bot", base)).toContain("messenger-link");
     expect(freelanceWordingIssues("Telegram bot, or call me on WhatsApp", base)).toContain("messenger");
     expect(freelanceWordingIssues("Details at https://example.com/x", base)).toContain("outside-link");
-    expect(freelanceWordingIssues("See https://example.invalid/work and https://gist.github.com/x", base)).toEqual([]);
-    expect(freelanceWordingIssues("Demo at http://127.0.0.1:4911/x", base)).toContain("outside-link");
+    // The owner's own sites (SPACE_FREELANCE_LINK_HOSTS) match exactly; other hosts of their domain stay outside links.
+    const own = { ...base, ownHosts: ["brand.example", "www.brand.example"] };
+    expect(freelanceWordingIssues("See https://www.brand.example/work and https://gist.github.com/x", own)).toEqual([]);
+    expect(freelanceWordingIssues("See https://www.brand.example/work", base)).toContain("outside-link");
+    expect(freelanceWordingIssues("Demo at https://space.brand.example:4911/x", own)).toContain("outside-link");
     expect(freelanceWordingIssues("A seamless integration", base)).toContain("seamless");
     expect(freelanceWordingIssues("Ping me on Telegram", { ...base, contracted: true })).toEqual([]);
     expect(freelanceWordingIssues("Fixed price, two milestones.", { ...base, bid: { type: "HOURLY", amount: 30 } })).toEqual(["below-rate-floor"]);

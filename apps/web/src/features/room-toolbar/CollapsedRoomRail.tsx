@@ -5,6 +5,7 @@ import { toggleBrowserFullscreen } from "../desktop-titlebar/fullscreen.js";
 import type { SideSurfaces } from "../docks/useSideSurfaces.js";
 import { LiveRailButton, LiveRailMenu, type LiveRail } from "../live-pane/useLiveRail.js";
 import { MinimizedPaneBarToggle } from "../pane-float/MinimizedPaneBarToggle.js";
+import { useNotificationStore } from "../notifications/notification-store.js";
 import type { SnipTool } from "../snip-tool/useSnipTool.js";
 import { DesktopNavigation } from "../ui-theme/DesktopNavigation.js";
 import { RailVisibilityMenu } from "../ui-theme/RailVisibilityMenu.js";
@@ -16,7 +17,7 @@ import {
   type useRailVisibility
 } from "../ui-theme/use-rail-visibility.js";
 import type { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";
-import { ChevronLeft, ChevronRight, Crop, Keyboard, Maximize2, Minimize2, Music2, Nous, PanelLeft, PanelTopOpen, PanelsTopLeft, Star, StickyNote } from "../ui-theme/app-icons.js";
+import { Bell, ChevronLeft, ChevronRight, Crop, Keyboard, Maximize2, Minimize2, Music2, Nous, PanelLeft, PanelTopOpen, PanelsTopLeft, Star, StickyNote } from "../ui-theme/app-icons.js";
 import { VIBE_MUSIC_PANEL_ID } from "../vibe-music/vibe-music-session.js";
 import { OSK_PANEL_ID } from "./room-toolbar-actions.js";
 import type { ToolbarPopovers } from "./useToolbarPopovers.js";
@@ -90,6 +91,7 @@ export function CollapsedRoomRail({
   const { previousRoom, nextRoom, selectRoom } = roomNavigation;
   const { isSideSurfaceOpen, activeSideSurface, sideSurfaceToggleLabel, toggleSideSurface } = docks;
   const { isSnipToolOpen, setIsSnipToolOpen } = snip;
+  const unread = useNotificationStore().pending.total;
   return (
     <div
       ref={collapsedToolbarRef}
@@ -173,6 +175,30 @@ export function CollapsedRoomRail({
           }}
         >
           <Nous aria-hidden="true" />
+        </button>
+      ) : null}
+      {/* Operator 4/11 «εχει χαθει το Pane notifications!»: the Notification Center had no rail icon, only the end of the Docks menu. */}
+      {railVisibility.isVisible("notifications") ? (
+        <button
+          type="button"
+          className={`room-toolbar-visibility-button room-rail-notifications${isSideSurfaceOpen && activeSideSurface === "notifications" ? " is-active" : ""}`}
+          title={unread ? `${sideSurfaceToggleLabel("notifications")} · ${unread} unread` : sideSurfaceToggleLabel("notifications")}
+          data-rail-id="notifications"
+          aria-label={sideSurfaceToggleLabel("notifications")}
+          aria-pressed={isSideSurfaceOpen && activeSideSurface === "notifications"}
+          onClick={() => {
+            setIsThemeMenuOpen(false);
+            setIsPaneLayoutMenuOpen(false);
+            setIsCollapsedPaneLayoutMenuOpen(false);
+            setIsPaneSpanAllMenuOpen(false);
+            setIsWorkspaceTextSizePickerOpen(false);
+            setIsVibeMusicOpen(false);
+            setLowerRailVisibilityMenu(null);
+            toggleSideSurface("notifications");
+          }}
+        >
+          <Bell aria-hidden="true" />
+          {unread ? <span className="room-rail-count" aria-hidden="true">{unread > 99 ? "99+" : unread}</span> : null}
         </button>
       ) : null}
       {railVisibility.isVisible("live-model") ? (

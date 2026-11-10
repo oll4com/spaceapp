@@ -23,6 +23,23 @@ describe("space_copilot_control", () => {
       { runtimeId: "cli:claude", includeTranscript: false, accountProfileId: "work" });
   });
 
+  it("starts the always-on Mail Copilot on Space Gateway whatever its last session used, unless the gateway or a pin says otherwise (Nous 03:20 BKK 1/11)", async () => {
+    const withGateway = (gateway: string | null) => {
+      const invoke = vi.fn<CopilotInvoke>(async () => ({}));
+      const last = session({ accountProfileId: "api", isActive: false, status: "EXITED" });
+      return { invoke, control: createCopilotControl({ invoke, store: { getActivePaneCliSession: async () => null, listPaneCliSessions: async () => [last] } as never, gatewayAccount: async () => gateway }) };
+    };
+    const ready = withGateway("space-gateway");
+    expect(await ready.control("user:operator", pane("MAIL_COPILOT"), "start_agent")).toBe("Started Bob's agent (cli:claude, account space-gateway).");
+    expect(ready.invoke).toHaveBeenCalledWith("user:operator", "POST", "/api/panes/pane%3Abob00001/cli/session", { runtimeId: "cli:claude", includeTranscript: false, accountProfileId: "space-gateway" });
+    // Other copilots keep their last account; a pinned direct account or a gateway that does not serve keeps the last one too.
+    await ready.control("user:operator", pane("FREELANCE_COPILOT"), "start_agent");
+    expect(ready.invoke).toHaveBeenLastCalledWith("user:operator", "POST", "/api/panes/pane%3Abob00001/cli/session", { runtimeId: "cli:claude", includeTranscript: false, accountProfileId: "api" });
+    const pinned = withGateway(null);
+    await pinned.control("user:operator", pane("MAIL_COPILOT"), "start_agent");
+    expect(pinned.invoke).toHaveBeenCalledWith("user:operator", "POST", "/api/panes/pane%3Abob00001/cli/session", { runtimeId: "cli:claude", includeTranscript: false, accountProfileId: "api" });
+  });
+
   it("leaves a running agent alone and starts a pane whose last session ran another CLI on the default account", async () => {
     const running = fixture(session());
     expect(await running.control("user:operator", pane("MAIL_COPILOT"), "start_agent")).toBe("Bob's agent is already running.");

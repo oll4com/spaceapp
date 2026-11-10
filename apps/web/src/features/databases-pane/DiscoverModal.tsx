@@ -1,5 +1,6 @@
 import { Compass, Database, Check, X, RefreshCw } from "../ui-theme/app-icons.js";
 import type { DatabaseDiscoveryItem } from "@space/contracts";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export interface DiscoverModalProps {
   discovered: DatabaseDiscoveryItem[];
@@ -16,6 +17,8 @@ export function DiscoverModal({
   onRefresh,
   onConnectDiscovered
 }: DiscoverModalProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const getBadgeClass = (engine: string) => {
     if (engine === "POSTGRES") return "db-badge-pg";
     if (engine === "MYSQL") return "db-badge-mysql";
@@ -29,7 +32,7 @@ export function DiscoverModal({
         <div className="db-modal-header">
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <Compass size={16} style={{ color: "var(--modern-accent)" }} />
-            <span>Discover Project Databases</span>
+            <span>{t("Discover Project Databases")}</span>
           </div>
           <button className="db-crumb-btn" onClick={onClose}>
             <X size={15} />
@@ -38,16 +41,16 @@ export function DiscoverModal({
 
         <div className="db-modal-body">
           <p style={{ fontSize: "0.8rem", color: "var(--modern-muted)", margin: 0 }}>
-            Scanning project directory, configuration files (.env, docker-compose.yml), and SQLite database files.
+            {t("Scanning project directory, configuration files (.env, docker-compose.yml), and SQLite database files.")}
           </p>
 
           {isLoading ? (
             <div style={{ padding: 24, textAlign: "center", color: "var(--modern-muted)" }}>
-              Scanning workspace...
+              {t("Scanning workspace...")}
             </div>
           ) : discovered.length === 0 ? (
             <div style={{ padding: 24, textAlign: "center", color: "var(--modern-muted)" }}>
-              No database configurations or SQLite files detected in this project.
+              {t("No database configurations or SQLite files detected in this project.")}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -73,9 +76,9 @@ export function DiscoverModal({
                       <span style={{ fontWeight: 600, fontSize: "0.85rem" }}>{item.name}</span>
                     </div>
                     <div style={{ fontSize: "0.74rem", color: "var(--modern-muted)" }}>
-                      Source: <code>{item.source}</code>
-                      {item.database && ` • DB: ${item.database}`}
-                      {item.filename && ` • File: ${item.filename}`}
+                      {t("Source: ")}<code>{item.source}</code>
+                      {item.database && ` • ${t("DB: {name}", { name: item.database })}`}
+                      {item.filename && ` • ${t("File: {name}", { name: item.filename })}`}
                     </div>
                   </div>
 
@@ -83,7 +86,7 @@ export function DiscoverModal({
                     className="db-btn db-btn-primary"
                     onClick={() => onConnectDiscovered(item)}
                   >
-                    Connect
+                    {t("Connect")}
                   </button>
                 </div>
               ))}
@@ -94,10 +97,10 @@ export function DiscoverModal({
         <div className="db-modal-footer">
           <button className="db-btn" onClick={onRefresh} disabled={isLoading}>
             <RefreshCw size={13} className={isLoading ? "spin" : ""} />
-            <span>Rescan</span>
+            <span>{t("Rescan")}</span>
           </button>
           <button className="db-btn" onClick={onClose}>
-            Close
+            {t("Close")}
           </button>
         </div>
       </div>

@@ -1,11 +1,13 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import { readOpenCodeConfigForUpdate, writeOpenCodeConfigAtomic } from "./opencode-config-file.js";
 import { restartOpenCodeSharedServer } from "./service-restarts.js";
 import {
   type CliProviderSetting,
   type CliProviderSettingsResponse
 } from "@space/contracts";
+import { SPACE_AGENT_HOME } from "@space/contracts";
 
-export const DEFAULT_OPENCODE_CONFIG_PATH = "/var/lib/spaceapp-user/.config/opencode/opencode.json";
+export const DEFAULT_OPENCODE_CONFIG_PATH = `${SPACE_AGENT_HOME}/.config/opencode/opencode.json`;
 
 export interface KnownProviderMeta {
   id: string;
@@ -62,6 +64,7 @@ export interface OpenCodeConfigFile {
   [key: string]: unknown;
 }
 
+/** For display only: a file that cannot be read shows the defaults. Writers use readOpenCodeConfigForUpdate. */
 export async function readOpenCodeConfigFile(path = DEFAULT_OPENCODE_CONFIG_PATH): Promise<OpenCodeConfigFile> {
   try {
     const raw = await readFile(path, "utf8");
@@ -71,12 +74,12 @@ export async function readOpenCodeConfigFile(path = DEFAULT_OPENCODE_CONFIG_PATH
   }
 }
 
+/** Replaces the config whole (a dated backup, temp file, fsync, rename); a failed write leaves the old file intact. */
 export async function writeOpenCodeConfigFile(
   config: OpenCodeConfigFile,
   path = DEFAULT_OPENCODE_CONFIG_PATH
 ): Promise<void> {
-  const content = JSON.stringify(config, null, 2) + "\n";
-  await writeFile(path, content, "utf8");
+  await writeOpenCodeConfigAtomic(path, JSON.stringify(config, null, 2) + "\n", "space-cli-providers");
 }
 
 export async function getCliProviderSettings(
@@ -134,7 +137,8 @@ export async function updateCliProviderSetting(
   const configPath = options?.configPath ?? DEFAULT_OPENCODE_CONFIG_PATH;
   const restart = options?.restartServer ?? restartOpenCodeSharedServer;
 
-  const config = await readOpenCodeConfigFile(configPath);
+  // An unreadable, empty or stub file is refused (with the backup to restore it from), never rewritten from {}.
+  const config = await readOpenCodeConfigForUpdate<OpenCodeConfigFile>(configPath);
   const disabledList = Array.isArray(config.disabled_providers) ? [...config.disabled_providers] : [];
   const set = new Set(disabledList);
 
@@ -161,7 +165,7 @@ export async function updateAllCliProviders(
   const configPath = options?.configPath ?? DEFAULT_OPENCODE_CONFIG_PATH;
   const restart = options?.restartServer ?? restartOpenCodeSharedServer;
 
-  const config = await readOpenCodeConfigFile(configPath);
+  const config = await readOpenCodeConfigForUpdate<OpenCodeConfigFile>(configPath);
 
   if (enabled) {
     config.disabled_providers = [];

@@ -5,7 +5,6 @@
  */
 export interface NousMute { reason: string; until: string }
 
-export const NOUS_MUTE_MAX_HOURS = 24;
 const QUIET_KINDS = new Set(["FINISHED", "WAITING"]);
 
 export function createNousMutes(now: () => number = Date.now) {
@@ -18,7 +17,7 @@ export function createNousMutes(now: () => number = Date.now) {
   };
   return {
     mute(owner: string, roomId: string, reason: string, hours: number): NousMute {
-      const mute = { reason, until: new Date(now() + Math.min(hours, NOUS_MUTE_MAX_HOURS) * 3_600_000).toISOString() };
+      const mute = { reason, until: new Date(now() + hours * 3_600_000).toISOString() };
       live(owner).set(roomId, mute);
       return mute;
     },

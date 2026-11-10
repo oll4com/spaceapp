@@ -19,13 +19,15 @@ import {
   type OpenCodeServerControl,
 } from "@space/opencode-control";
 import type { SpaceApiConfig } from "./config.js";
+import { gatewayRequestIdHeader } from "./gateway-request-id.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export interface TitleCandidate extends TaskTitleCandidateStatus {
-  /** `images` are validated files the model may see (vision candidates only). */
-  generate(prompt: string, signal: AbortSignal, images?: readonly string[]): Promise<string>;
+  /** `images` are validated files the model may see (vision candidates only); `traceId` names the gateway row (OBS-006). */
+  generate(prompt: string, signal: AbortSignal, images?: readonly string[], traceId?: string): Promise<string>;
 }
 /** Written daily by scripts/space-opencode-free-model-picker.mjs after a real tool call. */
-export const freeModelPickerStatePath = "/opt/spaceapp/var/space-opencode-free-model.json";
+export const freeModelPickerStatePath = `${SPACE_INSTALL_ROOT}/var/space-opencode-free-model.json`;
 export class TitleProviderFailure extends Error {
   constructor(
     readonly status: number,
@@ -245,7 +247,7 @@ export class TaskTitleProviders {
             checkedAt: now,
             cooldownUntil: null,
             vision: true,
-            generate: async (prompt, signal, images) => {
+            generate: async (prompt, signal, images, traceId) => {
               // Only the deployment-configured subscription gateway and its
               // dedicated credential are trusted; a catalog type label alone
               // must not authorize a different potentially billed endpoint.
@@ -273,6 +275,7 @@ export class TaskTitleProviders {
                   headers: {
                     authorization: `Bearer ${key}`,
                     "content-type": "application/json",
+                    ...gatewayRequestIdHeader(traceId),
                   },
                   signal,
                   body: JSON.stringify({
@@ -302,8 +305,8 @@ export class TaskTitleProviders {
     }
     this.candidates = candidates.map((candidate) => ({
       ...candidate,
-      generate: async (prompt, signal, images) => {
-        const value = await candidate.generate(prompt, signal, images);
+      generate: async (prompt, signal, images, traceId) => {
+        const value = await candidate.generate(prompt, signal, images, traceId);
         const current = this.candidates.find((c) => c.id === candidate.id);
         if (current) {
           current.availability = "available";

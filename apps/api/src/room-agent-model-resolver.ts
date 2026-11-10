@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { readActiveFreeOpenCodeModel } from "./opencode-free-model.js";
 import { childProcessEnv } from "./child-process-env.js";
+import { SPACE_AGENT_HOME } from "@space/contracts";
 
 export interface AdvancedMissionModelSelection {
   providerId: string | null;
@@ -20,6 +21,9 @@ export interface ResolveAdvancedMissionModelOptions {
   geminiTokenRoot?: string;
   openCodeStateFile?: string;
 }
+
+/** The Claude model asked on Space Gateway's subscription route when a Codex call does not answer (the autopilot, the card translator). */
+export const GATEWAY_CLAUDE_MODEL = "claude-sonnet-5-5";
 
 /** The service root of a Codex-compatible base URL, which is usually configured with its `/v1` suffix. */
 export function codexServiceRoot(baseUrl: string): string {
@@ -47,7 +51,7 @@ export async function checkCodexSolAvailability(
 }
 
 export async function checkGeminiAvailability(
-  geminiRoot = "/var/lib/spaceapp-user/.codex/space-gemini"
+  geminiRoot = `${SPACE_AGENT_HOME}/.codex/space-gemini`
 ): Promise<boolean> {
   const mainToken = path.join(geminiRoot, "home/.gemini/antigravity-cli/antigravity-oauth-token");
   try {

@@ -29,7 +29,7 @@ export async function recordAudit(
     // An agent's broker session acts as the operator; the row keeps who really called (hardening plan step 17).
     metadata: request.sessionPrincipal
       ? { ...input.metadata, sessionPrincipal: request.sessionPrincipal, ...(request.user?.brokerScope ? { brokerScope: request.user.brokerScope } : {}) }
-      : input.metadata ?? {}
+      : request.mobileDevice ? { ...input.metadata, via: "mobile", device: request.mobileDevice.id, peer: request.ip } : input.metadata ?? {}
   });
 }
 

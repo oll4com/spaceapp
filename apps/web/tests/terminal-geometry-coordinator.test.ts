@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import {
   createTerminalGeometryCoordinator,
   fitTerminalForInitialAttach
@@ -375,6 +377,19 @@ describe("terminal geometry coordinator", () => {
     expect(current.sendResize).toHaveBeenCalledOnce();
   });
 
+  it("does not clamp a paused off-screen renderer whose screen still has the old grid's width", async () => {
+    // The 100-column spawn grid (900px) is still on screen; xterm deferred the resize because the pane is off-screen.
+    const current = fixture({ cols: 100, proposedCols: 80, screenWidth: 900 });
+    Object.assign(current.terminal, { _core: { _renderService: { _isPaused: true } } });
+    current.coordinator.syncVisibility();
+    await flushAnimationFrame();
+    await flushAnimationFrame();
+
+    expect(current.terminal.resize).not.toHaveBeenCalled();
+    expect(current.sendResize).toHaveBeenCalledOnce();
+    expect(current.sendResize.mock.calls[0]?.[0]).toMatchObject({ cols: 80, rows: 24 });
+  });
+
   it("does not clamp when the screen fits within tolerance", async () => {
     const current = fixture({ cols: 80, proposedCols: 80, screenWidth: 801 });
     current.coordinator.syncVisibility();
@@ -626,6 +641,79 @@ describe("terminal geometry coordinator", () => {
 
     expect(current.fitAddon.fit).toHaveBeenCalled();
     expect(current.terminal.refresh).toHaveBeenCalledWith(0, 23);
+  });
+
+  it("recomputes xterm's row letter-spacing left stale by a display:none measure and redraws an unchanged layout", async () => {
+    const current = fixture();
+    let glyphWidth = 0;
+    const renderer = {
+      _rowFactory: { defaultSpacing: 9 },
+      _widthCache: { get: vi.fn(() => glyphWidth) },
+      _setDefaultSpacing: vi.fn(() => {
+        renderer._rowFactory.defaultSpacing = 9 - glyphWidth;
+      })
+    };
+    Object.assign(current.terminal, { _core: { _renderService: { _renderer: { value: renderer } } } });
+    current.coordinator.syncVisibility();
+    await flushAnimationFrame();
+    await flushAnimationFrame();
+    // Still measuring 0: leave the spacing alone rather than recompute it from another hidden read.
+    expect(renderer._setDefaultSpacing).not.toHaveBeenCalled();
+    current.terminal.refresh.mockClear();
+
+    glyphWidth = 9;
+    current.coordinator.requestRefit({ delayedPass: false });
+    await flushAnimationFrame();
+    expect(renderer._rowFactory.defaultSpacing).toBe(0);
+    expect(current.terminal.refresh).toHaveBeenCalledExactlyOnceWith(0, 23);
+
+    current.terminal.refresh.mockClear();
+    current.coordinator.requestRefit({ delayedPass: false });
+    await flushAnimationFrame();
+    expect(current.terminal.refresh).not.toHaveBeenCalled();
+  });
+
+  it("real xterm: a device pixel ratio change while display:none no longer leaves glyphs a cell apart once visible", async () => {
+    window.matchMedia = vi.fn().mockImplementation(() => ({
+      matches: false, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn()
+    }));
+    let hidden = false;
+    // jsdom has no layout: every glyph is 9px wide and a display:none element measures 0.
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return hidden ? 0 : (this.textContent?.length ?? 0) * 9;
+    });
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(() => (hidden ? 0 : 17));
+    const host = terminalHost(720, 340);
+    const terminal = new Terminal({ cols: 80, rows: 20 });
+    const fitAddon = new FitAddon();
+    fitAddon.proposeDimensions = () => ({ cols: terminal.cols, rows: terminal.rows });
+    terminal.loadAddon(fitAddon);
+    terminal.open(host);
+    const letterSpacing = () => host.querySelector<HTMLElement>(".xterm-rows")!.style.letterSpacing;
+    expect(letterSpacing()).toBe("0px");
+    hidden = true;
+    (terminal as unknown as { _core: { _renderService: { handleDevicePixelRatioChange: () => void } } })
+      ._core._renderService.handleDevicePixelRatioChange();
+    expect(letterSpacing()).toBe("9px");
+    hidden = false;
+    const coordinator = createTerminalGeometryCoordinator({
+      ownerDocument: document,
+      host,
+      getTerminal: () => terminal,
+      getFitAddon: () => fitAddon,
+      isVisible: () => true,
+      isMinimized: () => false,
+      measureCharacterSize: vi.fn(),
+      invalidateWidthMeasurements: vi.fn(),
+      getResizeIdentity: () => null,
+      sendResize: vi.fn()
+    });
+    coordinator.syncVisibility();
+    await flushAnimationFrame();
+    await flushAnimationFrame();
+    expect(letterSpacing()).toBe("0px");
+    coordinator.dispose();
+    terminal.dispose();
   });
 
   it("still redraws an unchanged layout when the painted screen collapsed", async () => {

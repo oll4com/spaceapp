@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sourceControl = vi.hoisted(() => ({ connections: vi.fn() }));
@@ -14,6 +15,7 @@ import type { SideSurface } from "../src/features/docks/dock-types.js";
 import { useSideSurfaceEffects, useSideSurfaces, type SideSurfacesContext } from "../src/features/docks/useSideSurfaces.js";
 import { CompactSideSurfaceDrawer, InlineSideSurface } from "../src/features/docks/SideSurfaceFrame.js";
 import { WORKSPACE_DOCK_SESSION_KEY } from "../src/features/workspace-session.js";
+import { announceNousFocusPhase } from "../src/features/nous-focus/nous-focus-events.js";
 
 type Props = Omit<SideSurfacesContext, "isDesktopSideSurfaceOpen" | "setIsDesktopSideSurfaceOpen"> & { initialDesktopOpen?: boolean };
 
@@ -45,6 +47,19 @@ describe("useSideSurfaces", () => {
     sourceControl.connections.mockReset().mockResolvedValue([]);
   });
   afterEach(() => cleanup());
+
+  it.each(["mobile", "desktop"] as const)("uncovers the pane during a focus visit and restores the %s dock", (shellMode) => {
+    const { result } = renderHook(() => useHarness({ ...base, shellMode,
+      restoredDock: { surface: "nous", desktopOpen: true, compactOpen: true } }));
+    act(() => announceNousFocusPhase("go"));
+    expect(result.current.isSideSurfaceOpen).toBe(false);
+    expect(result.current.showOverlaySideSurface).toBe(false);
+    if (shellMode === "mobile") expect(result.current.retainCompactSideSurface).toBe(true);
+    act(() => announceNousFocusPhase("back"));
+    expect(result.current.activeSideSurface).toBe("nous");
+    expect(result.current.isSideSurfaceOpen).toBe(true);
+    expect(result.current.retainCompactSideSurface).toBe(false);
+  });
 
   it("restores the dock session and persists every change", () => {
     const { result } = renderHook((props: Props) => useHarness(props), {
@@ -156,6 +171,46 @@ describe("useSideSurfaces", () => {
     expect(drawer.getAttribute("data-surface-mode")).toBe("drawer");
     fireEvent.keyDown(drawer, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Tasks" })).toBeNull();
+  });
+
+  it("leaves keyboard ownership to a dialog portaled outside the compact drawer", () => {
+    function Drawer() {
+      const sideSurfaces = useHarness({ ...base, shellMode: "mobile", restoredDock: { surface: "agent-files", desktopOpen: false, compactOpen: true } });
+      return <><CompactSideSurfaceDrawer sideSurfaces={sideSurfaces} launcherActions={[]} renderSurface={() => <button>Dock control</button>} fallback={null} />
+        {createPortal(<div role="dialog" aria-modal="true" aria-label="File preview"><button>Preview control</button></div>, document.body)}</>;
+    }
+    render(<Drawer />);
+    const control = screen.getByRole("button", { name: "Preview control" });
+    control.focus();
+    expect(fireEvent.keyDown(control, { key: "Tab" })).toBe(true);
+    expect(document.activeElement).toBe(control);
+    fireEvent.keyDown(control, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Agent Files" })).toBeTruthy();
+  });
+
+  it("preserves a compact dock draft while visiting, removes the focus trap, and releases the retained dock on Stay", () => {
+    function Draft() {
+      const [text, setText] = useState("");
+      return <input aria-label="Dock draft" value={text} onChange={(event) => setText(event.target.value)} />;
+    }
+    function Drawer() {
+      const sideSurfaces = useHarness({ ...base, shellMode: "mobile", restoredDock: { surface: "nous", desktopOpen: false, compactOpen: true } });
+      return <><button type="button">Pane answer</button><CompactSideSurfaceDrawer sideSurfaces={sideSurfaces} launcherActions={[]} renderSurface={() => <Draft />} fallback={null} /></>;
+    }
+    render(<Drawer />);
+    const draft = screen.getByLabelText("Dock draft");
+    fireEvent.change(draft, { target: { value: "Keep this answer" } });
+    act(() => announceNousFocusPhase("go"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(draft.isConnected).toBe(true);
+    screen.getByRole("button", { name: "Pane answer" }).focus();
+    fireEvent.keyDown(document.activeElement!, { key: "Tab" });
+    expect(document.activeElement).not.toBe(draft);
+    act(() => announceNousFocusPhase("back"));
+    expect((screen.getByLabelText("Dock draft") as HTMLInputElement).value).toBe("Keep this answer");
+    act(() => announceNousFocusPhase("go"));
+    act(() => announceNousFocusPhase("stay"));
+    expect(draft.isConnected).toBe(false);
   });
 
   it("renders the inline dock hidden but mounted after it closes", () => {

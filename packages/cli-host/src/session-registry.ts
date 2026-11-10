@@ -536,7 +536,7 @@ export class CliHostSessionRegistry {
 // Keep wrap/whitespace branches disjoint: nested optional whitespace can
 // catastrophically backtrack on PTY padding and block every hosted session.
 export const CLI_UPLOAD_WRAPPED_PATH_PATTERN =
-  /(?<![ \t\r\n])(?:[ \t\r\n]|\x1b\[[0-9;?]*[ -/]*[@-~])*['"]?(?:\/srv\/space\/var\/artifacts)?\/cli-uploads\/(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[\r\n][ \t]*|(?<![ \t\r\n])[ \t]+(?=[\r\n]))+\.[a-zA-Z0-9]{1,10}['"]?[ \t]*/gi;
+  /(?<![ \t\r\n])(?:[ \t\r\n]|\x1b\[[0-9;?]*[ -/]*[@-~])*['"]?(?:\/opt\/spaceapp\/var\/artifacts)?\/cli-uploads\/(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[\r\n][ \t]*|(?<![ \t\r\n])[ \t]+(?=[\r\n]))+\.[a-zA-Z0-9]{1,10}['"]?[ \t]*/gi;
 
 const CLI_UPLOAD_MARKER = "/cli-uploads/";
 const CLI_UPLOAD_ARTIFACT_ROOT = "/opt/spaceapp/var/artifacts";
@@ -547,7 +547,7 @@ const CLI_UPLOAD_PATH_MAX_HOLD_CHARS = 1_024;
 const CLI_UPLOAD_PATH_CONTINUATION_PATTERN =
   /^(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[\r\n][ \t]*|(?<![ \t\r\n])[ \t]+(?=[\r\n]))*(?:\x1b(?:\[[0-9;?]*[ -/]*)?|[ \t]+)?$/;
 const CLI_UPLOAD_PATH_SEPARATOR_PATTERN = /(\x1b\[[0-9;?]*[ -/]*[@-~]|[ \t\r\n])/;
-const CLI_UPLOAD_PATH_START_PATTERN = /(?=\/srv\/space\/var\/artifacts\/cli-uploads\/)|(?<!\/srv\/space\/var\/artifacts)(?=\/cli-uploads\/)/;
+const CLI_UPLOAD_PATH_START_PATTERN = /(?=\/opt\/spaceapp\/var\/artifacts\/cli-uploads\/)|(?<!\/opt\/spaceapp\/var\/artifacts)(?=\/cli-uploads\/)/;
 export const CLI_UPLOAD_PATH_HOLD_MS = 150;
 
 function uploadPathLabel(pathText: string): string {

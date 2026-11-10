@@ -1,4 +1,4 @@
-import type { RoomTaskModelUsage, RoomTaskTiming } from "@space/contracts";
+import type { AgentRunUsage, RoomTaskModelUsage, RoomTaskTiming } from "@space/contracts";
 import type { RolloutReducer } from "./codex-rollout-reader.js";
 
 export interface NativeTaskExecution {
@@ -7,6 +7,8 @@ export interface NativeTaskExecution {
   status: "RUNNING" | "COMPLETED" | "INTERRUPTED" | "WAITING_FOR_INPUT" | "UNKNOWN";
   timing: RoomTaskTiming;
   modelsUsed: RoomTaskModelUsage[];
+  /** A Chat run's ledger usage (counters, source, model; never text), so Control can read a turn's receipt (CTX-001). */
+  usage?: AgentRunUsage;
 }
 
 function record(value: unknown): Record<string, unknown> {

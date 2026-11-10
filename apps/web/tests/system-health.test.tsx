@@ -41,6 +41,8 @@ vi.mock("../src/api.js", () => ({
     systemHealth: mocks.health,
     healthPing: mocks.ping,
     systemAnalyticsModels: mocks.models,
+    // The full Token usage & analytics workspace asks whether this server receives install pings (none in tests).
+    systemAnalyticsInstalls: async () => null,
     toolbarUsageAccounts: mocks.accounts,
     toolbarResetCredits: async () => ({ accounts: [], credits: [], checkedAt: new Date().toISOString() }),
     toolbarAntigravityUsageAccounts: mocks.antigravityAccounts,
@@ -356,8 +358,8 @@ describe("shared health UI", () => {
     mocks.models.mockImplementation(async (range) => ({ ...fixture.systemAnalyticsModels, range }));
     render(<div className="space-shell"><textarea aria-label="Active terminal" /><SystemHealth userId="operator" railVisible environment={null} /></div>);
     const terminal = screen.getByRole("textbox", { name: "Active terminal" });
-    act(() => window.dispatchEvent(new CustomEvent("space:system-health", { detail: { section: "ai" } })));
-    fireEvent.change(screen.getByRole("combobox", { name: "Resource view" }), { target: { value: "usage" } });
+    act(() => window.dispatchEvent(new CustomEvent("space:system-health", { detail: { section: "usage" } })));
+    expect((screen.getByRole("combobox", { name: "Resource view" }) as HTMLSelectElement).value).toBe("analytics");
     await waitFor(() => expect(mocks.models).toHaveBeenCalledWith("24h", "all"));
     expect(await screen.findByText("Tokens in / out / reasoning")).toBeTruthy();
     expect(terminal.isConnected).toBe(true);
@@ -414,11 +416,18 @@ describe("shared health UI", () => {
     cleanup();
     vi.useRealTimers();
   });
-  it("shows unavailable account capacity when neither usage source reports a quota", async () => {
+  it("leaves the quota tile and the AI overview row out when this installation has no AI account (plan clipboard:sJpyQIBFGszW)", async () => {
     render(<SystemHealth userId="operator" railVisible environment={null} />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     const rail = screen.getByRole("navigation", { name: "Resource indicators" });
-    expect(within(rail).getByRole("button", { name: /^Account remaining: Codex Unavailable/ })).toBeTruthy();
+    expect(within(rail).queryByRole("button", { name: /^AI quota left/ })).toBeNull();
+    act(() => window.dispatchEvent(new CustomEvent("space:system-health", { detail: { section: "overview" } })));
+    const dialog = screen.getByRole("dialog", { name: "Resources" });
+    expect(within(dialog).queryByText("Accounts & quotas")).toBeNull();
+    expect(within(dialog).getByText("CLI sessions")).toBeTruthy();
+    act(() => window.dispatchEvent(new CustomEvent("space:system-health", { detail: { section: "ai" } })));
+    expect(within(dialog).getByText(/No AI accounts or API keys are connected in this installation yet/)).toBeTruthy();
+    expect(within(dialog).queryByRole("tablist", { name: "Account providers" })).toBeNull();
   });
   it("opens resources and health with shared telemetry and stops hidden polling", async () => {
     render(<SystemHealth userId="operator" railVisible environment={null} />);
@@ -428,7 +437,7 @@ describe("shared health UI", () => {
     const rail = screen.getByRole("navigation", {
       name: "Resource indicators",
     });
-    expect(within(rail).getAllByRole("button")).toHaveLength(6);
+    expect(within(rail).getAllByRole("button")).toHaveLength(5);
     expect(mocks.health).toHaveBeenCalledTimes(1);
     fireEvent.click(within(rail).getByRole("button", { name: /^CPU:/ }));
     expect(screen.getByRole("dialog", { name: "Resources" })).toBeTruthy();
@@ -774,14 +783,14 @@ describe("shared health UI", () => {
 
     // Verify both Antigravity and Codex tables are present in All Providers view
     expect(screen.getAllByText("Antigravity (Google)")[0]).toBeTruthy();
-    expect(screen.getByText("Codex usage")).toBeTruthy();
+    expect(document.querySelector('.toolbar-metric-provider-section[data-provider="codex"]')).toBeTruthy();
 
     // Verify Antigravity details
     expect(screen.getByText("Profile in1")).toBeTruthy();
     expect(screen.getByText("d.pantazis@example.com · Google AI Pro")).toBeTruthy();
-    expect(screen.getByText("96%")).toBeTruthy();
-    expect(screen.getByText("95%")).toBeTruthy();
-    expect(screen.getByText("90%")).toBeTruthy();
+    expect(screen.getByText("96% left")).toBeTruthy();
+    expect(screen.getByText("95% left")).toBeTruthy();
+    expect(screen.getByText("90% left")).toBeTruthy();
 
     // Verify Unlicensed account
     expect(screen.getByText("Profile 8")).toBeTruthy();
@@ -792,13 +801,13 @@ describe("shared health UI", () => {
     // Verify Codex details (75% renders as a healthy window above 30%)
     const codexCard = screen.getByText("flpgmopai@gmail.com").closest("li");
     expect(codexCard).toBeTruthy();
-    const codexPill = within(codexCard as HTMLElement).getByText("75%");
+    const codexPill = within(codexCard as HTMLElement).getByText("75% left");
     expect(codexPill.closest(".account-quota-cell")?.classList.contains("is-healthy")).toBe(true);
 
     // Filter to Antigravity only
     fireEvent.click(screen.getByRole("tab", { name: "Antigravity (Google)" }));
     expect(screen.getAllByText("Antigravity (Google)")[0]).toBeTruthy();
-    expect(screen.queryByText("Codex usage")).toBeNull();
+    expect(document.querySelector('.toolbar-metric-provider-section[data-provider="codex"]')).toBeNull();
     expect(screen.queryByText("flpgmopai@gmail.com")).toBeNull();
 
     // Filter to Codex only
@@ -809,12 +818,12 @@ describe("shared health UI", () => {
     // Switch back to all providers
     fireEvent.click(screen.getByRole("tab", { name: "All Providers" }));
     expect(screen.getAllByText("Antigravity (Google)")[0]).toBeTruthy();
-    expect(screen.getByText("Codex usage")).toBeTruthy();
+    expect(document.querySelector('.toolbar-metric-provider-section[data-provider="codex"]')).toBeTruthy();
 
     // Test clicking provider card in grid toggles filter
     fireEvent.click(screen.getByRole("tab", { name: "Antigravity (Google)" }));
     expect(screen.getAllByText("Antigravity (Google)")[0]).toBeTruthy();
-    expect(screen.queryByText("Codex usage")).toBeNull();
+    expect(document.querySelector('.toolbar-metric-provider-section[data-provider="codex"]')).toBeNull();
   });
 
   it("filters accounts in flyout by provider and quota and saves preference to localStorage", async () => {
@@ -900,7 +909,7 @@ describe("shared health UI", () => {
 
     // Open Resources dialog
     const rail = screen.getByRole("navigation", { name: "Resource indicators" });
-    const accountsButton = within(rail).getByRole("button", { name: /Account remaining/ });
+    const accountsButton = within(rail).getByRole("button", { name: /AI quota left/ });
     fireEvent.click(accountsButton);
 
     const dialog = screen.getByRole("dialog", { name: "Resources" });
@@ -930,7 +939,7 @@ describe("shared health UI", () => {
     const boCard = within(dialog).getByText("bo").closest("li") as HTMLElement;
     expect(within(boCard).getByText("Gemini")).toBeTruthy();
     expect(within(boCard).getByText("Claude · GPT")).toBeTruthy();
-    expect(within(boCard).getAllByTitle(/: Exhausted/).map((cell) => cell.textContent)).toEqual(["0%"]);
+    expect(within(boCard).getAllByTitle(/: Exhausted/).map((cell) => cell.textContent)).toEqual(["0% left"]);
 
     // Verify saved to localStorage
     expect(storage.getItem("space:health-accounts:availability-filter")).toBe("available");
@@ -997,11 +1006,11 @@ describe("shared health UI", () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     const rail = screen.getByRole("navigation", { name: "Resource indicators" });
-    fireEvent.click(within(rail).getByRole("button", { name: /Account remaining/ }));
+    fireEvent.click(within(rail).getByRole("button", { name: /AI quota left/ }));
     const dialog = screen.getByRole("dialog", { name: "Resources" });
 
-    fireEvent.click(within(dialog).getByRole("tab", { name: "Claude" }));
-    expect(storage.getItem("space:health-accounts:provider-filter")).toBe("claude");
+    expect(within(dialog).queryByRole("tablist", { name: "Account providers" })).toBeNull();
+    expect(dialog.querySelectorAll(".toolbar-metric-provider-section")).toHaveLength(1);
     expect(dialog.querySelectorAll(".toolbar-metric-account-card")).toHaveLength(3);
     for (const label of ["ntheo", "dev", "api"]) expect(within(dialog).getByText(label)).toBeTruthy();
     expect(within(dialog).getAllByText("Week · Fable")).toHaveLength(2);
@@ -1026,10 +1035,10 @@ describe("shared health UI", () => {
     expect(select).toBeTruthy();
     expect(select.classList.contains("resources-detail-select")).toBe(true);
 
-    const optgroups = select.querySelectorAll("optgroup");
-    expect(optgroups.length).toBeGreaterThanOrEqual(4);
-    const options = select.querySelectorAll("option");
-    expect(options.length).toBeGreaterThanOrEqual(10);
+    // Eight views (plan clipboard:sJpyQIBFGszW): Models, Provider routing, Token usage and Connection merged into the others.
+    expect([...select.querySelectorAll("optgroup")].map((group) => group.label)).toEqual(["AI usage", "System"]);
+    expect([...select.querySelectorAll("option")].map((option) => option.value)).toEqual(
+      ["ai", "analytics", "sessions", "performance", "processes", "services", "topology", "alerts"]);
   });
 
   it("keeps only basic metrics and disables extended per-device disk and network metrics in Performance view", async () => {
@@ -1073,7 +1082,8 @@ describe("shared health UI", () => {
     const dialog = screen.getByRole("dialog", { name: "Resources" });
     expect(dialog).toBeTruthy();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Latency history" }));
+    // Latency lives in Performance now; the old Connection id opens it there.
+    expect((within(dialog).getByRole("combobox", { name: "Resource view" }) as HTMLSelectElement).value).toBe("performance");
 
     const rangeNav = within(dialog).getByLabelText("History range");
     expect((within(rangeNav).getByRole("button", { name: "Live · 60 sec" }) as HTMLButtonElement).disabled).toBe(false);
@@ -1186,78 +1196,50 @@ describe("shared health UI", () => {
     expect(actions?.querySelector(".health-window-close-btn")).toBeTruthy();
   });
 
-  it("rotates Account remaining across providers every 20 seconds", async () => {
+  it("shows the subscription pool with the least room, lists every pool and never an API budget", async () => {
     const nowIso = new Date().toISOString();
-    mocks.accounts.mockResolvedValue({
-      data: [
-        {
-          id: "codex-1",
-          label: "codex-active@example.com",
-          fiveHourRemainingPercent: 100,
-          weeklyRemainingPercent: 4,
-          sampledAt: nowIso,
-        },
-      ],
-      pagination: { page: 1, pageSize: 1, totalItems: 1, totalPages: 1 },
-      source: "space-gateway",
-      isStale: false,
-      error: null,
-      checkedAt: nowIso,
-    });
-    mocks.antigravityAccounts.mockResolvedValue({
-      data: [
-        {
-          id: "agy-1",
-          label: "agy-account",
-          email: "agy@example.com",
-          tier: "Antigravity",
-          status: "CONNECTED",
-          gemini: {
-            displayName: "Gemini Models",
-            fiveHourRemainingPercent: 52,
-            weeklyRemainingPercent: 68,
-          },
-          claude: null,
-          sampledAt: nowIso,
-        },
-      ],
-      pagination: { page: 1, pageSize: 1, totalItems: 1, totalPages: 1 },
-      source: "space-gemini-profiles",
-      isStale: false,
-      error: null,
-      checkedAt: nowIso,
-    });
+    const page = { page: 1, pageSize: 50, totalItems: 2, totalPages: 1 };
+    const list = (source: string, data: unknown[]) => ({ data, pagination: page, source, isStale: false, error: null, checkedAt: nowIso });
+    mocks.accounts.mockResolvedValue(list("space-gateway", [
+      { id: "codex-1", label: "codex@example.com", planType: "plus", fiveHourRemainingPercent: 80, weeklyRemainingPercent: 90, sampledAt: nowIso },
+    ]));
+    // Stable 3/11: no Gemini group from Google, the Free account without a 5h bucket.
+    const silent = { displayName: "Gemini Models", fiveHourRemainingPercent: null, weeklyRemainingPercent: null };
+    mocks.antigravityAccounts.mockResolvedValue(list("space-gemini-profiles", [
+      { id: "pro", label: "pro", email: null, tier: "Google AI Pro", status: "CONNECTED", gemini: silent,
+        claude: { displayName: "Claude and GPT models", fiveHourRemainingPercent: 100, weeklyRemainingPercent: 100 }, sampledAt: nowIso },
+      { id: "free", label: "free", email: null, tier: "Free", status: "CONNECTED", gemini: silent,
+        claude: { displayName: "Claude and GPT models", fiveHourRemainingPercent: null, weeklyRemainingPercent: 88.8 }, sampledAt: nowIso },
+    ]));
+    const claude = { email: null, plan: "Team · Max 5x", status: "CONNECTED", fiveHourResetAt: null, weeklyResetAt: null, weeklyScope: null, sampledAt: nowIso };
+    mocks.claudeAccounts.mockResolvedValue(list("space-claude-profiles", [
+      { ...claude, id: "a", label: "a", fiveHourRemainingPercent: 30, weeklyRemainingPercent: 60 },
+      { ...claude, id: "b", label: "b", fiveHourRemainingPercent: 50, weeklyRemainingPercent: 80 },
+    ]));
+    mocks.apiProviderAccounts.mockResolvedValue(list("api-credentials", [
+      { id: "openrouter", label: "OpenRouter", status: "EXHAUSTED", balance: "$0.00" },
+    ]));
 
-    render(
-      <SystemHealth
-        userId="operator"
-        railVisible
-        environment={null}
-      />
-    );
-    await act(async () => {
-      await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(100);
-    });
+    render(<SystemHealth userId="operator" railVisible environment={null} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
 
-    const rail = screen.getByRole("navigation", {
-      name: "Resource indicators",
-    });
-    const accountsButton = within(rail).getByRole("button", { name: /Account remaining/ });
-    expect(accountsButton).toBeTruthy();
-    expect(within(accountsButton).getByText("CODEX")).toBeTruthy();
+    const rail = screen.getByRole("navigation", { name: "Resource indicators" });
+    const quota = within(rail).getByRole("button", { name: /^AI quota left: Claude Max 40% \(5h\), the least of 3 providers, Healthy/ });
+    expect(within(quota).getByText("CLAUDE")).toBeTruthy();
+    expect(within(quota).getByText("40%")).toBeTruthy();
+    const title = quota.getAttribute("title") ?? "";
+    expect(title).toContain("Codex: 5h 80% · week 90%");
+    expect(title).toContain("Antigravity: 5h 100% · week 100%");
+    // Per provider only: no account counts (operator 6/11).
+    expect(title).not.toMatch(/account|partial|without a 5h/);
+    expect(title).not.toMatch(/API|OpenRouter|\$/);
+    expect(rail.textContent).not.toMatch(/API|\$/);
 
-    // Advance 20 seconds -> rotates to next provider (AGY)
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(20_000);
-    });
-    expect(within(accountsButton).getByText("AGY")).toBeTruthy();
-
-    // Advance 20 seconds -> rotates back to CODEX
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(20_000);
-    });
-    expect(within(accountsButton).getByText("CODEX")).toBeTruthy();
+    // No rotation: the same pool after a minute.
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(within(quota).getByText("CLAUDE")).toBeTruthy();
+    fireEvent.click(quota);
+    expect(screen.getByRole("dialog", { name: "Resources" })).toBeTruthy();
   });
 
   it("toggles data-resource-rail-expanded and is-expanded class when expander is clicked", async () => {

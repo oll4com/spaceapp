@@ -1,3 +1,8 @@
+import { autohandNativeSessionIdPattern } from "./autohand-native-session.js";
+import { droidNativeSessionIdPattern } from "./droid-native-session.js";
+import { ompNativeSessionIdPattern } from "./omp-native-model.js";
+import { museNativeSessionIdPattern } from "./muse-native-session.js";
+import { kimiNativeSessionIdPattern } from "./kimi-native-session.js";
 import { claudeNativeSessionIdPattern } from "./claude-native-turns.js";
 import {
   geminiNativeConversationIdPattern,
@@ -5,9 +10,9 @@ import {
   writeGeminiPaneConversation
 } from "./gemini-native-session.js";
 import { opencodeNativeSessionIdPattern, readOpenCodeNativeSessionId } from "./opencode-native-session.js";
-import { qoderNativeSessionId, qoderNativeSessionIdPattern } from "./qoder-native-session.js";
+import { copilotNativeSessionId, cursorNativeSessionId, grokNativeSessionId, qoderNativeSessionId, qoderNativeSessionIdPattern } from "./qoder-native-session.js";
 import { resolveReasonixNativeSessionRef } from "./reasonix-native-session.js";
-import { qwenNativeSessionIdPattern } from "./task-title-native.js";
+import { hermesNativeSessionIdPattern, qwenNativeSessionIdPattern } from "./task-title-native.js";
 import type { ResolvedSpaceCliTask } from "./unified-cli-task-registry.js";
 
 /**
@@ -74,14 +79,16 @@ const resolvers: Readonly<Record<string, Resolver>> = {
       ?? await dependencies.readOpenCodeNativeSessionId(sourceTask.session.sessionId);
     return ref ? { ...recorded(ref)!, auditMetadata: { opencodeNativeSessionId: ref } } : null;
   },
-  // The launch passes `--continue`; the wrapper steers it to the pane's recorded conversation.
+  // The launch passes `--continue` with the id in SPACE_GEMINI_CONVERSATION_ID (read from the revision's ref), and the wrapper
+  // launches `agy --conversation <id>`. The pane file stays for stable's wrapper; dev cannot write it (EXT-G-6, 2/11: a task
+  // resume on dev carried no id and agy continued another conversation).
   "cli:gemini": async ({ sourceTask, pane }, dependencies) => {
     const ref = matching(geminiNativeConversationIdPattern, sourceTask.revision.nativeTaskRef)
       ?? await dependencies.readGeminiPaneConversation(pane.id);
     return ref
       ? {
           ref,
-          persistAsNativeTaskRef: false,
+          persistAsNativeTaskRef: true,
           afterAllocate: (paneId) => dependencies.writeGeminiPaneConversation(paneId, ref),
           auditMetadata: {}
         }
@@ -93,13 +100,36 @@ const resolvers: Readonly<Record<string, Resolver>> = {
       firstUserMessage: sourceTask.firstUserMessage
     }).catch(() => null)
   ),
+  // Exact full id bound through the native heartbeat; capability remains pending live proof.
+  "cli:autohand": async ({ sourceTask }) => recorded(matching(autohandNativeSessionIdPattern, sourceTask.revision.nativeTaskRef)),
+  "cli:droid": async ({ sourceTask }) => recorded(matching(droidNativeSessionIdPattern, sourceTask.revision.nativeTaskRef)),
   "cli:claude": async ({ sourceTask }) => recorded(matching(claudeNativeSessionIdPattern, sourceTask.revision.nativeTaskRef)),
   // The metadata bridge records the session it bound to the pane's Qwen process; without one,
   // the launch falls back to Qwen's provider-selection `--continue`.
   "cli:qwen": async ({ sourceTask }) => recorded(matching(qwenNativeSessionIdPattern, sourceTask.revision.nativeTaskRef)),
+  // omp too: the task titles record the session its pane process ran (omp-native-model.ts).
+  "cli:omp": async ({ sourceTask }) => recorded(matching(ompNativeSessionIdPattern, sourceTask.revision.nativeTaskRef)),
+  // Muse too: the session folder its pane process held open (muse-native-session.ts).
+  "cli:muse": async ({ sourceTask }) => recorded(matching(museNativeSessionIdPattern, sourceTask.revision.nativeTaskRef)),
+  // Hermes: the task titles record the session its pane's TUI ran (hermes-task-metadata.py binds it by the Space session).
+  "cli:hermes": async ({ sourceTask }) => recorded(matching(hermesNativeSessionIdPattern, sourceTask.revision.nativeTaskRef)),
+  // Kimi too: the session its pane process leased for a turn (kimi-native-session.ts).
+  "cli:kimi": async ({ sourceTask }) => recorded(matching(kimiNativeSessionIdPattern, sourceTask.revision.nativeTaskRef)),
   // Qoder runs each Space session under a Space-named session id (qoder-native-session.ts).
   "cli:qoder": async ({ sourceTask }) => recorded(
     matching(qoderNativeSessionIdPattern, sourceTask.revision.nativeTaskRef) ?? qoderNativeSessionId(sourceTask.session.sessionId)
+  ),
+  // Copilot runs each Space session under a Space-named session id too (SPACE_COPILOT_SESSION_ID).
+  "cli:copilot": async ({ sourceTask }) => recorded(
+    matching(qoderNativeSessionIdPattern, sourceTask.revision.nativeTaskRef) ?? copilotNativeSessionId(sourceTask.session.sessionId)
+  ),
+  // Grok too (SPACE_GROK_SESSION_ID).
+  "cli:grok": async ({ sourceTask }) => recorded(
+    matching(qoderNativeSessionIdPattern, sourceTask.revision.nativeTaskRef) ?? grokNativeSessionId(sourceTask.session.sessionId)
+  ),
+  // Cursor too (SPACE_CURSOR_SESSION_ID).
+  "cli:cursor": async ({ sourceTask }) => recorded(
+    matching(qoderNativeSessionIdPattern, sourceTask.revision.nativeTaskRef) ?? cursorNativeSessionId(sourceTask.session.sessionId)
   )
 };
 

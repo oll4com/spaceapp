@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   generateVaultSigningKey, generateVaultTransportKey, newVaultHandle, sealVaultEnvelope, signVaultMessage, vaultBase64url, vaultOperatorRequestMessage, vaultRandomBytes,
   type VaultOperatorSignedKind
@@ -161,14 +161,15 @@ describe("Vault agent routes", () => {
         expect(answer.json(), path).toEqual({ status: "BLOCKED", auditId: expect.stringMatching(/^vault_audit:/), reason: "AGENT_ACCESS_OFF" });
         expect(answer.body, path).not.toContain(SENTINEL);
       }
-      expect((await call("status", {})).json()).toEqual({ status: "LISTED", auditId: expect.stringMatching(/^vault_audit:/), agentAccess: false, delegatedItems: 0, pendingItems: 0 });
+      expect((await call("status", {})).json()).toEqual({ status: "LISTED", auditId: expect.stringMatching(/^vault_audit:/), agentAccess: false, delegatedItems: 0 });
       const audited = (await call("audit", { limit: 3 })).json();
       expect(audited.entries).toHaveLength(3);
       expect(audited.entries[0]).toEqual({ at: expect.any(String), action: "AGENT_LIST", result: "LISTED", reason: null, itemId: null });
       expect(audited.entries[1]).toMatchObject({ action: "ITEM_SAVE", result: "BLOCKED", reason: "AGENT_ACCESS_OFF" });
       // Selectors, URLs, values and unknown keys never pass the schema; a save needs a plain web site.
       for (const [path, payload] of [["fill", { handle, fields: ["PASSWORD"], selector: "#password" }], ["fill", { handle, fields: ["PASSWORD"], origin: "https://evil.example" }],
-        ["generate-fill", { purpose: "NEW_ACCOUNT" }], ["generate-fill", { purpose: "CHANGE_PASSWORD" }], ["fill", { handle: "vault_item:../x", fields: ["PASSWORD"] }],
+        ["generate-fill", { purpose: "NEW_ACCOUNT" }], ["generate-fill", { purpose: "CHANGE_PASSWORD" }],
+        ["generate-fill", { purpose: "NEW_ACCOUNT", label: "x", policy: { minLength: 20, maxLength: 10 } }], ["generate-fill", { purpose: "NEW_ACCOUNT", label: "x", policy: { maxLength: 4 } }], ["fill", { handle: "vault_item:../x", fields: ["PASSWORD"] }],
         ["list", { paneId: "pane:other" }], ["approval", { handle, fields: ["PASSWORD"] }], ["fill", { handle, fields: ["PASSWORD"], targetPaneId: "../x" }],
         ["save", { site: "http://10.0.0.1", username: "a", label: "A" }], ["save", { site: "https://shop.example", username: "a", label: "A", fields: { PASSWORD: "x" } }]] as const) {
         expect([404, 422], JSON.stringify(payload)).toContain((await call(path, payload)).statusCode);
@@ -269,6 +270,31 @@ describe("Vault API key handoff", () => {
       for (const [path, payload] of [["key-list", {}], ["key-save", { label: "x", value: "y" }], ["key-take", { id: key.id }]] as const) {
         expect((await one.call(path, payload)).json()).toMatchObject({ status: "BLOCKED", reason: "AGENT_ACCESS_OFF" });
       }
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("Vault keys and Space Gateway", () => {
+  it("hands a free provider's key an agent or the operator saves to Space Gateway at once, and nothing else (operator 7/11 10:53 BKK, nous_msg:c1272a0c)", async () => {
+    const addOpenAiApiKey = vi.fn(async () => ({ status: 200, body: { status: "CONNECTED" } }));
+    const { app, store, config, brokerKey, session } = await fixture({ gatewayAdminService: { addOpenAiApiKey } as never });
+    try {
+      const alice = await session({ id: "user:alice", email: "alice@space.local", role: "OPERATOR" });
+      await app.inject({ method: "POST", url: "/api/space-vault/enroll", headers: alice.headers, payload: (await enrollment(brokerKey.publicKey, "user:alice")).body });
+      await app.inject({ method: "PUT", url: "/api/space-vault/agent-access", headers: alice.headers, payload: { enabled: true } });
+      const room = (await app.inject({ method: "POST", url: "/api/rooms", headers: alice.headers, payload: { name: "Keys", initialPaneCount: 0 } })).json();
+      const pane = store.createPane({ roomId: room.id, title: "Agent", mode: "TERMINAL", terminalRuntimeId: "cli:claude" });
+      const cli = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:claude", providerId: "claude", agentId: "claude", status: "RUNNING", purpose: "NORMAL" });
+      const headers = { [cliBrowserBridgeTokenHeader]: issueCliBrowserBridgeToken(config, { roomId: room.id, paneId: pane.id, cliSessionId: cli.sessionId })!, "content-type": "application/json" };
+      const save = (label: string, value: string) => app.inject({ method: "POST", url: "/api/cli/space-vault/key-save", headers, payload: { label, value } });
+      expect((await save("Jina AI API key (free 10M tokens)", "jina_SYNTHETIC")).json().status).toBe("SAVED");
+      expect((await save("Mailed DB password", "SYNTHETIC-db")).json().status).toBe("SAVED");
+      await app.inject({ method: "POST", url: "/api/space-vault/keys", headers: alice.headers, payload: { label: "Inception Labs API key (free 100M tokens)", value: "sk_SYNTHETIC", expiresInHours: null, kept: true } });
+      await vi.waitFor(() => expect(addOpenAiApiKey).toHaveBeenCalledTimes(2));
+      expect(addOpenAiApiKey.mock.calls).toEqual([[{ provider: "JINA", apiKey: "jina_SYNTHETIC", label: "Jina AI API key (free 10M tokens)" }],
+        [{ provider: "INCEPTION", apiKey: "sk_SYNTHETIC", label: "Inception Labs API key (free 100M tokens)" }]]);
     } finally {
       await app.close();
     }

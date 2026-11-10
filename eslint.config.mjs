@@ -1,11 +1,11 @@
-// ESLint baseline (plan item 3.5). Every rule reports a warning only, so `npm run lint`
-// never blocks work; it measures the current state. Once the count is stable, rules
-// can become errors for new code. Formatting is not linted: a mass reformat would
+// ESLint baseline (plan item 3.5). Every rule reports a warning only; `npm run lint` fails above
+// its --max-warnings ceiling, which the merge queue checks through test:deploy (lint-ceiling.test.mjs).
+// Once the count is stable, rules can become errors for new code. Formatting is not linted: a mass reformat would
 // touch protected terminal and room-switch code.
 import js from "@eslint/js";
 import reactHooks from "eslint-plugin-react-hooks";
 import globals from "globals";
-import tseslint from "typescript-eslint";
+import tseslint from "./scripts/lint-tools/eslint.mjs";
 
 /** Turns every configured rule severity into "warn". */
 function warnOnly(configs) {

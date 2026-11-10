@@ -242,9 +242,16 @@ export function registerMailCopilotRoutes(app: FastifyInstance, service: MailCop
     const body = parseBody(mailThreadActionSchema.extend({ paneId: paneIdSchema.optional() }).strict(), request.body ?? {});
     const { paneId, ...input } = body;
     const { owner, pane } = await ownerAndPane(request, paneId);
-    await service.modify(owner, pane, params.threadId, input);
+    const result = await service.modify(owner, pane, params.threadId, input);
     await deps.audit(request, "mail_copilot.thread.modify", params.threadId, { account: input.account, action: input.action, paneId: paneId ?? null });
-    return { ok: true };
+    return { ok: true, ...result };
+  });
+  // The open thread's labels and when each was put on or taken off, and by whom (the reader's "Label history").
+  app.get("/api/mail-copilot/threads/:threadId/labels", routeOptions, async (request) => {
+    const params = parseQuery(threadParamsSchema, request.params);
+    const query = parseQuery(paneQuery.extend({ account: emailSchema }).strict(), request.query ?? {});
+    const { owner, pane } = await ownerAndPane(request, query.paneId);
+    return service.threadLabels(owner, pane, query.account, params.threadId);
   });
 
   app.post("/api/mail-copilot/messages/send", routeOptions, async (request) => {

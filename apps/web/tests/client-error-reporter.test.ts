@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { CLIENT_ERROR_REPORT_LIMIT, clientErrorReport, installClientErrorReporter } from "../src/client-error-reporter.js";
 
+vi.mock("../src/sentry-bootstrap.js", () => ({ captureWebError: vi.fn() }));
+import { captureWebError } from "../src/sentry-bootstrap.js";
+
 const origin = "https://space.example";
 
 function errorWithStack(name: string, message: string, stack: string) {
@@ -61,4 +64,30 @@ describe("client error reports", () => {
     await Promise.resolve();
     expect(send).toHaveBeenCalledTimes(1);
   });
+
+  it("give the message only to the local desktop log, never to the server report", () => {
+    const target = new EventTarget();
+    const send = vi.fn().mockResolvedValue(null);
+    const local = vi.fn(() => { throw new Error("desktop bridge gone"); });
+    installClientErrorReporter({ send, local, target: target as unknown as Window, origin });
+    const event = new Event("unhandledrejection") as Event & { reason?: unknown };
+    event.reason = new Error("Request failed: 409 The browser session is closed.");
+    target.dispatchEvent(event);
+    expect(local).toHaveBeenCalledWith(expect.objectContaining({ kind: "rejection" }), "Request failed: 409 The browser session is closed.");
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(send.mock.calls[0]![0])).not.toContain("browser session");
+  });
+});
+
+it("deduplicates a boundary error and its global report for both destinations", () => {
+  vi.mocked(captureWebError).mockClear();
+  const send = vi.fn().mockResolvedValue(null);
+  const target = new EventTarget();
+  const stop = installClientErrorReporter({ send, target: target as unknown as Window, origin });
+  const error = errorWithStack("TypeError", "private", "at render (https://space.example/assets/app.js:1:2)");
+  target.dispatchEvent(new CustomEvent("space:surface-error", { detail: error }));
+  target.dispatchEvent(new ErrorEvent("error", { error }));
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(captureWebError).toHaveBeenCalledTimes(1);
+  stop();
 });

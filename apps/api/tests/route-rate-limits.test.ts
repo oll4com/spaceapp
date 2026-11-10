@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
+import ts from "typescript-api";
 import { expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { getApiConfig } from "../src/config.js";
@@ -58,7 +58,13 @@ const compositionRouteSources = [
   "../src/cli-runtime-routes.ts",
   "../src/cli-account-routes.ts",
   "../src/link-inspect-routes.ts",
-  "../src/client-error-routes.ts"
+  "../src/client-error-routes.ts",
+  "../src/agent-tools-launch-routes.ts",
+  "../src/auth-session-routes.ts",
+  "../src/admin-cleanup-routes.ts",
+  "../src/public-waitlist-routes.ts",
+  "../src/system-services-routes.ts",
+  "../src/dot-auto-routing-routes.ts"
 ];
 
 it("declares an explicit CodeQL-visible rate limit on every Fastify route", async () => {

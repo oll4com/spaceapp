@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { InMemoryDemoProjectsRepository, type DemoProjectsRepository } from "@space/db";
 import { DemoCredentialStore } from "../src/demo-projects/credentials.js";
 import { DemoProjectsService } from "../src/demo-projects/service.js";
+import { registerDemoProjectsRoutes } from "../src/demo-projects/routes.js";
+import Fastify from "fastify";
 
 /**
  * Connector behaviour is exercised against a scripted provider: the same code
@@ -328,6 +330,52 @@ describe("demo connector OAuth", () => {
         publicOrigin: "https://space.example"
       })
     ).rejects.toMatchObject({ code: "DEMO_OAUTH_STATE_INVALID" });
+  });
+});
+
+describe("demo connector consent from the phone (R12, SpaceApp Android 0.2.13)", () => {
+  async function routes() {
+    const app = Fastify();
+    app.addHook("onRequest", async (request) => { if (request.headers["x-test-session"]) request.user = { id: owner, email: "c@example.test", role: "ADMIN" }; });
+    registerDemoProjectsRoutes(app, { service: context!.service, enabled: true, rateLimitOptions: {}, resolvePublicOrigin: () => "https://space.example",
+      sessionToken: (request) => String(request.headers["x-test-session"] ?? ""), ownerId: async () => owner });
+    await context!.service.connections.saveSettings(owner, "google-sheets", { clientId: "google-client-id.apps.googleusercontent.com", clientSecret: "google-client-secret" });
+    return app;
+  }
+  const phone = { "x-test-session": "phone-session", "x-space-client": "app=SPACEAPP_ANDROID; v=0.2.13; os=ANDROID; form=PHONE" };
+  const start = async (app: Awaited<ReturnType<typeof routes>>, headers: Record<string, string>) =>
+    new URL((await app.inject({ method: "POST", url: "/api/demo-projects/connections/google-sheets/authorize", headers })).json().authorizationUrl).searchParams.get("state")!;
+
+  it("a consent the app started ends in the system browser with a redirect to the app, which completes it with its own session", async () => {
+    const app = await routes();
+    const state = await start(app, phone);
+    const path = `/api/demo-projects/connections/google-sheets/callback?code=authorization-code&state=${encodeURIComponent(state)}`;
+    // Google sends the system browser back here: no Space session, no X-Space-Client.
+    const browser = await app.inject({ method: "GET", url: path });
+    expect(browser.statusCode).toBe(302);
+    const target = new URL(String(browser.headers.location));
+    expect(`${target.protocol}${target.pathname}`).toBe("com.oll4.spaceapp:/oauth-return");
+    expect(target.searchParams.get("to")).toBe(path);
+    // The app opens `to` with its session: the connection completes, no second redirect.
+    const back = await app.inject({ method: "GET", url: target.searchParams.get("to")!, headers: phone });
+    expect(back.statusCode).toBe(200);
+    expect(back.body).toContain("Connection complete");
+    expect((await context!.service.connections.listConnections(owner, "https://space.example")).find((c) => c.provider === "google-sheets")).toMatchObject({ status: "CONNECTED" });
+    await app.close();
+  });
+
+  it("a consent the web started keeps the web page, also when the callback has no session", async () => {
+    const app = await routes();
+    const web = { "x-test-session": "web-session" };
+    const state = await start(app, web);
+    const path = `/api/demo-projects/connections/google-sheets/callback?code=authorization-code&state=${encodeURIComponent(state)}`;
+    const noSession = await app.inject({ method: "GET", url: path });
+    expect(noSession.statusCode).toBe(200);
+    expect(noSession.body).toContain("DEMO_OAUTH_SESSION_REQUIRED");
+    const done = await app.inject({ method: "GET", url: path, headers: web });
+    expect(done.statusCode).toBe(200);
+    expect(done.body).toContain("Connection complete");
+    await app.close();
   });
 });
 

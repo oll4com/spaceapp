@@ -6,6 +6,7 @@ import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { LIVE_RAIL_CAPTIONS_DISABLED_STORAGE_KEY } from "./LiveRailContextMenu.js";
 import { LiveCaption, LiveOrb, useLiveCaption, type LiveRailStatus } from "./useLiveRail.js";
 import type { LiveTranscriptItem } from "./live-session.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 const LIVE_STATUS_LABELS: Record<LiveRailStatus, string> = {
   idle: "Ready", connecting: "Connecting…", active: "Listening", listening: "You are speaking",
@@ -13,16 +14,18 @@ const LIVE_STATUS_LABELS: Record<LiveRailStatus, string> = {
 };
 
 export function LiveRailSession() {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const coordinator = useLiveCoordinator();
   const state = useLiveSessionState();
   const [roomOnly, setRoomOnly] = useState(false);
   const transcripts = (state?.transcripts ?? []).filter(item => !roomOnly || item.roomId === state?.roomId);
   const [conversationOpen, setConversationOpen] = useState(false);
   const status = state?.status ?? "idle";
-  const statusLabel = !state?.enabled ? "Disconnected" : state.contextState !== "ready" ? "Updating room context…" : LIVE_STATUS_LABELS[status];
+  const statusLabel = !state?.enabled ? t("Disconnected") : state.contextState !== "ready" ? t("Updating room context…") : t(LIVE_STATUS_LABELS[status]);
   const roomNames = new Map((state?.transcripts ?? []).filter(item => item.roomId && item.roomName && item.roomName !== item.roomId).map(item => [item.roomId!, item.roomName!]));
   if (state?.roomId && state.roomName) roomNames.set(state.roomId, state.roomName);
-  const roomLabel = (item: LiveTranscriptItem) => (item.roomId && roomNames.get(item.roomId)) || item.roomName || "Other room";
+  const roomLabel = (item: LiveTranscriptItem) => (item.roomId && roomNames.get(item.roomId)) || item.roomName || t("Other room");
   const [captionsDisabled, setCaptionsDisabled] = useState(() => window.localStorage?.getItem(LIVE_RAIL_CAPTIONS_DISABLED_STORAGE_KEY) === "true");
   const { item: captionItem, visible: captionVisible } = useLiveCaption(state?.transcripts ?? []);
   const captionsAllowed = state?.enabled === true && !captionsDisabled && !conversationOpen;
@@ -96,7 +99,7 @@ export function LiveRailSession() {
   return (
     <>
       {conversationOpen ? (
-        <section className="live-rail-conversation-window" aria-label="Live voice conversation" style={{ left: conversationPosition.left, top: conversationPosition.top }}>
+        <section className="live-rail-conversation-window" aria-label={t("Live voice conversation")} style={{ left: conversationPosition.left, top: conversationPosition.top }}>
           <header className="live-rail-conversation-header" onPointerDown={(event) => {
             if ((event.target as HTMLElement).closest("button")) return;
             const rect = event.currentTarget.parentElement?.getBoundingClientRect();
@@ -113,21 +116,21 @@ export function LiveRailSession() {
               <span role="status">{statusLabel}{state?.roomName ? ` · ${state.roomName}` : ""}</span>
             </div>
             <div className="live-rail-conversation-actions">
-              <button type="button" aria-label={state?.muted ? "Unmute" : "Mute"} title={state?.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={state?.muted === true} onClick={() => coordinator?.setMuted(!state?.muted)}>
+              <button type="button" aria-label={state?.muted ? t("Unmute") : t("Mute")} title={state?.muted ? t("Unmute microphone") : t("Mute microphone")} aria-pressed={state?.muted === true} onClick={() => coordinator?.setMuted(!state?.muted)}>
                 {state?.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}
               </button>
-              <button type="button" className={state?.enabled ? "is-danger" : "is-primary"} aria-label={state?.enabled ? "Disconnect" : "Connect"} title={state?.enabled ? "End Live voice conversation" : "Start Live voice conversation"} onClick={() => coordinator?.toggle()}>
+              <button type="button" className={state?.enabled ? "is-danger" : "is-primary"} aria-label={state?.enabled ? t("Disconnect") : t("Connect")} title={state?.enabled ? t("End Live voice conversation") : t("Start Live voice conversation")} onClick={() => coordinator?.toggle()}>
                 {state?.enabled ? <PhoneOff aria-hidden="true" /> : <Phone aria-hidden="true" />}
               </button>
-              <button type="button" aria-label="Clear conversation" title={roomOnly ? "Clear this room conversation" : "Clear conversation"} onClick={handleClearConversation}>
+              <button type="button" aria-label={t("Clear conversation")} title={roomOnly ? t("Clear this room conversation") : t("Clear conversation")} onClick={handleClearConversation}>
                 <Trash2 aria-hidden="true" />
               </button>
-              <button type="button" aria-label="Close Live conversation" title="Close" onClick={() => setConversationOpen(false)}>
+              <button type="button" aria-label={t("Close Live conversation")} title={t("Close")} onClick={() => setConversationOpen(false)}>
                 <X aria-hidden="true" />
               </button>
             </div>
           </header>
-          {state?.error ? <p className="live-rail-conversation-error" role="alert">{state.error}</p> : null}
+          {state?.error ? <p className="live-rail-conversation-error" role="alert">{t(state.error)}</p> : null}
           <div className="live-rail-conversation-body" ref={conversationBodyRef} aria-live="polite" onScroll={(event) => {
             const body = event.currentTarget;
             shouldFollowTranscriptRef.current = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
@@ -135,7 +138,7 @@ export function LiveRailSession() {
             {transcripts.length === 0 ? (
               <div className="live-rail-conversation-empty">
                 <LiveOrb status={status} className="live-rail-empty-orb" />
-                <p>Your Live conversation will appear here.</p>
+                <p>{t("Your Live conversation will appear here.")}</p>
               </div>
             ) : transcripts.map((item, index) => {
               const previous = transcripts[index - 1];
@@ -145,9 +148,9 @@ export function LiveRailSession() {
                 <Fragment key={item.id}>
                   {roomChanged ? <p className="live-rail-room-divider"><span>{roomLabel(item)}</span></p> : null}
                   <div className={`live-rail-message is-${item.role}${isTool ? " is-tool" : ""}`}>
-                    {!isTool && (roomChanged || item.role !== previous?.role) ? <strong>{item.role === "user" ? "You" : item.role === "assistant" ? "Live" : "System"}</strong> : null}
+                    {!isTool && (roomChanged || item.role !== previous?.role) ? <strong>{item.role === "user" ? t("You") : item.role === "assistant" ? "Live" : t("System")}</strong> : null}
                     {isTool ? (
-                      <details><summary><Wrench aria-hidden="true" />{item.toolCall?.name ?? "Control tool"}<small>{item.toolCall?.status ?? "done"}</small></summary>
+                      <details><summary><Wrench aria-hidden="true" />{item.toolCall?.name ?? t("Control tool")}<small>{item.toolCall?.status ?? t("done")}</small></summary>
                         <span>{item.toolCall?.query}</span><span>{item.toolCall?.resultSummary ?? item.text}</span></details>
                     ) : <span>{item.text}</span>}
                   </div>
@@ -156,7 +159,7 @@ export function LiveRailSession() {
             })}
           </div>
           <footer className="live-rail-conversation-footer">
-            <SpaceToggle className="live-rail-room-toggle" label="This room only" checked={roomOnly} onChange={setRoomOnly} compact />
+            <SpaceToggle className="live-rail-room-toggle" label={t("This room only")} checked={roomOnly} onChange={setRoomOnly} compact />
           </footer>
         </section>
       ) : null}

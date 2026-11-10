@@ -13,6 +13,17 @@ import {
 } from "../src/index.js";
 
 describe("InMemorySpaceStore", () => {
+
+  it("lists every Space agent session of a room, past the old newest 100 (31/10)", () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "History room", initialPaneCount: 1 });
+    const pane = store.listPanes(room.id)[0]!;
+    for (let index = 0; index < 101; index += 1) {
+      store.createSpaceAgentSession({ paneId: pane.id, roomId: room.id, title: `Chat ${index}`, threadId: `thread-${index}`, selectedProviderId: null,
+        selectedModelId: "gpt-5.6-sol", selectedModelConfigId: "gpt-5.6-sol:high", selectedProviderName: null, selectedModelName: "GPT-5.6", selectedReasoningKey: "high" });
+    }
+    expect(store.listSpaceAgentHistory(room.id)).toHaveLength(101);
+  });
   it("reads panes directly and pages events without changing full-list semantics", () => {
     const store = new InMemorySpaceStore();
     const room = store.createRoom({ name: "Bounded events", initialPaneCount: 0 }, "trace:events");
@@ -1997,7 +2008,7 @@ describe("InMemorySpaceStore", () => {
       });
       expect(browserSkill?.body).toContain("[REDACTED]");
       expect(browserSkill?.body).not.toContain("raw-test-value");
-      expect(JSON.stringify(browserSkill)).not.toMatch(new RegExp(`${"vm"}${"207"}|10\\.100\\.0\\.${"207"}`, "i"));
+      expect(JSON.stringify(browserSkill)).not.toMatch(new RegExp(`${"vm"}${"207"}|192\\.0\\.2\\.${"207"}`, "i"));
       expect(pluginSkill).toMatchObject({
         displayName: "Oll4 Codex Controls",
         source: "CODEX_SKILL",

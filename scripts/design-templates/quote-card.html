@@ -1,0 +1,13 @@
+<body>
+<style>
+.content{position:absolute;inset:calc(var(--u)*9);justify-content:center}
+.mark{font-family:Georgia,"DejaVu Serif",serif;font-size:calc(var(--u)*22);line-height:.6;color:var(--primary);height:calc(var(--u)*10)}
+.quote{font-family:var(--font-heading),"Liberation Sans","DejaVu Sans",sans-serif;font-weight:700;font-size:calc(var(--u)*6.2);line-height:1.22}
+.author{font-size:calc(var(--u)*3.4);color:var(--primary);font-weight:700}
+.author::before{content:"— "}
+.foot{display:flex;align-items:center;justify-content:space-between;gap:calc(var(--u)*3)}
+.foot .logo{height:calc(var(--u)*6)}
+</style>
+<div class="glow"></div>
+<div class="safe"><div class="content stack"><div class="mark">“</div><p class="t quote">{{quote}}</p><div class="foot"><div class="t author">{{author}}</div>{{logo}}</div></div></div>
+</body>

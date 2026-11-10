@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import ts from "typescript";
+import ts from "typescript-api";
 
 const appSource = readFileSync(resolve(__dirname, "../src/App.tsx"), "utf8");
 // PaneCard (and the lazy pane chunks it renders) moved verbatim out of App.tsx.

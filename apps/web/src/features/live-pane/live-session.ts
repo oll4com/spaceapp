@@ -14,6 +14,7 @@ import type {
 import {
   inferProviderFromModel,
   validateLiveAudioConfig,
+  CASCADE_LIVE_PROVIDERS,
   LIVE_AUDIO_PROVIDERS,
   PANE_TYPES,
   controlInspectSections
@@ -1644,28 +1645,50 @@ async function openLocalVoiceConversationSession(
   };
 }
 
-const FISH_CLOSE_REASONS: Record<string, string> = {
+const CASCADE_CLOSE_REASONS: Record<string, string> = {
   fish_401: "Fish Audio rejected the API key.",
   fish_402: "Fish Audio has no balance left for this key.",
-  fish_429: "Fish Audio is busy or rate limited. Try again shortly."
+  fish_429: "Fish Audio is busy or rate limited. Try again shortly.",
+  livekit_401: "LiveKit rejected the API key.",
+  livekit_429: "LiveKit Inference is busy or rate limited. Try again shortly.",
+  murf_401: "Murf AI rejected the API key.",
+  murf_402: "Murf AI has no characters left on this key.",
+  murf_429: "Murf AI is busy or rate limited. Try again shortly.",
+  assemblyai_401: "AssemblyAI rejected the API key.",
+  assemblyai_1008: "AssemblyAI is at its session limit. Try again in a minute.",
+  cartesia_401: "Cartesia rejected the API key.",
+  cartesia_402: "Cartesia has no credits left on this key.",
+  cartesia_429: "Cartesia is busy or rate limited. Try again shortly."
 };
 
 /**
- * Fish Audio (Drama 3): Fish hears the operator and decides when a turn ends, Space's voice delegate answers or picks a
- * Live tool, and Drama 3 speaks the answer. Space's bridge (`/api/voice/ws-proxy`) holds the key and the MessagePack.
+ * Fish Audio (Drama 3) and the startup voice grants (LiveKit Inference, Cartesia, Murf AI, AssemblyAI): the provider hears
+ * the operator and decides when a turn ends, Space's voice delegate answers or picks a Live tool, and the provider's voice
+ * speaks the answer. Space's bridge (`/api/voice/ws-proxy`) holds the keys.
  */
-async function openFishAudioConversationSession(
+async function openCascadeVoiceSession(
   options: LiveSessionOptions,
-  callbacks: LiveSessionCallbacks
+  callbacks: LiveSessionCallbacks,
+  provider: LiveAudioProviderId
 ): Promise<LiveSessionHandle> {
   const runtime = getSpaceRuntime();
   if (runtime.kind === "demo") throw new Error(DEMO_LOCAL_REPLY);
   if (!runtime.platform.userMediaSupported) throw new Error("Microphone capture is not available in this browser.");
+  const fish = provider === "fish";
+  const descriptor = LIVE_AUDIO_PROVIDERS[provider];
+  const label = descriptor.displayName;
   callbacks.onStatusChange?.("connecting");
   const ctx = await buildLiveSessionContext(options);
-  const session = await api.createVoiceRealtimeCall({ provider: "fish", model: "drama-3", language: options.language });
-  if (session.protocol !== "fish-cascade" || !session.websocketUrl?.startsWith("/")) throw new Error("Fish Audio returned an incompatible voice protocol.");
-  const voice = /^[0-9a-f]{32}$/.test(String(options.voice ?? "")) ? String(options.voice) : LIVE_AUDIO_PROVIDERS.fish.defaultVoice;
+  const requested = descriptor.models.some((entry) => entry.id === options.model) ? options.model : descriptor.defaultModel;
+  const session = await api.createVoiceRealtimeCall({ provider, model: requested, language: options.language });
+  if (session.protocol !== (fish ? "fish-cascade" : "grant-cascade") || !session.websocketUrl?.startsWith("/")) throw new Error(`${label} returned an incompatible voice protocol.`);
+  const model = requested;
+  const entry = descriptor.models.find((item) => item.id === model);
+  const speaker = entry?.label ?? label;
+  // The bridge checks a grant voice against its engine and falls back to the model's own.
+  const voice = fish
+    ? /^[0-9a-f]{32}$/.test(String(options.voice ?? "")) ? String(options.voice) : descriptor.defaultVoice
+    : String(options.voice || entry?.defaultVoice || descriptor.defaultVoice);
   const stream = await getAudioStreamWithFallback(runtime, options.audioDeviceId);
   let audioContext: AudioContext | undefined;
   let playbackContext: AudioContext | undefined;
@@ -1700,7 +1723,7 @@ async function openFishAudioConversationSession(
     send({ type: "agent_speaking", speaking: false });
     if (!closed) callbacks.onStatusChange?.("listening");
   };
-  // Barge-in, or a newer turn: the reply in flight is dropped and Fish learns the agent went quiet.
+  // Barge-in, or a newer turn: the reply in flight is dropped and the provider learns the agent went quiet.
   const stopSpeaking = () => {
     stopAudio();
     if (!ttsDone) send({ type: "stop" });
@@ -1730,7 +1753,7 @@ async function openFishAudioConversationSession(
   const say = (text: string) => {
     const spoken = text.trim();
     if (!spoken || closed) { callbacks.onStatusChange?.("listening"); return; }
-    callbacks.onTranscriptUpdate?.({ id: `fish-assistant-${Date.now()}`, role: "assistant", text: spoken, timestamp: new Date().toISOString() });
+    callbacks.onTranscriptUpdate?.({ id: `${provider}-assistant-${Date.now()}`, role: "assistant", text: spoken, timestamp: new Date().toISOString() });
     history.push(`Assistant: ${spoken}`);
     speaking = true;
     ttsDone = false;
@@ -1753,14 +1776,14 @@ async function openFishAudioConversationSession(
       if (!origin()) return;
       if (!first.toolCall?.name) { say(first.message ?? ""); return; }
       const output = await executeLiveFunction(first.toolCall.name, JSON.stringify(first.toolCall.args ?? {}),
-        { ...options, getCommandRoom: origin, callbacks, callId: `${toolSessionId}:fish:${mine}`, provider: "fish", streamingMode: options.streamingMode });
+        { ...options, getCommandRoom: origin, callbacks, callId: `${toolSessionId}:${provider}:${mine}`, provider, streamingMode: options.streamingMode });
       if (!origin()) return;
       const follow = await api.delegateVoiceIntent({ roomId: room,
         query: `${query}Tool ${first.toolCall.name} returned: ${output.slice(0, 1200)}\nTell the user the result in one or two short spoken sentences, in the language of their last message.` });
       if (origin()) say(follow.message || output.slice(0, 300));
     } catch (error) {
       if (!origin()) return;
-      callbacks.onError?.(`Fish Audio reply failed: ${error instanceof Error ? error.message : String(error)}`);
+      callbacks.onError?.(`${label} reply failed: ${error instanceof Error ? error.message : String(error)}`);
       callbacks.onStatusChange?.("listening");
     }
   };
@@ -1778,7 +1801,7 @@ async function openFishAudioConversationSession(
   };
   const fail = (message: string) => { if (!closed) { cleanup(); callbacks.onError?.(message); callbacks.onStatusChange?.("error"); } };
   const userText = (text: string) => {
-    callbacks.onTranscriptUpdate?.({ id: `fish-user-${Date.now()}`, role: "user", text, timestamp: new Date().toISOString() });
+    callbacks.onTranscriptUpdate?.({ id: `${provider}-user-${Date.now()}`, role: "user", text, timestamp: new Date().toISOString() });
     void answer(text);
   };
   try {
@@ -1792,7 +1815,7 @@ async function openFishAudioConversationSession(
     source.connect(processor); processor.connect(gain); gain.connect(audioContext.destination);
     socket = new WebSocket(`${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}${session.websocketUrl}`);
     socket.binaryType = "arraybuffer";
-    timer = setTimeout(() => fail("Fish Audio did not start the session in time."), 15_000);
+    timer = setTimeout(() => fail(`${label} did not start the session in time.`), 15_000);
     socket.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) { if (!ttsDone) playPcm(event.data); return; }
       let message: { type?: string; text?: string; user_turn?: boolean; reason?: string; recoverable?: boolean };
@@ -1800,7 +1823,7 @@ async function openFishAudioConversationSession(
       if (message.type === "session_started") {
         ready = true;
         clearTimeout(timer);
-        updateLiveSessionStats({ sessionActive: true, sessionStartedAt: Date.now(), model: "drama-3", voice, toolsCount: ctx.tools.length });
+        updateLiveSessionStats({ sessionActive: true, sessionStartedAt: Date.now(), model, voice, toolsCount: ctx.tools.length });
         callbacks.onStatusChange?.("listening");
       } else if (message.type === "user_turn_taken") {
         noteLiveUserTurn();
@@ -1814,14 +1837,14 @@ async function openFishAudioConversationSession(
       } else if (message.type === "tts_done") {
         ttsDone = true;
         if (!playing.size) finishSpeaking();
-        if (message.reason !== "stop") callbacks.onError?.(FISH_CLOSE_REASONS[message.reason ?? ""] ?? "Drama 3 could not speak this reply.");
-      } else if (message.type === "error" && message.recoverable === false) fail("Fish Audio ended the session.");
+        if (message.reason !== "stop") callbacks.onError?.(CASCADE_CLOSE_REASONS[message.reason ?? ""] ?? `${speaker} could not speak this reply.`);
+      } else if (message.type === "error" && message.recoverable === false) fail(`${label} ended the session.`);
     };
-    socket.onerror = () => fail("Fish Audio connection failed.");
-    socket.onclose = (event) => fail(FISH_CLOSE_REASONS[event.reason] ?? "Fish Audio connection closed.");
+    socket.onerror = () => fail(`${label} connection failed.`);
+    socket.onclose = (event) => fail(CASCADE_CLOSE_REASONS[event.reason] ?? `${label} connection closed.`);
     processor.onaudioprocess = (event) => {
       if (closed || !ready || socket?.readyState !== WebSocket.OPEN) return;
-      if (socket.bufferedAmount > 1_048_576) { fail("Fish Audio microphone transport is congested."); return; }
+      if (socket.bufferedAmount > 1_048_576) { fail(`${label} microphone transport is congested.`); return; }
       socket.send(pcm16FromFloat32(downsampleBuffer(event.inputBuffer.getChannelData(0), audioContext!.sampleRate, 16000)));
     };
     return {
@@ -1832,7 +1855,7 @@ async function openFishAudioConversationSession(
       microphone: stream,
       sendTextMessage: (text) => { if (text.trim()) userText(text.trim()); },
       sendInput: (parts) => {
-        if (parts.some((part) => part.type !== "text")) throw new Error("Attachments are not supported by Fish Audio.");
+        if (parts.some((part) => part.type !== "text")) throw new Error(`Attachments are not supported by ${label}.`);
         const text = parts.map((part) => part.type === "text" ? part.text : "").join("\n").trim();
         if (text) userText(text);
       }
@@ -6755,8 +6778,8 @@ export async function openLiveConversationSession(
   if (provider === "vercel") {
     return openVercelLiveConversationSession(options, callbacks, options.paneId ?? "live");
   }
-  if (provider === "fish") {
-    return openFishAudioConversationSession(options, callbacks);
+  if (provider && CASCADE_LIVE_PROVIDERS.has(provider)) {
+    return openCascadeVoiceSession(options, callbacks, provider);
   }
   return openOpenAiVoiceConversationSession(options, callbacks);
 }

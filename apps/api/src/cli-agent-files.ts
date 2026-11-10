@@ -1,6 +1,6 @@
 import { execFile } from "./safe-child-process.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { constants, createReadStream, existsSync } from "node:fs";
+import { constants, existsSync } from "node:fs";
 import { openWorkspacePath, descriptorPath } from "./workspace-filesystem.js";
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,6 +15,7 @@ import type { SpaceApiConfig } from "./config.js";
 import { recordUploadedArtifact, UploadRecordUncertainError } from "./upload-record.js";
 import { childProcessEnv } from "./child-process-env.js";
 import { agentTokenLive, agentTokenSecret, agentTokenTtlMs } from "./cli-browser-bridge.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export const cliAgentFilesTokenHeader = "x-space-cli-agent-files-token";
 export const agentFileMaxBytes = 100 * 1024 * 1024;
@@ -65,6 +66,7 @@ const textExtensions = new Set([
 ]);
 const mimeByExtension: Record<string, string> = {
   ".aac": "audio/aac",
+  ".apk": "application/vnd.android.package-archive",
   ".csv": "text/csv",
   ".docx": docxMimeType,
   ".gif": "image/gif",
@@ -215,7 +217,7 @@ export async function normalizeAgentFileDocx(
   }
   const directCommand = options.command ?? process.env.SPACE_LIBREOFFICE_PATH;
   const temporaryRoot = options.temporaryRoot ??
-    (directCommand ? tmpdir() : process.env.SPACE_AGENT_FILE_DOCX_WORK_ROOT ?? "/opt/spaceapp/var/agent-docx-work");
+    (directCommand ? tmpdir() : process.env.SPACE_AGENT_FILE_DOCX_WORK_ROOT ?? `${SPACE_INSTALL_ROOT}/var/agent-docx-work`);
   await mkdir(temporaryRoot, { recursive: true, mode: 0o700 });
   const workingRoot = await mkdtemp(join(temporaryRoot, "request-"));
   const inputDirectory = join(workingRoot, "input");
@@ -274,7 +276,7 @@ export async function normalizeAgentFileDocx(
       );
       await execFileAsync(
         options.brokerCommand ?? "/usr/bin/sudo",
-        ["-n", "/opt/spaceapp/bin/space-docx-normalizer"],
+        ["-n", `${SPACE_INSTALL_ROOT}/bin/space-docx-normalizer`],
         {
           encoding: "utf8",
           timeout: options.timeoutMs ?? agentFileDocxNormalizationTimeoutMs + 15_000,
@@ -383,8 +385,10 @@ export function verifyCliAgentFilesToken(
 }
 
 export function cliAgentFilesApiBaseUrl(
-  config: Pick<SpaceApiConfig, "host" | "port" | "browserEvidenceTargetOrigin">
+  config: Pick<SpaceApiConfig, "host" | "port" | "browserEvidenceTargetOrigin"> & Partial<Pick<SpaceApiConfig, "cliApiBaseUrl">>
 ): string {
+  // A public install's panes run in the CLI container: SPACE_CLI_API_BASE_URL, as for the browser bridge.
+  if (config.cliApiBaseUrl) return config.cliApiBaseUrl.replace(/\/+$/, "");
   if (config.browserEvidenceTargetOrigin) return config.browserEvidenceTargetOrigin.replace(/\/+$/, "");
   const host = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
   return `http://${host}:${config.port}`;

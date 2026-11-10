@@ -64,6 +64,8 @@ test("generated profiles and access modes have the expected merged Docker Compos
       assert.equal(core.entrypoint ?? null, null, "startup must inherit the image entrypoint without rewriting compiled code");
       assert.equal(core.environment.SPACE_PUBLIC_DISTRIBUTION, "true");
       assert.equal(core.environment.SPACE_AGENT_TOOLS_WRITER, "disabled");
+      // Nous's turns run in spaceapp-cli and call their tools back on the compose network.
+      assert.equal(core.environment.SPACE_CLI_API_BASE_URL, "http://spaceapp-core:4911");
       assert.equal(
         [core, cli].filter((service) =>
           service.volumes.some((volume) => volume.target === "/workspaces")

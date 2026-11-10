@@ -1,6 +1,7 @@
 import { execFile } from "../safe-child-process.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // What the operator sees before approving a Vault broker reinstall (Vault review 2026-10-22, plan clipboard:HIPO0ALNjfsP
 // step 4): the commit the installed bundle was built from (its build banner), its SHA-256, and the diff stat of the bundle's
@@ -23,7 +24,7 @@ export interface VaultBrokerReportDeps { bundlePath?: string; repo?: string; sou
 /** Markdown for the decision card; never throws (what cannot be read is said). */
 export async function vaultBrokerReport(deps: VaultBrokerReportDeps = {}): Promise<string> {
   const bundlePath = deps.bundlePath ?? VAULT_BROKER_BUNDLE_PATH;
-  const repo = deps.repo ?? "/opt/spaceapp";
+  const repo = deps.repo ?? SPACE_INSTALL_ROOT;
   const sources = deps.sources ?? VAULT_BROKER_SOURCES;
   let bundle: Buffer;
   try { bundle = await readFile(bundlePath); } catch { return `**Installed broker:** none at \`${bundlePath}\` (a first install).`; }

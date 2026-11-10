@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type {
-  MarketingBookmark, MarketingCampaign, MarketingChannel, MarketingEvent, MarketingMemory, MarketingMemoryQuery, MarketingMetric, MarketingPost, MarketingPostStatus, MarketingRule, MarketingRun
+  MarketingBookmark, MarketingCampaign, MarketingChannel, MarketingEvent, MarketingMemory, MarketingMemoryQuery, MarketingMetric, MarketingPost, MarketingPostKind, MarketingPostStatus, MarketingRule, MarketingRun
 } from "@space/contracts";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 
@@ -14,11 +14,11 @@ export type MarketingCampaignCreateRecord = Omit<MarketingCampaign, "id" | "crea
 export type MarketingCampaignPatch = Partial<Pick<MarketingCampaign, "name" | "goal" | "channels" | "status" | "startsAt" | "endsAt" | "payload">>;
 export type MarketingPostCreateRecord = Omit<MarketingPost, "id" | "createdAt" | "updatedAt">;
 export type MarketingPostPatch = Partial<Omit<MarketingPost, "id" | "ownerUserId" | "channel" | "kind" | "createdAt" | "updatedAt">>;
-export interface MarketingPostFilter { status?: MarketingPostStatus[]; channel?: MarketingChannel; campaignId?: string; limit: number }
+export interface MarketingPostFilter { status?: MarketingPostStatus[]; channel?: MarketingChannel; campaignId?: string; excludeKinds?: MarketingPostKind[]; /** No limit: every matching post. */ limit?: number }
 export type MarketingMemoryCreateRecord = Omit<MarketingMemory, "id" | "uses" | "lastUsedAt" | "createdAt" | "updatedAt">;
 export type MarketingMemoryPatch = Partial<Pick<MarketingMemory, "text" | "pinned">>;
 export type MarketingEventCreateRecord = Omit<MarketingEvent, "id" | "createdAt">;
-export interface MarketingEventFilter { paneId?: string | null; postId?: string | null; types?: string[]; status?: string[]; limit: number }
+export interface MarketingEventFilter { paneId?: string | null; postId?: string | null; types?: string[]; status?: string[]; /** No limit: every matching event (a brief watch must see every waiting brief, operator 31/10). */ limit?: number }
 export type MarketingRunPatch = Partial<Pick<MarketingRun, "status" | "counters" | "kickoffSentAt" | "stoppedAt" | "lastActivityAt">>;
 export type MarketingRuleCreateRecord = Omit<MarketingRule, "id" | "appliedCount" | "lastAppliedAt" | "decidedAt" | "createdAt" | "updatedAt">;
 export type MarketingRulePatch = Partial<Pick<MarketingRule, "status" | "decidedAt" | "appliedCount" | "lastAppliedAt">>;
@@ -34,9 +34,10 @@ export interface MarketingCopilotRepository {
   createPost(input: MarketingPostCreateRecord): Promise<MarketingPost>;
   /** Updates a post; with `fromStatus` only while the post is in one of those states (an atomic transition), else null. */
   updatePost(owner: string, id: string, patch: MarketingPostPatch, fromStatus?: MarketingPostStatus[]): Promise<MarketingPost | null>;
-  /** Publications on a channel since a time: PUBLISHED ones by their publication time, PUBLISHING ones in flight. */
+  /** Publications on a channel since a time: PUBLISHED ones by their publication time, PUBLISHING ones in flight; replies never count (no cap). */
   countPublications(owner: string, channel: MarketingChannel, since: string): Promise<number>;
-  listMemory(owner: string, query: MarketingMemoryQuery): Promise<MarketingMemory[]>;
+  /** No limit: every memory that matches. */
+  listMemory(owner: string, query: Omit<MarketingMemoryQuery, "limit"> & { limit?: number }): Promise<MarketingMemory[]>;
   /** Inserts, or replaces the memory with the same kind, key and channel. */
   upsertMemory(input: MarketingMemoryCreateRecord): Promise<MarketingMemory>;
   updateMemory(owner: string, id: string, patch: MarketingMemoryPatch): Promise<MarketingMemory | null>;
@@ -56,8 +57,8 @@ export interface MarketingCopilotRepository {
   updateRule(owner: string, id: string, patch: MarketingRulePatch): Promise<MarketingRule | null>;
   /** Records the day's values (a second recording of the same day replaces them). */
   recordMetrics(owner: string, metrics: MarketingMetric[]): Promise<void>;
-  /** Values since a day (YYYY-MM-DD), oldest first. */
-  listMetrics(owner: string, sinceDay: string): Promise<MarketingMetric[]>;
+  /** Values since a day (YYYY-MM-DD), or every recorded value without one; oldest first. */
+  listMetrics(owner: string, sinceDay?: string): Promise<MarketingMetric[]>;
   /** Oldest first, the order the operator added them. */
   listBookmarks(owner: string): Promise<MarketingBookmark[]>;
   getBookmark(owner: string, id: string): Promise<MarketingBookmark | null>;
@@ -100,7 +101,7 @@ export class InMemoryMarketingCopilotRepository implements MarketingCopilotRepos
   }
   async listPosts(owner: string, filter: MarketingPostFilter) {
     return [...this.posts.values()].filter((row) => row.ownerUserId === owner && (!filter.status?.length || filter.status.includes(row.status))
-      && (!filter.channel || row.channel === filter.channel) && (!filter.campaignId || row.campaignId === filter.campaignId))
+      && (!filter.channel || row.channel === filter.channel) && (!filter.campaignId || row.campaignId === filter.campaignId) && !filter.excludeKinds?.includes(row.kind))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, filter.limit).map((row) => ({ ...row }));
   }
   async getPost(owner: string, id: string) { const row = this.owned(this.posts, owner, id); return row ? { ...row } : null; }
@@ -118,10 +119,10 @@ export class InMemoryMarketingCopilotRepository implements MarketingCopilotRepos
     return { ...next };
   }
   async countPublications(owner: string, channel: MarketingChannel, since: string) {
-    return [...this.posts.values()].filter((row) => row.ownerUserId === owner && row.channel === channel
+    return [...this.posts.values()].filter((row) => row.ownerUserId === owner && row.channel === channel && row.kind !== "REPLY"
       && (row.status === "PUBLISHING" || (row.status === "PUBLISHED" && (row.publishedAt ?? row.updatedAt) >= since))).length;
   }
-  async listMemory(owner: string, query: MarketingMemoryQuery) {
+  async listMemory(owner: string, query: Omit<MarketingMemoryQuery, "limit"> & { limit?: number }) {
     const words = tokens(query.query ?? "");
     const score = (row: MarketingMemory) => {
       if (!words.length) return 0;
@@ -217,8 +218,8 @@ export class InMemoryMarketingCopilotRepository implements MarketingCopilotRepos
   async recordMetrics(owner: string, metrics: MarketingMetric[]) {
     for (const metric of metrics) this.metrics.set(`${owner}|${metric.day}|${metric.source}|${metric.key}`, { ...metric, owner });
   }
-  async listMetrics(owner: string, sinceDay: string) {
-    return [...this.metrics.values()].filter((row) => row.owner === owner && row.day >= sinceDay)
+  async listMetrics(owner: string, sinceDay?: string) {
+    return [...this.metrics.values()].filter((row) => row.owner === owner && (sinceDay === undefined || row.day >= sinceDay))
       .sort((a, b) => a.day.localeCompare(b.day) || a.source.localeCompare(b.source) || a.key.localeCompare(b.key)).map((row) => ({ day: row.day, source: row.source, key: row.key, value: row.value }));
   }
   private bookmarks = new Map<string, MarketingBookmark>();
@@ -330,8 +331,8 @@ export class PostgresMarketingCopilotRepository implements MarketingCopilotRepos
   updateCampaign(owner: string, id: string, patch: MarketingCampaignPatch) { return this.update(campaignTable, owner, id, patch); }
   async listPosts(owner: string, filter: MarketingPostFilter) {
     return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(postTable)} FROM marketing_copilot_posts WHERE owner_user_id=$1 AND ($2::text[] IS NULL OR status = ANY($2))
-      AND ($3::text IS NULL OR channel=$3) AND ($4::text IS NULL OR campaign_id=$4) ORDER BY updated_at DESC LIMIT $5`,
-      [owner, filter.status?.length ? filter.status : null, filter.channel ?? null, filter.campaignId ?? null, filter.limit])).rows.map(postTable.row);
+      AND ($3::text IS NULL OR channel=$3) AND ($4::text IS NULL OR campaign_id=$4) AND ($6::text[] IS NULL OR kind <> ALL($6::text[])) ORDER BY updated_at DESC LIMIT $5`,
+      [owner, filter.status?.length ? filter.status : null, filter.channel ?? null, filter.campaignId ?? null, filter.limit ?? null, filter.excludeKinds?.length ? filter.excludeKinds : null])).rows.map(postTable.row);
   }
   getPost(owner: string, id: string) { return this.one(postTable, owner, id); }
   createPost(input: MarketingPostCreateRecord) { return this.insert(postTable, { ...input, id: newId("mktpost") }); }
@@ -339,16 +340,16 @@ export class PostgresMarketingCopilotRepository implements MarketingCopilotRepos
     return fromStatus ? this.update(postTable, owner, id, patch, "AND status = ANY($3::text[])", [fromStatus]) : this.update(postTable, owner, id, patch);
   }
   async countPublications(owner: string, channel: MarketingChannel, since: string) {
-    const row = (await this.pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM marketing_copilot_posts WHERE owner_user_id=$1 AND channel=$2
+    const row = (await this.pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM marketing_copilot_posts WHERE owner_user_id=$1 AND channel=$2 AND kind <> 'REPLY'
       AND (status='PUBLISHING' OR (status='PUBLISHED' AND coalesce(published_at, updated_at) >= $3))`, [owner, channel, since])).rows[0];
     return Number.parseInt(row?.count ?? "0", 10);
   }
-  async listMemory(owner: string, query: MarketingMemoryQuery) {
+  async listMemory(owner: string, query: Omit<MarketingMemoryQuery, "limit"> & { limit?: number }) {
     const text = searchText(query.query);
     return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(memoryTable)} FROM marketing_copilot_memory WHERE owner_user_id=$1 AND ($3::text[] IS NULL OR kind = ANY($3::text[]))
         AND ($4::text IS NULL OR channel IS NULL OR channel=$4) AND ($2::text IS NULL OR search @@ websearch_to_tsquery('simple', $2))
       ORDER BY pinned DESC, CASE WHEN $2::text IS NULL THEN 0 ELSE ts_rank(search, websearch_to_tsquery('simple', $2)) END DESC, uses DESC, updated_at DESC LIMIT $5`,
-      [owner, text, query.kinds?.length ? query.kinds : null, query.channel ?? null, query.limit])).rows.map(memoryTable.row);
+      [owner, text, query.kinds?.length ? query.kinds : null, query.channel ?? null, query.limit ?? null])).rows.map(memoryTable.row);
   }
   async upsertMemory(input: MarketingMemoryCreateRecord) {
     const row = (await this.pool.query<Record<string, unknown>>(`INSERT INTO marketing_copilot_memory(id, owner_user_id, kind, key, text, channel, tags, source, pinned)
@@ -372,7 +373,7 @@ export class PostgresMarketingCopilotRepository implements MarketingCopilotRepos
     return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(eventTable)} FROM marketing_copilot_events WHERE owner_user_id=$1 AND ($2::text IS NULL OR pane_id=$2)
         AND ($3::text IS NULL OR post_id=$3) AND ($4::text[] IS NULL OR type = ANY($4::text[])) AND ($5::text[] IS NULL OR status = ANY($5::text[]))
       ORDER BY created_at DESC, id DESC LIMIT $6`,
-      [owner, filter.paneId ?? null, filter.postId ?? null, filter.types?.length ? filter.types : null, filter.status?.length ? filter.status : null, filter.limit])).rows.map(eventTable.row);
+      [owner, filter.paneId ?? null, filter.postId ?? null, filter.types?.length ? filter.types : null, filter.status?.length ? filter.status : null, filter.limit ?? null])).rows.map(eventTable.row);
   }
   async takeNextBrief(owner: string, paneId: string, staleMs: number) {
     const row = (await this.pool.query<Record<string, unknown>>(`UPDATE marketing_copilot_events SET status='TAKEN',
@@ -404,14 +405,14 @@ export class PostgresMarketingCopilotRepository implements MarketingCopilotRepos
         ON CONFLICT (owner_user_id, day, source, key) DO UPDATE SET value = EXCLUDED.value, recorded_at = now()`, [owner, metric.day, metric.source, metric.key, metric.value]);
     }
   }
-  async listMetrics(owner: string, sinceDay: string) {
+  async listMetrics(owner: string, sinceDay?: string) {
     // to_char: pg turns a date into a local-midnight Date, which shifts the day east of UTC.
     return (await this.pool.query<{ day: string; source: string; key: string; value: unknown }>(`SELECT to_char(day, 'YYYY-MM-DD') AS day, source, key, value FROM marketing_copilot_metrics
-      WHERE owner_user_id=$1 AND day >= $2 ORDER BY day, source, key LIMIT 5000`, [owner, sinceDay])).rows
+      WHERE owner_user_id=$1 AND ($2::date IS NULL OR day >= $2::date) ORDER BY day, source, key`, [owner, sinceDay ?? null])).rows
       .map((row) => ({ day: row.day, source: row.source, key: row.key, value: Number(row.value) }));
   }
   async listBookmarks(owner: string) {
-    return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(bookmarkTable)} FROM marketing_copilot_bookmarks WHERE owner_user_id=$1 ORDER BY created_at, id LIMIT 500`, [owner])).rows.map(bookmarkTable.row);
+    return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(bookmarkTable)} FROM marketing_copilot_bookmarks WHERE owner_user_id=$1 ORDER BY created_at, id`, [owner])).rows.map(bookmarkTable.row);
   }
   getBookmark(owner: string, id: string) { return this.one(bookmarkTable, owner, id); }
   createBookmark(input: MarketingBookmarkCreateRecord) { return this.insert(bookmarkTable, { ...input, id: newId("mktbm") }); }

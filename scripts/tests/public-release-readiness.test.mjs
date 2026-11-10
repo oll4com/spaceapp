@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { evaluatePublicRelease } from "../public-release-readiness.mjs";
 
 const policy = {
@@ -176,4 +181,33 @@ test("public release readiness accepts the exact non-redistribution policy", () 
 
   assert.equal(result.ok, true);
   assert.deepEqual(result.blockers, []);
+});
+
+test("readiness CLI validates an exact refreshed 1.2 prerelease seed and rejects stale seeds", () => {
+  const root = new URL("../../", import.meta.url); const fixture = mkdtempSync(join(tmpdir(), "space-seed-release-"));
+  try {
+    for (const path of ["scripts/public-release-readiness.mjs", "scripts/release-version.mjs", "scripts/space-shared-memory-seed.mjs", "packages/contracts/src/nous-shared-memory.ts"]) {
+      const target = join(fixture, path); mkdirSync(dirname(target), { recursive: true }); cpSync(new URL(path, root), target);
+    }
+    symlinkSync(fileURLToPath(new URL("node_modules", root)), join(fixture, "node_modules"), "dir");
+    writeFileSync(join(fixture, "package.json"), JSON.stringify({ type: "module" }));
+    mkdirSync(join(fixture, "packages/run-spaceapp"), { recursive: true });
+    writeFileSync(join(fixture, "packages/run-spaceapp/package.json"), JSON.stringify({ version: "1.2.0-hostroot.0" }));
+    mkdirSync(join(fixture, "docs/legal"), { recursive: true });
+    writeFileSync(join(fixture, "docs/legal/cli-distribution-policy.json"), JSON.stringify(policy));
+    writeFileSync(join(fixture, "THIRD_PARTY_NOTICES.md"), notices); writeFileSync(join(fixture, "Dockerfile"), "FROM node:22\n");
+    for (const path of ["packages/contracts/src/nous-shared-memory-seed.ts", "packages/db/src/nous-shared-memory-repository.ts", "packages/db/migrations/0266_nous_shared_memory.sql", "apps/api/src/nous/wiring.ts"]) {
+      mkdirSync(dirname(join(fixture, path)), { recursive: true });
+      writeFileSync(join(fixture, path), path.endsWith("wiring.ts") ? "registerSharedMemoryRoutes sharedMemory.ready sharedMemory.world" : "fixture");
+    }
+    const seedPath = join(fixture, "packages/contracts/src/nous-shared-memory-seed.json");
+    const seed = JSON.parse(readFileSync(new URL("packages/contracts/src/nous-shared-memory-seed.json", root), "utf8"));
+    writeFileSync(seedPath, JSON.stringify({ ...seed, releaseVersion: "1.2.0-hostroot.0" }));
+    const args = [join(fixture, "scripts/public-release-readiness.mjs"), "--version", "1.2.0-hostroot.0", "--npm-tag", "personal", "--release-mode", "full", "--runtime-version", "1.2.0-hostroot.0"];
+    assert.equal(JSON.parse(execFileSync(process.execPath, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })).ok, true);
+    writeFileSync(join(fixture, "apps/api/src/nous/wiring.ts"), "older core without shared memory");
+    assert.throws(() => execFileSync(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] }));
+    writeFileSync(seedPath, JSON.stringify(seed));
+    assert.throws(() => execFileSync(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] }));
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
 });

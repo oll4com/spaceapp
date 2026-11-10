@@ -1,4 +1,4 @@
-import type { CreateRemoteRepositoryInput, GitRemoteRepository, RepositoryListInput, RepositoryPage, RepositoryProviderAdapter, RepositoryTarget, RepositoryTargetListInput } from "@space/contracts";
+import type { CreateRemoteRepositoryInput, GitRemoteRepository, RepositoryListInput, RepositoryPage, RepositoryProviderAdapter, RepositoryTargetListInput } from "@space/contracts";
 import { AdapterBase, array, invalid, object, repositoryName, requiredTarget, segment, text } from "./base.js";
 import { GitControlError } from "../errors.js";
 function uuid(value: string): string { if (!/^\{[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\}$/i.test(value)) throw new GitControlError("INVALID_REPOSITORY", "A stable Bitbucket UUID is required."); return value; }

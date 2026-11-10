@@ -22,7 +22,7 @@ function authHeaders(role: "USER" | "OPERATOR" | "ADMIN") {
 
 async function setup(fetchImpl: typeof fetch = vi.fn(async () => { throw Object.assign(new TypeError("fetch failed"), { cause: new Error("connect ECONNREFUSED 127.0.0.1:4920") }); }) as unknown as typeof fetch, internalToken: string | null = null,
   antigravityProfileSource?: { list(): Promise<{ profileId: string; tokenPath: string }[]>; read(path: string): Promise<string> }, spaceOpenAiKeyFile?: string,
-  spaceClaudeKeyFile?: string) {
+  spaceClaudeKeyFile?: string, spaceKeyFiles?: Partial<Record<"OPENROUTER" | "DEEPSEEK", string>>) {
   const repository = new InMemoryGatewayRepository();
   repository.accounts.push({
     id: accountId, provider: "CODEX", label: "Team A", alias: null, email: "a@example.test", planType: "plus", status: "ACTIVE", statusReason: null,
@@ -32,12 +32,13 @@ async function setup(fetchImpl: typeof fetch = vi.fn(async () => { throw Object.
     credentialsExpiresAt: null, source: "OAUTH", sourceRef: null, blockedUntil: null
   });
   const store = new InMemorySpaceStore();
+  const baseConfig = getApiConfig({});
   const app = await createApp({
     store,
-    config: getApiConfig({}),
+    config: { ...baseConfig, instanceJobs: { ...baseConfig.instanceJobs, "gateway-priority-panes": false } },
     auth: { sessionSecret, devLogin: false, secureCookies: false },
     gatewayAdminService: createGatewayAdminService({ repository, gatewayUrl: "http://127.0.0.1:4920", fetchImpl, internalToken, antigravityProfileSource, spaceOpenAiKeyFile,
-      spaceClaudeKeyFile })
+      spaceClaudeKeyFile, spaceKeyFiles })
   });
   apps.push(app);
   return { app, repository, store };
@@ -196,10 +197,16 @@ describe("Space Gateway admin routes", () => {
     expect(resume.statusCode).toBe(409);
     expect(resume.json()).toMatchObject({ error: { code: "GATEWAY_ACCOUNT_FREE_PLAN" } });
     expect(repository.accounts[0]).toMatchObject({ status: "PAUSED", alias: null });
-    // On a paid plan again (a new sign-in), it resumes.
-    repository.accounts[0]!.planType = "plus";
-    const paid = await app.inject({ method: "PATCH", url: `/api/admin/gateway/accounts/${accountId}`, headers: authHeaders("ADMIN"), payload: { paused: false } });
-    expect(paid.json()).toMatchObject({ status: "ACTIVE", statusReason: null });
+    // On a paid plan again (a new sign-in or an upstream plan recheck), it resumes.
+    const recheckedRef: { current?: Awaited<ReturnType<typeof setup>> } = {};
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith(`/accounts/${accountId}/test`) && recheckedRef.current) recheckedRef.current.repository.accounts[0]!.planType = "google-ai-pro";
+      return new Response(JSON.stringify({ ok: true, planType: "google-ai-pro" }));
+    });
+    const rechecked = (recheckedRef.current = await setup(fetchImpl as unknown as typeof fetch, "internal-secret"));
+    Object.assign(rechecked.repository.accounts[0]!, { planType: "free", status: "PAUSED", statusReason: "Free plan: paused automatically." });
+    const paid = await rechecked.app.inject({ method: "PATCH", url: `/api/admin/gateway/accounts/${accountId}`, headers: authHeaders("ADMIN"), payload: { paused: false } });
+    expect(paid.json()).toMatchObject({ status: "ACTIVE", statusReason: null, planType: "google-ai-pro" });
   });
 
   it("pages request logs with a numeric cursor", async () => {
@@ -261,7 +268,7 @@ describe("Space Gateway admin routes", () => {
     const idToken = (email: string) => `x.${Buffer.from(JSON.stringify({ email })).toString("base64url")}.y`;
     const files: Record<string, string> = {
       "/p/main": JSON.stringify({ token: { refresh_token: "rt-main" }, id_token: idToken("main@example.com") }),
-      "/p/work": JSON.stringify({ token: { refresh_token: "rt-work" }, id_token: idToken("work@example.com") })
+      "/p/work": JSON.stringify({ token: { refresh_token: "rt-work" }, id_token_email: "work@example.com" })
     };
     const source = { list: async () => [{ profileId: "main", tokenPath: "/p/main" }, { profileId: "work", tokenPath: "/p/work" }, { profileId: "empty", tokenPath: "/p/none" }],
       read: async (path: string) => { if (!(path in files)) throw new Error("missing"); return files[path]!; } };
@@ -297,9 +304,44 @@ describe("Space Gateway admin routes", () => {
     const pool = await app.inject({ method: "POST", url: "/api/admin/gateway/api-key/add", headers: authHeaders("ADMIN"), payload: { provider: "OPENROUTER", apiKey: `sk-or-v1-${"o".repeat(40)}` } });
     expect(pool.json()).toMatchObject({ status: "CONNECTED" });
     expect(JSON.parse(String((fetchImpl.mock.calls[2] as unknown as [string, RequestInit])[1].body))).toEqual({ provider: "OPENROUTER", apiKey: `sk-or-v1-${"o".repeat(40)}` });
-    // Only OpenAI has a server key to reuse.
-    expect((await app.inject({ method: "POST", url: "/api/admin/gateway/api-key/add", headers: authHeaders("ADMIN"), payload: { provider: "DEEPSEEK", useSpaceKey: true } })).statusCode).toBe(422);
+    // The server's Google key serves Live voice and is never offered to Space Gateway.
+    expect((await app.inject({ method: "POST", url: "/api/admin/gateway/api-key/add", headers: authHeaders("ADMIN"), payload: { provider: "GOOGLE_AI", useSpaceKey: true } })).statusCode).toBe(422);
     expect((await app.inject({ method: "POST", url: "/api/admin/gateway/api-key/add", headers: authHeaders("OPERATOR"), payload: { provider: "OPENAI_API", useSpaceKey: true } })).statusCode).toBe(403);
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  it("caches the pools' supported models until a key is added or an account's usage is refreshed (7/11)", async () => {
+    let lists = 0;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (!url.endsWith("/pool-models")) return new Response(JSON.stringify({ status: "CONNECTED", account: { id: accountId, provider: "JINA", label: "Jina" } }));
+      lists += 1;
+      return new Response(JSON.stringify({ data: [{ provider: "JINA", models: [`jina-embeddings-v${lists}`], error: null }], fetchedAt: "2026-11-07T00:00:00.000Z" }));
+    });
+    const { app } = await setup(fetchImpl as unknown as typeof fetch, "internal-secret");
+    const models = async () => (await app.inject({ method: "GET", url: "/api/admin/gateway/pool-models", headers: authHeaders("ADMIN") })).json().data[0].models;
+    expect(await models()).toEqual(["jina-embeddings-v1"]);
+    expect(await models()).toEqual(["jina-embeddings-v1"]);
+    await app.inject({ method: "POST", url: "/api/admin/gateway/api-key/add", headers: authHeaders("ADMIN"), payload: { provider: "JINA", apiKey: `jina_${"j".repeat(40)}` } });
+    expect(await models()).toEqual(["jina-embeddings-v2"]);
+    await app.inject({ method: "POST", url: `/api/admin/gateway/accounts/${accountId}/usage`, headers: authHeaders("ADMIN"), payload: {} });
+    expect(await models()).toEqual(["jina-embeddings-v3"]);
+    expect(lists).toBe(3);
+    expect((await app.inject({ method: "GET", url: "/api/admin/gateway/pool-models", headers: authHeaders("OPERATOR") })).statusCode).toBe(403);
+  });
+
+  it("offers the OpenRouter and DeepSeek keys the server already holds to their key pools (Nous providers 2026-10-29)", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "gateway-pool-keys-"));
+    const openrouter = join(directory, "space-openrouter.key");
+    await writeFile(openrouter, `sk-or-v1-${"r".repeat(40)}\n`);
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ status: "CONNECTED", account: { id: accountId, provider: "OPENROUTER", label: "OpenRouter API key …rrrr" } })));
+    const { app } = await setup(fetchImpl as unknown as typeof fetch, "internal-secret", undefined, undefined, undefined, { OPENROUTER: openrouter, DEEPSEEK: join(directory, "absent.key") });
+    const added = await app.inject({ method: "POST", url: "/api/admin/gateway/api-key/add", headers: authHeaders("ADMIN"), payload: { provider: "OPENROUTER", useSpaceKey: true } });
+    expect(added.json()).toMatchObject({ status: "CONNECTED" });
+    expect(added.body).not.toContain("sk-or");
+    expect(JSON.parse(String((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({ provider: "OPENROUTER", apiKey: `sk-or-v1-${"r".repeat(40)}`, sourceRef: "space-openrouter" });
+    const absent = await app.inject({ method: "POST", url: "/api/admin/gateway/api-key/add", headers: authHeaders("ADMIN"), payload: { provider: "DEEPSEEK", useSpaceKey: true } });
+    expect(absent.statusCode).toBe(404);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     await rm(directory, { recursive: true, force: true });
   });
 
@@ -416,6 +458,14 @@ describe("Space Gateway admin routes", () => {
     expect(report.days.map((row: { key: string }) => row.key)).toEqual(["2026-10-01", "2026-10-02"]);
     expect(report.totals).toMatchObject({ requests: 2, errors: 1, inputTokens: 20, costUsd: 1 });
     expect(report.models).toEqual([expect.objectContaining({ key: "gpt-5.5", requests: 2 })]);
+    expect(report.providers).toEqual([expect.objectContaining({ key: "CODEX", requests: 2, rateLimited: 0 })]);
+    expect(report.fallbacks).toEqual([]);
+    expect(report.windows).toEqual([expect.objectContaining({ accountId, label: "Team A", quotaKey: "", primary: expect.objectContaining({ usedPercent: 40 }) })]);
+    expect(report.lost).toMatchObject({ windows: [], totals: { windows: 0, lostTokens: 0 } });
+    // The weekly window that reset on 5/10 at 60 %: 40 % lost, priced by the 26 tokens and $1 of the 7 days before.
+    repository.history.push({ accountId, window: "SECONDARY", quotaKey: "", usedPercent: 60, resetAt: "2026-10-05T06:00:00.000Z", recordedAt: "2026-10-05T05:00:00.000Z" });
+    const lost = (await app.inject({ url: "/api/admin/gateway/reports?from=2026-10-01&to=2026-10-31", headers: authHeaders("ADMIN") })).json().lost;
+    expect(lost.windows).toEqual([expect.objectContaining({ label: "Team A", provider: "CODEX", week: "2026-10-05", usedPercent: 60, lostPercent: 40, lostTokens: 17, lostCostUsd: 0.67 })]);
     expect((await app.inject({ url: "/api/admin/gateway/reports?from=2026-10-31&to=2026-10-01", headers: authHeaders("ADMIN") })).statusCode).toBe(422);
     expect((await app.inject({ url: "/api/admin/gateway/reports?from=2026-10-01", headers: authHeaders("ADMIN") })).statusCode).toBe(422);
   });

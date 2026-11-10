@@ -448,14 +448,14 @@ describe("Space public demo app", () => {
     // changes there are gated behind Admin mode on desktop.
     fireEvent.click(await workspaceAction("Resources", "Utilities", true));
     const resources = await screen.findByRole("dialog", { name: "Resources" });
-    const connection = await within(resources).findByRole("button", { name: /^Connection/ });
-    await waitFor(() => expect(connection.textContent).toMatch(/Latency & API traffic\d+ ms$/));
-    const aiUsage = within(resources).getByRole("button", { name: /^AI usage/ });
-    await waitFor(() => expect(aiUsage.textContent).toContain("91%"));
+    // Latency sits on the System row now (Connection merged into Performance, plan clipboard:sJpyQIBFGszW).
+    const system = await within(resources).findByRole("button", { name: /^System/ });
+    await waitFor(() => expect(system.textContent).toMatch(/Latency \d+ ms/));
+    const aiUsage = await within(resources).findByRole("button", { name: /^Accounts & quotas/ });
     fireEvent.click(aiUsage);
     expect(await within(resources).findByText("Demo account")).toBeTruthy();
     await waitFor(() => {
-      const codexUsage = within(resources).getByText("Codex usage").closest(".toolbar-metric-provider-section");
+      const codexUsage = resources.querySelector('.toolbar-metric-provider-section[data-provider="codex"]');
       expect(codexUsage?.textContent).toContain("Routing capacity · all accounts84%");
       expect(codexUsage?.textContent).toContain("Demo account");
     });
@@ -465,14 +465,10 @@ describe("Space public demo app", () => {
     await waitFor(() => expect(within(resources).getByText("Space CLI sessions").closest(".resources-embedded-metric")?.textContent).toContain("Cleanup eligible"));
     expect(within(resources).getByText("Running").parentElement?.textContent).toBe("Running3");
 
-    fireEvent.change(view, { target: { value: "connection" } });
-    expect(await within(resources).findByText("42 ms")).toBeTruthy();
-    expect(within(resources).getByText("HTTP 5xx errors").parentElement?.textContent).toBe("HTTP 5xx errors0");
-
-    fireEvent.change(view, { target: { value: "provider" } });
-    // codex-lb and its routes are retired: the provider view names Space Gateway and offers no switch.
-    expect(await within(resources).findByText(/Codex runs through Space Gateway/)).toBeTruthy();
-    expect(within(resources).queryByRole("menu", { name: "Provider quick switch" })).toBeNull();
+    // Provider routing (one fixed sentence) and Connection & API (Performance's own metrics) are gone from the views.
+    const values = [...(view as HTMLSelectElement).options].map((option) => option.value);
+    expect(values).not.toContain("provider");
+    expect(values).not.toContain("connection");
   });
 
   it("confirms safe memory reclaim as a local no-op through Manage", async () => {
@@ -491,7 +487,7 @@ describe("Space public demo app", () => {
     await enableAdminMode();
 
     const resources = await openResourcesView("ai");
-    const usage = (await within(resources).findByText("Codex usage")).closest(".toolbar-metric-provider-section") as HTMLElement;
+    const usage = await waitFor(() => resources.querySelector('.toolbar-metric-provider-section[data-provider="codex"]') as HTMLElement);
     const reset = await within(usage).findByRole("button", { name: "Resets 2" });
     fireEvent.click(reset);
 
@@ -513,16 +509,13 @@ describe("Space public demo app", () => {
       return await within(dock).findByRole("switch", { name: "Enable Codex CLI" }) as HTMLInputElement;
     };
     // The ALL and Provider toolbar badges now live in the Resources window (ecc0af72fb).
-    const findProviderRouting = async (accountUsage: string) => {
+    // Accounts & quotas lists Codex only while Codex is on (plan clipboard:sJpyQIBFGszW).
+    const findAccounts = async () => {
       const workspace = await openWorkspaceMenu();
       fireEvent.click(within(workspace).getByRole("button", { name: "Resources" }));
       const resources = await screen.findByRole("dialog", { name: "Resources" });
-      const aiUsage = await within(resources).findByRole("button", { name: /^AI usage/ });
-      await waitFor(() => expect(aiUsage.textContent).toContain(accountUsage));
-      fireEvent.click(aiUsage);
-      const view = await within(resources).findByRole("combobox", { name: "Resource view" }) as HTMLSelectElement;
-      fireEvent.change(view, { target: { value: "provider" } });
-      await waitFor(() => expect(view.value).toBe("provider"));
+      fireEvent.click(await within(resources).findByRole("button", { name: /^Accounts & quotas/ }));
+      await within(resources).findByRole("combobox", { name: "Resource view" });
       return resources;
     };
     const findAddChatPane = async () => {
@@ -546,8 +539,8 @@ describe("Space public demo app", () => {
     expect((await demoRuntimeBundle.runtime.api.panes("room:demo-launch")).data.some((pane) =>
       pane.mode === "CHAT" || pane.terminalRuntimeId === "codex" || pane.terminalRuntimeId === "cli:codex"
     )).toBe(false);
-    const offResources = await findProviderRouting("OFF");
-    expect(within(offResources).queryByText(/Codex runs through Space Gateway/)).toBeNull();
+    const offResources = await findAccounts();
+    await waitFor(() => expect(offResources.querySelector('.toolbar-metric-provider-section[data-provider="codex"]')).toBeNull());
     expect(await findAddChatPane()).toHaveProperty("disabled", true);
 
     // Resources and Create replaced the dock view, so reopen the CLI dock to re-enable.
@@ -555,8 +548,8 @@ describe("Space public demo app", () => {
     fireEvent.click(enableToggle);
     await waitFor(() => expect(enableToggle.checked).toBe(true));
     expect((await demoRuntimeBundle.runtime.api.cliRuntimeSettings()).settings.find(setting => setting.runtimeId === "cli:codex")?.enabled).toBe(true);
-    const onResources = await findProviderRouting("91%");
-    expect(await within(onResources).findByText(/Codex runs through Space Gateway/)).toBeTruthy();
+    const onResources = await findAccounts();
+    await waitFor(() => expect(onResources.querySelector('.toolbar-metric-provider-section[data-provider="codex"]')).toBeTruthy());
     expect(await findAddChatPane()).toHaveProperty("disabled", false);
     expect((await demoRuntimeBundle.runtime.api.panes("room:demo-launch")).data.some((pane) =>
       pane.mode === "CHAT" || pane.terminalRuntimeId === "codex" || pane.terminalRuntimeId === "cli:codex"

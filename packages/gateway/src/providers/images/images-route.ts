@@ -9,7 +9,7 @@ import { requestOrigin } from "../../client-detect.js";
 import { gatewayError, gatewayErrors, type GatewayErrorEnvelope } from "../../errors.js";
 import { checkKeyLimits, PolicyRejection } from "../../policy.js";
 import { costUsd, geminiCostUsd, imageCostUsd, type ImageTokenUsage } from "../../pricing/pricing.js";
-import { readBounded } from "../../proxy-util.js";
+import { clientRequestId, readBounded } from "../../proxy-util.js";
 import type { RequestLogWriter } from "../../request-log-writer.js";
 import { selectAccount } from "../../router/balancer.js";
 import type { GatewayRouteHelpers } from "../../server.js";
@@ -337,7 +337,7 @@ export function registerImageRoutes(app: FastifyInstance, helpers: GatewayRouteH
     }
     const settings = await options.settings();
     const scope = key.accountScopeEnabled ? new Set(key.accountIds) : null;
-    const requestId = `req_${randomUUID().replace(/-/g, "")}`;
+    const requestId = clientRequestId(request) ?? `req_${randomUUID().replace(/-/g, "")}`;
     const result = await job.run(settings, scope);
     const errorText = result.ok ? null : typeof result.error === "string" ? result.error : result.error.error.message;
     options.logs.add({

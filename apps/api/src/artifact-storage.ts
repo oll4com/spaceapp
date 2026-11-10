@@ -1,9 +1,10 @@
-import { join, resolve, sep } from "node:path";
+import { rmdir } from "node:fs/promises";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import type { Artifact } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 import { agentFileReadPath } from "./cli-agent-files.js";
 import { FilesystemError } from "./filesystem-error.js";
-import { unlinkWorkspaceFile } from "./workspace-filesystem.js";
+import { descriptorPath, openWorkspacePath, unlinkWorkspaceFile } from "./workspace-filesystem.js";
 
 export function safeStorageSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 140) || "item";
@@ -86,10 +87,27 @@ export function localArtifactFilePath(input: { artifactRoot: string; artifact: A
     candidate = join(input.artifactRoot, "browser-evidence", safeBrowserEvidenceSegment(captureId), safeCliFilename(filename));
   }
 
+  if (parsed.hostname === "mcp-executions" && segments.length === 2) {
+    // The executor (mcp.ts) names the folder after the execution id with every character outside [A-Za-z0-9_-] replaced by "_".
+    const [executionId, filename] = segments as [string, string];
+    candidate = join(input.artifactRoot, "mcp-executions", executionId.replace(/[^A-Za-z0-9_-]/g, "_"), safeCliFilename(filename));
+  }
+
   if (!candidate || !pathInside(input.artifactRoot, candidate)) {
     throw new SpaceConflictError(`Artifact ${input.artifact.id} does not have a supported local file-backed storage URI.`);
   }
   return candidate;
+}
+
+/** A browser-evidence file lives in its own capture folder, which goes with its last file (rmdir keeps a folder that holds
+ *  anything and never follows a link); every other store shares day folders that stay. */
+async function unlinkArtifactFile(artifactRoot: string, filePath: string): Promise<void> {
+  await unlinkWorkspaceFile(artifactRoot, filePath);
+  const folder = dirname(filePath);
+  if (dirname(folder) !== join(artifactRoot, "browser-evidence")) return;
+  const parent = await openWorkspacePath(artifactRoot, dirname(folder), true).catch(() => null);
+  if (!parent) return;
+  try { await rmdir(join(descriptorPath(parent), basename(folder))); } catch { /* not empty, or already gone */ } finally { await parent.close(); }
 }
 
 export async function permanentlyDeleteLocalArtifact(input: {
@@ -99,7 +117,7 @@ export async function permanentlyDeleteLocalArtifact(input: {
 }): Promise<Artifact> {
   const filePath = localArtifactFilePath({ artifactRoot: input.artifactRoot, artifact: input.artifact });
   try {
-    await unlinkWorkspaceFile(input.artifactRoot, filePath);
+    await unlinkArtifactFile(input.artifactRoot, filePath);
   } catch (error) {
     if (!(error instanceof FilesystemError && error.code === "NOT_FOUND")) {
       throw error;
@@ -121,7 +139,7 @@ export async function sweepExpiredBrowserArtifacts(input: {
   removeFile?: (path: string) => Promise<void>;
 }): Promise<BrowserArtifactRetentionSweepResult> {
   const expired = await input.store.deleteExpiredBrowserArtifacts(input.at);
-  const removeFile = input.removeFile ?? ((filePath: string) => unlinkWorkspaceFile(input.artifactRoot, filePath));
+  const removeFile = input.removeFile ?? ((filePath: string) => unlinkArtifactFile(input.artifactRoot, filePath));
   let filesRemoved = 0;
   const fileErrors: Array<{ artifactId: string; message: string }> = [];
   for (const artifact of expired) {

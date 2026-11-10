@@ -264,6 +264,19 @@ describe("Codex App Server Unix-socket control", () => {
     });
   });
 
+  it("carries an original API request id in native turn metadata without changing the prompt or other turns", async () => {
+    const server = await listen(initializedServer(message => message.method === "turn/start"
+      ? { id: message.id, result: { turn: { id: "turn:trace", status: "inProgress" } } } : undefined));
+    const service = createCodexAppServerSocketControlService({ socketPath: server.socketPath, timeoutMs: 500 });
+    for (const requestId of ["req:api-original", undefined, "x".repeat(121), "has space"]) {
+      await service.startTurn({ threadId: "thread:trace", prompt: "Fixed prompt", clientUserMessageId: "command:trace", sourceRequestId: requestId });
+    }
+    const turns = server.messages.filter(message => message.method === "turn/start");
+    expect(turns[0]?.params).toMatchObject({ responsesapiClientMetadataPatch: { space_request_id: "req:api-original" },
+      input: [{ type: "text", text: "Fixed prompt", text_elements: [] }] });
+    for (const turn of turns.slice(1)) expect(turn.params).not.toHaveProperty("responsesapiClientMetadataPatch");
+  });
+
   it("sanitizes remote failures and bounds unresponsive sockets", async () => {
     const failing = await listen(initializedServer((message) => {
       if (message.method === "turn/interrupt") {

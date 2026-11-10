@@ -264,7 +264,8 @@ describe("SystemAnalyticsWorkspace", () => {
     const sessionTable = await screen.findByText("Space CLI sessions");
     expect(within(sessionTable.closest("article")!).getAllByText("Codex CLI").length).toBeGreaterThan(0);
     expect(within(sessionTable.closest("article")!).getByText("OpenCode Diagnostics")).toBeTruthy();
-    expect(mocks.sessions).toHaveBeenCalledWith("10m");
+    // Opened on Models (Resources › Token usage & analytics), the range starts at 24 h as the former Token usage page did.
+    expect(mocks.sessions).toHaveBeenCalledWith("24h");
   });
 
   it("shows the Installs tab only where install pings exist, one row per installation", async () => {

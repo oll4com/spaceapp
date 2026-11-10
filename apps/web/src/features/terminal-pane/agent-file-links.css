@@ -23,3 +23,9 @@
   color: #06261e;
   box-shadow: 0 0 0 1px rgba(6, 38, 30, 0.55);
 }
+
+/* nous_msg:8e7e6c25: file mentions in plain texts (appointment notes, notification bodies, Done) link like ChatMarkdown's. */
+a.file-mention-link { color: inherit; text-decoration: underline dotted #5cc8aa; cursor: pointer; overflow-wrap: anywhere; }
+a.file-mention-link > svg { width: 1em; height: 1em; margin-left: 0.2em; vertical-align: -0.15em; color: #5cc8aa; }
+.agent-file-mention-problem { position: fixed; right: 16px; bottom: 16px; z-index: 1300; max-width: min(420px, calc(100vw - 32px)); margin: 0; padding: 0.6rem 0.8rem;
+  border-radius: 10px; background: #2a1517; color: #f7c6cc; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); cursor: pointer; }

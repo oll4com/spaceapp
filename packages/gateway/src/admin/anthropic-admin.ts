@@ -26,10 +26,12 @@ export function startAnthropicBillingSync(options: {
   const now = options.now ?? Date.now;
   let running: Promise<{ ok: boolean; error: string | null; limitsSet: number }> | null = null;
   const sync = async () => {
-    const record = await options.repository.getAnthropicAdmin();
-    if (!record) return { ok: false, error: "not_configured", limitsSet: 0 };
     const at = new Date(now()).toISOString();
     try {
+      // Inside the try: a database that cannot be reached fails this sync, never the gateway (2026-10-28: Postgres down
+      // on a full disk made this read reject unhandled, and every worker started afterwards exited on it).
+      const record = await options.repository.getAnthropicAdmin();
+      if (!record) return { ok: false, error: "not_configured", limitsSet: 0 };
       const cipher = options.cipher();
       if (!cipher) throw new AnthropicAdminError("credential_key_missing", 0);
       let adminKey: string;

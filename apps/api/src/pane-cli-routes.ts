@@ -33,7 +33,7 @@ import { recordAudit } from "./request-audit.js";
 import type { RoomPaneController } from "./room-pane-control.js";
 import type { NativeTaskExecution } from "./room-task-telemetry.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
-import { isOperatorPerson, noteOperatorPaneInput } from "./queue-operator-grants.js";
+import { grantsFromOperatorLine, noteOperatorPaneInput } from "./queue-operator-grants.js";
 
 const cliTerminalClientEventBodyLimitBytes = 2 * 1024;
 
@@ -107,6 +107,25 @@ function closeCliSocketWithSetupError(
     )
   );
   socket.close(1008, "CLI terminal unavailable");
+}
+
+/** How long the page waits for GET model-settings/status (`cliModelSettingsStatus` in the web's live-api.ts). */
+export const cliModelSettingsStatusReadMs = 8_000;
+
+/**
+ * Milliseconds since the request began at each step of a CLI route, logged as `cli_route.steps` when it took 1 s or more
+ * (4/11: GET cli/session p50 4 s and model-settings/status p99 8 s on stable, and no log line named the step).
+ */
+export function cliRouteSteps(request: Pick<FastifyRequest, "log">, route: string, now: () => number = () => performance.now()) {
+  const startedAt = now();
+  const steps: Record<string, number> = {};
+  return {
+    mark(name: string) { steps[name] = Math.round(now() - startedAt); },
+    log(runtimeId: string | null | undefined) {
+      const totalMs = Math.round(now() - startedAt);
+      if (totalMs >= 1_000) request.log.info({ event: "cli_route.steps", route, runtimeId, totalMs, steps }, "Slow CLI route steps");
+    }
+  };
 }
 
 /**
@@ -202,7 +221,7 @@ export function registerPaneCliTerminalRoutes(app: FastifyInstance, options: {
         userId: request.user!.id,
         proofScope: request.user?.proofScope,
         proofSession: request.sessionPrincipal === "user:operator-proof",
-        onOperatorInput: isOperatorPerson(request.user) ? noteOperatorPaneInput : undefined,
+        onOperatorInput: grantsFromOperatorLine(request) ? noteOperatorPaneInput : undefined,
         requestId: request.requestIdForSpace,
         log: request.log
       });
@@ -211,49 +230,64 @@ export function registerPaneCliTerminalRoutes(app: FastifyInstance, options: {
     }
   });
   app.get("/api/panes/:id/cli/session", defaultRouteRateLimitOptions, async (request) => {
-    const params = parseQuery(idParamSchema, request.params);
-    const query = parseQuery(cliSessionQuerySchema, request.query);
-    const pane = await getPaneById(store, params.id);
-    assertCliPaneCompatible(pane);
-    await assertPaneCliRuntimeEnabled(pane);
-    assertRootAdmin(request, pane.terminalRuntimeId);
-    await cliPaneReopener.settled(pane.id);
-    let active = await store.getActivePaneCliSession(pane.id);
-    if (!active || !active.isActive || active.status === "EXITED" || active.status === "ERROR") {
-      return null;
-    }
-    active = await cliTerminalManager.reconcileNormalSessionHostState(active);
-    if (!active.isActive || active.status === "EXITED" || active.status === "ERROR") {
-      return null;
-    }
-    assertRootAdmin(request, active.runtimeId);
-    await cliRuntimeVisibility.assertEnabled(active.runtimeId);
-    const runtime = request.user?.automationScope === "APP_DIAGNOSTICS"
-      ? activeCliSessionObserverRuntime(config, active.runtimeId)
-      : findRuntime(await cliRuntimeRegistryCache.readStaleWhileRefreshing(), active.runtimeId);
-    if (!runtime) {
-      throw new SpaceNotFoundError(`CLI runtime ${active.runtimeId} was not found.`);
-    }
-    // A balanced CLI's pane learns whether it is on Auto, so its account picker shows it after a reload.
-    const accountMode = cliAccountBalancer && isCliBalancedRuntimeId(active.runtimeId)
-      ? { accountMode: await cliAccountBalancer.isAuto(pane.id) ? "AUTO" as const : "PROFILE" as const } : {};
-    return { ...accountMode, ...await buildPaneCliSessionResponse({
-      store,
-      runtime,
-      sessionId: active.sessionId,
-      includeWebsocket: true,
-      includeTranscript:
-        request.user?.automationScope === "APP_DIAGNOSTICS"
-          ? false
-          : query.includeTranscript,
-      compactTranscript:
-        request.user?.automationScope === "APP_DIAGNOSTICS"
-          ? false
-          : Boolean(query.compactTranscript),
-      proofScope: request.user?.proofScope,
-      tokenTtlMs: config.cliTokenTtlMs,
-      issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
-    }) };
+    const step = cliRouteSteps(request, "GET /api/panes/:id/cli/session");
+    let runtimeId: string | null = null;
+    try {
+      const params = parseQuery(idParamSchema, request.params);
+      const query = parseQuery(cliSessionQuerySchema, request.query);
+      const pane = await getPaneById(store, params.id);
+      runtimeId = pane.terminalRuntimeId ?? null;
+      step.mark("pane");
+      assertCliPaneCompatible(pane);
+      await assertPaneCliRuntimeEnabled(pane);
+      step.mark("enabled");
+      assertRootAdmin(request, pane.terminalRuntimeId);
+      await cliPaneReopener.settled(pane.id);
+      step.mark("reopen");
+      let active = await store.getActivePaneCliSession(pane.id);
+      step.mark("session");
+      if (!active || !active.isActive || active.status === "EXITED" || active.status === "ERROR") {
+        return null;
+      }
+      active = await cliTerminalManager.reconcileNormalSessionHostState(active);
+      step.mark("host");
+      if (!active.isActive || active.status === "EXITED" || active.status === "ERROR") {
+        return null;
+      }
+      assertRootAdmin(request, active.runtimeId);
+      // The pane's own runtime was checked above; only a session on another runtime needs its own check.
+      if (pane.mode !== "TERMINAL" || pane.terminalRuntimeId !== active.runtimeId) await cliRuntimeVisibility.assertEnabled(active.runtimeId);
+      step.mark("visible");
+      const runtime = request.user?.automationScope === "APP_DIAGNOSTICS"
+        ? activeCliSessionObserverRuntime(config, active.runtimeId)
+        : findRuntime(await cliRuntimeRegistryCache.readStaleWhileRefreshing(), active.runtimeId);
+      step.mark("registry");
+      if (!runtime) {
+        throw new SpaceNotFoundError(`CLI runtime ${active.runtimeId} was not found.`);
+      }
+      // A balanced CLI's pane learns whether it is on Auto, so its account picker shows it after a reload.
+      const accountMode = cliAccountBalancer && isCliBalancedRuntimeId(active.runtimeId)
+        ? { accountMode: await cliAccountBalancer.isAuto(pane.id) ? "AUTO" as const : "PROFILE" as const } : {};
+      step.mark("account");
+      return { ...accountMode, ...await buildPaneCliSessionResponse({
+        store,
+        runtime,
+        sessionId: active.sessionId,
+        session: active,
+        includeWebsocket: true,
+        includeTranscript:
+          request.user?.automationScope === "APP_DIAGNOSTICS"
+            ? false
+            : query.includeTranscript,
+        compactTranscript:
+          request.user?.automationScope === "APP_DIAGNOSTICS"
+            ? false
+            : Boolean(query.compactTranscript),
+        proofScope: request.user?.proofScope,
+        tokenTtlMs: config.cliTokenTtlMs,
+        issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
+      }) };
+    } finally { step.log(runtimeId); }
   });
 }
 
@@ -268,7 +302,7 @@ export function registerPaneCliModelRoutes(app: FastifyInstance, options: {
   cliTerminalManager: CliTerminalManager;
   assertCliHttpMutationControl: (request: FastifyRequest, session: PaneCliSession) => Promise<void>;
   waitForCodexThreadSettings: (input: { threadId: string; cwd: string | null; sessionId: string; modelId: string; reasoningEffort: string; models: CodexAppServerSocketModelOption[]; }) => Promise<void>;
-  readPaneNativeModelSettings: (session: PaneCliSession) => Promise<PaneCliModelSettings>;
+  readPaneNativeModelSettings: (session: PaneCliSession, mark?: (step: string) => void, signal?: AbortSignal) => Promise<PaneCliModelSettings>;
   applyNativePaneModel: (input: {
     pane: Pane; active: PaneCliSession; modelId: string; reasoningEffort: string; traceId: string;
     assertControl: (current: PaneCliSession) => Promise<void>;
@@ -322,48 +356,63 @@ export function registerPaneCliModelRoutes(app: FastifyInstance, options: {
       ? (await readPaneOpenCodeModelSettings(pane, active, request.requestIdForSpace)).settings
       : (await readPaneCliModelSettings(pane, active, request.requestIdForSpace)).settings;
   });
-  app.get("/api/panes/:id/cli/model-settings/status", defaultRouteRateLimitOptions, async (request) => {
-    const params = parseQuery(idParamSchema, request.params);
-    const pane = await getPaneById(store, params.id);
-    assertCliPaneCompatible(pane);
-    await assertPaneCliRuntimeEnabled(pane);
-    const active = await store.getActivePaneCliSession(pane.id);
-    if (!active || !active.isActive || active.status === "EXITED" || active.status === "ERROR") {
-      throw new SpaceConflictError("Attach a CLI session before checking its model settings.");
-    }
-    assertNormalCliSession(active);
-    assertRootAdmin(request, active.runtimeId);
+  app.get("/api/panes/:id/cli/model-settings/status", defaultRouteRateLimitOptions, async (request, reply) => {
+    const step = cliRouteSteps(request, "GET /api/panes/:id/cli/model-settings/status");
+    let runtimeId: string | null = null;
+    // The page waits 8 s for this answer (cliModelSettingsStatus); the screen read stops then, or as soon as the client leaves
+    // (stable 4/11: the read went on for up to 156 s after the page had given up).
+    const reading = new AbortController();
+    const stopReading = () => reading.abort(new SpaceFeatureDisabledError("CLI_MODEL_CATALOG_UNAVAILABLE",
+      "The CLI screen was not read in time. Try again."));
+    const readingTimer = setTimeout(stopReading, cliModelSettingsStatusReadMs);
+    reply.raw.once("close", stopReading);
     try {
-      const settings = !isCodexDirectParityRuntime(active.runtimeId) && !isOpenCodeDirectParityRuntime(active.runtimeId)
-        ? await readPaneNativeModelSettings(active)
-        : isOpenCodeDirectParityRuntime(active.runtimeId)
-        ? (await readPaneOpenCodeModelSettings(pane, active, request.requestIdForSpace)).settings
-        : (await readPaneCliModelSettings(pane, active, request.requestIdForSpace)).settings;
-      return paneCliModelSettingsStatusSchema.parse({ status: "AVAILABLE", settings });
-    } catch (error) {
-      if (error instanceof SpaceConflictError) {
-        return paneCliModelSettingsStatusSchema.parse({
-          status: "UNAVAILABLE",
-          reasonCode: "CONFLICT",
-          reason: error.message
-        });
+      const params = parseQuery(idParamSchema, request.params);
+      const pane = await getPaneById(store, params.id);
+      runtimeId = pane.terminalRuntimeId ?? null;
+      step.mark("pane");
+      assertCliPaneCompatible(pane);
+      await assertPaneCliRuntimeEnabled(pane);
+      step.mark("enabled");
+      const active = await store.getActivePaneCliSession(pane.id);
+      step.mark("session");
+      if (!active || !active.isActive || active.status === "EXITED" || active.status === "ERROR") {
+        throw new SpaceConflictError("Attach a CLI session before checking its model settings.");
       }
-      if (
-        error instanceof SpaceFeatureDisabledError &&
-        (error.errorCode === "CODEX_SESSION_CONTROL_UNAVAILABLE" ||
-          error.errorCode === "CODEX_MODEL_CATALOG_UNAVAILABLE" ||
-          error.errorCode === "OPENCODE_SESSION_CONTROL_UNAVAILABLE" ||
-          error.errorCode === "OPENCODE_MODEL_CATALOG_UNAVAILABLE" ||
-          error.errorCode === "CLI_MODEL_CATALOG_UNAVAILABLE")
-      ) {
-        return paneCliModelSettingsStatusSchema.parse({
-          status: "UNAVAILABLE",
-          reasonCode: error.errorCode,
-          reason: error.message
-        });
+      assertNormalCliSession(active);
+      assertRootAdmin(request, active.runtimeId);
+      try {
+        const settings = !isCodexDirectParityRuntime(active.runtimeId) && !isOpenCodeDirectParityRuntime(active.runtimeId)
+          ? await readPaneNativeModelSettings(active, step.mark, reading.signal)
+          : isOpenCodeDirectParityRuntime(active.runtimeId)
+          ? (await readPaneOpenCodeModelSettings(pane, active, request.requestIdForSpace)).settings
+          : (await readPaneCliModelSettings(pane, active, request.requestIdForSpace)).settings;
+        return paneCliModelSettingsStatusSchema.parse({ status: "AVAILABLE", settings });
+      } catch (error) {
+        if (error instanceof SpaceConflictError) {
+          return paneCliModelSettingsStatusSchema.parse({
+            status: "UNAVAILABLE",
+            reasonCode: "CONFLICT",
+            reason: error.message
+          });
+        }
+        if (
+          error instanceof SpaceFeatureDisabledError &&
+          (error.errorCode === "CODEX_SESSION_CONTROL_UNAVAILABLE" ||
+            error.errorCode === "CODEX_MODEL_CATALOG_UNAVAILABLE" ||
+            error.errorCode === "OPENCODE_SESSION_CONTROL_UNAVAILABLE" ||
+            error.errorCode === "OPENCODE_MODEL_CATALOG_UNAVAILABLE" ||
+            error.errorCode === "CLI_MODEL_CATALOG_UNAVAILABLE")
+        ) {
+          return paneCliModelSettingsStatusSchema.parse({
+            status: "UNAVAILABLE",
+            reasonCode: error.errorCode,
+            reason: error.message
+          });
+        }
+        throw error;
       }
-      throw error;
-    }
+    } finally { clearTimeout(readingTimer); step.log(runtimeId); }
   });
   app.patch("/api/panes/:id/cli/model-settings", defaultRouteRateLimitOptions, async (request) => {
     assertManagedPlanMutationScope(request);

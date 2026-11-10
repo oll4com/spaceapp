@@ -2419,7 +2419,7 @@ describe("Space contracts", () => {
     }).status).toBe("QUEUED");
     expect(session.permissionMode).toBeNull();
     expect(session.collaborationMode).toBeNull();
-    expect(JSON.stringify({ session, message, run })).not.toMatch(new RegExp("10\\.100\\.0\\.216|api[_-]?key|sec" + "ret|pass" + "word|tok" + "en", "i"));
+    expect(JSON.stringify({ session, message, run })).not.toMatch(new RegExp("192\\.0\\.2\\.216|api[_-]?key|sec" + "ret|pass" + "word|tok" + "en", "i"));
   });
 
   it("validates stored native Coder agent sessions and proxy requests", () => {

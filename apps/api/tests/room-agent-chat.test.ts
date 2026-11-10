@@ -4,7 +4,7 @@ import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { createRoomAgentService } from "../src/room-agent.js";
 import {
-  buildRoomAgentChatMessages, ChatCompletionSseParser, createRoomAgentChat, roomAgentTimeline,
+  buildRoomAgentChatMessages, ChatCompletionSseParser, createGatewayChatModel, createRoomAgentChat, roomAgentTimeline,
   type ChatStreamChunk, type RoomAgentChatBody, type RoomAgentChatModel
 } from "../src/room-agent-chat.js";
 import { createRoomAgentTools, type RoomAgentToolDeps } from "../src/room-agent-tools.js";
@@ -14,11 +14,14 @@ type Step = ChatStreamChunk[] | ((body: RoomAgentChatBody, signal: AbortSignal) 
 
 function scriptedModel(steps: Step[], supportsTools = true) {
   const bodies: RoomAgentChatBody[] = [];
-  const model: RoomAgentChatModel & { bodies: RoomAgentChatBody[] } = {
+  const traceIds: Array<string | undefined> = [];
+  const model: RoomAgentChatModel & { bodies: RoomAgentChatBody[]; traceIds: Array<string | undefined> } = {
     supportsTools,
     bodies,
-    async *stream(body, signal) {
+    traceIds,
+    async *stream(body, signal, trace) {
       bodies.push(structuredClone(body));
+      traceIds.push(trace?.traceId);
       const step = steps.shift() ?? [{ content: "Done." }];
       const chunks = typeof step === "function" ? await step(body, signal) : step;
       for (const chunk of chunks) yield chunk;
@@ -363,7 +366,7 @@ describe("Room Agent conversation history", () => {
       { role: "assistant", content: "answer 5" }
     ]);
     const small = buildRoomAgentChatMessages({ systemPrompt: "system", history, budgetChars: 200 });
-    expect(small[1]).toEqual({ role: "system", content: "Earlier messages were dropped from context." });
+    expect(small[1]).toMatchObject({ role: "system", content: expect.stringMatching(/^\d+ earlier turns? of this conversation (is|are) beyond your context; the room transcript keeps/) });
     expect(small.filter((message) => message.role === "user").length).toBeLessThan(6);
     expect(small.at(-1)).toEqual({ role: "assistant", content: "answer 5" });
   });
@@ -373,6 +376,24 @@ describe("Room Agent conversation history", () => {
       row("s1", "system", JSON.stringify({ v: 1, type: "CONFIRMATION", turn: "a1", token: "t", action: "Close Bob", status: "PENDING", result: null, expiresAt: "2099-01-01T00:00:00.000Z" }), 4)];
     expect(buildRoomAgentChatMessages({ systemPrompt: "system", history, currentMessageId: "a1" })).toEqual([
       { role: "system", content: "system" }, { role: "user", content: "κλείσε τον Bob" }]);
+  });
+});
+
+describe("Room Agent gateway model", () => {
+  it("sends the turn's request id as x-request-id when Space Gateway can keep it, and nothing else (OBS-006)", async () => {
+    const headers: Array<Record<string, string>> = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      headers.push(init.headers as Record<string, string>);
+      return new Response("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n", { status: 200 });
+    }) as unknown as typeof fetch;
+    const model = createGatewayChatModel({ baseUrl: "http://127.0.0.1:1", keyFile: null, fetchImpl });
+    const body: RoomAgentChatBody = { model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] };
+    for (const trace of [{ traceId: "req:abc123def456" }, { traceId: "has space" }, { traceId: "x".repeat(121) }, undefined]) {
+      const chunks: ChatStreamChunk[] = [];
+      for await (const chunk of model.stream(body, new AbortController().signal, trace)) chunks.push(chunk);
+      expect(chunks).toEqual([{ content: "ok" }]);
+    }
+    expect(headers.map((sent) => sent["x-request-id"])).toEqual(["req:abc123def456", undefined, undefined, undefined]);
   });
 });
 
@@ -457,6 +478,16 @@ describe("Room Agent conversation API", () => {
     expect(received).toContain('"text":"Βλέπω ένα pane."');
     await vi.waitFor(async () => expect((await c.read()).status).toBe("IDLE"));
     expect((await c.read()).messages.at(-1)).toMatchObject({ kind: "CHAT", content: "Βλέπω ένα pane.", status: "COMPLETED" });
+  });
+
+  it("gives every model step of a turn the request id the API answered with (OBS-006)", async () => {
+    const c = await setup([toolCall("no_such_tool", {}), [{ content: "One pane." }]]);
+    const accepted = await c.send("which panes?", "api:trace");
+    expect(accepted.statusCode).toBe(202);
+    const requestId = String(accepted.headers["x-request-id"]);
+    expect(requestId).toMatch(/^req:/);
+    await vi.waitFor(async () => expect((await c.read()).status).toBe("IDLE"), { timeout: 15_000 });
+    expect(c.model.traceIds).toEqual([requestId, requestId]);
   });
 
   it("returns 409 for a second message and Stop interrupts the answer", async () => {

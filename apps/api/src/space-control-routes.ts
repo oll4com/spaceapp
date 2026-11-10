@@ -1,3 +1,4 @@
+import type {} from "./request-context.js";
 import { terminalRenderBatchSchema } from "@space/contracts";
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
@@ -116,11 +117,12 @@ export function registerSpaceControlRoutes(app:FastifyInstance,control:ReturnTyp
   return options?.resolveActor?options.resolveActor(request.user.id,request.user.email):{id:request.user.id,role:request.user.role};
  };
  const toolList=Object.entries(controlToolSchemas).map(([name,schema])=>({name,description:controlToolDescriptions[name as keyof typeof controlToolDescriptions],inputSchema:z.toJSONSchema(schema)}));
- async function call(user:ControlActor,name:string,raw:unknown){
+ // OBS-006: sourceRequestId is the HTTP request that carried the tool call (the MCP endpoint), so an agent's prompt names it as a REST command does.
+ async function call(user:ControlActor,name:string,raw:unknown,sourceRequestId?:string){
   switch(name){
    case "space_capabilities":return control.capabilities(controlToolSchemas.space_capabilities.parse(raw).roomId);
    case "space_inspect":return control.inspect(user,controlInspectSchema.parse(raw));
-   case "space_execute":{const parsed=controlExecuteSchema.parse(sanitizeControlExecute(raw));return control.execute(user,parsed,parsed.waitForCompletion??true);}
+   case "space_execute":{const parsed=controlExecuteSchema.parse(sanitizeControlExecute(raw));return control.execute(user,parsed,parsed.waitForCompletion??true,sourceRequestId);}
    case "space_operations":{const p=controlToolSchemas.space_operations.parse(raw);return control.operations(user,p.roomId,p.id,p.operation==="cancel");}
    case "space_schedules":{const p=controlToolSchemas.space_schedules.parse(raw);return control.schedules(user,p.roomId,p.operation,p.id,p.dueAt,p.command);}
    case "space_watches":{const p=controlToolSchemas.space_watches.parse(raw);return control.watches(user,p.roomId,p.operation,p);}
@@ -134,7 +136,7 @@ export function registerSpaceControlRoutes(app:FastifyInstance,control:ReturnTyp
  }
  app.get("/api/control/v1/capabilities",async request=>{await actor(request);return control.capabilities(z.object({roomId:z.string().min(1).optional()}).parse(request.query).roomId);});
  app.post("/api/control/v1/inspect",async request=>control.inspect(await actor(request),controlInspectSchema.parse(request.body)));
- app.post("/api/control/v1/commands",async request=>{const parsed=controlExecuteSchema.parse(sanitizeControlExecute(request.body));return control.execute(await actor(request),parsed,parsed.waitForCompletion??true);});
+ app.post("/api/control/v1/commands",async request=>{const parsed=controlExecuteSchema.parse(sanitizeControlExecute(request.body));return control.execute(await actor(request),parsed,parsed.waitForCompletion??true,request.requestIdForSpace);});
  app.post("/api/control/v1/screenshot",async request=>{const user=await actor(request);const p=controlToolSchemas.space_screenshot.parse(request.body);return control.screenshot(user,p.roomId,p);});
  app.post("/api/control/v1/test-tools",async request=>{const user=await actor(request);const p=controlToolSchemas.space_test_mcp_tools.parse(request.body);return control.testMcpTools(user,p.roomId,p);});
   app.get("/api/control/v1/tools",async request=>{await actor(request);const p=controlToolSchemas.space_list_mcp_tools.parse(request.query);return control.listMcpTools(p.category);});
@@ -157,7 +159,7 @@ export function registerSpaceControlRoutes(app:FastifyInstance,control:ReturnTyp
    if(p.method==="initialize")result={protocolVersion:"2025-11-25",capabilities:{tools:{listChanged:false}},serverInfo:{name:"space-control",version:"1.0.0"}};
    else if(p.method==="ping")result={};
    else if(p.method==="tools/list")result={tools:toolList};
-   else if(p.method==="tools/call"){const args=z.object({name:z.string(),arguments:z.unknown().optional()}).parse(p.params);const cliRoom=options?.cliRoom(request);const callArguments=cliRoom?cliRoomArguments(args.name,args.arguments,cliRoom):args.arguments;const data=await call(user,args.name,callArguments??{});const structuredContent=data!==null&&typeof data==="object"&&!Array.isArray(data)?data:{data};result={content:[{type:"text",text:JSON.stringify(structuredContent)}],structuredContent,isError:["FAILED","PARTIAL","UNKNOWN","CANCELLED"].includes((data as {status?:string})?.status??"")};}
+   else if(p.method==="tools/call"){const args=z.object({name:z.string(),arguments:z.unknown().optional()}).parse(p.params);const cliRoom=options?.cliRoom(request);const callArguments=cliRoom?cliRoomArguments(args.name,args.arguments,cliRoom):args.arguments;const data=await call(user,args.name,callArguments??{},request.requestIdForSpace);const structuredContent=data!==null&&typeof data==="object"&&!Array.isArray(data)?data:{data};result={content:[{type:"text",text:JSON.stringify(structuredContent)}],structuredContent,isError:["FAILED","PARTIAL","UNKNOWN","CANCELLED"].includes((data as {status?:string})?.status??"")};}
    else return {jsonrpc:"2.0",id:p.id,error:{code:-32601,message:"Method not found"}};
    return {jsonrpc:"2.0",id:p.id,result};
   }catch(error){return {jsonrpc:"2.0",id:p.id,error:{code:-32602,message:error instanceof SpaceConflictError?error.message:"Invalid Space control arguments."}};}
@@ -165,6 +167,7 @@ export function registerSpaceControlRoutes(app:FastifyInstance,control:ReturnTyp
   const mcpRateLimitOptions = {
   config: {
    rateLimit: {
+    // Security: a token's calls a minute (a runaway loop, not a working agent, reaches it); 429 answers when to retry.
     max: 600,
     timeWindow: "1 minute",
     keyGenerator: (request: FastifyRequest) => {

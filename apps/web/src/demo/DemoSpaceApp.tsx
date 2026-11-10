@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 import { createDemoRuntime } from "./demo-runtime.js";
 import { createCurrentMockFixture } from "./mock-fixture.js";
 import { noteServerModules } from "../features/pane-visibility/server-modules.js";
-import { PUBLIC_MOCK_MODULES } from "./mock-copilots.js";
+import { publicMockModules } from "./mock-copilots.js";
 
 export function DemoSpaceApp() {
   return <SpaceRuntimeProvider runtime={demoRuntimeBundle.runtime}><VoiceInputProvider><App /></VoiceInputProvider></SpaceRuntimeProvider>;
@@ -21,7 +21,7 @@ export function PublicMockApp() {
   const showcase = new URLSearchParams(location.search).get("showcase") === "1";
   useEffect(() => showcase ? installShowcaseController() : undefined, [showcase]);
   const [bundle] = useState(() => {
-    noteServerModules({ optionalModules: [...PUBLIC_MOCK_MODULES] });
+    noteServerModules({ optionalModules: publicMockModules(location.search) });
     return createDemoRuntime({ fixture: showcase ? createShowcaseFixture() : createCurrentMockFixture(), localStorage: window.localStorage, sessionStorage: window.sessionStorage });
   });
   const feature = new URLSearchParams(location.search).get("feature");

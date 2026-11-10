@@ -3,6 +3,7 @@ import type { AgentRuntimeRegistry, DesignAsset, DesignBrandKit, DesignEvent, De
 import { api } from "../../api.js";
 import { usePanePolling } from "../../use-pane-polling.js";
 import { subscribeDesignLiveEvents } from "./live-events.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export interface DesignData {
   settings: DesignPaneMetadata | null;
@@ -30,6 +31,10 @@ export function useDesignData(pane: Pane, enabled: boolean): DesignData {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef<Promise<void> | null>(null);
+  // A ref, so a language change never makes `refresh` a new function (its effects and polling would start over).
+  const language = useUiLanguage();
+  const languageRef = useRef(language);
+  languageRef.current = language;
 
   const refresh = useCallback(async () => {
     if (inFlight.current) return inFlight.current;
@@ -49,7 +54,7 @@ export function useDesignData(pane: Pane, enabled: boolean): DesignData {
         if (eventsResponse) setEvents(eventsResponse.events);
         setError(null);
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "Design data could not be loaded.");
+        setError(caught instanceof Error ? caught.message : uiText(languageRef.current, "Design data could not be loaded."));
       } finally {
         setLoading(false);
         inFlight.current = null;

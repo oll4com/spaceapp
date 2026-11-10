@@ -9,6 +9,9 @@ vi.mock("../src/api.js", () => ({ api: mocks }));
 class Socket extends EventTarget {
   static all: Socket[] = [];
   binaryType = "";
+  readyState = 1;
+  sent: string[] = [];
+  send(data: string) { this.sent.push(data); }
   constructor(_url: string) { super(); Socket.all.push(this); }
   close() { this.dispatchEvent(new Event("close")); }
   message(data: unknown) { this.dispatchEvent(new MessageEvent("message", { data })); }
@@ -100,4 +103,14 @@ it("routes the mixed browser audio through master gain without reconnecting", as
   expect(context.gain.disconnect).toHaveBeenCalledOnce();
   setSpaceVolume(1);
   expect(context.gain.gain.value).toBe(0);
+});
+
+it("tells the server which panes this tab plays, so other browsers are muted at the source", async () => {
+  const view = render(<><Harness /><Harness paneId="pane:second" /></>);
+  await waitFor(() => expect(Socket.all).toHaveLength(1));
+  await act(async () => Socket.all[0]!.message(JSON.stringify({ type: "audioReady", paneId: "pane:audio", sessionId: "browser:audio", streamId: "audio:proof", encoding: "pcm_s16le", sampleRate: 48000, channels: 2 })));
+  expect(JSON.parse(Socket.all[0]!.sent.at(-1)!)).toEqual({ type: "audible", paneIds: ["pane:audio", "pane:second"] });
+  view.rerender(<Harness />);
+  expect(JSON.parse(Socket.all[0]!.sent.at(-1)!)).toEqual({ type: "audible", paneIds: ["pane:audio"] });
+  expect(Socket.all).toHaveLength(1);
 });

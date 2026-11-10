@@ -276,12 +276,10 @@ function KeyDetail({ apiKey, accounts, client, settings, now, onChanged }: {
           </div>
         </>
       ) : error ? null : <p className="space-gateway-empty">Loading usage…</p>}
+      <SpaceToggle checked={apiKey.isActive} label="In use" disabled={busy} detail="Clients with this key are refused while it is off."
+        onChange={(active) => void run(async () => { await client.updateKey(apiKey.id, { isActive: active }); onChanged(); }, "Could not update the API key.")} />
       <div className="space-gateway-toolbar">
         <button type="button" className="space-gateway-button" disabled={busy} onClick={() => setEditing(true)}>Edit</button>
-        <button type="button" className="space-gateway-button" disabled={busy}
-          onClick={() => void run(async () => { await client.updateKey(apiKey.id, { isActive: !apiKey.isActive }); onChanged(); }, "Could not update the API key.")}>
-          {apiKey.isActive ? "Disable" : "Enable"}
-        </button>
         {confirm === "regenerate"
           ? <button type="button" className="space-gateway-button danger" disabled={busy}
             onClick={() => void run(async () => { setRegenerated(await client.regenerateKey(apiKey.id)); onChanged(); }, "Could not regenerate the key.")}>Confirm regenerate</button>
@@ -320,6 +318,13 @@ export function GatewayKeysTab({ client, settings, onChanged }: { client: SpaceG
     } catch (reason) { setError(errorText(reason, "Could not load API keys.")); }
   }, [client]);
   useEffect(() => { void load(); }, [load]);
+  const [switching, setSwitching] = useState<string | null>(null);
+  async function setActive(key: GatewayApiKey, active: boolean) {
+    setSwitching(key.id);
+    try { await client.updateKey(key.id, { isActive: active }); setNotice(`${key.name} ${active ? "enabled" : "disabled"}.`); await load(); onChanged(); }
+    catch (reason) { setError(errorText(reason, "Could not update the API key.")); }
+    finally { setSwitching(null); }
+  }
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -366,8 +371,8 @@ export function GatewayKeysTab({ client, settings, onChanged }: { client: SpaceG
                 const tightest = key.limits.map((limit) => ({ limit, share: limit.maxValue > 0 ? limitUsed(limit, now) / limit.maxValue : 0 }))
                   .sort((a, b) => b.share - a.share)[0];
                 return (
-                  <li key={key.id}>
-                    <button type="button" className={`gw-list-item${selected?.id === key.id ? " is-selected" : ""}`} aria-pressed={selected?.id === key.id}
+                  <li key={key.id} className="gw-list-row">
+                    <button type="button" className={`gw-list-item${selected?.id === key.id ? " is-selected" : ""}${key.isActive ? "" : " status-paused"}`} aria-pressed={selected?.id === key.id}
                       onClick={() => setSelectedId(key.id)}>
                       <span className="gw-list-title"><strong>{key.name}</strong>
                         <span className={`space-gateway-chip tone-${keyState(key, now) === "Active" ? "ok" : "warn"}`}>{keyState(key, now)}</span></span>
@@ -377,6 +382,8 @@ export function GatewayKeysTab({ client, settings, onChanged }: { client: SpaceG
                       <RemainingBar compact label="Weekly" remaining={pooled.secondaryRemainingPercent} />
                       {tightest ? <LimitBar label="Limit" used={limitUsed(tightest.limit, now)} max={tightest.limit.maxValue} format={formatLimit(tightest.limit.limitType)} /> : null}
                     </button>
+                    <SpaceToggle compact className="gw-row-switch" label="" ariaLabel={`Use ${key.name}`} checked={key.isActive} disabled={switching === key.id}
+                      onChange={(active) => void setActive(key, active)} />
                   </li>
                 );
               })}

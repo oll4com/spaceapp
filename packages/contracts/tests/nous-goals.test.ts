@@ -18,11 +18,11 @@ describe("Nous goals contracts", () => {
     expect(NOUS_TURN_REASONS).toContain("GOAL");
     expect(NOUS_TURN_KINDS).toContain("goal");
     expect(nousTurnKindOf("GOAL")).toBe("goal");
-    expect(nousModelsSettingsSchema.parse({}).goal).toEqual({ model: "claude-fable-5-1", effort: "max" });
-    expect(nousModelFor(undefined, "GOAL")).toEqual({ model: "claude-fable-5-1", effort: "max" });
+    expect(nousModelsSettingsSchema.parse({}).goal).toEqual({ model: "gpt-6-astra", effort: "high" });
+    expect(nousModelFor(undefined, "GOAL")).toEqual({ model: "gpt-6-astra", effort: "high" });
     // Settings saved before 2026-10-27 have no goal row: the default applies, the saved rows stay.
-    expect(nousModelsSettingsSchema.parse({ inbox: { model: "claude-sonnet-5-5", effort: "low" } })).toMatchObject({ inbox: { model: "claude-sonnet-5-5", effort: "low" }, goal: { model: "claude-fable-5-1", effort: "max" } });
-    expect(nousSettingsSchema.parse({}).goals).toEqual({ loop: true, gapSeconds: 60, backoffMinutes: 15, backoffMaxMinutes: 60, unchangedTurns: 3 });
+    expect(nousModelsSettingsSchema.parse({ inbox: { model: "claude-sonnet-5-5", effort: "low" } })).toMatchObject({ inbox: { model: "claude-sonnet-5-5", effort: "low" }, goal: { model: "gpt-6-astra", effort: "high" } });
+    expect(nousSettingsSchema.parse({}).goals).toEqual({ loop: true, gapSeconds: 600, backoffMinutes: 30, backoffMaxMinutes: 120, unchangedTurns: 2 });
     expect(nousGoalsSettingsSchema.safeParse({ backoffMinutes: 30, backoffMaxMinutes: 10 }).success).toBe(false);
     expect(nousGoalsSettingsSchema.safeParse({ gapSeconds: 5 }).success).toBe(false);
     expect(nousTurnFactsSchema.parse({ turnId: "nous_turn:a", ownerUserId: "user:operator", reason: "GOAL", status: "DONE", tools: {}, planPoints: 0, outcomes: [],
@@ -38,5 +38,11 @@ describe("Nous goals contracts", () => {
     expect(nousGoalUpdateArgsSchema.safeParse({ goal: "nous_goal:abcdef123456", achieved: { evidence: "short" } }).success).toBe(false);
     expect(nousGoalUpdateArgsSchema.safeParse({ goal: "nous_goal:abcdef123456", text: "new words" }).success).toBe(false);
     expect(nousGoalUpdateArgsSchema.parse({ goal: "nous_goal:abcdef123456", progress: 30, waitsOn: { kind: "OPERATOR", what: "the Stripe sign-in" } }).waitsOn).toEqual({ kind: "OPERATOR", what: "the Stripe sign-in", until: null });
+    // A limit (plan clipboard:ESIzQb7rHGQM): a deadline or a measurable target; null clears it; nothing else.
+    expect(nousGoalUpdateArgsSchema.parse({ goal: "nous_goal:abcdef123456", limit: { kind: "DATE", until: "2026-12-31T23:59:00+07:00" } }).limit).toEqual({ kind: "DATE", until: "2026-12-31T23:59:00+07:00" });
+    expect(nousGoalUpdateArgsSchema.parse({ goal: "nous_goal:abcdef123456", limit: { kind: "TARGET", what: " 100 paid licences " } }).limit).toEqual({ kind: "TARGET", what: "100 paid licences" });
+    expect(nousGoalUpdateArgsSchema.parse({ goal: "nous_goal:abcdef123456", limit: null }).limit).toBeNull();
+    expect(nousGoalUpdateArgsSchema.safeParse({ goal: "nous_goal:abcdef123456", limit: { kind: "DATE", until: "December" } }).success).toBe(false);
+    expect(nousGoalUpdateArgsSchema.safeParse({ goal: "nous_goal:abcdef123456", limit: { kind: "TARGET", what: "" } }).success).toBe(false);
   });
 });

@@ -1,7 +1,9 @@
+import { requestDoneView, requestUpdatesView } from "../nous/nous-done-events.js";
 import { useSyncExternalStore } from "react";
 import { needsYou, type NotificationLink, type NotificationsPending, type NotificationStreamPayload, type SpaceNotification } from "@space/contracts";
 import { api } from "../../api.js";
 import { requestNousFocus } from "../nous-focus/nous-focus-events.js";
+import { requestNeedsYouView } from "../needs-you/needs-you-view.js";
 
 /**
  * The signed-in user's notifications in this tab: what waits (badge counts per room and pane), the newest
@@ -15,6 +17,9 @@ export interface NotificationStoreState {
   pending: NotificationsPending;
   /** Newest records (open and read), for the Center. */
   items: SpaceNotification[];
+  /** Older records the operator loaded with "Load earlier" (31/10: until then the Center held only the newest 100), and whether more exist. */
+  earlier?: SpaceNotification[];
+  hasEarlier?: boolean;
   toasts: NotificationToast[];
 }
 export type NotificationNavigator = (link: NotificationLink, notification: SpaceNotification) => void;
@@ -52,6 +57,15 @@ export function resetNotificationStore(userId: string | null): void {
   emit({ userId, loaded: false, pending: emptyPending, items: [], toasts: [] });
 }
 
+/** The next 100 records older than every one the Center holds, kept until the store is reset. */
+export async function loadEarlierNotifications(): Promise<void> {
+  const held = [...state.items, ...state.earlier ?? []];
+  const oldest = held.reduce<string | null>((min, item) => !min || item.createdAt < min ? item.createdAt : min, null);
+  if (!oldest) return;
+  const page = await api.notifications({ status: "ALL", limit: 100, before: oldest });
+  emit({ ...state, earlier: [...state.earlier ?? [], ...page.notifications.filter((item) => !held.some((known) => known.id === item.id))], hasEarlier: page.notifications.length >= 100 });
+}
+
 /** Nous's card for one pane (plan clipboard:8FfXWclYUfOH): what only the operator's hands can do there. */
 export function isNousPaneCard(notification: SpaceNotification): boolean {
   return notification.source === "NOUS" && Boolean(notification.paneId && notification.roomId && notification.dedupeKey?.startsWith("nous:pane:"));
@@ -70,7 +84,7 @@ export async function refreshNotifications(): Promise<void> {
       const [pending, list] = await Promise.all([api.notificationsPending(), api.notifications({ status: "ALL", limit: 100 })]);
       const fresh = state.loaded ? pending.latest.filter((item) => !seen.has(deliveryKey(item))) : [];
       for (const item of [...pending.latest, ...list.notifications]) seen.add(deliveryKey(item));
-      emit({ ...state, loaded: true, pending, items: list.notifications });
+      emit({ ...state, loaded: true, pending, items: list.notifications, hasEarlier: state.earlier?.length ? state.hasEarlier : list.notifications.length >= 100 });
       if (fresh.length) onNew?.(fresh);
     } catch {
       // Offline or signed out: the last known state stays.
@@ -116,9 +130,41 @@ export async function readAllNotifications(): Promise<void> {
   emit({ ...state, toasts: [] });
   await refreshNotifications();
 }
-/** Opens what the notification points at and marks it read; a needs-you request takes the operator to its pane at once (maximized, focused, back when it resolves). */
+/**
+ * A needs-you card's Go (plan clipboard:ytwWl09xNH0Z): the operator clicked it, so Space takes them to its pane (maximized, focused). Only a card
+ * whose work is in a pane offers it (needsYouPlace PANE), and the card's "Open the mail/page" link in its Details.
+ */
+let surfaceTarget: string | null = null;
+/** What a card that opens a dock asked it to show (`sign:<id>`: that signature request); the dock takes it once it is mounted. */
+export function takeSurfaceTarget(prefix: string): string | null {
+  if (!surfaceTarget?.startsWith(prefix)) return null;
+  const target = surfaceTarget;
+  surfaceTarget = null;
+  return target.slice(prefix.length);
+}
+export function goToNeedsYouPane(notification: SpaceNotification): void {
+  // A card about a dock (a signature request: Agent Files' Sign view) opens that dock, not the asking pane.
+  if (notification.link.surface && notification.link.target) {
+    surfaceTarget = notification.link.target;
+    navigator?.({ surface: notification.link.surface, target: notification.link.target }, notification);
+    window.dispatchEvent(new CustomEvent("space:surface-target", { detail: { target: notification.link.target } }));
+    return;
+  }
+  if (notification.roomId && notification.paneId) requestNousFocus({ roomId: notification.roomId, paneId: notification.paneId, immediate: true, notification });
+}
+/** A click on a needs-you toast, pop-up, Center row or native notification opens the card in Nous's Needs you tab: no room or pane changes. */
+export function openNeedsYouCard(notification: SpaceNotification): void {
+  requestNeedsYouView(notification.id);
+  navigator?.({ surface: "nous" }, notification);
+  if (notification.status === "OPEN") void markNotificationRead(notification.id);
+}
+/** Opens what the notification points at and marks it read; a needs-you request opens its card (operator 3/11 19:25 BKK: never the pane by itself). */
 export function openNotification(notification: SpaceNotification): void {
-  if (needsYou(notification)) requestNousFocus({ roomId: notification.roomId!, paneId: notification.paneId!, immediate: true, notification });
-  else navigator?.(notification.link, notification);
-  void markNotificationRead(notification.id);
+  if (needsYou(notification)) openNeedsYouCard(notification);
+  else {
+    if (notification.source === "NOUS" && notification.kind === "REQUEST_DONE" && notification.link.target === "done") requestDoneView();
+    if (notification.source === "NOUS" && notification.link.target === "updates") requestUpdatesView();
+    navigator?.(notification.link, notification);
+    void markNotificationRead(notification.id);
+  }
 }

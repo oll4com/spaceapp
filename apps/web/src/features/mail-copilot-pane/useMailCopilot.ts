@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRuntimeRegistry, ConnectorAccountSummary, MailCopilotEvent, MailCopilotPaneMetadata, MailCopilotRunView, Pane } from "@space/contracts";
 import { api } from "../../api.js";
 import { usePanePolling } from "../../use-pane-polling.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { subscribeMailCopilotLiveEvents } from "./live-events.js";
 
 export interface MailCopilotData {
@@ -29,6 +30,9 @@ export function useMailCopilotData(pane: Pane, enabled: boolean): MailCopilotDat
   const [events, setEvents] = useState<MailCopilotEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const language = useUiLanguage();
+  const languageRef = useRef(language);
+  languageRef.current = language; // read at error time, so a language change never refetches
   const inFlight = useRef<Promise<void> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -47,7 +51,7 @@ export function useMailCopilotData(pane: Pane, enabled: boolean): MailCopilotDat
         if (eventsResponse) setEvents(eventsResponse.events);
         setError(null);
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "Mail Copilot data could not be loaded.");
+        setError(caught instanceof Error ? caught.message : uiText(languageRef.current, "Mail Copilot data could not be loaded."));
       } finally {
         setLoading(false);
         inFlight.current = null;

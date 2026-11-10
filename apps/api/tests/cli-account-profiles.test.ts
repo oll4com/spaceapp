@@ -8,6 +8,8 @@ import { createApp } from "../src/app.js";
 import { createCsrfToken, signSession } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
 import type { GatewayAdminService } from "../src/gateway/gateway-service.js";
+// The pane host listens on a Unix socket, whose path stops at 108 bytes: a pane's long TMPDIR would break it.
+import { cliHostSocketTmpdir } from "./support/cli-runtimes-harness.js";
 
 const sessionSecret = "cli-account-profiles-test-secret";
 const apps: FastifyInstance[] = [];
@@ -268,7 +270,7 @@ describe("CLI account profiles API", () => {
   });
 
   it("continues the exact Claude conversation when a pane switches account", async () => {
-    const hostRoot = await mkdtemp(join(tmpdir(), "space-claude-profile-host-"));
+    const hostRoot = await mkdtemp(join(cliHostSocketTmpdir, "space-claude-profile-host-"));
     temporaryRoots.push(hostRoot);
     const { app, store } = await setup({
       SPACE_CLI_CLAUDE_CREDENTIAL_SMOKE: "true",
@@ -395,7 +397,7 @@ describe("CLI account profiles API", () => {
   });
 
   it("never writes a Job Copilot pane's account into its pane row", async () => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), "space-job-copilot-workspaces-"));
+    const workspaceRoot = await mkdtemp(join(cliHostSocketTmpdir, "space-job-copilot-workspaces-"));
     temporaryRoots.push(workspaceRoot);
     const { app, store } = await setup({ SPACE_CLI_WORKSPACE_ROOT: workspaceRoot, SPACE_CLI_HOST_SOCKET: join(workspaceRoot, "pane-host.sock") });
     store.createCliAccountProfile("cli:gemini", { runtimeId: "cli:gemini", profileId: "work", displayName: "work" }, "user:admin");
@@ -479,7 +481,7 @@ describe("CLI account profiles API", () => {
     expect(store.getCliAccountProfile("cli:gemini", "personal")).toBeNull();
   });
   it("starts an Auto Copilot pane on the account with the most room and leaves Auto when an account is named", async () => {
-    const hostRoot = await mkdtemp(join(tmpdir(), "space-copilot-auto-host-"));
+    const hostRoot = await mkdtemp(join(cliHostSocketTmpdir, "space-copilot-auto-host-"));
     temporaryRoots.push(hostRoot);
     const { app, store } = await setup({ SPACE_CLI_HOST_SOCKET: join(hostRoot, "pane-host.sock") });
     for (const profileId of ["main", "work"]) {

@@ -18,8 +18,10 @@ import {
 } from "@space/contracts";
 import type { SpaceApiConfig } from "./config.js";
 import { FISH_ASR_URL, FISH_AUDIO_KEY_FILE } from "./fish-voice-bridge.js";
+import { grantVoicePlan, isGrantLiveProvider, readGrantKeys, type GrantKeys } from "./voice-grants.js";
 import { configuredDelegateModel, estimateLiveCost } from "./live-model-policy.js";
 import { isGptLiveModel, resolveDelegatedModel, voiceForModel, voiceModelCandidates, voiceModelUnavailable, type LiveModelFallback } from "./live-openai-model-fallback.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export { delegatedReasoningEffort } from "./live-openai-model-fallback.js";
 
@@ -519,7 +521,7 @@ export async function resolveLiveAudioCredentials(
       } catch {}
     }
     try {
-      const defaultKey = (await readFile("/opt/spaceapp/secrets/space-vercel-voice.key", "utf8")).trim();
+      const defaultKey = (await readFile(`${SPACE_INSTALL_ROOT}/secrets/space-vercel-voice.key`, "utf8")).trim();
       if (defaultKey) return { configured: true, apiKey: defaultKey };
     } catch {}
     if (config.vercelVoiceApiKey?.trim()) {
@@ -540,6 +542,13 @@ export async function resolveLiveAudioCredentials(
       configured: false,
       missingReason: `Fish Audio key not configured on Space. Save it in ${FISH_AUDIO_KEY_FILE}.`
     };
+  }
+
+  // Grant cascades: the credential is every grant key the server holds, as JSON, so a cascade can pair two grants.
+  if (isGrantLiveProvider(provider)) {
+    const keys = await readGrantKeys();
+    const { missing } = grantVoicePlan(provider, undefined, keys);
+    return missing ? { configured: false, missingReason: missing } : { configured: true, apiKey: JSON.stringify(keys) };
   }
 
   return { configured: false, missingReason: `Unknown provider: ${provider}` };
@@ -703,7 +712,23 @@ export async function createVoiceRealtimeCall(
     });
   }
 
-  // 6. OpenAI Live flow (WebRTC)
+  // 6. Startup grant cascades: the browser speaks to Space's grant bridge (voice-routes), which holds the keys.
+  if (isGrantLiveProvider(provider)) {
+    const cred = ownerCredential ? { configured: true, apiKey: ownerCredential.apiKey, missingReason: undefined } : await resolveLiveAudioCredentials(config, provider);
+    if (!cred.configured || !cred.apiKey) throw new Error(cred.missingReason || "This voice grant is not configured on Space.");
+    const result = grantVoicePlan(provider, input.model, JSON.parse(cred.apiKey) as GrantKeys, input.language);
+    if (!result.plan) throw new Error(result.missing);
+    return voiceRealtimeSessionResponseSchema.parse({
+      provider,
+      protocol: "grant-cascade",
+      model: getLiveAudioProvider(provider).models.find((entry) => entry.id === input.model?.trim())?.id ?? getLiveAudioProvider(provider).defaultModel,
+      websocketUrl: `grant:${provider}`,
+      token: JSON.stringify(result.plan),
+      sessionId: `${provider}_live_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    });
+  }
+
+  // 7. OpenAI Live flow (WebRTC)
   const cred = ownerCredential ? { configured: true, apiKey: ownerCredential.apiKey, missingReason: undefined } : await resolveLiveAudioCredentials(config, "openai");
   if (!cred.configured || !cred.apiKey) {
     throw new Error(cred.missingReason || "Voice transcription is disabled or key file missing.");

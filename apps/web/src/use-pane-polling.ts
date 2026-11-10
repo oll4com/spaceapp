@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { subscribeCoreApiAvailability } from "./core-api-state.js";
 
 /** Poll presentation data without queueing overlapping requests on slow links. */
 export function usePanePolling(
@@ -43,8 +44,15 @@ export function usePanePolling(
     if (immediate) void tick();
     else schedule();
     document.addEventListener("visibilitychange", visible);
+    // Space answers again after a restart (nous_msg:1be51d08): re-read now, so a pane whose read failed meanwhile is not left empty until its next tick.
+    let out = false;
+    const unsubscribe = subscribeCoreApiAvailability((outage) => {
+      if (out && !outage) visible();
+      out = Boolean(outage);
+    });
     return () => {
       disposed = true;
+      unsubscribe();
       controller.abort();
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", visible);

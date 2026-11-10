@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -174,6 +175,18 @@ function parseArgs(argv) {
 
 export async function runCli(argv) {
   const options = parseArgs(argv);
+  const [runtimeMajor, runtimeMinor] = options.requestedRuntimeVersion.split(".").map(Number);
+  if (runtimeMajor > 1 || (runtimeMajor === 1 && runtimeMinor >= 2)) {
+    execFileSync(process.execPath, ["--experimental-strip-types", join(repoRoot, "scripts/space-shared-memory-seed.mjs"),
+      "verify", "--version", options.requestedRuntimeVersion], { stdio: ["ignore", "pipe", "pipe"] });
+    // A seed alone is insufficient: the approved core export must carry its importer and scoped runtime.
+    await Promise.all(["packages/contracts/src/nous-shared-memory-seed.ts", "packages/db/src/nous-shared-memory-repository.ts",
+      "packages/db/migrations/0266_nous_shared_memory.sql"].map((path) => readFile(join(repoRoot, path), "utf8")));
+    const nousWiring = await readFile(join(repoRoot, "apps/api/src/nous/wiring.ts"), "utf8");
+    if (!["registerSharedMemoryRoutes", "sharedMemory.ready", "sharedMemory.world"].every((name) => nousWiring.includes(name))) {
+      throw new Error("Export the approved shared-memory core runtime before public release acceptance.");
+    }
+  }
   const packageManifest = JSON.parse(
     await readFile(join(repoRoot, "packages", "run-spaceapp", "package.json"), "utf8")
   );

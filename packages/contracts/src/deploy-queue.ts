@@ -53,7 +53,7 @@ export const deployQueueReportSchema = z.object({
   current: deployQueueBatchSchema.nullable(),
   /** A batch prepared on top of the deploying one (pipeline). */
   next: deployQueueBatchSchema.nullable().optional(),
-  active: z.array(deployQueueTicketSchema).max(200),
+  active: z.array(deployQueueTicketSchema),
   recent: z.array(deployQueueTicketSchema).max(30)
 }).strict();
 

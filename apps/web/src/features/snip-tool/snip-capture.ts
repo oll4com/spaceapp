@@ -1,5 +1,5 @@
 import { getSpaceRuntime, getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
-import { canvasBlob, canvasFrame, frameFromBlob, type SnipFrame } from "./snip-image.js";
+import { canvasBlob, canvasFrame, frameFromBlob, type Rect, type SnipFrame } from "./snip-image.js";
 
 export function checkAbort(signal: AbortSignal) { if (signal.aborted) throw new DOMException("Capture cancelled", "AbortError"); }
 function abortable<T>(promise: Promise<T>, signal: AbortSignal, timeoutMs = 10000): Promise<T> {
@@ -96,6 +96,78 @@ export function assertCaptureAllowed() {
 export function hasNativeCapture(): boolean {
   const w = window as any;
   return typeof w.spaceDesktop?.capturePage === "function" || typeof w.SpaceNative?.requestPageCapture === "function";
+}
+/** Video recording uses MediaRecorder on SpaceApp's own window (desktop) or tab (browser); Android captures stills only. */
+export function canRecordScreen(): boolean {
+  return typeof (window as any).SpaceNative?.requestPageCapture !== "function" && typeof MediaRecorder !== "undefined" && getSpaceRuntime().platform.displayMediaSupported;
+}
+export interface SnipRecording { stop: () => void; done: Promise<File>; cropped: boolean }
+/** SpaceApp itself: its window in the desktop app (no picker), this tab in a browser when its capture handle proves it. */
+async function pageStream(handle: string): Promise<{ stream: MediaStream; page: "window" | "tab" | null }> {
+  const w = window as any;
+  const source = await w.spaceDesktop?.getWindowMediaSourceId?.().catch(() => null);
+  if (source?.success && source.sourceId) {
+    try {
+      // No size cap, so the window arrives at device pixels.
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory: { chromeMediaSource: "desktop", chromeMediaSourceId: source.sourceId, maxWidth: 8192, maxHeight: 8192 } } as any });
+      return { stream, page: "window" };
+    } catch { /* The display-media handler records the screen instead. */ }
+  }
+  try { (navigator.mediaDevices as any)?.setCaptureHandleConfig?.({ handle, exposeOrigin: false, permittedOrigins: [location.origin] }); } catch { /* Unsupported: recorded whole. */ }
+  const stream = await getSpaceRuntime().platform.getDisplayMedia({ video: true, audio: false, preferCurrentTab: true, selfBrowserSurface: "include" } as any);
+  return { stream, page: (stream.getVideoTracks()[0] as any)?.getCaptureHandle?.()?.handle === handle ? "tab" : null };
+}
+/** Draws each new frame's region (viewport pixels) into a canvas, whose stream is what gets recorded. */
+async function cropStream(source: MediaStream, region: Rect, page: "window" | "tab") {
+  const video = document.createElement("video"); video.muted = true; video.playsInline = true; video.srcObject = source;
+  await video.play();
+  // shortcut: a window frame is assumed even left, right and bottom with the title bar on top; measure the page's offset if a shell draws it otherwise.
+  const place = () => {
+    const scale = page === "window" ? window.devicePixelRatio || 1 : video.videoWidth / window.innerWidth;
+    const x = Math.max(0, (video.videoWidth - window.innerWidth * scale) / 2);
+    return { scale, x, y: Math.max(0, video.videoHeight - window.innerHeight * scale - x) };
+  };
+  const canvas = document.createElement("canvas");
+  const { scale } = place();
+  // Even sizes suit every video encoder.
+  canvas.width = Math.max(2, 2 * Math.round(region.width * scale / 2)); canvas.height = Math.max(2, 2 * Math.round(region.height * scale / 2));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Screen recording is unavailable.");
+  let live = true;
+  const draw = () => {
+    if (!live) return;
+    const p = place();
+    ctx.drawImage(video, p.x + region.x * p.scale, p.y + region.y * p.scale, region.width * p.scale, region.height * p.scale, 0, 0, canvas.width, canvas.height);
+    if (typeof video.requestVideoFrameCallback === "function") video.requestVideoFrameCallback(draw); else requestAnimationFrame(draw);
+  };
+  draw();
+  return { stream: canvas.captureStream(), release: () => { live = false; video.pause(); video.srcObject = null; } };
+}
+/** Records `region` of SpaceApp until stop() or the browser's own "Stop sharing"; another source picked in the browser is recorded whole. */
+export async function startSnipRecording(region: Rect, handle: string): Promise<SnipRecording> {
+  assertCaptureAllowed();
+  const { stream: source, page } = await pageStream(handle);
+  let stream = source, release = () => {};
+  const mimeType = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].find(type => MediaRecorder.isTypeSupported?.(type)) ?? "video/webm";
+  let recorder: MediaRecorder;
+  try {
+    if (page) ({ stream, release } = await cropStream(source, region, page));
+    recorder = new MediaRecorder(stream, { mimeType });
+  } catch (error) { release(); source.getTracks().forEach(track => track.stop()); throw error; }
+  const chunks: Blob[] = [];
+  const done = new Promise<File>((resolve, reject) => {
+    recorder.ondataavailable = event => { if (event.data?.size) chunks.push(event.data); };
+    recorder.onstop = () => {
+      release();
+      [source, stream].forEach(s => s.getTracks().forEach(track => track.stop()));
+      if (chunks.length) resolve(new File(chunks, `space-recording-${Date.now()}.webm`, { type: "video/webm" }));
+      else reject(new Error("The recording is empty."));
+    };
+  });
+  const stop = () => { if (recorder.state !== "inactive") recorder.stop(); };
+  source.getVideoTracks()[0]?.addEventListener("ended", stop);
+  recorder.start(1000);
+  return { stop, done, cropped: Boolean(page) };
 }
 export async function captureSnip(overlay: HTMLElement, signal: AbortSignal, options?: SnipCaptureOptions): Promise<Blob> {
   const shot = await grab(overlay, signal, options);

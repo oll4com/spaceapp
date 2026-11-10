@@ -469,16 +469,30 @@ export async function discoverMcpCatalog(
       asRecord(initialize.result, "MCP initialize returned an invalid result.");
       client.notify("notifications/initialized");
 
-      const toolsList = await client.request("tools/list", {}, timeoutMs);
-      const toolsResult = asRecord(toolsList.result, "MCP tools/list returned an invalid result.");
-      const rawTools = toolsResult.tools;
-      if (!Array.isArray(rawTools)) {
-        throw new McpDiscoveryExecutionError("MCP tools/list result did not include a tools array.");
-      }
+      const rawTools: unknown[] = [];
+      const cursors = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        const toolsList = await client.request("tools/list", cursor === undefined ? {} : { cursor }, timeoutMs);
+        const toolsResult = asRecord(toolsList.result, "MCP tools/list returned an invalid result.");
+        if (!Array.isArray(toolsResult.tools)) {
+          throw new McpDiscoveryExecutionError("MCP tools/list result did not include a tools array.");
+        }
+        rawTools.push(...toolsResult.tools);
+        const next = toolsResult.nextCursor;
+        if (next !== undefined && (typeof next !== "string" || cursors.has(next))) {
+          throw new McpDiscoveryExecutionError("MCP tools/list returned an invalid or repeated cursor.");
+        }
+        cursor = next;
+        if (cursor !== undefined) cursors.add(cursor);
+      } while (cursor !== undefined);
+      const toolNames = new Set<string>();
 
       const serverTools = rawTools.map((rawTool) => {
         const toolRecord = asRecord(rawTool, "MCP tools/list returned an invalid tool record.");
         const name = asToolName(toolRecord.name);
+        if (toolNames.has(name)) throw new McpDiscoveryExecutionError("MCP tools/list returned a duplicate tool name.");
+        toolNames.add(name);
         const inputSchema = toolRecord.inputSchema ?? {};
         const nativeReadonlyTool = serverConfig.id === "space-readonly" && [
           "space_status",

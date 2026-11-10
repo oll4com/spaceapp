@@ -1,11 +1,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { MailAccountSummary, MailLabel, MailMessage, MailThreadSummary } from "@space/contracts";
+import type { MailAccountSummary, MailActionLogEntry, MailLabel, MailMessage, MailThreadSummary } from "@space/contracts";
 import { Composer, MailClient, composeDraft, mailTime, replyRecipients } from "../src/features/mail-copilot-pane/MailClient.js";
 import { useMailbox } from "../src/features/mail-copilot-pane/useMailbox.js";
 
 const apiMock = vi.hoisted(() => ({
-  mailAccounts: vi.fn(), mailLabels: vi.fn(), mailThreads: vi.fn(), mailThread: vi.fn(), modifyMailThread: vi.fn(), sendMail: vi.fn(), saveMailDraft: vi.fn(),
+  mailAccounts: vi.fn(), mailLabels: vi.fn(), mailThreads: vi.fn(), mailThread: vi.fn(), mailThreadLabels: vi.fn(), modifyMailThread: vi.fn(), sendMail: vi.fn(), saveMailDraft: vi.fn(),
   updateMailCopilotView: vi.fn(), requestMailFix: vi.fn(), mailAttachmentUrl: (paneId: string | undefined, account: string, messageId: string, attachmentId: string) => `/api/mail-copilot/messages/${messageId}/attachments/${attachmentId}?account=${account}`
 }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
@@ -40,6 +40,7 @@ describe("MailClient", () => {
     apiMock.mailThreads.mockResolvedValue({ threads: rows, nextPageToken: "page2", errors: [] });
     apiMock.mailThread.mockResolvedValue({ thread: { account: "me@gmail.com", threadId: "t1", subject: "Invoice", messages: [{ ...message, messageId: "m0", unread: false, html: null, text: "Earlier" }, message] } });
     apiMock.modifyMailThread.mockResolvedValue({ ok: true });
+    apiMock.mailThreadLabels.mockResolvedValue({ labels: [], history: [] });
     apiMock.sendMail.mockResolvedValue({ messageId: "sent", threadId: "t1" });
     apiMock.saveMailDraft.mockResolvedValue({ draftId: "d", messageId: "dm" });
     apiMock.updateMailCopilotView.mockResolvedValue({ view: null });
@@ -108,15 +109,54 @@ describe("MailClient", () => {
     expect(screen.queryByRole("form", { name: "Send to AI" })).toBeNull();
   });
 
-  it("moves the open conversation to a user label: out of the inbox and closed", async () => {
+  it("moves the open conversation to a user label: out of the inbox, still open with its label chip and the move in its label history", async () => {
+    const clients = { id: "Label_1", name: "Clients" };
+    const entry = (id: string, action: MailActionLogEntry["action"], extra: Partial<MailActionLogEntry> = {}): MailActionLogEntry => ({
+      id, ownerUserId: "user:operator", accountEmail: "me@gmail.com", threadId: "t1", messageId: null, action, labelIds: ["Label_1"], labelNames: ["Clients"], fromAddress: "anna@acme.com", fromDomain: "acme.com",
+      subject: "Invoice", subjectKey: "invoice", actor: "OPERATOR", source: "PANE", ruleId: null, occurredAt: "2026-11-03T05:40:00.000Z", ...extra });
     render(<Harness />);
     fireEvent.click(await screen.findByRole("button", { name: "Unread: Anna: Invoice" }));
+    await waitFor(() => expect(apiMock.mailThreadLabels).toHaveBeenCalledWith("pane:mail00001", "me@gmail.com", "t1"));
+    // No labels yet: no chips, and an empty history.
+    expect(screen.queryByRole("list", { name: "Labels of this conversation" })).toBeNull();
+    expect(screen.getByText("No label changes recorded for this conversation yet.")).toBeTruthy();
     const move = await screen.findByRole("combobox", { name: "Move to" });
     expect(within(move).getAllByRole("option").map((option) => option.textContent)).toEqual(["Move to…", "Clients"]);
+    apiMock.modifyMailThread.mockResolvedValueOnce({ ok: true, labels: [clients] });
+    apiMock.mailThreadLabels.mockResolvedValueOnce({ labels: [clients], history: [entry("mailact:move01", "MOVE")] });
     fireEvent.change(move, { target: { value: "Clients" } });
     await waitFor(() => expect(apiMock.modifyMailThread).toHaveBeenLastCalledWith("pane:mail00001", "t1", { account: "me@gmail.com", action: "move", labelIds: ["Clients"] }));
     await waitFor(() => expect(screen.queryByRole("button", { name: /Anna: Invoice/ })).toBeNull());
-    expect(screen.queryByRole("combobox", { name: "Move to" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Invoice" })).toBeTruthy();
+    expect(await screen.findByText("Moved to Clients")).toBeTruthy();
+    const chips = await screen.findByRole("list", { name: "Labels of this conversation" });
+    expect(within(chips).getAllByRole("listitem").map((chip) => chip.textContent?.trim())).toEqual(["Clients"]);
+    expect(screen.getByText("Label history (1)")).toBeTruthy();
+    expect(screen.getByText("Added to Clients")).toBeTruthy();
+    expect(screen.getByText(/You, in this pane/)).toBeTruthy();
+
+    // The x on the chip takes the label off; the history then shows when it came off and by whom.
+    apiMock.modifyMailThread.mockResolvedValueOnce({ ok: true, labels: [] });
+    apiMock.mailThreadLabels.mockResolvedValueOnce({ labels: [], history: [entry("mailact:unlab1", "UNLABEL", { occurredAt: "2026-11-03T05:45:00.000Z" }), entry("mailact:move01", "MOVE"),
+      entry("mailact:job001", "LABEL", { labelIds: ["Label_9"], labelNames: ["Job Applications/Other"], actor: "SPACE", source: "GMAIL" })] });
+    fireEvent.click(within(chips).getByRole("button", { name: "Remove label Clients" }));
+    await waitFor(() => expect(apiMock.modifyMailThread).toHaveBeenLastCalledWith("pane:mail00001", "t1", { account: "me@gmail.com", action: "unlabel", labelIds: ["Label_1"] }));
+    await waitFor(() => expect(screen.queryByRole("list", { name: "Labels of this conversation" })).toBeNull());
+    expect(await screen.findByText("Label history (3)")).toBeTruthy();
+    expect(screen.getByText("Removed from Clients")).toBeTruthy();
+    expect(screen.getByText("Added to Job Applications/Other")).toBeTruthy();
+    expect(screen.getByText(/Job Copilot ·/)).toBeTruthy();
+  });
+
+  it("shows each list row's user labels as chips, but not the label the list shows", async () => {
+    apiMock.mailThreads.mockResolvedValue({ threads: [{ ...rows[0]!, labels: [{ id: "Label_1", name: "Clients" }, { id: "Label_2", name: "Invoices" }] }, rows[1]], errors: [] });
+    render(<Harness />);
+    const list = await screen.findByRole("list", { name: "Inbox conversations" });
+    const row = within(list).getAllByRole("listitem")[0]!;
+    expect(Array.from(row.querySelectorAll(".mc-label-chip")).map((chip) => chip.textContent)).toEqual(["Clients", "Invoices"]);
+    fireEvent.change(screen.getByRole("combobox", { name: "Show label" }), { target: { value: "Clients" } });
+    await waitFor(() => expect(apiMock.mailThreads).toHaveBeenLastCalledWith("pane:mail00001", { account: "all", labelId: "Clients", q: undefined }));
+    await waitFor(() => expect(Array.from(screen.getAllByRole("listitem")[0]!.querySelectorAll(".mc-label-chip")).map((chip) => chip.textContent)).toEqual(["Invoices"]));
   });
 
   it("replies from the conversation with quoted text, threading ids and the signature, and sends", async () => {

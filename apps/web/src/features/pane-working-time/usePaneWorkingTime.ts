@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { api } from "../../api.js";
+import { serverNow } from "../../server-clock.js";
 
 export interface UsePaneWorkingTimeOptions {
   paneId: string;
@@ -24,6 +25,9 @@ interface StoredWorkingTime {
 }
 
 const NON_CRITICAL_INITIAL_DELAY_MS = 4_000;
+// API audit 4/11 (operator's Warm approval through Nous, mayApproveWarm): the badge ticks locally and shows minutes, so one server sync a
+// minute is enough; at 15 s it was the API's most called route (~4,160 calls/h on stable, every visible pane).
+export const WORKING_TIME_SYNC_MS = 60_000;
 
 export function formatWorkingTime(ms: number): string {
   const totalMinutes = Math.max(0, Math.floor(ms / (60 * 1000)));
@@ -48,7 +52,7 @@ function readStoredWorkingTime(paneId: string, paneCreatedAt?: string): StoredWo
     if (typeof parsed?.completedWorkingMs === "number" && parsed.completedWorkingMs >= 0) {
       let completedMs = parsed.completedWorkingMs;
       if (paneCreatedAt) {
-        const paneAgeMs = Math.max(0, Date.now() - Date.parse(paneCreatedAt));
+        const paneAgeMs = Math.max(0, serverNow() - Date.parse(paneCreatedAt));
         if (Number.isFinite(paneAgeMs) && completedMs > paneAgeMs) {
           completedMs = paneAgeMs;
         }
@@ -130,7 +134,7 @@ export function usePaneWorkingTime({
       if (cancelled || started) return;
       started = true;
       void syncWithServer();
-      interval = window.setInterval(syncWithServer, 15_000);
+      interval = window.setInterval(syncWithServer, WORKING_TIME_SYNC_MS);
     };
     timeoutHandle = window.setTimeout(start, NON_CRITICAL_INITIAL_DELAY_MS);
     const handleVisibilityOrFocus = () => {
@@ -208,7 +212,8 @@ export function usePaneWorkingTime({
     ? completedWorkingMs + currentTurnElapsedMs
     : completedWorkingMs;
 
-  const paneAgeMs = paneCreatedAt ? Math.max(0, Date.now() - Date.parse(paneCreatedAt)) : Infinity;
+  // UX-004: createdAt is the server's time, so the age is too (a browser clock behind the server would read a young pane as 0m).
+  const paneAgeMs = paneCreatedAt ? Math.max(0, serverNow() - Date.parse(paneCreatedAt)) : Infinity;
   const totalWorkingMs = Number.isFinite(paneAgeMs) ? Math.min(rawTotalWorkingMs, paneAgeMs) : rawTotalWorkingMs;
 
   const totalSeconds = Math.max(0, Math.floor(totalWorkingMs / 1000));

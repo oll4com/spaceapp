@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ompTerminalName, readOmpNativeModel } from "../src/omp-native-model.js";
+import { ompSessionId, ompTerminalName, ompTurnOpen, readOmpNativeModel, readOmpNativeSession } from "../src/omp-native-model.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -85,6 +85,29 @@ it("follows a breadcrumb only to a regular session file inside omp's sessions di
   expect(await readOmpNativeModel(identity, paths)).toMatchObject({ modelId: "space-gateway-claude/claude-sonnet-5-5" });
 });
 
+it("reads the id of the session this pane's omp runs, the one `omp --resume <id>` reopens", async () => {
+  const id = "01a14c8e-e69f-73bb-81af-e66c78905f37";
+  const header = line({ type: "session", version: 3, id, timestamp: "2026-10-18T01:09:55.999Z", cwd });
+  expect(await readOmpNativeSession(identity, await fixture({ session: [line({ type: "title", title: "x" }), header] })))
+    .toEqual({ sessionId: id, turnOpen: null });
+  // Not a session header, or an id the launcher and sudoers would refuse: no id (the model is still read).
+  expect(ompSessionId([line({ type: "message", id }), header])).toBe(id);
+  expect(ompSessionId([line({ type: "session", id: "../../etc/passwd" })])).toBeNull();
+  expect(ompSessionId([line({ type: "session", id: id.toUpperCase() })])).toBeNull();
+  expect(await readOmpNativeSession(identity, await fixture())).toMatchObject({ sessionId: null, modelId: "space-gateway-claude/claude-sonnet-5-5" });
+  expect(await readOmpNativeSession({ ...identity, paneId: "pane:OtherPane123" }, await fixture({ session: [header] }))).toBeNull();
+});
+
+it("reads whether omp's turn goes on from its session's last message (step 9, 3/11: a pty:true command's abort left it going)", () => {
+  const message = (role: string, stopReason?: string) => line({ type: "message", message: { role, ...(stopReason ? { stopReason } : {}) } });
+  const asked = [message("user"), message("assistant", "toolUse")];
+  expect(ompTurnOpen([])).toBeNull();
+  expect(ompTurnOpen(asked)).toBe(true);
+  // The first Escape aborted only the command: its result goes back to the model, the turn goes on.
+  expect(ompTurnOpen([...asked, message("toolResult"), line({ type: "custom", customType: "x" })])).toBe(true);
+  expect(ompTurnOpen([...asked, message("toolResult"), message("assistant", "aborted")])).toBe(false);
+  expect(ompTurnOpen([...asked, message("toolResult"), message("assistant", "stop")])).toBe(false);
+});
 it("names terminals beyond /dev/pts/255 the way omp keys its breadcrumbs", () => {
   // /dev/pts/300: major 136, minor 300 spills into the high minor bits of tty_nr.
   expect(ompTerminalName((300 & 0xff) | (136 << 8) | ((300 & ~0xff) << 12))).toBe("pts-300");

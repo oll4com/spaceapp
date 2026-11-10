@@ -289,7 +289,7 @@ describe("Postgres Telegram persistence", () => {
     };
     const client = new RecordingClient((sql, values) => {
       // Completion locks the pane first so it orders with submission and polling.
-      if (sql.includes("FROM panes") && sql.includes("FOR UPDATE")) return [pane];
+      if (sql.includes("FROM panes") && sql.includes("FOR NO KEY UPDATE")) return [pane];
       if (sql.includes("UPDATE space_agent_messages")) return [{ ...message, content: values?.[1], status: "COMPLETED" }];
       if (sql.includes("UPDATE space_agent_runs")) {
         return [{ ...run, status: "COMPLETED", codexThreadId: values?.[1], codexTurnId: values?.[2], completedAt: values?.[3] }];
@@ -339,7 +339,7 @@ describe("Postgres Telegram persistence", () => {
       event: { type: "TURN_COMPLETED" }
     });
     const statements = client.calls.map((call) => call.sql);
-    const paneLock = statements.findIndex(sql => sql.includes("FROM panes") && sql.includes("FOR UPDATE"));
+    const paneLock = statements.findIndex(sql => sql.includes("FROM panes") && sql.includes("FOR NO KEY UPDATE"));
     const runLock = statements.findIndex(sql => sql.includes("FROM space_agent_runs") && sql.includes("FOR UPDATE"));
     expect(paneLock).toBeGreaterThanOrEqual(0);
     expect(runLock).toBeGreaterThan(paneLock);
@@ -347,7 +347,7 @@ describe("Postgres Telegram persistence", () => {
     expect(outboxCall?.sql).toContain("agent_label, task_title");
     expect(outboxCall?.values).toContain("Διόρθωση Telegram flood");
     expect(outboxCall?.values).toContain("Full final answer");
-    expect(statements.findIndex((sql) => sql.includes("FROM panes") && sql.includes("FOR UPDATE"))).toBeLessThan(
+    expect(statements.findIndex((sql) => sql.includes("FROM panes") && sql.includes("FOR NO KEY UPDATE"))).toBeLessThan(
       statements.findIndex((sql) => sql.includes("FROM space_agent_runs") && sql.includes("FOR UPDATE"))
     );
     expect(statements.findIndex((sql) => sql.includes("INSERT INTO telegram_notification_outbox"))).toBeLessThan(

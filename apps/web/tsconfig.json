@@ -6,6 +6,7 @@
     "moduleResolution": "NodeNext",
     "outDir": "dist-types",
     "noEmit": true,
+    "rootDir": "../..",
     "paths": {
       "@space/contracts": ["../../packages/contracts/dist/index.d.ts"],
       "@space/icons": ["../../packages/icons/src/app-icons.tsx"]

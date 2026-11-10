@@ -14,15 +14,15 @@ const newId = (prefix: string) => `${prefix}:${randomBytes(9).toString("base64ur
 
 export type FreelanceLeadCreateRecord = Omit<FreelanceLead, "id" | "createdAt" | "updatedAt">;
 export type FreelanceLeadPatch = Partial<Omit<FreelanceLead, "id" | "ownerUserId" | "channel" | "createdAt" | "updatedAt">>;
-export interface FreelanceLeadFilter { status?: FreelanceLeadStatus[]; channel?: FreelanceChannel; dueBefore?: string; limit: number }
+export interface FreelanceLeadFilter { status?: FreelanceLeadStatus[]; channel?: FreelanceChannel; dueBefore?: string; /** No limit: every match. */ limit?: number }
 export type FreelanceMessageCreateRecord = Omit<FreelanceMessage, "id" | "createdAt" | "updatedAt">;
 export type FreelanceMessagePatch = Partial<Omit<FreelanceMessage, "id" | "ownerUserId" | "leadId" | "channel" | "direction" | "kind" | "createdAt" | "updatedAt">>;
-export interface FreelanceMessageFilter { leadId?: string; status?: FreelanceMessageStatus[]; channel?: FreelanceChannel; limit: number }
+export interface FreelanceMessageFilter { leadId?: string; status?: FreelanceMessageStatus[]; channel?: FreelanceChannel; /** No limit: every match. */ limit?: number }
 export type FreelanceAccountPatch = Partial<Pick<FreelanceAccount, "status" | "email" | "profileUrl" | "notes">>;
 export type FreelanceMemoryCreateRecord = Omit<FreelanceMemory, "id" | "uses" | "lastUsedAt" | "createdAt" | "updatedAt">;
 export type FreelanceMemoryPatch = Partial<Pick<FreelanceMemory, "text" | "pinned">>;
 export type FreelanceEventCreateRecord = Omit<FreelanceEvent, "id" | "createdAt">;
-export interface FreelanceEventFilter { paneId?: string | null; leadId?: string | null; types?: string[]; status?: string[]; limit: number }
+export interface FreelanceEventFilter { paneId?: string | null; leadId?: string | null; types?: string[]; status?: string[]; /** No limit: every matching event (a brief watch must see every waiting brief, operator 31/10). */ limit?: number }
 export type FreelanceRunPatch = Partial<Pick<FreelanceRun, "status" | "counters" | "kickoffSentAt" | "stoppedAt" | "lastActivityAt">>;
 export type FreelanceRuleCreateRecord = Omit<FreelanceRule, "id" | "appliedCount" | "lastAppliedAt" | "decidedAt" | "createdAt" | "updatedAt">;
 export type FreelanceRulePatch = Partial<Pick<FreelanceRule, "status" | "decidedAt" | "appliedCount" | "lastAppliedAt">>;
@@ -92,7 +92,7 @@ export class InMemoryFreelanceCopilotRepository implements FreelanceCopilotRepos
   async listLeads(owner: string, filter: FreelanceLeadFilter) {
     return [...this.leads.values()].filter((row) => row.ownerUserId === owner && (!filter.status?.length || filter.status.includes(row.status)) && (!filter.channel || row.channel === filter.channel)
       && (!filter.dueBefore || (row.nextActionAt !== null && row.nextActionAt <= filter.dueBefore)))
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, filter.limit).map((row) => ({ ...row }));
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, filter.limit ?? undefined).map((row) => ({ ...row }));
   }
   async getLead(owner: string, id: string) { const row = this.owned(this.leads, owner, id); return row ? { ...row } : null; }
   async findLead(owner: string, channel: FreelanceChannel, key: { externalId?: string | null; url?: string | null }) {
@@ -116,7 +116,7 @@ export class InMemoryFreelanceCopilotRepository implements FreelanceCopilotRepos
   async listMessages(owner: string, filter: FreelanceMessageFilter) {
     return [...this.messages.values()].filter((row) => row.ownerUserId === owner && (!filter.leadId || row.leadId === filter.leadId)
       && (!filter.status?.length || filter.status.includes(row.status)) && (!filter.channel || row.channel === filter.channel))
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).slice(0, filter.limit).map((row) => ({ ...row }));
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).slice(0, filter.limit ?? undefined).map((row) => ({ ...row }));
   }
   async getMessage(owner: string, id: string) { const row = this.owned(this.messages, owner, id); return row ? { ...row } : null; }
   async createMessage(input: FreelanceMessageCreateRecord) {
@@ -162,7 +162,7 @@ export class InMemoryFreelanceCopilotRepository implements FreelanceCopilotRepos
     return [...this.memories.values()].filter((row) => row.ownerUserId === owner && (!query.kinds?.length || query.kinds.includes(row.kind))
       && (!query.channel || !row.channel || row.channel === query.channel) && (!words.length || score(row) > 0))
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || score(b) - score(a) || b.uses - a.uses || b.updatedAt.localeCompare(a.updatedAt))
-      .slice(0, query.limit).map((row) => ({ ...row }));
+      .slice(0, query.limit ?? undefined).map((row) => ({ ...row }));
   }
   async upsertMemory(input: FreelanceMemoryCreateRecord) {
     const at = this.now();
@@ -195,7 +195,7 @@ export class InMemoryFreelanceCopilotRepository implements FreelanceCopilotRepos
   async listEvents(owner: string, filter: FreelanceEventFilter) {
     return this.events.filter((row) => row.ownerUserId === owner && (!filter.paneId || row.paneId === filter.paneId) && (!filter.leadId || row.leadId === filter.leadId)
       && (!filter.types?.length || filter.types.includes(row.type)) && (!filter.status?.length || (row.status !== null && filter.status.includes(row.status))))
-      .sort(byNewest).slice(0, filter.limit).map((row) => ({ ...row }));
+      .sort(byNewest).slice(0, filter.limit ?? undefined).map((row) => ({ ...row }));
   }
   async takeNextWorkItem(owner: string, paneId: string, staleMs: number) {
     const at = this.now();
@@ -343,7 +343,7 @@ export class PostgresFreelanceCopilotRepository implements FreelanceCopilotRepos
   async listLeads(owner: string, filter: FreelanceLeadFilter) {
     return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(leadTable)} FROM freelance_copilot_leads WHERE owner_user_id=$1 AND ($2::text[] IS NULL OR status = ANY($2))
       AND ($3::text IS NULL OR channel=$3) AND ($4::timestamptz IS NULL OR (next_action_at IS NOT NULL AND next_action_at <= $4)) ORDER BY updated_at DESC LIMIT $5`,
-      [owner, filter.status?.length ? filter.status : null, filter.channel ?? null, filter.dueBefore ?? null, filter.limit])).rows.map(leadTable.row);
+      [owner, filter.status?.length ? filter.status : null, filter.channel ?? null, filter.dueBefore ?? null, filter.limit ?? null])).rows.map(leadTable.row);
   }
   getLead(owner: string, id: string) { return this.one(leadTable, owner, id); }
   async findLead(owner: string, channel: FreelanceChannel, key: { externalId?: string | null; url?: string | null }) {
@@ -359,7 +359,7 @@ export class PostgresFreelanceCopilotRepository implements FreelanceCopilotRepos
   async listMessages(owner: string, filter: FreelanceMessageFilter) {
     return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(messageTable)} FROM freelance_copilot_messages WHERE owner_user_id=$1 AND ($2::text IS NULL OR lead_id=$2)
       AND ($3::text[] IS NULL OR status = ANY($3)) AND ($4::text IS NULL OR channel=$4) ORDER BY created_at DESC, id DESC LIMIT $5`,
-      [owner, filter.leadId ?? null, filter.status?.length ? filter.status : null, filter.channel ?? null, filter.limit])).rows.map(messageTable.row);
+      [owner, filter.leadId ?? null, filter.status?.length ? filter.status : null, filter.channel ?? null, filter.limit ?? null])).rows.map(messageTable.row);
   }
   getMessage(owner: string, id: string) { return this.one(messageTable, owner, id); }
   createMessage(input: FreelanceMessageCreateRecord) { return this.insert(messageTable, { ...input, id: newId("flmsg") }); }
@@ -410,7 +410,7 @@ export class PostgresFreelanceCopilotRepository implements FreelanceCopilotRepos
     return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(memoryTable)} FROM freelance_copilot_memory WHERE owner_user_id=$1 AND ($3::text[] IS NULL OR kind = ANY($3::text[]))
         AND ($4::text IS NULL OR channel IS NULL OR channel=$4) AND ($2::text IS NULL OR search @@ websearch_to_tsquery('simple', $2))
       ORDER BY pinned DESC, CASE WHEN $2::text IS NULL THEN 0 ELSE ts_rank(search, websearch_to_tsquery('simple', $2)) END DESC, uses DESC, updated_at DESC LIMIT $5`,
-      [owner, text, query.kinds?.length ? query.kinds : null, query.channel ?? null, query.limit])).rows.map(memoryTable.row);
+      [owner, text, query.kinds?.length ? query.kinds : null, query.channel ?? null, query.limit ?? null])).rows.map(memoryTable.row);
   }
   async upsertMemory(input: FreelanceMemoryCreateRecord) {
     const row = (await this.pool.query<Record<string, unknown>>(`INSERT INTO freelance_copilot_memory(id, owner_user_id, kind, key, text, channel, tags, source, pinned)

@@ -1,0 +1,15 @@
+<body class="{{has-background}}">
+<style>
+/* Headers and covers (X header, LinkedIn banner, YouTube banner): everything sits inside the safe area, sized by its height. */
+.shade{position:absolute;inset:0;background:color-mix(in srgb,var(--bg) calc(var(--overlay)*100%),transparent)}
+body:not(.has-background) .shade{display:none}
+.row{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:calc(var(--u)*8);padding:0 calc(var(--u)*8)}
+.row .logo{height:calc(var(--u)*34);max-width:none;align-self:center}
+.text{display:flex;flex-direction:column;gap:calc(var(--u)*3);min-width:0}
+.headline{font-size:calc(var(--u)*24*var(--headline-scale))}
+.sub{font-size:calc(var(--u)*9)}
+.url{font-size:calc(var(--u)*7)}
+</style>
+<div class="photo"></div><div class="shade"></div><div class="glow"></div>
+<div class="safe"><div class="row">{{logo}}<div class="text"><h1 class="t headline">{{headline}}</h1><p class="t sub">{{subline}}</p><div class="t url">{{url}}</div></div></div></div>
+</body>

@@ -1,7 +1,8 @@
 import type {} from "./request-context.js";
 import type { FastifyInstance, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
-import { idSchema, listTaskItemsQuerySchema, taskItemListResponseSchema, createTaskItemRequestSchema, updateTaskItemInputSchema } from "@space/contracts";
+import { historySince, idSchema, listTaskItemsQuerySchema, listTaskRunsQuerySchema, taskItemListResponseSchema, taskRunListResponseSchema, createTaskItemRequestSchema, updateTaskItemInputSchema } from "@space/contracts";
+import { sendApiError } from "./http-errors.js";
 import { SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import type { AuditRecorder } from "./request-audit.js";
 import { startTaskSchedules, type TaskScheduleRunnerDeps } from "./task-schedules.js";
@@ -11,7 +12,7 @@ const idParamSchema = z.object({ id: idSchema });
 /** Owner-scoped domain. Authentication, CSRF, rate limiting and errors are installed by the composition root. */
 export function registerTaskItemRoutes(app: FastifyInstance, options: {
   store: Pick<SpaceStore, "upsertUser" | "listTaskItems" | "getTaskItem" | "upsertTaskItem" | "updateTaskItem" | "deleteTaskItem" | "clearTaskItems" | "getPane" | "getRoom"
-    | "dueTaskSchedules" | "claimTaskSchedule">;
+    | "dueTaskSchedules" | "claimTaskSchedule" | "listTaskRuns" | "settleTaskRuns" | "pruneTaskRuns" | "getUserSettings">;
   routeOptions: Pick<RouteShorthandOptions, "config">;
   recordAudit: AuditRecorder;
   /** Scheduled tasks are typed into their CLI panes when due; null where the instance job is off. */
@@ -32,6 +33,16 @@ export function registerTaskItemRoutes(app: FastifyInstance, options: {
         totalPages: Math.ceil(result.total / query.pageSize)
       }
     });
+  });
+
+  // Task runs (operator 1/11 03:32 BKK, plan clipboard:GA__W4qBxSPR): every run of the owner's scheduled tasks, newest first; ADMIN only.
+  app.get("/api/tasks/runs", routeOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Task runs require the ADMIN role.");
+    const query = listTaskRunsQuerySchema.parse(request.query);
+    const owner = await store.upsertUser(request.user);
+    // Only the owner's history period (history.periodDays, at most 90 days) shows; older runs are pruned.
+    const since = historySince(await store.getUserSettings(owner.id));
+    return taskRunListResponseSchema.parse(await store.listTaskRuns(owner.id, { ...query, since }));
   });
 
   app.get("/api/task-items/:id", routeOptions, async (request) => {

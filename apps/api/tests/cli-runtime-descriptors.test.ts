@@ -134,7 +134,7 @@ describe("CLI runtime descriptors", () => {
     });
   });
 
-  it("defines isolated Autohand setup with fixed OpenRouter and no native resume", () => {
+  it("defines isolated Autohand setup with fixed OpenRouter and resume by session id that is not yet a proven native reference", () => {
     expect(findCliRuntimeDescriptor("cli:autohand")).toMatchObject({
       key: "autohand",
       id: "cli:autohand",
@@ -154,9 +154,13 @@ describe("CLI runtime descriptors", () => {
       environment: {
         AUTOHAND_HOME: "/var/lib/spaceapp-user/.codex/space-autohand"
       },
-      nativeResumeArgs: null,
+      // fd5f1cc310 (ADAPTER-006): --resume <full id> is wired, but the authenticated live proof is still missing.
+      nativeResumeArgs: ["--resume"],
+      declaresNativeReference: false,
       defaultModelId: "openrouter/auto"
     });
+    expect(findCliRuntimeDescriptor("cli:autohand")?.adapterLimitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: "nativeResume", code: "REFERENCE_PENDING_LIVE_PROOF" })]));
   });
 
   it("routes the stable Gemini runtime id directly to official Antigravity native authentication", () => {

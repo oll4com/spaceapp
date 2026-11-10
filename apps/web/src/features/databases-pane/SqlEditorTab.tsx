@@ -4,13 +4,14 @@ import { sql } from "@codemirror/lang-sql";
 import { Play, Square, Clock, Database, CircleAlert, Copy, Check } from "../ui-theme/app-icons.js";
 import type { DatabaseCatalog, DatabaseExecuteSqlResponse } from "@space/contracts";
 import { formatCellDisplay } from "./DataTab.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export interface SqlEditorTabProps {
   connectionId: string;
   catalog: DatabaseCatalog | null;
   defaultSql?: string;
   isReadOnly?: boolean;
-  onExecuteSql: (sql: string, limit?: number) => Promise<DatabaseExecuteSqlResponse>;
+  onExecuteSql: (sql: string, limit?: number, sessionId?: string) => Promise<DatabaseExecuteSqlResponse>;
   onCancelSql: (sessionId: string) => Promise<void>;
 }
 
@@ -22,6 +23,8 @@ export function SqlEditorTab({
   onExecuteSql,
   onCancelSql
 }: SqlEditorTabProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [queryText, setQueryText] = useState(
     defaultSql || "SELECT * FROM information_schema.tables LIMIT 50;"
   );
@@ -37,11 +40,11 @@ export function SqlEditorTab({
     const schemaMap: Record<string, string[]> = {};
     if (catalog?.schemas) {
       for (const s of catalog.schemas) {
-        for (const t of s.tables) {
-          const colNames = t.columns.map((c) => c.name);
-          schemaMap[t.name] = colNames;
+        for (const tb of s.tables) {
+          const colNames = tb.columns.map((c) => c.name);
+          schemaMap[tb.name] = colNames;
           if (s.name !== "public" && s.name !== "main") {
-            schemaMap[`${s.name}.${t.name}`] = colNames;
+            schemaMap[`${s.name}.${tb.name}`] = colNames;
           }
         }
       }
@@ -58,14 +61,16 @@ export function SqlEditorTab({
     setIsRunning(true);
     setErrorMessage(null);
     setResult(null);
+    // The id is known before the query runs, so Cancel stops this query, not the previous one.
+    const sessionId = crypto.randomUUID();
+    setActiveSessionId(sessionId);
 
     try {
-      const res = await onExecuteSql(queryText, limit);
+      const res = await onExecuteSql(queryText, limit, sessionId);
       if (res.error) {
         setErrorMessage(res.error);
       } else {
         setResult(res);
-        setActiveSessionId(res.sessionId);
       }
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : String(err));
@@ -118,21 +123,21 @@ export function SqlEditorTab({
             className="db-btn db-btn-primary"
             onClick={() => void handleRun()}
             disabled={isRunning || !queryText.trim()}
-            title="Execute query (Ctrl+Enter / Cmd+Enter)"
+            title={t("Execute query (Ctrl+Enter / Cmd+Enter)")}
           >
             <Play size={13} />
-            <span>Run</span>
+            <span>{t("Run")}</span>
           </button>
 
           {isRunning && (
-            <button className="db-btn db-btn-danger" onClick={() => void handleCancel()} title="Cancel running query">
+            <button className="db-btn db-btn-danger" onClick={() => void handleCancel()} title={t("Cancel running query")}>
               <Square size={13} />
-              <span>Cancel</span>
+              <span>{t("Cancel")}</span>
             </button>
           )}
 
           <div style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 8 }}>
-            <span style={{ fontSize: "0.78rem", color: "var(--modern-muted)" }}>Limit:</span>
+            <span style={{ fontSize: "0.78rem", color: "var(--modern-muted)" }}>{t("Limit:")}</span>
             <select
               className="db-select"
               style={{ padding: "2px 6px" }}
@@ -156,9 +161,9 @@ export function SqlEditorTab({
                 <span>{result.executionTimeMs} ms</span>
               </div>
               <div style={{ fontSize: "0.78rem", color: "var(--modern-muted)" }}>
-                {result.rowCount} rows {result.affectedRows !== undefined ? `(${result.affectedRows} affected)` : ""}
+                {t("{count} rows", { count: result.rowCount })} {result.affectedRows !== undefined ? t("({count} affected)", { count: result.affectedRows }) : ""}
               </div>
-              <button className="db-crumb-btn" onClick={handleCopyJson} title="Copy results as JSON">
+              <button className="db-crumb-btn" onClick={handleCopyJson} title={t("Copy results as JSON")}>
                 {copied ? <Check size={13} style={{ color: "var(--modern-accent)" }} /> : <Copy size={13} />}
               </button>
             </>
@@ -223,11 +228,11 @@ export function SqlEditorTab({
           </table>
         ) : result ? (
           <div style={{ padding: 24, textAlign: "center", color: "var(--modern-muted)" }}>
-            Query executed successfully. {result.affectedRows !== undefined ? `${result.affectedRows} rows affected.` : "No rows returned."}
+            {result.affectedRows !== undefined ? t("Query executed successfully. {count} rows affected.", { count: result.affectedRows }) : t("Query executed successfully. No rows returned.")}
           </div>
         ) : (
           <div style={{ padding: 24, textAlign: "center", color: "var(--modern-muted)" }}>
-            Enter SQL and press Run or Ctrl+Enter.
+            {t("Enter SQL and press Run or Ctrl+Enter.")}
           </div>
         )}
       </div>

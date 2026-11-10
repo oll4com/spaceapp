@@ -1,5 +1,6 @@
 import type { Pane, Room } from "@space/contracts";
 import { atEmptyPrompt } from "./room-agent-autopilot.js";
+import { noteModelState } from "./model-unavailable.js";
 import type { RoomPaneObservation } from "./room-pane-control.js";
 
 const TICK_MS = 60_000;
@@ -39,7 +40,9 @@ export function createCopilotRunKick<R extends { id: string; status: string }>(d
             const key = `${run.id}:${backlog}`;
             const before = last.get(pane.id);
             if (before && now() - before.at < (before.key === key ? REKICK_MS : TICK_MS)) continue;
-            if (!atEmptyPrompt(await deps.inspect(pane))) continue;
+            const observed = await deps.inspect(pane);
+            // R11-5: an unavailable model holds the kick, and Nous hears it once per outage.
+            if (noteModelState(room.ownerUserId, pane, observed.text) || !atEmptyPrompt(observed)) continue;
             last.set(pane.id, { key, at: now() });
             await deps.kickoff(pane, run);
             kicked += 1;

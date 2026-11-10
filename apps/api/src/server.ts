@@ -1,3 +1,4 @@
+import { initNodeSentry, flushSentry } from "@space/contracts/sentry-node";
 import { assertDevInstanceIsolated } from "@space/contracts";
 import { hideNestedCodexSkills } from "./agent-tools.js";
 import { createApp } from "./app.js";
@@ -8,6 +9,7 @@ import { pluginsService } from "./plugins-service.js";
 import { installProcessGuards } from "./process-guards.js";
 
 assertDevInstanceIsolated(process.env, "api");
+initNodeSentry("api");
 const config = getApiConfig(process.env);
 const setup = await loadOwnerSetupBootstrap(process.env);
 const app = await createApp({
@@ -19,7 +21,7 @@ const app = await createApp({
   resumeChessTournament: config.instanceJobs["chess-tournament-resume"]
 });
 
-installProcessGuards({ log: app.log, shutdown: () => app.close() });
+installProcessGuards({ log: app.log, shutdown: async () => { await flushSentry(); await app.close(); } });
 if (process.env.SPACE_DATABASE_POOL_MAX) {
   app.log.warn(`SPACE_DATABASE_POOL_MAX=${config.databasePoolMax} is ignored: every db module shares one pool per process, sized by SPACE_DATABASE_SHARED_POOL_MAX (default 20).`);
 }

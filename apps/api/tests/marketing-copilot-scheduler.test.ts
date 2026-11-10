@@ -32,12 +32,57 @@ describe("a post the copilot's own pacing holds (queue item 19)", () => {
     const other = await approvedPost(service, target, null);
     const first = await service.nextItem(owner, target, { waitMs: 0 });
     expect(first).toMatchObject({ kind: "PUBLISH", post: { id: held.id } });
-    await expect(service.deferPublish(owner, target, { postId: held.id, until: "2026-10-27T15:00:00.000Z", reason: "past" })).rejects.toThrow("next 14 days");
+    await expect(service.deferPublish(owner, target, { postId: held.id, until: "2026-10-27T15:00:00.000Z", reason: "past" })).rejects.toThrow("must be in the future");
     expect(await service.deferPublish(owner, target, { postId: held.id, until: "2026-10-28T08:10:00.000Z", reason: "5 Reddit posts a day" }))
       .toMatchObject({ post: { id: held.id, status: "APPROVED", scheduledAt: "2026-10-28T08:10:00.000Z" } });
     expect(await service.nextItem(owner, target, { waitMs: 0 })).toMatchObject({ kind: "PUBLISH", post: { id: other.id } });
     at = Date.parse("2026-10-28T08:11:00.000Z");
     expect((await service.duePosts(owner, target)).map((post) => post.id)).toContain(held.id);
+  });
+});
+
+describe("a closed Marketing pane with posts due (queue item 44)", () => {
+  // 28/10: Cleo/Kate was closed as idle at 10:48 BKK with an approved Reddit post due at 15:10, and nothing would reopen her.
+  it("reopens the owner's newest closed pane once per 10 minutes when no Marketing pane is open; a refused reopen leaves the due card", async () => {
+    let at = Date.parse("2026-10-28T08:10:00.000Z");
+    const service = createMarketingCopilotService({ repository: new InMemoryMarketingCopilotRepository(), now: () => new Date(at).toISOString() });
+    const older = { ...pane("pane:mktold001"), isClosed: true, updatedAt: "2026-10-20T00:00:00.000Z" } as Pane;
+    const kate = { ...pane("pane:mktkate01"), paneName: "Kate", isClosed: true, updatedAt: "2026-10-28T03:48:00.000Z" } as Pane;
+    await approvedPost(service, kate, null);
+    const reopened: string[] = [];
+    const notices: string[] = [];
+    const notified: string[] = [];
+    let panes: Pane[] = [older, kate];
+    let refuse = false;
+    const scheduler = createMarketingCopilotScheduler({
+      service, log: { warn: vi.fn() }, store: { listRooms: () => [{ ...room, name: "Cleo" } as Room], listPanes: (_roomId: string, includeClosed = false) => includeClosed ? panes : panes.filter((entry) => !entry.isClosed) },
+      hasAgent: async () => true, hasActiveRun: async () => false, startRun: vi.fn(async () => {}),
+      notifyDue: async (_owner, _room, target) => { notified.push(target.id); },
+      reopen: { reopen: async (_owner, target) => { if (refuse) throw new Error("Browser sessions are disabled"); reopened.push(target.id); },
+        notice: (_owner, key, line) => { notices.push(`${key} ${line}`); }, now: () => at }
+    });
+    await scheduler.tick();
+    expect(reopened).toEqual([kate.id]);
+    expect(notices).toEqual([expect.stringMatching(/^copilot-reopen:pane:mktkate01 Space reopened Kate in room Cleo \(it was closed\): 1 approved post is due\./)]);
+    // Not again within 10 minutes; then again while it is still closed.
+    await scheduler.tick();
+    at += 10 * 60_000;
+    await scheduler.tick();
+    expect(reopened).toEqual([kate.id, kate.id]);
+    // An open Marketing pane publishes them: nothing reopens. A paused closed pane stays closed.
+    panes = [older, kate, pane("pane:mktopen01")];
+    at += 10 * 60_000;
+    await scheduler.tick();
+    panes = [{ ...pane("pane:mktpaus01", true), isClosed: true, updatedAt: "2026-10-28T05:00:00.000Z" } as Pane];
+    at += 10 * 60_000;
+    await scheduler.tick();
+    expect(reopened).toHaveLength(2);
+    // A reopen Space cannot do raises the existing "posts are due" card instead.
+    panes = [older, kate];
+    refuse = true;
+    at += 10 * 60_000;
+    await scheduler.tick();
+    expect(notified).toEqual([kate.id]);
   });
 });
 
@@ -143,5 +188,26 @@ describe("marketing copilot scheduler", () => {
     expect(marketingNotificationFor(event("PUBLISHING"))).toEqual({ action: "resolve", key: "failed:mktpost:p1" });
     expect(marketingNotificationFor(event("PUBLISHED"))).toEqual({ action: "published", key: "published:mktpost:p1" });
     expect(marketingNotificationFor(event("POST_DRAFTED"))).toBeNull();
+  });
+});
+
+describe("a brief waiting after the agent ended its run (31/10, operator: idle panes with waiting briefs)", () => {
+  it("starts a run for it, never while a run is active (a pause holds), and raises no posts-due card without an agent", async () => {
+    const service = createMarketingCopilotService({ repository: new InMemoryMarketingCopilotRepository(), now: () => "2026-10-31T01:00:00.000Z" });
+    const target = pane("pane:mktbrief1");
+    await service.createBrief(owner, target, { text: "Post the 0.2.4 release note", from: "NOUS" });
+    let active = false;
+    let agent = true;
+    const startRun = vi.fn(async () => {});
+    const notifyDue = vi.fn(async () => {});
+    const scheduler = createMarketingCopilotScheduler({ service, log: { warn: vi.fn() }, store: { listRooms: () => [room], listPanes: () => [target] },
+      hasAgent: async () => agent, hasActiveRun: async () => active, ready: async () => true, startRun, notifyDue });
+    expect(await scheduler.tick()).toMatchObject({ started: 1 });
+    expect(startRun).toHaveBeenCalledTimes(1);
+    active = true;
+    expect(await scheduler.tick()).toMatchObject({ started: 0 });
+    active = false; agent = false;
+    expect(await scheduler.tick()).toMatchObject({ started: 0, notified: 0 });
+    expect(notifyDue).not.toHaveBeenCalled();
   });
 });

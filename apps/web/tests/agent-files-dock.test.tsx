@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Artifact, Room } from "@space/contracts";
-import { AgentFilesDock, clearStoredAgentFilesCache } from "../src/features/agent-files/AgentFilesDock.js";
+import { AgentFilesDock, FilePreviewDialog, clearStoredAgentFilesCache } from "../src/features/agent-files/AgentFilesDock.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 import { SPACE_ARTIFACT_MIME } from "../src/features/artifacts/artifact-drag.js";
@@ -88,6 +88,56 @@ afterEach(() => {
 });
 
 describe("AgentFilesDock", () => {
+  it("switches a markdown preview to a remembered Reading view and back, and keeps code files raw", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, text: async () => "# Plan\n\n| Mine | Cost |\n|---|---|\n| **A** | 5 |" })));
+    const preview = (filename: string) => render(<FilePreviewDialog filename={filename} meta="" kind="TEXT" url="/preview" closeLabel="Close" onClose={() => undefined} />);
+
+    const first = preview("plan.md");
+    expect((await screen.findByText(/\| Mine \| Cost \|/)).tagName).toBe("PRE");
+    fireEvent.click(screen.getByRole("button", { name: "Show reading view" }));
+    expect(screen.getByRole("table")).toBeTruthy();
+    expect(screen.getByText("A").tagName).toBe("STRONG");
+    first.unmount();
+
+    const again = preview("plan.md");
+    expect(await screen.findByRole("table")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show original text" }));
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.getByText(/\| Mine \| Cost \|/).tagName).toBe("PRE");
+    again.unmount();
+
+    preview("data.json");
+    expect((await screen.findByText(/\| Mine/)).tagName).toBe("PRE");
+    expect(screen.queryByRole("button", { name: "Show reading view" })).toBeNull();
+  });
+
+  it("portals the preview out of a transformed dock, preserves its theme and keeps Tab inside", async () => {
+    const apk = artifact({ id: "artifact:apk", mimeType: "application/vnd.android.package-archive",
+      storageUri: "space-artifact://agent-files/Nous-Android-0.2.2.apk",
+      metadata: { source: "AGENT_OUTPUT", originalFilename: "Nous-Android-0.2.2.apk" } });
+    vi.spyOn(liveRuntime.api, "artifacts").mockResolvedValue(paginated([apk]));
+    const { container } = render(<div className="space-shell" data-ui-theme="modern" data-color-mode="light">
+      <div className="side-surface-drawer" style={{ transform: "translateX(20px)" }}><AgentFilesDock activeRoom={room} /></div>
+    </div>);
+    const preview = await screen.findByRole("button", { name: "Preview Nous-Android-0.2.2.apk" });
+    preview.focus();
+    fireEvent.click(preview);
+    const dialog = screen.getByRole("dialog", { name: "Preview Nous-Android-0.2.2.apk" });
+    expect(container.contains(dialog)).toBe(false);
+    expect(dialog.parentElement?.parentElement).toBe(document.body);
+    expect(dialog.parentElement?.dataset.uiTheme).toBe("modern");
+    expect(dialog.parentElement?.dataset.colorMode).toBe("light");
+    const close = within(dialog).getByRole("button", { name: "Close Agent File preview" });
+    const download = within(dialog).getByRole("button", { name: "Download Nous-Android-0.2.2.apk" });
+    close.focus();
+    fireEvent.keyDown(close, { key: "Tab" });
+    expect(document.activeElement).toBe(download);
+    fireEvent.keyDown(download, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(close);
+    fireEvent.click(close);
+    expect(document.activeElement).toBe(preview);
+  });
+
   it("filters filenames and file types locally and clears an empty search", async () => {
     const files = [
       artifact({ id: "artifact:pdf", mimeType: "application/pdf", storageUri: "space-artifact://agent-files/report.pdf", metadata: { source: "AGENT_OUTPUT", originalFilename: "Release Report.pdf" } }),
@@ -362,6 +412,32 @@ describe("AgentFilesDock", () => {
     }));
     expect(write).toHaveBeenCalledWith(expect.any(Blob));
     expect(screen.queryByText(/verification failed/i)).toBeNull();
+  });
+
+  it.each([true, false])("hands a large APK to Android's URL downloader without fetching or encoding bytes (accepted: %s)", async (accepted) => {
+    const apk = artifact({
+      id: "artifact:android-apk", mimeType: "application/vnd.android.package-archive",
+      storageUri: "space-artifact://agent-files/Nous-Android-0.2.2.apk", byteSize: 64_118_005,
+      metadata: { source: "AGENT_OUTPUT", originalFilename: "Nous-Android-0.2.2.apk" }
+    });
+    vi.spyOn(liveRuntime.api, "artifacts").mockResolvedValue(paginated([apk]));
+    vi.spyOn(liveRuntime.api, "signatureRequests").mockResolvedValue({ requests: [] });
+    const downloadUrl = vi.fn(() => accepted);
+    const saveFile = vi.fn();
+    vi.stubGlobal("SpaceNative", { downloadUrl, saveFile });
+    const fetchBytes = vi.fn();
+    vi.stubGlobal("fetch", fetchBytes);
+    const readBytes = vi.spyOn(FileReader.prototype, "readAsDataURL");
+    render(<AgentFilesDock activeRoom={room} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Download Nous-Android-0.2.2.apk" }));
+    await waitFor(() => expect(downloadUrl).toHaveBeenCalledWith(
+      "/api/artifacts/artifact%3Aandroid-apk/download", "Nous-Android-0.2.2.apk", apk.mimeType
+    ));
+    if (!accepted) expect(await screen.findByText("The Android download could not be started. Please try again.")).toBeTruthy();
+    expect(fetchBytes).not.toHaveBeenCalled();
+    expect(saveFile).not.toHaveBeenCalled();
+    expect(readBytes).not.toHaveBeenCalled();
   });
 
   it("supports individual deletion, room clear, refresh, and fullscreen", async () => {
@@ -1025,6 +1101,8 @@ describe("AgentFilesDock", () => {
     expect(agentFilesCss).toContain("container: agent-files / inline-size;");
     expect(agentFilesCss).toContain("@container agent-files (max-width: 32rem)");
     expect(agentFilesCss).toContain(".agent-files-modal-body");
+    // A long text centered on the preview stage lost its start above the scroll origin (Unboxing plan, 4/11).
+    expect(agentFilesCss).toMatch(/\.agent-files-text-preview \{[^}]*align-self: start;/);
     expect(agentFilesCss).not.toContain("!important");
   });
 });

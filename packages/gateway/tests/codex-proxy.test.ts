@@ -7,6 +7,7 @@ import { compressBlock } from "../src/compression/engine.js";
 import { applyRequestPolicy, PolicyRejection } from "../src/policy.js";
 import { registerCodexProxyRoutes } from "../src/providers/codex/codex-proxy.js";
 import { RequestLogWriter } from "../src/request-log-writer.js";
+import { createPriorityPanes } from "../src/admin/priority-panes.js";
 import { createGatewayServer } from "../src/server.js";
 
 const cipher = createCredentialCipher(Buffer.alloc(32, 9));
@@ -39,13 +40,14 @@ async function setup(upstream: (accountId: string | null, body: Record<string, u
       lastRefreshAt: new Date(nowMs).toISOString() });
     await repository.saveUsageWindows(accountId, [{ window: "PRIMARY", usedPercent: used, resetAt: null, windowMinutes: 300 }]);
   }
-  await repository.updateSettings({ planPriority: [], routingStrategy: "USAGE_WEIGHTED" });
+  await repository.updateSettings({ planPriority: [], routingStrategy: "USAGE_WEIGHTED", subscriptionRouting: "WEEKLY_PACE" });
   const { plainKey, keyHash, keyPrefix } = generateGatewayApiKey();
   await repository.createApiKey({ keyId: `gw_key:${"c".repeat(32)}`, name: "CLI", keyHash, keyPrefix, trafficClass: "INTERACTIVE", allowedModels: [],
     enforcedModel: null, allowedReasoningEfforts: [], enforcedReasoningEffort: null, accountIds: [], compressionOverride: null, limits: [],
     expiresAt: null, createdBy: null, ...keyOverrides });
   const pool = new AccountPool({ provider: "CODEX", repository, cipher: () => cipher, refresher, now: () => nowMs });
   const logs = new RequestLogWriter(repository, { intervalMs: 1 });
+  const priorityPanes = createPriorityPanes({ now: () => nowMs });
   const calls: { url: string; accountId: string | null; body: Record<string, unknown>; headers: Record<string, string> }[] = [];
   const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
     const headers = init.headers as Record<string, string>;
@@ -53,10 +55,12 @@ async function setup(upstream: (accountId: string | null, body: Record<string, u
     calls.push({ url, accountId: headers["chatgpt-account-id"] ?? null, body, headers });
     return upstream(headers["chatgpt-account-id"] ?? null, body);
   }) as unknown as typeof fetch;
+  const apiLog: Array<{ reqId: string; event: string }> = [];
   const server = createGatewayServer({ repository, version: "test", credentialKeyPresent: () => true, now: () => new Date(nowMs),
+    requestLog: (record) => apiLog.push(record),
     routes: (app, helpers) => registerCodexProxyRoutes(app, helpers, { pool, logs, settings: () => repository.getSettings(), fetchImpl, now: () => nowMs,
       settleKeyUsage: (keyId, usage) => repository.settleApiKeyUsage(keyId, usage), compression: compression as never, modelPlans: modelPlans as never,
-      ...(speedDefaults ? { speedDefaults: async () => speedDefaults } : {}) }) });
+      ...(speedDefaults ? { speedDefaults: async () => speedDefaults } : {}), priorityPanes }) });
   const post = (payload: Record<string, unknown>, headers: Record<string, string> = {}) => server.app.inject({
     method: "POST", url: "/backend-api/codex/responses", headers: { authorization: `Bearer ${plainKey}`, "user-agent": "codex_cli_rs/0.150.1", ...headers }, payload
   });
@@ -69,10 +73,61 @@ async function setup(upstream: (accountId: string | null, body: Record<string, u
   const postV1 = (payload: Record<string, unknown>) => server.app.inject({
     method: "POST", url: "/v1/responses", headers: { authorization: `Bearer ${plainKey}` }, payload
   });
-  return { repository, pool, logs, calls, post, postChat, postCompact, postV1, server };
+  return { repository, pool, logs, calls, post, postChat, postCompact, postV1, server, apiLog, priorityPanes };
 }
 
 describe("Codex proxy", () => {
+  it("keeps a caller's x-request-id as the log id only when it fits the column, and answers with the id it logged (OBS-006)", async () => {
+    const { post, logs, repository, calls, apiLog, server } = await setup(() => streamResponse(completed("resp_1")));
+    const ids: string[] = [];
+    for (const requestId of ["req:cli-pane-7f3a", "x".repeat(120), "x".repeat(121), "has space", "  ", undefined]) {
+      const response = await post({ model: "gpt-5.6-sol", stream: true, input: "PRIVATE_PROMPT" }, requestId === undefined ? {} : { "x-request-id": requestId });
+      expect(response.statusCode).toBe(200);
+      ids.push(String(response.headers["x-request-id"]));
+    }
+    await logs.flush();
+    const logged = (await repository.listRequestLogs({ limit: 10 })).map((log) => log.requestId).reverse();
+    expect(logged).toEqual(ids);
+    expect(ids[0]).toBe("req:cli-pane-7f3a");
+    expect(ids[1]).toBe("x".repeat(120));
+    for (const id of ids.slice(2)) expect(id).toMatch(/^req_[0-9a-f]{32}$/);
+    expect(apiLog.map((row) => row.reqId)).toEqual(ids);
+    expect(calls.map((call) => call.headers["x-request-id"])).toEqual(ids);
+    expect(JSON.stringify(apiLog)).not.toMatch(/PRIVATE_PROMPT|token-chatgpt|authorization|has space/);
+    await server.app.close();
+  });
+
+  it("links native turn metadata to model rows while preserving the transport API event", async () => {
+    const { post, logs, repository, calls, apiLog, server } = await setup(() => streamResponse(completed("resp_trace")));
+    const candidates = ["req:original-api", undefined, "x".repeat(121), "has space"];
+    for (const [index, source] of candidates.entries()) {
+      const response = await post({ model: "gpt-5.6-sol", stream: true, input: "PRIVATE_PROMPT",
+        client_metadata: { "x-codex-turn-metadata": JSON.stringify({ turn_id: `native-turn-${index}`, space_request_id: source, other: "PRIVATE_METADATA" }) }
+      }, { "x-request-id": `req:transport-${index}` });
+      expect(response.headers["x-request-id"]).toBe(index === 0 ? source : `req:transport-${index}`);
+    }
+    await logs.flush();
+    expect((await repository.listRequestLogs({ limit: 10 })).map(row => row.requestId).reverse())
+      .toEqual(["req:original-api", "req:transport-1", "req:transport-2", "req:transport-3"]);
+    expect(apiLog.filter(row => row.event === "gateway.model_request")).toEqual([
+      { event: "gateway.model_request", reqId: "req:original-api", transportRequestId: "req:transport-0", nativeTurnId: "native-turn-0" }
+    ]);
+    expect(apiLog.filter(row => row.event === "gateway.request").map(row => row.reqId)).toEqual(candidates.map((_, i) => `req:transport-${i}`));
+    expect(calls[0]?.headers["x-request-id"]).toBe("req:original-api");
+    expect(JSON.stringify(apiLog)).not.toMatch(/PRIVATE|has space|authorization/);
+    await server.app.close();
+  });
+
+  it("never holds background work past today's share of the week: no pace cap (operator 7/11 19:22 BKK, nous_msg:3d047588)", async () => {
+    const harness = await setup(() => streamResponse(completed("resp_pace")));
+    const day = 86_400, now = nowMs / 1000;
+    const original = harness.pool.toBalancerState.bind(harness.pool);
+    vi.spyOn(harness.pool, "toBalancerState").mockImplementation((account) => ({ ...original(account), secondaryUsedPercent: account.id === accountA ? 71 : 75,
+      secondaryResetAt: now + 3.5 * day, weekDayStart: { at: (now - day / 2) * 1000, usedPercent: 60 } }));
+    const ask = (project: string) => harness.post({ model: "gpt-5.6-sol", stream: true, input: "hi" }, { "x-space-project": project });
+    for (const project of ["pane:finn0001", "pane:bruno0001", "nous", "nous-operator"]) expect((await ask(project)).statusCode, project).toBe(200);
+  });
+
   it("streams a reply from the least-used account and logs usage", async () => {
     const { post, calls, logs, repository } = await setup(() => streamResponse(completed("resp_1"), 200, { "x-codex-primary-used-percent": "12" }));
     const response = await post({ model: "gpt-5.6-sol", stream: true, input: "hi", service_tier: "fast", reasoning: { effort: "ultra" } });

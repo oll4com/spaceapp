@@ -273,7 +273,7 @@ function RunView({ run, models, busy, act, confirm }: { run: CouncilRun; models:
       <details className="council-section">
         <summary>Activity ({run.events.length})</summary>
         <ol className="council-events">
-          {run.events.slice(-40).map((event, index) => <li key={`${event.at}-${index}`}><time dateTime={event.at}>{new Date(event.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time> {event.text}</li>)}
+          {run.events.map((event, index) => <li key={`${event.at}-${index}`}><time dateTime={event.at}>{new Date(event.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time> {event.text}</li>)}
         </ol>
       </details>
     </div>

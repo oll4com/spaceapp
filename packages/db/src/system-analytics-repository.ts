@@ -757,8 +757,9 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
       // the previous watermark by the next one.
       if (this.lastRollupAt === null || Date.parse(at) > Date.parse(this.lastRollupAt)) this.lastRollupAt = at;
     } catch (error) {
-      rollbackFailed = await rollbackKeepingError(client);
-      throw error;
+      const rollback = await rollbackKeepingError(client, error);
+      rollbackFailed = rollback.failed;
+      throw rollback.error;
     } finally {
       client.release?.(rollbackFailed || undefined);
     }

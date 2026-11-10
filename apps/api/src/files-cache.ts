@@ -2,8 +2,9 @@ import { statfs, readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { DiskStats } from "@space/contracts";
 import { WORKSPACE_ROOT } from "./files-service.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
-export const CACHE_DIR = path.join(process.env.SPACE_VAR_DIR || "/opt/spaceapp/var", "cache");
+export const CACHE_DIR = path.join(process.env.SPACE_VAR_DIR || `${SPACE_INSTALL_ROOT}/var`, "cache");
 export const FILES_CACHE_FILE = path.join(CACHE_DIR, "files-disk-cache.json");
 
 export interface FilesCacheData {

@@ -2,6 +2,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { usePanePolling } from "../src/use-pane-polling.js";
 import { singleFlightRequest } from "../src/single-flight-request.js";
+import { reportCoreApiFailure, reportCoreApiSuccess, resetCoreApiAvailability } from "../src/core-api-state.js";
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
@@ -55,6 +56,22 @@ describe("pane polling on congested links", () => {
     expect(poll).toHaveBeenCalledTimes(1);
     await act(() => vi.advanceTimersByTimeAsync(5000));
     expect(poll).toHaveBeenCalledTimes(2);
+  });
+
+  it("nous_msg:1be51d08: re-reads at once when Space answers again after an outage, not on the next tick", async () => {
+    vi.useFakeTimers();
+    resetCoreApiAvailability();
+    const poll = vi.fn(async () => undefined);
+    const hook = renderHook(() => usePanePolling(poll, 30_000));
+    await act(async () => undefined);
+    expect(poll).toHaveBeenCalledTimes(1);
+    act(() => reportCoreApiFailure());
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    expect(poll).toHaveBeenCalledTimes(1);
+    await act(async () => { reportCoreApiSuccess(); });
+    expect(poll).toHaveBeenCalledTimes(2);
+    hook.unmount();
+    resetCoreApiAvailability();
   });
 
   it("shares global reads between 48 panes but returns a fresh response after completion", async () => {

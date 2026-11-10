@@ -21,6 +21,15 @@ describe("Live history outbox", () => {
     const cleared = fixture({ storage, load: async () => ({ items: [], epochs: { "room:a": 1 } }) }); expect(await cleared.sync.setOwner("owner:a")).toEqual([]);
     await cleared.sync.flush(); expect(cleared.save).not.toHaveBeenCalled();
   });
+  it("restores every unsaved turn after a refresh, past the old newest 500 (31/10)", async () => {
+    const records = new Map(); const storage = { getItem: (key: string) => records.get(key), setItem: (key: string, value: string) => records.set(key, value) };
+    const f = fixture({ storage }); await f.sync.setOwner("owner:a");
+    for (let index = 0; index < 600; index += 1) f.sync.enqueue({ ...turn, id: `t${index}` });
+    f.sync.dispose();
+    const restored = fixture({ storage }); await restored.sync.setOwner("owner:a");
+    for (let round = 0; round < 12; round += 1) await restored.sync.flush();
+    expect(new Set(restored.saved.map(entry => entry.item.id)).size).toBe(600);
+  });
   it("fences late deltas after clear while allowing a new turn", async () => {
     const f = fixture(); await f.sync.setOwner("owner:a"); f.sync.enqueue(turn); await f.sync.clearRoom("room:a", ["one"]);
     f.sync.enqueue({ ...turn, text: "late" }); f.sync.enqueue({ ...turn, id: "two" }); await f.sync.flush();

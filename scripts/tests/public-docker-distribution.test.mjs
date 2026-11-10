@@ -12,7 +12,7 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
   const normalizedDockerfile = dockerfile.replace(/\\\r?\n\s*/g, " ");
   const nodeImage =
-    "node:22.23.4-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf";
+    "node:26.13.0-trixie-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39";
   const nodeStages = Array.from(
     dockerfile.matchAll(/^FROM (\S+) AS (build|runtime-base)$/gm),
     ([, image, stage]) => ({ image, stage })
@@ -31,7 +31,7 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
     "build, runtime, and browser apt transactions must explicitly install patched liblzma5"
   );
   assert.match(dockerfile, /ARG TARGETARCH/);
-  assert.match(dockerfile, /ARG NPM_VERSION=11\.18\.0/);
+  assert.match(dockerfile, /ARG NPM_VERSION=11\.21\.1/);
   assert.match(
     normalizedDockerfile,
     /npm install --global --ignore-scripts --no-audit --no-fund "npm@\$\{NPM_VERSION\}"/
@@ -95,7 +95,7 @@ test("runtime images patch fixable vulnerabilities in npm's bundled dependencies
 
   assert.match(
     normalizedRuntimeStage,
-    /npm pack --ignore-scripts --no-audit --no-fund --pack-destination \/tmp\/npm-security-patches brace-expansion@5\.0\.12 tar@7\.5\.21 ip-address@10\.7\.4 undici@6\.29\.1 postcss-selector-parser@7\.1\.6/
+    /npm pack --ignore-scripts --no-audit --no-fund --pack-destination \/tmp\/npm-security-patches brace-expansion@5\.0\.12 tar@7\.5\.22 ip-address@10\.7\.4 undici@6\.29\.1 postcss-selector-parser@7\.1\.6/
   );
   assert.match(
     normalizedRuntimeStage,
@@ -103,7 +103,7 @@ test("runtime images patch fixable vulnerabilities in npm's bundled dependencies
   );
   assert.match(
     normalizedRuntimeStage,
-    /tar -xzf \/tmp\/npm-security-patches\/tar-7\.5\.21\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/tar --strip-components=1/
+    /tar -xzf \/tmp\/npm-security-patches\/tar-7\.5\.22\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/tar --strip-components=1/
   );
   assert.match(
     normalizedRuntimeStage,
@@ -261,9 +261,11 @@ test("core never runs OpenCode itself", async () => {
   assert.match(app, /new CliTerminalManager\(\{[^}]*?credentialHost: publicCredentialHost,/);
   assert.match(app, /checkCredential: \(runtime\) => checkCliRuntimeCredential\(runtime, publicCredentialHost\?\.execute\)/);
   assert.match(app, /observeCredential: \(runtime\) => observeCliRuntimeCredential\(runtime, publicCredentialHost\?\.execute\)/);
-  assert.match(app, /new OpencodeModelBenchService\(\{\n    execVerbose: publicCredentialHost\n      \? \(provider\) => publicCredentialHost\.openCodeModels\(provider\)/);
+  // ARCH-001 step 88 moved the model bench into system-analytics-wiring.ts; app.ts hands it the credential host.
+  assert.match(await read("system-analytics-wiring.ts"), /new OpencodeModelBenchService\(\{\n    execVerbose: publicCredentialHost\n      \? \(provider\) => publicCredentialHost\.openCodeModels\(provider\)/);
+  assert.match(app, /createSystemAnalyticsServices\(\{[^}]*publicCredentialHost \}\)/);
   assert.match(app, /createOpenCodeTextModel\(\{ run: runOpenCode \}\)/);
-  assert.match(app, /completeRoomAgentPrompt\(\{[^}]*runOpenCode \}\)/);
+  assert.match(app, /completeRoomAgentPrompt\(\{[^}]*\brunOpenCode[,\s]/);
   assert.doesNotMatch(app, /createOpenCodeTextModel\(\)|checkCliRuntimeCredential\(runtime\)|observeCliRuntimeCredential\(runtime\)/);
   assert.match(await read("cli-terminal.ts"), /this\.options\.credentialHost\n\s+\? await this\.options\.credentialHost\.execute\(runtime\.detectedCommandPath, \["credential-smoke"\]/);
   // First Setup (1.1.8): the setup assistant and the Room Agent check take the credential host's OpenCode before their own.
@@ -347,4 +349,168 @@ test("core seeds generic starter memory only when mutable owner memory is absent
   assert.doesNotMatch(core, /gemini_history|SPACE_GEMINI_MEMORY/);
   assert.match(starter, /^# SpaceApp Memory/m);
   assert.doesNotMatch(starter, /\/etc\/docs|\/srv\/space|spaceapp-user|oll4\.com/i);
+});
+
+test("runtime images carry no TypeScript compiler (TypeScript 7's Go binary brought fixable Go stdlib CVEs, 1.2.0)", async () => {
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const build = dockerfile.split(/^(?=FROM )/m).find((stage) => / AS build$/m.test(stage)).replace(/\\\r?\n\s*/g, " ");
+  assert.match(build, /npm prune --omit=dev\s+&& rm -rf node_modules\/typescript node_modules\/@typescript\s/);
+});
+
+test("core supervisor starts the web proxy without Space credentials and the api with them (INT5-C-F5)", async () => {
+  // The image's policy module: packages/runtime builds it into dist (export from Space dev after 6b0a6cebe9).
+  assert.match(await readFile(join(root, "packages", "runtime", "src", "child-process-env.ts"), "utf8"), /export function childProcessEnv\(/);
+  const dir = await mkdtemp(join(tmpdir(), "spaceapp-supervisor-"));
+  try {
+    const { cp, mkdir } = await import("node:fs/promises");
+    const { spawn } = await import("node:child_process");
+    const { setTimeout: delay } = await import("node:timers/promises");
+    await mkdir(join(dir, "deploy", "docker"), { recursive: true });
+    await cp(join(root, "deploy", "docker", "core-supervisor.mjs"), join(dir, "deploy", "docker", "core-supervisor.mjs"));
+    // Stand-in policy and services: each service records whether it saw the secret, then waits for the supervisor's stop.
+    await mkdir(join(dir, "packages", "runtime", "dist"), { recursive: true });
+    await writeFile(join(dir, "packages", "runtime", "dist", "child-process-env.js"),
+      'export const childProcessEnv = () => ({ PATH: process.env.PATH, FILTERED: "1" });\n');
+    const service = (name) => `import { writeFileSync } from "node:fs";\n` +
+      `writeFileSync(${JSON.stringify(join(dir, `${name}.json`))}, JSON.stringify({ secret: process.env.SPACE_SESSION_SECRET ?? null, filtered: process.env.FILTERED ?? null }));\n` +
+      "setInterval(() => {}, 1000);\n";
+    for (const [name, path] of [["api", "apps/api/dist/server.js"], ["web", "apps/web/server.mjs"]]) {
+      await mkdir(dirname(join(dir, path)), { recursive: true });
+      await writeFile(join(dir, path), service(name));
+    }
+    await writeFile(join(dir, "package.json"), '{ "type": "module" }\n');
+    const supervisor = spawn(process.execPath, ["deploy/docker/core-supervisor.mjs"], {
+      cwd: dir, stdio: "ignore",
+      env: { PATH: process.env.PATH, SPACE_SESSION_SECRET: "fixture-session-secret", SPACEAPP_WORKFLOWS_ENABLED: "false" }
+    });
+    const exited = new Promise((done) => supervisor.once("exit", done));
+    const read = async (name) => JSON.parse(await readFile(join(dir, `${name}.json`), "utf8"));
+    for (let i = 0; i < 100; i++) {
+      if (await read("api").then(() => read("web"), () => null).catch(() => null)) break;
+      await delay(50);
+    }
+    supervisor.kill("SIGTERM");
+    assert.equal(await exited, 0);
+    assert.deepEqual(await read("api"), { secret: "fixture-session-secret", filtered: null });
+    assert.deepEqual(await read("web"), { secret: null, filtered: "1" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("core entrypoint runs migrations without the session secret and hands it to the supervisor (EXT-C-F8)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "spaceapp-entrypoint-"));
+  try {
+    const { chmod, cp, mkdir } = await import("node:fs/promises");
+    await mkdir(join(dir, "deploy", "docker"), { recursive: true });
+    await cp(join(root, "deploy", "docker", "core-entrypoint.sh"), join(dir, "deploy", "docker", "core-entrypoint.sh"));
+    await writeFile(join(dir, "deploy", "docker", "memory-names.sh"), "exit 0\n");
+    // Stand-ins: install writes nothing, gosu drops its user, each node step records which credentials it saw.
+    await mkdir(join(dir, "bin"));
+    for (const [name, body] of [["install", "exit 0"], ["gosu", 'shift\nexec "$@"']]) {
+      await writeFile(join(dir, "bin", name), `#!/bin/sh\n${body}\n`);
+      await chmod(join(dir, "bin", name), 0o755);
+    }
+    const step = (name) => `import { writeFileSync } from "node:fs";\n` +
+      `writeFileSync(${JSON.stringify(join(dir, `${name}.json`))}, JSON.stringify({ db: process.env.SPACE_DATABASE_URL ?? null, secret: process.env.SPACE_SESSION_SECRET ?? null, agent: process.env.SPACE_AGENT_TOKEN_SECRET ?? null }));\n`;
+    await mkdir(join(dir, "packages", "db", "dist"), { recursive: true });
+    await writeFile(join(dir, "packages", "db", "dist", "migrate.js"), step("migrate"));
+    await writeFile(join(dir, "deploy", "docker", "core-supervisor.mjs"), step("supervisor"));
+    await writeFile(join(dir, "package.json"), '{ "type": "module" }\n');
+    for (const [name, value] of [["database-url", "postgres://fixture"], ["session-secret", "fixture-session-secret"], ["agent-token-secret", "fixture-agent-secret"], ["setup-token", "fixture-setup-token"]]) {
+      await writeFile(join(dir, name), value);
+    }
+    execFileSync("sh", ["deploy/docker/core-entrypoint.sh"], {
+      cwd: dir, stdio: "ignore",
+      env: {
+        PATH: `${join(dir, "bin")}:${process.env.PATH}`,
+        SPACE_DATABASE_URL_SOURCE_FILE: join(dir, "database-url"), SPACE_DATABASE_URL_FILE: join(dir, "database-url-runtime"),
+        SPACE_SESSION_SECRET_FILE: join(dir, "session-secret"), SPACE_AGENT_TOKEN_SECRET_FILE: join(dir, "agent-token-secret"),
+        SPACE_SETUP_TOKEN_SOURCE_FILE: join(dir, "setup-token"), SPACE_SETUP_TOKEN_RUNTIME_FILE: join(dir, "setup-token-runtime"),
+        SPACE_MEMORY_ROOT: join(dir, "memory"), SPACE_MEMORY_GRAPH_ROOT: join(dir, "graph"), SPACE_STARTER_MEMORY_ROOT: join(dir, "starter"),
+        SPACE_TELEGRAM_SECRET_ROOT: join(dir, "telegram"), SPACE_TELEGRAM_OWNERSHIP_MANIFEST: join(dir, "telegram", "owners.json")
+      }
+    });
+    const read = async (name) => JSON.parse(await readFile(join(dir, `${name}.json`), "utf8"));
+    assert.deepEqual(await read("migrate"), { db: "postgres://fixture", secret: null, agent: null });
+    assert.deepEqual(await read("supervisor"), { db: "postgres://fixture", secret: "fixture-session-secret", agent: "fixture-agent-secret" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("core supervisor gives the worker the database URL without the session secret (EXT-C-F8)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "spaceapp-supervisor-worker-"));
+  try {
+    const { cp, mkdir } = await import("node:fs/promises");
+    const { spawn } = await import("node:child_process");
+    const { setTimeout: delay } = await import("node:timers/promises");
+    await mkdir(join(dir, "deploy", "docker"), { recursive: true });
+    await cp(join(root, "deploy", "docker", "core-supervisor.mjs"), join(dir, "deploy", "docker", "core-supervisor.mjs"));
+    await mkdir(join(dir, "packages", "runtime", "dist"), { recursive: true });
+    await writeFile(join(dir, "packages", "runtime", "dist", "child-process-env.js"), "export const childProcessEnv = () => ({ PATH: process.env.PATH });\n");
+    const services = [["api", "apps/api/dist/server.js"], ["worker", "apps/worker/dist/worker.js"], ["web", "apps/web/server.mjs"]];
+    for (const [name, path] of services) {
+      await mkdir(dirname(join(dir, path)), { recursive: true });
+      await writeFile(join(dir, path), `import { writeFileSync } from "node:fs";\n` +
+        `writeFileSync(${JSON.stringify(join(dir, `${name}.json`))}, JSON.stringify({ db: process.env.SPACE_DATABASE_URL ?? null, secret: process.env.SPACE_SESSION_SECRET ?? null, agent: process.env.SPACE_AGENT_TOKEN_SECRET ?? null }));\n` +
+        "setInterval(() => {}, 1000);\n");
+    }
+    await writeFile(join(dir, "package.json"), '{ "type": "module" }\n');
+    const supervisor = spawn(process.execPath, ["deploy/docker/core-supervisor.mjs"], {
+      cwd: dir, stdio: "ignore",
+      env: { PATH: process.env.PATH, SPACE_DATABASE_URL: "postgres://fixture", SPACE_SESSION_SECRET: "fixture-session-secret", SPACE_AGENT_TOKEN_SECRET: "fixture-agent-secret" }
+    });
+    const exited = new Promise((done) => supervisor.once("exit", done));
+    const read = async (name) => JSON.parse(await readFile(join(dir, `${name}.json`), "utf8"));
+    for (let i = 0; i < 100 && !(await Promise.all(services.map(([name]) => read(name))).catch(() => null)); i++) await delay(50);
+    supervisor.kill("SIGTERM");
+    assert.equal(await exited, 0);
+    assert.deepEqual(await read("api"), { db: "postgres://fixture", secret: "fixture-session-secret", agent: "fixture-agent-secret" });
+    assert.deepEqual(await read("worker"), { db: "postgres://fixture", secret: null, agent: null });
+    assert.deepEqual(await read("web"), { db: null, secret: null, agent: null });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// Review 5/5 F5 (plan clipboard:NtzEOzE3Ew00 step 4): every image a build or an install pulls from someone else is
+// pinned by digest, so a moved tag never changes what ships; SpaceApp's own images are pinned by images.lock.json.
+test("every third-party image in the Dockerfile and the compose template is pinned by digest", async () => {
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const stages = new Set(Array.from(dockerfile.matchAll(/^FROM \S+ AS (\S+)$/gm), ([, stage]) => stage));
+  const bases = Array.from(dockerfile.matchAll(/^FROM (\S+)/gm), ([, image]) => image).filter((image) => !stages.has(image));
+  const copied = Array.from(dockerfile.matchAll(/--from=(\S+)/g), ([, image]) => image).filter((image) => !stages.has(image));
+  const compose = await readFile(join(root, "packages", "run-spaceapp", "templates", "compose.yml"), "utf8");
+  const pulled = Array.from(compose.matchAll(/^\s*image: (\S+)$/gm), ([, image]) => image)
+    .filter((image) => !image.startsWith("ghcr.io/oll4com/spaceapp-"));
+  assert.ok(bases.length > 0 && pulled.length > 0);
+  for (const image of [...bases, ...copied, ...pulled]) {
+    assert.match(image, /^[a-z0-9./-]+:[\w.-]+@sha256:[0-9a-f]{64}$/, `${image} must carry a tag and its digest`);
+  }
+  for (const image of compose.matchAll(/^\s*image: (ghcr\.io\/oll4com\/spaceapp-\S+)$/gm)) {
+    assert.match(image[1], /:\$\{SPACEAPP_IMAGE_TAG\}\$\{SPACEAPP_(CORE|CLI|BROWSER)_IMAGE_DIGEST:-\}$/);
+  }
+});
+
+test("1.2.0: every script agent-bootstrap.ts names, and every script the API and worker load, is in the image under /opt/spaceapp/scripts", async () => {
+  const { runtimeScripts, runtimeScriptData } = await import("../public-export.mjs");
+  const dockerfile = (await readFile(join(root, "Dockerfile"), "utf8")).replace(/\\\r?\n\s*/g, " ");
+  // What the runtime stages copy from the build stage's /app: each COPY's sources, files or whole folders.
+  const copied = [...dockerfile.matchAll(/^COPY --from=build\b(.*)$/gm)].flatMap(([, line]) => {
+    const words = line.trim().split(/\s+/).filter((word) => !word.startsWith("--"));
+    return words.slice(0, -1).filter((word) => word.startsWith("/app/")).map((word) => word.slice("/app/".length));
+  });
+  const inImage = (path) => copied.some((source) => path === source || path.startsWith(`${source}/`));
+  const wanted = [...runtimeScripts(root), ...[...runtimeScriptData.keys()].map((dir) => `${dir}/x`)];
+  assert.ok(wanted.includes("scripts/space-progress.mjs"));
+  assert.deepEqual(wanted.filter((path) => !inImage(path)), []);
+  // SPACE_INSTALL_ROOT is /opt/spaceapp on a public install; both images point its scripts folder at /app/scripts.
+  const hostPaths = await readFile(join(root, "packages/contracts/src/host-paths.ts"), "utf8").catch(() => "");
+  if (hostPaths) assert.match(hostPaths, /SPACE_INSTALL_ROOT = "\/opt\/spaceapp"/);
+  const stage = (name) => dockerfile.match(new RegExp(`FROM runtime-base AS ${name}([\\s\\S]*?)(?=\\nFROM |\\s*$)`))?.[1] || "";
+  assert.match(stage("core"), /^RUN ln -s \/app\/scripts \/opt\/spaceapp\/scripts$/m);
+  // The CLI image's /opt/spaceapp is /etc (the panes' session folder), so its scripts folder is /etc/scripts.
+  assert.match(stage("cli"), /^RUN ln -s \/etc \/opt\/spaceapp$/m);
+  assert.match(stage("cli"), /^RUN ln -s \/app\/scripts \/etc\/scripts$/m);
 });

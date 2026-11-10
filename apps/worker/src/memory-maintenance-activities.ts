@@ -48,8 +48,9 @@ import {
   spaceMemoryMonthlyPath
 } from "@space/runtime";
 import { runMemoryAiAudit } from "./memory-ai-audit.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
-const DEFAULT_GRAPH_ROOT = "/opt/spaceapp/var/memory-graph";
+const DEFAULT_GRAPH_ROOT = `${SPACE_INSTALL_ROOT}/var/memory-graph`;
 const ATHENS_TIME_ZONE = "Europe/Athens";
 const CACHE_BATCH_LIMIT = 500;
 

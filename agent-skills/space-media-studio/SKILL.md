@@ -82,9 +82,19 @@ page could not show, and `blockedWrites` (writes the capture browser stopped).
 ## Targets
 
 - `--room room:<id>`: the room to show. `--pane <id>`: select a pane; add `--crop pane` for just that pane.
+- `--crop rail`: the resource rail (turned on in the capture browser only; it is a per-browser switch). The manifest's
+  `railQuota` holds the AI quota tile's tag, value and tooltip text: the tooltip is a native title no screenshot shows.
+  Use desktop-hd or desktop-4k: at 1440x900 the rail stays folded.
+  `--rail monitoring-charts` (with `--pane`): a Monitoring Copilot pane opens on its Charts tab; `--rail marketing-memory`: a Marketing Copilot on Memory; `--rail app-studio-setup`: an App Studio pane on Setup (its device picker).
+  `--appointments week|month` (with `--pane`): an Appointments pane opens on that view, which shows done calls too (the List opens on Upcoming);
+  without `--pane` (with `--dock nous-fullscreen`) Nous's Appointments card, and `--appointments-wheel next|prev` sends it one horizontal wheel.
 - `--dock <id>`: open a dock (`--crop dock` crops to it); `--dock none`: the app with its dock closed (a capture otherwise
-  opens with the Rooms dock showing). `--settings <key>`: open the Settings dock at a section.
+  opens with the Rooms dock showing). Nous tabs: `nous-load`, `nous-quotas`, `nous-task-runs`, `nous-goals`, `nous-needs-you`, `nous-startup` (`nous-funding` is its alias; `--program <id>` opens that program's details, as a click does; `--approved` presses the Approved status chip), `nous-jobs`, `nous-crypto`, `nous-score`. `--settings <key>`: open the Settings dock at a section. `--focus-search`: the first visible search of the pane (`--pane`) or the open dock is focused before the shot; the report's
+  `focusSearch` gives the input's and its wrapper's outline, box-shadow and border.
   `--health <section>`: open the Health dock at a section (`usage` is Token usage).
+  `--gateway <tab>`: open Space Gateway full screen on a tab (`routing` shows the provider order).
+  `--gateway-account "<provider>"` (as the Accounts list names it, such as `Jina AI`): that provider's first account, cropped to its detail
+  with the pool's supported models; the Accounts list itself (e-mails, other accounts) is never shot.
 - `--view app|help|benchmark`. On the mock, `--scene <chapter>:<step>` runs one showcase scene.
 - `--format png|jpeg|webp`, `--quality 1-100`.
 
@@ -93,7 +103,7 @@ page could not show, and `blockedWrites` (writes the capture browser stopped).
 Preview (account untouched): `--theme modern|classic|codex|motion|aurora|liquid-glass|jarvis|aira` (`codex` is shown as
 Graphite), `--mode system|light|dark` (only the Modern theme has a light mode), `--icons lucide|material-rounded|motion|aurora|space`,
 `--background spaceapp|aurora|liquid-glass|jarvis|aira|none`, `--tint 0-100` (Glass Planet), `--room-theme graphite|forest|copper|steel|contrast|motion`,
-`--zoom 50-200`.
+`--zoom 50-200`, `--language en|el` (Space's own words in English or Greek, as Settings → Personal → Language; `space_screenshot` takes it as `language`, `space_authenticated_ui_proof` for PROVE_NEEDS_YOU_TARGET too).
 
 ### Persistent appearance (only on the operator's request)
 
@@ -127,7 +137,7 @@ Space pane). Close every pane and the room you opened.
 ## Video
 
 A scenario file is `{"steps":[...]}` with 1-20 steps and at most 180 seconds; each step may hold `dock`, `settings`,
-`health` (or `scene` on the mock) and `dwellMs` (500-30000, default 3000); `"dock": "none"` closes the open dock. The
+`health`, `gateway` (or `scene` on the mock) and `dwellMs` (500-30000, default 3000); `"dock": "none"` closes the open dock. The
 engine records Chrome's screencast at device pixels and encodes a constant 30 fps H.264 MP4 (`--gif` adds a GIF); the
 report's `frames` / `durationMs` is the real frame rate. Measured 2026-10-23 (60 s stable take, two CLIs typing): desktop-hd
 about 18 fps, 2560x1440 about 12, desktop-4k about 7 (refused for video; it is for stills). One room per clip: record several clips for a multi-room tour and join

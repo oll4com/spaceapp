@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
-  VAULT_PASSWORD_SYMBOLS, VaultCryptoError, canonicalVaultOrigin, generateVaultPassword,
-  type VaultHandoffKey, type VaultItemMetadata, type VaultItemRecord, type VaultPasswordPolicy
+  VAULT_PASSWORD_SYMBOLS, VaultCryptoError, canonicalVaultOrigin, generateVaultPassword, vaultItemLink, vaultLoginPageProblem,
+  type VaultHandoffKey, type VaultItemMetadata, type VaultItemRecord, type VaultPasswordPolicy, type VaultPendingSecret
 } from "@space/contracts";
 import { api } from "../../api.js";
 import type { GoogleAccountSummary, VaultItemStats, VaultStateResponse } from "../../live-api.js";
@@ -14,7 +14,7 @@ import {
   recoverVault, unlockVault, type UnlockedVault, type VaultItemSecrets
 } from "./vault-client.js";
 import { ChromeImportError, parseChromePasswords, planChromeImport, runChromeImport, type ChromeExport, type ChromeImportPlan } from "./chrome-import.js";
-import { handOverToAgents, holdVaultKeys, lockVaultSession, openVaultInbox, subscribeVaultSession, vaultSessionKeys } from "./vault-session.js";
+import { handOverToAgents, holdVaultKeys, lockVaultSession, openVaultInbox, subscribeVaultSession, vaultInboxProblem, vaultInboxRowProblem, vaultSessionKeys } from "./vault-session.js";
 import { useVaultDefaults, type VaultDefaults } from "./vault-defaults.js";
 import { VAULT_IDLE_CHOICES, useVaultAutoLockSettings, type VaultAutoLockSettings } from "./vault-auto-lock.js";
 import "./vault.css";
@@ -26,16 +26,19 @@ import "./vault.css";
 // each unlock and item change, and the logins agents saved are added on unlock.
 
 type View = "items" | "keys" | "audit" | "settings";
-interface Draft { id?: string; label: string; origins: string; acceptedRisks: string[]; secrets: VaultItemSecrets; agentUse: boolean; previous?: VaultItemRecord }
+interface Draft { id?: string; label: string; origins: string; loginPage: string; acceptedRisks: string[]; secrets: VaultItemSecrets; agentUse: boolean; previous?: VaultItemRecord }
 const MIN_MASTER = 12;
-const emptyDraft = (): Draft => ({ label: "", origins: "", acceptedRisks: [], secrets: {}, agentUse: true });
+const emptyDraft = (): Draft => ({ label: "", origins: "", loginPage: "", acceptedRisks: [], secrets: {}, agentUse: true });
+/** The origins the editor saves (each address as its origin); the login page must be on one of them. */
+const draftOrigins = (text: string) => text.split(/\s+/).filter(Boolean).map((origin) => canonicalVaultOrigin(origin)?.origin ?? origin);
 const warningText = { INSECURE_HTTP: "not encrypted (http)", IP_LITERAL: "an IP address", PUNYCODE: "an international (punycode) name that can imitate another site" } as const;
 const errorText = (error: unknown) => error instanceof VaultCryptoError ? "The master password is not correct." : error instanceof Error ? error.message : "Something went wrong.";
 
 export function VaultDock() {
   const [state, setState] = useState<VaultStateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  // A problem the background inbox import met while the dock was closed shows when it opens.
+  const [notice, setNotice] = useState<string | null>(() => vaultInboxProblem());
   const [info, setInfo] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // The keys live in the tab's Vault session (vault-session.ts), not in the dock: closing the dock keeps the Vault unlocked.
@@ -70,9 +73,11 @@ export function VaultDock() {
     }
   }), [load]);
 
-  const run = async (work: () => Promise<void>) => {
-    setBusy(true); setNotice(null);
-    try { await work(); } catch (cause) { setNotice(errorText(cause)); } finally { setBusy(false); }
+  // A background read (the item list) never sets busy: it would disable Unlock and Recover and drop the operator's click or Enter.
+  const run = async (work: () => Promise<void>, background = false) => {
+    if (!background) setBusy(true);
+    setNotice(null);
+    try { await work(); } catch (cause) { setNotice(errorText(cause)); } finally { if (!background) setBusy(false); }
   };
   const holdKeys = (keys: UnlockedVault) => holdVaultKeys(keys);
   // After every unlock: logins agents saved meanwhile are added, and agents get the current items.
@@ -107,12 +112,16 @@ export function VaultDock() {
           const created = await setUpVault(api, state.ownerUserId, password);
           holdKeys(created.unlocked); setRecoveryKey(created.recoveryKey); await openInbox(created.unlocked); await load();
         })} />
-        : !unlocked ? <UnlockForm busy={busy} brokerAvailable={state.brokerAvailable} hasRecovery={Boolean(state.vault?.hasRecovery)} pendingItems={state.pendingItems ?? 0}
-          onSubmit={(password) => run(async () => { const keys = await unlockVault(api, state.ownerUserId, password); holdKeys(keys); await openInbox(keys); })}
-          onRecover={(recoveryKey, password) => run(async () => {
-            const keys = await recoverVault(api, state.ownerUserId, recoveryKey, password);
-            holdKeys(keys); await openInbox(keys); setInfo("Your new master password is set. The old one no longer opens the Vault; your recovery key still does."); await load();
-          })} />
+        : !unlocked ? <>
+          <UnlockForm busy={busy} brokerAvailable={state.brokerAvailable} hasRecovery={Boolean(state.vault?.hasRecovery)}
+            onSubmit={(password) => run(async () => { const keys = await unlockVault(api, state.ownerUserId, password); holdKeys(keys); await openInbox(keys); })}
+            onRecover={(recoveryKey, password) => run(async () => {
+              const keys = await recoverVault(api, state.ownerUserId, recoveryKey, password);
+              holdKeys(keys); await openInbox(keys); setInfo("Your new master password is set. The old one no longer opens the Vault; your recovery key still does."); await load();
+            })} />
+          {/* Saved logins show without an unlock (operator 30/10, standing request of 20/10); their values open only unlocked. */}
+          <ItemsView locked version={itemsVersion} keys={unlockedRef} run={run} confirm={confirm} defaults={defaults} vaultState={state} onVaultChanged={load} />
+        </>
         : (
           <>
             <DockChips label="Vault view" value={view} onChange={setView} options={[{ id: "items", label: "Items" }, { id: "keys", label: "Passwords & keys" }, { id: "audit", label: "Activity" }, { id: "settings", label: "Settings" }]} />
@@ -162,8 +171,8 @@ function RecoveryKey({ value, onDone }: { value: string; onDone: () => void }) {
   );
 }
 
-function UnlockForm({ busy, brokerAvailable, hasRecovery, pendingItems, onSubmit, onRecover }: {
-  busy: boolean; brokerAvailable: boolean; hasRecovery: boolean; pendingItems: number; onSubmit: (password: string) => void; onRecover: (recoveryKey: string, password: string) => void;
+function UnlockForm({ busy, brokerAvailable, hasRecovery, onSubmit, onRecover }: {
+  busy: boolean; brokerAvailable: boolean; hasRecovery: boolean; onSubmit: (password: string) => void; onRecover: (recoveryKey: string, password: string) => void;
 }) {
   const [password, setPassword] = useState("");
   const [recovering, setRecovering] = useState(false);
@@ -184,7 +193,6 @@ function UnlockForm({ busy, brokerAvailable, hasRecovery, pendingItems, onSubmit
     <form className="vault-card vault-form" onSubmit={(event) => { event.preventDefault(); if (password) onSubmit(password); }}>
       <h3>Unlock the Vault</h3>
       {!brokerAvailable ? <DockNotice tone="warning">The server's Vault key broker is not running, so the Vault cannot open right now.</DockNotice> : null}
-      {pendingItems > 0 ? <DockNotice tone="info">{`${pendingItems} login${pendingItems === 1 ? "" : "s"} that agents saved or changed ${pendingItems === 1 ? "is" : "are"} added to Items when you unlock.`}</DockNotice> : null}
       <label>Master password<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
       <DockButton type="submit" icon={Unlock} tone="primary" busy={busy} disabled={busy || !password || !brokerAvailable}>Unlock</DockButton>
       {hasRecovery ? <DockButton onClick={() => setRecovering(true)} disabled={busy}>Forgot it? Use the recovery key</DockButton> : null}
@@ -192,13 +200,15 @@ function UnlockForm({ busy, brokerAvailable, hasRecovery, pendingItems, onSubmit
   );
 }
 
-type Runner = (work: () => Promise<void>) => Promise<void>;
+type Runner = (work: () => Promise<void>, background?: boolean) => Promise<void>;
 type Confirm = ReturnType<typeof useDockConfirm>["confirm"];
 
-function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultChanged }: {
-  version: number; keys: { current: UnlockedVault | null }; run: Runner; confirm: Confirm; defaults: VaultDefaults; vaultState: VaultStateResponse; onVaultChanged: () => Promise<void>;
+function ItemsView({ locked = false, version, keys, run, confirm, defaults, vaultState, onVaultChanged }: {
+  locked?: boolean; version: number; keys: { current: UnlockedVault | null }; run: Runner; confirm: Confirm; defaults: VaultDefaults; vaultState: VaultStateResponse; onVaultChanged: () => Promise<void>;
 }) {
   const [items, setItems] = useState<VaultItemMetadata[] | null>(null);
+  // Logins agents saved or changed that are no item yet (no values here): rows of the list until an unlocked tab imports them.
+  const [waiting, setWaiting] = useState<VaultPendingSecret[]>([]);
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [stats, setStats] = useState<Record<string, VaultItemStats>>({});
@@ -210,12 +220,20 @@ function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultC
   useEffect(() => { void Promise.resolve().then(() => api.listGoogleAccounts()).then((result) => setAccounts(result.accounts), () => undefined); }, []);
   const accountName = (id: string) => accounts.find((account) => account.id === id)?.email ?? "Another Google account";
   const reload = useCallback(async () => {
-    const { items: listed, stats: listedStats } = await api.vaultItems();
+    const [{ items: listed, stats: listedStats }, rows] = await Promise.all([api.vaultItems(), api.vaultPendingRows()]);
     setItems(listed);
     setStats(listedStats ?? {});
+    setWaiting([...rows.pending].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
   }, []);
-  useEffect(() => { void run(reload); }, [reload, version]); // eslint-disable-line react-hooks/exhaustive-deps
-  const shown = useMemo(() => (items ?? []).filter((item) => `${item.label} ${item.origins.join(" ")}`.toLowerCase().includes(search.trim().toLowerCase())
+  useEffect(() => { void run(reload, true); }, [reload, version]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A login an agent saves while the dock is open shows within 30 s, locked or not.
+  useEffect(() => { const timer = window.setInterval(() => void reload().catch(() => undefined), 30_000); return () => window.clearInterval(timer); }, [reload]);
+  const matches = (text: string) => text.toLowerCase().includes(search.trim().toLowerCase());
+  const itemIds = useMemo(() => new Set((items ?? []).map((item) => item.id)), [items]);
+  const newPassword = useMemo(() => new Map(waiting.filter((entry) => entry.kind === "CHANGE_PASSWORD" && itemIds.has(entry.handle)).reverse().map((entry) => [entry.handle, entry])), [waiting, itemIds]);
+  const waitingRows = waiting.filter((entry) => (entry.kind === "NEW_ACCOUNT" || !itemIds.has(entry.handle)) && matches(`${entry.label} ${entry.origin}`)
+    && (!accountFilter || accountFilter === "none"));
+  const shown = useMemo(() => (items ?? []).filter((item) => matches(`${item.label} ${item.origins.join(" ")}`)
     && (!accountFilter || (accountFilter === "none" ? !item.googleAccountId : item.googleAccountId === accountFilter))), [items, search, accountFilter]);
   // Every change reaches agents and Nous at once while agent access is on.
   const changed = async () => { await reload(); await handOverToAgents(keys.current!); await onVaultChanged(); };
@@ -233,9 +251,9 @@ function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultC
 
   if (draft) {
     return <ItemEditor draft={draft} generator={defaults.generator} onCancel={() => setDraft(null)} onSave={(next) => run(async () => {
-      const origins = next.origins.split(/\s+/).filter(Boolean).map((origin) => canonicalVaultOrigin(origin)?.origin ?? origin);
+      const origins = draftOrigins(next.origins);
       const policy = { ...(next.previous?.metadata.policy ?? VAULT_AGENT_POLICY), agentUse: next.agentUse, acceptedOriginRisks: next.acceptedRisks.filter((origin) => origins.includes(origin)) };
-      await api.vaultSaveItem(await encryptVaultItem(keys.current!, { id: next.id, label: next.label.trim(), origins, secrets: next.secrets, status: "ACTIVE", policy }, next.previous));
+      await api.vaultSaveItem(await encryptVaultItem(keys.current!, { id: next.id, label: next.label.trim(), origins, loginPage: next.loginPage.trim() || null, secrets: next.secrets, status: "ACTIVE", policy }, next.previous));
       setDraft(null); await changed();
     })} />;
   }
@@ -244,19 +262,21 @@ function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultC
   if (checkingSites) return <SiteCheck items={items} keys={keys} run={run} confirm={confirm} onClose={() => setCheckingSites(false)} onDeleted={changed} />;
   return (
     <div className="vault-items">
-      <AgentAccess vaultState={vaultState} run={run} delegable={items.filter((item) => item.policy.agentUse && item.status === "ACTIVE").length} onChange={async (enabled) => {
+      {locked ? null : <AgentAccess vaultState={vaultState} run={run} delegable={items.filter((item) => item.policy.agentUse && item.status === "ACTIVE").length} onChange={async (enabled) => {
         const result = await api.vaultSetAgentAccess(enabled);
         // Off revokes, which starts a new epoch: the signed requests of this tab follow it.
         if (typeof result.epoch === "number" && keys.current) holdVaultKeys({ ...keys.current, epoch: result.epoch });
         if (enabled) await handOverToAgents(keys.current!);
         await onVaultChanged();
-      }} />
+      }} />}
       <div className="vault-items-bar">
         <DockSearch value={search} onChange={setSearch} label="Search the Vault" placeholder="Search by name or address" />
-        <DockButton icon={Plus} tone="primary" onClick={() => setDraft(emptyDraft())}>Add item</DockButton>
-        <DockButton icon={FileUp} onClick={() => setImporting(true)}>Import from Chrome</DockButton>
-        <DockButton icon={Unlink} disabled={!items.length} onClick={() => setCheckingSites(true)}>Check sites</DockButton>
-        <DockButton icon={Trash2} disabled={items.length < 2} onClick={() => void removeDuplicates()}>Remove duplicates</DockButton>
+        {locked ? null : <>
+          <DockButton icon={Plus} tone="primary" onClick={() => setDraft(emptyDraft())}>Add item</DockButton>
+          <DockButton icon={FileUp} onClick={() => setImporting(true)}>Import from Chrome</DockButton>
+          <DockButton icon={Unlink} disabled={!items.length} onClick={() => setCheckingSites(true)}>Check sites</DockButton>
+          <DockButton icon={Trash2} disabled={items.length < 2} onClick={() => void removeDuplicates()}>Remove duplicates</DockButton>
+        </>}
       </div>
       {accounts.length ? <label className="vault-filter">Google account
         <select value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}>
@@ -265,33 +285,50 @@ function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultC
           {accounts.map((account) => <option key={account.id} value={account.id}>{account.email}</option>)}
         </select>
       </label> : null}
-      {shown.length === 0 ? <DockState kind="empty" icon={Vault} title={items.length ? "No item matches" : "No items yet"} detail={items.length ? undefined : "Add a login to keep it encrypted here."} /> : null}
+      {shown.length + waitingRows.length === 0 ? <DockState kind="empty" icon={Vault} title={items.length || waiting.length ? "No item matches" : "No items yet"} detail={items.length || waiting.length ? undefined : "Add a login to keep it encrypted here."} /> : null}
       <ul className="vault-list">
+        {waitingRows.map((entry) => {
+          const problem = vaultInboxRowProblem(entry.id);
+          return (
+            <li key={entry.id} className="vault-row" data-status="ACTIVE">
+              <div className="vault-row-main">
+                <strong>{entry.label}</strong>
+                <span className="vault-origins">{entry.origin}</span>
+                <span className="vault-meta">{`${entry.kind === "NEW_ACCOUNT" ? "Saved" : "Password changed"} by an agent · ${formatUserTime(entry.createdAt, { withDate: true })}`}</span>
+                {problem ? <span className="vault-meta" role="status">{problem}</span> : null}
+              </div>
+            </li>
+          );
+        })}
         {shown.map((item) => {
+          const fresh = newPassword.get(item.id);
           return (
             <li key={item.id} className="vault-row" data-status={item.status}>
               <div className="vault-row-main">
                 <strong>{item.label}</strong>
-                <span className="vault-origins">{item.origins.join(", ")}</span>
+                {/* nous_msg:cc5aba71: the login page when the item has one (Shopflix's origin answers 500), else its first origin. */}
+                <span className="vault-origins"><a href={vaultItemLink(item)!} target="_blank" rel="noreferrer noopener">{vaultItemLink(item)}</a>
+                  {item.origins.length > 1 ? `, ${item.origins.slice(1).join(", ")}` : ""}</span>
                 {stats[item.id] ? <span className="vault-meta">{itemStatsLine(stats[item.id]!)}</span> : null}
+                {fresh ? <span className="vault-meta">{`New password from an agent · ${formatUserTime(fresh.createdAt, { withDate: true })}`}</span> : null}
                 <span className="vault-tags">
                   {item.googleAccountId ? <span className="vault-tag">{accountName(item.googleAccountId)}</span> : null}
                   {item.status === "PENDING" ? <span className="vault-tag is-pending">Pending</span> : null}
                   {!item.policy.agentUse ? <span className="vault-tag">Hidden from agents</span> : null}
                 </span>
               </div>
-              <div className="vault-row-actions">
+              {locked ? null : <div className="vault-row-actions">
                 <DockButton icon={Pencil} aria-label={`Edit ${item.label}`} onClick={() => void run(async () => {
                   const full = (await api.vaultItem(item.id)).item;
                   const secrets = await decryptVaultItem(keys.current!, full);
-                  setDraft({ id: item.id, label: item.label, origins: item.origins.join("\n"), acceptedRisks: item.policy.acceptedOriginRisks, secrets, agentUse: item.policy.agentUse, previous: full });
+                  setDraft({ id: item.id, label: item.label, origins: item.origins.join("\n"), loginPage: item.loginPage ?? "", acceptedRisks: item.policy.acceptedOriginRisks, secrets, agentUse: item.policy.agentUse, previous: full });
                 })} />
                 <DockButton icon={Trash2} tone="danger" aria-label={`Delete ${item.label}`} onClick={() => void (async () => {
                   if (await confirm({ title: `Delete ${item.label}?`, message: "Its encrypted fields are deleted for good.", confirmLabel: "Delete" })) await remove(item.id);
                 })()} />
-              </div>
+              </div>}
               {/* Only items saved before imports became ACTIVE (2026-10-19) are PENDING; a changed password needs no confirmation (operator 2026-10-21). */}
-              {item.status === "PENDING" ? <div className="vault-row-review">
+              {item.status === "PENDING" && !locked ? <div className="vault-row-review">
                 <DockButton tone="primary" onClick={() => void run(async () => { await api.vaultSaveItem(confirmVaultItem((await api.vaultItem(item.id)).item)); await changed(); })}>Keep</DockButton>
                 <DockButton onClick={() => void (async () => {
                   if (await confirm({ title: `Discard ${item.label}?`, message: "The item and its generated password are deleted.", confirmLabel: "Discard" })) await remove(item.id);
@@ -328,7 +365,8 @@ function ItemEditor({ draft: initial, generator, onCancel, onSave }: { draft: Dr
   const origins = draft.origins.split(/\s+/).filter(Boolean).map((raw) => ({ raw, parsed: canonicalVaultOrigin(raw) }));
   const invalid = origins.some((origin) => !origin.parsed);
   const unaccepted = origins.some((origin) => origin.parsed && origin.parsed.warnings.length > 0 && !draft.acceptedRisks.includes(origin.parsed.origin));
-  const canSave = draft.label.trim() && origins.length > 0 && !invalid && !unaccepted && Object.values(draft.secrets).some(Boolean);
+  const pageProblem = draft.loginPage.trim() && !invalid ? vaultLoginPageProblem(draft.loginPage.trim(), draftOrigins(draft.origins)) : null;
+  const canSave = draft.label.trim() && origins.length > 0 && !invalid && !unaccepted && !pageProblem && Object.values(draft.secrets).some(Boolean);
   const submit = (event: FormEvent) => { event.preventDefault(); if (canSave) onSave(draft); };
   return (
     <form className="vault-card vault-form vault-editor" onSubmit={submit}>
@@ -339,7 +377,9 @@ function ItemEditor({ draft: initial, generator, onCancel, onSave }: { draft: Dr
         : parsed.warnings.length ? <SpaceToggle key={raw} checked={draft.acceptedRisks.includes(parsed.origin)} label={`Allow ${parsed.origin}`}
           detail={`This address is ${parsed.warnings.map((warning) => warningText[warning]).join(" and ")}.`}
           onChange={(checked) => set({ acceptedRisks: checked ? [...draft.acceptedRisks, parsed.origin] : draft.acceptedRisks.filter((origin) => origin !== parsed.origin) })} />
-        : parsed.origin !== raw ? <p key={raw} className="vault-hint">Saved as {parsed.origin}</p> : null)}
+        : parsed.origin !== raw ? <p key={raw} className="vault-hint">Saved as {parsed.origin}{draft.loginPage ? "" : " (the full address can go in Login page)"}</p> : null)}
+      <label>Login page (optional)<input value={draft.loginPage} placeholder="https://accounts.example.com/login" onChange={(event) => set({ loginPage: event.target.value })} /></label>
+      {pageProblem ? <p className="vault-hint is-error">{pageProblem}</p> : null}
       <label>Username<input autoComplete="off" value={draft.secrets.USERNAME ?? ""} onChange={(event) => setSecret("USERNAME", event.target.value)} /></label>
       <div className="vault-password-row">
         <label>Password<input type={reveal ? "text" : "password"} autoComplete="new-password" value={draft.secrets.PASSWORD ?? ""} onChange={(event) => setSecret("PASSWORD", event.target.value)} /></label>

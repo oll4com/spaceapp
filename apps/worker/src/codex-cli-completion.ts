@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import type { SpaceStore } from "@space/runtime";
+import { childProcessEnv, type SpaceStore } from "@space/runtime";
 
 const execFileAsync = promisify(execFile);
 const codexRolloutGoalStatuses = new Set([
@@ -258,6 +258,7 @@ export async function resolveCodexCliRolloutPath(input: {
   let rawRolloutPath: string;
   try {
     const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json", stateDbPath, sql], {
+      env: childProcessEnv(),
       timeout: 1_500,
       maxBuffer: 64 * 1024
     });

@@ -15,9 +15,10 @@ const mebibyte = 1024 * 1024;
 // measured 1078.6 MiB, 21.4 MiB under the old 1100 MiB, and arm64 ran about 22 MiB above amd64 in 1.1.5.
 // 1.1.8 raised browser to 1765 MiB (Nous decision 2026-10-25): the release run measured linux/arm64 at 1756.3 MiB
 // (amd64 1741.6 MiB); shrinking the arm64 browser image is planned for 1.1.9.
+// Node 26 base image allowance: Nous decision D3, 2026-10-30 (step 5).
 export const containerImageSizeBudgets = Object.freeze({
   core: 1150 * mebibyte,
-  browser: 1765 * mebibyte,
+  browser: 1800 * mebibyte,
   cli: 2800 * mebibyte
 });
 

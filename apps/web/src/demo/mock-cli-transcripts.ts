@@ -4,6 +4,8 @@
  * status trees, colored diff blocks, and interactive command handling.
  */
 
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
+
 function diffLine(type: "+" | "-", lineNum: number | string, content: string): string {
   const prefix = `  ${lineNum} ${type}   ${content}`;
   const padded = prefix.padEnd(66, " ");
@@ -135,12 +137,12 @@ export const CLI_MOCK_DEFINITIONS: Record<string, CliMockDefinition> = {
     displayName: "OpenCode CLI",
     model: "deepseek-reasoner",
     modelId: "deepseek-r1-reasoner",
-    cwd: "/opt/spaceapp/apps/web",
+    cwd: `${SPACE_INSTALL_ROOT}/apps/web`,
     version: "v1.18.2",
     transcript:
       `\x1b[38;5;75m◆\x1b[0m \x1b[1mOpenCode Interpreter\x1b[0m \x1b[2mv1.18.2\x1b[0m\r\n` +
       `\x1b[2mEngine: deepseek-reasoner · Session: opencode-401\x1b[0m\r\n` +
-      `\x1b[2m/opt/spaceapp/apps/web\x1b[0m\r\n\r\n` +
+      `\x1b[2m${SPACE_INSTALL_ROOT}/apps/web\x1b[0m\r\n\r\n` +
       `\x1b[1m> optimize pane layout transitions and eliminate reflow during six-room cycling\x1b[0m\r\n\r\n` +
       `\x1b[32m●\x1b[0m \x1b[1mAnalyzeAST\x1b[0m(src/features/room-manager/room-layout.tsx)\r\n` +
       `  \x1b[2m└ Evaluated 3 layout triggers in pane visibility observer\x1b[0m\r\n\r\n` +
@@ -183,12 +185,12 @@ export const CLI_MOCK_DEFINITIONS: Record<string, CliMockDefinition> = {
     displayName: "Gemini CLI",
     model: "Gemini 3.8 Flash (High)",
     modelId: "gemini-3.8-flash",
-    cwd: "/opt/spaceapp",
+    cwd: SPACE_INSTALL_ROOT,
     version: "v3.8.0",
     transcript:
       `\x1b[38;5;39m✦\x1b[0m \x1b[1mGoogle Gemini CLI\x1b[0m \x1b[2mv3.8.0 (Antigravity Core)\x1b[0m\r\n` +
       `\x1b[2mModel: Gemini 3.8 Flash (High) · Multimodal Engine\x1b[0m\r\n` +
-      `\x1b[2m/opt/spaceapp\x1b[0m\r\n\r\n` +
+      `\x1b[2m${SPACE_INSTALL_ROOT}\x1b[0m\r\n\r\n` +
       `\x1b[1m> audit multimodal vision pipeline and streamline image attachment parsing\x1b[0m\r\n\r\n` +
       `\x1b[32m●\x1b[0m \x1b[1mInspect\x1b[0m(src/runtime/vision-pipeline.ts)\r\n` +
       `  \x1b[2m└ Verified native embedded vision capability across Reasonix/DeepSeek runtimes\x1b[0m\r\n\r\n` +
@@ -228,11 +230,11 @@ export const CLI_MOCK_DEFINITIONS: Record<string, CliMockDefinition> = {
     displayName: "Autohand Code CLI",
     model: "claude-3.5-sonnet:beta",
     modelId: "claude-3-5-sonnet",
-    cwd: "/opt/spaceapp/backend",
+    cwd: `${SPACE_INSTALL_ROOT}/backend`,
     version: "v2.1.0",
     transcript:
       `\x1b[38;5;33m⚡\x1b[0m \x1b[1mAutohand Code\x1b[0m \x1b[2mv2.1.0 (OpenRouter Core)\x1b[0m\r\n` +
-      `\x1b[2mModel: anthropic/claude-3.5-sonnet:beta · /opt/spaceapp/backend\x1b[0m\r\n\r\n` +
+      `\x1b[2mModel: anthropic/claude-3.5-sonnet:beta · ${SPACE_INSTALL_ROOT}/backend\x1b[0m\r\n\r\n` +
       `\x1b[1m> implement rate-limiting middleware using Redis token-bucket algorithm\x1b[0m\r\n\r\n` +
       `\x1b[32m●\x1b[0m \x1b[1mCreate\x1b[0m(packages/server/middleware/token-bucket.ts)\r\n` +
       diffLine("+", 1, "export class TokenBucketLimiter {") +
@@ -314,14 +316,14 @@ export const CLI_MOCK_DEFINITIONS: Record<string, CliMockDefinition> = {
     displayName: "Kimi Code CLI",
     model: "moonshot-v1-128k",
     modelId: "moonshot-v1-128k",
-    cwd: "/opt/spaceapp/docs/analytics",
+    cwd: `${SPACE_INSTALL_ROOT}/docs/analytics`,
     version: "v1.6.0",
     transcript:
       `\x1b[38;5;45m◆\x1b[0m \x1b[1mKimi Code CLI\x1b[0m \x1b[2mv1.6.0 (Moonshot AI)\x1b[0m\r\n` +
       `\x1b[2mModel: moonshot-v1-128k · Long-Context Intelligence\x1b[0m\r\n` +
-      `\x1b[2m/opt/spaceapp/docs/analytics\x1b[0m\r\n\r\n` +
+      `\x1b[2m${SPACE_INSTALL_ROOT}/docs/analytics\x1b[0m\r\n\r\n` +
       `\x1b[1m> summarize weekly operational metrics and generate cross-service health matrix\x1b[0m\r\n\r\n` +
-      `\x1b[32m●\x1b[0m \x1b[1mScanLogs\x1b[0m(/opt/spaceapp/var/logs/services/)\r\n` +
+      `\x1b[32m●\x1b[0m \x1b[1mScanLogs\x1b[0m(${SPACE_INSTALL_ROOT}/var/logs/services/)\r\n` +
       `  \x1b[2m└ Ingested 1.2M lines across api, temporal, and nginx\x1b[0m\r\n\r\n` +
       `\x1b[32m●\x1b[0m \x1b[1mSynthesize\x1b[0m(var/reports/health-matrix-2026-w40.json)\r\n` +
       `  \x1b[2m└ Health: 99.98% · P99 Latency: 48ms · Zero 5xx errors recorded\x1b[0m\r\n\r\n` +
@@ -350,12 +352,12 @@ export const CLI_MOCK_DEFINITIONS: Record<string, CliMockDefinition> = {
     displayName: "Grok Build CLI",
     model: "grok-3-code",
     modelId: "grok-3-code",
-    cwd: "/opt/spaceapp/apps/builder",
+    cwd: `${SPACE_INSTALL_ROOT}/apps/builder`,
     version: "v2.0.4",
     transcript:
       `\x1b[38;5;231m✕\x1b[0m \x1b[1mGrok Build CLI\x1b[0m \x1b[2mv2.0.4 (xAI Engineering)\x1b[0m\r\n` +
       `\x1b[2mModel: grok-3-code · Low-Latency Compiler Suite\x1b[0m\r\n` +
-      `\x1b[2m/opt/spaceapp/apps/builder\x1b[0m\r\n\r\n` +
+      `\x1b[2m${SPACE_INSTALL_ROOT}/apps/builder\x1b[0m\r\n\r\n` +
       `\x1b[1m> build high-speed zero-copy IPC transport between worker threads and main loop\x1b[0m\r\n\r\n` +
       `\x1b[32m●\x1b[0m \x1b[1mPatch\x1b[0m(src/native/shared_ring_buffer.rs)\r\n` +
       diffLine("+", 88, "let ring = SharedMemoryRing::attach('/dev/shm/space_ipc_0')?;") +
@@ -393,12 +395,12 @@ export const CLI_MOCK_DEFINITIONS: Record<string, CliMockDefinition> = {
     displayName: "DeepSeek CLI",
     model: "deepseek-r1-reasoner",
     modelId: "deepseek-r1-reasoner",
-    cwd: "/opt/spaceapp/ai-engine",
+    cwd: `${SPACE_INSTALL_ROOT}/ai-engine`,
     version: "v3.1",
     transcript:
       `\x1b[38;5;32m🐋\x1b[0m \x1b[1mDeepSeek Coder CLI\x1b[0m \x1b[2mv3.1\x1b[0m\r\n` +
       `\x1b[2mModel: deepseek-r1-reasoner (Full Reasoning Mode)\x1b[0m\r\n` +
-      `\x1b[2m/opt/spaceapp/ai-engine\x1b[0m\r\n\r\n` +
+      `\x1b[2m${SPACE_INSTALL_ROOT}/ai-engine\x1b[0m\r\n\r\n` +
       `\x1b[1m> deduce optimal KV-cache eviction policy under 4-bit quantization\x1b[0m\r\n\r\n` +
       `\x1b[38;5;246m● Chain-of-Thought Reasoning:\x1b[0m\r\n` +
       `  \x1b[2m├─ Analyze attention sparsity: 87% of heads exhibit diagonal concentration\x1b[0m\r\n` +
@@ -477,7 +479,7 @@ export const CLI_MOCK_DEFINITIONS: Record<string, CliMockDefinition> = {
     displayName: "GitHub Copilot CLI",
     model: "gpt-5-copilot",
     modelId: "gpt-5-copilot",
-    cwd: "/opt/spaceapp",
+    cwd: SPACE_INSTALL_ROOT,
     version: "v1.0.8",
     transcript:
       `\x1b[38;5;141m🐙\x1b[0m \x1b[1mGitHub Copilot CLI\x1b[0m \x1b[2mv1.0.8\x1b[0m\r\n` +
@@ -516,11 +518,11 @@ export const CLI_MOCK_DEFINITIONS: Record<string, CliMockDefinition> = {
     displayName: "Hermes Agent CLI",
     model: "hermes-3-llama-3.1-405b",
     modelId: "hermes-3",
-    cwd: "/opt/spaceapp/var/missions",
+    cwd: `${SPACE_INSTALL_ROOT}/var/missions`,
     version: "v2.8.1",
     transcript:
       `\x1b[38;5;214m☤\x1b[0m \x1b[1mHermes Agent CLI\x1b[0m \x1b[2mv2.8.1 (Autonomous Worker)\x1b[0m\r\n` +
-      `\x1b[2mDispatch: Mission #401 · /opt/spaceapp/var/missions\x1b[0m\r\n\r\n` +
+      `\x1b[2mDispatch: Mission #401 · ${SPACE_INSTALL_ROOT}/var/missions\x1b[0m\r\n\r\n` +
       `\x1b[1m> orchestrate background database vacuum and sync replication status\x1b[0m\r\n\r\n` +
       `\x1b[32m●\x1b[0m \x1b[1mExecute\x1b[0m(VACUUM ANALYZE VERBOSE)\r\n` +
       `  \x1b[2m└ Reclaimed 142 MB free pages, updated planner statistics\x1b[0m\r\n\r\n` +
@@ -587,11 +589,11 @@ export const CLI_MOCK_DEFINITIONS: Record<string, CliMockDefinition> = {
     displayName: "Qoder CLI",
     model: "qoder-engine-v2",
     modelId: "qoder-engine-v2",
-    cwd: "/opt/spaceapp",
+    cwd: SPACE_INSTALL_ROOT,
     version: "v1.2.0",
     transcript:
       `\x1b[38;5;81m⚙\x1b[0m \x1b[1mQoder CLI\x1b[0m \x1b[2mv1.2.0 (Code Intelligence Engine)\x1b[0m\r\n` +
-      `\x1b[2mLanguage Server: TypeScript 5.7 / Rust 1.84 · /opt/spaceapp\x1b[0m\r\n\r\n` +
+      `\x1b[2mLanguage Server: TypeScript 5.7 / Rust 1.84 · ${SPACE_INSTALL_ROOT}\x1b[0m\r\n\r\n` +
       `\x1b[1m> find cyclic dependencies and calculate module coupling score\x1b[0m\r\n\r\n` +
       `\x1b[32m●\x1b[0m \x1b[1mDependencyGraph\x1b[0m(412 internal modules)\r\n` +
       `  \x1b[2m└ Cycles detected: 0 · Maximum dependency depth: 6\x1b[0m\r\n\r\n` +
@@ -622,7 +624,7 @@ export const CLI_MOCK_DEFINITIONS: Record<string, CliMockDefinition> = {
     displayName: "Muse Code CLI",
     model: "muse-audio-v1",
     modelId: "muse-audio-v1",
-    cwd: "/opt/spaceapp/media",
+    cwd: `${SPACE_INSTALL_ROOT}/media`,
     version: "v0.9.1",
     transcript:
       `\x1b[38;5;177m♪\x1b[0m \x1b[1mMuse Code CLI\x1b[0m \x1b[2mv0.9.1 (Creative Synthesis & Audio)\x1b[0m\r\n` +

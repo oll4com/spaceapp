@@ -7,6 +7,7 @@ import { writeDockSession, type DockSession } from "../workspace-session.js";
 import type { SideSurface } from "./dock-types.js";
 import { sideSurfaceMeta } from "./side-surface-meta.js";
 import { DOCK_DEFINITIONS } from "./use-docks-visibility.js";
+import { useLeaveDuringNousFocus } from "../nous-focus/nous-focus-events.js";
 
 // Which dock (side surface) is active and whether it is shown: inline beside the
 // board on desktop, as a modal drawer on compact shells.
@@ -45,6 +46,8 @@ export interface SideSurfaces {
   activeSideSurfaceCloseLabel: string;
   showInlineSideSurface: boolean;
   showOverlaySideSurface: boolean;
+  /** Preserve the compact dock's view and drafts, hidden and inert, only for the duration of a focus visit. */
+  retainCompactSideSurface: boolean;
   /** The desktop dock stays mounted (hidden) once opened. */
   mountInlineSideSurface: boolean;
   availableDocks: SideSurface[];
@@ -73,6 +76,20 @@ export function useSideSurfaces({
   const [isCompactSideSurfaceOpen, setIsCompactSideSurfaceOpen] = useState(() => restoredDock?.compactOpen ?? false);
   const compactSideSurfaceRef = useRef<HTMLElement>(null);
   const compactSideSurfaceTriggerRef = useRef<HTMLElement | null>(null);
+  const [retainCompactSideSurface, setRetainCompactSideSurface] = useState(false);
+  useLeaveDuringNousFocus({ surface: activeSideSurface, desktop: isDesktopSideSurfaceOpen, compact: isCompactSideSurfaceOpen },
+    () => {
+      setRetainCompactSideSurface(isCompactSideSurfaceOpen);
+      setIsDesktopSideSurfaceOpen(false);
+      setIsCompactSideSurfaceOpen(false);
+    },
+    (saved) => {
+      setActiveSideSurface(saved.surface);
+      setIsDesktopSideSurfaceOpen(saved.desktop);
+      setIsCompactSideSurfaceOpen(saved.compact);
+      setRetainCompactSideSurface(false);
+    },
+    () => setRetainCompactSideSurface(false));
 
   useEffect(() => {
     writeDockSession(runtime.platform.sessionStorage, { surface: activeSideSurface, desktopOpen: isDesktopSideSurfaceOpen, compactOpen: isCompactSideSurfaceOpen });
@@ -177,6 +194,7 @@ export function useSideSurfaces({
     activeSideSurfaceCloseLabel,
     showInlineSideSurface,
     showOverlaySideSurface,
+    retainCompactSideSurface,
     mountInlineSideSurface,
     availableDocks,
     sideSurfaceToggleLabel,
@@ -228,7 +246,7 @@ export function useSideSurfaceEffects(
     function handleKeyDown(event: KeyboardEvent) {
       // A modal opened from inside the drawer (project picker, diff dialog) owns its own Escape and focus.
       const nestedModal = event.target instanceof Element ? event.target.closest('dialog[open], [aria-modal="true"]') : null;
-      if (nestedModal && nestedModal !== drawer && drawer?.contains(nestedModal)) return;
+      if (nestedModal && nestedModal !== drawer) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();

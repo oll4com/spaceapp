@@ -27,12 +27,13 @@ import {
 import { redactMemoryText } from "@space/runtime";
 import { createStaleWhileRevalidateCache } from "./stale-while-revalidate.js";
 import { childProcessEnv } from "./child-process-env.js";
+import { readSqliteRows } from "./sqlite-read.js";
+import { SPACE_AGENT_HOME, SPACE_DOCS_ROOT, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const execFileAsync = promisify(execFile);
-const defaultCodexHome = "/var/lib/spaceapp-user/.codex";
-const defaultEnvironmentInspectorCommand = "/opt/spaceapp/bin/codex-vscode-parity";
+const defaultCodexHome = `${SPACE_AGENT_HOME}/.codex`;
+const defaultEnvironmentInspectorCommand = `${SPACE_INSTALL_ROOT}/bin/codex-vscode-parity`;
 const sqliteTimeoutMs = 5000;
-const sqliteMaxBuffer = 2 * 1024 * 1024;
 const historyBatchSize = 100;
 const maxRolloutBytes = 20 * 1024 * 1024;
 const maxRolloutItems = 1000;
@@ -48,8 +49,8 @@ const maxEnvironmentCacheTtlMs = 60_000;
 const defaultWrapperProbeCacheTtlMs = 5 * 60_000;
 const trustedChatBootstrapContextPattern = /# AGENTS\.md instructions for\s|<environment_context(?:>|\s)/iu;
 // Paths in these patterns are written plainly (not as \/ escapes) so the public export's path rewrite reaches them.
-const canonicalBootstrapDocPattern = new RegExp("(?:/opt/spaceapp/docs/gemini(?:_core)?\\.md|/etc/AGENTS\\.md|/opt/spaceapp/AGENTS\\.md)\\b", "iu");
-const artifactImagePath = "/opt/spaceapp/var/artifacts/";
+const canonicalBootstrapDocPattern = new RegExp(`(?:${SPACE_DOCS_ROOT}/gemini(?:_core)?\\.md|/etc/AGENTS\\.md|${SPACE_INSTALL_ROOT}/AGENTS\\.md)\\b`, "iu");
+const artifactImagePath = `${SPACE_INSTALL_ROOT}/var/artifacts/`;
 const chatTransportImagesPattern = new RegExp(`(?:\\n\\n<image name=\\[Image #\\d+\\] path="${artifactImagePath}[^"<>\\r\\n]+">\\s*</image>)+\\s*$`);
 const codexImageFailureLinePattern = new RegExp(`^<image name=\\[Image #\\d+\\] path="${artifactImagePath}[^"\\r\\n]+">$`);
 const bootstrapDocReferencePattern = /\b(?:gemini(?:_core)?\.md|AGENTS\.md)\b/iu;
@@ -158,15 +159,7 @@ async function runSqliteJson<T>(dbPath: string, sql: string): Promise<T[]> {
 }
 
 async function runSqliteJsonOnPath<T>(dbPath: string, sql: string, readonly: boolean): Promise<T[]> {
-  const flags = readonly ? ["-readonly", "-json"] : ["-json"];
-  const { stdout } = await execFileAsync("sqlite3", [...flags, dbPath, sql], {
-    timeout: sqliteTimeoutMs,
-    maxBuffer: sqliteMaxBuffer
-  });
-  const text = stdout.trim();
-  if (!text) return [];
-  const parsed = JSON.parse(text) as unknown;
-  return Array.isArray(parsed) ? (parsed as T[]) : [];
+  return readSqliteRows<T>(dbPath, sql, { readOnly: readonly });
 }
 
 async function runSqliteSnapshotFallback<T>(dbPath: string, sql: string): Promise<T[]> {

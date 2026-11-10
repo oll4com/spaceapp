@@ -7,8 +7,9 @@ import {
   type CodexHistoryPurgeResponse
 } from "@space/contracts";
 import { SpaceConflictError } from "@space/runtime";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
-const defaultCommand = "/opt/spaceapp/bin/codex-vscode-parity";
+const defaultCommand = `${SPACE_INSTALL_ROOT}/bin/codex-vscode-parity`;
 const maxOutputBytes = 32_000;
 const maxErrorBytes = 8_000;
 const previewTimeoutMs = 120_000;

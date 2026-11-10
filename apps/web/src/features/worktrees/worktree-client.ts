@@ -4,6 +4,7 @@ import type {
   SpaceWorktree,
   WorktreeOperationResult
 } from "@space/contracts";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 let csrfCache: { token: string; headerName: string; expiresAt: number } | null = null;
 
@@ -23,7 +24,7 @@ async function getCsrfHeader(signal?: AbortSignal): Promise<Record<string, strin
   return {};
 }
 
-export async function fetchWorktrees(repoPath = "/opt/spaceapp"): Promise<SpaceWorktree[]> {
+export async function fetchWorktrees(repoPath = SPACE_INSTALL_ROOT): Promise<SpaceWorktree[]> {
   const res = await fetch(`/api/worktrees?repoPath=${encodeURIComponent(repoPath)}`, {
     credentials: "same-origin"
   });

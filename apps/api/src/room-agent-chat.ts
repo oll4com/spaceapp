@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import type { Event, RoomAgentEvent, RoomAgentStreamFrame, RoomAgentTimelineMessage, SpaceAgentMessageRecord } from "@space/contracts";
 import { SpaceConflictError, makeSpaceId, nowIso, type SpaceStore } from "@space/runtime";
+import { gatewayRequestIdHeader } from "./gateway-request-id.js";
 import { codexServiceRoot, runOpenCodeText, type AdvancedMissionModelSelection } from "./room-agent-model-resolver.js";
 import { roomSnapshotFallbackAnswer, type RoomAgentSnapshot } from "./room-agent-snapshot.js";
 import { readActiveFreeOpenCodeModel } from "./opencode-free-model.js";
@@ -39,7 +40,8 @@ export interface ChatStreamChunk {
 
 export interface RoomAgentChatModel {
   readonly supportsTools: boolean;
-  stream(body: RoomAgentChatBody, signal: AbortSignal): AsyncIterable<ChatStreamChunk>;
+  /** `trace.traceId` is the turn's request id; the gateway model sends it so its request log row carries the same id. */
+  stream(body: RoomAgentChatBody, signal: AbortSignal, trace?: { traceId: string }): AsyncIterable<ChatStreamChunk>;
 }
 
 /** Parses Server-Sent Events of OpenAI-style chat completion chunks, split anywhere. */
@@ -103,12 +105,13 @@ export function createGatewayChatModel(options: { baseUrl: string | null; keyFil
   }
   return {
     supportsTools: true,
-    async *stream(body, signal) {
+    async *stream(body, signal, trace) {
       if (!options.baseUrl) { yield { error: "No model service is configured." }; return; }
       const token = await apiKey();
       const response = await request(`${codexServiceRoot(options.baseUrl)}/v1/chat/completions`, {
         method: "POST",
-        headers: { "content-type": "application/json", accept: "text/event-stream", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        headers: { "content-type": "application/json", accept: "text/event-stream", ...(token ? { authorization: `Bearer ${token}` } : {}),
+          ...gatewayRequestIdHeader(trace?.traceId) },
         body: JSON.stringify({ ...body, store: false, stream: true, ...(body.tools?.length ? { parallel_tool_calls: true } : {}) }),
         signal
       });
@@ -247,12 +250,8 @@ export function withRoomAgentEvents(timeline: RoomAgentTimelineMessage[], events
     merged.push(message);
   }
   merged.push(...rows.slice(next));
-  const max = options.max ?? 500;
-  return merged.length > max ? merged.slice(-max) : merged;
-}
-
-function clip(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  // Every row unless a caller asks for fewer (until 31/10 the newest 500).
+  return options.max !== undefined && merged.length > options.max ? merged.slice(-options.max) : merged;
 }
 
 /**
@@ -268,7 +267,8 @@ export function buildRoomAgentChatMessages(input: {
   budgetChars?: number;
   detailedTurns?: number;
 }): RoomAgentChatMessage[] {
-  const budget = input.budgetChars ?? 24_000;
+  // Technical: the history stays a share of the model's context (until 31/10 24,000); older turns are counted in a note, never cut silently.
+  const budget = input.budgetChars ?? 100_000;
   const detailedTurns = input.detailedTurns ?? 4;
   interface Turn { user: SpaceAgentMessageRecord | null; answers: SpaceAgentMessageRecord[]; tools: RoomAgentToolRow[] }
   const turns: Turn[] = [];
@@ -293,23 +293,23 @@ export function buildRoomAgentChatMessages(input: {
   const rendered = turns.map((turn, index) => {
     const detailed = index >= turns.length - detailedTurns;
     const messages: RoomAgentChatMessage[] = [];
-    if (turn.user) messages.push({ role: "user", content: clip(turn.user.content, 4_000) });
+    if (turn.user) messages.push({ role: "user", content: turn.user.content });
     const answer = turn.answers.map((message) => message.content.trim()).filter(Boolean).join("\n\n");
     if (turn.tools.length && detailed) {
       const calls = turn.tools.map((row, callIndex) => ({ ...row, callId: row.callId || `call_${index}_${callIndex}` }));
       messages.push({ role: "assistant", content: null, tool_calls: calls.map((row) => ({ id: row.callId, type: "function",
         function: { name: row.name, arguments: JSON.stringify(row.arguments ?? {}) } })) });
       for (const row of calls) {
-        messages.push({ role: "tool", tool_call_id: row.callId, content: clip(row.result ?? (row.status === "RUNNING" ? "(no result: the turn was stopped)" : row.display ?? ""), 2_000) });
+        messages.push({ role: "tool", tool_call_id: row.callId, content: row.result ?? (row.status === "RUNNING" ? "(no result: the turn was stopped)" : row.display ?? "") });
       }
-      if (answer) messages.push({ role: "assistant", content: clip(answer, 6_000) });
+      if (answer) messages.push({ role: "assistant", content: answer });
     } else {
       const used = turn.tools.length ? `(used ${turn.tools.map((row) => {
         const target = row.arguments?.pane ?? (Array.isArray(row.arguments?.panes) ? (row.arguments.panes as unknown[]).join(", ") : null);
         return `${row.name}${typeof target === "string" && target ? ` on ${target}` : ""}`;
       }).join("; ")})` : "";
       const content = [used, answer].filter(Boolean).join("\n");
-      if (content) messages.push({ role: "assistant", content: clip(content, 6_000) });
+      if (content) messages.push({ role: "assistant", content });
     }
     const size = messages.reduce((sum, message) => sum + (message.content?.length ?? 0) + JSON.stringify(message.tool_calls ?? []).length, 0);
     return { messages, size };
@@ -325,7 +325,7 @@ export function buildRoomAgentChatMessages(input: {
   }
   return [
     { role: "system", content: input.systemPrompt },
-    ...(first > 0 ? [{ role: "system" as const, content: "Earlier messages were dropped from context." }] : []),
+    ...(first > 0 ? [{ role: "system" as const, content: `${first} earlier turn${first === 1 ? "" : "s"} of this conversation ${first === 1 ? "is" : "are"} beyond your context; the room transcript keeps ${first === 1 ? "it" : "them"}.` }] : []),
     ...rendered.slice(first).flatMap((turn) => turn.messages)
   ];
 }
@@ -412,7 +412,8 @@ export interface RoomAgentChatLimits {
   retryDelayMs: number;
 }
 
-const defaultLimits: RoomAgentChatLimits = { steps: 8, turnMs: 180_000, toolMs: 20_000, textFrameMs: 150, saveMs: 500, retries: 2, retryDelayMs: 1_500 };
+// No step count (until 31/10 8 tool steps a turn): the turn's time is the bound.
+const defaultLimits: RoomAgentChatLimits = { steps: Infinity, turnMs: 180_000, toolMs: 20_000, textFrameMs: 150, saveMs: 500, retries: 2, retryDelayMs: 1_500 };
 
 export const ROOM_AGENT_BUSY_MESSAGE = "The Room Agent is still answering. Wait for the reply or press Stop.";
 
@@ -551,7 +552,7 @@ export function createRoomAgentChat(deps: {
     const answer = () => [...texts, stepText].map((text) => text.trim()).filter(Boolean).join("\n\n");
     let writes: Promise<unknown> = Promise.resolve();
     const write = (patch: { content: string; status: "RUNNING" | "COMPLETED" | "FAILED" | "INTERRUPTED" }) => {
-      writes = writes.then(() => deps.store.updateSpaceAgentMessage(messageId, { content: patch.content.slice(0, 50_000), status: patch.status }, input.traceId, "RUNNING"))
+      writes = writes.then(() => deps.store.updateSpaceAgentMessage(messageId, { content: patch.content, status: patch.status }, input.traceId, "RUNNING"))
         .catch((error) => deps.log?.warn({ err: error, roomId, messageId }, "Room Agent turn could not be saved."));
       return writes;
     };
@@ -559,7 +560,7 @@ export function createRoomAgentChat(deps: {
     let frameTimer: ReturnType<typeof setTimeout> | null = null;
     let lastSave = 0;
     let saveTimer: ReturnType<typeof setTimeout> | null = null;
-    const frameNow = () => { lastFrame = Date.now(); emit(roomId, { phase: "text", messageId, requestId: input.requestId, text: answer().slice(0, 50_000) }); };
+    const frameNow = () => { lastFrame = Date.now(); emit(roomId, { phase: "text", messageId, requestId: input.requestId, text: answer() }); };
     const saveNow = () => { lastSave = Date.now(); void write({ content: answer(), status: "RUNNING" }); };
     const onText = () => {
       const now = Date.now();
@@ -595,11 +596,13 @@ export function createRoomAgentChat(deps: {
         messages.push({ role: "tool", tool_call_id: call.id, content: await runTool(input, call, signal, (display) => toolDisplays.push(display)) });
       }
 
+      // The turn's last 30 seconds are for the answer: past them the model answers with no more tool calls (no step count since 31/10).
+      const answerBy = Date.now() + limits.turnMs - 30_000;
       for (let step = 0; step < limits.steps; step++) {
-        const last = step === limits.steps - 1;
+        const last = step === limits.steps - 1 || Date.now() >= answerBy;
         const body: RoomAgentChatBody = { model: modelId, reasoning_effort: deps.reasoningEffort ?? "medium", messages,
           ...(model.supportsTools ? { tools: deps.tools.definitions, tool_choice: last ? "none" : "auto" } : {}) };
-        const calls = await streamStep(model, body, signal, () => onText(), (text) => { stepText = text; });
+        const calls = await streamStep(model, body, signal, input.traceId, () => onText(), (text) => { stepText = text; });
         if (!model.supportsTools || !calls.length || last) break;
         messages.push({ role: "assistant", content: stepText || null, tool_calls: calls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments || "{}" } })) });
         if (stepText.trim()) texts.push(stepText);
@@ -645,7 +648,7 @@ export function createRoomAgentChat(deps: {
       pendingFor(roomId).delete(entry.token);
       await updateConfirmation(entry, "DECLINED", null);
     }
-    emit(roomId, { phase: status === "FAILED" ? "error" : "done", messageId, requestId: input.requestId, text: content.slice(0, 50_000) });
+    emit(roomId, { phase: status === "FAILED" ? "error" : "done", messageId, requestId: input.requestId, text: content });
     try {
       const event = await deps.store.recordRoomEvent({ roomId, paneId: null, turnId: null, traceId: input.traceId, type: "ROOM_AGENT_UPDATED",
         message: "The Room Agent answered.", payload: { kind: "TURN_DONE", messageId, status } });
@@ -655,7 +658,7 @@ export function createRoomAgentChat(deps: {
     }
   }
 
-  async function streamStep(model: RoomAgentChatModel, body: RoomAgentChatBody, signal: AbortSignal, onText: () => void,
+  async function streamStep(model: RoomAgentChatModel, body: RoomAgentChatBody, signal: AbortSignal, traceId: string, onText: () => void,
     setText: (text: string) => void): Promise<Array<{ id: string; name: string; arguments: string }>> {
     for (let attempt = 0; ; attempt++) {
       if (signal.aborted) throw signal.reason;
@@ -664,7 +667,7 @@ export function createRoomAgentChat(deps: {
       let failure: string | null = null;
       const calls = new Map<number, { id: string; name: string; arguments: string }>();
       try {
-        for await (const chunk of model.stream(body, signal)) {
+        for await (const chunk of model.stream(body, signal, { traceId })) {
           if (signal.aborted) throw signal.reason;
           if (chunk.error) { failure = chunk.error; break; }
           if (chunk.content) {
@@ -741,7 +744,7 @@ export function createRoomAgentChat(deps: {
         instruction: "Ask the operator one short question. Call confirm_action with this token only after their explicit yes in their next message." });
     }
     const display = outcome.display.slice(0, 300);
-    const finished: RoomAgentToolRow = { ...row, display, status, result: result.slice(0, 8_000) };
+    const finished: RoomAgentToolRow = { ...row, display, status, result };
     await Promise.resolve(deps.store.updateSpaceAgentMessage(created.messageId, { content: JSON.stringify(finished), status: outcome.ok || outcome.needsConfirmation ? "COMPLETED" : "FAILED" }, input.traceId))
       .catch(() => {});
     emit(input.roomId, { phase: "tool", messageId: input.messageId, requestId: input.requestId, tool: { rowId: created.messageId, name: call.name, label: display, status } });

@@ -8,6 +8,7 @@ export interface RoomAgentSnapshotPane extends RoomAgentPaneStripItem {
   steps: string[];
   cwd: string | null;
   isMaximized: boolean;
+  sessionId?: string;
 }
 
 export interface RoomAgentSnapshot {
@@ -56,7 +57,8 @@ export function roomAgentSnapshotPane(pane: Pane, detail: DashboardActivityDetai
     taskSummary: clip(topic?.summary || metadata?.description || null, 400),
     steps: (metadata?.steps ?? []).slice(0, 5).map((step) => clip(step, 160)!).filter(Boolean),
     cwd: pane.cwd ?? null,
-    isMaximized: pane.isMaximized
+    isMaximized: pane.isMaximized,
+    ...(detail?.sessionId ? { sessionId: detail.sessionId } : {})
   };
 }
 
@@ -140,7 +142,7 @@ export function formatRoomPaneLines(snapshot: RoomAgentSnapshot, detail: "compac
   return panes.map((pane) => {
     const kind = pane.runtimeId ? `${pane.mode} ${pane.runtimeId}` : pane.mode;
     const flags = [pane.isMinimized ? "minimized" : null, pane.isMaximized ? "maximized" : null].filter(Boolean).join(", ");
-    const head = `- ${paneLabel(pane)} [paneId=${pane.paneId}; ${kind}${pane.modelId ? `; model=${pane.modelId}` : ""}${flags ? `; ${flags}` : ""}]: ${activityText(pane)}`;
+    const head = `- ${paneLabel(pane)} [paneId=${pane.paneId}; ${kind}${pane.sessionId ? `; session=${pane.sessionId}` : ""}${pane.modelId ? `; model=${pane.modelId}` : ""}${flags ? `; ${flags}` : ""}]: ${activityText(pane)}`;
     const task = pane.taskTitle ? `; task "${pane.taskTitle}"` : pane.title && pane.title !== pane.paneName ? `; title "${clip(pane.title, 80)}"` : "";
     if (detail === "compact") {
       const summary = pane.activity === "WAITING" || pane.activity === "WORKING" ? clip(pane.taskSummary, 140) : null;

@@ -5,12 +5,14 @@ import { lookup } from "node:dns/promises";
 import { accessSync, constants, createReadStream, readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
+import { totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import { nanoid } from "nanoid";
 import type { BrowserHostActorContext, BrowserHostCaptureMetrics } from "@space/browser-host";
 import {
   browserFrameSchema,
   browserSelectStateSchema,
+  browserRoutePac,
   freelanceEgressPac,
   resolveFreelanceCopilotPaneMetadata,
   browserRecordingFrameSummarySchema,
@@ -63,6 +65,7 @@ import {
   type GoogleBrowserEvidence
 } from "./google-browser-session-check.js";
 import { childProcessEnv } from "./child-process-env.js";
+import { chromeSandboxCheck, type ChromeSandboxState } from "./browser-sandbox.js";
 
 interface ViewportSize {
   width: number;
@@ -123,6 +126,15 @@ export function nextBrowserFrameDeadline(now: number, deadline: number, fps: num
   if (fps <= 0 || (deadline > 0 && now + 0.5 < deadline)) return null;
   const interval = 1000 / fps;
   return deadline > 0 && now - deadline < interval ? deadline + interval : now + interval;
+}
+
+/**
+ * Technical bound (operator 5/11 14:47 BKK «άλλαξε το όριο του browser»; it was 10): half the server's RAM at 1.25 GiB a pane browser. Measured
+ * 5/11 on public-host: 6 sessions in 3 Chromes, 4.4 GB RSS (0.73 GB a session; one pane's own Chrome 1.7 GB). 47 GiB gives 18. Never below the old 10.
+ * Past it the API closes the least recently used agent browser for the operator (browser-reaper.ts); agents still get BROWSER_SESSION_CAPACITY.
+ */
+export function browserSessionCap(totalBytes: number): number {
+  return Math.max(10, Math.floor((totalBytes * 0.5) / (1.25 * 1024 ** 3)));
 }
 
 export class BrowserCapacityGate {
@@ -280,6 +292,8 @@ export interface BrowserSessionStatus {
   capacity?: ReturnType<BrowserCapacityGate["snapshot"]>;
   /** This host presses every `space_browser_press` key (assertBrowserHostPressKey). */
   pressKeys?: boolean;
+  /** Chromium's own sandbox on this host (INT5-C-F3): SANDBOXED, or NO_SANDBOX with the reason. */
+  sandbox?: ChromeSandboxState;
 }
 
 export interface StartBrowserSessionInput {
@@ -577,11 +591,19 @@ export async function assertBrowserHostPressKey(
   throw new SpaceFeatureDisabledError("BROWSER_ACTION_UNAVAILABLE", `press ${action.key} needs the Browser Host restart that brings it.`);
 }
 
-// The focused element when it is an open native dropdown (top frame), read in an isolated world so page scripts cannot fake it.
-const OPEN_SELECT_EXPRESSION = `(() => {
+// The focused dropdown or frame, read in an isolated world so page scripts cannot fake it.
+/** The focused dropdown's state; with `choose`, the focused (closed) dropdown takes that option with the page's input and change events. */
+const selectExpression = (choose: number | null) => `(() => {
   const select = document.activeElement;
+  if (select instanceof HTMLIFrameElement || select instanceof HTMLFrameElement) {
+    const box = select.getBoundingClientRect(), style = getComputedStyle(select);
+    return { focusFrame: true, x: box.x + select.clientLeft + (parseFloat(style.paddingLeft) || 0),
+      y: box.y + select.clientTop + (parseFloat(style.paddingTop) || 0) };
+  }
   if (!(select instanceof HTMLSelectElement) || select.multiple) return null;
-  try { if (!select.matches(":open")) return null; } catch { return null; }
+  ${choose === null ? `try { if (!select.matches(":open")) return null; } catch { return null; }`
+    : `if (select.selectedIndex !== ${Math.trunc(choose)}) { select.selectedIndex = ${Math.trunc(choose)};
+    select.dispatchEvent(new Event("input", { bubbles: true })); select.dispatchEvent(new Event("change", { bubbles: true })); }`}
   const box = select.getBoundingClientRect();
   const options = Array.from(select.options).slice(0, 500);
   return { selectedIndex: select.selectedIndex, box: { x: box.x, y: box.y, width: box.width, height: box.height },
@@ -591,32 +613,91 @@ const OPEN_SELECT_EXPRESSION = `(() => {
 })()`;
 
 /** The open native dropdown the live view must draw itself (option D, plan clipboard:gHaiX_8yanVA), or null. */
-export async function readOpenBrowserSelect(send: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>): Promise<BrowserSelectState | null> {
-  const tree = await send<{ frameTree: BrowserFrameTreeNode }>("Page.getFrameTree");
-  const world = await send<{ executionContextId: number }>("Page.createIsolatedWorld", { frameId: tree.frameTree.frame.id, worldName: "space-select-state" });
-  const read = await send<{ result?: { value?: unknown } }>("Runtime.evaluate", { contextId: world.executionContextId, returnByValue: true, expression: OPEN_SELECT_EXPRESSION });
-  const parsed = browserSelectStateSchema.nullable().safeParse(read.result?.value ?? null);
-  if (!parsed.success || !parsed.data) return null;
-  const state = parsed.data;
-  // The action's text holds 20,000 characters: leave the last labels out and say so.
-  while (state.labels.length > 0 && JSON.stringify(state).length > 19_000) { state.labels.pop(); state.truncated = true; }
-  state.disabled = state.disabled.filter((index) => index < state.labels.length);
-  return state;
+export async function readOpenBrowserSelect(
+  send: <T = unknown>(method: string, params?: Record<string, unknown>, sessionId?: string) => Promise<T>,
+  pageSessionId?: string,
+  choose: number | null = null
+): Promise<BrowserSelectState | null> {
+  const attached: string[] = [];
+  try {
+    let sessionId = pageSessionId;
+    let { frameTree } = await send<{ frameTree: BrowserFrameTreeNode }>("Page.getFrameTree", {}, sessionId);
+    let world = await send<{ executionContextId: number }>("Page.createIsolatedWorld", { frameId: frameTree.frame.id, worldName: "space-select-state" }, sessionId);
+    let x = 0, y = 0;
+    const visited = new Set([frameTree.frame.id]);
+    for (let depth = 0; depth <= 4; depth += 1) {
+      const read = await send<{ result?: { value?: unknown }; exceptionDetails?: unknown }>("Runtime.evaluate", {
+        contextId: world.executionContextId, returnByValue: true, expression: selectExpression(choose)
+      }, sessionId);
+      if (read.exceptionDetails) return null;
+      const value = read.result?.value;
+      const parsed = browserSelectStateSchema.nullable().safeParse(value ?? null);
+      if (parsed.success) {
+        if (!parsed.data) return null;
+        const state = parsed.data;
+        state.box.x += x; state.box.y += y;
+        // The action's text holds 20,000 characters: leave the last labels out and say so.
+        while (state.labels.length > 0 && JSON.stringify(state).length > 19_000) { state.labels.pop(); state.truncated = true; }
+        state.disabled = state.disabled.filter((index) => index < state.labels.length);
+        return state;
+      }
+      const focus = value as { focusFrame?: unknown; x?: unknown; y?: unknown } | null;
+      if (depth === 4 || focus?.focusFrame !== true || typeof focus.x !== "number" || !Number.isFinite(focus.x)
+        || typeof focus.y !== "number" || !Number.isFinite(focus.y)) return null;
+      const element = await send<{ result?: { objectId?: string } }>("Runtime.evaluate", {
+        contextId: world.executionContextId, returnByValue: false, expression: "document.activeElement"
+      }, sessionId);
+      const objectId = element.result?.objectId;
+      if (!objectId) return null;
+      let node: { nodeName?: string; frameId?: string };
+      try {
+        ({ node } = await send<{ node: typeof node }>("DOM.describeNode", { objectId }, sessionId));
+      } finally {
+        await send("Runtime.releaseObject", { objectId }, sessionId).catch(() => undefined);
+      }
+      const frameId = node.frameId;
+      if (!frameId || !["IFRAME", "FRAME"].includes(node.nodeName ?? "") || visited.has(frameId)) return null;
+      visited.add(frameId); x += focus.x; y += focus.y;
+      const child = frameTree.childFrames?.find(frame => frame.frame.id === frameId);
+      if (child) {
+        try {
+          world = await send<{ executionContextId: number }>("Page.createIsolatedWorld", { frameId, worldName: "space-select-state" }, sessionId);
+          frameTree = child;
+          continue;
+        } catch { /* Chrome may list a child whose document lives in another process. */ }
+      }
+      // OOPIFs do not appear in this session's frame tree. Match Chrome's frame id, never a page-controlled URL.
+      const targets = await send<{ targetInfos: Array<{ type: string; targetId: string }> }>("Target.getTargets", {}, pageSessionId);
+      if (!targets.targetInfos.some(target => target.type === "iframe" && target.targetId === frameId)) return null;
+      const target = await send<{ sessionId: string }>("Target.attachToTarget", { targetId: frameId, flatten: true }, pageSessionId);
+      attached.push(target.sessionId);
+      sessionId = target.sessionId;
+      ({ frameTree } = await send<{ frameTree: BrowserFrameTreeNode }>("Page.getFrameTree", {}, sessionId));
+      if (frameTree.frame.id !== frameId) return null;
+      world = await send<{ executionContextId: number }>("Page.createIsolatedWorld", { frameId, worldName: "space-select-state" }, sessionId);
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    for (const sessionId of attached.reverse()) await send("Target.detachFromTarget", { sessionId }, pageSessionId).catch(() => undefined);
+  }
 }
 
 /**
- * Picks option `index` of the open dropdown with real keys: arrows from the highlighted (selected) option, then Enter, so the
- * page gets one change. The popup steps over disabled options, so only enabled ones between the two count.
+ * Picks option `index` of the open dropdown by its index, never by keys counted from the selected option: R20-3 (30/10 09:37 BKK,
+ * Braintrust) arrows from "selected" moved from wherever Chrome's popup was scrolled and picked "French Southern Territories" for
+ * Greece. Escape closes the popup without a change, then the focused dropdown in its own frame takes the option with one change.
  */
 export async function chooseOpenBrowserSelectOption(client: { send<T = unknown>(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<T> },
   sessionId: string, index: number): Promise<string> {
-  const state = await readOpenBrowserSelect((method, params) => client.send(method, params, sessionId));
+  const send = <T,>(method: string, params?: Record<string, unknown>, targetSessionId?: string) => client.send<T>(method, params, targetSessionId);
+  const state = await readOpenBrowserSelect(send, sessionId);
   if (!state) throw new SpaceConflictError("The dropdown is no longer open.");
   if (index >= state.labels.length || state.disabled.includes(index)) throw new SpaceConflictError("That option cannot be chosen.");
-  const from = state.selectedIndex;
-  const steps = state.labels.filter((_, i) => !state.disabled.includes(i) && (index > from ? i > from && i <= index : i >= index && i < from)).length;
-  for (let step = 0; step < steps; step += 1) await pressBrowserKey(client, sessionId, index > from ? "ArrowDown" : "ArrowUp");
-  await pressBrowserKey(client, sessionId, "Enter");
+  await pressBrowserKey(client, sessionId, "Escape");
+  const chosen = await readOpenBrowserSelect(send, sessionId, index);
+  if (chosen?.selectedIndex !== index) throw new SpaceConflictError("The dropdown did not take that option; pick it again.");
   return `Chose "${state.labels[index]}".`;
 }
 
@@ -1166,7 +1247,16 @@ export async function recoverInterruptedBrowserCaptureJobs(
   for (const session of sessions) {
     const jobs = await store.listBrowserCaptureJobs(session.sessionId);
     for (const job of jobs) {
-      if (job.options.kind !== "RECORDING" || !["RUNNING", "QUEUED", "FAILED"].includes(job.status)) continue;
+      // DATA-001: the stopped host's capture queue lived in its memory, so a screenshot left QUEUED or RUNNING stayed so for good. One
+      // that never started runs now; one being taken has no partial output and fails, so its caller asks again instead of waiting.
+      if (job.options.kind !== "RECORDING") {
+        if (job.status === "QUEUED") requeuedJobs.push(job.jobId);
+        if (job.status === "RUNNING") {
+          await store.updateBrowserCaptureJob(job.jobId, { status: "FAILED", statusReason: "Browser Host restarted before the screenshot was taken.", completedAt: nowIso() });
+        }
+        continue;
+      }
+      if (!["RUNNING", "QUEUED", "FAILED"].includes(job.status)) continue;
       const segments = await store.listBrowserCaptureSegments(job.jobId);
       const openSegments = segments.filter((segment) => segment.status === "OPEN");
       if (job.status === "FAILED" && openSegments.length === 0) continue;
@@ -1201,7 +1291,7 @@ export function browserSessionNeedsNavigation<TSession extends Pick<PaneBrowserS
 }
 
 export function browserSessionRestoreUrls(
-  session: Pick<PaneBrowserSession, "activePageId" | "currentUrl" | "pages" | "status">
+  session: Pick<PaneBrowserSession, "activePageId" | "currentUrl" | "pages" | "status"> & Partial<Pick<PaneBrowserSession, "targetUrl">>
 ): { activeUrl: string | null; backgroundUrls: string[] } {
   // Tabs in another Google account reopen in that account's Chrome, never in the pane's.
   const persisted = session.pages
@@ -1209,13 +1299,18 @@ export function browserSessionRestoreUrls(
     .slice(0, 100);
   const active = persisted.find((page) => page.pageId === session.activePageId || page.isActive);
   const accountTabActive = session.pages.some((page) => page.account && (page.pageId === session.activePageId || page.isActive));
-  // A navigation owns the active page: it is about to load it, or Chrome died
-  // before the navigation committed (never reload a target that may crash it).
-  // The background tabs are unrelated to the navigation and are still restored.
+  // Chrome died during a navigation: never reload its target (it may crash Chrome again; the
+  // active tab's listed URL can already be that target). Like Chrome's own session restore, the
+  // active tab gets its last committed page (currentUrl) back unless that is the target itself.
+  // The background tabs are unrelated to the navigation and are restored either way.
   if (session.status === "NAVIGATING") {
+    const committed = session.currentUrl;
+    const activeUrl = !accountTabActive && committed && /^https?:\/\//i.test(committed) && committed !== session.targetUrl ? committed : null;
     return {
-      activeUrl: null,
-      backgroundUrls: Array.from(new Set(persisted.filter((page) => page !== active && page.url !== active?.url).map((page) => page.url)))
+      activeUrl,
+      backgroundUrls: Array.from(new Set(persisted
+        .filter((page) => page !== active && page.url !== active?.url && page.url !== activeUrl && page.url !== session.targetUrl)
+        .map((page) => page.url)))
     };
   }
   const activeUrl = active?.url ?? (accountTabActive ? persisted[0]?.url ?? null
@@ -1302,6 +1397,9 @@ function blockedBrowserHostname(hostname: string): boolean {
 
 export type BrowserAddressResolver = (hostname: string) => Promise<Array<{ address: string }>>;
 
+/** Above one resolver retry (resolv.conf timeout:2 attempts:2), so a single lost answer does not fail a page. */
+export const DEFAULT_BROWSER_DNS_TIMEOUT_MS = 4_500;
+
 export class BrowserRequestGuard {
   private readonly cache = new Map<string, { blocked: boolean; expiresAt: number }>();
   private readonly allowedLocalOrigins: Set<string>;
@@ -1340,15 +1438,14 @@ export class BrowserRequestGuard {
         let cached = this.cache.get(hostname);
         if (!cached || cached.expiresAt <= now) {
           const resolver = this.options.resolver ?? (async (name: string) => lookup(name, { all: true }));
+          const ask = () => withTimeout(resolver(hostname), this.options.timeoutMs ?? DEFAULT_BROWSER_DNS_TIMEOUT_MS, "Browser target DNS lookup timed out.");
           let addresses: Array<{ address: string }>;
           try {
-            addresses = await withTimeout(
-              resolver(hostname),
-              this.options.timeoutMs ?? 1_500,
-              "Browser target DNS lookup timed out."
-            );
+            // One lost UDP answer costs a resolver retry; ask once more before failing the page (R33-2).
+            addresses = await ask().catch(ask);
           } catch {
-            this.block(hostname, "Browser navigation target DNS resolution failed or timed out.");
+            throw new SpaceFeatureDisabledError("BROWSER_TARGET_DNS_FAILED",
+              `DNS lookup for ${hostname} failed or timed out twice; reload the page.`, { hostname });
           }
           cached = {
             blocked: !addresses!.length || addresses!.some((entry) => isPrivateOrReservedAddress(entry.address)),
@@ -1377,7 +1474,7 @@ export async function assertSafeBrowserTargetUrl(raw: string, allowedLocalOrigin
   return new BrowserRequestGuard([allowedLocalOrigin, DEEPSEEK_HARNESS_BROWSER_ORIGIN]).assertAllowed(raw);
 }
 
-class CdpClient {
+export class CdpClient {
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
   private readonly listeners = new Set<(event: CdpEvent) => void>();
@@ -2186,7 +2283,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
   // Sessions this process is navigating right now (a count, for overlapping navigations).
   const navigationsInFlight = new Map<string, number>();
   const tickets = new Map<string, { paneId: string; sessionId: string; expiresAt: number }>();
-  const capacity = new BrowserCapacityGate(10, 4);
+  const capacity = new BrowserCapacityGate(browserSessionCap(totalmem()), 4);
   const captureQueue: string[] = [];
   const captureCommands = new Map<string, "STOP" | "CANCEL">();
   const requestGuard = new BrowserRequestGuard([
@@ -2247,7 +2344,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         hostname,
         errorCode: error instanceof SpaceFeatureDisabledError ? error.errorCode : "BROWSER_TARGET_BLOCKED"
       }, 1_000);
-      await client.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }, event.sessionId).catch(() => undefined);
+      const dns = error instanceof SpaceFeatureDisabledError && error.errorCode === "BROWSER_TARGET_DNS_FAILED";
+      await client.send("Fetch.failRequest", { requestId, errorReason: dns ? "NameNotResolved" : "BlockedByClient" }, event.sessionId).catch(() => undefined);
     }
   }
 
@@ -2261,6 +2359,10 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       return `Google Chrome command ${commandPath} is not executable for the space service user.`;
     }
   }
+
+  // Started with the manager (the Browser Host's start), so the first session rarely waits for it.
+  const sandbox = chromeSandboxCheck(config.browserSessionsChromePath);
+  if (config.browserSessionsEnabled && chromeExecutableIssue() === null) void sandbox.args();
 
   function statusReason(): string {
     if (!config.browserSessionsEnabled) return "SPACE_BROWSER_SESSIONS_ENABLED must be true before managed Chrome sessions can start.";
@@ -2335,17 +2437,20 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
   }
 
   /**
-   * The Chrome flags of a Freelance Copilot pane's per-platform egress (its PAC, WebRTC kept on the proxied routes, and
-   * the clock and languages of the pane's own route), with a key that names them; null for every other pane and for
-   * an all-direct pane. The PAC holds the pane's route, so a route change changes the key and relaunches Chrome.
+   * The Chrome flags of a pane's network route (its PAC, WebRTC kept on the proxied routes, and the clock and languages of
+   * the route), with a key that names them: a Freelance Copilot's per-platform routes, or the route chosen for any other
+   * pane browser (plan clipboard:iLvBs5eOMZjF). Null when nothing was chosen (or a Freelance pane is all direct); an
+   * explicit "This server" is key "direct". The PAC holds the route, so a route change changes the key and relaunches Chrome.
    */
   async function egressFor(paneId: string): Promise<{ args: string[]; env: Record<string, string>; key: string } | null> {
     const pane = await Promise.resolve(store.getPane(paneId)).catch(() => null);
-    if (pane?.mode !== "FREELANCE_COPILOT") return null;
-    const settings = resolveFreelanceCopilotPaneMetadata(pane.freelanceCopilotMetadata).settings;
-    const pac = freelanceEgressPac(settings);
-    if (!pac) return null;
-    const locale = egressLocales[settings.browserEgress];
+    if (!pane) return null;
+    const freelance = pane.mode === "FREELANCE_COPILOT" ? resolveFreelanceCopilotPaneMetadata(pane.freelanceCopilotMetadata).settings : null;
+    const route = freelance ? freelance.browserEgress : await Promise.resolve(store.getPaneBrowserRoute(paneId)).catch(() => null);
+    if (!route) return null;
+    const pac = freelance ? freelanceEgressPac(freelance) : browserRoutePac(route);
+    if (!pac) return freelance ? null : { args: [], env: {}, key: "direct" };
+    const locale = egressLocales[route];
     return {
       args: [`--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,${Buffer.from(pac).toString("base64")}`, "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         ...(locale ? [`--accept-lang=${locale.acceptLang}`] : [])],
@@ -2361,9 +2466,22 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     await Promise.all(CHROME_SAVED_LOGIN_FILES.map(name => rm(join(profilePath, "Default", name), { force: true })));
   }
 
+  // Sign-ins kept in session cookies (Upwork, Braintrust, Contra, job ATSs) outlive a relaunch: the Browser Host restarts of
+  // 31/10 signed Upwork out. Chrome loads a profile's saved session cookies only after a crashed last session or with "continue
+  // where you left off", which would also reopen old tabs unguarded beside the ones this manager restores, so the last exit is
+  // marked crashed (--hide-crash-restore-bubble keeps the restore prompt away). Chrome is not running for the profile here.
+  async function keepSessionCookies(profilePath: string) {
+    const path = join(profilePath, "Default", "Preferences");
+    const prefs = await readFile(path, "utf8").then(JSON.parse).catch(() => null) as { profile?: { exit_type?: unknown } } | null;
+    if (!prefs?.profile || typeof prefs.profile !== "object" || prefs.profile.exit_type === "Crashed") return;
+    await writeFile(`${path}.space-tmp`, JSON.stringify({ ...prefs, profile: { ...prefs.profile, exit_type: "Crashed" } }), { mode: 0o600 });
+    await rename(`${path}.space-tmp`, path);
+  }
+
   async function launchProfile(session: Pick<PaneBrowserSession, "profilePath" | "viewport">, egress: { args: string[]; env: Record<string, string>; key: string } | null = null): Promise<BrowserProfileRuntime> {
     await mkdir(session.profilePath, { recursive: true, mode: 0o700 });
     await forgetChromeSavedLogins(session.profilePath);
+    await keepSessionCookies(session.profilePath).catch(() => undefined);
     const viewport = viewportSizes[session.viewport];
     const audioEnv = config.browserSessionsAudioEnabled
       ? {
@@ -2399,7 +2517,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     const chrome = spawn(
       config.browserSessionsChromePath,
       [
-        "--no-sandbox",
+        ...await sandbox.args(),
         "--remote-debugging-address=127.0.0.1",
         "--remote-debugging-port=0",
         `--user-data-dir=${session.profilePath}`,
@@ -2409,6 +2527,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         "--disable-dev-shm-usage",
         "--autoplay-policy=no-user-gesture-required",
         "--noerrdialogs",
+        "--hide-crash-restore-bubble",
         "--disable-blink-features=AutomationControlled",
         "--use-gl=angle",
         "--use-angle=swiftshader",
@@ -2662,8 +2781,10 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
   /** Moves a tab into another Google account's Chrome (or back to the pane's): same place in the pane, other cookies. */
   async function switchPageAccount(input: StartBrowserSessionInput, accountTab: NonNullable<StartBrowserSessionInput["accountTab"]>, context?: BrowserHostActorContext): Promise<PaneBrowserSessionResponse> {
     const { pane } = input;
-    // Freelance Copilot tabs leave through the platform's egress route, which another account's Chrome does not use.
+    // Freelance Copilot tabs leave through the platform's egress route, which another account's Chrome does not use; so do tabs
+    // of a pane with a chosen network route (plan clipboard:iLvBs5eOMZjF).
     if (pane.mode === "FREELANCE_COPILOT") throw new SpaceConflictError("FREELANCE_EGRESS: Freelance Copilot tabs keep the pane's Google account.");
+    if ((await egressFor(pane.id))?.args.length) throw new SpaceConflictError("BROWSER_ROUTE: tabs of a pane with a network route keep the pane's Google account.");
     await paneStarts.get(pane.id)?.catch(() => undefined);
     const session = await requireActiveSession(pane);
     await assertCanMutate(session, context);
@@ -2806,15 +2927,16 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       await closeProfile(profile, session.profilePath);
       profile = undefined;
     }
-    // A Freelance Copilot pane only joins a Chrome started with its own routes (else it leaves from the wrong country):
-    // the account's Chrome restarts with them and the panes sharing the account come back on it with their tabs.
-    // Another Freelance pane's routes are refused: two route sets would restart each other's Chrome in turn.
+    // A pane with a network route (a Freelance Copilot's, or one chosen for the pane) only joins a Chrome started with it (else
+    // it leaves from the wrong country); a Chrome with no key runs on this server's address. The account's Chrome restarts
+    // with the route and the panes sharing the account come back on it with their tabs. Another pane's chosen route is
+    // refused: two routes would restart each other's Chrome in turn.
     let egress: Awaited<ReturnType<typeof egressFor>> = null;
     let moved: string[] = [];
     try {
       egress = await egressFor(session.paneId);
-      if (egress && profile && (profile.egressKey ?? null) !== egress.key) {
-        if ([...profile.members].some(member => member.egressKey)) throw new SpaceConflictError("FREELANCE_EGRESS: another Freelance Copilot pane uses this browser account with other routes; close it there or give this Freelance Copilot another browser account.");
+      if (egress && profile && (profile.egressKey ?? "direct") !== egress.key) {
+        if ([...profile.members].some(member => member.egressKey)) throw new SpaceConflictError("BROWSER_ROUTE: another pane uses this browser account on another network route; give both the same route, close the other pane, or use another browser account.");
         moved = [...runtimes].filter(([, member]) => member.profile === profile).map(([id]) => id);
         await closeProfile(profile, session.profilePath);
         profile = undefined;
@@ -3768,14 +3890,15 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     return { sessionId: session.sessionId, events: timelineEventsForRuntime(session, runtime, includeNetwork, limit) };
   }
 
-  return {
+  return traceBrowserHostCalls({
     status: () => ({
       enabled: config.browserSessionsEnabled && chromeExecutableIssue() === null,
       statusReason: statusReason(),
       defaultUrl: config.browserSessionsDefaultUrl,
       checkedAt: nowIso(),
       capacity: capacity.snapshot(),
-      pressKeys: true
+      pressKeys: true,
+      sandbox: sandbox.state()
     }),
     startOrRestore(input, context) {
       if (input.accountTab) return switchPageAccount(input, input.accountTab, context);
@@ -4021,7 +4144,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         text = JSON.stringify(await maskedScreenshot(session, runtime));
       }
       if (input.type === "select_state") {
-        text = JSON.stringify(await readOpenBrowserSelect((method, params) => runtime.client.send(method, params, runtime.cdpSessionId)));
+        text = JSON.stringify(await readOpenBrowserSelect((method, params, sessionId) => runtime.client.send(method, params, sessionId), runtime.cdpSessionId));
       }
       if (input.type === "select_choose") {
         text = await chooseOpenBrowserSelectOption(runtime.client, runtime.cdpSessionId, input.index);
@@ -4109,7 +4232,53 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       return true;
     },
     startAudioStream
-  };
+  });
+}
+
+/**
+ * The argument of each traced call holding its trace id, or an object with a traceId field (a start's input, a capture's context);
+ * per-keystroke input and lease heartbeats are left out (one line each would flood the journal).
+ */
+const TRACED_BROWSER_CALLS: Partial<Record<keyof BrowserSessionManager, number>> = {
+  startOrRestore: 0, createCapture: 2, navigate: 2, setViewport: 2, action: 2, stopPane: 1, stopRoom: 1, setStreamMode: 2, createPage: 3, activatePage: 2,
+  closePage: 2, acquireControl: 2, releaseControl: 2, stopCapture: 2, cancelCapture: 2, vaultFill: 2
+};
+const traceIdentifier = (value: unknown): string | null => (typeof value === "string" && /^[A-Za-z0-9:._-]{1,240}$/.test(value) ? value : null);
+
+/**
+ * OBS-001: one browser_host_request line (method, trace id, pane, status, code, duration; never a URL or page text) for every call
+ * the API traced, so GET /api/admin/traces/:traceId reaches the Browser Host's journal. Wraps the manager in place.
+ */
+export function traceBrowserHostCalls(manager: BrowserSessionManager, write: (line: string) => void = (line) => { process.stderr.write(line); }): BrowserSessionManager {
+  const methods = manager as unknown as Record<string, unknown>;
+  for (const [method, index] of Object.entries(TRACED_BROWSER_CALLS)) {
+    const call = methods[method];
+    if (typeof call !== "function") continue;
+    methods[method] = async (...args: unknown[]) => {
+      const held = args[index];
+      const traceId = traceIdentifier(held !== null && typeof held === "object" ? (held as { traceId?: unknown }).traceId : held);
+      if (!traceId) return call(...args);
+      const target = args[0] as string | { id?: unknown; pane?: { id?: unknown } } | undefined;
+      const id = traceIdentifier(typeof target === "string" ? target : target?.id ?? target?.pane?.id);
+      const startedAt = Date.now();
+      const line = (status: "OK" | "FAILED", code?: string) => write(`${JSON.stringify({
+        event: "browser_host_request", method, traceId, [method === "stopRoom" ? "roomId" : "paneId"]: id, status, ...(code ? { code } : {}), durationMs: Date.now() - startedAt
+      })}\n`);
+      try {
+        const result = await call(...args);
+        line("OK");
+        return result;
+      } catch (error) {
+        // The code the Browser Host answers with (serializedError in packages/browser-host/src/server.ts).
+        const failed = error as { code?: unknown; errorCode?: unknown; name?: unknown } | null;
+        const code = failed?.errorCode ?? failed?.code;
+        line("FAILED", typeof code === "string" && /^[A-Z][A-Z0-9_]{1,95}$/.test(code) ? code
+          : failed?.name === "SpaceNotFoundError" ? "BROWSER_HOST_NOT_FOUND" : failed?.name === "SpaceConflictError" ? "BROWSER_HOST_CONFLICT" : "BROWSER_HOST_INTERNAL_ERROR");
+        throw error;
+      }
+    };
+  }
+  return manager;
 }
 
 export interface ElementScreenshotClip {

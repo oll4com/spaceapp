@@ -226,16 +226,33 @@ export function openCodeV2MessagesAsV1(messages: unknown[]): Array<{ info: JsonR
   return result;
 }
 
+// OpenCode 2's /api/session/:id/message schema caps each page's limit at 200 (HTTP 400 ParseError above 200).
+const openCodeV2MessagePageLimit = 200;
+
 /** The session's last `limit` messages, oldest first, in the {info, parts} shape Space reads. */
 export async function fetchOpenCodeSessionMessages(
   control: OpenCodeServerControl,
   nativeSessionId: string,
   limit: number
 ): Promise<unknown[]> {
-  const response = await openCodeV2Fetch(control, `/api/session/${encodeURIComponent(nativeSessionId)}/message?limit=${limit}&order=desc`);
-  if (!response.ok) throw new Error(`OpenCode message list failed with HTTP ${response.status}.`);
-  const data = jsonRecord(await response.json()).data;
-  return openCodeV2MessagesAsV1(Array.isArray(data) ? [...data].reverse() : []);
+  const target = Math.max(1, Math.trunc(limit));
+  const collected: unknown[] = [];
+  let cursor: string | null = null;
+  while (collected.length < target) {
+    const pageLimit = Math.min(target - collected.length, openCodeV2MessagePageLimit);
+    const query = cursor
+      ? `limit=${pageLimit}&cursor=${encodeURIComponent(cursor)}`
+      : `limit=${pageLimit}&order=desc`;
+    const response = await openCodeV2Fetch(control, `/api/session/${encodeURIComponent(nativeSessionId)}/message?${query}`);
+    if (!response.ok) throw new Error(`OpenCode message list failed with HTTP ${response.status}.`);
+    const payload = jsonRecord(await response.json());
+    const data = Array.isArray(payload.data) ? payload.data : [];
+    collected.push(...data);
+    const nextCursor = jsonRecord(payload.cursor).next;
+    if (data.length < pageLimit || typeof nextCursor !== "string" || nextCursor.length === 0) break;
+    cursor = nextCursor;
+  }
+  return openCodeV2MessagesAsV1(collected.reverse());
 }
 
 /** Queues a user prompt without waiting for the turn; false when the server refused it. */

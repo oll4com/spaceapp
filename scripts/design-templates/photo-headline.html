@@ -1,0 +1,10 @@
+<body class="{{has-background}}">
+<style>
+.shade{position:absolute;inset:0;background:linear-gradient(to top,color-mix(in srgb,var(--bg) calc(var(--overlay)*100% + 30%),transparent) 0,
+  color-mix(in srgb,var(--bg) calc(var(--overlay)*100%),transparent) 45%,transparent 75%)}
+body:not(.has-background) .shade{display:none}
+.content{position:absolute;inset:calc(var(--u)*7);justify-content:flex-end}
+</style>
+<div class="photo"></div><div class="shade"></div>
+<div class="safe"><div class="content stack">{{logo}}<div class="t badge">{{badge}}</div><h1 class="t headline">{{headline}}</h1><p class="t sub">{{subline}}</p><div class="t cta">{{cta}}</div></div></div>
+</body>

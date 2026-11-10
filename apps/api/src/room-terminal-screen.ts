@@ -22,8 +22,56 @@ function undimmedLineText(line: ProjectedLine, trimRight: boolean): string {
   return trimRight ? text.replace(/\s+$/u, "") : text;
 }
 
-/** Bounded, on-demand terminal projection; does not mount or resize the live pane. */
-export async function projectRoomTerminalScreen(chunks: string[], cols = 100, rows = 30, unwrap = false, omitFaint = false): Promise<string> {
+/** A palette index (0-255) or a truecolor `#rrggbb`; the terminal's default colour is left out. */
+export type TerminalColor = number | `#${string}`;
+/** Adjacent cells of one style (SpaceApp Android R9): default attributes are left out, so a plain line is `[{ text }]`. */
+export interface TerminalRun { text: string; fg?: TerminalColor; bg?: TerminalColor; bold?: true; dim?: true; italic?: true; underline?: true; inverse?: true }
+type ProjectedCell = NonNullable<ReturnType<ProjectedLine["getCell"]>>;
+
+function cellColor(cell: ProjectedCell, which: "Fg" | "Bg"): TerminalColor | undefined {
+  const value = which === "Fg" ? cell.getFgColor() : cell.getBgColor();
+  if (which === "Fg" ? cell.isFgRGB() : cell.isBgRGB()) return `#${value.toString(16).padStart(6, "0")}`;
+  return (which === "Fg" ? cell.isFgPalette() : cell.isBgPalette()) ? value : undefined;
+}
+
+/** The line's cells as runs, cut to `length` characters: the line's text is always a prefix of its cells. */
+function lineRuns(line: ProjectedLine, omitFaint: boolean, length: number): TerminalRun[] {
+  const runs: TerminalRun[] = [];
+  let used = 0, lastKey = "";
+  for (let x = 0; x < line.length && used < length; x++) {
+    const cell = line.getCell(x);
+    if (!cell || cell.getWidth() === 0) continue;
+    const faint = omitFaint && cell.isDim();
+    let text = faint ? " ".repeat(cell.getWidth()) : cell.getChars() || " ";
+    text = text.slice(0, length - used);
+    used += text.length;
+    const style: Omit<TerminalRun, "text"> = {};
+    if (!faint) {
+      const fg = cellColor(cell, "Fg"), bg = cellColor(cell, "Bg");
+      if (fg !== undefined) style.fg = fg;
+      if (bg !== undefined) style.bg = bg;
+      if (cell.isBold()) style.bold = true;
+      if (cell.isDim()) style.dim = true;
+      if (cell.isItalic()) style.italic = true;
+      if (cell.isUnderline()) style.underline = true;
+      if (cell.isInverse()) style.inverse = true;
+    }
+    const key = JSON.stringify(style);
+    if (runs.length && key === lastKey) runs[runs.length - 1]!.text += text;
+    else runs.push({ text, ...style });
+    lastKey = key;
+  }
+  return runs;
+}
+
+function appendRuns(target: TerminalRun[], runs: TerminalRun[]) {
+  const last = target.at(-1), [first, ...rest] = runs;
+  if (last && first && JSON.stringify({ ...last, text: "" }) === JSON.stringify({ ...first, text: "" })) { last.text += first.text; target.push(...rest); }
+  else target.push(...runs);
+}
+
+async function projectRoomTerminal(chunks: string[], cols: number, rows: number, unwrap: boolean, omitFaint: boolean, styled: boolean, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   const terminal = new headless.Terminal({ cols, rows, scrollback: 0, allowProposedApi: true });
   try {
     // The host already retains at most 8 MiB. Cutting that replay again can
@@ -32,21 +80,59 @@ export async function projectRoomTerminalScreen(chunks: string[], cols = 100, ro
     // instead of silently treating a partial reconstruction as current state.
     const content = chunks.join("");
     if (Buffer.byteLength(content, "utf8") > 8 * 1024 * 1024) throw new Error("Room terminal replay exceeds the projection limit.");
-    await new Promise<void>((resolve) => terminal.write(content, resolve));
+    // Fed in 64 KiB writes: xterm parses one write whole, so an 8 MiB replay in one write held the API's main thread 1.5 s (stable 4/11,
+    // operator-approved change); between writes a cancellable read stops and other requests run. xterm's parser keeps its state across writes.
+    const step = 64 * 1024;
+    for (let at = 0; at < content.length; at += step) {
+      signal?.throwIfAborted();
+      await new Promise<void>((resolve) => terminal.write(content.slice(at, at + step), resolve));
+    }
+    signal?.throwIfAborted();
     const buffer = terminal.buffer.active;
     const lines: string[] = [];
+    const runs: TerminalRun[][] = [];
     for (let index = 0; index < buffer.length; index++) {
       const line = buffer.getLine(index);
       const trimRight = !(unwrap && buffer.getLine(index + 1)?.isWrapped);
       const text = !line ? '' : omitFaint ? undimmedLineText(line, trimRight) : line.translateToString(trimRight);
-      if (unwrap && line?.isWrapped && lines.length) lines[lines.length - 1] += text;
-      else lines.push(text);
+      const lineStyle = styled && line ? lineRuns(line, omitFaint, text.length) : [];
+      if (unwrap && line?.isWrapped && lines.length) { lines[lines.length - 1] += text; if (styled) appendRuns(runs[runs.length - 1]!, lineStyle); }
+      else { lines.push(text); if (styled) runs.push(lineStyle); }
     }
-    return lines.join('\n');
+    return { text: lines.join('\n'), runs };
   } finally { terminal.dispose(); }
 }
 
+/** Bounded, on-demand terminal projection; does not mount or resize the live pane. */
+export async function projectRoomTerminalScreen(chunks: string[], cols = 100, rows = 30, unwrap = false, omitFaint = false, signal?: AbortSignal): Promise<string> {
+  return (await projectRoomTerminal(chunks, cols, rows, unwrap, omitFaint, false, signal)).text;
+}
+
+/** The same projection with each line's runs of equal style too, from one replay, so `runs` are the lines of `text`. */
+export function projectRoomTerminalRuns(chunks: string[], cols = 100, rows = 30, unwrap = false, omitFaint = false, signal?: AbortSignal): Promise<{ text: string; runs: TerminalRun[][] }> {
+  return projectRoomTerminal(chunks, cols, rows, unwrap, omitFaint, true, signal);
+}
+
+export const TERMINAL_RUNS_MAX_LINES = 2_000;
+export const TERMINAL_RUNS_MAX_BYTES = 256 * 1024;
+
+/**
+ * The runs for exactly the lines of `text` as it is sent (redacted): a line whose runs read otherwise goes as one plain run, so the
+ * colours never carry text the answer left out; runs that are not this text's lines go out not at all. Past the bounds: TOO_LARGE.
+ */
+export function styledRunsFor(text: string, runs: TerminalRun[][] | undefined): { runs?: TerminalRun[][]; runsOmitted?: "TOO_LARGE" } {
+  const lines = text.split("\n");
+  if (!runs || runs.length !== lines.length) return {};
+  if (lines.length > TERMINAL_RUNS_MAX_LINES) return { runsOmitted: "TOO_LARGE" };
+  const aligned = lines.map((line, index) => runs[index]!.map((run) => run.text).join("") === line ? runs[index]! : line ? [{ text: line }] : []);
+  return Buffer.byteLength(JSON.stringify(aligned), "utf8") > TERMINAL_RUNS_MAX_BYTES ? { runsOmitted: "TOO_LARGE" } : { runs: aligned };
+}
+
+/** ADAPTER-012: dev's Hermes panes run the profile space-dev, and Hermes puts a named profile before its prompt ("space-dev ❯"). */
+const withoutDevProfilePrompt = (screen: string) => screen.replace(/^([ \t\u00a0]*)space-dev (?=❯)/gm, "$1");
+
 export function roomTerminalState(screen: string): "RUNNING" | "IDLE" | "WAITING_FOR_INPUT" | "UNKNOWN" {
+  screen = withoutDevProfilePrompt(screen);
   // Claude Code's "Switch model? … 1. Yes, switch to … 2. No, go back" is a question with options, not an idle composer (27/10).
   if (/select (?:a |an )?(?:session|model|option)|enter to (?:confirm|select)|allow (?:once|always)|approve this|do you want to proceed|switch model\?[\s\S]{0,800}?\b1\.\s+yes,?\s+switch\b/i.test(screen)) return "WAITING_FOR_INPUT";
   if (/(?:ask (?:codex|opencode|gemini|claude)?(?:\s+to do)?\s+anything|ask anything|send a message)/i.test(screen)) return "IDLE";
@@ -66,6 +152,16 @@ export function roomTerminalState(screen: string): "RUNNING" | "IDLE" | "WAITING
   // Cursor's "→ Plan, search, build anything" and Oh My Pi's "π >" input line.
   if (/(?:^|\n)\s*(?:[│┃]\s*)?[❯›>]\s*[^\n]*$/m.test(screen) || /plan, search, build anything|(?:^|\n)\s*π >/i.test(screen)) return "IDLE";
   return "UNKNOWN";
+}
+
+/**
+ * A Claude pane's state with Claude's own session status over the room screen: busy is running, a screen that only looks
+ * busy is idle, and an idle Claude is idle when the screen cannot tell (R9-9, 28/10: a browser-attached pane's screen, rebuilt
+ * from the output tail, lost its idle composer and four prompts to Alex/Hugo were refused as not ready). A question stays one.
+ */
+export function claudeRoomState<S extends string>(state: S, native: { busy: boolean; status: string | null }): S | "RUNNING" | "IDLE" {
+  if (native.busy) return "RUNNING";
+  return state === "RUNNING" || (state === "UNKNOWN" && native.status === "idle") ? "IDLE" : state;
 }
 
 export function roomTerminalCommands(screen: string): string[] {
@@ -210,32 +306,114 @@ export function roomAnswerInput(answer: string, submit: boolean): string {
 }
 
 /**
- * A bare prompt marker among the last lines: the CLI's composer is empty. The marker's row may also carry only Claude Code's status of
- * the finished turn ("❯ Cogitated for 18s · done 5:49 PM", "❯ Churned for 45s · done 6:46 PM · 1 sh↓ …"): 28/10 a scheduled task and
- * held texts waited on such idle panes as if they held a draft.
+ * The CLI's composer is empty: its last prompt row is bare, or carries only Claude Code's status of the finished turn ("❯ Cogitated for 18s ·
+ * done 5:49 PM", "❯ Churned for 45s · done 6:46 PM · 1 sh↓ …"): 28/10 a scheduled task and held texts waited on such idle panes as if they held a draft.
  */
 export function roomComposerEmpty(screen: string): boolean {
-  const tail = screen.split("\n").filter((line) => line.trim()).slice(-6).join("\n");
-  return /^[ \t\u00a0]*[❯›>][ \t\u00a0]*(?:[A-Z][a-z]+ed for (?:\d+h ?)?(?:\d+m ?)?\d+s(?: · [^\n]*)?)?[ \t\u00a0]*$/m.test(tail);
+  screen = withoutDevProfilePrompt(screen);
+  const lines = screen.split("\n").filter((line) => line.trim());
+  const tail = lines.slice(-6).join("\n");
+  if (CODEX_PLACEHOLDER_ROW.test(tail) || openCodeComposerEmpty(tail)) return true;
+  // The composer is the screen's last prompt row, whatever follows it: on 31/10 Claude Code listed a background shell under its footer,
+  // five rows pushed Alex/Emma's empty "❯" out of a 6-line window, and every brief kick waited 7 hours. Claude's panel rows ("❯ ● main") are no composer.
+  const prompt = lines.slice(-24).findLast((line) => /^[ \t\u00a0]*[❯›>]/.test(line) && !CLAUDE_PANEL_MAIN_ROW.test(line));
+  return prompt !== undefined && (EMPTY_PROMPT_ROW.test(prompt) || AGY_MODE_ROW.test(prompt));
+}
+/**
+ * Antigravity's (cli:gemini) empty composer shows its mode: "> Accept-edits mode: file edits auto-approved (shift+tab to cycle)"
+ * (1.4.12; "> Accept-edits mode" before; also Plan, Auto and "Best-of-N"). 1/11 the Crypto task VCLveLP_3o8g waited on idle Crypto/Andy as if it held a draft.
+ * shortcut: a draft typed word for word as the hint reads as empty, like Codex's placeholder.
+ */
+const AGY_MODE_ROW = /^[ \t\u00a0]*>[ \t\u00a0]+[A-Z][a-z]*(?:-[A-Za-z]+)* mode(?:: [^\n]*\(shift\+tab to cycle\))?[ \t\u00a0]*$/;
+/**
+ * Why text typed now would not start a turn, from what the screen shows around its composer: the CLI's spinner right above the
+ * composer box, or a composer holding text (a draft, a menu). Null when the composer is bare or not on screen (a lost composer is no
+ * evidence: R9-9). 31/10 Alex/Max: Nous's text was typed while Claude worked and stayed an unsent draft.
+ */
+export function roomComposerNotReady(screen: string): string | null {
+  screen = withoutDevProfilePrompt(screen);
+  const lines = screen.split("\n").filter((line) => line.trim());
+  const at = lines.findLastIndex((line, index) => index >= lines.length - 24 && /^[ \t ]*[❯›>]/.test(line) && !CLAUDE_PANEL_MAIN_ROW.test(line));
+  if (at < 0) return null;
+  let above = at - 1;
+  while (above >= 0 && /^[\s─━]+$/.test(lines[above]!)) above--;
+  if (above >= 0 && roomTerminalState(lines[above]!) === "RUNNING") return "its CLI is working";
+  return roomComposerEmpty(screen) ? null : "its composer holds text";
+}
+/**
+ * An empty prompt row. It may also carry only Claude Code's status of the finished turn: any capitalised verb ending -ed, accented ones too
+ * ("❯ Sautéed for 40s · done 3:31 AM · 1 shell still running", 31/10 Alex/Emma), or its "new task? /clear to save 122.2k tokens" hint
+ * (31/10 03:15 BKK Cleo/Kate; 1.1M counts too).
+ */
+const EMPTY_PROMPT_ROW = /^[ \t\u00a0]*[❯›>][ \t\u00a0]*(?:\p{Lu}\p{Ll}+ed for (?:\d+h ?)?(?:\d+m ?)?\d+s(?: · [^\n]*)?|new task\? \/clear to save [\d.]+[kM]? tokens)?[ \t\u00a0]*$/u;
+
+/**
+ * OpenCode 2's input box: rows starting "┃" above its "┃ Build · <model>" status row; rows that are empty or show its "Ask anything…"
+ * placeholder are an empty composer (30/10 11:32 BKK: task Q9kP5IL44A-W waited on Alex/Bob's idle OpenCode as if it held a draft).
+ */
+function openCodeComposerEmpty(tail: string): boolean {
+  const box = openCodeBox(tail);
+  return box.length > 0 && box.every((row) => row === "" || /^Ask anything…/.test(row));
+}
+
+/** The rows of OpenCode 2's input box, top down, trimmed; none without its status row. */
+function openCodeBox(tail: string): string[] {
+  const lines = tail.split("\n");
+  const status = lines.findLastIndex((line) => /^[ \t\u00a0]*┃[ \t\u00a0]+(?:Build|Plan)\b[^\n]* · /.test(line));
+  const box: string[] = [];
+  for (let at = status - 1; at >= 0 && /^[ \t\u00a0]*┃/.test(lines[at]!); at--) box.unshift(lines[at]!.replace(/^[ \t\u00a0]*┃/, "").trim());
+  return box;
 }
 
 /**
+ * Codex's dim placeholder of an empty composer (0.152 rotates a list, 0.165 shows "Ask Codex to do anything"): 29/10 the kits task
+ * tC05_57xRiBO waited on Alex/Kate's idle Codex as if it held a draft. shortcut: a draft typed word for word as a placeholder reads as
+ * empty; the undimmed read (cli-prompt-submit) still tells them apart.
+ */
+const CODEX_PLACEHOLDER_ROW = /^[ \t\u00a0]*›[ \t\u00a0]*(?:Ask Codex to do anything|Explain this codebase|Summarize recent commits|Implement \{feature\}|Find and fix a bug in @filename|Write tests for @filename|Improve documentation in @filename|Run \/review on my current changes|Use \/skills to list available skills|Check recently modified functions for compatibility|How many files have been modified\?|Will this algorithm scale well\?)[ \t\u00a0]*$/m;
+
+/**
  * Whether the composer (the last prompt line and the lines wrapped under it) still holds the typed text: its end, or
- * Claude's "[Pasted text #N]" placeholder. Spaces are ignored, so wrapping does not matter; the last marker is the
+ * Claude's "[Pasted text #N]" placeholder (OpenCode 2: its ┃ box, or "[Pasted ~N lines]"). Spaces are ignored, so wrapping does not matter; the last marker is the
  * composer because earlier prompts echo above it.
  */
 export function roomComposerHolds(screen: string, typed: string): boolean {
+  const held = composerText(screen);
+  return held !== "" && (held.endsWith(compactSpaces(typed).slice(-32)) || PASTE_PLACEHOLDER.test(held));
+}
+/**
+ * The composer shows nothing but a typed text: all of it, or the end of a long one scrolled to its end (Claude Code 2.1.307), at least 32
+ * characters of it. Never a paste placeholder, which could be anyone's paste.
+ */
+export function roomComposerShowsOnly(screen: string, typed: string): boolean {
+  const held = composerText(screen);
+  const whole = compactSpaces(typed);
+  return held !== "" && held.length >= Math.min(whole.length, 32) && whole.endsWith(held);
+}
+const compactSpaces = (value: string) => value.replace(/\s+/g, "");
+// Codex 0.166 shows a long paste as "[Pasted Content 1532 chars]".
+const PASTE_PLACEHOLDER = /^\[Pasted(?:text#\d+(?:\+\d+lines)?|~?\d+lines?|Content\d+chars)\](?:#\d+)?$/;
+/**
+ * Codex's footer right under its composer, no blank row between (real 0.165/0.166 screens): "  GPT-5.5 default · ~/proj",
+ * "  ← for agents · ? for shortcuts". 3/11 20:41 UTC Bruno/Oscar: read as part of the draft, a Nous text that stayed in the
+ * composer looked sent, so no Enter was pressed again and no pane-draft line reached Nous.
+ */
+const CODEX_FOOTER_ROW = /^[ \t\u00a0]*(?:gpt-[\w.-]+(?: [\w-]+)* · |[←?] for )/i;
+/** The composer's text without spaces ("" when empty): OpenCode 2's box, else the last prompt line and the lines wrapped under it. */
+function composerText(screen: string): string {
+  screen = withoutDevProfilePrompt(screen);
+  // R43-2: OpenCode 2's box (real PTY 2/11: a multi-line paste reads "[Pasted ~3 lines]").
+  const box = compactSpaces(openCodeBox(screen).filter((row) => !/^Ask anything…/.test(row)).join(""));
+  if (box) return box;
   const lines = screen.split("\n");
   const at = lines.findLastIndex((line) => /^[ \t\u00a0]*[❯›>]/.test(line));
-  if (at < 0) return false;
+  if (at < 0) return "";
   const composer = [lines[at]!];
   for (const line of lines.slice(at + 1)) {
-    if (!line.trim() || /^[\s─━]+$/.test(line)) break;
+    if (!line.trim() || /^[\s─━]+$/.test(line) || CODEX_FOOTER_ROW.test(line)) break;
     composer.push(line);
   }
-  const compact = (value: string) => value.replace(/\s+/g, "");
-  const held = compact(composer.join("")).slice(1);
-  return held !== "" && (held.endsWith(compact(typed).slice(-32)) || /^\[Pastedtext#\d+(?:\+\d+lines)?\]$/.test(held));
+  return compactSpaces(composer.join("")).slice(1);
 }
 
 /**

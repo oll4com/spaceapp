@@ -18,6 +18,7 @@ import {
   createEntry,
   renameEntry,
   chmodEntry,
+  assertUploadDirectory,
   deleteEntry,
   searchFiles,
   assertAccessAllowed,
@@ -72,6 +73,12 @@ export function registerFilesRoutes(app: FastifyInstance, options: {
     if (mode === "admin" && options.store) {
       await recordAudit(options.store, request, { action: `files.${action}`, targetType: "path", targetId: target });
     }
+  };
+  // EXT-G-2: a refused host-mode change (credential directory, outside the roots) is audited too.
+  const auditRefusal = async (request: FastifyRequest, error: unknown, action: string, target: string) => {
+    if (!(error instanceof FilesystemError) || error.code !== "PATH_DENIED") return;
+    await auditAdminChange(request, "admin", `${action}.refused`, target)
+      .catch((auditError) => request.log.warn({ err: auditError }, "files refusal audit failed"));
   };
   // Initialize background 24h disk & folder size cache
   initFilesCache();
@@ -153,6 +160,7 @@ export function registerFilesRoutes(app: FastifyInstance, options: {
       await auditAdminChange(request, body.mode, "write", body.path);
       return reply.send(result);
     } catch (error) {
+      await auditRefusal(request, error, "write", String((request.body as { path?: string } | undefined)?.path));
       return handleFileError(error, reply);
     }
   });
@@ -170,6 +178,7 @@ export function registerFilesRoutes(app: FastifyInstance, options: {
       await auditAdminChange(request, body.mode, "create", body.path);
       return reply.send(result);
     } catch (error) {
+      await auditRefusal(request, error, "create", String((request.body as { path?: string } | undefined)?.path));
       return handleFileError(error, reply);
     }
   });
@@ -187,6 +196,8 @@ export function registerFilesRoutes(app: FastifyInstance, options: {
       await auditAdminChange(request, body.mode, "rename", `${body.oldPath} -> ${body.newPath}`);
       return reply.send(result);
     } catch (error) {
+      const body = request.body as { oldPath?: string; newPath?: string } | undefined;
+      await auditRefusal(request, error, "rename", `${body?.oldPath} -> ${body?.newPath}`);
       return handleFileError(error, reply);
     }
   });
@@ -204,6 +215,7 @@ export function registerFilesRoutes(app: FastifyInstance, options: {
       await auditAdminChange(request, body.mode, "chmod", body.path);
       return reply.send(result);
     } catch (error) {
+      await auditRefusal(request, error, "chmod", String((request.body as { path?: string } | undefined)?.path));
       return handleFileError(error, reply);
     }
   });
@@ -221,6 +233,7 @@ export function registerFilesRoutes(app: FastifyInstance, options: {
       await auditAdminChange(request, body.mode, body.recursive ? "delete-recursive" : "delete", result.path);
       return reply.send(result);
     } catch (error) {
+      await auditRefusal(request, error, "delete", String((request.body as { path?: string } | undefined)?.path));
       return handleFileError(error, reply);
     }
   });
@@ -249,12 +262,12 @@ export function registerFilesRoutes(app: FastifyInstance, options: {
     const abort = new AbortController();
     const onAbort = () => abort.abort();
     request.raw.once("aborted", onAbort);
+    let targetDir = WORKSPACE_ROOT;
     try {
       if (!request.isMultipart()) {
         return reply.status(400).send({ ok: false, error: "Upload must be multipart/form-data" });
       }
       release = acquireFileUpload();
-      let targetDir = WORKSPACE_ROOT;
       let mode: "user" | "admin" = "user";
       const budget = { bytes: 0 };
       for await (const part of request.parts()) {
@@ -266,6 +279,7 @@ export function registerFilesRoutes(app: FastifyInstance, options: {
         if (mode !== "admin") throw new FilesystemError("File upload strictly requires Admin Mode.", 403);
         if (staged.length >= fileUploadLimits.files) throw new FilesystemError("Too many files in one upload.", 413, "UPLOAD_LIMIT_EXCEEDED");
         const { resolvedPath: directory } = assertAccessAllowed(targetDir, mode, request.user, WORKSPACE_ROOT);
+        await assertUploadDirectory(directory, WORKSPACE_ROOT);
         staged.push(await stageFileUpload({ directory, filename: part.filename, source: part.file, budget, signal: abort.signal }));
       }
       // Validation and parsing failures never publish partial or truncated data. Files are then
@@ -293,6 +307,7 @@ export function registerFilesRoutes(app: FastifyInstance, options: {
       }
       return reply.send({ ok: true, uploadedCount: staged.length, files: saved });
     } catch (error) {
+      await auditRefusal(request, error, "upload", targetDir);
       return handleFileError(error, reply);
     } finally {
       request.raw.off("aborted", onAbort);

@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { webUrlWithoutCredentials } from "./link-rules.js";
+import { finishedChangeHasProof } from "./copilot-rules.js";
 
 // Security Copilot pane (plan clipboard:8ce8_URHW9Dk, operator request 2026-10-24): Space watches public vulnerability feeds
 // around the clock and matches them to what every Proxmox host runs; the pane's CLI agent inventories the hosts over SSH and
@@ -148,7 +150,8 @@ export const securityFindingIdSchema = idOf("secfind");
 /** Structured fields only: no free description text from third parties reaches the agent. */
 export const securityAdvisorySchema = z.object({
   id: z.string().min(3).max(120),
-  aliases: z.array(z.string().max(120)).max(40).default([]),
+  // Every alias and reference an advisory carries (until 31/10 40 and 20).
+  aliases: z.array(z.string().max(120)).default([]),
   sources: z.array(securityAdvisorySourceSchema).min(1).max(SECURITY_ADVISORY_SOURCES.length),
   title: z.string().max(300),
   severity: securitySeveritySchema,
@@ -157,7 +160,7 @@ export const securityAdvisorySchema = z.object({
   kev: z.boolean().default(false),
   kevAddedAt: z.string().max(40).nullable().default(null),
   publishedAt: z.string().max(40).nullable().default(null),
-  references: z.array(z.string().url().max(500)).max(20).default([])
+  references: z.array(z.string().url().max(500)).default([])
 }).strict();
 export type SecurityAdvisory = z.infer<typeof securityAdvisorySchema>;
 
@@ -198,9 +201,10 @@ export type SecurityActionKind = z.infer<typeof securityActionKindSchema>;
 export const SECURITY_ALWAYS_ASK_KINDS: readonly SecurityActionKind[] = ["HOST_REBOOT", "SESSION_ENDING_RESTART", "DATA_DELETE", "OTHER"];
 /** Kinds whose `backup` must name what restores the host (a snapshot, a backup file, the package's old version). */
 export const SECURITY_BACKUP_KINDS: readonly SecurityActionKind[] = ["PACKAGE_UPGRADE", "CONFIG_CHANGE", "WAF_RULE", "CONTAINER_UPDATE"];
-/** At most this many actions the gate lets run on its own per host and hour; one RUNNING action per host at a time. */
+/** Safety: at most this many actions run on their own per host and hour (more becomes a REVIEW, never lost); one RUNNING action per host. */
 export const SECURITY_MAX_ACTIONS_PER_HOST_HOUR = 6;
-export const SECURITY_ACTION_STATUSES = ["RUNNING", "ASKED", "APPROVED", "DECLINED", "VERIFIED", "FAILED", "ROLLED_BACK"] as const;
+// R13-14: SUPERSEDED, a held change the copilot closed because its target was already met (never a person's answer).
+export const SECURITY_ACTION_STATUSES = ["RUNNING", "ASKED", "APPROVED", "DECLINED", "VERIFIED", "FAILED", "ROLLED_BACK", "SUPERSEDED"] as const;
 export const securityActionStatusSchema = z.enum(SECURITY_ACTION_STATUSES);
 export type SecurityActionStatus = z.infer<typeof securityActionStatusSchema>;
 export const securityActionIdSchema = idOf("secact");
@@ -238,9 +242,11 @@ export const securityActionBeginSchema = z.object({
 }).strict();
 export type SecurityActionBegin = z.infer<typeof securityActionBeginSchema>;
 export const securityActionFinishSchema = z.object({
-  status: z.enum(["VERIFIED", "FAILED", "ROLLED_BACK"]),
-  verification: text()
-}).strict();
+  status: z.enum(["VERIFIED", "FAILED", "ROLLED_BACK", "SUPERSEDED"]),
+  verification: text().optional(),
+  /** R13-14: SUPERSEDED's proof that the target is already there (the version installed, the service's start time, the finding or alert closed). */
+  evidence: z.string().trim().min(3).max(2000).optional()
+}).strict().refine(...finishedChangeHasProof());
 
 // ---- memory (the copilot's own, separate from Space Memory) --------------------------------------
 export const SECURITY_MEMORY_KINDS = ["HOST", "RULE", "FACT", "LESSON", "EXCEPTION", "PLAYBOOK", "PREFERENCE"] as const;
@@ -288,7 +294,7 @@ export const SECURITY_EVENT_TYPES = [
 ] as const;
 export const securityEventTypeSchema = z.enum(SECURITY_EVENT_TYPES);
 export type SecurityEventType = z.infer<typeof securityEventTypeSchema>;
-export const securityEventStatusSchema = z.enum(["PENDING", "TAKEN", "DONE", "FAILED", "OPEN", "ANSWERED", "APPROVED", "DECLINED"]);
+export const securityEventStatusSchema = z.enum(["PENDING", "TAKEN", "DONE", "FAILED", "OPEN", "ANSWERED", "APPROVED", "DECLINED", "SUPERSEDED"]);
 export type SecurityEventStatus = z.infer<typeof securityEventStatusSchema>;
 export const securityEventSchema = z.object({
   id: securityEventIdSchema,
@@ -296,7 +302,7 @@ export const securityEventSchema = z.object({
   paneId: idOf("pane"),
   type: securityEventTypeSchema,
   status: securityEventStatusSchema.nullable(),
-  message: z.string().min(1).max(2000),
+  message: z.string().min(1),
   payload: z.record(z.string(), z.unknown()),
   createdAt: isoDateTime,
   updatedAt: isoDateTime
@@ -324,7 +330,7 @@ export const SECURITY_ADVISORY_PAGES: ReadonlyArray<readonly [host: string, path
 export function securityAdvisoryUrlAllowed(url: string): boolean {
   let parsed: URL;
   try { parsed = new URL(url); } catch { return false; }
-  if (parsed.protocol !== "https:" || parsed.username || parsed.password || (parsed.port && parsed.port !== "443")) return false;
+  if (!webUrlWithoutCredentials(parsed) || (parsed.port && parsed.port !== "443")) return false;
   const host = parsed.hostname.toLowerCase();
   return SECURITY_ADVISORY_PAGES.some(([allowedHost, prefix]) => host === allowedHost && parsed.pathname.startsWith(prefix));
 }

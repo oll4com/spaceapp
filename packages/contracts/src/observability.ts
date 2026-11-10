@@ -211,6 +211,15 @@ export const traceLookupResponseSchema = z.object({
     startedAt: z.string().min(1).max(64),
     endedAt: z.string().max(64).nullable()
   })).max(500).default([]),
-  logQueries: z.object({ api: z.string(), worker: z.string() })
+  // Space Gateway request log rows whose id is this trace (a Space caller's x-request-id, OBS-006); codes and times, never error text.
+  gatewayRequests: z.array(z.object({
+    provider: z.string().min(1).max(40),
+    model: z.string().min(1).max(160),
+    status: z.string().min(1).max(40),
+    errorCode: traceIdentifierSchema.default(null),
+    latencyMs: z.number().int().nonnegative().nullable(),
+    requestedAt: z.string().min(1).max(64)
+  })).max(500).default([]),
+  logQueries: z.object({ api: z.string(), worker: z.string(), cliHost: z.string(), browserHost: z.string() })
 });
 export type TraceLookupResponse = z.infer<typeof traceLookupResponseSchema>;

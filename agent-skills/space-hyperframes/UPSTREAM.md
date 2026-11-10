@@ -5,7 +5,7 @@
 - Files: every file of `skills/` (21 skills with their references, scripts, fonts, sound effects and template assets, plus the upstream `python-encoding.test.mjs`), copied unchanged into this folder. The bundled fonts keep their OFL texts. The repository `LICENSE` is copied to this folder.
 - Not vendored: the packages (`packages/`), `skills-manifest.json`, docs, examples, registry, themes and the per-harness plugin folders.
 
-Space changes: none to the vendored files. This folder's index `SKILL.md`, `LICENSE` and this file are new.
+Space changes: this folder's index `SKILL.md`, `LICENSE` and this file are new. One vendored file changed: `media-use/scripts/lib/telemetry.mjs` no longer carries HyperFrames' own PostHog project key (a public, write-only ingestion key that the release secret scan flagged); `MEDIA_USE_POSTHOG_KEY` names a project to send to, and without it nothing is sent (2026-10-29, with a case in `telemetry.test.mjs`). Re-apply it on a re-vendor.
 
 ## CLI on the Space host
 

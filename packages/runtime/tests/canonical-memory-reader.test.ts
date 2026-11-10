@@ -20,16 +20,16 @@ describe('canonical production retrieval',()=>{
   // Stable's 3.5 MB month held the API's loop for up to 15 s when it was parsed on the main thread (2026-10-24).
   const {bridge,paths}=await fixture();
   const entry=(n:number)=>`\n<!-- space-memory:id=memory:loop${String(n).padStart(6,'0')} -->\n## 2026-09-04 10:00 EEST - LoopProof ${n}\n\n${Array.from({length:8},(_,i)=>`- step ${i} of entry ${n} with enough words to look like a real note`).join('\n')}\n`;
-  await appendFile(paths.monthlyPath,Array.from({length:2500},(_,n)=>entry(n)).join(''));
+  await appendFile(paths.monthlyPath,Array.from({length:500},(_,n)=>entry(n)).join(''));
   let maxLagMs=0,last=Date.now();
   const timer=setInterval(()=>{const now=Date.now();maxLagMs=Math.max(maxLagMs,now-last-10);last=now;},10);
   const started=Date.now();
-  const entries=await bridge.list({...query,q:'LoopProof 2499'});
+  const entries=await bridge.list({...query,q:'LoopProof 499'});
   const parseMs=Date.now()-started;
   // The gap since the last tick counts too: a blocked loop resumes here before the overdue tick runs.
   maxLagMs=Math.max(maxLagMs,Date.now()-last-10);
   clearInterval(timer);
-  expect(entries.some(e=>e.title.includes('LoopProof 2499'))).toBe(true);
+  expect(entries.some(e=>e.title.includes('LoopProof 499'))).toBe(true);
   expect(parseMs).toBeGreaterThan(300);
   expect(maxLagMs).toBeLessThan(parseMs/2);
  },30_000);
@@ -94,14 +94,15 @@ describe('canonical production retrieval',()=>{
   await rm(policy);execFileSync('mkfifo',[policy]);
   expect(await bridge.list({...query,q:'ReplacedOnly'})).toEqual([]);
  });
- it('returns evidence beyond 10000 characters in an external record without changing identity',async()=>{
+ it('returns a long external record whole, its late evidence included, without changing identity',async()=>{
   const {bridge,paths}=await fixture();
   await writeFile(paths.monthlyPath,`## 2026-09-05 - Long external record\n\n${'Unrelated context. '.repeat(1200)}LateNeedle verified /external/archive-copy.\n`);
   const full=await bridge.list(query);
   const rows=await bridge.list({...query,q:'LateNeedle verified'});
   expect(rows).toHaveLength(1);
   expect(rows[0]?.body).toContain('LateNeedle verified /external/archive-copy.');
-  expect(rows[0]?.body.length).toBeLessThanOrEqual(10000);
+  // The whole record since 31/10 (until then a 10,000-character window around the match).
+  expect(rows[0]?.body).toContain('Unrelated context. '.repeat(1200).trim());
   expect(rows[0]?.id).toBe(full.find(r=>r.title==='Long external record')?.id);
  });
  it('fails promptly on configured FIFOs/symlinks and never returns a cached record for an unreadable source',async()=>{

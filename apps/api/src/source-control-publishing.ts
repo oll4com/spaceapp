@@ -12,9 +12,10 @@ import type {
   SourceControlConnectionRecord,
   SpaceStore
 } from "@space/runtime";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const brokerCommand = "/usr/bin/sudo";
-const brokerExecutable = "/opt/spaceapp/bin/space-source-control-secret-broker";
+const brokerExecutable = `${SPACE_INSTALL_ROOT}/bin/space-source-control-secret-broker`;
 const secretReferenceSchema = z.string().regex(/^source_control_(?:gitea|github)_[A-Za-z0-9_-]{8,96}$/);
 const brokerSuccessSchema = z
   .object({

@@ -1,6 +1,6 @@
 import type { CliHostIdentity } from "@space/cli-host";
 import type { CliHostGateway } from "./cli-terminal.js";
-import { projectRoomTerminalScreen } from "./room-terminal-screen.js";
+import { projectRoomTerminalRuns, projectRoomTerminalScreen, type TerminalRun } from "./room-terminal-screen.js";
 
 /** Replay tail used when the bounded host ring has trimmed the session start. */
 const REPLAY_TAIL_EVENTS = 200;
@@ -12,9 +12,10 @@ export async function readRoomHostScreen(host: Pick<CliHostGateway, "attach" | "
 }
 
 export async function readRoomHostScreenSnapshot(host: Pick<CliHostGateway, "attach" | "detach" | "inspect">,
-  identity: CliHostIdentity, cols: number, rows: number, unwrap = false, expectedGenerationId?: string, omitFaint = false) {
+  identity: CliHostIdentity, cols: number, rows: number, unwrap = false, expectedGenerationId?: string, omitFaint = false, styled = false,
+  signal?: AbortSignal) {
   try {
-    return await snapshotFromReplay(host, identity, cols, rows, unwrap, expectedGenerationId, -1, omitFaint);
+    return await snapshotFromReplay(host, identity, cols, rows, unwrap, expectedGenerationId, -1, omitFaint, styled, signal);
   } catch (error) {
     // Long-lived sessions trim the ring start, so a full replay is unavailable.
     // Fall back to the recent tail: a repainted TUI frame still scrapes.
@@ -22,7 +23,7 @@ export async function readRoomHostScreenSnapshot(host: Pick<CliHostGateway, "att
     const summary = await host.inspect(identity).catch(() => null);
     if (!summary || summary.status !== "RUNNING") throw error;
     return await snapshotFromReplay(host, identity, cols, rows, unwrap,
-      expectedGenerationId, Math.max(0, summary.nextOutputSequence - 1 - REPLAY_TAIL_EVENTS), omitFaint);
+      expectedGenerationId, Math.max(0, summary.nextOutputSequence - 1 - REPLAY_TAIL_EVENTS), omitFaint, styled, signal);
   }
 }
 
@@ -33,11 +34,13 @@ function isReplayGapError(error: unknown): boolean {
 
 async function snapshotFromReplay(host: Pick<CliHostGateway, "attach" | "detach">,
   identity: CliHostIdentity, cols: number, rows: number, unwrap: boolean,
-  expectedGenerationId: string | undefined, afterSequence: number, omitFaint = false) {
+  expectedGenerationId: string | undefined, afterSequence: number, omitFaint = false, styled = false, signal?: AbortSignal): Promise<{ text: string; revision: number; runs?: TerminalRun[][] }> {
+  signal?.throwIfAborted();
   const observer = await host.attach({ identity, afterSequence });
   try {
     if (expectedGenerationId && observer.session.generationId !== expectedGenerationId) throw new Error("Room terminal geometry belongs to a different host generation.");
-    return { text: await projectRoomTerminalScreen(observer.replay.map(event => event.data), cols, rows, unwrap, omitFaint),
-      revision: observer.session.nextOutputSequence };
+    const chunks = observer.replay.map(event => event.data);
+    const projected = styled ? await projectRoomTerminalRuns(chunks, cols, rows, unwrap, omitFaint, signal) : { text: await projectRoomTerminalScreen(chunks, cols, rows, unwrap, omitFaint, signal) };
+    return { ...projected, revision: observer.session.nextOutputSequence };
   } finally { await host.detach(identity, observer.attachmentId); }
 }

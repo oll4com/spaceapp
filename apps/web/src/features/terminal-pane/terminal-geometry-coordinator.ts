@@ -143,6 +143,8 @@ function clampTerminalOverflow(
   host: HTMLElement,
   sample: LayoutSample
 ): boolean {
+  // xterm pauses an off-screen renderer and defers its resize, so the screen still has the old grid's width: no overflow to measure.
+  if ((terminal as { _core?: { _renderService?: { _isPaused?: boolean } } })._core?._renderService?._isPaused === true) return false;
   let clamped = false;
   for (let pass = 0; pass < GEOMETRY_OVERFLOW_MAX_CLAMP_COLS; pass += 1) {
     const screen = screenRectSample(host);
@@ -307,6 +309,24 @@ function geometryIsBroken(
   );
   if (hostWidth > 0 && screenWidth > 0 && screenWidth < hostWidth * GEOMETRY_COLLAPSE_RATIO) return true;
   return hostWidth > 0 && screenWidth > hostWidth + GEOMETRY_OVERFLOW_TOLERANCE_PX;
+}
+
+interface XtermDomRendererSpacing {
+  _setDefaultSpacing?: () => void;
+  _rowFactory?: { defaultSpacing?: number };
+  _widthCache?: { get?: (content: string, bold: boolean, italic: boolean) => number };
+}
+
+// xterm's DOM renderer spaces rows by (cell width - width of 'W'); run on a display:none terminal 'W' is 0 and every glyph
+// is drawn a whole cell apart until something recomputes it (operator-approved Warm change 2026-11-06, full-screen fonts).
+function repairDefaultLetterSpacing(terminal: TerminalGeometryTerminal): boolean {
+  const renderer = (terminal as { _core?: { _renderService?: { _renderer?: { value?: XtermDomRendererSpacing } } } })
+    ._core?._renderService?._renderer?.value;
+  if (typeof renderer?._setDefaultSpacing !== "function" || !renderer._rowFactory) return false;
+  if (!((renderer._widthCache?.get?.("W", false, false) ?? 0) > 0)) return false;
+  const before = renderer._rowFactory.defaultSpacing;
+  renderer._setDefaultSpacing();
+  return renderer._rowFactory.defaultSpacing !== before;
 }
 
 export function createTerminalGeometryCoordinator(options: TerminalGeometryCoordinatorOptions) {
@@ -482,6 +502,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       pendingRefit = true;
       return;
     }
+    if (repairDefaultLetterSpacing(terminal)) terminal.refresh(0, terminal.rows - 1);
     if (reapplyUnchangedGeometry(sample, terminal, fitAddon)) return;
     const keepAtBottom = options.isScrolledToBottom?.() ?? false;
     options.onTrace?.("FIT_BEFORE", restoringPresentation ? "REVEAL" : repairRequested ? "REPAIR" : "NORMAL");

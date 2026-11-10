@@ -49,6 +49,23 @@ describe("Qwen exact resume reference", () => {
     }
   });
 
+  it.each(["cli:omp", "cli:muse", "cli:droid"])("records %s's live session id the same way (ADAPTER-006)", async runtimeId => {
+    const f = qwenFixture("019a3c54-7d3e-7b6f-8b45-3df4e53ddd25", runtimeId);
+    await f.service.context(f.pane.id);
+    expect(f.store.getCliTaskRevision(f.revision.revisionId)?.nativeTaskRef).toBe("019a3c54-7d3e-7b6f-8b45-3df4e53ddd25");
+  });
+
+  it("persists Autohand's complete native identity and ignores prefixes or wrong-runtime ids", async () => {
+    const id = "85de09e6-3d1f-4e13-9173-142a9e9a36cf-1793700000000";
+    for (const nativeId of [id, null, id.slice(0, 36), "../session"]) {
+      const f = qwenFixture(nativeId, "cli:autohand");
+      try {
+        await f.service.context(f.pane.id);
+        expect(f.store.getCliTaskRevision(f.revision.revisionId)?.nativeTaskRef).toBe(nativeId === id ? id : null);
+      } finally { await f.service.close(); }
+    }
+  });
+
   it("leaves other bridged runtimes on provider selection", async () => {
     const f = qwenFixture("hermes_session_1", "cli:hermes");
     await f.service.context(f.pane.id);

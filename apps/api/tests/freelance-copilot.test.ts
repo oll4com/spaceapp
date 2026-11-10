@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { defaultFreelanceCopilotPaneMetadata, type FreelanceCopilotPaneMetadata, type Pane } from "@space/contracts";
 import { InMemoryFreelanceCopilotRepository } from "@space/db";
 import { createFreelanceCopilotService } from "../src/freelance-copilot/service.js";
-import type { MailboxFactory, MailboxMessageSummary } from "../src/job-apply/mailbox.js";
+import { isMailReport, type MailboxFactory, type MailboxMessageSummary } from "../src/job-apply/mailbox.js";
 
 const owner = "user:operator";
 const crypto = { seal: (plain: string) => `sealed:${plain}`, open: (sealed: string) => sealed.replace(/^sealed:/, "") };
@@ -17,15 +17,17 @@ function setup(mail: Array<MailboxMessageSummary & { text: string }> = [], start
   const repository = new InMemoryFreelanceCopilotRepository(now);
   const events: string[] = [];
   const opened: string[] = [];
+  const moved: Array<{ uids: number[]; folder: string }> = [];
   const mailboxes: MailboxFactory = {
     async open(_config, password) {
       opened.push(password);
       if (password === "wrong") throw new Error("Authentication failed");
-      return { recent: async () => mail.map(({ text: _text, ...summary }) => summary), texts: async () => mail, close: async () => undefined };
+      return { recent: async () => mail.map(({ text: _text, ...summary }) => summary), texts: async () => mail, close: async () => undefined,
+        moveTo: async (uids, folder) => { moved.push({ uids, folder }); } };
     }
   };
   const service = createFreelanceCopilotService({ repository, crypto, mailboxes, now, onEvent: (event) => events.push(event.type) });
-  return { service, repository, events, opened, advance: (ms: number) => { clock += ms; } };
+  return { service, repository, events, opened, moved, advance: (ms: number) => { clock += ms; } };
 }
 const job = { channel: "UPWORK" as const, url: "https://www.upwork.com/jobs/~021", externalId: "~021", title: "Build an MCP server for our Shopify store", budget: "$2,000 fixed", status: "QUALIFIED" as const, facts: { paymentVerified: true } };
 const proposal = "You need your Shopify catalog reachable by an AI agent. I built SpaceApp (https://spaceapp.dev), an MCP-based agent workspace. First milestone: read-only product tools, $800.";
@@ -135,5 +137,33 @@ describe("Freelance Copilot send gate", () => {
     expect(await service.nextItem(owner, other, { waitMs: 0 })).toMatchObject({ kind: "BRIEF", item: { message: "For any pane" } });
     expect(await service.nextItem(owner, other, { waitMs: 0 })).toEqual({ done: true, reason: "QUEUE_EMPTY" });
     expect(await service.nextItem(owner, mine, { waitMs: 0 })).toMatchObject({ kind: "BRIEF", item: { message: "For Freelance Copilot 1", payload: { takenByPaneId: mine.id } } });
+  });
+});
+
+describe("Freelance Copilot mail poll: DMARC reports", () => {
+  const google = { from: "noreply-dmarc-support@google.com", subject: "Report domain: oll4.com Submitter: google.com Report-ID: 1234567890" };
+  const reportSource = [`From: ${google.from}`, `Subject: ${google.subject}`, "Content-Type: application/zip;", "\tname=\"google.com!oll4.com!1793664000!1793750399.zip\"",
+    "Content-Disposition: attachment; filename=\"google.com!oll4.com!1793664000!1793750399.zip\"", "Content-Transfer-Encoding: base64", "", "UEsDBBQAAAAIAA=="].join("\r\n");
+  const clientSource = ["From: anna@acme.example", "Subject: Report domain: what we need for the new shop", "Content-Type: multipart/mixed; boundary=b1", "", "--b1",
+    "Content-Type: text/plain", "", "Hi, can you quote the migration?", "--b1", "Content-Type: application/pdf; name=\"brief.pdf\"", "", "JVBERi0=", "--b1--"].join("\r\n");
+
+  it("files reports in DMARC as no work item, closes the open report items and still turns a client's mail into one", async () => {
+    expect(isMailReport(google, reportSource)).toBe(true);
+    expect(isMailReport({ from: "anna@acme.example", subject: "Report domain: what we need for the new shop" }, clientSource)).toBe(false);
+    const report = (uid: number) => ({ uid, ...google, receivedAt: "2026-10-14T09:00:00.000Z", snippet: "", text: "", report: true as const });
+    const mail: Array<MailboxMessageSummary & { text: string }> = [report(5)];
+    const { service, repository, moved } = setup(mail);
+    const target = pane();
+    await service.connectMailbox(owner, { host: "example.invalid", port: 993, secure: true, user: "work@example.invalid", password: "secret" });
+    expect(await service.pollMail(owner, target)).toBe(0);
+    // A report that became an item before the rule.
+    const old = await repository.createEvent({ ownerUserId: owner, paneId: target.id, runId: null, leadId: null, messageId: null, type: "MAIL", status: "PENDING", message: "Mail: Report domain", payload: { uid: 5, ...google } });
+    mail.push(report(6), { uid: 7, from: "anna@acme.example", subject: "Website migration", receivedAt: "2026-10-14T10:01:00.000Z", snippet: "Hi", text: "Hi" });
+    expect(await service.pollMail(owner, target)).toBe(1);
+    expect(moved).toEqual([{ uids: [6, 5], folder: "DMARC" }]);
+    const open = await repository.listEvents(owner, { types: ["MAIL"], status: ["PENDING", "TAKEN"] });
+    expect(open.map((item) => item.payload.uid)).toEqual([7]);
+    expect(open.some((item) => item.id === old.id)).toBe(false);
+    expect((await repository.listEvents(owner, { types: ["NOTE"] }))[0]?.message).toBe("Skipped 2 DMARC report mails (domain reports, not client mail): moved to the DMARC folder.");
   });
 });

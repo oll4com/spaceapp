@@ -1,3 +1,4 @@
+import { codexTurnTrace } from "./turn-trace.js";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { GatewayCompressionMode, GatewayOutputPolicy, GatewaySettings } from "@space/contracts";
@@ -11,10 +12,10 @@ import { effectiveCompression, requestCompressionMode } from "../../compression/
 import { compressionDetail, compressionRows, compressionSignalRows } from "../../compression/recorder.js";
 import { costUsd } from "../../pricing/pricing.js";
 import { StickyStore } from "../../accounts/sticky-store.js";
-import { hashKey, header, readBounded } from "../../proxy-util.js";
+import { clientRequestId, hashKey, header, readBounded, stickyScope } from "../../proxy-util.js";
 import { detectClient, requestOrigin } from "../../client-detect.js";
 import type { RequestLogWriter } from "../../request-log-writer.js";
-import { selectAccount, USAGE_LIMIT_REACHED, permanentFailureCodes, type UpstreamError } from "../../router/balancer.js";
+import { PACE_CAP, selectAccount, USAGE_LIMIT_REACHED, permanentFailureCodes, type UpstreamError } from "../../router/balancer.js";
 import type { GatewayRouteHelpers } from "../../server.js";
 import { ChatRequestError, ChatStreamTranslator, chatToResponses, normalizeResponsesRequest, responseToChatCompletion } from "./chat.js";
 import { buildCodexUpstreamHeaders } from "./headers.js";
@@ -38,6 +39,8 @@ const usageLimitMessage = /usage limit|you've hit your limit|purchase more credi
 export const accountHandshakeStatuses = new Set([401, 404, 429]);
 
 export interface CodexProxyOptions {
+  /** Panes on an open operator request: never held by the pace cap (admin/priority-panes.ts). */
+  priorityPanes?: { has(project: string | null): boolean };
   pool: AccountPool;
   logs: RequestLogWriter;
   settings: () => Promise<GatewaySettings>;
@@ -229,11 +232,13 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
 
   /**
    * The account for one attempt: the continuation owner when there is one, else the sticky thread's account while
-   * it has budget, else the routing strategy's pick. `none` explains an empty pool.
+   * it has budget, else the routing strategy's pick. `none` explains an empty pool. `paceCap`: new background work (not Nous's runs,
+   * paceCapApplies) holds at today's share of each account's week; a continuation on its owner or sticky account never does (plan clipboard:DotwYXVD2N3n).
    */
   async function pickAccount(settings: GatewaySettings, scope: Set<string> | null, tried: Set<string>, stickyHash: string | null,
-    ownerAccountId: string | null, model: string | null): Promise<{ account?: GatewayAccountRecord; none?: { errorCode: string | null; errorMessage: string | null } }> {
+    ownerAccountId: string | null, model: string | null, paceCap: boolean): Promise<{ account?: GatewayAccountRecord; none?: { errorCode: string | null; errorMessage: string | null } }> {
     const inScope = (await options.pool.accounts()).filter((account) => (!scope || scope.has(account.id)) && !tried.has(account.id));
+    // A continuation runs on its owner: the pace cap never cuts a turn mid-way (operator 6/11, nous_msg:a0d02e19).
     if (ownerAccountId) return { account: inScope.find((candidate) => candidate.id === ownerAccountId) };
     const accounts = options.modelPlans ? options.modelPlans.eligible(inScope, model) : inScope;
     if (accounts.length === 0 && inScope.length > 0) {
@@ -243,14 +248,18 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     const stickyId = stickyHash && settings.stickyThreadsEnabled ? await stickyAccounts.get(stickyHash) : undefined;
     const stickyState = stickyId ? states.find((state) => state.accountId === stickyId) : undefined;
     if (stickyState) {
-      const check = selectAccount([stickyState], { now: now() / 1000, routingStrategy: "SINGLE_ACCOUNT", allowUsageExhaustionError: false });
+      const check = selectAccount([stickyState], { now: now() / 1000, routingStrategy: "SINGLE_ACCOUNT", allowUsageExhaustionError: false, paceCap: false });
       const used = Math.max(stickyState.usedPercent ?? 0, stickyState.secondaryUsedPercent ?? 0);
       if (check.account && used < settings.stickyReallocationBudgetThresholdPercent) {
         return { account: accounts.find((candidate) => candidate.id === stickyState.accountId) };
       }
     }
     const result = selectAccount(states, {
-      now: now() / 1000, routingStrategy: settings.routingStrategy, planPriority: settings.planPriority, preferEarlierReset: settings.preferEarlierReset, weeklyPace: true
+      now: now() / 1000, routingStrategy: settings.routingStrategy, planPriority: settings.planPriority, preferEarlierReset: settings.preferEarlierReset, weeklyPace: true,
+      exhaustionFloorPercent: settings.exhaustionFloorPercent, paceCap,
+      accountNames: Object.fromEntries(accounts.map((candidate) => [candidate.id, candidate.alias ?? candidate.label])),
+      // Fill first, no reserve (Nous runs on Claude); a held conversation keeps its account (a prolite plan reports no 5-hour window).
+      fillFirst: settings.subscriptionRouting === "FILL_FIRST" ? { reserve: null } : null
     });
     for (const state of states) options.pool.absorb(state);
     if (!result.account) return { none: { errorCode: result.errorCode ?? null, errorMessage: result.errorMessage ?? null } };
@@ -261,7 +270,13 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     if (!(await helpers.authenticate(request, reply))) return reply;
     const key = request.gatewayApiKey!;
     const startedAt = now();
-    const requestId = header(request, "x-request-id") ?? `req_${randomUUID().replace(/-/g, "")}`;
+    const trace = codexTurnTrace(request.body);
+    const requestId = trace?.requestId ?? clientRequestId(request) ?? `req_${randomUUID().replace(/-/g, "")}`;
+    if (trace) {
+      helpers.logModelRequest(request, trace);
+      request.headers["x-request-id"] = requestId;
+      reply.raw.setHeader("x-request-id", requestId);
+    }
     const input = request.body;
     if (!input || typeof input !== "object" || Array.isArray(input)) {
       return reply.code(400).send(gatewayError("invalid_request", "The request body must be a JSON object.", "invalid_request_error"));
@@ -284,7 +299,7 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     const stickySource = typeof policy.body.prompt_cache_key === "string" ? "prompt_cache_key"
       : header(request, "session_id") ? "session_id" : header(request, "x-codex-session-id") ? "x-codex-session-id" : null;
     const stickyRaw = stickySource === "prompt_cache_key" ? String(policy.body.prompt_cache_key) : stickySource ? header(request, stickySource) : null;
-    const stickyHash = stickyRaw ? hashKey(`codex:${stickyRaw}`) : null;
+    const stickyHash = stickyRaw ? hashKey(`codex:${stickyScope(request)}${stickyRaw}`) : null;
     const compressed = await compressRequest(policy.body, request, key, settings, startedAt, stickyHash);
     const { outgoing, saved: compressionSaved, measured: compressionMeasured, detail } = compressed;
     const upstreamBody = JSON.stringify({ ...outgoing, stream: true });
@@ -311,11 +326,12 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     let lastFailure: UpstreamFailure | null = null;
     let retryWith: GatewayAccountRecord | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const { account, none } = retryWith ? { account: retryWith, none: undefined } : await pickAccount(settings, scope, tried, stickyHash, ownerAccountId, policy.model);
+      const { account, none } = retryWith ? { account: retryWith, none: undefined } : await pickAccount(settings, scope, tried, stickyHash, ownerAccountId, policy.model,
+        false);
       retryWith = null;
       if (!account) {
         if (attempt === 0 && none) {
-          const status = none.errorCode === USAGE_LIMIT_REACHED ? 429 : 503;
+          const status = none.errorCode === USAGE_LIMIT_REACHED || none.errorCode === PACE_CAP ? 429 : 503;
           options.logs.add({ ...baseLog(), status: "error", errorCode: none.errorCode ?? "no_accounts", errorMessage: none.errorMessage, latencyMs: now() - startedAt });
           return reply.code(status).send(gatewayError(none.errorCode ?? "no_accounts", none.errorMessage ?? gatewayErrors.noAccounts().error.message,
             status === 429 ? "rate_limit_error" : "server_error"));
@@ -490,7 +506,7 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     if (!(await helpers.authenticate(request, reply))) return reply;
     const key = request.gatewayApiKey!;
     const startedAt = now();
-    const requestId = header(request, "x-request-id") ?? `req_${randomUUID().replace(/-/g, "")}`;
+    const requestId = clientRequestId(request) ?? `req_${randomUUID().replace(/-/g, "")}`;
     const input = request.body;
     if (!input || typeof input !== "object" || Array.isArray(input)) {
       return reply.code(400).send(gatewayError("invalid_request", "The request body must be a JSON object.", "invalid_request_error"));
@@ -509,7 +525,7 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     delete body.stream;
     const upstreamBody = JSON.stringify(body);
     const stickyRaw = typeof body.prompt_cache_key === "string" ? body.prompt_cache_key : header(request, "session_id") ?? header(request, "x-codex-session-id");
-    const stickyHash = stickyRaw ? hashKey(`codex:${stickyRaw}`) : null;
+    const stickyHash = stickyRaw ? hashKey(`codex:${stickyScope(request)}${stickyRaw}`) : null;
     const scope = key.accountScopeEnabled ? new Set(key.accountIds) : null;
     const tried = new Set<string>();
     const log = (fields: Partial<GatewayRequestLogInsert> & Pick<GatewayRequestLogInsert, "status" | "errorCode">) => options.logs.add({
@@ -522,11 +538,12 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     let lastFailure: UpstreamFailure | null = null;
     let retryWith: GatewayAccountRecord | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const { account, none } = retryWith ? { account: retryWith, none: undefined } : await pickAccount(settings, scope, tried, stickyHash, null, policy.model);
+      const { account, none } = retryWith ? { account: retryWith, none: undefined } : await pickAccount(settings, scope, tried, stickyHash, null, policy.model,
+        false);
       retryWith = null;
       if (!account) {
         if (attempt === 0 && none) {
-          const status = none.errorCode === USAGE_LIMIT_REACHED ? 429 : 503;
+          const status = none.errorCode === USAGE_LIMIT_REACHED || none.errorCode === PACE_CAP ? 429 : 503;
           log({ status: "error", errorCode: none.errorCode ?? "no_accounts", errorMessage: none.errorMessage });
           return reply.code(status).send(gatewayError(none.errorCode ?? "no_accounts", none.errorMessage ?? gatewayErrors.noAccounts().error.message,
             status === 429 ? "rate_limit_error" : "server_error"));
@@ -590,7 +607,8 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
   if (options.webSockets) {
     registerCodexWebSocketRoutes(app, helpers, {
       options, now, upstreamUrl, maxAttempts, bufferLimit, health: webSocketHealth, openWebSocket, registry: options.webSockets,
-      pickAccount, recordFailure, parseUpstreamError, recordPassiveUsage, withSpeedDefault, compressRequest, finishRequest, responseOwners, stickyAccounts
+      pickAccount, recordFailure, parseUpstreamError, recordPassiveUsage, withSpeedDefault, compressRequest, finishRequest, responseOwners, stickyAccounts,
+      priorityPanes: options.priorityPanes
     });
   }
 }

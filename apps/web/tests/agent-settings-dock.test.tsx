@@ -8,9 +8,13 @@ vi.mock("../src/api.js", () => ({ api }));
 vi.mock("../src/features/voice-input/VoiceSettingsCard.js", () => ({
   VoiceSettingsCard: () => <div data-testid="voice-card" />
 }));
+vi.mock("../src/features/nous/NousSettingsCard.js", () => ({
+  NousSettingsCard: () => <div data-testid="nous-card" />
+}));
 
 import { AgentSettingsDock, type AgentSettingsCards } from "../src/features/settings/AgentSettingsDock.js";
 import { WorkspaceSurface } from "../src/features/ui-theme/WorkspaceSurface.js";
+import { openSettingsSection } from "../src/features/settings/settings-section-request.js";
 
 function stubCard(name: string) {
   return function StubCard(props: object) {
@@ -181,6 +185,19 @@ describe("AgentSettingsDock", () => {
     expect((search as HTMLInputElement).value).toBe("");
     expect(section("Telegram notifications").hidden).toBe(false);
     expect(screen.getByRole("status").textContent).toContain("No settings match");
+  });
+
+  it("opens Nous at its provider and model on request, also when asked before the dock mounted, and finds it by provider", () => {
+    act(() => openSettingsSection("nous"));
+    renderDock();
+    const nous = screen.getByRole("button", { name: "Nous", hidden: true }).closest("section")!;
+    expect(nous.getAttribute("data-open")).toBe("true");
+    expect(screen.getByTestId("nous-card")).toBeTruthy();
+    const search = screen.getByRole("searchbox", { name: "Search settings" });
+    fireEvent.change(search, { target: { value: "openrouter" } });
+    expect(nous.hidden).toBe(false);
+    fireEvent.change(search, { target: { value: "provider" } });
+    expect(nous.hidden).toBe(false);
   });
 
   it("opens fullscreen with a groups list and leaves it with Escape", () => {

@@ -16,8 +16,11 @@ import { RequestsTab, VIDEO_OPEN_STATUSES } from "./RequestsTab.js";
 import { SetupTab } from "./SetupTab.js";
 import { StudioView } from "./StudioView.js";
 import { useVideoData } from "./useVideo.js";
+import { onPaneTarget } from "../notifications/pane-target.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import "../copilot-kit/copilot-pane.css";
 import "./video-pane.css";
+import { CopilotNotice } from "../copilot-kit/CopilotNotice.js";
 
 export interface VideoPaneProps {
   pane: Pane;
@@ -46,6 +49,8 @@ export function resolveActiveTab(tab: string | null | undefined, layout: "split"
  * props. Narrow panes stack: one surface at a time, the Studio as a tab, the tab strip at the bottom.
  */
 export function VideoPane({ pane, isVisible, terminal }: VideoPaneProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const data = useVideoData(pane, isVisible);
   const paneRef = useRef<HTMLDivElement | null>(null);
   const layout = useCopilotLayout(paneRef);
@@ -65,12 +70,9 @@ export function VideoPane({ pane, isVisible, terminal }: VideoPaneProps) {
   useEffect(() => { writeRailPreference(`space:video:rail:${pane.id}`, rail); }, [pane.id, rail]);
   // A notification click opens the request it points at.
   useEffect(() => {
-    const onOpen = (event: Event) => {
-      const detail = (event as CustomEvent<{ paneId?: string; target?: string }>).detail;
-      if (detail?.paneId === pane.id && /^request:/.test(detail.target ?? "")) setRail((current) => ({ ...current, collapsed: false, tab: "requests" }));
-    };
-    window.addEventListener("space:notification-open", onOpen);
-    return () => window.removeEventListener("space:notification-open", onOpen);
+    return onPaneTarget(pane.id, (target) => {
+      if (/^request:/.test(target)) setRail((current) => ({ ...current, collapsed: false, tab: "requests" }));
+    });
   }, [pane.id]);
 
   const togglePaused = useCallback(async (checked: boolean) => {
@@ -106,34 +108,34 @@ export function VideoPane({ pane, isVisible, terminal }: VideoPaneProps) {
   return (
     <div ref={paneRef} className="jc-pane vd-pane" data-pane-id={pane.id} data-layout={layout} data-rail={railOpen ? "open" : "collapsed"} data-studio={studioShown ? "visible" : "hidden"}
       style={{ "--jc-rail-width": `${rail.width}px` } as React.CSSProperties}>
-      <header className="jc-bar" aria-label="Video command bar" data-layout={layout}>
+      <header className="jc-bar" aria-label={t("Video command bar")} data-layout={layout}>
         <div className="jc-bar-row primary">
           <AgentChip kind={VIDEO_KIND} pane={pane} runtimeOptions={runtimeOptions} switching={agent.switching} onSwitchRuntime={(runtimeId) => void agent.switchAgent(runtimeId)} onSetDefault={() => void agent.setAsDefault()} />
           <div className={`jc-run-pill state-${paused ? "paused" : open.length ? "running" : "idle"}`} role="status" aria-live="polite">
-            <span className="jc-run-label">{paused ? "Paused" : open.length ? `${open.length} request${open.length === 1 ? "" : "s"}` : "No requests"} · {data.settings?.settings.requestAutonomy === "APPROVAL" ? "Needs my approval" : "Delivers automatically"}</span>
-            {needsYou ? <span className="jc-run-needs" title="Approvals or questions waiting for you">{needsYou} need{needsYou === 1 ? "s" : ""} you</span> : null}
+            <span className="jc-run-label">{paused ? t("Paused") : open.length ? t(open.length === 1 ? "{count} request" : "{count} requests", { count: open.length }) : t("No requests")} · {data.settings?.settings.requestAutonomy === "APPROVAL" ? t("Needs my approval") : t("Delivers automatically")}</span>
+            {needsYou ? <span className="jc-run-needs" title={t("Approvals or questions waiting for you")}>{t(needsYou === 1 ? "{count} needs you" : "{count} need you", { count: needsYou })}</span> : null}
           </div>
         </div>
         <div className="jc-bar-row secondary">
           <div className="jc-bar-toggles">
-            <SpaceToggle compact className="jc-toggle" label="Paused" checked={paused} onChange={(checked) => void togglePaused(checked)} />
+            <SpaceToggle compact className="jc-toggle" label={t("Paused")} checked={paused} onChange={(checked) => void togglePaused(checked)} />
             {layout === "split" ? (
-              <button type="button" className={`jc-icon-button${railOpen ? " selected" : ""}`} aria-pressed={railOpen} aria-label={railOpen ? "Collapse the video rail" : "Expand the video rail"} title={railOpen ? "Collapse rail" : "Expand rail"} onClick={toggleRail}>
+              <button type="button" className={`jc-icon-button${railOpen ? " selected" : ""}`} aria-pressed={railOpen} aria-label={railOpen ? t("Collapse the video rail") : t("Expand the video rail")} title={railOpen ? t("Collapse rail") : t("Expand rail")} onClick={toggleRail}>
                 <PanelRight aria-hidden="true" />
               </button>
             ) : null}
           </div>
         </div>
       </header>
-      {notice || data.error ? <div className="jc-notice" role="status">{notice ?? data.error}</div> : null}
+      <CopilotNotice text={notice || data.error} loaded={Boolean(data.settings)} />
       <div className="jc-body">
-        <section className="jc-main vd-main" aria-label="Studio" data-active={studioShown ? "true" : "false"} aria-hidden={studioShown ? undefined : "true"}>
+        <section className="jc-main vd-main" aria-label={t("Studio")} data-active={studioShown ? "true" : "false"} aria-hidden={studioShown ? undefined : "true"}>
           {data.settings ? <StudioView pane={pane} settings={data.settings.settings} assets={data.assets} requests={data.requests} media={data.media} request={shownRequest}
-            onChanged={() => void data.refresh()} onSelectRequest={openInStudio} onFindMusic={() => selectTab("music")} /> : <p className="jc-muted jc-panel-loading" role="status">Loading the Studio…</p>}
+            onChanged={() => void data.refresh()} onSelectRequest={openInStudio} onFindMusic={() => selectTab("music")} /> : <p className="jc-muted jc-panel-loading" role="status">{t("Loading the Studio…")}</p>}
         </section>
-        <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label="Resize the video rail" aria-hidden={rail.collapsed ? "true" : undefined}
+        <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label={t("Resize the video rail")} aria-hidden={rail.collapsed ? "true" : undefined}
           onPointerDown={onResizeStart} onPointerMove={onResizeMove} onPointerUp={onResizeEnd} onPointerCancel={onResizeEnd} onDoubleClick={() => setRail((current) => ({ ...current, width: RAIL_DEFAULT_WIDTH }))} />
-        <CopilotRail tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
+        <CopilotRail firstRead={{ text: notice || data.error, loaded: Boolean(data.settings) }} tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
           {railOpen && activeTab === "requests" ? <RequestsTab paneId={pane.id} requests={data.requests} onOpen={openInStudio} onChanged={() => void data.refresh()} /> : null}
           {railOpen && activeTab === "library" ? <LibraryTab paneId={pane.id} assets={data.assets} onChanged={() => void data.refresh()} /> : null}
           {railOpen && activeTab === "music" ? <MusicTab paneId={pane.id} assets={data.assets} onChanged={() => void data.refresh()} /> : null}

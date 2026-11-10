@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { AgentRunCost, AgentRunUsage } from "./agent-run-ledger.js";
 import { dotIdSchema, dotPermissionModeSchema } from "./dots.js";
 import type { AgentPaneModelOption } from "./schemas.js";
+import { atLeastOneField } from "./update-rules.js";
 
 // Space Dots Stage 8: every Dot setting lives in SpaceApp Settings → Dots, and each
 // Dot has one continuous feed across rooms (its messages plus notices it sends itself).
@@ -40,7 +41,7 @@ export const updateDotUserSettingsSchema = z.object({
   defaultPermissionMode: dotPermissionModeSchema.nullable().optional(),
   confirmExternalActions: z.boolean().optional(),
   proactive: dotProactiveSettingsSchema.partial().strict().optional()
-}).strict().refine(input => Object.keys(input).length > 0, "Provide a settings change.");
+}).strict().refine(...atLeastOneField("Provide a settings change."));
 export type DotProactiveSettings = z.infer<typeof dotProactiveSettingsSchema>;
 export type DotUserSettings = z.infer<typeof dotUserSettingsSchema>;
 export type UpdateDotUserSettings = z.infer<typeof updateDotUserSettingsSchema>;

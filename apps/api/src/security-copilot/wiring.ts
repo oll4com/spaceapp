@@ -65,6 +65,7 @@ export function registerSecurityCopilot(app: FastifyInstance, deps: SecurityCopi
   const service = createSecurityCopilotService({
     repository, store, notifications: deps.notifications, feeds: deps.feeds ?? createFeeds(),
     hotfix: { allowed: async (owner) => nousSettingsSchema.parse((await store.getUserSettings(owner)).nous ?? {}).maySecurityHotfix, grant: allowPaneQueueCommand },
+    askOwnHosts: async (owner) => nousSettingsSchema.parse((await store.getUserSettings(owner)).nous ?? {}).askOwnHostChanges,
     kickoff: { ready: async (pane) => deps.kickoff !== undefined || (Boolean(await activeSession(pane))
       && (!deps.inspect || atEmptyPrompt(await deps.inspect(pane).catch(() => ({ state: "UNKNOWN" }) as unknown as RoomPaneObservation)))), send },
     onEvent: (event: SecurityEvent) => {
@@ -89,9 +90,12 @@ export function registerSecurityCopilot(app: FastifyInstance, deps: SecurityCopi
     };
     const first = setTimeout(pass, FIRST_WATCH_MS);
     const timer = setInterval(pass, WATCH_EVERY_MS);
+    // Queue item 33: a waiting brief is typed within a minute, not at the next 30-minute pass.
+    const briefs = setInterval(() => void service.kickBriefs().catch((error: unknown) => deps.log.warn({ err: error }, "Security Copilot brief kick failed")), 60_000);
     first.unref();
     timer.unref();
-    app.addHook("onClose", async () => { clearTimeout(first); clearInterval(timer); });
+    briefs.unref();
+    app.addHook("onClose", async () => { clearTimeout(first); clearInterval(timer); clearInterval(briefs); });
   }
   return service;
 }

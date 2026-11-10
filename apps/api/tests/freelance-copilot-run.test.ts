@@ -19,6 +19,7 @@ vi.setConfig({ testTimeout: 30_000 });
 const temporaryRoots: string[] = [];
 afterEach(async () => {
   await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  vi.unstubAllEnvs();
 });
 
 const inbox = [{ uid: 3, from: "donotreply@upwork.com", subject: "Your Upwork verification code", receivedAt: new Date().toISOString(), snippet: "Code", text: "Your code is 482913." }];
@@ -34,7 +35,9 @@ async function fixture() {
   const config = getApiConfig({
     SPACE_CLI_ENABLED: "true", SPACE_CLI_COMMAND_PATH: root, SPACE_CLI_HOST_SOCKET: join(root, "pane-host.sock"), SPACE_CLI_CODEX_CREDENTIAL_SMOKE: "true",
     SPACE_CLI_WORKSPACE_ROOT: join(root, "workspaces"), SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true", SPACE_INTERNAL_API_TOKEN: "internal-token-for-freelance-copilot-tests", SPACE_ARTIFACT_ROOT: root,
-    SPACE_CONNECTOR_KEY_FILE: join(root, "connector.key")
+    SPACE_CONNECTOR_KEY_FILE: join(root, "connector.key"),
+    // The test's own Space Memory (none here), never the operator's.
+    SPACE_MEMORY_MONTHLY_PATH: join(root, "space_memory_2026-11.md")
   });
   await writeFile(join(root, "connector.key"), "synthetic-connector-key-with-enough-length-0123456789\n");
   const store = new InMemorySpaceStore();
@@ -42,7 +45,8 @@ async function fixture() {
   const roomEvents: Event[] = [];
   eventBus.subscribe((event) => { if (event.type === "FREELANCE_COPILOT_UPDATED") roomEvents.push(event); });
   const kickoffs: Array<{ paneId: string; runId: string }> = [];
-  const app = await createApp({ store, config, eventBus, jobApplyMailTriage: false, marketingCopilotScheduler: false, freelanceCopilotScheduler: false, freelanceCopilotMailboxes: mailboxes,
+  const repository = new InMemoryFreelanceCopilotRepository();
+  const app = await createApp({ store, config, eventBus, jobApplyMailTriage: false, marketingCopilotScheduler: false, freelanceCopilotScheduler: false, freelanceCopilotMailboxes: mailboxes, freelanceCopilotRepository: repository,
     freelanceCopilotKickoff: async (pane: Pane, run: FreelanceRun) => { kickoffs.push({ paneId: pane.id, runId: run.id }); },
     auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false } });
   const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { email: "space@space.local", password: "space-dev" } });
@@ -58,13 +62,38 @@ async function fixture() {
   const other = store.createPane({ roomId: room.id, title: "Shell", mode: "TERMINAL", terminalRuntimeId: "cli:codex" });
   const otherSession = store.createPaneCliSession({ paneId: other.id, roomId: room.id, runtimeId: "cli:codex", providerId: "codex", agentId: "codex", status: "RUNNING", purpose: "NORMAL" });
   const outsider = { [cliBrowserBridgeTokenHeader]: issueCliBrowserBridgeToken(config, { roomId: room.id, paneId: other.id, cliSessionId: otherSession.sessionId })!, "content-type": "application/json" };
-  return { app, pane, headers, agent, outsider, roomEvents, kickoffs, paneUrl: `/api/panes/${encodeURIComponent(pane.id)}/freelance-copilot` };
+  return { app, pane, headers, agent, outsider, roomEvents, kickoffs, repository, paneUrl: `/api/panes/${encodeURIComponent(pane.id)}/freelance-copilot` };
 }
 
 const cli = "/api/cli/freelance-copilot";
 
 describe("freelance copilot run loop", () => {
+  it("answers a question its own memory may answer with the memories first, and asks only with afterMemory (R13-5)", async () => {
+    const { app, agent } = await fixture();
+    try {
+      const memory = (await app.inject({ method: "POST", url: `${cli}/memory`, headers: agent, payload: { kind: "FACT", key: "hourly rate", text: "The hourly rate is 85 USD." } })).json().memory;
+      const ask = (afterMemory?: boolean) => app.inject({ method: "POST", url: `${cli}/question`, headers: agent, payload: { question: "What hourly rate should the Upwork proposal quote?", ...(afterMemory ? { afterMemory } : {}) } });
+      expect((await ask()).json()).toMatchObject({ questionId: null, memoryHits: [{ id: memory.id }], note: expect.stringContaining("afterMemory: true") });
+      expect((await ask(true)).json().questionId).toMatch(/^flq:/);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("finds a date of birth asked as DOB or birthday in its own memory (plan clipboard:7L5KyWp3kQsP step 3, Cleo/Dana 1/11)", async () => {
+    const { app, agent } = await fixture();
+    try {
+      const memory = (await app.inject({ method: "POST", url: `${cli}/memory`, headers: agent, payload: { kind: "PROFILE", key: "date of birth", text: "Born 1 January 1980 (synthetic)." } })).json().memory;
+      for (const question of ["The Upwork identity form asks for your DOB.", "What is your birthday for the Contra profile?"]) {
+        expect((await app.inject({ method: "POST", url: `${cli}/question`, headers: agent, payload: { question } })).json()).toMatchObject({ questionId: null, memoryHits: [{ id: memory.id }] });
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
   it("runs a brief to a sent proposal, a client reply and the client-ready handoff with a notification", async () => {
+    vi.stubEnv("SPACE_FREELANCE_ALIAS_DOMAIN", "brand.example");
     const { app, pane, headers, agent, outsider, roomEvents, kickoffs, paneUrl } = await fixture();
     try {
       expect((await app.inject({ method: "GET", url: `${cli}/state` })).statusCode).toBe(401);
@@ -87,14 +116,18 @@ describe("freelance copilot run loop", () => {
       expect(kickoffs).toEqual([{ paneId: pane.id, runId: started.json().run.id }]);
       const state = (await app.inject({ method: "GET", url: `${cli}/state`, headers: agent })).json();
       expect(state.channels.UPWORK).toMatchObject({ effectiveAutonomy: "FULL", signIn: "GOOGLE", alias: null });
-      expect(state.channels.CONTRA).toMatchObject({ signIn: "EMAIL", alias: "contra@example.invalid" });
-      expect(state.accounts.map((account: { channel: string }) => account.channel)).toEqual(["UPWORK", "CONTRA", "FIVERR", "TOPTAL", "ARC", "BRAINTRUST"]);
+      expect(state.channels.CONTRA).toMatchObject({ signIn: "EMAIL", alias: "contra@brand.example" });
+      expect(state.accounts.map((account: { channel: string }) => account.channel)).toEqual(["UPWORK", "CONTRA", "FIVERR", "TOPTAL", "ARC", "BRAINTRUST", "GURU", "PEOPLEPERHOUR"]);
 
       const brief = (await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: { waitMs: 0 } })).json();
       expect(brief).toMatchObject({ done: false, kind: "BRIEF" });
       const added = (await app.inject({ method: "POST", url: `${cli}/leads`, headers: agent, payload: { channel: "UPWORK", url: "https://www.upwork.com/jobs/~031", externalId: "~031", title: "MCP server for a SaaS API", budget: "$1,500 fixed", status: "QUALIFIED", facts: { paymentVerified: true, proposals: 4 } } })).json();
       expect(added).toMatchObject({ duplicate: false, scamSignals: [] });
       const leadId = added.lead.id as string;
+      // 2/11: Cleo/Dana's Guru lead was refused with "invalid channel".
+      const guru = await app.inject({ method: "POST", url: `${cli}/leads`, headers: agent, payload: { channel: "GURU", url: "https://www.guru.com/work/detail/2104521", externalId: "2104521", title: "Node API integration", status: "NEW" } });
+      expect(guru.statusCode).toBe(200);
+      expect(guru.json().lead).toMatchObject({ channel: "GURU" });
       const drafted = (await app.inject({ method: "POST", url: `${cli}/messages`, headers: agent, payload: { leadId, kind: "PROPOSAL", body: "You want your API usable by AI agents. I built SpaceApp (https://spaceapp.dev). First milestone: three read-only tools, $600.", bid: { type: "FIXED", amount: 1500 }, connects: 12 } })).json();
       expect(drafted.wordingIssues).toEqual([]);
       const messageId = drafted.message.id as string;
@@ -119,6 +152,31 @@ describe("freelance copilot run loop", () => {
       const settings = (await app.inject({ method: "GET", url: `${paneUrl}/settings`, headers })).json().metadata;
       settings.settings.paused = true;
       expect((await app.inject({ method: "PUT", url: `${paneUrl}/settings`, headers, payload: settings })).json().metadata.settings.paused).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("turns a Start on a quiet queue into one platform search brief, and adds none while a mail waits (operator 2026-10-28)", async () => {
+    const { app, pane, headers, agent, kickoffs, repository, paneUrl } = await fixture();
+    try {
+      const briefs = async () => (await app.inject({ method: "GET", url: `/api/freelance-copilot/events?paneId=${encodeURIComponent(pane.id)}`, headers })).json().events.filter((event: { type: string }) => event.type === "BRIEF");
+      const started = await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers });
+      expect(started.json()).toMatchObject({ status: "RUNNING", kickoffSent: true, backlog: 1 });
+      expect(kickoffs).toHaveLength(1);
+      const first = (await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: { waitMs: 0 } })).json();
+      expect(first).toMatchObject({ done: false, kind: "BRIEF", item: { message: expect.stringContaining("search every enabled platform") } });
+      // A second press while the agent works the brief (TAKEN) adds no other one.
+      expect((await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers })).json()).toMatchObject({ status: "RUNNING" });
+      expect(await briefs()).toHaveLength(1);
+
+      await app.inject({ method: "POST", url: `${cli}/report`, headers: agent, payload: { eventId: first.item.id, outcome: "done", summary: "Two leads added" } });
+      await app.inject({ method: "POST", url: `${paneUrl}/run/stop`, headers });
+      const ownerUserId = started.json().run.ownerUserId as string;
+      await repository.createEvent({ ownerUserId, paneId: pane.id, runId: null, leadId: null, messageId: null, type: "MAIL", status: "PENDING", message: "Mail from Upwork: New job alert", payload: { uid: 9 } });
+      expect((await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers })).json()).toMatchObject({ status: "RUNNING", backlog: 1 });
+      expect((await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: { waitMs: 0 } })).json()).toMatchObject({ done: false, kind: "MAIL" });
+      expect(await briefs()).toHaveLength(1);
     } finally {
       await app.close();
     }

@@ -6,6 +6,7 @@ export interface LiveHistoryTurn {
   createdAtMs: number; revision: number;
 }
 export interface LiveHistoryRepository {
+  /** No limit: every turn (a search and Nous read them all, operator 31/10). */
   read(owner: string, roomId?: string, limit?: number): Promise<{ items: LiveHistoryTurn[]; epochs: Record<string, number> }>;
   write(owner: string, turn: LiveHistoryTurn, epoch: number): Promise<boolean>;
   clear(owner: string, room: string): Promise<number>;
@@ -17,8 +18,9 @@ export class InMemoryLiveHistoryRepository implements LiveHistoryRepository {
   private epochs = new Map<string, number>();
   private imported = new Set<string>();
   private key(owner: string, room: string) { return JSON.stringify([owner, room]); }
-  async read(owner: string, roomId?: string, limit = 200) {
-    const items = [...this.turns.entries()].filter(([key, turn]) => JSON.parse(key)[0] === owner && (!roomId || turn.roomId === roomId)).map(([, item]) => structuredClone(item)).sort((a, b) => a.createdAtMs - b.createdAtMs).slice(-limit);
+  async read(owner: string, roomId?: string, limit?: number) {
+    const all = [...this.turns.entries()].filter(([key, turn]) => JSON.parse(key)[0] === owner && (!roomId || turn.roomId === roomId)).map(([, item]) => structuredClone(item)).sort((a, b) => a.createdAtMs - b.createdAtMs);
+    const items = limit === undefined ? all : all.slice(-limit);
     const epochs: Record<string, number> = {};
     for (const [key, epoch] of this.epochs) { const [o, r] = JSON.parse(key); if (o === owner && (!roomId || roomId === r)) epochs[r] = epoch; }
     return { items, epochs };
@@ -45,9 +47,9 @@ export class InMemoryLiveHistoryRepository implements LiveHistoryRepository {
 export class PostgresLiveHistoryRepository implements LiveHistoryRepository {
   constructor(private pool: PgPoolLike) {}
   static fromConnectionString(url: string) { return new PostgresLiveHistoryRepository(createSpacePgPool(url, { max: 3 })); }
-  async read(owner: string, roomId?: string, limit = 200) {
+  async read(owner: string, roomId?: string, limit?: number) {
     const [turns, rooms] = await Promise.all([
-      this.pool.query<{ item: LiveHistoryTurn }>("SELECT item FROM live_conversation_turns WHERE owner_user_id=$1 AND ($2::text IS NULL OR room_id=$2) ORDER BY created_at DESC,turn_id DESC LIMIT $3", [owner, roomId ?? null, limit]),
+      this.pool.query<{ item: LiveHistoryTurn }>("SELECT item FROM live_conversation_turns WHERE owner_user_id=$1 AND ($2::text IS NULL OR room_id=$2) ORDER BY created_at DESC,turn_id DESC LIMIT $3", [owner, roomId ?? null, limit ?? null]),
       this.pool.query<{ room_id: string; epoch: number }>("SELECT room_id,epoch FROM live_conversation_rooms WHERE owner_user_id=$1 AND ($2::text IS NULL OR room_id=$2)", [owner, roomId ?? null])
     ]);
     return { items: turns.rows.map(row => row.item).reverse(), epochs: Object.fromEntries(rooms.rows.map(row => [row.room_id, row.epoch])) };
@@ -69,7 +71,7 @@ export class PostgresLiveHistoryRepository implements LiveHistoryRepository {
       // An equal/stale retry is acknowledged without overwriting newer text.
       const existing = result.rows.length ? true : (await client.query<{ room_id: string }>("SELECT room_id FROM live_conversation_turns WHERE owner_user_id=$1 AND session_id=$2 AND turn_id=$3", [owner, turn.sessionId, turn.id])).rows[0]?.room_id === turn.roomId;
       await client.query("COMMIT"); return existing;
-    } catch (error) { rollbackFailed = await rollbackKeepingError(client); throw error; } finally { client.release?.(rollbackFailed || undefined); }
+    } catch (error) { const rollback = await rollbackKeepingError(client, error); rollbackFailed = rollback.failed; throw rollback.error; } finally { client.release?.(rollbackFailed || undefined); }
   }
   async clear(owner: string, room: string) {
     const client = await this.pool.connect();
@@ -79,7 +81,7 @@ export class PostgresLiveHistoryRepository implements LiveHistoryRepository {
       const result = await client.query<{ epoch: number }>("INSERT INTO live_conversation_rooms(owner_user_id,room_id,epoch,legacy_imported) VALUES($1,$2,1,true) ON CONFLICT(owner_user_id,room_id) DO UPDATE SET epoch=live_conversation_rooms.epoch+1,legacy_imported=true RETURNING epoch", [owner, room]);
       await client.query("DELETE FROM live_conversation_turns WHERE owner_user_id=$1 AND room_id=$2", [owner, room]);
       await client.query("COMMIT"); return result.rows[0]!.epoch;
-    } catch (error) { rollbackFailed = await rollbackKeepingError(client); throw error; } finally { client.release?.(rollbackFailed || undefined); }
+    } catch (error) { const rollback = await rollbackKeepingError(client, error); rollbackFailed = rollback.failed; throw rollback.error; } finally { client.release?.(rollbackFailed || undefined); }
   }
   async importLegacy(owner: string, room: string, turns: LiveHistoryTurn[]) {
     // Stable IDs make crash retries idempotent; the room epoch prevents resurrection after clear.

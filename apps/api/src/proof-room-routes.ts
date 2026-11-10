@@ -181,7 +181,7 @@ export function registerProofRoomRoutes(app: FastifyInstance, deps: {
           : profile === "CLI_INPUT"
             ? `${cliInputProofRoomDescriptionPrefix}${input.runtimeId}]`
             : "Persistent isolated room for agent UI proof and debugging.",
-        // Proof rooms never inherit the /opt/spaceapp room default (eda97abab6):
+        // Proof rooms never inherit the <install root> room default (eda97abab6):
         // their /etc panes would otherwise start CLI sessions in the live checkout.
         projectPath: "/etc",
         initialPaneCount: 0,
@@ -315,7 +315,7 @@ export function registerProofRoomRoutes(app: FastifyInstance, deps: {
       await Promise.allSettled(
         panes.map(async (pane) => {
           const session = await store.getActivePaneCliSession(pane.id);
-          if (session) await cliTerminalManager.interrupt(session.sessionId);
+          if (session) await cliTerminalManager.interrupt(session.sessionId, undefined, request.requestIdForSpace);
         })
       );
       try {

@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   abortOpenCodeSession,
   createOpenCodeSession,
@@ -411,6 +411,8 @@ describe("opencode-control against an OpenCode 2 server", () => {
     expect(history[1].info).toMatchObject({ parentID: "msg_1", modelID: "big-pickle", providerID: "opencode", finish: "stop", tokens: { input: 10 } });
     expect(history[1].parts.at(-1)).toEqual({ type: "text", text: "TOKEN" });
     expect(calls.findLast((call) => call.path.includes("/message"))?.path).toBe("/api/session/ses_v2turn/message?limit=30&order=desc");
+    await fetchOpenCodeSessionMessages(control, "ses_v2turn", 512);
+    expect(calls.findLast((call) => call.path.includes("/message"))?.path).toBe("/api/session/ses_v2turn/message?limit=200&order=desc");
     expect(await sendOpenCodePrompt(control, "ses_v2turn", "hello")).toBe(true);
     expect(calls.findLast((call) => call.path === "/api/session/ses_v2turn/prompt")?.body).toEqual({ text: "hello" });
   });

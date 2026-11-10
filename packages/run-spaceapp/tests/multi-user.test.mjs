@@ -58,6 +58,8 @@ test("user enable, add and remove give each user a CLI container and the core it
   assert.match(compose, /mem_limit: "1536m"/);
   for (const volume of ["cli-state", "memory", "cli-socket", "workspaces"]) assert.match(compose, new RegExp(`spaceapp-${volume}-${slug}:`));
   assert.match(compose, new RegExp(`\\./secrets/users/${slug}/providers:/run/spaceapp-secrets/providers:ro`));
+  // A user's container gets only their providers folder, never the pane bridge secret (1.2.0 review).
+  assert.doesNotMatch(compose, /agent-token-secret|\.\/secrets(?!\/(?:users\/[\w-]+\/)?providers:)/);
   // The user's container never mounts the owner's keys, CLI state, memory or workspaces.
   const service = compose.slice(compose.indexOf(`spaceapp-cli-${slug}:`), compose.indexOf("\nvolumes:"));
   assert.doesNotMatch(service, /- spaceapp-cli-state:|- spaceapp-memory:|- spaceapp-workspaces:|\.\/secrets\/providers:/);

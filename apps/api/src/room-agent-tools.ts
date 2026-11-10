@@ -5,7 +5,7 @@ import {
 } from "@space/contracts";
 import { releaseTrainInputSchema, type ReleaseTrainActor, type ReleaseTrainInput } from "./release-trains.js";
 import { classifyPaneApproval } from "./room-agent-guardrails.js";
-import { notePaneReached } from "./room-agent-monitor.js";
+import { notePaneReached, notePaneSent } from "./room-agent-monitor.js";
 import type { RoomPaneObservation } from "./room-pane-control.js";
 
 /**
@@ -62,7 +62,8 @@ export interface RoomAgentToolDeps {
   };
 }
 
-export const ROOM_AGENT_TOOL_RESULT_MAX_CHARS = 8_000;
+/** Technical: one tool result inside the Room Agent's prompt (its model's context); until 31/10 8,000. Past it the answer says how much is left. */
+export const ROOM_AGENT_TOOL_RESULT_MAX_CHARS = 40_000;
 
 const paneRef = z.string().trim().min(1).max(120).describe("A pane's name as shown in the room (Andy, Bob, ...).");
 const paneList = z.array(paneRef).min(1).max(16);
@@ -146,7 +147,7 @@ export const roomAgentToolDefinitions = roomAgentToolNames.map((name) => ({
 }));
 
 function clip(text: string, max = ROOM_AGENT_TOOL_RESULT_MAX_CHARS): string {
-  return text.length > max ? `${text.slice(0, max - 20)}\n…(truncated)` : text;
+  return text.length > max ? `${text.slice(0, max - 120)}\n…(${text.length - (max - 120)} more characters: call again for a narrower part, e.g. fewer lines or one pane)` : text;
 }
 
 function json(value: unknown): string {
@@ -272,9 +273,11 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
     return operationOutcome(operation, done, failure);
   }
 
-  async function settleMonitorEvents(ctx: RoomAgentToolContext, pane: Pane, decision: string, kinds?: RoomAgentEvent["kind"][]) {
+  async function settleMonitorEvents(ctx: RoomAgentToolContext, pane: Pane, said: string, kinds?: RoomAgentEvent["kind"][]) {
     if (!deps.monitor) return;
-    const open = await deps.monitor.listEvents(ctx.roomId, { paneId: pane.id, statuses: ["OPEN", "ESCALATED"], limit: 5 }).catch(() => []);
+    // Round 9 item 3: a call Nous made through these tools says so, so the unblocking list names Nous, not the Room Agent.
+    const decision = ctx.requestId?.startsWith("nous:") ? said.replace(/^The Room Agent/, "Nous") : said;
+    const open = await deps.monitor.listEvents(ctx.roomId, { paneId: pane.id, statuses: ["OPEN", "ESCALATED"] }).catch(() => []);
     for (const event of open) {
       if (kinds && !kinds.includes(event.kind)) continue;
       const updated = await deps.monitor.updateEvent(event.eventId, { status: "HANDLED", decision }, ["OPEN", "ESCALATED"]).catch(() => null);
@@ -289,7 +292,7 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
    */
   async function waitsOnTextQuestion(ctx: RoomAgentToolContext, pane: Pane): Promise<boolean> {
     if (!deps.monitor) return false;
-    const open = await deps.monitor.listEvents(ctx.roomId, { paneId: pane.id, statuses: ["OPEN", "ESCALATED"], limit: 5 }).catch(() => []);
+    const open = await deps.monitor.listEvents(ctx.roomId, { paneId: pane.id, statuses: ["OPEN", "ESCALATED"] }).catch(() => []);
     return open.some((event) => event.kind === "WAITING" && /waiting: Question for you/.test(event.title));
   }
 
@@ -308,7 +311,7 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
         const value = task as unknown as Record<string, unknown>;
         return `- ${String(value.title ?? value.taskId ?? "task")}${value.status ? ` (${String(value.status)})` : ""}`;
       });
-      const head = `${paneName(pane)} (${pane.mode}${observed.runtimeId ? ` ${observed.runtimeId}` : ""}; state ${observed.state}`
+      const head = `${paneName(pane)} (${pane.mode}${observed.runtimeId ? ` ${observed.runtimeId}` : ""}${observed.sessionId ? `; ${observed.sessionId}` : ""}; state ${observed.state}`
         + `${observed.modelId ? `; model ${observed.modelId}` : ""}${observed.nativeMode ? `; mode ${observed.nativeMode}` : ""}${pane.isClosed ? "; closed" : ""}).`;
       return {
         ok: true,
@@ -327,6 +330,8 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
       // A text delivered to a pane that waited on a question or a stop answers that wait.
       const delivered = new Set(operation.results.filter((result) => result.status === "COMPLETED" && result.paneId).map((result) => result.paneId!));
       for (const paneId of delivered) notePaneReached(paneId);
+      // W45 step 1: a text queued after the pane's turn is still the agent's coordination of an overlap naming the pane.
+      for (const result of operation.results) if (result.status === "PENDING" && result.paneId) notePaneSent(result.paneId);
       for (const pane of panes.filter((entry) => delivered.has(entry.id))) {
         await settleMonitorEvents(ctx, pane, `The Room Agent sent "${args.text.trim().replace(/\s+/g, " ").slice(0, 80)}" for you.`, ["WAITING", "STUCK"]);
       }

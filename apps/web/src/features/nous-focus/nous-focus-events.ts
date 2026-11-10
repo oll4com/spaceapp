@@ -11,11 +11,28 @@ export interface NousFocusDetail { roomId: string; paneId: string; immediate: bo
 export const NOUS_FOCUS_EVENT = "space:nous-focus";
 /** Go and Back tell the Nous dock to leave its fullscreen while the operator is at the pane, and to come back after. */
 export const NOUS_FOCUS_PHASE_EVENT = "space:nous-focus-phase";
-export type NousFocusPhase = "go" | "back";
+export type NousFocusPhase = "go" | "back" | "stay";
 /** NOUS_PANE_BOARD_UPDATED from the server stream (ids only): the Nous dock's pane board refetches. */
 export const NOUS_PANE_BOARD_EVENT = "space:nous-pane-board";
 /** The app's server stream (re)connected (replay-complete): the focus hook offers the newest open needs-you the tab may have missed. */
 export const NOUS_FOCUS_CHECK_EVENT = "space:nous-focus-check";
+
+const TYPING_MS = 2_000;
+const LIVE_ON = new Set(["connecting", "active", "listening", "thinking", "speaking"]);
+let lastKeyAt = 0;
+if (typeof window !== "undefined") window.addEventListener("keydown", () => { lastKeyAt = Date.now(); }, true);
+
+/** Why a new card's window must wait before it shows (operator 3/11 19:30 BKK: none pops while he types); null when the operator is free. */
+export function nousFocusHold(): string | null {
+  if (document.visibilityState !== "visible") return "the app is in the background";
+  const active = document.activeElement as HTMLElement | null;
+  // A terminal keeps its hidden input focused all the time: only its recent keys count as typing (2026-10-26: the banner never went).
+  const field = active && !active.classList.contains("xterm-helper-textarea") && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName));
+  if (Date.now() - lastKeyAt < TYPING_MS || field) return "you are typing";
+  if (document.querySelector("dialog[open], [role='dialog'][aria-modal='true'], [role='alertdialog']")) return "a dialog is open";
+  if ([...document.querySelectorAll<HTMLElement>("[data-live-status]")].some((element) => LIVE_ON.has(element.dataset.liveStatus ?? ""))) return "Live is on";
+  return null;
+}
 
 export function requestNousFocus(detail: NousFocusDetail): void {
   window.dispatchEvent(new CustomEvent<NousFocusDetail>(NOUS_FOCUS_EVENT, { detail }));
@@ -48,15 +65,16 @@ export function writeNousFocusEnabled(enabled: boolean): void {
 }
 
 /** A surface that would cover the pane (the Nous dock's fullscreen) leaves on Go and comes back as it was on Back. */
-export function useLeaveDuringNousFocus<T>(current: T, leave: () => void, restore: (saved: T) => void): void {
-  const latest = useRef({ current, leave, restore });
-  latest.current = { current, leave, restore };
+export function useLeaveDuringNousFocus<T>(current: T, leave: () => void, restore: (saved: T) => void, stay?: () => void): void {
+  const latest = useRef({ current, leave, restore, stay });
+  latest.current = { current, leave, restore, stay };
   const saved = useRef<{ value: T } | null>(null);
   useEffect(() => {
     const onPhase = (event: Event) => {
       const phase = (event as CustomEvent<NousFocusPhase>).detail;
       if (phase === "go" && !saved.current) { saved.current = { value: latest.current.current }; latest.current.leave(); }
       if (phase === "back" && saved.current) { latest.current.restore(saved.current.value); saved.current = null; }
+      if (phase === "stay") { saved.current = null; latest.current.stay?.(); }
     };
     window.addEventListener(NOUS_FOCUS_PHASE_EVENT, onPhase);
     return () => window.removeEventListener(NOUS_FOCUS_PHASE_EVENT, onPhase);

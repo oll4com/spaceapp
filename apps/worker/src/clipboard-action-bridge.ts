@@ -157,13 +157,13 @@ export async function executeClipboardActionBridge(input: {
     try {
       if (request.action.type === "list") {
         const query = listClipboardItemsQuerySchema.parse({
-          page: 1,
+          page: request.action.page,
           pageSize: request.action.pageSize,
           q: request.action.q,
           source: request.action.source
         });
         const result = await input.store.listClipboardItems(input.turnInput.operatorUserId, query);
-        lines.push(`- EXECUTED clipboard:list; matches=${result.total}; returned=${result.items.length}`);
+        lines.push(`- EXECUTED clipboard:list; matches=${result.total}; page=${request.action.page}; returned=${result.items.length}`);
         for (const item of result.items) lines.push(`  - ${formatClipboardItem(item, listPreviewCharacters)}`);
         executedActionCount += 1;
         continue;

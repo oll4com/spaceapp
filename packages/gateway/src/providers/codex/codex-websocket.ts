@@ -1,3 +1,4 @@
+import { codexTurnTrace } from "./turn-trace.js";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import websocketPlugin from "@fastify/websocket";
@@ -10,7 +11,7 @@ import { requestOrigin } from "../../client-detect.js";
 import { gatewayErrors } from "../../errors.js";
 import { applyRequestPolicy, checkKeyLimits, PolicyRejection, type PolicyResult } from "../../policy.js";
 import { hashKey, header } from "../../proxy-util.js";
-import { USAGE_LIMIT_REACHED } from "../../router/balancer.js";
+import { PACE_CAP, USAGE_LIMIT_REACHED } from "../../router/balancer.js";
 import type { GatewayRouteHelpers } from "../../server.js";
 import { ChatRequestError, normalizeResponsesRequest } from "./chat.js";
 import type { CodexProxyOptions, CodexRequestKey, UpstreamFailure } from "./codex-proxy.js";
@@ -79,7 +80,7 @@ export interface CodexWebSocketShared {
   openWebSocket: typeof openUpstreamWebSocket;
   registry: CodexWebSocketRegistry;
   pickAccount(settings: GatewaySettings, scope: Set<string> | null, tried: Set<string>, stickyHash: string | null, ownerAccountId: string | null,
-    model: string | null): Promise<{ account?: GatewayAccountRecord; none?: { errorCode: string | null; errorMessage: string | null } }>;
+    model: string | null, paceCap: boolean): Promise<{ account?: GatewayAccountRecord; none?: { errorCode: string | null; errorMessage: string | null } }>;
   /** The account to retry on when its rejected access token was refreshed. */
   recordFailure(account: GatewayAccountRecord, failure: UpstreamFailure): Promise<GatewayAccountRecord | null>;
   parseUpstreamError(text: string, status: number): UpstreamFailure;
@@ -91,6 +92,8 @@ export interface CodexWebSocketShared {
     policy: PolicyResult; startedAt: number; baseLog: Omit<GatewayRequestLogInsert, "status" | "errorCode" | "errorMessage">; compressionSaved: number | null }): void;
   responseOwners: StickyStore;
   stickyAccounts: StickyStore;
+  /** Panes on an open operator request: never held by the pace cap (admin/priority-panes.ts). */
+  priorityPanes?: { has(project: string | null): boolean };
 }
 
 export function registerCodexWebSocketRoutes(app: FastifyInstance, helpers: GatewayRouteHelpers, shared: CodexWebSocketShared) {
@@ -103,8 +106,11 @@ export function registerCodexWebSocketRoutes(app: FastifyInstance, helpers: Gate
         done();
       }
     });
-    scope.websocketServer.on("headers", (headers: string[], request: { [TURN_STATE]?: string }) => {
+    scope.websocketServer.on("headers", (headers: string[], request: Pick<FastifyRequest, "headers"> & { [TURN_STATE]?: string }) => {
       if (request[TURN_STATE]) headers.push(`x-codex-turn-state: ${request[TURN_STATE]}`);
+      // The onRequest hook has replaced missing/invalid ids before the upgrade.
+      const requestId = header(request, "x-request-id");
+      if (requestId) headers.push(`x-request-id: ${requestId}`);
     });
     const preValidation = async (request: FastifyRequest, reply: FastifyReply) => {
       if (!(await helpers.authenticate(request, reply))) return;
@@ -117,7 +123,7 @@ export function registerCodexWebSocketRoutes(app: FastifyInstance, helpers: Gate
       (request.raw as { [TURN_STATE]?: string })[TURN_STATE] = presented && /^[\x21-\x7e]{1,256}$/.test(presented) ? presented : `turn_${randomUUID().replace(/-/g, "")}`;
     };
     for (const [path, route] of [["/backend-api/codex/responses", "codex"], ["/v1/responses", "v1"]] as const) {
-      scope.get(path, { websocket: true, preValidation }, (socket, request) => new CodexWebSocketSession(socket, request, route, shared).start());
+      scope.get(path, { websocket: true, preValidation }, (socket, request) => new CodexWebSocketSession(socket, request, route, shared, helpers).start());
     }
   });
 }
@@ -141,7 +147,7 @@ class CodexWebSocketSession {
   private readonly turnState: string;
 
   constructor(private readonly client: WebSocket, private readonly request: FastifyRequest, private readonly route: "codex" | "v1",
-    private readonly shared: CodexWebSocketShared) {
+    private readonly shared: CodexWebSocketShared, private readonly helpers: GatewayRouteHelpers) {
     this.key = request.gatewayApiKey!;
     this.turnState = (request.raw as { [TURN_STATE]?: string })[TURN_STATE] ?? `turn_${randomUUID().replace(/-/g, "")}`;
   }
@@ -248,12 +254,15 @@ class CodexWebSocketSession {
   private async run(text: string) {
     const { options, now } = this.shared;
     const startedAt = now();
-    const requestId = `req_${randomUUID().replace(/-/g, "")}`;
     if (Buffer.byteLength(text, "utf8") > MAX_CREATE_BYTES) {
       this.sendError(400, "response.create is too large for upstream websocket", "invalid_request_error", "payload_too_large");
       return;
     }
     const body = { ...(JSON.parse(text) as Json) };
+    const trace = codexTurnTrace(body);
+    // Untagged frames retain connection-level correlation; never reuse another frame's native turn tag.
+    const requestId = trace?.requestId ?? this.request.id;
+    if (trace) this.helpers.logModelRequest(this.request, trace);
     delete body.type;
     let policy: PolicyResult;
     try {
@@ -302,11 +311,12 @@ class CodexWebSocketSession {
     let retryWith: GatewayAccountRecord | null = null;
     for (let attempt = 0; attempt < this.shared.maxAttempts && !this.closed; attempt += 1) {
       const { account, none } = retryWith ? { account: retryWith, none: undefined }
-        : await this.shared.pickAccount(settings, scope, tried, stickyHash, ownerAccountId, policy.model);
+        : await this.shared.pickAccount(settings, scope, tried, stickyHash, ownerAccountId, policy.model,
+          false);
       retryWith = null;
       if (!account) {
         if (attempt === 0 && none) {
-          const status = none.errorCode === USAGE_LIMIT_REACHED ? 429 : 503;
+          const status = none.errorCode === USAGE_LIMIT_REACHED || none.errorCode === PACE_CAP ? 429 : 503;
           options.logs.add({ ...baseLog(), status: "error", errorCode: none.errorCode ?? "no_accounts", errorMessage: none.errorMessage, latencyMs: now() - startedAt });
           this.sendError(status, none.errorMessage ?? gatewayErrors.noAccounts().error.message, status === 429 ? "rate_limit_error" : "server_error",
             none.errorCode ?? "no_accounts");

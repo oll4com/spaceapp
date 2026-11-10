@@ -9,18 +9,18 @@ const expectedResumeModes = [
   ["cli:opencode", ["REFERENCE", "PROVIDER_SELECTION"]],
   ["cli:codex", ["REFERENCE"]],
   ["cli:claude", ["REFERENCE", "PROVIDER_SELECTION"]],
-  ["cli:gemini", ["PROVIDER_SELECTION"]],
-  ["cli:autohand", []],
-  ["cli:qwen", ["PROVIDER_SELECTION"]],
-  ["cli:kimi", ["PROVIDER_SELECTION"]],
-  ["cli:grok", ["PROVIDER_SELECTION"]],
+  ["cli:gemini", ["REFERENCE", "PROVIDER_SELECTION"]],
+  ["cli:autohand", ["PROVIDER_SELECTION"]],
+  ["cli:qwen", ["REFERENCE", "PROVIDER_SELECTION"]],
+  ["cli:kimi", ["REFERENCE", "PROVIDER_SELECTION"]],
+  ["cli:grok", ["REFERENCE", "PROVIDER_SELECTION"]],
   ["cli:deepseek", ["REFERENCE"]],
-  ["cli:cursor", ["PROVIDER_SELECTION"]],
-  ["cli:copilot", ["PROVIDER_SELECTION"]],
-  ["cli:hermes", ["PROVIDER_SELECTION"]],
-  ["cli:omp", ["PROVIDER_SELECTION"]],
-  ["cli:qoder", ["PROVIDER_SELECTION"]],
-  ["cli:muse", ["PROVIDER_SELECTION"]],
+  ["cli:cursor", ["REFERENCE", "PROVIDER_SELECTION"]],
+  ["cli:copilot", ["REFERENCE", "PROVIDER_SELECTION"]],
+  ["cli:hermes", ["REFERENCE", "PROVIDER_SELECTION"]],
+  ["cli:omp", ["REFERENCE", "PROVIDER_SELECTION"]],
+  ["cli:qoder", ["REFERENCE", "PROVIDER_SELECTION"]],
+  ["cli:muse", ["REFERENCE", "PROVIDER_SELECTION"]],
   ["cli:droid", ["PROVIDER_SELECTION"]]
 ] as const;
 
@@ -73,7 +73,7 @@ describe("CLI adapter contract negotiation", () => {
 
   it("accepts only structured limitations and older declarations without them", () => {
     const runtime = registry.data.find(item => item.id === "cli:autohand")!;
-    expect(runtime.cliAdapter?.limitations?.map(item => item.code)).toContain("NATIVE_RESUME_UNSUPPORTED");
+    expect(runtime.cliAdapter?.limitations?.map(item => item.code)).toContain("REFERENCE_PENDING_LIVE_PROOF");
     const withLimitation = (limitation: Record<string, string>) =>
       agentRuntimeSchema.safeParse({ ...runtime, cliAdapter: { ...runtime.cliAdapter, limitations: [limitation] } }).success;
     expect(withLimitation({ operation: "start", code: "WORKS_DIFFERENTLY", detail: "free-form claim" })).toBe(false);

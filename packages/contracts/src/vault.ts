@@ -1,11 +1,16 @@
 import { z } from "zod";
-import { vaultPasswordPolicySchema } from "./vault-password.js";
+import { getDomain } from "tldts";
+import { vaultGeneratePolicySchema, vaultPasswordPolicySchema } from "./vault-password.js";
+import { noRepeatedValues } from "./array-rules.js";
 
 // Vault contracts (plan clipboard:vEYtT6-bEN0J step 2, ADR-012). Everything here is ciphertext, public keys or
 // non-secret metadata: no schema has a field that can hold a plaintext secret, a VRK share, a password or the ARK.
 
 export const VAULT_FORMAT_VERSION = 1;
 export const VAULT_FIELD_ROLES = ["USERNAME", "PASSWORD", "OTP"] as const;
+/** What a fill typed and what stayed disabled or read-only (Oracle 7/11: a confirm box the site opens late), so an agent never submits past an empty box. */
+const filledRole = z.enum([...VAULT_FIELD_ROLES, "NEW_PASSWORD", "CONFIRM_PASSWORD"]);
+export const vaultFillFieldsSchema = z.object({ filled: z.array(filledRole), disabled: z.array(filledRole) }).strict();
 export const VAULT_APPROVAL_MODES = ["ASSIST", "RULES", "FULL"] as const;
 /** What each envelope protects; part of the AEAD associated data, so an envelope never opens in another role. */
 export const VAULT_ENVELOPE_PURPOSES = [
@@ -114,6 +119,20 @@ export function canonicalVaultOrigin(input: string): { origin: string; warnings:
 
 const canonicalOrigin = z.string().max(300).refine((value) => canonicalVaultOrigin(value)?.origin === value, "Not an exact canonical origin.");
 
+/**
+ * An item's login page (operator 4/11 16:33 BKK, nous_msg:cc5aba71: Shopflix's origin answers 500, its login page is a path): a
+ * plain address, never a secret, on one of the item's own origins, so it changes neither where a login fills nor what matches.
+ */
+export function vaultLoginPageProblem(loginPage: string, origins: readonly string[]): string | null {
+  let url: URL;
+  try { url = new URL(loginPage); } catch { return "The login page is not a web address."; }
+  if (url.username || url.password) return "The login page must not carry a username or password.";
+  return origins.includes(url.origin) ? null : `The login page must be on the item's own site (${origins.join(", ")}).`;
+}
+const loginPageField = z.string().trim().min(1).max(2000);
+/** Where the Vault opens an item: its login page when it has one, else its first origin. */
+export const vaultItemLink = (item: { origins: readonly string[]; loginPage?: string | null }) => item.loginPage ?? item.origins[0] ?? null;
+
 // approvalMode and maxFillsPerHour are kept so stored items keep parsing; nothing enforces them since the one-switch
 // decision (2026-10-18: no per-use approval, no hourly limit; vault-protection.test.ts "no hourly limit").
 export const vaultItemPolicySchema = z.object({
@@ -135,8 +154,12 @@ export const vaultItemMetadataSchema = z.object({
    * HMAC of the first origin and the lower-case username under a key derived from the VRK, made in the unlocked browser: two
    * items with the same site and username have the same key, so a fill can prefer the pane's Google account. Never sent to agents.
    */
-  loginKey: b64url(22, 22).nullable().default(null)
+  loginKey: b64url(22, 22).nullable().default(null),
+  /** The page to open for this login (vaultLoginPageProblem); null: its first origin. */
+  loginPage: loginPageField.nullable().default(null)
 }).strict().superRefine((item, context) => {
+  const pageProblem = item.loginPage ? vaultLoginPageProblem(item.loginPage, item.origins) : null;
+  if (pageProblem) context.addIssue({ code: "custom", message: pageProblem, path: ["loginPage"] });
   for (const origin of item.origins) {
     if (canonicalVaultOrigin(origin)!.warnings.length > 0 && !item.policy.acceptedOriginRisks.includes(origin)) {
       context.addIssue({ code: "custom", message: `Origin ${origin} needs the operator's explicit acceptance.`, path: ["origins"] });
@@ -211,12 +234,22 @@ export const vaultUseCapabilitySchema = signed(vaultUseClaimsSchema);
 export type VaultUseClaims = z.infer<typeof vaultUseClaimsSchema>;
 
 const code = z.string().regex(/^[A-Z][A-Z0-9_]{0,39}$/);
+/** A CDP method ("Runtime.callFunctionOn") or UNKNOWN / UNKNOWN_DOCUMENT: what made a page dirty before a Vault fill (28/10). */
+export const vaultDirtiedBySchema = z.string().regex(/^[A-Z][A-Za-z_]{0,30}(\.[A-Za-z]{1,40})?$/);
 /**
  * The only shape an agent-facing Vault answer may take; auditId is null only when the owner has no vault to audit in. `reason`
  * (2026-10-22) is the audit's short code, so a fill can be acted on: FIELD_NOT_FOUND_AFTER_RELOAD says the page was reloaded
  * first and the field was gone; redo the steps with navigate, click, type and press only, then fill again.
  */
-export const vaultAgentResultSchema = z.object({ status: z.enum(VAULT_AGENT_STATUSES), auditId: vaultAuditIdSchema.nullable(), reason: code.nullable().default(null) }).strict();
+export const vaultAgentResultSchema = z.object({ status: z.enum(VAULT_AGENT_STATUSES), auditId: vaultAuditIdSchema.nullable(), reason: code.nullable().default(null),
+  /** FILLED/SUBMITTED: the fields typed and the ones still disabled (reason FIELD_DISABLED: never submitted, the page needs a look first). */
+  fields: vaultFillFieldsSchema.optional(),
+  /** FIELD_NOT_FOUND_AFTER_RELOAD: the CDP method that made the page dirty (Runtime.callFunctionOn = browser_evaluate), never page text. */
+  dirtiedBy: vaultDirtiedBySchema.optional(),
+  /** R20-7: a fill typed into a fresh document after a reload; the page's other fields and steps are gone and need redoing. */
+  reloaded: z.literal(true).optional(),
+  /** SIGNIN_WORKS: Space's own sentence (the stored sign-in's last SUCCESS and method), never page text. */
+  message: z.string().max(400).optional() }).strict();
 export type VaultAgentResult = z.infer<typeof vaultAgentResultSchema>;
 
 /** Audit payload: ids, enums and short codes only, so no secret or page text can be written into it. */
@@ -251,6 +284,10 @@ export const vaultAgentGenerateRequestSchema = z.object({
   username: z.string().trim().min(1).max(320).optional(),
   roles: z.array(z.enum(VAULT_GENERATE_ROLES)).min(1).max(2).default(["NEW_PASSWORD"]),
   submit: z.boolean().default(false),
+  /** The site's stated password rules its field attributes do not carry (queue item 37). */
+  policy: vaultGeneratePolicySchema.optional(),
+  /** The operator's explicit order for a reset at a site whose stored sign-in works (nous_msg:fe72e061): its Nous message id, audited. */
+  operatorOrder: z.string().regex(/^nous_msg:[A-Za-z0-9_-]{6,80}$/).optional(),
   targetPaneId
 }).strict().superRefine((request, context) => {
   if (request.purpose === "CHANGE_PASSWORD" && !request.handle) context.addIssue({ code: "custom", message: "CHANGE_PASSWORD needs the item handle.", path: ["handle"] });
@@ -271,20 +308,32 @@ export function vaultAgentSaveSite(input: string): string | null {
 }
 /**
  * A login an agent (or Nous) created and saves: it already knows these values, since it registered the account. The API seals
- * them to the operator's inbox key at once; the dock adds the item on its next unlock.
+ * them to the operator's inbox key at once and it is fillable at once, Vault locked or not; the dock files it as an item when it is next unlocked.
  */
 export const vaultAgentSaveRequestSchema = z.object({
-  site: z.string().trim().min(1).max(2000).refine((value) => vaultAgentSaveSite(value) !== null, "Not a web address Space can save (https, no IP address or punycode name)."),
-  username: z.string().trim().min(1).max(320),
+  /** Only with loginPage: set (or with null clear) the login page of a saved login; no value changes, no unlock. */
+  handle: vaultItemIdSchema.optional(),
+  site: z.string().trim().min(1).max(2000).refine((value) => vaultAgentSaveSite(value) !== null, "Not a web address Space can save (https, no IP address or punycode name).").optional(),
+  username: z.string().trim().min(1).max(320).optional(),
   password: z.string().min(1).max(512).optional(),
-  label: z.string().trim().min(1).max(80)
-}).strict();
+  label: z.string().trim().min(1).max(80).optional(),
+  loginPage: loginPageField.nullable().optional()
+}).strict().superRefine((value, context) => {
+  const issue = (message: string, path: string) => context.addIssue({ code: "custom", message, path: [path] });
+  if (value.handle) {
+    if (value.site || value.username || value.password || value.label) issue("With handle, send only loginPage.", "handle");
+    if (value.loginPage === undefined) issue("With handle, loginPage is required (null clears it).", "loginPage");
+    return;
+  }
+  for (const field of ["site", "username", "label"] as const) if (!value[field]) issue(`${field} is required for a new login.`, field);
+  const origin = value.site ? vaultAgentSaveSite(value.site) : null;
+  const problem = value.loginPage && origin ? vaultLoginPageProblem(value.loginPage, [origin]) : null;
+  if (problem) issue(problem, "loginPage");
+});
 
 /** space_vault_status: whether the operator lets agents and Nous use the Vault, and how many items are handed to them. */
 export const vaultAgentStatusResultSchema = z.object({
-  status: z.literal("LISTED"), auditId: vaultAuditIdSchema.nullable(), agentAccess: z.boolean(), delegatedItems: z.number().int().min(0),
-  /** Logins agents saved or the Vault generated that wait in the inbox until the operator's dock is unlocked (2026-10-19). */
-  pendingItems: z.number().int().min(0)
+  status: z.literal("LISTED"), auditId: vaultAuditIdSchema.nullable(), agentAccess: z.boolean(), delegatedItems: z.number().int().min(0)
 }).strict();
 /** space_vault_audit: this pane's recent Vault attempts, ids and result codes only. */
 export const vaultAgentAuditResultSchema = z.object({
@@ -354,12 +403,12 @@ export function vaultDelegationOperatorMessage(input: {
 export const vaultAgentListItemSchema = z.object({
   handle: vaultItemIdSchema, label: z.string().max(80), origins: z.array(z.string().max(300)).max(10), fields: z.array(z.enum(VAULT_FIELD_ROLES)).max(3),
   /** The Google account's address the login belongs to (a Chrome import's source account); absent: none. */
-  account: z.string().max(320).optional()
+  account: z.string().max(320).optional(),
+  /** The page to open before a fill; absent: the first origin. */
+  loginPage: z.string().max(2000).optional()
 }).strict();
 export const vaultAgentListResultSchema = z.object({
-  status: z.literal("LISTED"), auditId: vaultAuditIdSchema.nullable(), items: z.array(vaultAgentListItemSchema).max(VAULT_DELEGATION_TECHNICAL_MAX_ITEMS),
-  /** As in status: logins that are not fillable yet because no unlocked dock has added and handed them over. */
-  pendingItems: z.number().int().min(0)
+  status: z.literal("LISTED"), auditId: vaultAuditIdSchema.nullable(), items: z.array(vaultAgentListItemSchema).max(VAULT_DELEGATION_TECHNICAL_MAX_ITEMS)
 }).strict();
 
 /** The operator's inbox key: generated passwords arrive sealed to it while the Vault is locked. */
@@ -379,10 +428,12 @@ export function vaultOperatorRequestMessage(kind: VaultOperatorSignedKind, input
   return new TextEncoder().encode(vaultCanonicalJson({ v: 1, kind: `space-vault-${kind}`, ...body }));
 }
 
-/** A login an agent saved or a password it generated in a fill, waiting for the dock to add it to the Vault on its next unlock. */
+/** A login an agent saved or a password it generated in a fill: fillable at once through the delegation; the dock files it as an item when next unlocked. */
 export const vaultPendingSecretSchema = z.object({
   id: id("vault_pending"), kind: z.enum(["NEW_ACCOUNT", "CHANGE_PASSWORD"]), handle: vaultItemIdSchema, label: z.string().max(80), origin: canonicalOrigin,
-  sealedUsername: vaultTransportEnvelopeSchema.nullable(), sealedPassword: vaultTransportEnvelopeSchema.nullable(), paneId: z.string().max(200).nullable(), createdAt: isoDate
+  sealedUsername: vaultTransportEnvelopeSchema.nullable(), sealedPassword: vaultTransportEnvelopeSchema.nullable(), paneId: z.string().max(200).nullable(), createdAt: isoDate,
+  /** A new login's login page (on its origin), filed with it; a set by handle before the dock files it lands here too. */
+  loginPage: loginPageField.nullable().default(null)
 }).strict();
 export type VaultPendingSecret = z.infer<typeof vaultPendingSecretSchema>;
 
@@ -397,8 +448,19 @@ export function vaultSignupSite(input: string): string | null {
   if (!parsed || parsed.warnings.length > 0 || !parsed.origin.startsWith("https://") || new URL(parsed.origin).port) return null;
   return parsed.origin;
 }
-const signupSites = z.array(z.string().max(300).refine((value) => vaultSignupSite(value) === value, "Not an exact https site."))
-  .min(1).max(VAULT_SIGNUP_GRANT_LIMITS.maxSites).refine((sites) => new Set(sites).size === sites.length, "Duplicate site.");
+
+/**
+ * Where a login fills (operator request 2026-10-30, gsis.gr): its exact origins, or a clean https site (no port, IP or punycode)
+ * whose registrable domain (private suffixes kept, so foo.github.io never covers bar.github.io) is a clean https origin's of the item.
+ */
+export function vaultOriginCovers(origins: readonly string[], target: string): boolean {
+  if (origins.includes(target)) return true;
+  const domain = (site: string) => vaultSignupSite(site) === site ? getDomain(new URL(site).hostname, { allowPrivateDomains: true }) : null;
+  const wanted = domain(target);
+  return wanted !== null && origins.some((origin) => domain(origin) === wanted);
+}
+const signupSites =z.array(z.string().max(300).refine((value) => vaultSignupSite(value) === value, "Not an exact https site."))
+  .min(1).max(VAULT_SIGNUP_GRANT_LIMITS.maxSites).refine(...noRepeatedValues("Duplicate site."));
 const dailyCap = z.number().int().min(1).max(VAULT_SIGNUP_GRANT_LIMITS.maxDailyCap);
 
 export const vaultSignupGrantClaimsSchema = z.object({

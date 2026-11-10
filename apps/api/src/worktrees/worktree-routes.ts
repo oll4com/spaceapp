@@ -10,6 +10,7 @@ import type { SpaceWorktree } from "@space/contracts";
 import { createStaleWhileRevalidateCache } from "../stale-while-revalidate.js";
 import { WORKTREES_ROOT, WorktreeError, WorktreeService } from "./worktree-service.js";
 import { assertRemovableWorktreePath, parseForceFlag } from "./worktree-removal-guard.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
  * Worktree badges poll each path every few seconds and every status read
@@ -97,7 +98,7 @@ export function registerWorktreeRoutes(app: FastifyInstance, options: WorktreeRo
       requireDestructiveAccess(request);
       const query = z
         .object({
-          repoPath: z.string().min(1).default("/opt/spaceapp")
+          repoPath: z.string().min(1).default(SPACE_INSTALL_ROOT)
         })
         .parse(request.query);
       const data = await service.listWorktrees(query.repoPath);
@@ -167,7 +168,7 @@ export function registerWorktreeRoutes(app: FastifyInstance, options: WorktreeRo
       requireDestructiveAccess(request);
       const body = z
         .object({
-          repoPath: z.string().min(1).default("/opt/spaceapp"),
+          repoPath: z.string().min(1).default(SPACE_INSTALL_ROOT),
           dryRun: z.boolean().default(false),
           force: z.boolean().default(false),
           excludePaths: z.array(z.string()).optional()

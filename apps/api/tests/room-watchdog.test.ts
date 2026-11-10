@@ -3,6 +3,7 @@ import { InMemorySpaceStore } from "@space/runtime";
 import { InMemoryControlRepository } from "@space/db";
 import { controlExecuteSchema, type Event } from "@space/contracts";
 import { createSpaceControl } from "../src/space-control.js";
+import { createRoomWatchdogNotices, ROOM_ALERT_GAP_MS, ROOM_FROZEN_MS } from "../src/room-watchdog-notices.js";
 
 // A room whose first pane is closed, as in room Dino (2026-10-17), and a control service whose room locks give up
 // after the next queued timeouts instead of 30 s.
@@ -33,15 +34,18 @@ function lockFixture(timeouts: number[]) {
     interrupt: vi.fn(async (pane: { id: string }) => { if (pane.id === holder!.id) await held; return {}; })
   };
   const alerts: Event[] = [];
+  const published: Event[] = [];
   const send = vi.fn(async () => ({ submitted: true }));
   const service = createSpaceControl({
     store, repository, controller, send, publish: vi.fn(async () => {}),
-    publishEvent: (event) => { if (event.type === "ROOM_WATCHDOG_ALERT") alerts.push(event); }
+    publishEvent: (event) => { published.push(event); },
+    reportWatchdog: (event) => { alerts.push(event); },
+    resolveActor: async (id) => ({ id, role: "ADMIN" as const })
   });
   const actor = { id: "operator:one", role: "ADMIN" as const };
   const execute = (requestId: string, actions: unknown[]) =>
     service.execute(actor, controlExecuteSchema.parse({ roomId: room.id, requestId, actions })).catch(() => undefined);
-  return { store, room, closed: closed!, holder: holder!, blocked: blocked!, controller, send, alerts, release, execute, service };
+  return { store, repository, room, closed: closed!, holder: holder!, blocked: blocked!, controller, send, alerts, published, release, execute, service };
 }
 
 describe("Room Watchdog and Anti-Freeze Protection", () => {
@@ -51,7 +55,8 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
     try {
       const holding = c.execute("request:holder", [{ kind: "pane", operation: "stop", target: { paneIds: [c.holder.id] } }]);
       await vi.waitFor(() => expect(c.controller.interrupt).toHaveBeenCalledTimes(1));
-      const answer = await c.execute("request:prompt", [{ kind: "pane", operation: "prompt", target: { paneIds: [c.blocked.id] }, text: "Next step", when: "NOW" }]);
+      // Two panes: a prompt to one pane takes only that pane's lock (R9-10), a prompt to several the room's.
+      const answer = await c.execute("request:prompt", [{ kind: "pane", operation: "prompt", target: { paneIds: [c.blocked.id, c.holder.id] }, text: "Next step", when: "NOW" }]);
 
       // The caller hears FAILED with the code, never RUNNING with no results.
       expect(answer?.status).toBe("FAILED");
@@ -76,12 +81,12 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
     try {
       const holding = c.execute("request:holder", [{ kind: "pane", operation: "stop", target: { paneIds: [c.holder.id] } }]);
       await vi.waitFor(() => expect(c.controller.interrupt).toHaveBeenCalledTimes(1));
-      const answer = c.execute("request:prompt", [{ kind: "pane", operation: "prompt", target: { paneIds: [c.blocked.id] }, text: "Next step", when: "NOW" }]);
+      const answer = c.execute("request:prompt", [{ kind: "pane", operation: "prompt", target: { paneIds: [c.blocked.id, c.holder.id] }, text: "Next step", when: "NOW" }]);
       await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
       c.release();
 
       expect((await answer)?.status).not.toBe("FAILED");
-      await vi.waitFor(() => expect(c.send).toHaveBeenCalledWith(expect.objectContaining({ id: c.blocked.id }), "Next step", expect.any(String)));
+      await vi.waitFor(() => expect(c.send).toHaveBeenCalledWith(expect.objectContaining({ id: c.blocked.id }), "Next step", expect.any(String), expect.any(String)));
       expect(c.alerts).toHaveLength(0);
       await holding;
     } finally {
@@ -121,13 +126,45 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
     }
   });
 
+  it("names the holder that held the room lock during the wait, not the one that took it a moment before (R9-10)", async () => {
+    // 28/10: a prompt held room Bruno 30 s; Bob's attach timed out just after the next execute took the lock, and the alert named that one.
+    const c = lockFixture([2_000, 2_000, 400]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let releaseSecond!: () => void;
+    const second = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    const first = c.controller.interrupt.getMockImplementation()!;
+    c.controller.interrupt.mockImplementation(async (pane: { id: string }) => pane.id === c.blocked.id ? (await second, {}) : first(pane));
+    try {
+      const holding = c.execute("request:long", [{ kind: "pane", operation: "stop", target: { paneIds: [c.holder.id] } }]);
+      await vi.waitFor(() => expect(c.controller.interrupt).toHaveBeenCalledTimes(1));
+      const next = c.execute("request:next", [{ kind: "pane", operation: "stop", target: { paneIds: [c.blocked.id] } }]);
+      // execute reads and writes its record before it queues for the lock: the attach queues after it.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const attach = c.service.withOperatorMutation(c.closed, async () => "attached").catch((error: Error) => error);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      c.release();
+      await vi.waitFor(() => expect(c.controller.interrupt).toHaveBeenCalledTimes(2));
+      expect(await attach).toMatchObject({ code: "ROOM_LOCK_TIMEOUT" });
+
+      const alert = c.alerts.at(-1)!;
+      const payload = alert.payload as { holder: Record<string, unknown> & { heldMs: number } };
+      expect(payload.holder).toMatchObject({ source: "execute", paneIds: [c.holder.id], requestId: "request:long" });
+      expect(payload.holder.heldMs).toBeGreaterThanOrEqual(250);
+      expect(alert.message).toContain(`held by execute for ${c.holder.id} (request request:long)`);
+      expect(alert.message).not.toContain("request:next");
+      releaseSecond();
+      await Promise.all([holding, next]);
+    } finally {
+      c.release();
+      releaseSecond();
+      warn.mockRestore();
+    }
+  });
+
   it("says the mutation itself overran when it held the room lock past the timeout, never that it blocked itself", async () => {
     // A schedule whose pane inspection hangs (2026-10-17: a scheduled continue held room Vault for 30 s).
     const c = lockFixture([60]);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    // Like the Postgres store, recording gives the event a new id.
-    const record = c.store.recordRoomEvent.bind(c.store);
-    vi.spyOn(c.store, "recordRoomEvent").mockImplementation((input) => { const { id: _id, ...rest } = input as Event; return record(rest); });
     c.controller.inspect.mockImplementationOnce(async () => { await new Promise(() => {}); return undefined as never; });
     try {
       const command = controlExecuteSchema.parse({ roomId: c.room.id, requestId: "request:schedule",
@@ -137,8 +174,9 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
       expect(c.alerts).toHaveLength(1);
       expect(c.alerts[0]!.message).toMatch(new RegExp(`^Room watchdog: control held the lock on room "${c.room.id}" for \\d+ ms; the lock was released`));
       expect(c.alerts[0]!.message).not.toContain("held by");
-      // The stored copy is the one published, so a later latest-event republish keeps the id the notification dedupes on.
-      expect((await c.store.getLatestEvent(c.room.id))?.id).toBe(c.alerts[0]!.id);
+      // 2/11: a timeout that recovers by itself is neither a room event (a latest-event republish would show it again) nor live (the banner).
+      expect(c.store.listEvents(c.room.id).some((event) => event.type === "ROOM_WATCHDOG_ALERT")).toBe(false);
+      expect(c.published.some((event) => event.type === "ROOM_WATCHDOG_ALERT")).toBe(false);
     } finally {
       warn.mockRestore();
     }
@@ -338,5 +376,115 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
 
     // Verify running agent pane was never interrupted
     expect(controller.interrupt).not.toHaveBeenCalled();
+  });
+
+  // 2/11 10:02 BKK (operator «τι ειναι ολα αυτα τα λαθη!!!!»): the watch and schedule ticks inspected panes under the room lock, 30 s each at load 45.
+  it("inspects a watched pane outside the room lock, so the room's other controls go on meanwhile", async () => {
+    const c = lockFixture([5_000, 5_000, 5_000, 5_000]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let releaseInspect!: () => void;
+    const inspecting = new Promise<void>((resolve) => { releaseInspect = resolve; });
+    try {
+      await c.service.watches({ id: "operator:one", role: "ADMIN" }, c.room.id, "register", { paneId: c.blocked.id });
+      const idle = c.controller.inspect.getMockImplementation()!;
+      c.controller.inspect.mockImplementationOnce(async (pane) => { await inspecting; return idle(pane); });
+      const ticking = c.service.tick();
+      await vi.waitFor(() => expect(c.controller.inspect).toHaveBeenCalledTimes(2));
+
+      expect((await c.execute("request:layout", [{ kind: "layout", operation: "sort" }]))?.status).toBe("COMPLETED");
+      releaseInspect();
+      await ticking;
+      expect(c.alerts).toHaveLength(0);
+    } finally {
+      releaseInspect();
+      warn.mockRestore();
+    }
+  });
+
+  it("runs a schedule's checks and its prompt outside the room lock: the prompt holds only its pane's lock (R9-10)", async () => {
+    const c = lockFixture([5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let state: "RUNNING" | "IDLE" = "RUNNING";
+    const idle = c.controller.inspect.getMockImplementation()!;
+    c.controller.inspect.mockImplementation(async (pane) => ({ ...(await idle(pane)), state }));
+    let releaseSend!: () => void;
+    const typing = new Promise<void>((resolve) => { releaseSend = resolve; });
+    try {
+      // A prompt after the running turn becomes a schedule; the turn ends and the tick sends it.
+      const queued = await c.execute("request:after", [{ kind: "pane", operation: "prompt", target: { paneIds: [c.blocked.id] }, text: "Next step", when: "AFTER_TURN" }]);
+      const scheduleId = (queued?.results[0]?.evidence as { scheduleId?: string }).scheduleId!;
+      expect(scheduleId).toMatch(/^control_schedule:/);
+      state = "IDLE";
+      c.send.mockImplementationOnce(async () => { await typing; return { submitted: true }; });
+      const ticking = c.service.tick();
+      await vi.waitFor(() => expect(c.send).toHaveBeenCalledWith(expect.objectContaining({ id: c.blocked.id }), "Next step", expect.any(String), expect.any(String)));
+
+      expect((await c.execute("request:layout", [{ kind: "layout", operation: "sort" }]))?.status).toBe("COMPLETED");
+      releaseSend();
+      await ticking;
+      expect((await c.service.watches({ id: "operator:one", role: "ADMIN" }, c.room.id, "get", { id: scheduleId }) as { status: string }).status).toBe("COMPLETED");
+      expect(c.alerts).toHaveLength(0);
+    } finally {
+      releaseSend();
+      warn.mockRestore();
+    }
+  });
+});
+
+describe("Room watchdog notices (2/11)", () => {
+  function notices() {
+    let clock = Date.parse("2026-11-02T02:00:30Z");
+    const timers: Array<{ at: number; run: () => void }> = [];
+    const lines: Array<{ owner: string; key: string; line: string }> = [];
+    const published: Event[] = [];
+    const watchdog = createRoomWatchdogNotices({
+      room: async () => ({ name: "Alex", ownerUserId: "user:operator" }),
+      notice: async (owner, key, line) => { lines.push({ owner, key, line }); },
+      publish: (event) => { published.push(event); },
+      warn: () => {},
+      now: () => clock,
+      setTimer: (run, ms) => { timers.push({ at: clock + ms, run }); }
+    });
+    const alert = (payload: Record<string, unknown>, paneId: string | null = null): Event => ({ id: `event:${Math.random()}`, roomId: "room:alex", paneId, turnId: null,
+      workflowId: null, traceId: "trace:one", type: "ROOM_WATCHDOG_ALERT", message: "Room watchdog: …", payload, createdAt: new Date(clock).toISOString() });
+    const advance = async (ms: number) => {
+      clock += ms;
+      for (const timer of timers.splice(0).filter((t) => { if (t.at <= clock) return true; timers.push(t); return false; })) timer.run();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    return { watchdog, lines, published, alert, advance };
+  }
+
+  it("folds an hour of self-recovering alerts into one line for Nous at the hour's end, with no banner", async () => {
+    const n = notices();
+    for (let i = 0; i < 50; i += 1) {
+      n.watchdog.report(i % 5 === 0
+        ? n.alert({ kind: "ROOM_FREEZE_PREVENTED", paneTitle: "Finn" }, "pane:finn")
+        : n.alert({ kind: "ROOM_LOCK_TIMEOUT_ABORT", holder: { source: i % 2 ? "watch tick" : "schedule tick" } }));
+      await n.advance(ROOM_ALERT_GAP_MS + 1_000);
+    }
+    expect(n.published).toHaveLength(0);
+    // The hour 02:00-03:00 flushed once; the alerts after 03:00 wait for their own hour.
+    expect(n.lines).toHaveLength(1);
+    expect(n.lines[0]).toMatchObject({ owner: "user:operator", key: "room-watchdog:room:alex:2026-11-02T02" });
+    expect(n.lines[0]!.line).toContain('Room watchdog, room "Alex" (room:alex), 02:00-03:00 UTC: 30 alerts, each recovered by itself: '
+      + "24 room-lock timeouts (lock held by watch tick ×12, schedule tick ×12); 6 CLI commands over 8 s (Finn ×6). ");
+  });
+
+  it("raises one banner when a room's alerts keep coming for 10 minutes, and another only after a quiet gap", async () => {
+    const n = notices();
+    const lock = () => n.watchdog.report(n.alert({ kind: "ROOM_LOCK_TIMEOUT_ABORT", holder: { source: "execute" } }));
+    for (let elapsed = 0; elapsed < ROOM_FROZEN_MS; elapsed += 60_000) { lock(); await n.advance(60_000); }
+    expect(n.published).toHaveLength(0);
+    lock();
+    await n.advance(0);
+    expect(n.published).toHaveLength(1);
+    expect(n.published[0]).toMatchObject({ type: "ROOM_WATCHDOG_ALERT", roomId: "room:alex", payload: { kind: "ROOM_FROZEN", needsOperator: true, alerts: 11 } });
+    expect(n.published[0]!.message).toMatch(/^Room "Alex" has been stuck for 10 minutes/);
+    // Still stuck: no second banner. After a gap the next streak starts over.
+    for (let i = 0; i < 5; i += 1) { lock(); await n.advance(60_000); }
+    await n.advance(ROOM_ALERT_GAP_MS + 1);
+    lock();
+    expect(n.published).toHaveLength(1);
   });
 });

@@ -287,6 +287,63 @@ async function connect(
 }
 
 describe("CLI terminal protocol-v2 control", () => {
+  it.each(["interactive reconnect", "observer upgrade"] as const)(
+    "acquires control after a pane move through %s without replacing the running CLI",
+    async (mode) => {
+      const harness = await createHarness();
+      const auth = authFor("user:moved-control");
+      try {
+        const session = await issueSession(harness, auth);
+        const first = await connect(harness, session, auth, {
+          tabLineageId: firstTabLineageId, pageClientId: firstPageClientId
+        });
+        const firstReady = await waitForFrame(first.frames, (frame) => frame.type === "ready");
+        first.socket.send(JSON.stringify({ type: "control_release", leaseId: firstReady.leaseId }));
+        await vi.waitFor(() => expect(harness.store.getActivePaneCliTerminalControlLease(session.session.sessionId)).toBeNull());
+
+        // Keep a socket attached so the manager retains its original host identity,
+        // as it did for the operator's panes while their DB room changed.
+
+        const target = harness.store.createRoom({ name: "Moved CLI", initialPaneCount: 0 });
+        const moved = await harness.app.inject({
+          method: "POST", url: `/api/panes/${encodeURIComponent(harness.pane.id)}/move`,
+          headers: { cookie: auth.cookie, [csrfHeaderName]: auth.csrfToken },
+          payload: { targetRoomId: target.id }
+        });
+        expect(moved.statusCode).toBe(200);
+        expect(harness.store.getPaneCliSession(session.session.sessionId)).toMatchObject({
+          roomId: target.id, status: "RUNNING", isActive: true
+        });
+        const refreshed = await issueSession(harness, auth, "GET");
+        expect(refreshed.session.sessionId).toBe(session.session.sessionId);
+        const next = await connect(harness, refreshed, auth, {
+          tabLineageId: secondTabLineageId, pageClientId: secondPageClientId,
+          clientMode: mode === "observer upgrade" ? "OBSERVER" : "INTERACTIVE"
+        });
+        let control = await waitForFrame(next.frames, (frame) => frame.type === "ready" || frame.type === "error");
+        if (mode === "observer upgrade") {
+          expect(control).toMatchObject({ type: "ready", controlState: "OBSERVER" });
+          next.socket.send(JSON.stringify({ type: "control_upgrade" }));
+          next.socket.send(JSON.stringify({ type: "control_request" }));
+          control = await waitForFrame(next.frames, (frame) => (frame.type === "control_state" && frame.controlState === "CONTROLLER") || frame.type === "error");
+        }
+        expect(control).toMatchObject({ controlState: "CONTROLLER" });
+        expect(harness.store.getActivePaneCliTerminalControlLease(session.session.sessionId)).toMatchObject({
+          sessionId: session.session.sessionId, paneId: harness.pane.id, roomId: target.id
+        });
+        next.socket.send(JSON.stringify({ type: "input", data: "continue", leaseId: control.leaseId }));
+        await vi.waitFor(() => expect(harness.host.input.mock.calls.map((call) => (call as unknown[])[2])).toContain("continue"));
+        expect(harness.host.attach).toHaveBeenCalledTimes(1);
+        expect(harness.host.terminate).not.toHaveBeenCalled();
+        expect(next.frames.filter((frame) => frame.type === "error")).toEqual([]);
+        next.socket.terminate();
+        first.socket.terminate();
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  );
+
   it("delivers ordinary input in order while transcript persistence is delayed", async () => {
     const harness = await createHarness();
     const auth = authFor("user:delayed-input-persistence");
@@ -1056,6 +1113,44 @@ describe("CLI terminal protocol-v2 control", () => {
       );
       expect(harness.host.resize).not.toHaveBeenCalled();
       expect(observer.closeCode()).toBeNull();
+      observer.socket.terminate();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("never sends control_upgraded to an observer that did not ask, whatever the controllers do (CONTROL-001, API side)", async () => {
+    const harness = await createHarness();
+    const auth = authFor("user:observer-unsolicited");
+    try {
+      const session = await issueSession(harness, auth);
+      const first = await connect(harness, session, auth, { tabLineageId: firstTabLineageId, pageClientId: firstPageClientId });
+      await waitForFrame(first.frames, (frame) => frame.type === "ready");
+      const observer = await connect(harness, await issueSession(harness, auth, "GET"), auth, {
+        tabLineageId: secondTabLineageId, pageClientId: secondPageClientId, clientMode: "OBSERVER"
+      });
+      await waitForFrame(observer.frames, (frame) => frame.type === "ready");
+
+      // Controllers come and go around the observer: the first page drops, a third page connects and takes control.
+      first.socket.terminate();
+      const third = await connect(harness, await issueSession(harness, auth, "GET"), auth, {
+        tabLineageId: "66666666-6666-4666-8666-666666666666", pageClientId: "77777777-7777-4777-8777-777777777777"
+      });
+      await waitForFrame(third.frames, (frame) => frame.type === "ready");
+      third.socket.send(JSON.stringify({ type: "control_request" }));
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
+
+      const types = observer.frames.map((frame) => frame.type);
+      expect(types).not.toContain("control_upgraded");
+      expect(types).not.toContain("control_granted");
+      expect(observer.closeCode()).toBeNull();
+
+      // Only its own control_upgrade is acknowledged, once.
+      observer.socket.send(JSON.stringify({ type: "control_upgrade" }));
+      await waitForFrame(observer.frames, (frame) => frame.type === "control_upgraded");
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      expect(observer.frames.filter((frame) => frame.type === "control_upgraded")).toHaveLength(1);
+      third.socket.terminate();
       observer.socket.terminate();
     } finally {
       await harness.cleanup();

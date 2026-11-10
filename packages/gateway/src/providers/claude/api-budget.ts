@@ -6,7 +6,9 @@ import { anthropicBillingReport } from "../../anthropic-billing.js";
  * The Claude API-key account paced to the operator's monthly budget (plan clipboard:nUloPOH3blDT step 6; operator 27/10: use the
  * month's API budget fully, never above it). Spend is the Accounts card's figure: Anthropic's posted days, the gateway's estimate
  * for days not posted yet (UTC month). Today's allowance is what the month has left before today, shared over the days left with
- * today included, so the last day gets the whole remainder. The key's own daily cap still applies: the lower limit wins.
+ * today included, so the last day gets the whole remainder; it is shown, never a stop: only the month's budget stops the key
+ * (operator 5/11 nous_msg:3ef54585, the free $500 serves Nous before Antigravity; a day's share had sent Nous to Antigravity with
+ * $427 of the month left). The key's own daily cap still applies.
  */
 export const MONTHLY_BUDGET_REACHED = "MONTHLY_BUDGET_REACHED";
 export const DAILY_ALLOWANCE_REACHED = "DAILY_ALLOWANCE_REACHED";
@@ -25,7 +27,7 @@ export function apiBudgetPace(budgetUsd: number | null | undefined, days: Gatewa
   const daysLeft = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate() - date.getUTCDate() + 1;
   const remainingUsd = budgetUsd - monthSpentUsd;
   const allowanceTodayUsd = Math.max(0, budgetUsd - (monthSpentUsd - todaySpentUsd)) / daysLeft;
-  const stop = remainingUsd <= 0 ? MONTHLY_BUDGET_REACHED : todaySpentUsd >= allowanceTodayUsd ? DAILY_ALLOWANCE_REACHED : null;
+  const stop = remainingUsd <= 0 ? MONTHLY_BUDGET_REACHED : null;
   return { budgetUsd, monthSpentUsd: round(monthSpentUsd), remainingUsd: round(remainingUsd), daysLeft, allowanceTodayUsd: round(allowanceTodayUsd),
     todaySpentUsd: round(todaySpentUsd), stop };
 }

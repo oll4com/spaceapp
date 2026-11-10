@@ -1,19 +1,22 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:22.23.4-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf AS build
+FROM node:26.13.0-trixie-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39 AS build
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential liblzma5 python3 pkg-config \
     && rm -rf /var/lib/apt/lists/*
 COPY . .
+# TypeScript survives the prune as @t3-oss/env-core's optional peer; nothing loads it at runtime, and TypeScript 7's Go compiler
+# would ship Go stdlib CVEs in every image.
 RUN npm ci --no-audit --no-fund \
     && npm run build \
     && npm prune --omit=dev \
+    && rm -rf node_modules/typescript node_modules/@typescript \
     && find node_modules -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' \) -delete
 
-FROM node:22.23.4-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf AS runtime-base
+FROM node:26.13.0-trixie-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39 AS runtime-base
 ARG TARGETARCH
-ARG NPM_VERSION=11.18.0
+ARG NPM_VERSION=11.21.1
 ENV NODE_ENV=production \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
@@ -22,7 +25,7 @@ LABEL org.opencontainers.image.licenses=MIT
 RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSION}" \
     && install -d /tmp/npm-security-patches \
     && npm pack --ignore-scripts --no-audit --no-fund --pack-destination /tmp/npm-security-patches \
-      brace-expansion@5.0.12 tar@7.5.21 ip-address@10.7.4 undici@6.29.1 postcss-selector-parser@7.1.6 \
+      brace-expansion@5.0.12 tar@7.5.22 ip-address@10.7.4 undici@6.29.1 postcss-selector-parser@7.1.6 \
     && rm -rf \
       /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
       /usr/local/lib/node_modules/npm/node_modules/tar \
@@ -37,7 +40,7 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSIO
       /usr/local/lib/node_modules/npm/node_modules/postcss-selector-parser \
     && tar -xzf /tmp/npm-security-patches/brace-expansion-5.0.12.tgz \
       -C /usr/local/lib/node_modules/npm/node_modules/brace-expansion --strip-components=1 \
-    && tar -xzf /tmp/npm-security-patches/tar-7.5.21.tgz \
+    && tar -xzf /tmp/npm-security-patches/tar-7.5.22.tgz \
       -C /usr/local/lib/node_modules/npm/node_modules/tar --strip-components=1 \
     && tar -xzf /tmp/npm-security-patches/ip-address-10.7.4.tgz \
       -C /usr/local/lib/node_modules/npm/node_modules/ip-address --strip-components=1 \
@@ -65,6 +68,21 @@ COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mj
 COPY --from=build --chown=spaceapp:spaceapp /app/scripts/rotate-owner-setup-token.mjs ./scripts/rotate-owner-setup-token.mjs
 COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-backup.mjs ./scripts/portable-backup.mjs
 COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-restore.mjs ./scripts/portable-restore.mjs
+# The scripts the API runs and agent-bootstrap.ts tells panes to run, with what they load (1.2.0; guard: public-docker-distribution
+# "every script agent-bootstrap.ts names is in the image"). /opt/spaceapp/scripts points here in the core and CLI images.
+COPY --from=build --chown=spaceapp:spaceapp \
+  /app/scripts/cli-render-fixture.mjs /app/scripts/space-android-toolchain-setup.mjs /app/scripts/space-app-studio-build.mjs \
+  /app/scripts/space-app-studio-mcp.mjs /app/scripts/space-design-render.mjs /app/scripts/space-dots-home-check.mjs \
+  /app/scripts/space-load-gate.mjs /app/scripts/space-media-capture.mjs /app/scripts/space-monitoring-copilot-mcp.mjs \
+  /app/scripts/space-progress.mjs /app/scripts/space-security-copilot-mcp.mjs /app/scripts/space-security-inventory.mjs \
+  /app/scripts/space-security-probe.sh /app/scripts/space-security-scanner-setup.mjs /app/scripts/space-site-signins-tools.mjs \
+  /app/scripts/space-task.mjs /app/scripts/space-test-resource.mjs /app/scripts/space-video-engine.mjs \
+  /app/scripts/space-video-tools-setup.mjs ./scripts/
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/lib/mcp-result.mjs /app/scripts/lib/space-chrome-render.mjs ./scripts/lib/
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/design-templates ./scripts/design-templates
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/video-tools ./scripts/video-tools
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/android-toolchain ./scripts/android-toolchain
+COPY --from=build --chown=spaceapp:spaceapp /app/deploy/space-harness-pane-env.mjs ./deploy/space-harness-pane-env.mjs
 COPY --chown=spaceapp:spaceapp deploy/docker ./deploy/docker
 RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint.sh deploy/docker/cli-entrypoint.sh \
     && install -m 0755 deploy/docker/public-cli-wrapper.sh /usr/local/bin/spaceapp-cli-wrapper \
@@ -74,6 +92,8 @@ RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint
 
 FROM runtime-base AS core
 COPY --chown=spaceapp:spaceapp starter-memory /opt/spaceapp/starter-memory
+# The API names its scripts under the install root (SPACE_INSTALL_ROOT, /opt/spaceapp): the ones the image carries in /app.
+RUN ln -s /app/scripts /opt/spaceapp/scripts
 # The Databases tool's SQLite worker (apps/api/src/databases/sqlite-worker.py) needs Python 3.12+ with its sqlite3 module;
 # python3-minimal has no sqlite3 (1.1.7 review: SQLite could not run in public installations).
 RUN apt-get update \
@@ -125,6 +145,8 @@ RUN apt-get update \
     && printf '%s\n' "$TARGETARCH" > /usr/local/share/spaceapp-cli-architecture
 # The application's default room project is /opt/spaceapp. CLI sessions run in /etc, as
 # /etc/AGENTS.md documents, so that path resolves to /etc in this image. Without it, the
-# Getting Started OpenCode pane exits with "chdir(2) failed" before OpenCode starts.
+# Getting Started OpenCode pane exits with "chdir(2) failed" before OpenCode starts. /etc/scripts makes the
+# /opt/spaceapp/scripts/... commands agent-bootstrap.ts gives panes (space-progress, space-task, ...) resolve to /app/scripts.
 RUN ln -s /etc /opt/spaceapp
+RUN ln -s /app/scripts /etc/scripts
 ENTRYPOINT ["/app/deploy/docker/cli-entrypoint.sh"]

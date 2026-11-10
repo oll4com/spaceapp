@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { FileUp, FileDown, X } from "../ui-theme/app-icons.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export interface ImportModalProps {
   currentTable?: string | null;
@@ -9,6 +10,8 @@ export interface ImportModalProps {
 }
 
 export function ImportModal({ currentTable, onClose, onImport }: ImportModalProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [format, setFormat] = useState<"SQL" | "CSV">(currentTable ? "CSV" : "SQL");
   const [table, setTable] = useState(currentTable || "");
   const [content, setContent] = useState("");
@@ -37,10 +40,10 @@ export function ImportModal({ currentTable, onClose, onImport }: ImportModalProp
         table: format === "CSV" ? table : undefined,
         content
       });
-      alert(res.message || "Import completed successfully.");
+      alert(res.message || t("Import completed successfully."));
       onClose();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Import failed");
+      alert(err instanceof Error ? err.message : t("Import failed"));
     } finally {
       setIsImporting(false);
     }
@@ -52,7 +55,7 @@ export function ImportModal({ currentTable, onClose, onImport }: ImportModalProp
         <div className="db-modal-header">
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <FileUp size={16} style={{ color: "var(--modern-accent)" }} />
-            <span>Import Data / Script</span>
+            <span>{t("Import Data / Script")}</span>
           </div>
           <button className="db-crumb-btn" onClick={onClose}>
             <X size={15} />
@@ -61,7 +64,7 @@ export function ImportModal({ currentTable, onClose, onImport }: ImportModalProp
 
         <div className="db-modal-body">
           <div className="db-form-group">
-            <label className="db-form-label">Format</label>
+            <label className="db-form-label">{t("Format")}</label>
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 type="button"
@@ -69,7 +72,7 @@ export function ImportModal({ currentTable, onClose, onImport }: ImportModalProp
                 style={{ flex: 1, justifyContent: "center" }}
                 onClick={() => setFormat("SQL")}
               >
-                SQL Script
+                {t("SQL Script")}
               </button>
               <button
                 type="button"
@@ -77,18 +80,18 @@ export function ImportModal({ currentTable, onClose, onImport }: ImportModalProp
                 style={{ flex: 1, justifyContent: "center" }}
                 onClick={() => setFormat("CSV")}
               >
-                CSV Data
+                {t("CSV Data")}
               </button>
             </div>
           </div>
 
           {format === "CSV" && (
             <div className="db-form-group">
-              <label className="db-form-label">Target Table</label>
+              <label className="db-form-label">{t("Target Table")}</label>
               <input
                 type="text"
                 className="db-input"
-                placeholder="Table name to insert records into"
+                placeholder={t("Table name to insert records into")}
                 value={table}
                 onChange={(e) => setTable(e.target.value)}
               />
@@ -97,14 +100,14 @@ export function ImportModal({ currentTable, onClose, onImport }: ImportModalProp
 
           <div className="db-form-group">
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <label className="db-form-label">File or Raw Content</label>
+              <label className="db-form-label">{t("File or Raw Content")}</label>
               <button
                 type="button"
                 className="db-btn"
                 style={{ padding: "2px 6px", fontSize: "0.75rem" }}
                 onClick={() => fileInputRef.current?.click()}
               >
-                Upload File...
+                {t("Upload File...")}
               </button>
               <input
                 ref={fileInputRef}
@@ -118,7 +121,7 @@ export function ImportModal({ currentTable, onClose, onImport }: ImportModalProp
               className="db-input"
               rows={8}
               style={{ fontFamily: "monospace", fontSize: "0.78rem" }}
-              placeholder={format === "SQL" ? "Paste SQL statements here..." : "col1,col2,col3\nval1,val2,val3"}
+              placeholder={format === "SQL" ? t("Paste SQL statements here...") : "col1,col2,col3\nval1,val2,val3"}
               value={content}
               onChange={(e) => setContent(e.target.value)}
             />
@@ -127,7 +130,7 @@ export function ImportModal({ currentTable, onClose, onImport }: ImportModalProp
 
         <div className="db-modal-footer">
           <button type="button" className="db-btn" onClick={onClose}>
-            Cancel
+            {t("Cancel")}
           </button>
           <button
             type="button"
@@ -135,7 +138,7 @@ export function ImportModal({ currentTable, onClose, onImport }: ImportModalProp
             disabled={isImporting || !content.trim() || (format === "CSV" && !table.trim())}
             onClick={handleSubmit}
           >
-            {isImporting ? "Importing..." : "Start Import"}
+            {isImporting ? t("Importing...") : t("Start Import")}
           </button>
         </div>
       </div>
@@ -151,6 +154,8 @@ export interface ExportModalProps {
 }
 
 export function ExportModal({ currentTable, tables, onClose, onExport }: ExportModalProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [format, setFormat] = useState<"SQL" | "CSV">("SQL");
   const [table, setTable] = useState(currentTable || (tables[0] || ""));
   const [includeStructure, setIncludeStructure] = useState(true);
@@ -179,7 +184,7 @@ export function ExportModal({ currentTable, tables, onClose, onExport }: ExportM
       URL.revokeObjectURL(url);
       onClose();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Export failed");
+      alert(err instanceof Error ? err.message : t("Export failed"));
     } finally {
       setIsExporting(false);
     }
@@ -191,7 +196,7 @@ export function ExportModal({ currentTable, tables, onClose, onExport }: ExportM
         <div className="db-modal-header">
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <FileDown size={16} style={{ color: "var(--modern-accent)" }} />
-            <span>Export Database / Table</span>
+            <span>{t("Export Database / Table")}</span>
           </div>
           <button className="db-crumb-btn" onClick={onClose}>
             <X size={15} />
@@ -200,7 +205,7 @@ export function ExportModal({ currentTable, tables, onClose, onExport }: ExportM
 
         <div className="db-modal-body">
           <div className="db-form-group">
-            <label className="db-form-label">Format</label>
+            <label className="db-form-label">{t("Format")}</label>
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 type="button"
@@ -208,7 +213,7 @@ export function ExportModal({ currentTable, tables, onClose, onExport }: ExportM
                 style={{ flex: 1, justifyContent: "center" }}
                 onClick={() => setFormat("SQL")}
               >
-                SQL Dump
+                {t("SQL Dump")}
               </button>
               <button
                 type="button"
@@ -216,21 +221,21 @@ export function ExportModal({ currentTable, tables, onClose, onExport }: ExportM
                 style={{ flex: 1, justifyContent: "center" }}
                 onClick={() => setFormat("CSV")}
               >
-                CSV Table Data
+                {t("CSV Table Data")}
               </button>
             </div>
           </div>
 
           <div className="db-form-group">
-            <label className="db-form-label">Table</label>
+            <label className="db-form-label">{t("Table")}</label>
             <select
               className="db-select"
               value={table}
               onChange={(e) => setTable(e.target.value)}
             >
-              {tables.map((t) => (
-                <option key={t} value={t}>
-                  {t}
+              {tables.map((tbl) => (
+                <option key={tbl} value={tbl}>
+                  {tbl}
                 </option>
               ))}
             </select>
@@ -239,12 +244,12 @@ export function ExportModal({ currentTable, tables, onClose, onExport }: ExportM
           {format === "SQL" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
               <SpaceToggle
-                label="Include Table Structure (DDL)"
+                label={t("Include Table Structure (DDL)")}
                 checked={includeStructure}
                 onChange={setIncludeStructure}
               />
               <SpaceToggle
-                label="Include Data (INSERTs)"
+                label={t("Include Data (INSERTs)")}
                 checked={includeData}
                 onChange={setIncludeData}
               />
@@ -254,7 +259,7 @@ export function ExportModal({ currentTable, tables, onClose, onExport }: ExportM
 
         <div className="db-modal-footer">
           <button type="button" className="db-btn" onClick={onClose}>
-            Cancel
+            {t("Cancel")}
           </button>
           <button
             type="button"
@@ -262,7 +267,7 @@ export function ExportModal({ currentTable, tables, onClose, onExport }: ExportM
             disabled={isExporting}
             onClick={handleExport}
           >
-            {isExporting ? "Exporting..." : "Download Export"}
+            {isExporting ? t("Exporting...") : t("Download Export")}
           </button>
         </div>
       </div>

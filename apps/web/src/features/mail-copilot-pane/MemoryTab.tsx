@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { MAIL_COPILOT_MEMORY_KINDS, type MailCopilotMemory, type MailCopilotMemoryKind, type MailHabitSender } from "@space/contracts";
 import { api } from "../../api.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { Pencil, Pin, PinOff, Plus, Search, Trash2 } from "../ui-theme/app-icons.js";
 import { mailTime } from "./MailClient.js";
 import { subscribeMailCopilotLiveEvents } from "./live-events.js";
@@ -9,6 +10,8 @@ const KIND_LABEL: Record<MailCopilotMemoryKind, string> = { CONTACT: "Contact", 
 const SOURCE_LABEL: Record<MailCopilotMemory["source"], string> = { USER: "you", AGENT: "copilot", LEARNED: "learned from you" };
 
 function MemoryRow({ memory, onChange, onDelete }: { memory: MailCopilotMemory; onChange(memory: MailCopilotMemory): void; onDelete(id: string): void }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(memory.text);
   const [busy, setBusy] = useState(false);
@@ -20,26 +23,26 @@ function MemoryRow({ memory, onChange, onDelete }: { memory: MailCopilotMemory; 
   return (
     <li className={`jc-memory${memory.pinned ? " pinned" : ""}`}>
       <div className="jc-memory-head">
-        <span className={`jc-tag kind-${memory.kind.toLowerCase()}`}>{KIND_LABEL[memory.kind]}</span>
+        <span className={`jc-tag kind-${memory.kind.toLowerCase()}`}>{t(KIND_LABEL[memory.kind])}</span>
         {memory.key ? <span className="jc-memory-key">{memory.key}</span> : null}
         {memory.contactEmail ? <span className="jc-muted">{memory.contactEmail}</span> : memory.domain ? <span className="jc-muted">{memory.domain}</span> : null}
         <span className="jc-memory-actions">
-          <button type="button" className="jc-icon-button" title={memory.pinned ? "Unpin" : "Pin (always recalled first)"} aria-label={`${memory.pinned ? "Unpin" : "Pin"} memory`} disabled={busy}
+          <button type="button" className="jc-icon-button" title={memory.pinned ? t("Unpin") : t("Pin (always recalled first)")} aria-label={memory.pinned ? t("Unpin memory") : t("Pin memory")} disabled={busy}
             onClick={() => void run(async () => onChange((await api.updateMailMemory(memory.id, { pinned: !memory.pinned })).memory))}>{memory.pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}</button>
-          <button type="button" className="jc-icon-button" title="Edit" aria-label="Edit memory" disabled={busy} onClick={() => setEditing((open) => !open)}><Pencil aria-hidden="true" /></button>
-          <button type="button" className="jc-icon-button" title="Forget" aria-label="Forget memory" disabled={busy} onClick={() => void run(async () => { await api.forgetMailMemory(memory.id); onDelete(memory.id); })}><Trash2 aria-hidden="true" /></button>
+          <button type="button" className="jc-icon-button" title={t("Edit")} aria-label={t("Edit memory")} disabled={busy} onClick={() => setEditing((open) => !open)}><Pencil aria-hidden="true" /></button>
+          <button type="button" className="jc-icon-button" title={t("Forget")} aria-label={t("Forget memory")} disabled={busy} onClick={() => void run(async () => { await api.forgetMailMemory(memory.id); onDelete(memory.id); })}><Trash2 aria-hidden="true" /></button>
         </span>
       </div>
       {editing ? (
         <form className="jc-memory-edit" onSubmit={(event) => { event.preventDefault(); void run(async () => { onChange((await api.updateMailMemory(memory.id, { text: text.trim() })).memory); setEditing(false); }); }}>
-          <textarea rows={2} value={text} aria-label="Memory text" onChange={(event) => setText(event.target.value)} disabled={busy} />
-          <div className="jc-actions"><button type="submit" className="jc-button primary" disabled={busy || !text.trim()}>Save</button><button type="button" className="jc-button ghost" onClick={() => { setEditing(false); setText(memory.text); }}>Cancel</button></div>
+          <textarea rows={2} value={text} aria-label={t("Memory text")} onChange={(event) => setText(event.target.value)} disabled={busy} />
+          <div className="jc-actions"><button type="submit" className="jc-button primary" disabled={busy || !text.trim()}>{t("Save")}</button><button type="button" className="jc-button ghost" onClick={() => { setEditing(false); setText(memory.text); }}>{t("Cancel")}</button></div>
         </form>
       ) : <p className="jc-memory-text">{memory.text}</p>}
       <div className="jc-memory-meta jc-muted">
-        <span>from {SOURCE_LABEL[memory.source]}</span>
-        <span>{Math.round(memory.confidence * 100)}% sure</span>
-        <span>{memory.uses === 1 ? "used once" : `used ${memory.uses} times`}</span>
+        <span>{t("from {source}", { source: t(SOURCE_LABEL[memory.source]) })}</span>
+        <span>{t("{percent}% sure", { percent: Math.round(memory.confidence * 100) })}</span>
+        <span>{memory.uses === 1 ? t("used once") : t("used {count} times", { count: memory.uses })}</span>
         <span title={memory.updatedAt}>{mailTime(memory.updatedAt)}</span>
       </div>
     </li>
@@ -48,6 +51,8 @@ function MemoryRow({ memory, onChange, onDelete }: { memory: MailCopilotMemory; 
 
 /** What the copilot learned from the operator's own actions, per account: each sender's habit, with Forget. */
 function LearnedHabits({ paneId }: { paneId: string }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [habits, setHabits] = useState<MailHabitSender[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const load = useCallback(async () => {
@@ -70,9 +75,9 @@ function LearnedHabits({ paneId }: { paneId: string }) {
   if (!habits?.length) return null;
   const accounts = [...new Set(habits.map((habit) => habit.account))];
   return (
-    <section className="mc-habits" aria-label="Learned habits">
-      <h3>Learned habits</h3>
-      <p className="jc-muted">What you do to mail, in this pane and in Gmail itself, per account. The copilot follows these; three consistent times make a rule.</p>
+    <section className="mc-habits" aria-label={t("Learned habits")}>
+      <h3>{t("Learned habits")}</h3>
+      <p className="jc-muted">{t("What you do to mail, in this pane and in Gmail itself, per account. The copilot follows these; three consistent times make a rule.")}</p>
       {accounts.map((account) => (
         <div key={account} className="mc-habits-account">
           <strong>{account}</strong>
@@ -82,12 +87,12 @@ function LearnedHabits({ paneId }: { paneId: string }) {
                 <div className="jc-memory-head">
                   <span className="jc-memory-key">{habit.sender}</span>
                   <span className="jc-memory-actions">
-                    <button type="button" className="jc-icon-button" title="Forget this sender's habit" aria-label={`Forget the habit for ${habit.sender} on ${account}`} disabled={busy !== null}
+                    <button type="button" className="jc-icon-button" title={t("Forget this sender's habit")} aria-label={t("Forget the habit for {sender} on {account}", { sender: habit.sender, account })} disabled={busy !== null}
                       onClick={() => void forget(habit)}><Trash2 aria-hidden="true" /></button>
                   </span>
                 </div>
                 <p className="jc-memory-text">{habit.summary}</p>
-                <div className="jc-memory-meta jc-muted"><span title={habit.lastAt}>last {mailTime(habit.lastAt)}</span></div>
+                <div className="jc-memory-meta jc-muted"><span title={habit.lastAt}>{t("last {time}", { time: mailTime(habit.lastAt) })}</span></div>
               </li>
             ))}
           </ul>
@@ -99,6 +104,8 @@ function LearnedHabits({ paneId }: { paneId: string }) {
 
 /** The Memory rail tab: what the copilot knows about how the operator handles mail; search, filter, teach, pin, edit, forget. */
 export function MemoryTab({ paneId }: { paneId: string }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [memories, setMemories] = useState<MailCopilotMemory[]>([]);
   const [query, setQuery] = useState("");
   const [kinds, setKinds] = useState<MailCopilotMemoryKind[]>([]);
@@ -128,38 +135,38 @@ export function MemoryTab({ paneId }: { paneId: string }) {
     setBusy(true);
     setMessage(null);
     api.rememberMailMemory({ kind: teach.kind, text: teach.text.trim(), ...(teach.key.trim() ? { key: teach.key.trim() } : {}), source: "USER", pinned: false, confidence: 0.9, tags: [] })
-      .then(() => { setTeach({ kind: teach.kind, key: "", text: "" }); setTeachOpen(false); setMessage("The copilot will remember that."); void load(); })
-      .catch((error: unknown) => setMessage(error instanceof Error ? error.message : "Could not save."))
+      .then(() => { setTeach({ kind: teach.kind, key: "", text: "" }); setTeachOpen(false); setMessage(t("The copilot will remember that.")); void load(); })
+      .catch((error: unknown) => setMessage(error instanceof Error ? error.message : t("Could not save.")))
       .finally(() => setBusy(false));
   };
   return (
     <div className="jc-memory-tab" role="tabpanel" id="jc-panel-memory" aria-labelledby="jc-tab-memory">
       <div className="jc-memory-toolbar">
-        <label className="jc-search"><Search aria-hidden="true" /><input type="search" value={query} placeholder="Search memory" aria-label="Search memory" onChange={(event) => setQuery(event.target.value)} /></label>
-        <button type="button" className="jc-button primary" aria-expanded={teachOpen} onClick={() => setTeachOpen((open) => !open)}><Plus aria-hidden="true" /> Teach</button>
+        <label className="jc-search"><Search aria-hidden="true" /><input type="search" value={query} placeholder={t("Search memory")} aria-label={t("Search memory")} onChange={(event) => setQuery(event.target.value)} /></label>
+        <button type="button" className="jc-button primary" aria-expanded={teachOpen} onClick={() => setTeachOpen((open) => !open)}><Plus aria-hidden="true" /> {t("Teach")}</button>
       </div>
-      <div className="jc-chips" role="group" aria-label="Memory kinds">
+      <div className="jc-chips" role="group" aria-label={t("Memory kinds")}>
         {MAIL_COPILOT_MEMORY_KINDS.map((kind) => (
           <button key={kind} type="button" className={`jc-chip${kinds.includes(kind) ? " selected" : ""}`} aria-pressed={kinds.includes(kind)}
-            onClick={() => setKinds((current) => current.includes(kind) ? current.filter((entry) => entry !== kind) : [...current, kind])}>{KIND_LABEL[kind]}</button>
+            onClick={() => setKinds((current) => current.includes(kind) ? current.filter((entry) => entry !== kind) : [...current, kind])}>{t(KIND_LABEL[kind])}</button>
         ))}
       </div>
       {teachOpen ? (
         <form className="jc-teach" onSubmit={submitTeach}>
           <div className="jc-form-grid">
-            <label className="jc-field"><span>Kind</span>
-              <select value={teach.kind} onChange={(event) => setTeach({ ...teach, kind: event.target.value as MailCopilotMemoryKind })}>{MAIL_COPILOT_MEMORY_KINDS.map((kind) => <option key={kind} value={kind}>{KIND_LABEL[kind]}</option>)}</select>
+            <label className="jc-field"><span>{t("Kind")}</span>
+              <select value={teach.kind} onChange={(event) => setTeach({ ...teach, kind: event.target.value as MailCopilotMemoryKind })}>{MAIL_COPILOT_MEMORY_KINDS.map((kind) => <option key={kind} value={kind}>{t(KIND_LABEL[kind])}</option>)}</select>
             </label>
-            <label className="jc-field"><span>Key (optional: a sender, a domain, a template name)</span><input value={teach.key} onChange={(event) => setTeach({ ...teach, key: event.target.value })} /></label>
+            <label className="jc-field"><span>{t("Key (optional: a sender, a domain, a template name)")}</span><input value={teach.key} onChange={(event) => setTeach({ ...teach, key: event.target.value })} /></label>
           </div>
-          <label className="jc-field"><span>What should the copilot remember?</span><textarea rows={2} value={teach.text} onChange={(event) => setTeach({ ...teach, text: event.target.value })} required /></label>
-          <div className="jc-actions"><button type="submit" className="jc-button primary" disabled={busy || !teach.text.trim()}>Remember</button><button type="button" className="jc-button ghost" onClick={() => setTeachOpen(false)}>Cancel</button></div>
+          <label className="jc-field"><span>{t("What should the copilot remember?")}</span><textarea rows={2} value={teach.text} onChange={(event) => setTeach({ ...teach, text: event.target.value })} required /></label>
+          <div className="jc-actions"><button type="submit" className="jc-button primary" disabled={busy || !teach.text.trim()}>{t("Remember")}</button><button type="button" className="jc-button ghost" onClick={() => setTeachOpen(false)}>{t("Cancel")}</button></div>
         </form>
       ) : null}
       {message ? <p className="jc-message" role="status">{message}</p> : null}
       <LearnedHabits paneId={paneId} />
-      {loading && memories.length === 0 ? <p className="jc-muted jc-panel-loading" role="status">Loading memory…</p> : null}
-      {!loading && memories.length === 0 ? <div className="jc-empty"><strong>Nothing remembered yet</strong><span>How you write, who people are and the replies you keep sending land here as the copilot learns. Teach it something to start.</span></div> : null}
+      {loading && memories.length === 0 ? <p className="jc-muted jc-panel-loading" role="status">{t("Loading memory…")}</p> : null}
+      {!loading && memories.length === 0 ? <div className="jc-empty"><strong>{t("Nothing remembered yet")}</strong><span>{t("How you write, who people are and the replies you keep sending land here as the copilot learns. Teach it something to start.")}</span></div> : null}
       <ul className="jc-memory-list">
         {memories.map((memory) => (
           <MemoryRow key={memory.id} memory={memory} onChange={(updated) => setMemories((current) => current.map((entry) => entry.id === updated.id ? updated : entry))}

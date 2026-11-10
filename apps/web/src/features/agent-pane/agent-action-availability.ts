@@ -33,7 +33,7 @@ function busyReason(availability: AgentPaneActionAvailability): string | null {
  * Why a Chat pane menu action cannot run right now, or null when it can. Mirrors the guards in
  * AgentPane's action listener so a click never ends in a silent no-op.
  */
-export function agentActionDisabledReason(actionId: string, availability: AgentPaneActionAvailability | null): string | null {
+function disabledReason(actionId: string, availability: AgentPaneActionAvailability | null): string | null {
   const known = ["import", "generate-title", "plan", "resume", "stop", "memory", "copy", "reconnect", "new_task", "task_history", "attach_folder", "manage_goal"];
   if (!known.includes(actionId)) return null;
   if (!availability) return actionId === "reconnect" ? null : "The Chat is still loading.";
@@ -57,4 +57,11 @@ export function agentActionDisabledReason(actionId: string, availability: AgentP
     if (!availability.hasContent) return actionId === "resume" ? "There is no Chat task to resume yet." : "There is no Chat task to save yet.";
   }
   return null;
+}
+
+/** `t` is the interface language's translator; the reasons stay English without one. */
+export function agentActionDisabledReason(actionId: string, availability: AgentPaneActionAvailability | null,
+  t?: (text: string) => string): string | null {
+  const reason = disabledReason(actionId, availability);
+  return reason && t ? t(reason) : reason;
 }

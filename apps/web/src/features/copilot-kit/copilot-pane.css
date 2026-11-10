@@ -154,6 +154,7 @@
 :is(.jc-pane, .jc-launch) .jc-button:disabled { opacity: 0.5; cursor: default; }
 
 .jc-notice { flex: 0 0 auto; padding: 6px 12px; border-bottom: 1px solid color-mix(in srgb, var(--jc-warn) 40%, transparent); background: color-mix(in srgb, var(--jc-warn) 12%, transparent); }
+.jc-notice.is-calm { border-bottom-color: var(--jc-border, transparent); background: transparent; color: var(--jc-muted, inherit); }
 
 /* ---- body: browser + rail ---------------------------------------------- */
 .jc-body {
@@ -219,6 +220,7 @@
 /* The terminal keeps its size while hidden so xterm never fits to a zero box. */
 .jc-panel-terminal[data-active="false"] { visibility: hidden; pointer-events: none; }
 .jc-rail[data-collapsed="true"] .jc-rail-body { display: none; }
+.jc-rail-body[data-first-read="pending"] > :not(.jc-panel-terminal) { display: none; }
 .jc-panel-loading { padding: 12px; }
 
 /* ---- shared bits ------------------------------------------------------- */
@@ -340,37 +342,14 @@
 .jc-imap { padding: 8px 10px; border: 1px solid var(--jc-border); border-radius: 8px; }
 .jc-imap .jc-form { padding: 10px 0 0; overflow: visible; }
 
-/* ---- handoff strip ----------------------------------------------------- */
-.jc-handoff-posting { color: var(--jc-muted); }
-.jc-handoff-elapsed { color: var(--jc-muted); font-variant-numeric: tabular-nums; }
-.jc-handoff-pulse { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--jc-warn); box-shadow: 0 0 0 0 color-mix(in srgb, var(--jc-warn) 60%, transparent); animation: jc-pulse 1.6s ease-out infinite; }
+/* The browser's existing control icon is the handoff affordance. */
 @keyframes jc-pulse { 70% { box-shadow: 0 0 0 10px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
-/* While the agent waits, the browser's control icon pulses too: pressing it takes control. */
 .jc-pane[data-handoff="requested"] .browser-control-toggle { box-shadow: 0 0 0 0 color-mix(in srgb, var(--jc-warn) 60%, transparent); animation: jc-pulse 1.6s ease-out infinite; }
-/* In flow above the live browser, never over it, whether the agent waits or the operator holds control: the
-   operator must reach the page, its tabs and address bar (a sign-in popup opening, the page they are on). */
-.jc-handoff-strip {
-  order: -1;
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--jc-info) 45%, transparent);
-  background: color-mix(in srgb, var(--jc-info) 18%, var(--jc-raised));
-}
-.jc-handoff-strip[data-state="requested"] {
-  border-bottom-color: color-mix(in srgb, var(--jc-warn) 55%, transparent);
-  background: color-mix(in srgb, var(--jc-warn) 16%, var(--jc-raised));
-}
-.jc-handoff-strip svg { width: 15px; height: 15px; color: var(--jc-info); }
-.jc-handoff-strip > .jc-handoff-text { flex: 1 1 auto; min-width: 0; }
-:is(.jc-pane, .jc-launch) .jc-handoff-strip .jc-button { margin-left: auto; }
 
 /* ---- launch dialog ----------------------------------------------------- */
 /* Above the floating rails and orbs (z-index 70-220), like the terminal upload dialog: on a phone the
    right-hand rail covered the end of the Open button and the Remember switch. */
-.attachment-modal.jc-launch-modal { z-index: 1100; }
+.attachment-modal:is(.jc-launch-modal, .jc-shot-modal) { z-index: 1100; }
 /* A column inside the modal: the head, account row, notes and actions keep their height and the agent list
    takes, and scrolls in, what is left. As a grid the dialog let its rows overflow its own max-height (a 390px
    phone pushed the actions out of the box), and the list's rows shrank to the global button min-height. */
@@ -473,7 +452,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .jc-run-ring-value, .jc-meter-bar, .jc-rail-tab, .jc-rail-tab svg, .jc-event, .jc-event-link, .jc-rail :is(.jc-button, .jc-chip, .jc-search) { transition: none; }
-  .jc-run-ring[data-state="running"] .jc-run-ring-track, .jc-handoff-pulse, .jc-pane[data-handoff="requested"] .browser-control-toggle { animation: none; }
+  .jc-run-ring[data-state="running"] .jc-run-ring-track, .jc-pane[data-handoff="requested"] .browser-control-toggle { animation: none; }
 }
 
 /* ---- run controls, activity, fields, memory (S5) --------------------- */
@@ -512,7 +491,8 @@
 :is(.jc-pane, .jc-launch) .jc-event-link svg { flex: none; width: 13px; height: 13px; }
 :is(.jc-pane, .jc-launch) .jc-event-link:hover { background: color-mix(in srgb, var(--jc-accent) 26%, transparent); }
 :is(.jc-pane, .jc-launch) .jc-event-link:focus-visible { outline: 2px solid var(--jc-accent); outline-offset: 1px; }
-.jc-event-shot { display: block; max-width: 220px; margin-top: 4px; border: 1px solid var(--jc-border); border-radius: 6px; overflow: hidden; background: rgba(0, 0, 0, 0.3); }
+:is(.jc-pane, .jc-launch) .jc-event-shot { display: block; width: 100%; max-width: min(100%, 420px); min-height: 0; margin-top: 4px; padding: 0; border: 1px solid var(--jc-border); border-radius: 6px; overflow: hidden; background: rgba(0, 0, 0, 0.3); cursor: zoom-in; }
+:is(.jc-pane, .jc-launch) .jc-event-shot:focus-visible { outline: 2px solid var(--jc-accent); outline-offset: 1px; }
 .jc-event-shot img { display: block; width: 100%; height: auto; }
 
 /* What waits for the operator: a raised card with a warm edge, above the timeline. */
@@ -664,7 +644,6 @@
 .jc-pane[data-layout="stacked"]:is([data-browser="visible"], [data-mail="visible"]) .jc-rail-body { visibility: hidden; pointer-events: none; }
 .jc-pane[data-layout="stacked"]:is([data-browser="visible"], [data-mail="visible"]) .jc-rail-body { z-index: 0; }
 .jc-pane[data-layout="stacked"]:is([data-browser="hidden"], [data-mail="hidden"]) .jc-rail-body { z-index: 1; }
-.jc-pane[data-layout="stacked"] .jc-handoff-card { max-width: 100%; }
 .jc-pane[data-layout="stacked"] .jc-form-grid, .jc-pane[data-layout="stacked"] .jc-caps { grid-template-columns: minmax(0, 1fr); }
 .jc-pane[data-layout="stacked"] .jc-steps { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .jc-pane[data-layout="stacked"] .jc-step { padding: 6px 2px; font-size: 11px; }

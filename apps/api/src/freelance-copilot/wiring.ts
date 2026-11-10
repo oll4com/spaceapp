@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { eventSchema, makeNeedsYouAsk, type FreelanceEvent, type FreelanceRun, type Pane } from "@space/contracts";
+import { eventSchema, FREELANCE_CHANNEL_LABELS, makeNeedsYouAsk, type FreelanceChannel, type FreelanceEvent, type FreelanceRun, type Pane } from "@space/contracts";
 import { InMemoryFreelanceCopilotRepository, PostgresFreelanceCopilotRepository, type FreelanceCopilotRepository } from "@space/db";
 import { makeSpaceId, SpaceConflictError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
 import { submitCliPrompt } from "../cli-prompt-submit.js";
@@ -9,9 +9,10 @@ import type { CliTerminalManager } from "../cli-terminal.js";
 import type { ConnectorCrypto } from "../dot-connectors.js";
 import type { MailboxFactory } from "../job-apply/mailbox.js";
 import type { NotificationService } from "../notifications/service.js";
+import { withCheckedBlock } from "../nous/pane-notices.js";
 import { registerFreelanceCopilotRoutes, type FreelanceCopilotRouteDependencies } from "./routes.js";
 import { createFreelanceCopilotScheduler } from "./scheduler.js";
-import { createFreelanceCopilotService, type FreelanceCopilotService } from "./service.js";
+import { createFreelanceCopilotService, type FreelanceCopilotService, type FreelanceCopilotServiceOptions } from "./service.js";
 
 export interface FreelanceCopilotWiring extends Omit<FreelanceCopilotRouteDependencies, "store" | "kickoff"> {
   store: SpaceStore;
@@ -28,9 +29,15 @@ export interface FreelanceCopilotWiring extends Omit<FreelanceCopilotRouteDepend
   roomOwner(roomId: string): Promise<string | null>;
   /** The instance job `freelance-copilot-scheduler` (stable; dev opts in). */
   scheduler: boolean;
+  /** Reopens a closed pane as its owner (task-schedules' path), so due follow-ups reopen a closed pane (queue item 44); Nous hears of it. */
+  reopen?(pane: Pane, owner: string): Promise<unknown>;
+  notice?(owner: string, key: string, line: string): Promise<void> | void;
   log: { warn(details: unknown, message: string): void };
   /** The pane's CLI as the Room Agent sees it: a stalled RUNNING run is kicked only at an empty prompt. */
   inspect?(pane: Pane): Promise<RoomPaneObservation>;
+  /** Plan clipboard:7L5KyWp3kQsP step 3: the operator's pinned Space Memory entries sharing a question's words. */
+  operatorMemory?: FreelanceCopilotServiceOptions["operatorMemory"];
+  operatorMessages?: FreelanceCopilotServiceOptions["operatorMessages"];
 }
 
 const KICKOFF = (runId: string) => `Freelance Copilot run ${runId} started in this pane. Read the space-freelance-copilot skill (SKILL.md and its references), then loop: call space_freelancecopilot space_freelance_next until it returns done=true (without MCP tools in this session, call them on demand: JSON {"serverId","toolName","arguments"} on stdin to space-capability call); recall memory before writing, ground every claim in PROFILE, CASE_STUDY and FACT memories, send only after space_freelance_send_begin succeeds, report the sent URL with space_freelance_send_done, and call space_freelance_client_ready as soon as a client wants to go ahead.`;
@@ -76,19 +83,26 @@ export function registerFreelanceCopilot(app: FastifyInstance, deps: FreelanceCo
     const clientReady = plan.action === "clientReady";
     if (clientReady ? !settings.clientReady : !settings.needsYou) return;
     // Needs you as questions (plan clipboard:5AQvaoSR-IZa): the operator answers or decides from the card.
-    const decide = (item: "REVIEW" | "RULE" | "CAMPAIGN", itemId: unknown) => itemId ? makeNeedsYouAsk(event.message, { kind: "COPILOT_DECISION", copilot: "FREELANCE", item, itemId: String(itemId) }, ["Approve", "Decline"]) : null;
+    const decide = (item: "REVIEW" | "RULE" | "CAMPAIGN", itemId: unknown) => itemId ? makeNeedsYouAsk(event.message, { kind: "COPILOT_DECISION", copilot: "FREELANCE", item, itemId: String(itemId) }, ["Approve", "Decline"],
+      event.payload.vouched ? "Approve" : null) : null;
     const ask = event.type === "QUESTION" ? makeNeedsYouAsk(String(event.payload.question ?? event.message), { kind: "COPILOT_QUESTION", copilot: "FREELANCE", questionId: String(event.payload.questionId) },
       Array.isArray(event.payload.options) ? event.payload.options.map(String) : [])
       : event.type === "REVIEW_REQUESTED" ? decide("REVIEW", event.messageId) : event.type === "RULE_PROPOSED" ? decide("RULE", event.payload.ruleId) : null;
     await notifications.raise({ ownerUserId: owner, roomId: pane.roomId, paneId: pane.id, source: "FREELANCE_COPILOT", kind: event.type, severity: "ATTENTION",
-      title: clientReady ? `A client wants to go ahead (${pane.title})` : `Freelance Copilot needs you (${pane.title})`, body: event.message.slice(0, 2000),
-      link: { roomId: pane.roomId, paneId: pane.id, target: event.leadId ? `lead:${event.leadId}` : `event:${event.id}` }, dedupeKey, payload: { eventId: event.id, ...(ask ? { ask } : {}) },
+      title: clientReady ? `A client wants to go ahead (${pane.title})` : `Freelance Copilot needs you (${pane.title})`,
+      // Goal ee5a573e: a NEEDS_USER card says what the copilot checked first (the daily REVIEW counts the bare ones).
+      body: event.type === "NEEDS_USER" ? withCheckedBlock(event.message, [
+        typeof event.payload.channel === "string" ? `Account page: ${FREELANCE_CHANNEL_LABELS[event.payload.channel as FreelanceChannel] ?? event.payload.channel} (${String(event.payload.status ?? "checked")}), opened by ${pane.title}` : event.leadId ? `Lead: ${event.leadId}, read by ${pane.title}` : `Pipeline: ${pane.title}'s leads and runs`,
+        `Rules and settings: nothing ${pane.title} may do alone settles it`], 2_000) : event.message,
+      link: { roomId: pane.roomId, paneId: pane.id, target: event.leadId ? `lead:${event.leadId}` : `event:${event.id}` }, dedupeKey, payload: { eventId: event.id, ...(ask ? { ask } : {}),
+        // R24-2: a review goes to Nous first, and its inbox line carries the message's text.
+        ...(event.type === "REVIEW_REQUESTED" && event.messageId ? await repository.getMessage(owner, event.messageId).then((message) => message ? { review: { id: message.id, channel: message.channel, text: message.body } } : {}, () => ({})) : {}) },
       telegram: settings.telegram ? true : null });
   }
 
   const paneRooms = new Map<string, string>();
   const service = createFreelanceCopilotService({
-    repository, crypto: deps.crypto, mailboxes: deps.mailboxes,
+    repository, crypto: deps.crypto, mailboxes: deps.mailboxes, operatorMemory: deps.operatorMemory, operatorMessages: deps.operatorMessages,
     onEvent: (event) => {
       void (async () => {
         if (!event.paneId) return;
@@ -126,6 +140,7 @@ export function registerFreelanceCopilot(app: FastifyInstance, deps: FreelanceCo
   if (deps.scheduler) {
     const scheduler = createFreelanceCopilotScheduler({
       service, store, log: deps.log,
+      ...(deps.reopen ? { reopen: { reopen: (owner: string, pane: Pane) => deps.reopen!(pane, owner), ...(deps.notice ? { notice: deps.notice } : {}) } } : {}),
       // A pane with a CLI runtime always has an agent: the kickoff starts its CLI when needed.
       hasAgent: async (pane) => deps.kickoff !== undefined || Boolean(pane.terminalRuntimeId) || Boolean(await activeSession(pane)),
       hasActiveRun: async (pane) => Boolean(await service.activeRun(pane.id)),

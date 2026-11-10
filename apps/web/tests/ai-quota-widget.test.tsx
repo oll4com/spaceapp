@@ -103,7 +103,7 @@ describe("AI Quota & Usage widget", () => {
     expect(screen.getByRole("button", { name: "Antigravity: 0 of 1 accounts ready" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Claude: 2 of 3 accounts ready" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Claude2/3" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /API providers/ }).textContent).toContain("1/2 connected");
+    expect(screen.getByRole("button", { name: /API providers/ }).textContent).toContain("1/1 connected"); // OpenAI has no key: not counted (plan clipboard:sJpyQIBFGszW)
     expect(screen.getByRole("region", { name: "Reset alerts" })).toBeTruthy();
   });
 

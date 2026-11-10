@@ -1,7 +1,8 @@
 import { z } from "zod";
 import {
-  VAULT_AGENT_STATUSES, VAULT_FIELD_ROLES, vaultSignupGrantCertificateSchema, vaultSymmetricEnvelopeSchema, vaultTransportEnvelopeSchema, vaultUseCapabilitySchema
+  VAULT_AGENT_STATUSES, VAULT_FIELD_ROLES, vaultSignupGrantCertificateSchema, vaultSymmetricEnvelopeSchema, vaultTransportEnvelopeSchema, vaultUseCapabilitySchema, vaultFillFieldsSchema
 } from "./vault.js";
+import { vaultGeneratePolicySchema } from "./vault-password.js";
 
 // The Browser Host's sealed fill (plan clipboard:vEYtT6-bEN0J step 3, ADR-012): what the API asks the host and what comes
 // back. The request carries ciphertext and a broker-signed one-time capability; the answer carries a status, a short reason
@@ -23,7 +24,9 @@ export const vaultHostFillRequestSchema = z.object({
   keyEnvelope: vaultSymmetricEnvelopeSchema,
   /** The item's fill fields under the fill key. */
   fieldEnvelopes: z.partialRecord(z.enum(VAULT_FIELD_ROLES), vaultSymmetricEnvelopeSchema),
-  freshDocument
+  freshDocument,
+  /** GENERATE: the site's stated rules; sent only to a host whose target says `generatePolicy` (queue item 37). */
+  policy: vaultGeneratePolicySchema.optional()
 }).strict();
 export type VaultHostFillRequest = z.infer<typeof vaultHostFillRequestSchema>;
 
@@ -36,7 +39,9 @@ export const vaultHostSignupRequestSchema = z.object({
   mode: z.literal("SIGNUP"), certificate: vaultSignupGrantCertificateSchema, ownerUserId: z.string().min(1).max(200),
   vaultId: z.string().regex(/^vault:[A-Za-z0-9_-]{16,64}$/), paneId: z.string().min(1).max(200), targetId: z.string().min(1).max(128),
   frameId: z.string().min(1).max(128), origin: z.string().max(300), roles: z.array(z.enum(["NEW_PASSWORD", "CONFIRM_PASSWORD"])).min(1).max(2),
-  inboxPublicKey: z.string().regex(/^[A-Za-z0-9_-]{40,80}$/), submit: z.boolean(), freshDocument
+  inboxPublicKey: z.string().regex(/^[A-Za-z0-9_-]{40,80}$/), submit: z.boolean(), freshDocument,
+  /** The site's stated rules, merged into the field the broker generates for; only to a host that says `generatePolicy`. */
+  policy: vaultGeneratePolicySchema.optional()
 }).strict();
 export type VaultHostSignupRequest = z.infer<typeof vaultHostSignupRequestSchema>;
 
@@ -45,7 +50,9 @@ export const vaultHostFillResultSchema = z.object({
   /** True once a value entered the page, whatever happened after: the API then keeps the fence (absent from hosts before 2026-10-22). */
   typed: z.boolean().optional(),
   /** The top frame's document the fill ran in: the host reloads the page first, so it differs from the one the API fenced (absent from older hosts). */
-  document: z.string().max(128).nullable().optional()
+  document: z.string().max(128).nullable().optional(),
+  /** FILLED/SUBMITTED: the fields typed and the ones that stayed disabled (absent from hosts before 2026-11-07). */
+  fields: vaultFillFieldsSchema.optional()
 }).strict();
 export type VaultHostFillResult = z.infer<typeof vaultHostFillResultSchema>;
 
@@ -55,7 +62,9 @@ export const vaultHostTargetSchema = z.object({
   /** The top frame's document (CDP loaderId); it changes only when a new document loads. Absent from hosts started before 2026-10-18. */
   document: z.string().max(128).nullable().optional(),
   /** True from a host that takes `freshDocument` in fill requests (2026-10-22); the API sends the field only then, so an older host's strict schema never sees it. */
-  freshDocument: z.boolean().optional()
+  freshDocument: z.boolean().optional(),
+  /** True from a host that takes a generate `policy` (queue item 37, after its guarded restart); the API sends one only then. */
+  generatePolicy: z.boolean().optional()
 }).strict();
 export type VaultHostTarget = z.infer<typeof vaultHostTargetSchema>;
 

@@ -84,7 +84,8 @@ it("executes allocation -> send -> verification in one mission", async () => {
 it.each([
   ["a plain error", Error("child failed"), "ROOM_AGENT_SUPERVISOR_FAILED"],
   ["a Temporal timeout", Object.assign(Error("child failed"), { name: "ChildWorkflowFailure", cause: Object.assign(Error("timed out"), { name: "TimeoutFailure" }) }), "ROOM_AGENT_SUPERVISOR_TIMEOUT"],
-  ["an application failure type", Object.assign(Error("child failed"), { cause: { type: "CODEX_APP_SERVER_TURN_TIMEOUT" } }), "CODEX_APP_SERVER_TURN_TIMEOUT"]
+  ["an application failure type", Object.assign(Error("child failed"), { cause: { type: "CODEX_APP_SERVER_TURN_TIMEOUT" } }), "CODEX_APP_SERVER_TURN_TIMEOUT"],
+  ["the worker stopping (core's WorkerShutdown)", Object.assign(Error("child failed"), { cause: { cause: { type: "WorkerShutdown" } } }), "TURN_OUTCOME_UNKNOWN"]
 ])("records a turn failed by %s as FAILED with its cause code, never as superseded", async (_, error, code) => {
   const c = driver();
   temporal.child.mockImplementationOnce(async () => { throw error; });

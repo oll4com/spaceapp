@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { X, Check, CircleAlert, RefreshCw } from "../ui-theme/app-icons.js";
 import type { CreateDatabaseConnectionInput, DatabaseConnection, DatabaseEngine } from "@space/contracts";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export interface ConnectionModalProps {
   initialConnection?: DatabaseConnection | null;
@@ -18,6 +20,8 @@ export function ConnectionModal({
   onSubmit,
   onTest
 }: ConnectionModalProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [engine, setEngine] = useState<DatabaseEngine>(initialConnection?.engine || "POSTGRES");
   const [name, setName] = useState(initialConnection?.name || "");
   const [host, setHost] = useState(initialConnection?.host || "127.0.0.1");
@@ -88,7 +92,7 @@ export function ConnectionModal({
       });
       onClose();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to save connection");
+      alert(err instanceof Error ? err.message : t("Failed to save connection"));
     } finally {
       setIsSubmitting(false);
     }
@@ -98,7 +102,7 @@ export function ConnectionModal({
     <div className="db-modal-overlay">
       <div className="db-modal">
         <div className="db-modal-header">
-          <span>{initialConnection ? "Edit Connection" : "New Database Connection"}</span>
+          <span>{initialConnection ? t("Edit Connection") : t("New Database Connection")}</span>
           <button className="db-crumb-btn" onClick={onClose}>
             <X size={15} />
           </button>
@@ -107,7 +111,7 @@ export function ConnectionModal({
         <div className="db-modal-body">
           {/* Engine Selector */}
           <div className="db-form-group">
-            <label className="db-form-label">Database Engine</label>
+            <label className="db-form-label">{t("Database Engine")}</label>
             <div style={{ display: "flex", gap: 8 }}>
               {(["POSTGRES", "MYSQL", "SQLITE"] as const).map((eng) => (
                 <button
@@ -125,11 +129,11 @@ export function ConnectionModal({
 
           {/* Connection Name */}
           <div className="db-form-group">
-            <label className="db-form-label">Connection Name</label>
+            <label className="db-form-label">{t("Connection Name")}</label>
             <input
               type="text"
               className="db-input"
-              placeholder="e.g. Production DB, Main SQLite"
+              placeholder={t("e.g. Production DB, Main SQLite")}
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
@@ -137,23 +141,23 @@ export function ConnectionModal({
 
           {engine === "SQLITE" ? (
             <div className="db-form-group">
-              <label className="db-form-label">Database File Path</label>
+              <label className="db-form-label">{t("Database File Path")}</label>
               <input
                 type="text"
                 className="db-input"
-                placeholder="/opt/spaceapp/data.sqlite or ./app.db"
+                placeholder={`${SPACE_INSTALL_ROOT}/data.sqlite or ./app.db`}
                 value={filename}
                 onChange={(e) => setFilename(e.target.value)}
               />
               <span style={{ fontSize: "0.72rem", color: "var(--modern-faint)" }}>
-                Absolute path or relative to project workspace.
+                {t("Absolute path or relative to project workspace.")}
               </span>
             </div>
           ) : (
             <>
               <div style={{ display: "flex", gap: 8 }}>
                 <div className="db-form-group" style={{ flex: 3 }}>
-                  <label className="db-form-label">Host</label>
+                  <label className="db-form-label">{t("Host")}</label>
                   <input
                     type="text"
                     className="db-input"
@@ -163,7 +167,7 @@ export function ConnectionModal({
                   />
                 </div>
                 <div className="db-form-group" style={{ flex: 1 }}>
-                  <label className="db-form-label">Port</label>
+                  <label className="db-form-label">{t("Port")}</label>
                   <input
                     type="number"
                     className="db-input"
@@ -174,7 +178,7 @@ export function ConnectionModal({
               </div>
 
               <div className="db-form-group">
-                <label className="db-form-label">Database Name</label>
+                <label className="db-form-label">{t("Database Name")}</label>
                 <input
                   type="text"
                   className="db-input"
@@ -185,7 +189,7 @@ export function ConnectionModal({
 
               <div style={{ display: "flex", gap: 8 }}>
                 <div className="db-form-group" style={{ flex: 1 }}>
-                  <label className="db-form-label">Username</label>
+                  <label className="db-form-label">{t("Username")}</label>
                   <input
                     type="text"
                     className="db-input"
@@ -194,11 +198,11 @@ export function ConnectionModal({
                   />
                 </div>
                 <div className="db-form-group" style={{ flex: 1 }}>
-                  <label className="db-form-label">Password</label>
+                  <label className="db-form-label">{t("Password")}</label>
                   <input
                     type="password"
                     className="db-input"
-                    placeholder={initialConnection ? "(unchanged)" : "Password..."}
+                    placeholder={initialConnection ? t("(unchanged)") : t("Password...")}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                   />
@@ -207,7 +211,7 @@ export function ConnectionModal({
 
               <SpaceToggle
                 id="db_ssl"
-                label="Enable SSL / TLS encryption"
+                label={t("Enable SSL / TLS encryption")}
                 checked={ssl}
                 onChange={setSsl}
               />
@@ -229,7 +233,7 @@ export function ConnectionModal({
               }}
             >
               {testResult.ok ? <Check size={14} /> : <CircleAlert size={14} />}
-              <span>{testResult.ok ? `Connection verified! (${testResult.version || "OK"})` : `Connection failed: ${testResult.error}`}</span>
+              <span>{testResult.ok ? t("Connection verified! ({version})", { version: testResult.version || t("OK") }) : t("Connection failed: {error}", { error: testResult.error ?? "" })}</span>
             </div>
           )}
         </div>
@@ -242,10 +246,10 @@ export function ConnectionModal({
             disabled={isTesting || !name.trim()}
           >
             {isTesting && <RefreshCw size={12} className="spin" />}
-            <span>Test Connection</span>
+            <span>{t("Test Connection")}</span>
           </button>
           <button type="button" className="db-btn" onClick={onClose}>
-            Cancel
+            {t("Cancel")}
           </button>
           <button
             type="button"
@@ -253,7 +257,7 @@ export function ConnectionModal({
             onClick={handleSave}
             disabled={isSubmitting || !name.trim()}
           >
-            {isSubmitting ? "Saving..." : "Save Connection"}
+            {isSubmitting ? t("Saving...") : t("Save Connection")}
           </button>
         </div>
       </div>

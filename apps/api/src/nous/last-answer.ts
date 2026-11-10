@@ -1,6 +1,6 @@
 import type { Pane, PaneCliSession } from "@space/contracts";
 import { redactMemoryText, type SpaceStore } from "@space/runtime";
-import { CLAUDE_LAST_ANSWER_MAX_CHARS, loadClaudeNativeTurns } from "../claude-native-turns.js";
+import { loadClaudeNativeTurns } from "../claude-native-turns.js";
 import { codexDirectParityCodexHome, isClaudeDirectParityRuntime, isCodexDirectParityRuntime } from "../cli-parity.js";
 import { findCodexCliTurnFinalResult, findCodexTaskTimeline } from "../codex-rollout-diagnostics.js";
 
@@ -33,6 +33,6 @@ export function createPaneLastAnswer(deps: PaneLastAnswerDeps): (pane: Pane, opt
       const turn = (await codex.timeline(options).catch(() => [])).findLast((task) => task.status === "COMPLETED");
       answer = turn ? await codex.finalResult({ ...options, turnId: turn.taskId }).catch(() => null) : null;
     }
-    return answer?.trim() ? redactMemoryText(answer.trim()).slice(-CLAUDE_LAST_ANSWER_MAX_CHARS) : null;
+    return answer?.trim() ? redactMemoryText(answer.trim()) : null;
   };
 }

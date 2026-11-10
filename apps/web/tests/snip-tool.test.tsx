@@ -2,11 +2,13 @@
 import React from "react";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor, act, within } from "@testing-library/react";
-import { SnipToolOverlay } from "../src/features/snip-tool/SnipToolOverlay.js";
+import { clipboardPasteRoute, NOUS_PASTE_TARGET, SnipToolOverlay } from "../src/features/snip-tool/SnipToolOverlay.js";
 import { WorkspaceSurface } from "../src/features/ui-theme/WorkspaceSurface.js";
+import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 import { captureSnipFrame } from "../src/features/snip-tool/snip-capture.js";
 import { exportSnip, frameFromBlob } from "../src/features/snip-tool/snip-image.js";
 import { captureDomFrame, SnipDomUnsupportedError } from "../src/features/snip-tool/snip-dom-capture.js";
+import { clipboardFiles, NousPendingFiles, usePendingFiles } from "../src/features/nous/NousFiles.js";
 vi.mock("../src/features/snip-tool/snip-capture.js", async () => {
   const actual = await vi.importActual<any>("../src/features/snip-tool/snip-capture.js");
   return { ...actual, captureSnipFrame: vi.fn() };
@@ -274,16 +276,24 @@ describe("Snip Tool capture", () => {
     await waitFor(() => expect(onCapture).toHaveBeenCalledTimes(2));
   });
 
-  it("captures to the clipboard without sending when clipboard mode is on", async () => {
+  it("captures to the clipboard and saves every snip to Media Dock, never to a pane, when clipboard mode is on", async () => {
     const onCapture = vi.fn();
     render(<SnipToolOverlay isOpen onClose={vi.fn()} defaultClipboardMode activePaneId="pane:finn" activePaneName="Finn" onCapture={onCapture} />);
     fireEvent.click(screen.getByRole("button", { name: "Snip: Clipboard" }));
     dragRegion([20, 20], [200, 200]);
     await waitFor(() => expect(navigator.clipboard.write).toHaveBeenCalledOnce());
-    expect(onCapture).not.toHaveBeenCalled();
     expect(await screen.findByText("Copied to clipboard. Paste with Ctrl+V.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Capture full screen to clipboard" }));
     await waitFor(() => expect(navigator.clipboard.write).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(onCapture).toHaveBeenCalledTimes(2));
+    expect(onCapture.mock.calls.map(call => [call[0].type, call[1]])).toEqual([["image/png", null], ["image/png", null]]);
+  });
+
+  it("says a clipboard snip was kept when saving it to Media Dock fails", async () => {
+    render(<SnipToolOverlay isOpen onClose={vi.fn()} defaultClipboardMode onCapture={vi.fn().mockRejectedValue(new Error("offline"))} />);
+    fireEvent.click(screen.getByRole("button", { name: "Capture full screen to clipboard" }));
+    expect(await screen.findByText(/Copied to clipboard, but saving it to Media Dock failed: offline/)).toBeTruthy();
+    expect(navigator.clipboard.write).toHaveBeenCalledOnce();
   });
 
   it("captures the full screen 3 seconds after the timer is pressed, and a second press cancels", async () => {
@@ -370,20 +380,21 @@ describe("Snip Tool destination", () => {
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Capture full screen to clipboard" }));
     await screen.findByRole("button", { name: "Hold snips (2 held)" });
-    expect(screen.getByRole("button", { name: "Paste 2 held snips into Finn" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Paste 2 held snips into Nous when it is open, else the focused CLI pane/ })).toBeTruthy();
     expect(navigator.clipboard.write).not.toHaveBeenCalled();
     const input = screen.getByLabelText("Hugo input");
     // Greek layout: key is "ω", code is still KeyV.
     expect(fireEvent.keyDown(input, { key: "ω", code: "KeyV", ctrlKey: true })).toBe(false);
-    await waitFor(() => expect(onCapture).toHaveBeenCalledTimes(2));
-    expect(onCapture.mock.calls.map(call => [call[0].type, call[1]])).toEqual([["image/png", "pane:hugo"], ["image/png", "pane:hugo"]]);
+    await waitFor(() => expect(onCapture).toHaveBeenCalledTimes(4));
+    // Each snip went to Media Dock when it was taken, then to the pane on paste.
+    expect(onCapture.mock.calls.map(call => [call[0].type, call[1]])).toEqual([["image/png", null], ["image/png", null], ["image/png", "pane:hugo"], ["image/png", "pane:hugo"]]);
     expect(await screen.findByText("Pasted 2 snips into Hugo.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Hold snips" }).getAttribute("aria-pressed")).toBe("true");
     expect(fireEvent.keyDown(input, { key: "v", code: "KeyV", ctrlKey: true })).toBe(true);
-    expect(onCapture).toHaveBeenCalledTimes(2);
+    expect(onCapture).toHaveBeenCalledTimes(4);
   });
 
-  it("Ctrl+V with focus outside the panes pastes held snips into the snip target, but never from a text field", async () => {
+  it("Ctrl+V with focus outside the panes pastes held snips into the focused CLI pane, but never from a text field", async () => {
     const onCapture = vi.fn().mockResolvedValue(undefined);
     render(<>
       <button type="button">Plans</button><input aria-label="Composer" />
@@ -394,8 +405,8 @@ describe("Snip Tool destination", () => {
     await screen.findByRole("button", { name: "Hold snips (1 held)" });
     expect(fireEvent.keyDown(screen.getByLabelText("Composer"), { key: "v", code: "KeyV", ctrlKey: true })).toBe(true);
     expect(fireEvent.keyDown(screen.getByRole("button", { name: "Plans" }), { key: "v", code: "KeyV", ctrlKey: true })).toBe(false);
-    await waitFor(() => expect(onCapture).toHaveBeenCalledOnce());
-    expect(onCapture.mock.calls[0]![1]).toBe("pane:finn");
+    await waitFor(() => expect(onCapture).toHaveBeenCalledTimes(2));
+    expect(onCapture.mock.calls.map(call => call[1])).toEqual([null, "pane:finn"]);
     expect(await screen.findByText("Pasted 1 snip into Finn.")).toBeTruthy();
   });
 
@@ -404,18 +415,63 @@ describe("Snip Tool destination", () => {
     render(<SnipToolOverlay isOpen onClose={vi.fn()} defaultClipboardMode availablePanes={cliPanes} activePaneId="pane:finn" activePaneMode="TERMINAL" onCapture={onCapture} />);
     fireEvent.click(screen.getByRole("button", { name: "Hold snips" }));
     fireEvent.click(screen.getByRole("button", { name: "Capture full screen to clipboard" }));
-    await screen.findByRole("button", { name: "Hold snips (1 held)" });
+    await screen.findByText("Held 1 snip. Ctrl+V pastes them all.");
     vi.useFakeTimers();
     try {
       fireEvent.click(screen.getByRole("button", { name: "Capture in 3 seconds" }));
       expect(fireEvent.keyDown(document.body, { key: "v", code: "KeyV", ctrlKey: true })).toBe(false);
-      expect(onCapture).not.toHaveBeenCalled();
+      expect(onCapture).toHaveBeenCalledOnce();
       await act(async () => { vi.advanceTimersByTime(3000); });
     } finally {
       vi.useRealTimers();
     }
-    await waitFor(() => expect(onCapture).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(onCapture).toHaveBeenCalledTimes(4));
+    expect(onCapture.mock.calls.map(call => call[1])).toEqual([null, null, "pane:finn", "pane:finn"]);
     expect(await screen.findByText("Pasted 2 snips into Finn.")).toBeTruthy();
+  });
+
+  it("routes a clipboard-mode paste to the focused pane, else the open Nous composer, else the active CLI pane, else Media Dock", () => {
+    render(<><article data-space-pane-id="pane:hugo"><textarea aria-label="Hugo input" /></article><button type="button">Plans</button></>);
+    const hugo = screen.getByLabelText("Hugo input"), plans = screen.getByRole("button", { name: "Plans" });
+    expect(clipboardPasteRoute(hugo, "pane:finn")).toBe("pane:hugo");
+    expect(clipboardPasteRoute(plans, "pane:finn")).toBe("pane:finn");
+    expect(clipboardPasteRoute(plans, null)).toBeNull();
+    render(<textarea data-nous-composer aria-label="Message Nous" />);
+    expect(clipboardPasteRoute(plans, "pane:finn")).toBe(NOUS_PASTE_TARGET);
+    expect(clipboardPasteRoute(null, "pane:finn")).toBe(NOUS_PASTE_TARGET);
+    expect(clipboardPasteRoute(hugo, "pane:finn")).toBe("pane:hugo");
+  });
+
+  it("Ctrl+V in Nous attaches every held snip there, and with no Nous or CLI pane they stay in Media Dock, never a remembered pane", async () => {
+    const onCapture = vi.fn().mockResolvedValue(undefined), attached = vi.fn();
+    window.addEventListener("space:nous-attach-files", attached);
+    const ui = (nous: boolean, activePaneId: string | null) => <>
+      {nous && <textarea data-nous-composer aria-label="Message Nous" />}
+      <SnipToolOverlay isOpen onClose={vi.fn()} defaultClipboardMode availablePanes={cliPanes} activePaneId={activePaneId} activePaneMode="TERMINAL" onCapture={onCapture} />
+    </>;
+    try {
+      const { rerender } = render(ui(true, "pane:finn"));
+      fireEvent.click(screen.getByRole("button", { name: "Hold snips" }));
+      for (const n of [1, 2, 3]) {
+        fireEvent.click(screen.getByRole("button", { name: "Capture full screen to clipboard" }));
+        await screen.findByText(`Held ${n} snip${n === 1 ? "" : "s"}. Ctrl+V pastes them all.`);
+      }
+      expect(onCapture.mock.calls.map(call => call[1])).toEqual([null, null, null]);
+      expect(fireEvent.keyDown(screen.getByLabelText("Message Nous"), { key: "v", code: "KeyV", ctrlKey: true })).toBe(false);
+      expect(attached).toHaveBeenCalledOnce();
+      expect((attached.mock.calls[0]![0] as CustomEvent<File[]>).detail.map(file => file.type)).toEqual(["image/png", "image/png", "image/png"]);
+      expect(await screen.findByText("Attached 3 snips to Nous.")).toBeTruthy();
+      expect(onCapture).toHaveBeenCalledTimes(3);
+      // Nous closed and no CLI pane focused: Finn is still the remembered snip target, yet the paste goes nowhere but Media Dock.
+      rerender(ui(false, null));
+      fireEvent.click(screen.getByRole("button", { name: "Capture full screen to clipboard" }));
+      await screen.findByText("Held 1 snip. Ctrl+V pastes them all.");
+      expect(fireEvent.keyDown(document.body, { key: "v", code: "KeyV", ctrlKey: true })).toBe(false);
+      expect(await screen.findByText("Saved 1 snip to Media Dock.")).toBeTruthy();
+      expect(onCapture.mock.calls.map(call => call[1])).toEqual([null, null, null, null]);
+    } finally {
+      window.removeEventListener("space:nous-attach-files", attached);
+    }
   });
 
   it("releases the lock when the locked pane closes", () => {
@@ -643,7 +699,8 @@ describe("Snip Tool on the right rail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Snip: Clipboard" }));
     dragRegion([20, 20], [200, 200]);
     await waitFor(() => expect(navigator.clipboard.write).toHaveBeenCalledOnce());
-    expect(onCapture).not.toHaveBeenCalled();
+    await waitFor(() => expect(onCapture).toHaveBeenCalledOnce());
+    expect(onCapture.mock.calls[0]![1]).toBeNull();
     expect(railCard().classList.contains("snip-rail-card")).toBe(true);
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "Snip: Clipboard" }), { clientX: 776, clientY: 320, button: 0 });
@@ -680,5 +737,172 @@ describe("Snip Tool in the Workspace surface", () => {
     expect(capsule.classList.contains("is-inline")).toBe(true);
     expect(capsule.style.left).toBe("");
     expect(screen.getByText(/PrtScn works anywhere/)).toBeTruthy();
+  });
+});
+
+describe("Snip Tool video recording", () => {
+  afterEach(() => {
+    delete (navigator as any).mediaDevices; delete (window as any).devicePixelRatio;
+    delete (HTMLVideoElement.prototype as any).requestVideoFrameCallback; delete (HTMLCanvasElement.prototype as any).captureStream;
+  });
+  /** A browser sharing this tab (its capture handle matches) at twice the 800x600 viewport, unless `thisTab` is false. */
+  function fakeRecording({ thisTab = true, frame = [1600, 1200] } = {}) {
+    let handle = "";
+    const track = { stop: vi.fn(), addEventListener: vi.fn(), getCaptureHandle: () => (thisTab ? { handle } : null) };
+    const stream = { getTracks: () => [track], getVideoTracks: () => [track] };
+    const getDisplayMedia = vi.fn().mockResolvedValue(stream);
+    const getUserMedia = vi.fn().mockResolvedValue(stream);
+    installSpaceRuntime({ kind: "browser", platform: { displayMediaSupported: true, getDisplayMedia } } as any);
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia, setCaptureHandleConfig: (config: { handle: string }) => { handle = config.handle; } } });
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(HTMLVideoElement.prototype, "videoWidth", "get").mockReturnValue(frame[0]!);
+    vi.spyOn(HTMLVideoElement.prototype, "videoHeight", "get").mockReturnValue(frame[1]!);
+    (HTMLVideoElement.prototype as any).requestVideoFrameCallback = vi.fn();
+    const drawImage = vi.fn();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage } as any);
+    const cropTrack = { stop: vi.fn() };
+    const cropStream = { getTracks: () => [cropTrack], getVideoTracks: () => [cropTrack] };
+    (HTMLCanvasElement.prototype as any).captureStream = () => cropStream;
+    const recorded: unknown[] = [];
+    vi.stubGlobal("MediaRecorder", class {
+      static isTypeSupported = () => true;
+      state = "inactive"; ondataavailable: any; onstop: any;
+      constructor(source: unknown) { recorded.push(source); }
+      start() { this.state = "recording"; }
+      stop() { this.state = "inactive"; this.ondataavailable?.({ data: new Blob(["webm"]) }); this.onstop?.(); }
+    });
+    return { track, stream, cropTrack, cropStream, getDisplayMedia, getUserMedia, drawImage, recorded };
+  }
+  const record = (props: Partial<React.ComponentProps<typeof SnipToolOverlay>> = {}) => {
+    render(<SnipToolOverlay isOpen onClose={vi.fn()} onCapture={vi.fn().mockResolvedValue(undefined)} {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Record video" }));
+  };
+
+  it("opens the Snip selection, and Escape cancels with nothing recorded", () => {
+    const { getDisplayMedia } = fakeRecording();
+    const onCapture = vi.fn();
+    record({ onCapture });
+    expect(within(layer()).getByRole("status").textContent).toMatch(/^Record an area\. Drag to select it/);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Snip selection" })).toBeNull();
+    expect(getDisplayMedia).not.toHaveBeenCalled();
+    expect(onCapture).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Record video" })).toBeTruthy();
+  });
+
+  it("records the selected area of this tab, framed, until the second click and saves the WebM to Media Dock", async () => {
+    const { track, cropTrack, cropStream, getDisplayMedia, drawImage, recorded } = fakeRecording();
+    const onCapture = vi.fn().mockResolvedValue(undefined);
+    record({ activePaneId: "pane:1", availablePanes: panes, onCapture });
+    dragRegion([100, 50], [300, 200]);
+    const stop = await screen.findByRole("button", { name: /^Stop recording \(0:00\)/ });
+    expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({ preferCurrentTab: true }));
+    // The 200x150 area at (100, 50) of an 800x600 tab captured at 1600x1200.
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 200, 100, 400, 300, 0, 0, 400, 300);
+    expect(recorded).toEqual([cropStream]);
+    const frame = document.querySelector<HTMLElement>(".snip-record-frame")!;
+    expect([frame.style.left, frame.style.top, frame.style.width, frame.style.height]).toEqual(["98px", "48px", "204px", "154px"]);
+    fireEvent.click(stop);
+    await waitFor(() => expect(onCapture).toHaveBeenCalledOnce());
+    const [file, paneId] = onCapture.mock.calls[0]!;
+    expect([file.type, paneId]).toEqual(["video/webm", null]);
+    expect(track.stop).toHaveBeenCalled();
+    expect(cropTrack.stop).toHaveBeenCalled();
+    expect(await screen.findByText("Recording saved to Media Dock.")).toBeTruthy();
+    expect(document.querySelector(".snip-record-frame")).toBeNull();
+  });
+
+  it("records the desktop app's own window with no picker, past its title bar, at device pixels", async () => {
+    const { getDisplayMedia, getUserMedia, drawImage } = fakeRecording({ frame: [1600, 1260] });
+    Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 2 });
+    vi.stubGlobal("spaceDesktop", { capturePage: vi.fn(), getWindowMediaSourceId: vi.fn().mockResolvedValue({ success: true, sourceId: "window:7:0" }) });
+    record();
+    dragRegion([100, 50], [300, 200]);
+    await screen.findByRole("button", { name: /^Stop recording/ });
+    expect(getUserMedia.mock.calls[0]![0].video.mandatory).toMatchObject({ chromeMediaSource: "desktop", chromeMediaSourceId: "window:7:0" });
+    expect(getDisplayMedia).not.toHaveBeenCalled();
+    // A 30 px title bar above the 800x600 page.
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 200, 160, 400, 300, 0, 0, 400, 300);
+  });
+
+  it("records another source picked in the browser whole and says so", async () => {
+    const { stream, drawImage, recorded } = fakeRecording({ thisTab: false });
+    record();
+    dragRegion([100, 50], [300, 200]);
+    expect(await screen.findByText("Another source was chosen, so all of it is being recorded.")).toBeTruthy();
+    expect(recorded).toEqual([stream]);
+    expect(drawImage).not.toHaveBeenCalled();
+    expect(document.querySelector(".snip-record-frame")).toBeNull();
+  });
+
+  it("hides Record video on Android, which captures stills only", () => {
+    fakeRecording();
+    vi.stubGlobal("SpaceNative", { requestPageCapture: vi.fn() });
+    render(<SnipToolOverlay isOpen onClose={vi.fn()} onCapture={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Record video" })).toBeNull();
+  });
+
+  it("clipboard mode holds the finished recording, saved once: the Ctrl+V icon attaches the WebM to Nous, keyboard Ctrl+V pastes it into a CLI pane", async () => {
+    fakeRecording();
+    const onCapture = vi.fn().mockResolvedValue(undefined), attached = vi.fn();
+    window.addEventListener("space:nous-attach-files", attached);
+    try {
+      render(<>
+        <textarea data-nous-composer aria-label="Message Nous" />
+        <article data-space-pane-id="pane:hugo"><textarea aria-label="Hugo input" /></article>
+        <SnipToolOverlay isOpen onClose={vi.fn()} defaultClipboardMode availablePanes={cliPanes} activePaneId="pane:finn" activePaneMode="TERMINAL" onCapture={onCapture} />
+      </>);
+      const recordOnce = async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Record video" }));
+        dragRegion([100, 50], [300, 200]);
+        fireEvent.click(await screen.findByRole("button", { name: /^Stop recording/ }));
+        expect(await screen.findByText("Recording saved to Media Dock. Ctrl+V pastes it.")).toBeTruthy();
+      };
+      await recordOnce();
+      const [video, route] = onCapture.mock.calls[0]!;
+      expect([video.type, /\.webm$/.test(video.name), route]).toEqual(["video/webm", true, null]);
+      fireEvent.click(screen.getByRole("button", { name: /^Paste 1 held snips into/ }));
+      expect((attached.mock.calls[0]![0] as CustomEvent<File[]>).detail).toEqual([video]);
+      expect(await screen.findByText("Attached 1 snip to Nous.")).toBeTruthy();
+      expect(onCapture).toHaveBeenCalledOnce();
+      await recordOnce();
+      expect(fireEvent.keyDown(screen.getByLabelText("Hugo input"), { key: "v", code: "KeyV", ctrlKey: true })).toBe(false);
+      expect(await screen.findByText("Pasted 1 snip into Hugo.")).toBeTruthy();
+      // Media Dock got each recording once, when it stopped; the pane gets its own copy.
+      expect(onCapture.mock.calls.map(call => [call[0].type, call[1]])).toEqual([["video/webm", null], ["video/webm", null], ["video/webm", "pane:hugo"]]);
+      expect(onCapture.mock.calls[2]![0]).toBe(onCapture.mock.calls[1]![0]);
+    } finally {
+      window.removeEventListener("space:nous-attach-files", attached);
+    }
+  });
+
+  it("a video file pasted from the OS passes the Snip Tool and attaches in the Nous composer, as NousDock's paste does", async () => {
+    const uploadNousAttachments = vi.fn().mockResolvedValue({ attachments: [{ id: "att:1", kind: "VIDEO", name: "clip.webm" }] });
+    installSpaceRuntime({ kind: "browser", api: { uploadNousAttachments }, platform: {} } as unknown as Parameters<typeof installSpaceRuntime>[0]);
+    const onError = vi.fn();
+    function Composer() {
+      const pending = usePendingFiles(onError);
+      return <>
+        <textarea data-nous-composer aria-label="Message Nous" onPaste={event => pending.add(clipboardFiles(event.clipboardData))} />
+        <NousPendingFiles files={pending.files} onRemove={vi.fn()} />
+      </>;
+    }
+    render(<><Composer /><SnipToolOverlay isOpen onClose={vi.fn()} defaultClipboardMode onCapture={vi.fn()} /></>);
+    const clip = new File([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])], "clip.webm", { type: "video/webm" });
+    fireEvent.paste(screen.getByLabelText("Message Nous"), { clipboardData: { files: [clip], items: [], types: ["Files"], getData: () => "" } });
+    await waitFor(() => expect(uploadNousAttachments).toHaveBeenCalledWith([clip]));
+    expect(within(screen.getByRole("list", { name: "Attached files" })).getByText("clip.webm")).toBeTruthy();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("downloads the recording when the upload fails, so it is never lost", async () => {
+    fakeRecording();
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    record({ onCapture: vi.fn().mockRejectedValue(new Error("Too large.")) });
+    dragRegion([100, 50], [300, 200]);
+    fireEvent.click(await screen.findByRole("button", { name: /^Stop recording/ }));
+    expect(await screen.findByText("Too large. The recording was downloaded instead.")).toBeTruthy();
+    expect(click).toHaveBeenCalledOnce();
   });
 });

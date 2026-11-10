@@ -1,5 +1,6 @@
 import { join, resolve, sep } from "node:path";
 import { findCliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export const codexDirectParityRuntimeId = "cli:codex";
 export const codexDirectParityCommand = "codex-vscode-parity";
@@ -18,25 +19,25 @@ export const qwenDirectParityCommand = "qwen-vscode-parity";
 export const deepseekDirectParityRuntimeId = "cli:deepseek";
 export const deepseekDirectParityCommand = "deepseek-vscode-parity";
 export const codexDirectParityCwd = "/etc";
-export const codexDirectParityHome = "/var/lib/spaceapp-user";
+export const codexDirectParityHome = SPACE_AGENT_HOME;
 // The Codex home of the install the pane runs in: a public install's CLI container (SPACE_CODEX_HOME in its compose
 // file), so its turn state, plans and threads are found; stable and dev leave it unset.
-export const codexDirectParityCodexHome = process.env.SPACE_CODEX_HOME?.trim() || "/var/lib/spaceapp-user/.codex";
-export const codexDirectParityTmp = "/var/lib/spaceapp-user/.codex/tmp";
-export const claudeDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-claude";
+export const codexDirectParityCodexHome = process.env.SPACE_CODEX_HOME?.trim() || `${SPACE_AGENT_HOME}/.codex`;
+export const codexDirectParityTmp = `${SPACE_AGENT_HOME}/.codex/tmp`;
+export const claudeDirectParityRoot = `${SPACE_AGENT_HOME}/.codex/space-claude`;
 export const claudeDirectParityTmp = `${claudeDirectParityRoot}/tmp`;
-export const opencodeDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-opencode";
+export const opencodeDirectParityRoot = `${SPACE_AGENT_HOME}/.codex/space-opencode`;
 export const opencodeDirectParityTmp = `${opencodeDirectParityRoot}/tmp`;
-export const kimiDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-kimi";
+export const kimiDirectParityRoot = `${SPACE_AGENT_HOME}/.codex/space-kimi`;
 export const kimiDirectParityTmp = `${kimiDirectParityRoot}/tmp`;
-export const grokDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-grok";
+export const grokDirectParityRoot = `${SPACE_AGENT_HOME}/.codex/space-grok`;
 export const grokDirectParityTmp = `${grokDirectParityRoot}/tmp`;
-export const geminiDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-gemini";
+export const geminiDirectParityRoot = `${SPACE_AGENT_HOME}/.codex/space-gemini`;
 export const geminiDirectParityTmp = `${geminiDirectParityRoot}/tmp`;
-export const qwenDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-qwen";
+export const qwenDirectParityRoot = `${SPACE_AGENT_HOME}/.codex/space-qwen`;
 export const hermesDirectParityRuntimeId = "cli:hermes";
 export const hermesDirectParityCommand = "hermes-vscode-parity";
-export const hermesDirectParityRoot = "/var/lib/spaceapp-user/.hermes";
+export const hermesDirectParityRoot = `${SPACE_AGENT_HOME}/.hermes`;
 export const hermesDirectParityTmp = `${hermesDirectParityRoot}/tmp`;
 export const qwenDirectParityTmp = `${qwenDirectParityRoot}/tmp`;
 
@@ -91,6 +92,12 @@ export function resolveCodexDirectParityCwd(cwd: string | null | undefined, work
  */
 export function publicRoomWorkspacePath(workspaceRoot: string, roomId: string): string {
   return join(workspaceRoot, roomId.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "room");
+}
+
+/** A public install starts a pane that names no project of its own (none, the operator default /etc, the private checkout
+ * <install root>) in its room's folder. One rule for the UI start and Space Control's (Nous's panes; 1.2.0 lab 2/11: they ran in /etc). */
+export function publicPaneCwd(cwd: string | null | undefined, workspaceRoot: string, roomId: string): string {
+  return !cwd || cwd === codexDirectParityCwd || cwd === SPACE_INSTALL_ROOT ? publicRoomWorkspacePath(workspaceRoot, roomId) : cwd;
 }
 
 export function resolveDirectOperatorParityCwd(cwd: string | null | undefined, workspaceRoot: string): string {

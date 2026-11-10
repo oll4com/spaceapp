@@ -4,8 +4,9 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { isBrowserPane, isCliPane } from "./pane-guards.js";
-import type { FastifyInstance, RouteShorthandOptions } from "fastify";
+import { isBrowserPane, isCliPane, operatorForce } from "./pane-guards.js";
+import type { FastifyBaseLogger, FastifyInstance, RouteShorthandOptions } from "fastify";
+import type { BrowserHostActorContext } from "@space/browser-host";
 import {
   type AuthUser, createRoomInputSchema, MAX_ROOMS, paginationRequestSchema, roomLimitReached, type Pane, type PaneBrowserSession,
   type PaneCliSession, pickNextAvailableRoomName, reorderPanesInputSchema, reorderRoomsInputSchema, type Room,
@@ -153,6 +154,80 @@ export function registerRoomListRoutes(app: FastifyInstance, options: {
   });
 }
 
+/** What deleting a room needs; the DELETE route and the proof-room sweep both pass it. */
+export type RoomDeleteDeps = {
+  config: SpaceApiConfig;
+  store: SpaceStore;
+  browserSessionManager: BrowserSessionManagerWithHostHealth;
+  cliTerminalManager: Pick<CliTerminalManager, "detachSession">;
+  cliRenderAi: Pick<ReturnType<typeof createCliRenderAiController>, "dispose">;
+  youtubePlaybackStore: YouTubePlaybackStore;
+  youtubeAccountStore: YouTubeAccountStore;
+  browserAccountStore: YouTubeAccountStore;
+  /** The pane close guard (pane-routes DELETE /api/panes/:id): a room whose pane may not close is not deleted, closed panes included (they reopen when due). */
+  assertPaneMayClose?: (pane: Pane) => Promise<void>;
+};
+
+/** Deletes a room the one way: stop its browsers, delete it, drop proof state, audit room.delete, then detach its CLIs in the background. */
+export async function deleteRoomWithTeardown(deps: RoomDeleteDeps, roomId: string, ctx: {
+  traceId: string; actor: BrowserHostActorContext; proofStateUserId: string; log: FastifyBaseLogger; reason?: string; force?: boolean;
+  audit: (input: { action: string; targetType: string; targetId: string; metadata: Record<string, unknown> }) => Promise<void>;
+}): Promise<Room> {
+  const { config, store, browserSessionManager, cliTerminalManager, cliRenderAi, youtubePlaybackStore, youtubeAccountStore, browserAccountStore } = deps;
+  const panes = await store.listPanes(roomId, true);
+  if (!ctx.force) for (const pane of panes) await deps.assertPaneMayClose?.(pane);
+  const cliSessions: PaneCliSession[] = [];
+  const browserSessions: PaneBrowserSession[] = [];
+  for (const pane of panes) {
+    if (isCliPane(pane)) {
+      const active = await store.getActivePaneCliSession(pane.id);
+      if (active) cliSessions.push(active);
+    }
+    if (isBrowserPane(pane)) {
+      const active = await store.getActivePaneBrowserSession(pane.id);
+      if (active) browserSessions.push(active);
+    }
+  }
+  // The Unix host resolves stopPane against the stored active session. Stop
+  // browsers before cascading room deletion removes that identity; otherwise
+  // their Chrome processes keep consuming capacity until the host restarts.
+  await Promise.all(browserSessions.map((session) => browserSessionManager.stopPane(session.paneId, ctx.traceId, ctx.actor)));
+  const room = await store.deleteRoom(roomId);
+  if(room.description===cliRenderAiDescription)cliRenderAi.dispose(room.id);
+  if (room.kind === "AGENT_PROOF") {
+    await youtubePlaybackStore.removeProofState(`${ctx.proofStateUserId}:proof:${room.id}`);
+    await youtubeAccountStore.removeProofState(`${ctx.proofStateUserId}:proof:${room.id}`);
+    await browserAccountStore.removeProofState(`${ctx.proofStateUserId}:proof:${room.id}`);
+  }
+  await ctx.audit({
+    action: "room.delete",
+    targetType: "room",
+    targetId: room.id,
+    metadata: {
+      name: room.name,
+      paneCap: room.paneCap,
+      interruptedCliSessions: cliSessions.length,
+      closedBrowserSessions: browserSessions.length,
+      deferredTeardown: cliSessions.length,
+      ...(ctx.reason ? { reason: ctx.reason } : {})
+    }
+  });
+  void (async () => {
+    try {
+      const settled = await Promise.allSettled(cliSessions.map((session) => cliTerminalManager.detachSession(session)));
+      const failed = settled.filter((entry) => entry.status === "rejected").length;
+      if(!failed&&room.description===cliRenderAiDescription)await cleanupCliRenderAiRepository(config.browserEvidenceArtifactRoot,room.id);
+      ctx.log.info(
+        { roomId: room.id, cliSessions: cliSessions.length, browserSessions: browserSessions.length, failedTeardown: failed },
+        "room delete background teardown completed"
+      );
+    } catch (error) {
+      ctx.log.error({ err: error, roomId: room.id }, "room delete background teardown failed");
+    }
+  })();
+  return room;
+}
+
 /**
  * Room ordering, settings, project folders, pane layout, deletion and agent history; the parent retains
  * authentication, CSRF, errors and rate limits.
@@ -168,6 +243,7 @@ export function registerRoomManagementRoutes(app: FastifyInstance, options: {
   youtubePlaybackStore: YouTubePlaybackStore;
   youtubeAccountStore: YouTubeAccountStore;
   browserAccountStore: YouTubeAccountStore;
+  assertPaneMayClose?: (pane: Pane) => Promise<void>;
 }) {
   const { config, store, browserSessionManager, cliTerminalManager, routeOptions: defaultRouteRateLimitOptions,
     assertRoomAccess, cliRenderAi, youtubePlaybackStore, youtubeAccountStore, browserAccountStore } = options;
@@ -266,79 +342,26 @@ export function registerRoomManagementRoutes(app: FastifyInstance, options: {
     // ?kind=AGENT_PROOF: agents delete only their proof rooms, never an operator room by a wrong id.
     const expected = (request.query as { kind?: unknown } | undefined)?.kind;
     if (expected !== undefined && (await store.getRoom(params.id)).kind !== roomKindSchema.parse(expected)) throw new SpaceConflictError("The room is not of the expected kind.");
-    const panes = await store.listPanes(params.id, true);
-    const cliSessions: PaneCliSession[] = [];
-    const browserSessions: PaneBrowserSession[] = [];
-    for (const pane of panes) {
-      if (isCliPane(pane)) {
-        const active = await store.getActivePaneCliSession(pane.id);
-        if (active) cliSessions.push(active);
-      }
-      if (isBrowserPane(pane)) {
-        const active = await store.getActivePaneBrowserSession(pane.id);
-        if (active) browserSessions.push(active);
-      }
-    }
-    // The Unix host resolves stopPane against the stored active session. Stop
-    // browsers before cascading room deletion removes that identity; otherwise
-    // their Chrome processes keep consuming capacity until the host restarts.
-    await Promise.all(browserSessions.map((session) =>
-      browserSessionManager.stopPane(session.paneId, request.requestIdForSpace, operatorBrowserActor(request))
-    ));
-    const room = await store.deleteRoom(params.id);
-    if(room.description===cliRenderAiDescription)cliRenderAi.dispose(room.id);
-    if (room.kind === "AGENT_PROOF") {
-      await youtubePlaybackStore.removeProofState(`${request.user!.id}:proof:${room.id}`);
-      await youtubeAccountStore.removeProofState(`${request.user!.id}:proof:${room.id}`);
-      await browserAccountStore.removeProofState(`${request.user!.id}:proof:${room.id}`);
-    }
-    await recordAudit(store, request, {
-      action: "room.delete",
-      targetType: "room",
-      targetId: room.id,
-      metadata: {
-        name: room.name,
-        paneCap: room.paneCap,
-        interruptedCliSessions: cliSessions.length,
-        closedBrowserSessions: browserSessions.length,
-        deferredTeardown: cliSessions.length
-      }
+    const room = await deleteRoomWithTeardown(options, params.id, {
+      traceId: request.requestIdForSpace, actor: operatorBrowserActor(request), proofStateUserId: request.user!.id, log: request.log, force: operatorForce(request),
+      audit: (input) => recordAudit(store, request, input)
     });
-    void (async () => {
-      try {
-        const settled = await Promise.allSettled(
-          cliSessions.map((session) => cliTerminalManager.detachSession(session))
-        );
-        const failed = settled.filter((entry) => entry.status === "rejected").length;
-        if(!failed&&room.description===cliRenderAiDescription)await cleanupCliRenderAiRepository(config.browserEvidenceArtifactRoot,room.id);
-        request.log.info(
-          {
-            roomId: room.id,
-            cliSessions: cliSessions.length,
-            browserSessions: browserSessions.length,
-            failedTeardown: failed
-          },
-          "room delete background teardown completed"
-        );
-      } catch (error) {
-        request.log.error({ err: error, roomId: room.id }, "room delete background teardown failed");
-      }
-    })();
     return { ok: true, roomId: room.id };
   });
   app.get("/api/rooms/:id/agent-history", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
+    const { page, pageSize } = parseQuery(paginationRequestSchema, { pageSize: 100, ...(request.query as Record<string, unknown> | undefined) });
     await store.getRoom(params.id);
     const history = [...(await store.listSpaceAgentHistory(params.id)), ...(await store.listAgentPaneHistory(params.id))]
-      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
-      .slice(0, 100);
+      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+    // Every session of the room, paged (until 31/10 only the newest 100).
     return {
-      data: history,
+      data: history.slice((page - 1) * pageSize, page * pageSize),
       pagination: {
-        page: 1,
-        pageSize: 100,
+        page,
+        pageSize,
         totalItems: history.length,
-        totalPages: history.length ? 1 : 0
+        totalPages: Math.ceil(history.length / pageSize)
       }
     };
   });

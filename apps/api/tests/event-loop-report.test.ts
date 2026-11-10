@@ -8,6 +8,17 @@ function blockTheLoopFor300ms() {
   return spins;
 }
 
+// JS heap memory (typed array storage is outside the heap the sampler reads).
+function keepTwentyMegabytes() {
+  const kept: number[][] = [];
+  for (let block = 0; block < 20; block += 1) {
+    const values: number[] = [];
+    for (let index = 0; index < 2 ** 17; index += 1) values.push(index + 0.5);
+    kept.push(values);
+  }
+  return kept;
+}
+
 describe("event loop report", () => {
   it("logs utilization and delay percentiles once per interval and stops", async () => {
     const log = { info: vi.fn() };
@@ -28,10 +39,15 @@ describe("event loop report", () => {
     const stop = reportEventLoopLoad(log, 600, { profileEveryMs: 3_600_000 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     blockTheLoopFor300ms();
+    const kept = keepTwentyMegabytes();
     const profiles = () => log.info.mock.calls.filter(([, message]) => message === "Event loop profile");
     await vi.waitFor(() => expect(profiles()).toHaveLength(1), { timeout: 3_000 });
     stop();
     const [fields] = profiles()[0]!;
+    // API audit 4/11: the line names where the memory still held was allocated.
+    expect(kept.length).toBe(20);
+    expect(fields.heapLiveMb).toBeGreaterThanOrEqual(10);
+    expect(fields.heapTop.find((entry: { site: string }) => entry.site.includes("keepTwentyMegabytes")).mb).toBeGreaterThanOrEqual(10);
     expect(fields.event).toBe("event_loop.profile");
     expect(fields.longestBlockMs).toBeGreaterThanOrEqual(200);
     expect(fields.blockStack.join("\n")).toContain("blockTheLoopFor300ms");

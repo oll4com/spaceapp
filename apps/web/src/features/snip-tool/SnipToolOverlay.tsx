@@ -1,12 +1,15 @@
 import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { assertCaptureAllowed, captureSnipFrame, checkAbort, hasNativeCapture, releaseSnipSession, type SnipCaptureSession } from "./snip-capture.js";
+import {
+  assertCaptureAllowed, canRecordScreen, captureSnipFrame, checkAbort, hasNativeCapture, releaseSnipSession, startSnipRecording,
+  type SnipCaptureSession, type SnipRecording
+} from "./snip-capture.js";
 import { captureDomFrame, prepareDomCapture, SnipDomUnsupportedError } from "./snip-dom-capture.js";
 import { clamp, cropFrame, exportSnip, fitRect, frameFromBlob, selection, type Point, type Rect, type SnipFrame } from "./snip-image.js";
 import { SnipEditor, type SnipBusy, type SnipDestinationOption, type SnipEdit } from "./SnipEditor.js";
 import {
-  Check, ChevronDown, CircleAlert, Clipboard, Crop, GripVertical, ImagePlus, Images, Loader2, Lock, Monitor, Pencil, Timer, Unlock, X
+  Check, ChevronDown, CircleAlert, Clipboard, Crop, GripVertical, ImagePlus, Images, Loader2, Lock, Monitor, Pencil, Square, Timer, Unlock, Video, X
 } from "../ui-theme/app-icons.js";
 import {
   DOCK_MARGIN_RIGHT, getRailTopBoundary, loadSnipRailDock, placeSnipOnRail, saveSnipRailDock, SNIP_RAIL_CHANGED_EVENT, type SnipRailDock
@@ -29,7 +32,9 @@ export interface SnipToolOverlayProps {
 
 type Phase = "idle" | "selecting" | "editing";
 type Toast = { id: number; tone: "ok" | "error"; text: string; editable?: boolean };
-type Destination = { clipboard: boolean; hold: boolean; targetId: string | null; roomId?: string; label: string };
+type Destination = { clipboard: boolean; hold: boolean; media: boolean; targetId: string | null; roomId?: string; label: string };
+// A held snip or recording keeps its own type and name (image/png snips, video/webm recordings).
+type HeldSnip = { file: File; saved: boolean };
 
 const POSITIONS_STORAGE_KEY = "space.snip-tool.positions.v1";
 const CLIPBOARD_MODE_STORAGE_KEY = "space.snip-tool.clipboard-mode.v1";
@@ -92,9 +97,34 @@ async function copyBlobToClipboard(blobOrPromise: Blob | Promise<Blob>, signal?:
   if (signal) checkAbort(signal);
 }
 
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob), anchor = document.createElement("a");
+  anchor.href = url; anchor.download = filename; anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+
 const isCliMode = (mode?: string | null) => mode === "TERMINAL" || mode === "CHAT";
 const paneLabel = (pane: SnipTargetPane) => pane.paneName || pane.title || pane.mode;
 const MODE_TAGS: Record<string, string> = { TERMINAL: "CLI", CHAT: "Chat", BROWSER: "Browser" };
+
+export const NOUS_PASTE_TARGET = "nous";
+const NOUS_COMPOSER = "[data-nous-composer]";
+/**
+ * Where a clipboard-mode Ctrl+V goes: the pane holding focus, else the Nous composer when it is open, else the active
+ * CLI pane, else Media Dock (null). Never the remembered snip target, which may be a pane the operator no longer sees.
+ */
+export function clipboardPasteRoute(focus: Element | null, activeCliPaneId: string | null): string | null {
+  const paneId = focus?.closest("[data-space-pane-id]")?.getAttribute("data-space-pane-id");
+  if (paneId) return paneId;
+  if (focus?.closest(NOUS_COMPOSER) || document.querySelector(NOUS_COMPOSER)) return NOUS_PASTE_TARGET;
+  return activeCliPaneId;
+}
+/** Hands images to the Nous composer, which uploads them as its own attachments (NousDock). */
+function attachToNous(files: File[]) {
+  window.dispatchEvent(new CustomEvent("space:nous-attach-files", { detail: files }));
+  document.querySelector<HTMLElement>(NOUS_COMPOSER)?.focus({ preventScroll: true });
+}
 
 interface CaptureLayerProps {
   layerRef: React.RefObject<HTMLDivElement | null>;
@@ -184,11 +214,16 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   // Hold snips (clipboard mode only): snips stay in memory until one paste delivers them all.
   const [holdSnips, setHoldSnips] = useState(false);
-  const held = useRef<Blob[]>([]);
+  const held = useRef<HeldSnip[]>([]);
   const [heldCount, setHeldCount] = useState(0);
-  const pendingPaste = useRef<{ paneId: string | null } | null>(null);
+  const pendingPaste = useRef<{ focus: Element | null } | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
   const countdownTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [recording, setRecording] = useState<"starting" | "recording" | "saving" | null>(null);
+  const [recordSeconds, setRecordSeconds] = useState(0);
+  const recorder = useRef<SnipRecording | null>(null);
+  const [recordSelect, setRecordSelect] = useState(false);
+  const [recordRegion, setRecordRegion] = useState<Rect | null>(null);
   const [pos, setPos] = useState<Point>(() => loadSavedFloat() ?? defaultFloat({ width: 300, height: 44 }));
   const [pulse, setPulse] = useState(1);
   const [captureRoomId, setCaptureRoomId] = useState(roomId);
@@ -223,6 +258,14 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
   const targetDisplay = targetPane ? paneLabel(targetPane) : targetId ? "Unavailable pane" : "Media Dock";
   const destinationLabel = copyToClipboard ? "Clipboard" : targetDisplay;
   const snipLabel = copyToClipboard ? "Snip: Clipboard" : `Snip: ${targetDisplay}`;
+  const activeCliPaneId = activePaneId && isCliPane(activePaneId, activePaneMode) ? activePaneId : null;
+  /** Ctrl+V's destination: in clipboard mode wherever the operator is (clipboardPasteRoute), otherwise the snip target. */
+  const pasteRoute = (focus: Element | null) => copyToClipboard ? clipboardPasteRoute(focus, activeCliPaneId) : targetId;
+  const routeDisplay = (route: string | null) => {
+    if (route === NOUS_PASTE_TARGET) return "Nous";
+    const pane = route ? panes.find(p => p.id === route) : null;
+    return pane ? paneLabel(pane) : route ? "the pane" : "Media Dock";
+  };
 
   // ---- frame lifetime: frames are released once neither the editor nor the "Edit" toast needs them.
   const releaseFrame = (frame: SnipFrame | null | undefined) => {
@@ -345,19 +388,37 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
   };
 
   // ---- capture & delivery
-  const destinationSnapshot = (): Destination => ({ clipboard: copyToClipboard, hold: holdSnips && copyToClipboard, targetId, roomId: captureRoomId, label: destinationLabel });
+  const destinationSnapshot = (): Destination => ({
+    clipboard: copyToClipboard, hold: holdSnips && copyToClipboard, media: copyToClipboard, targetId, roomId: captureRoomId, label: destinationLabel
+  });
 
   const deliver = async (frame: SnipFrame, edit: SnipEdit, dest: Destination, signal: AbortSignal, alsoCopy: boolean): Promise<string> => {
     const png = exportSnip(frame, edit.crop, edit.marks).then(blob => { checkAbort(signal); return blob; });
     if (dest.clipboard) {
       setBusy("export");
+      let message: string, snip: HeldSnip | null = null;
       if (dest.hold) {
-        held.current.push(await png);
+        snip = { file: new File([await png], `space-snip-${Date.now()}.png`, { type: "image/png" }), saved: false };
+        held.current.push(snip);
         setHeldCount(held.current.length);
-        return `Held ${held.current.length} snip${held.current.length === 1 ? "" : "s"}. Ctrl+V pastes them all.`;
+        message = `Held ${held.current.length} snip${held.current.length === 1 ? "" : "s"}. Ctrl+V pastes them all.`;
+      } else {
+        // The system clipboard now holds this snip, newer than a recording plain clipboard mode held.
+        if (!holdSnips) { held.current = []; setHeldCount(0); }
+        await copyBlobToClipboard(png, signal);
+        message = "Copied to clipboard. Paste with Ctrl+V.";
       }
-      await copyBlobToClipboard(png, signal);
-      return "Copied to clipboard. Paste with Ctrl+V.";
+      if (!dest.media) return message;
+      // Clipboard mode keeps every snip in Media Dock at once, not only when it is pasted into a pane.
+      setBusy("send");
+      try {
+        await onCapture(new File([await png], `space-snip-${Date.now()}.png`, { type: "image/png" }), null, dest.roomId, signal);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        throw new Error(`${message.split(".")[0]}, but saving it to Media Dock failed: ${(error as Error).message || "unknown error"}`, { cause: error });
+      }
+      if (snip) snip.saved = true;
+      return message;
     }
     setBusy("send");
     const blob = await png;
@@ -468,9 +529,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
         setBusy("export");
         const blob = await exportSnip(frame, edit.crop, edit.marks);
         checkAbort(controller.signal);
-        const url = URL.createObjectURL(blob), anchor = document.createElement("a");
-        anchor.href = url; anchor.download = `space-snip-${Date.now()}.png`; anchor.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        downloadBlob(blob, `space-snip-${Date.now()}.png`);
         message = "Image download started.";
       } else {
         // "Copy image" always copies; only the primary action holds.
@@ -488,19 +547,28 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
   };
 
   /** Delivers every held snip in order, forgetting each one once it is delivered. */
-  const pasteHeld = async (paneId: string | null, label: string) => {
+  const pasteHeld = async (route: string | null) => {
+    const total = held.current.length, snips = `${total} snip${total === 1 ? "" : "s"}`;
+    if (route === NOUS_PASTE_TARGET) {
+      const files = held.current.map(snip => snip.file);
+      held.current = []; setHeldCount(0); setMenuOpen(false);
+      attachToNous(files);
+      showToast("ok", `Attached ${snips} to Nous.`);
+      return;
+    }
     const controller = begin();
     setBusy("send"); setToast(null); setMenuOpen(false);
-    let count = 0;
     try {
       while (held.current.length) {
-        await onCapture(new File([held.current[0]!], `space-snip-${Date.now()}-${count + 1}.png`, { type: "image/png" }), paneId, captureRoomId, controller.signal);
-        checkAbort(controller.signal);
+        // A snip clipboard mode already saved is not saved to Media Dock twice; a pane still gets its own copy.
+        if (route || !held.current[0]!.saved) {
+          await onCapture(held.current[0]!.file, route, captureRoomId, controller.signal);
+          checkAbort(controller.signal);
+        }
         held.current.shift();
-        count += 1;
         setHeldCount(held.current.length);
       }
-      showToast("ok", paneId ? `Pasted ${count} snip${count === 1 ? "" : "s"} into ${label}.` : `Saved ${count} snip${count === 1 ? "" : "s"} to Media Dock.`);
+      showToast("ok", route ? `Pasted ${snips} into ${routeDisplay(route)}.` : `Saved ${snips} to Media Dock.`);
     } catch (error) {
       const message = failed(error, controller.signal);
       if (message) showToast("error", message);
@@ -509,11 +577,12 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
     }
   };
 
-  /** Ctrl+V for the target pane: a clipboard image goes the way a snip does, text through the CLI pane's own paste. */
+  /** Ctrl+V for the paste route: a clipboard image goes the way a snip does, text through the CLI pane's own paste. */
   const pasteClipboard = async () => {
-    if (operation.current || missingTarget) return;
+    if (operation.current || (!copyToClipboard && missingTarget)) return;
     if (handlers.current.pasteHeldInto(null)) return;
-    const dest = destinationSnapshot(), label = targetDisplay, cli = isCliPane(targetId, targetPane?.mode);
+    const dest = destinationSnapshot(), route = pasteRoute(null), label = routeDisplay(route);
+    const cli = route !== NOUS_PASTE_TARGET && isCliPane(route, panes.find(p => p.id === route)?.mode);
     const controller = begin();
     setBusy("send"); setToast(null); setMenuOpen(false);
     try {
@@ -524,11 +593,13 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
       if (item) {
         const blob = await item.getType("image/png");
         checkAbort(controller.signal);
-        await onCapture(new File([blob], `space-paste-${Date.now()}.png`, { type: "image/png" }), dest.targetId, dest.roomId, controller.signal);
+        const file = new File([blob], `space-paste-${Date.now()}.png`, { type: "image/png" });
+        if (route === NOUS_PASTE_TARGET) attachToNous([file]);
+        else await onCapture(file, route, dest.roomId, controller.signal);
         checkAbort(controller.signal);
-        showToast("ok", dest.targetId ? `Pasted into ${label}.` : "Saved to Media Dock.");
+        showToast("ok", route ? `Pasted into ${label}.` : "Saved to Media Dock.");
       } else if (cli) {
-        window.dispatchEvent(new CustomEvent("space:terminal-pane-action", { detail: { paneId: dest.targetId, action: "paste" } }));
+        window.dispatchEvent(new CustomEvent("space:terminal-pane-action", { detail: { paneId: route, action: "paste" } }));
       } else {
         showToast("error", "The clipboard holds no image.");
       }
@@ -540,11 +611,12 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
     }
   };
 
-  const startSelecting = () => {
+  const startSelecting = (record = false) => {
     if (operation.current) return;
     rememberFocus();
     setMenuOpen(false);
     setToast(null);
+    setRecordSelect(record);
     setPhase("selecting");
   };
   const stopCountdown = () => {
@@ -565,6 +637,56 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
       handlers.current.fullScreen();
     }, 1000);
   };
+  /** Record selects an area like Snip; a second click or the browser's "Stop sharing" stops. */
+  const toggleRecording = () => {
+    if (recorder.current) recorder.current.stop();
+    else if (!recording) startSelecting(true);
+  };
+  /** Records the selected area until stopped; the video goes to Media Dock, or downloads if the upload fails. */
+  const recordArea = async (region: Rect) => {
+    // Not goIdle: closing the tool on capture would end the recording it starts.
+    setPhase("idle"); restoreFocus();
+    if (recorder.current || recording) return;
+    setRecording("starting"); setToast(null); setMenuOpen(false);
+    let file: File;
+    try {
+      const active = await startSnipRecording(region, session.current.handle);
+      // Closed while the browser asked for a source: nothing to keep.
+      if (!mounted.current) { active.stop(); void active.done.catch(() => {}); return; }
+      recorder.current = active;
+      setRecordRegion(active.cropped ? region : null);
+      setRecording("recording");
+      if (!active.cropped) showToast("ok", "Another source was chosen, so all of it is being recorded.");
+      file = await active.done;
+    } catch (error) {
+      recorder.current = null;
+      setRecording(null); setRecordRegion(null);
+      if (mounted.current) showToast("error", (error as Error).name === "NotAllowedError" ? "Recording cancelled." : (error as Error).message || "Recording failed.");
+      return;
+    }
+    recorder.current = null;
+    setRecordRegion(null);
+    setRecording("saving");
+    try {
+      await onCapture(file, null);
+      // Saved once here, so a paste only delivers it (pasteHeld never saves a saved one again).
+      const kept = handlers.current.holdRecording(file);
+      if (mounted.current) showToast("ok", kept ? "Recording saved to Media Dock. Ctrl+V pastes it." : "Recording saved to Media Dock.");
+    } catch (error) {
+      // shortcut: recordings above the 100 MiB pane upload cap (about 5 minutes) download instead; add chunked upload if long recordings matter.
+      downloadBlob(file, file.name);
+      if (mounted.current) showToast("error", `${(error as Error).message || "The upload failed."} The recording was downloaded instead.`);
+    } finally {
+      setRecording(null);
+    }
+  };
+  useEffect(() => {
+    if (recording !== "recording") return;
+    const started = Date.now();
+    setRecordSeconds(0);
+    const timer = setInterval(() => setRecordSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [recording]);
   const cancelSelecting = () => {
     operation.current?.abort();
     goIdle();
@@ -591,7 +713,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
   };
 
   // ---- lifecycle & keyboard
-  const handlers = useRef({ trigger: () => {}, cancelSelecting, fullScreen: () => {}, pasteHeldInto: (_paneId: string | null): boolean => false });
+  const handlers = useRef({ trigger: () => {}, cancelSelecting, fullScreen: () => {}, pasteHeldInto: (_focus: Element | null): boolean => false, holdRecording: (() => false) as (file: File) => boolean });
   handlers.current = {
     trigger: () => {
       if (operation.current) return;
@@ -599,27 +721,36 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
       else if (phaseRef.current === "selecting") cancelSelecting();
     },
     cancelSelecting,
-    fullScreen: () => { void capture(); },
-    pasteHeldInto: paneId => {
-      if (!copyToClipboard || (paneId ? !isCliPane(paneId) : missingTarget)) return false;
+    fullScreen: () => { if (recordSelect) void recordArea({ x: 0, y: 0, width: window.innerWidth, height: window.innerHeight }); else void capture(); },
+    pasteHeldInto: focus => {
+      if (!copyToClipboard) return false;
+      const route = clipboardPasteRoute(focus, activeCliPaneId);
+      if (route && route !== NOUS_PASTE_TARGET && !isCliPane(route)) return false;
       // A snip still being taken (timer, selection, capture, editor) joins the paste once it lands.
-      if (holdSnips && (countdownTimer.current || phaseRef.current !== "idle" || operation.current)) { pendingPaste.current = { paneId }; return true; }
+      if (holdSnips && (countdownTimer.current || phaseRef.current !== "idle" || operation.current)) { pendingPaste.current = { focus }; return true; }
       if (!held.current.length || operation.current || phaseRef.current !== "idle") return false;
-      const pane = paneId ? panes.find(p => p.id === paneId) : null;
-      void pasteHeld(paneId ?? targetId, paneId ? (pane ? paneLabel(pane) : "the pane") : targetDisplay);
+      void pasteHeld(route);
+      return true;
+    },
+    // The browser cannot put a video on the system clipboard, so clipboard mode holds it for Ctrl+V; without Hold snips only the latest.
+    holdRecording: file => {
+      if (!copyToClipboard) return false;
+      held.current = [...(holdSnips ? held.current : []), { file, saved: true }];
+      setHeldCount(held.current.length);
       return true;
     }
   };
 
   useEffect(() => {
     if (phase !== "idle" || busy || countdown !== null || !pendingPaste.current) return;
-    const { paneId } = pendingPaste.current;
+    const { focus } = pendingPaste.current;
     pendingPaste.current = null;
-    handlers.current.pasteHeldInto(paneId);
+    handlers.current.pasteHeldInto(focus);
   }, [phase, busy, countdown]);
 
   useEffect(() => {
     if (!isOpen) return;
+    setRecordSelect(false);
     setPhase(initialMode === "capturing" ? "selecting" : "idle");
     if (initialMode === "capturing") rememberFocus();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -651,15 +782,14 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
       if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); handlers.current.cancelSelecting(); }
       else if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement)) { event.preventDefault(); event.stopImmediatePropagation(); handlers.current.fullScreen(); }
     };
-    // A paste into a CLI pane delivers every held snip there, before the pane reads the system clipboard. Focus left
-    // outside the panes (a dock or the page, after snipping it) pastes into the snip target like the capsule's Ctrl+V.
+    // A paste into a CLI pane or the Nous composer delivers every held snip there, before it reads the system clipboard.
+    // Focus left elsewhere (a dock or the page, after snipping it) pastes where the capsule's Ctrl+V does.
     const pasteHeldSnips = (event: KeyboardEvent | ClipboardEvent) => {
       if (event instanceof KeyboardEvent && (event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey) || (event.code !== "KeyV" && event.key.toLowerCase() !== "v"))) return;
       const target = event.target instanceof HTMLElement ? event.target : null;
-      const paneId = target?.closest("[data-space-pane-id]")?.getAttribute("data-space-pane-id") ?? null;
-      // Text fields outside the panes keep their own paste.
-      if (!paneId && (target?.closest("input, textarea, select") || target?.isContentEditable)) return;
-      if (handlers.current.pasteHeldInto(paneId)) { event.preventDefault(); event.stopImmediatePropagation(); }
+      // Text fields outside the panes and the Nous composer keep their own paste.
+      if (!target?.closest(`[data-space-pane-id], ${NOUS_COMPOSER}`) && (target?.closest("input, textarea, select") || target?.isContentEditable)) return;
+      if (handlers.current.pasteHeldInto(target)) { event.preventDefault(); event.stopImmediatePropagation(); }
     };
     window.addEventListener("keydown", keyboard, true);
     window.addEventListener("keydown", pasteHeldSnips, true);
@@ -671,6 +801,8 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
       operation.current?.abort();
       operation.current = null;
       releaseSnipSession(session.current);
+      // Closing mid-recording keeps the video: stopping hands it to Media Dock.
+      recorder.current?.stop();
       window.removeEventListener("keydown", keyboard, true);
       window.removeEventListener("keydown", pasteHeldSnips, true);
       window.removeEventListener("paste", pasteHeldSnips, true);
@@ -841,6 +973,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
   ];
   const busyAny = Boolean(busy);
   const holding = copyToClipboard && heldCount > 0;
+  const pasteTarget = copyToClipboard ? "Nous when it is open, else the focused CLI pane, else Media Dock" : targetDisplay;
   const menuUp = floating && pos.y > (window.innerHeight || 600) - 300;
 
   const toastNode = toast && (
@@ -891,7 +1024,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
       <div className="snip-capsule-rows">
       <div className="snip-capsule-row">
       <div className="snip-split">
-        <button type="button" className="snip-capsule-snip" onClick={startSelecting} disabled={busyAny} aria-label={snipLabel}
+        <button type="button" className="snip-capsule-snip" onClick={() => startSelecting()} disabled={busyAny} aria-label={snipLabel}
           title={copyToClipboard ? "Snip an area to the clipboard (PrtScn)" : `Snip an area for ${targetDisplay}${isLocked ? " (locked)" : ""} (PrtScn)`}>
           {busyAny ? <Loader2 className="snip-spin" aria-hidden="true" /> : <Crop aria-hidden="true" />}
           <span className="snip-capsule-label"><span className="snip-capsule-verb">Snip</span><span className="snip-capsule-target">{destinationLabel}</span></span>
@@ -917,6 +1050,15 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
         title={countdown ? "Click to cancel the delayed capture" : `Capture the full screen in ${DELAY_SECONDS} seconds`}>
         {countdown ? <span className="snip-countdown" aria-hidden="true">{countdown}</span> : <Timer aria-hidden="true" />}
       </button>
+      {canRecordScreen() && (
+        <button type="button" className={`snip-icon-btn${recording === "recording" ? " is-recording" : ""}`} onClick={toggleRecording}
+          disabled={recording === "starting" || recording === "saving"} aria-pressed={recording === "recording"}
+          aria-label={recording === "recording" ? `Stop recording (${clock(recordSeconds)})` : "Record video"}
+          title={recording === "recording" ? "Stop recording: the video goes to Media Dock" : "Record a video of an area to Media Dock: drag to select it, click again to stop."}>
+          {recording === "recording" ? <><Square aria-hidden="true" /><span className="snip-countdown" aria-hidden="true">{clock(recordSeconds)}</span></>
+            : recording ? <Loader2 className="snip-spin" aria-hidden="true" /> : <Video aria-hidden="true" />}
+        </button>
+      )}
       <button type="button" className={`snip-icon-btn${editFirst ? " is-active" : ""}`} onClick={toggleEditFirst} disabled={busyAny}
         aria-label="Edit before send" aria-pressed={editFirst}
         title={editFirst ? "Edit before send is on: snips open in the editor first" : "Edit before send is off: snips are sent at once"}>
@@ -934,9 +1076,9 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
           {heldCount ? <span className="snip-countdown" aria-hidden="true">{heldCount}</span> : <Images aria-hidden="true" />}
         </button>
       )}
-      <button type="button" className="snip-icon-btn" onClick={() => void pasteClipboard()} disabled={busyAny || missingTarget}
-        aria-label={holding ? `Paste ${heldCount} held snips into ${targetDisplay}` : `Paste the clipboard into ${targetDisplay}`}
-        title={holding ? `Paste ${heldCount} held snips into ${targetDisplay} (Ctrl+V)` : `Paste the clipboard into ${targetDisplay} (Ctrl+V)`}>
+      <button type="button" className="snip-icon-btn" onClick={() => void pasteClipboard()} disabled={busyAny || (!copyToClipboard && missingTarget)}
+        aria-label={`${holding ? `Paste ${heldCount} held snips` : "Paste the clipboard"} into ${pasteTarget}`}
+        title={`${holding ? `Paste ${heldCount} held snips` : "Paste the clipboard"} into ${pasteTarget} (Ctrl+V)`}>
         <span className="snip-keycap" aria-hidden="true">Ctrl<b>V</b></span>
       </button>
       <button type="button" className={`snip-icon-btn${isLocked ? " is-locked" : ""}`} onClick={toggleTargetLock} disabled={busyAny}
@@ -989,8 +1131,14 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
       {(phase === "idle" || embedded) && (railCard || capsule)}
       {embedded && <p className="snip-inline-hint">Drag to snip any area, or capture the full screen. Turn on <strong>Edit before send</strong> to annotate first. PrtScn works anywhere.</p>}
       {phase === "selecting" && portalTarget && createPortal(
-        <CaptureLayer layerRef={layerRef} busy={busyAny} destinationLabel={destinationLabel} status={layerStatus}
-          onSelect={rect => void capture(rect)} onCancel={cancelSelecting} />,
+        <CaptureLayer layerRef={layerRef} busy={busyAny} destinationLabel={destinationLabel}
+          status={layerStatus ?? (recordSelect ? "Record an area. Drag to select it. Enter records the full screen, Escape cancels." : null)}
+          onSelect={rect => void (recordSelect ? recordArea(rect) : capture(rect))} onCancel={cancelSelecting} />,
+        portalTarget
+      )}
+      {recording === "recording" && recordRegion && portalTarget && createPortal(
+        <div className="snip-record-frame snip-ui" aria-hidden="true"
+          style={{ left: recordRegion.x - 2, top: recordRegion.y - 2, width: recordRegion.width + 4, height: recordRegion.height + 4 }} />,
         portalTarget
       )}
       {phase === "editing" && editor && portalTarget && createPortal(

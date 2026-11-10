@@ -28,6 +28,7 @@ import { SetupVoiceVerification } from "./setup-voice-verification.js";
 import { createStoredSetupVncAdapter } from "./setup-vnc-check.js";
 import type { SourceControlService } from "./source-control/service.js";
 import type { StreamingService } from "./streaming-service.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /** createApp options that only First Setup reads (tests replace its actions, Live provider and installation files). */
 export interface FirstSetupAppOptions {
@@ -100,7 +101,7 @@ export async function registerFirstSetup(app: FastifyInstance, deps: {
       checkSourceControl: async (ownerId) => { await deps.sourceControlService.bindings(ownerId); }
     }) },
     functionalChecks: { ...createSetupFunctionalChecks({ store, demoRoot: config.demoProjectsRoot, demoEnabled: config.demoProjectsEnabled,
-      workspaceRoot: process.env.SPACE_WORKSPACE_ROOT || "/opt/spaceapp",
+      workspaceRoot: process.env.SPACE_WORKSPACE_ROOT || SPACE_INSTALL_ROOT,
       scratchRoot: join(config.demoProjectsVarRoot, "setup-checks") }),
       ...(config.browserSessionsEnabled ? { "pane:browser": createSetupBrowserCheck({ store, manager: deps.browserSessionManager,
         origin: config.browserEvidenceTargetOrigin, profileRoot: config.browserSessionsProfileRoot }) } : {}),

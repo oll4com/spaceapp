@@ -7,6 +7,11 @@ import { CollapsedRoomRail, type CollapsedRoomRailProps } from "../src/features/
 import { useToolbarPopovers } from "../src/features/room-toolbar/useToolbarPopovers.js";
 import { useLiveRail } from "../src/features/live-pane/useLiveRail.js";
 
+const unread = vi.hoisted(() => ({ total: 0 }));
+vi.mock("../src/features/notifications/notification-store.js", async (importOriginal) => ({
+  ...(await importOriginal<object>()), useNotificationStore: () => ({ pending: { total: unread.total } })
+}));
+
 function Rail({ overrides, onPopovers }: { overrides: Partial<CollapsedRoomRailProps>; onPopovers?: (popovers: ReturnType<typeof useToolbarPopovers>) => void }) {
   const popovers = useToolbarPopovers();
   onPopovers?.(popovers);
@@ -70,6 +75,22 @@ describe("CollapsedRoomRail", () => {
     expect(popovers!.isCollapsedPaneLayoutMenuOpen).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Show room toolbar" }));
     expect(onShowToolbar).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the Notification Center one click away on the rail, with its unread count (operator 4/11: it had vanished)", () => {
+    const toggleSideSurface = vi.fn();
+    unread.total = 969;
+    const docks = { isSideSurfaceOpen: false, activeSideSurface: "nous" as const, sideSurfaceToggleLabel: (id: string) => `Show ${id}`, toggleSideSurface };
+    const { container } = render(<Rail overrides={{ docks }} />);
+    const bell = screen.getByRole("button", { name: "Show notifications" });
+    expect(bell.dataset.railId).toBe("notifications");
+    expect(bell.title).toBe("Show notifications · 969 unread");
+    expect(bell.querySelector(".room-rail-count")?.textContent).toBe("99+");
+    // Right after Nous in the rail's own order, so it sits beside the Nous icon.
+    expect(container.querySelector('[data-rail-id="nous"] + [data-rail-id="notifications"]')).not.toBeNull();
+    fireEvent.click(bell);
+    expect(toggleSideSurface).toHaveBeenCalledWith("notifications");
+    unread.total = 0;
   });
 
   it("opens the rail icon menu on right click", () => {

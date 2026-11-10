@@ -4,6 +4,7 @@ import { z } from "zod";
 import { t3CodeRuntimeVersionSchema } from "@space/contracts";
 import { T3_GATEWAY_SOCKET, T3GatewayError } from "./gateway-policy.js";
 import type { T3PaneScope } from "./access.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // T3 0.1.0's own threads carry colons (thread:project:<id>:<id>, <command>:fork); user threads are UUIDs.
 const id = z.string().regex(/^[A-Za-z0-9_:-]{1,200}$/);
@@ -94,7 +95,7 @@ export class T3Upstream {
 
 // The manifest lists every runtime file; parse it once per installed runtime.
 let versionCache: { key: string; value: ReturnType<typeof t3CodeRuntimeVersionSchema.parse> } | null = null;
-export async function installedT3Version(manifestPath = "/opt/spaceapp/var/cli-versions/t3code/current/runtime-manifest.json") {
+export async function installedT3Version(manifestPath = `${SPACE_INSTALL_ROOT}/var/cli-versions/t3code/current/runtime-manifest.json`) {
   try {
     const resolved = await realpath(manifestPath), key = `${resolved}:${(await stat(resolved)).mtimeMs}`;
     if (versionCache?.key === key) return versionCache.value;

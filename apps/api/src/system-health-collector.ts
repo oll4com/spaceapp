@@ -7,6 +7,7 @@ import {
   calculateCpuUsagePercent,
   type ProcCpuSample,
 } from "./host-stats.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export interface HealthCollectorSample {
   sampledAt: string;
@@ -147,7 +148,7 @@ export class SystemHealthCollector {
       this.read("/proc/net/route").catch(() => null),
       this.read("/proc/net/ipv6_route").catch(() => null),
       this.filesystem("/").catch(() => null),
-      this.filesystem("/opt/spaceapp").catch(() => null),
+      this.filesystem(SPACE_INSTALL_ROOT).catch(() => null),
     ] as const);
     const metrics: SystemHealthMetric[] = [];
     const add = (
@@ -236,7 +237,7 @@ export class SystemHealthCollector {
     );
     for (const [id, label, path, fs] of [
       ["root", "Root disk", "/", rootFs],
-      ["app", "Space disk", "/opt/spaceapp", appFs],
+      ["app", "Space disk", SPACE_INSTALL_ROOT, appFs],
     ] as const) {
       const total = fs ? fs.blocks * fs.bsize : null;
       const free = fs ? fs.bavail * fs.bsize : null;

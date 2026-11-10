@@ -89,9 +89,10 @@ export function matchesAvailabilityFilter(state: AccountAvailability, filter: Ac
 function resetMoment(ms: number, settings?: DateTimeSettings): string {
   const active = settings ?? readDateTimeSettings();
   const timeZone = active.timeZone && active.timeZone !== "system" ? active.timeZone : undefined;
+  // "Fri 13 Nov": a weekly reset names its date, not only its weekday (operator 8/11).
   let weekday = "";
   try {
-    weekday = new Intl.DateTimeFormat("en-US", { weekday: "short", ...(timeZone ? { timeZone } : {}) }).format(new Date(ms));
+    weekday = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", ...(timeZone ? { timeZone } : {}) }).format(new Date(ms));
   } catch {
     weekday = "";
   }
@@ -99,7 +100,7 @@ function resetMoment(ms: number, settings?: DateTimeSettings): string {
   return weekday ? `${weekday} ${time}` : time;
 }
 
-// "in 52m" and "in 3h 20m" inside a day; a weekday and time further out (a week at most).
+// "in 52m" and "in 3h 20m" inside a day; "Fri 13 Nov 06:00" further out.
 export function formatUntil(value: string | null | undefined, clock: number, settings?: DateTimeSettings): string | null {
   const ms = timeMs(value);
   if (!Number.isFinite(ms)) return null;

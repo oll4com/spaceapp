@@ -190,7 +190,7 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
   const disposedRef = useRef(false);
   const selectedIndexRef = useRef<number | null>(null);
   const lastPropFrameRef = useRef<string | null>(null);
-  const lastPointerPointRef = useRef(new Map<number, { x: number; y: number; button: ReturnType<typeof pointerButton> }>());
+  const lastPointerPointRef = useRef(new Map<number, { x: number; y: number; client: { x: number; y: number }; visual: { x: number; y: number }; button: ReturnType<typeof pointerButton> }>());
   const hasFrameRef = useRef(false);
   // Streamed frames redraw up to ~35 times per second; reading layout for each one
   // forces a synchronous reflow. The draw size is cached while a ResizeObserver can
@@ -359,14 +359,21 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
   function pointerInput(event: PointerEvent, eventType: "mouseMoved" | "mousePressed" | "mouseReleased") {
     if (!interactive) return;
     const previousPointer = lastPointerPointRef.current.get(event.pointerId);
-    const mapped = point(event) ?? (eventType === "mouseReleased" ? previousPointer : undefined);
+    const client = { x: event.clientX, y: event.clientY };
+    const visual = { x: client.x - (window.visualViewport?.offsetLeft ?? 0), y: client.y - (window.visualViewport?.offsetTop ?? 0) };
+    // Focusing the canvas can dismiss Android's keyboard and resize/move the pane. An unmoved
+    // pointer still belongs to its original target, even if the visual viewport's origin shifted.
+    const stationary = eventType !== "mousePressed" && previousPointer && previousPointer.button !== "none"
+      && ((previousPointer.client.x === client.x && previousPointer.client.y === client.y)
+        || (previousPointer.visual.x === visual.x && previousPointer.visual.y === visual.y));
+    const mapped = stationary ? previousPointer : point(event) ?? (eventType === "mouseReleased" ? previousPointer : undefined);
     if (!mapped) {
       if (eventType === "mouseReleased") lastPointerPointRef.current.delete(event.pointerId);
       return;
     }
     event.preventDefault();
     if (event.pointerType === "touch") {
-      if (eventType !== "mouseReleased") lastPointerPointRef.current.set(event.pointerId, { ...mapped, button: "left" });
+      if (eventType !== "mouseReleased") lastPointerPointRef.current.set(event.pointerId, { ...mapped, client, visual, button: "left" });
       inputRef.current({
         type: "TOUCH",
         eventType: eventType === "mousePressed" ? "touchStart" : eventType === "mouseReleased" ? "touchEnd" : "touchMove",
@@ -381,11 +388,12 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
     const button = eventType === "mouseReleased" && reportedButton === "none"
       ? previousPointer?.button ?? "none"
       : reportedButton;
-    if (eventType !== "mouseReleased") lastPointerPointRef.current.set(event.pointerId, { ...mapped, button });
+    if (eventType !== "mouseReleased") lastPointerPointRef.current.set(event.pointerId, { ...mapped, client, visual, button });
     inputRef.current({
       type: "POINTER",
       eventType,
-      ...mapped,
+      x: mapped.x,
+      y: mapped.y,
       button,
       ...(eventType === "mouseMoved" ? {} : { clickCount: Math.max(1, Math.min(4, event.detail || 1)) }),
       modifiers: modifierMaskFromEvent(event)
@@ -403,9 +411,10 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
         tabIndex={0}
         onContextMenu={(event) => event.preventDefault()}
         onPointerDown={(event) => {
-          event.currentTarget.focus();
-          event.currentTarget.setPointerCapture?.(event.pointerId);
+          // Map against the frame the operator tapped, before focus can restore the visual viewport.
           pointerInput(event, "mousePressed");
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+          event.currentTarget.focus({ preventScroll: true });
         }}
         onPointerMove={(event) => pointerInput(event, "mouseMoved")}
         onPointerUp={(event) => {
@@ -423,7 +432,8 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
               inputRef.current({
                 type: "POINTER",
                 eventType: "mouseReleased",
-                ...mapped,
+                x: mapped.x,
+                y: mapped.y,
                 button: reportedButton === "none" ? previousPointer?.button ?? "none" : reportedButton,
                 clickCount: Math.max(1, Math.min(4, event.detail || 1)),
                 modifiers: modifierMaskFromEvent(event)

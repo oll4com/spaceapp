@@ -9,14 +9,18 @@ import { InMemorySpaceStore, SpaceEventBus, makeSpaceId } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { getApiConfig } from "../src/config.js";
 import { createFcmSender, loadFcmServiceAccount, type FcmSender } from "../src/notifications/fcm.js";
-import { createNotificationService } from "../src/notifications/service.js";
+import { createNotificationService, pushDeviceId } from "../src/notifications/service.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 const temporaryRoots: string[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
+// Midday in the owner's default zone (Asia/Bangkok): quiet hours (23:00-09:00 there) would hold Telegram and push, so these
+// cases failed whenever the suite ran between 16:00 and 02:00 UTC. Only Date is faked, and it advances with real time.
+const atBangkokMidday = () => vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true, now: new Date("2026-10-12T05:00:00.000Z") });
 async function fixture(options: { telegram?: boolean; push?: FcmSender | null; seed?: (store: InMemorySpaceStore, repository: InMemorySpaceNotificationsRepository) => Promise<void> } = {}) {
   const root = await mkdtemp(join(tmpdir(), "space-notifications-"));
   temporaryRoots.push(root);
@@ -85,6 +89,7 @@ describe("Space notifications", () => {
   });
 
   it("sends a test notification and queues Telegram only for what needs the user, per the user's channels, never while notifications are suppressed", async () => {
+    atBangkokMidday();
     const { app, headers, notificationsRepository } = await fixture({ telegram: true });
     const test = (await app.inject({ method: "POST", url: "/api/notifications/test", headers })).json().notification;
     expect(test).toMatchObject({ source: "SYSTEM", kind: "TEST", severity: "ATTENTION", title: "Test notification" });
@@ -148,6 +153,7 @@ describe("Space notifications", () => {
   });
 
   it("pushes what needs the user to the owner's registered devices, per the push switches, and disables a token FCM no longer knows", async () => {
+    atBangkokMidday();
     const sent: Array<{ token: string; data: Record<string, string> }> = [];
     const push: FcmSender = { send: async (token, data) => { sent.push({ token, data }); return token.startsWith("gone") ? "INVALID_TOKEN" : "SENT"; } };
     const { app, headers, notificationsRepository } = await fixture({ push });
@@ -162,7 +168,8 @@ describe("Space notifications", () => {
     }
     const test = (await app.inject({ method: "POST", url: "/api/notifications/test", headers })).json().notification;
     await vi.waitFor(() => expect(sent).toHaveLength(2));
-    expect(sent.find((entry) => entry.token === phone)?.data).toEqual({ notificationId: test.id, title: "Space: Test notification", body: expect.stringContaining("This is how Space notifies you") });
+    expect(sent.find((entry) => entry.token === phone)?.data).toEqual({ notificationId: test.id, title: "Space: Test notification", body: expect.stringContaining("This is how Space notifies you"),
+      message: expect.stringContaining("This is how Space notifies you"), source: "SYSTEM" });
     await vi.waitFor(async () => expect(await notificationsRepository.pushTokens(test.ownerUserId)).toEqual([phone]));
     // Push off for SYSTEM: the next test notification is not pushed.
     await app.inject({ method: "PATCH", url: "/api/user-settings", headers, payload: { notifications: { channels: {}, perSource: { SYSTEM: { push: false } } } } });
@@ -170,6 +177,33 @@ describe("Space notifications", () => {
     expect((await app.inject({ method: "DELETE", url: "/api/notifications/push-devices", headers, payload: { token: phone } })).json()).toEqual({ removed: true });
     expect(await notificationsRepository.pushTokens(test.ownerUserId)).toEqual([]);
     expect(sent).toHaveLength(2);
+    await app.close();
+  });
+
+  it("R13: lists the user's own push devices without their tokens, marks this phone, and removes one by id; another user's id is a 404", async () => {
+    const { app, headers, notificationsRepository } = await fixture();
+    const phone = `phone:${"e".repeat(40)}`;
+    const tablet = `tablet:${"f".repeat(40)}`;
+    const theirs = `theirs:${"g".repeat(40)}`;
+    for (const token of [phone, tablet]) await app.inject({ method: "POST", url: "/api/notifications/push-devices", headers, payload: { token, appVersion: "0.2.13" } });
+    // N2/R6: a phone sets its level; a later registration without one (an older app, the web) keeps it.
+    await app.inject({ method: "POST", url: "/api/notifications/push-devices", headers, payload: { token: tablet, appVersion: "0.2.13", level: "HANDS" } });
+    await app.inject({ method: "POST", url: "/api/notifications/push-devices", headers, payload: { token: tablet, appVersion: "0.2.13" } });
+    expect((await app.inject({ method: "POST", url: "/api/notifications/push-devices", headers, payload: { token: tablet, level: "LOUD" } })).statusCode).toBe(422);
+    await notificationsRepository.registerPushDevice("user:someone-else", { token: theirs, platform: "ANDROID", appVersion: null });
+    expect((await app.inject({ method: "GET", url: "/api/notifications/push-devices" })).statusCode).toBe(401);
+    const listed = await app.inject({ method: "GET", url: "/api/notifications/push-devices", headers: { ...headers, "x-space-push-token": phone } });
+    expect(listed.json()).toEqual([
+      { id: pushDeviceId(tablet), platform: "ANDROID", appVersion: "0.2.13", level: "HANDS", lastSeenAt: expect.any(String), isCurrent: false },
+      { id: pushDeviceId(phone), platform: "ANDROID", appVersion: "0.2.13", level: "NOUS", lastSeenAt: expect.any(String), isCurrent: true }]);
+    expect(listed.body).not.toContain("eeee");
+    // Another user's device, or an id nobody has: 404, and theirs stays.
+    expect((await app.inject({ method: "DELETE", url: `/api/notifications/push-devices/${pushDeviceId(theirs)}`, headers })).statusCode).toBe(404);
+    expect(await notificationsRepository.pushTokens("user:someone-else")).toEqual([theirs]);
+    expect((await app.inject({ method: "DELETE", url: `/api/notifications/push-devices/push_device:${"0".repeat(24)}`, headers })).statusCode).toBe(404);
+    expect((await app.inject({ method: "DELETE", url: `/api/notifications/push-devices/${pushDeviceId(phone)}`, headers: { cookie: headers.cookie } })).statusCode).toBe(403);
+    expect((await app.inject({ method: "DELETE", url: `/api/notifications/push-devices/${pushDeviceId(phone)}`, headers })).json()).toEqual({ removed: true });
+    expect((await app.inject({ method: "GET", url: "/api/notifications/push-devices", headers })).json()).toEqual([expect.objectContaining({ id: pushDeviceId(tablet), isCurrent: false })]);
     await app.close();
   });
 
@@ -191,6 +225,32 @@ describe("Space notifications", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(sent).toEqual([attention.id]);
     expect(service.pushAvailable()).toBe(true);
+  });
+
+  it("N2/R6: each phone gets what its level lets through while Nous is on, and a card Nous leaves reaches the default level", async () => {
+    const repository = new InMemorySpaceNotificationsRepository();
+    const sent: Array<[string, string]> = [];
+    const service = createNotificationService({ repository, eventBus: new SpaceEventBus(), userSettings: async () => ({ notifications: null }) as never,
+      recordRoomEvent: async (input) => eventSchema.parse({ ...input, id: makeSpaceId("event"), workflowId: null, createdAt: new Date().toISOString() }),
+      nous: { held: async () => true, raised: () => undefined },
+      push: { send: async (token, data) => { sent.push([token.slice(0, 5), data.notificationId!]); return "SENT"; } } });
+    const token = (name: string) => `${name}:${"d".repeat(40)}`;
+    await service.registerPushDevice("user:1", { token: token("hands"), platform: "ANDROID", appVersion: null, level: "HANDS" });
+    await service.registerPushDevice("user:1", { token: token("usual"), platform: "ANDROID", appVersion: null });
+    await service.registerPushDevice("user:1", { token: token("every"), platform: "ANDROID", appVersion: null, level: "ALL" });
+    const raise = (kind: string, key: string, payload: Record<string, unknown> = {}) => service.raise({ ownerUserId: "user:1", roomId: null, paneId: null,
+      source: "MAIL_COPILOT", kind, severity: "ATTENTION", title: "Anna", body: "", link: {}, dedupeKey: key, payload, telegram: false });
+    const to = async (id: string) => { await new Promise((resolve) => setTimeout(resolve, 20)); return sent.filter(([, sentId]) => sentId === id).map(([name]) => name).sort(); };
+    // Held for Nous: only the phone on "all ATTENTION".
+    expect(await to((await raise("MAIL_RECEIVED", "mail:1")).id)).toEqual(["every"]);
+    // The operator's hands: every phone.
+    expect(await to((await raise("NEEDS_USER", "mail:2")).id)).toEqual(["every", "hands", "usual"]);
+    // A card held for Nous whose hour ended is released while Nous is still on: the default level gets it now, once.
+    const card = await raise("MAIL_RECEIVED", "mail:3", { heldForNous: { until: new Date(Date.now() + 60_000).toISOString() } });
+    expect(await to(card.id)).toEqual(["every"]);
+    sent.length = 0;
+    expect((await service.releaseHeldForNous("user:1", card.id))?.payload.releasedFromNous).toBeTruthy();
+    expect(await to(card.id)).toEqual(["every", "usual"]);
   });
 
   it("the FCM sender signs the token request with the service account key, keeps the access token, and tells invalid tokens apart", async () => {

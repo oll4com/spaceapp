@@ -32,7 +32,9 @@ export function isSnipToolTarget(target: EventTarget | null): boolean {
         '.snip-edit-tools',
         '.snip-actions',
         'button[aria-label="Snip Tool"]',
-        'button[title*="Snip Tool"]'
+        'button[title*="Snip Tool"]',
+        // The "SpaceApp was updated" banner floats over every menu: dismissing it must not close the menu (phone, 1/11).
+        '.space-app-update'
       ].join(", ")
     )
   );

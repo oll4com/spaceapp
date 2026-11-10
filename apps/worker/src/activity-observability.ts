@@ -1,3 +1,4 @@
+import { createSentryTrace, type SentryTrace } from "@space/contracts/sentry-node";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import type { Context } from "@temporalio/activity";
@@ -133,6 +134,7 @@ function isFailedResult(value: unknown): boolean {
 
 export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
+  reportError?: (error: unknown, trace: SentryTrace) => void;
   now?: () => number;
   cancelled?: () => boolean;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
@@ -217,6 +219,11 @@ export async function observeActivityExecution<T>(
     return result;
   } catch (error) {
     const cancelled = dependencies.cancelled?.() === true || /Cancel/i.test((error as { name?: string } | null)?.name ?? "");
+    if (!cancelled && dependencies.reportError) {
+      const parent = activityTraceparent(args);
+      try { dependencies.reportError(error, createSentryTrace(parent ? formatTraceparent(parent.traceId, parent.parentId, parent.flags) : undefined)); }
+      catch { /* Telemetry cannot change the activity result or retries. */ }
+    }
     const errorName = logIdentifier((error as { name?: unknown } | null)?.name);
     finish(cancelled ? "CANCELLED" : "FAILED", observation.reasonCode ?? errorCodeOf(error), errorName);
     throw error;

@@ -1,24 +1,24 @@
 import { open, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 import { execFile } from "./safe-child-process.js";
 import { promisify } from "node:util";
 import type { PaneCliSession } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
 import type { NativeTaskExecution } from "./room-task-telemetry.js";
 import { createNativeReadCache } from "./native-read-cache.js";
-import { createNativeReadServer } from "./native-read-server.js";
+import { createNativeReadServer, serveNativeReads } from "./native-read-server.js";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // Claude Code 2.1 transcript JSONL: a turn starts at a non-meta user prompt
 // (typed or a background task notification) and ends at system/turn_duration.
 // Local slash commands write user records that never reach the model.
-export const CLAUDE_SPACE_CONFIG_DIR = "/var/lib/spaceapp-user/.codex/space-claude";
+export const CLAUDE_SPACE_CONFIG_DIR = `${SPACE_AGENT_HOME}/.codex/space-claude`;
 const CLAUDE_TRANSCRIPT_TAIL_BYTES = 16 * 1024 * 1024;
-/** The newest characters of Claude's last answer this read returns (Nous's space_read_pane reply "last"). */
-export const CLAUDE_LAST_ANSWER_MAX_CHARS = 6_000;
-/** The newest turns whose end and final answer a read returns, and the newest characters kept of each answer. */
+/**
+ * Claude's last answer and each turn's final answer are whole (until 31/10 the newest 6,000 and 24,000 characters: Nous read a cut
+ * report); the reader's 8 MB output buffer is the technical bound. The newest turns whose end and answer a read returns:
+ */
 export const CLAUDE_TURN_RESULTS = 8;
-export const CLAUDE_TURN_RESULT_MAX_CHARS = 24_000;
 export const claudeNativeSessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** Claude Code's live per-process session status; `shell` is idle with background shells still running (2.1.303: `idle && shells ? "shell"`). */
@@ -41,7 +41,9 @@ export interface ClaudeNativeTurns {
   /** The latest answer broke on a transient server or connection error ("API Error: Connection lost"). */
   apiError: boolean;
   /** The latest answer is the account's usage limit (429 rate_limit) and when it resets; absent from readers older than 2026-10-20. */
-  rateLimit?: { at: string | null; resetsAt: string | null } | null;
+  rateLimit?: { at: string | null; resetsAt: string | null; paceHold?: boolean } | null;
+  /** The latest turn ended on Space Gateway's pace hold (429 PACE_CAP): it did not run, and waits for the pace day's opening (plan clipboard:DotwYXVD2N3n). */
+  paceHold?: { taskId: string; at: string | null; resumesAt: string } | null;
   /** Claude's last answer text from the transcript (its newest characters), null before the first one. */
   lastAnswer: string | null;
   tasks: NativeTaskExecution[];
@@ -51,6 +53,9 @@ export interface ClaudeNativeTurns {
    * answer follows it; absent from readers older than 2026-10-21. */
   modelPick?: ClaudeModelPick | null;
 }
+
+/** Space Gateway's pace hold answer (429 PACE_CAP) and the pace day's opening it names. */
+export const CLAUDE_PACE_HOLD = /Space Gateway is holding background work[\s\S]*?resumes at (\d{4}-\d\d-\d\d) (\d\d:\d\d) UTC/;
 
 export interface ClaudeModelPick { model: string | null; effort: string | null }
 
@@ -96,13 +101,20 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
   let customTitle: string | null = null;
   let apiError = false;
   let rateLimit: ClaudeNativeTurns["rateLimit"] = null;
+  // The open turn's latest answer is the gateway's pace hold; a turn it ends did not run, so it is not COMPLETED (operator 6/11, Cleo/Finn).
+  let openPaceHold: string | null = null;
+  let paceHold: ClaudeNativeTurns["paceHold"] = null;
   let lastAnswer: string | null = null;
   let lastAnswerId: string | null = null;
   const results: (ClaudeTurnResult & { answerId: string | null })[] = [];
   const close = (status: "COMPLETED" | "INTERRUPTED", completedAt: string | null, durationMs?: number, ended = true) => {
     if (!open) return;
     if (ended) results.at(-1)!.ended = status;
-    open.status = status;
+    // Held: closed by its turn end or only by the idle session (no turn_duration after the refusal); an operator's interrupt stays one.
+    const held = openPaceHold && (status === "COMPLETED" || !ended) ? openPaceHold : null;
+    open.status = held ? "WAITING_FOR_INPUT" : status;
+    paceHold = held ? { taskId: open.taskId, at: completedAt, resumesAt: held } : null;
+    openPaceHold = null;
     open.timing.completedAt = completedAt;
     open.timing.durationMs = typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0
       ? Math.round(durationMs)
@@ -136,13 +148,20 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
       const content = message.content;
       const said = typeof content === "string" ? content : Array.isArray(content)
         ? content.map((block) => record(block)).filter((block) => block.type === "text").map((block) => text(block.text) ?? "").join("\n") : "";
+      // Space Gateway's pool 429 names its wait only in words: "… The first one is back in 2h 5m (at 11:10)."
+      const wait = rateLimit && !rateLimit.resetsAt && at ? /\bback in (?:(\d+)h)? ?(?:(\d+)m)?/.exec(said) : null;
+      if (rateLimit && wait && (wait[1] || wait[2])) rateLimit.resetsAt = new Date(Date.parse(at!) + (Number(wait[1] ?? 0) * 60 + Number(wait[2] ?? 0)) * 60_000).toISOString();
+      // Its pace hold names the pace day's opening: "Space Gateway is holding background work … background work resumes at 2026-11-06 21:00 UTC."
+      const pace = rateLimit ? CLAUDE_PACE_HOLD.exec(said) : null;
+      if (rateLimit && pace) Object.assign(rateLimit, { resetsAt: `${pace[1]}T${pace[2]}:00.000Z`, paceHold: true });
+      if (open) openPaceHold = pace ? `${pace[1]}T${pace[2]}:00.000Z` : said.trim() || entry.isApiErrorMessage === true ? null : openPaceHold;
       if (said.trim() && entry.isApiErrorMessage !== true) {
         const id = text(message.id);
-        lastAnswer = (id && id === lastAnswerId && lastAnswer ? `${lastAnswer}\n${said}` : said).slice(-CLAUDE_LAST_ANSWER_MAX_CHARS);
+        lastAnswer = id && id === lastAnswerId && lastAnswer ? `${lastAnswer}\n${said}` : said;
         lastAnswerId = id;
         const turn = open ? results.at(-1)! : null;
         if (turn) {
-          turn.answer = (id && id === turn.answerId && turn.answer ? `${turn.answer}\n${said}` : said).slice(-CLAUDE_TURN_RESULT_MAX_CHARS);
+          turn.answer = id && id === turn.answerId && turn.answer ? `${turn.answer}\n${said}` : said;
           turn.answerId = id;
         }
       }
@@ -197,6 +216,7 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
     close("INTERRUPTED", lastActivityAt ?? at);
     apiError = false;
     rateLimit = null;
+    paceHold = null;
     open = {
       taskId: text(entry.promptId) ?? text(entry.uuid) ?? `claude-turn-${tasks.length + 1}`,
       title: (trimmed.startsWith("<task-notification>") ? "Background task notification" : prompt).slice(0, 2000),
@@ -211,7 +231,7 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
   if (open && !busy) close("INTERRUPTED", lastActivityAt, undefined, false);
   for (const task of tasks) task.timing.observedAt = observedAt;
   const turnResults = results.slice(-CLAUDE_TURN_RESULTS).map(({ answerId: _id, ...result }) => result);
-  return { tasks: tasks.slice(-256), modelId, reasoningEffort, title: customTitle ?? aiTitle, titleManual: customTitle !== null, apiError, rateLimit, lastAnswer, turnResults, modelPick };
+  return { tasks: tasks.slice(-256), modelId, reasoningEffort, title: customTitle ?? aiTitle, titleManual: customTitle !== null, apiError, rateLimit, paceHold, lastAnswer, turnResults, modelPick };
 }
 
 async function readTail(path: string, maxBytes = CLAUDE_TRANSCRIPT_TAIL_BYTES): Promise<string[]> {
@@ -312,31 +332,17 @@ const claudeNativeTurnsCache = createNativeReadCache<ClaudeNativeTurns>({
 // One long-lived launcher reader serves the reads (34 Claude panes spawned ~6,600 sudo launchers an hour
 // with the 30 s idle cache, 2026-10-24); the one-shot launcher read stays the fallback.
 const claudeNativeTurnsServer = createNativeReadServer<ClaudeNativeTurns>({
-  command: "/opt/spaceapp/bin/claude-vscode-parity",
+  command: `${SPACE_INSTALL_ROOT}/bin/claude-vscode-parity`,
   args: ["native-turns", "--serve"]
 });
 
-/** The launcher's `native-turns --serve`: one `{id, paneId, sessionId, rootPid}` JSON request per line, one
- * `{id, result}` line per answer, with the one-shot read's validation and reader. Ends when `input` closes. */
-export async function serveClaudeNativeTurns(
+/** The launcher's `native-turns --serve` (see `serveNativeReads`), with the one-shot read's validation and reader. */
+export function serveClaudeNativeTurns(
   input: NodeJS.ReadableStream,
   output: NodeJS.WritableStream,
   read: typeof readClaudeNativeTurns = readClaudeNativeTurns
 ): Promise<void> {
-  for await (const line of createInterface({ input, crlfDelay: Infinity })) {
-    if (line.length > 1_024) continue;
-    let request: Record<string, unknown>;
-    try { request = record(JSON.parse(line)); } catch { continue; }
-    const id = request.id;
-    if (typeof id !== "number" || !Number.isSafeInteger(id)) continue;
-    const identity = {
-      paneId: typeof request.paneId === "string" ? request.paneId : "",
-      sessionId: typeof request.sessionId === "string" ? request.sessionId : "",
-      rootPid: typeof request.rootPid === "number" ? request.rootPid : null
-    };
-    const result = validClaudeTurnReadIdentity(identity) ? read(identity).catch(() => null) : Promise.resolve(null);
-    void result.then((turns) => output.write(`${JSON.stringify({ id, result: turns })}\n`));
-  }
+  return serveNativeReads(input, output, validClaudeTurnReadIdentity, read);
 }
 
 /** A submitted prompt may start a turn: the pane's next read goes to the launcher. */
@@ -355,7 +361,7 @@ export async function loadClaudeNativeTurns(
     const served = await claudeNativeTurnsServer.read({ paneId: input.paneId, sessionId: input.sessionId, rootPid: input.rootPid });
     if (served !== undefined) return served;
     try {
-      const { stdout } = await promisify(execFile)("/opt/spaceapp/bin/claude-vscode-parity",
+      const { stdout } = await promisify(execFile)(`${SPACE_INSTALL_ROOT}/bin/claude-vscode-parity`,
         ["native-turns", input.paneId, input.sessionId, String(input.rootPid)],
         { timeout: 3000, maxBuffer: 8_388_608, env: { PATH: "/usr/bin:/bin" } });
       return JSON.parse(stdout) as ClaudeNativeTurns | null;

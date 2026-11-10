@@ -81,6 +81,13 @@ describe("Nous on Telegram", () => {
     ]);
     expect(f.acknowledged).toEqual([{ id: "q20", text: "Approved: Sent to Andy." }, { id: "q21", text: "Already answered." }, { id: "q22", text: "This decision no longer exists." }]);
     expect(f.offsets).toEqual([25]);
+    // A long card goes whole: its start first, the last part with the decision id and the buttons (no silent cut, plan xCBrZwhCTzmC step 4).
+    f.sent.length = 0;
+    const long = `${"a".repeat(5_000)}END`;
+    expect(await f.telegram.decisionCard(owner, decision("nous_decision:abc123def456", "OPEN", null), long)).toBe(true);
+    expect(f.sent.map((item) => item.text).join("")).toBe(`${long}\n\nDecision nous_decision:abc123def456`);
+    expect(f.sent.at(-1)!.text.length).toBeLessThanOrEqual(NOUS_TELEGRAM_CHUNK);
+    expect(f.sent.map((item) => Boolean(item.markup))).toEqual(f.sent.map((_, index) => index === f.sent.length - 1));
   });
 
   it("reads a reply to a card as the answer in words (a bare yes runs the action through the dock's rule), and never a reply to anything else", async () => {
@@ -92,6 +99,16 @@ describe("Nous on Telegram", () => {
     ]);
     expect(f.sent.map((item) => item.text)).toEqual(["Approved: Sent to Andy.", "Declined.", "Noted: Nous reads your words now."]);
     expect(f.send.mock.calls.map((call) => call[1])).toEqual(["ναι"]);
+  });
+
+  it("sends a reply longer than a decision answer holds to Nous whole, naming the decision, instead of cutting the operator's words", async () => {
+    const card = "Nous: Send the proposal?\n\nDecision nous_decision:abc123def456";
+    const words = `${"λέξη ".repeat(500)}ΤΕΛΟΣ`;
+    const f = fixture({ updates: [[message(40, words, "123", card)]] });
+    await f.telegram.poll();
+    expect(f.answer).not.toHaveBeenCalled();
+    expect(f.send.mock.calls.map((call) => call[1])).toEqual([`Answer to decision nous_decision:abc123def456 (longer than a decision answer holds, so here whole):\n${words}`]);
+    expect(f.sent.map((item) => item.text)).toEqual(["Too long for the card's answer, so it went to Nous whole: Nous reads your words now."]);
   });
 
   it("polls nothing without an owner, while a pairing is pending or when the integration is off, and backs off after an error", async () => {

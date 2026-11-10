@@ -2,7 +2,7 @@ import { ownerWorkingTimeZone, type Pane, type Room, type UserSettings } from "@
 import type { MailCopilotService } from "./service.js";
 
 export interface MailCopilotSyncDeps {
-  service: Pick<MailCopilotService, "accounts" | "syncState" | "syncAccount"> & Partial<Pick<MailCopilotService, "pruneActions" | "dailyRun" | "startForNewMail">>;
+  service: Pick<MailCopilotService, "accounts" | "syncState" | "syncAccount"> & Partial<Pick<MailCopilotService, "pruneActions" | "dailyRun" | "startForNewMail" | "keepAlive">>;
   store: { listRooms(): Promise<Room[]> | Room[]; listPanes(roomId: string): Promise<Pane[]> | Pane[]; getUserSettings?(owner: string): Promise<UserSettings | null> | UserSettings | null };
   log: { warn(obj: Record<string, unknown>, message: string): void; info?(obj: Record<string, unknown>, message: string): void };
   intervalMs?: number;
@@ -38,8 +38,8 @@ export async function syncPaneAccounts(service: Pick<MailCopilotService, "accoun
 
 /**
  * Polls Gmail history for every account of every open Mail Copilot pane (one poll per owner and account per tick):
- * new mail becomes MAIL_RECEIVED events, notifications and work items that start the pane's run, and each pane's daily
- * organize run starts when due. Single-flight: a slow tick is never overlapped.
+ * new mail becomes MAIL_RECEIVED events, notifications and work items that start the pane's run, each pane's daily
+ * organize run starts when due, and a stopped CLI or a stalled run is started again (`keepAlive`). Single-flight: a slow tick is never overlapped.
  */
 export function createMailCopilotSync(deps: MailCopilotSyncDeps) {
   let timer: NodeJS.Timeout | null = null;
@@ -53,7 +53,8 @@ export function createMailCopilotSync(deps: MailCopilotSyncDeps) {
     let created = 0;
     try {
       for (const room of await deps.store.listRooms()) {
-        if (!room.ownerUserId) continue;
+        // An Agent Proof room's Mail Copilot (a proof's own pane) is never a live copilot: no sync, run, daily pass or kept-alive CLI on real mail.
+        if (!room.ownerUserId || room.kind === "AGENT_PROOF") continue;
         for (const pane of (await deps.store.listPanes(room.id)).filter((pane) => pane.mode === "MAIL_COPILOT" && !pane.isClosed)) {
           const fresh = (await syncPaneAccounts(deps.service, room.ownerUserId, pane, deps.log, synced)).created;
           created += fresh;
@@ -62,6 +63,7 @@ export function createMailCopilotSync(deps: MailCopilotSyncDeps) {
             const zone = ownerWorkingTimeZone(await Promise.resolve(deps.store.getUserSettings?.(room.ownerUserId)).catch(() => null));
             await deps.service.dailyRun(room.ownerUserId, pane, zone).catch((error: unknown) => deps.log.warn({ err: error, paneId: pane.id }, "Mail Copilot daily run could not start"));
           }
+          if (deps.service.keepAlive) await deps.service.keepAlive(room.ownerUserId, pane, room.name).catch((error: unknown) => deps.log.warn({ err: error, paneId: pane.id }, "Mail Copilot health check failed"));
         }
       }
       if (deps.service.pruneActions && Date.now() - prunedAt > PRUNE_EVERY_MS) {

@@ -26,6 +26,7 @@ import {
 } from "../dock-kit/DockKit.js";
 import "./source-control.css";
 import { SourceControlDiffModal } from "./SourceControlDiffModal.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 interface Project { label: string; path: string }
 type DockProvider = "local" | RepositoryProviderId;
@@ -91,7 +92,7 @@ function formatCommitDate(iso?: string | null): string {
   }
 }
 
-export function SourceControlDock({ userId, projects, currentProjectPath, client = sourceControlClient, isAdmin = false, defaultProjectParent = "/opt/spaceapp/projects", onProjectOpened, canViewDeploys = false, deployClient }: Props) {
+export function SourceControlDock({ userId, projects, currentProjectPath, client = sourceControlClient, isAdmin = false, defaultProjectParent = `${SPACE_INSTALL_ROOT}/projects`, onProjectOpened, canViewDeploys = false, deployClient }: Props) {
   // A hidden dock stays mounted; it must not poll git status or fetch remotes in the background.
   const isDockActive = useIsDockActive();
   const { confirm, confirmDialog } = useDockConfirm();

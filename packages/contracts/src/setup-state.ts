@@ -1,13 +1,15 @@
 import { z } from "zod";
 import { idSchema, isoDateTimeSchema } from "./schemas.js";
 import { SETUP_CATALOG_VERSION, type SetupFeatureId } from "./setup-catalog.js";
+import { noRepeatedValues } from "./array-rules.js";
+import { orderedRange } from "./range-rules.js";
 
 export const setupProtocolVersion = 2 as const;
 export const setupFeatureIdSchema = z.string()
   .regex(/^(agent|dock|pane|widget|utility):[a-z0-9][a-z0-9-]{0,79}$/)
   .transform((value) => value as SetupFeatureId);
 const uniqueIds = z.array(setupFeatureIdSchema).max(100)
-  .refine((ids) => new Set(ids).size === ids.length, "Feature ids must be unique.");
+  .refine(...noRepeatedValues("Feature ids must be unique."));
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const nameSchema = z.string().regex(/^[a-z][a-z0-9._-]{0,127}$/);
 const referenceSchema = z.string().regex(/^[a-z][a-z0-9._:-]{3,127}$/);
@@ -126,8 +128,7 @@ export const setupReadinessReceiptSchema = z.object({
   expiresAt: isoDateTimeSchema,
   outcome: z.literal("PASSED"),
   evidenceRef: referenceSchema
-}).strict().refine((receipt) => Date.parse(receipt.expiresAt) > Date.parse(receipt.completedAt),
-  "Readiness receipt must expire after its completed check.");
+}).strict().refine(...orderedRange("completedAt", "expiresAt", "Readiness receipt must expire after its completed check.", true));
 export type SetupReadinessReceipt = z.infer<typeof setupReadinessReceiptSchema>;
 
 export const setupCompletionSchema = z.object({

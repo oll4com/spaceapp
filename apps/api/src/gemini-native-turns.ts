@@ -7,6 +7,8 @@ import { findGeminiProcessTree, readPaneStateRecord } from "./gemini-session-ver
 import { geminiNativeConversationIdPattern, normalizeGeminiPaneId } from "./gemini-native-session.js";
 import type { NativeTaskExecution } from "./room-task-telemetry.js";
 import { createNativeReadCache } from "./native-read-cache.js";
+import { createNativeReadServer, serveNativeReads } from "./native-read-server.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // Antigravity 1.2.11 gemini_coder.Step protobuf. Unknown formats fail closed.
 // Only user input, public response and timing/model metadata are decoded.
@@ -135,7 +137,8 @@ export function geminiNativeTurnsFromRows(rows: StepRow[]): GeminiNativeTurn[] {
       continue;
     }
     if (row.step_type === 17) { turn.status = "UNKNOWN"; continue; } // DONE error messages may precede retries.
-    const response = nested(payload, 20), answer = text(response, 1);
+    // 6/11 Dino/Paul: a 25,627-byte final reply failed the 20 KB text cap and its turn read RUNNING for hours; fields() bounds a step at 1 MiB.
+    const response = nested(payload, 20), answer = text(response, 1, Number.POSITIVE_INFINITY);
     // STOP_PATTERN=2 is the verified native final reply. Tool calls, errors,
     // max-token stops, FINISH guesses, idle screens and partial output are not.
     if (!turn.aborted && row.step_type === 15 && row.status === 3 && one(response, 12) === 2 &&
@@ -195,12 +198,35 @@ export function validGeminiTurnReadIdentity(input: { paneId: string; sessionId: 
 
 type GeminiNativeTurns = NonNullable<Awaited<ReturnType<typeof readGeminiNativeTurns>>>;
 
-// Shared short-lived reads, as for Claude (see native-read-cache.ts).
+// Shared short-lived reads, as for Claude (see native-read-cache.ts): an idle pane is read every 30 s (6 s spawned ~470
+// launchers an hour, API audit 4/11); the operator's Enter expires it at once, and Space's own typing reads `fresh`.
 const geminiNativeTurnsCache = createNativeReadCache<GeminiNativeTurns>({
   busyTtlMs: 3_000,
-  idleTtlMs: 6_000,
+  idleTtlMs: 30_000,
   isBusy: (native) => native.turns.some((turn) => turn.status === "RUNNING")
 });
+
+// API audit 4/11 (two Gemini panes with a running turn: 1,600-2,600 sudo launchers an hour, each a fork of the API, the largest program
+// in the restart minute's spawns): one long-lived launcher reader serves the reads, as for Claude; the one-shot read stays the fallback.
+const geminiNativeTurnsServer = createNativeReadServer<GeminiNativeTurns>({
+  command: `${SPACE_INSTALL_ROOT}/bin/gemini-vscode-parity`,
+  args: ["native-turns", "--serve"],
+  timeoutMs: 2_000
+});
+
+/** The launcher's `native-turns --serve` (see `serveNativeReads`), with the one-shot read's validation and reader. */
+export function serveGeminiNativeTurns(
+  input: NodeJS.ReadableStream,
+  output: NodeJS.WritableStream,
+  read: (input: { paneId: string; sessionId: string; rootPid: number | null }) => Promise<GeminiNativeTurns | null> = readGeminiNativeTurns
+): Promise<void> {
+  return serveNativeReads(input, output, validGeminiTurnReadIdentity, read);
+}
+
+/** A submitted prompt may start a turn: the pane's next read goes to the launcher. */
+export function expireGeminiNativeTurns(paneId: string): void {
+  geminiNativeTurnsCache.expire(`${paneId}|`);
+}
 
 /** Fixed launcher read adapter; private native databases keep their permissions.
  * Pass `fresh` where a just-finished state matters (prompt delivery, Room Agent inspections). */
@@ -210,13 +236,21 @@ export async function loadGeminiNativeTurns(
 ): Promise<GeminiNativeTurns | null> {
   if (!validGeminiTurnReadIdentity(input)) return null;
   return geminiNativeTurnsCache.read(`${input.paneId}|${input.sessionId}|${input.rootPid}`, async () => {
+    const served = await geminiNativeTurnsServer.read({ paneId: input.paneId, sessionId: input.sessionId, rootPid: input.rootPid });
+    if (served !== undefined) return served;
     try {
-      const { stdout } = await promisify(execFile)("/opt/spaceapp/bin/gemini-vscode-parity",
+      const { stdout } = await promisify(execFile)(`${SPACE_INSTALL_ROOT}/bin/gemini-vscode-parity`,
         ["native-turns", input.paneId, input.sessionId, String(input.rootPid)],
         { timeout: 2000, maxBuffer: 8_388_608, env: { PATH: "/usr/bin:/bin" } });
       return JSON.parse(stdout) as GeminiNativeTurns | null;
     } catch { return null; }
   }, { fresh });
+}
+
+/** Antigravity writes no step when Esc or ctrl+c interrupts a turn (agy 1.5.1, 6/11 Bruno/Kate RUNNING for hours at "Interrupted · What
+ * should Antigravity CLI do instead?"), so its last turn stays RUNNING; a working agy always shows "esc to cancel", so an idle screen ends it. */
+export function geminiTurnRunning(turn: { status: string } | undefined, screenIdle: boolean): boolean {
+  return turn?.status === "RUNNING" && !screenIdle;
 }
 
 export function geminiTurnActivity(turns: GeminiNativeTurn[], marker: string, recovery: { markerAtMs: number; turnId?: string | null; inputMarker?: string }) {

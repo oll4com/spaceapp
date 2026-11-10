@@ -19,7 +19,7 @@ const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 const tempRoot = async () => { const root = await mkdtemp(join(tmpdir(), "space-app-studio-")); roots.push(root); return root; };
 
-async function fixture() {
+async function fixture(options: { repository?: InMemoryAppStudioRepository } = {}) {
   const root = await tempRoot();
   // The agent bridge needs the CLI and its browser bridge on (a Codex wrapper that exits at once).
   const wrapper = join(root, "codex-vscode-parity");
@@ -34,7 +34,7 @@ async function fixture() {
   const roomEvents: Event[] = [];
   eventBus.subscribe((event) => { if (event.type === "APP_STUDIO_UPDATED" || event.type === "ARTIFACT_CREATED") roomEvents.push(event); });
   const kickoffs: string[] = [];
-  const app = await createApp({ store, config, eventBus, jobApplyMailTriage: false, marketingCopilotScheduler: false, appStudioKickoff: async (pane) => { kickoffs.push(pane.id); },
+  const app = await createApp({ store, config, eventBus, jobApplyMailTriage: false, marketingCopilotScheduler: false, appStudioKickoff: async (pane) => { kickoffs.push(pane.id); }, appStudioRepository: options.repository,
     auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false } });
   const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { email: "space@space.local", password: "space-dev" } });
   const cookie = `space_session=${login.cookies.find((entry) => entry.name === "space_session")?.value}`;
@@ -87,10 +87,17 @@ describe("App Studio routes", () => {
       // After a CLI restart the agent gets the brief it already took.
       expect((await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: {} })).json().brief.id).toBe(created.brief.id);
 
-      const asked = (await app.inject({ method: "POST", url: `${cli}/ask`, headers: agent, payload: { question: "Light or dark theme?", options: ["Light", "Dark"] } })).json();
+      // R23-2 (31/10: 5 App Studio questions with options and no recommended one): options need the recommended one, which must be one of them.
+      const unrecommended = await app.inject({ method: "POST", url: `${cli}/ask`, headers: agent, payload: { question: "Light or dark theme?", options: ["Light", "Dark"] } });
+      expect(unrecommended.statusCode).toBeGreaterThanOrEqual(400);
+      expect(unrecommended.json().error.details.fieldErrors.recommended).toEqual([expect.stringContaining("with options, name the one you recommend")]);
+      expect((await app.inject({ method: "POST", url: `${cli}/ask`, headers: agent, payload: { question: "Light or dark theme?", options: ["Light", "Dark"], recommended: "Sepia" } })).json().error.details.fieldErrors.recommended)
+        .toEqual(["recommended must be one of the options"]);
+      const asked = (await app.inject({ method: "POST", url: `${cli}/ask`, headers: agent, payload: { question: "Light or dark theme?", options: ["Light", "Dark"], recommended: "Dark" } })).json();
+      expect(asked.question.payload).toMatchObject({ options: ["Light", "Dark"], recommended: "Dark" });
       const pending = (await app.inject({ method: "GET", url: "/api/notifications?status=OPEN", headers })).json().notifications as Array<{ source: string; kind: string; severity: string }>;
       expect(pending).toContainEqual(expect.objectContaining({ source: "APP_STUDIO", kind: "APP_STUDIO_QUESTION", severity: "ATTENTION",
-        payload: expect.objectContaining({ ask: { question: "Light or dark theme?", options: ["Light", "Dark"], answer: { kind: "COPILOT_QUESTION", copilot: "APP_STUDIO", questionId: asked.question.id } } }) }));
+        payload: expect.objectContaining({ ask: { question: "Light or dark theme?", options: ["Light", "Dark"], recommended: "Dark", answer: { kind: "COPILOT_QUESTION", copilot: "APP_STUDIO", questionId: asked.question.id } } }) }));
       const answerUrl = `${url}/questions/${encodeURIComponent(asked.question.id)}/answer`;
       expect((await app.inject({ method: "POST", url: answerUrl, headers, payload: { answer: "Dark" } })).json().question).toMatchObject({ status: "ANSWERED", payload: { answer: "Dark", answeredBy: "OPERATOR" } });
       expect((await app.inject({ method: "POST", url: answerUrl, headers, payload: { answer: "Light" } })).statusCode).toBe(409);
@@ -98,14 +105,24 @@ describe("App Studio routes", () => {
       expect(((await app.inject({ method: "GET", url: "/api/notifications?status=OPEN", headers })).json().notifications as Array<{ kind: string }>).some((row) => row.kind === "APP_STUDIO_QUESTION")).toBe(false);
 
       await app.inject({ method: "POST", url: `${cli}/note`, headers: agent, payload: { message: "Created the Expo project" } });
-      const done = await app.inject({ method: "POST", url: `${cli}/briefs/${encodeURIComponent(created.brief.id)}/done`, headers: agent, payload: { summary: "Todo list and settings screens" } });
-      expect(done.json().event).toMatchObject({ type: "BRIEF_DONE", payload: { briefId: created.brief.id } });
-      expect((await app.inject({ method: "POST", url: `${cli}/briefs/${encodeURIComponent(created.brief.id)}/done`, headers: agent, payload: { summary: "again" } })).statusCode).toBe(409);
+      const doneUrl = `${cli}/briefs/${encodeURIComponent(created.brief.id)}/done`;
+      // Proof gate (operator 31/10 14:13 BKK): no done without a fresh preview per item.
+      const bare = await app.inject({ method: "POST", url: doneUrl, headers: agent, payload: { summary: "Todo list and settings screens" } });
+      expect(bare.statusCode).toBe(409);
+      expect(bare.json().error.message).toContain("space_appstudio_preview");
+      const shot = (await app.inject({ method: "POST", url: `${cli}/previews`, headers: { ...agent, "content-type": `multipart/form-data; boundary=${boundary}` },
+        payload: multipart({ route: "/" }, [["android-412x915", pngOf(824, 1830)]]) })).json().previews[0].artifactId as string;
+      const items = [{ item: "Todo list screen", previewArtifactIds: [shot] }];
+      const done = await app.inject({ method: "POST", url: doneUrl, headers: agent, payload: { summary: "Todo list and settings screens", items } });
+      expect(done.json().event).toMatchObject({ type: "BRIEF_DONE", payload: { briefId: created.brief.id, items } });
+      expect(((await app.inject({ method: "GET", url: "/api/notifications?status=OPEN", headers })).json().notifications as Array<{ kind: string; body: string }>)
+        .find((row) => row.kind === "APP_STUDIO_DONE")?.body).toContain(`"Todo list screen" → ${shot}`);
+      expect((await app.inject({ method: "POST", url: doneUrl, headers: agent, payload: { summary: "again", items } })).statusCode).toBe(409);
       expect((await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: {} })).json()).toMatchObject({ done: true });
 
       const state = (await app.inject({ method: "GET", url: `${url}/state`, headers })).json();
       expect(state.run).toEqual({ status: "IDLE", paused: false, openQuestions: 0, pendingBriefs: 0 });
-      expect(state.events.map((event: { type: string }) => event.type).sort()).toEqual(["ANSWERED", "BRIEF", "BRIEF_DONE", "NOTE", "QUESTION"]);
+      expect(state.events.map((event: { type: string }) => event.type).sort()).toEqual(["ANSWERED", "BRIEF", "BRIEF_DONE", "NOTE", "PREVIEW", "QUESTION"]);
       expect(state.events.find((event: { type: string }) => event.type === "BRIEF").status).toBe("DONE");
       expect(roomEvents.some((event) => event.type === "APP_STUDIO_UPDATED" && event.paneId === pane.id)).toBe(true);
     } finally { await app.close(); }
@@ -129,10 +146,15 @@ describe("App Studio routes", () => {
       // "all": one capture per phone in one upload, more files than the multipart plugin's global limit.
       const all = await upload({ route: "/all" }, APP_STUDIO_DEVICES.map((device) => [device.id, pngOf(device.width * 2, device.height * 2)] as [string, Buffer]));
       expect(all.statusCode).toBe(200);
-      expect(all.json().previews).toHaveLength(10);
+      expect(all.json().previews).toHaveLength(APP_STUDIO_DEVICES.length);
       expect((await upload({ route: "/" }, [["iphone-414x896", pngOf(828, 1792)]])).statusCode).toBe(409);
       expect((await upload({ route: "/" }, [["iphone-402x874", Buffer.from("<html></html>")]])).statusCode).toBe(409);
       expect((await upload({ route: "/../etc" }, [["iphone-402x874", pngOf(804, 1748)]])).statusCode).toBe(409);
+      // The lab emulator's capture of the installed build (space-app-studio-apk-proof.mjs) is filed as an APK preview.
+      const apk = await upload({ route: "/plans", source: "APK", packageName: "com.oll4.spaceapp.nous", versionName: "0.2.11" }, [["android-412x915", pngOf(720, 1600)]]);
+      expect(store.getArtifact(apk.json().previews[0].artifactId).metadata).toMatchObject({ capturedFrom: "APK", packageName: "com.oll4.spaceapp.nous", versionName: "0.2.11" });
+      expect((await upload({ route: "/plans", source: "PHONE" }, [["android-412x915", pngOf(720, 1600)]])).statusCode).toBe(409);
+      expect((await upload({ route: "/plans", source: "APK", packageName: "nous" }, [["android-412x915", pngOf(720, 1600)]])).statusCode).toBe(409);
       const shell = store.createPane({ roomId: room.id, title: "Claude CLI", mode: "TERMINAL", terminalRuntimeId: "cli:claude" });
       expect((await upload({ route: "/" }, [["iphone-402x874", pngOf(804, 1748)]], tokenFor(shell.id))).statusCode).toBe(409);
       expect((await app.inject({ method: "GET", url: `${cli}/devices`, headers: tokenFor(pane.id) })).json()).toMatchObject({ selected: ["android-412x915", "iphone-402x874"], devices: expect.arrayContaining([expect.objectContaining({ id: "iphone-440x956" })]) });
@@ -158,6 +180,19 @@ describe("App Studio routes", () => {
       expect(file.headers["content-disposition"]).toMatch(/^attachment; filename="com\.oll4\.nous-1\.0\.0\.apk"/);
       const events = (await app.inject({ method: "GET", url: `${url}/state`, headers })).json().events as Array<{ type: string; payload: Record<string, unknown> }>;
       expect(events.find((event) => event.payload.apkArtifactId === artifactId)).toMatchObject({ type: "NOTE", payload: { packageName: "com.oll4.nous", downloadPath } });
+      // R20-15 (operator 30/10): the same APK is an Agent File named for the app and its version. A test build (the default) goes to
+      // Apps/Android/Builds, which the Nous app's updater ignores (operator 31/10, space_memory:b5146b7c).
+      const { agentFileId } = first.json() as { agentFileId: string };
+      expect(store.getArtifact(agentFileId)).toMatchObject({ roomId: room.id, mimeType: "application/vnd.android.package-archive", sha256: store.getArtifact(artifactId)!.sha256,
+        metadata: expect.objectContaining({ folder: "Apps/Android/Builds", originalFilename: "Nous-Android-1.0.0.apk" }) });
+      expect((await app.inject({ method: "GET", url: `/api/artifacts/${encodeURIComponent(agentFileId)}/download`, headers })).statusCode).toBe(200);
+      // Only a release build is filed in Apps/Android itself, which the updater reads (once 1.0.5 was installed on the lab emulator).
+      await app.inject({ method: "POST", url: `${cli}/previews`, headers: { ...tokenFor(pane.id), "content-type": `multipart/form-data; boundary=${boundary}` },
+        payload: multipart({ route: "/", source: "APK", packageName: "com.oll4.nous", versionName: "1.0.5" }, [["android-412x915", pngOf(720, 1600)]]) });
+      const released = await upload({ ...fields, versionName: "1.0.5", versionCode: "5", release: "true" }, apk("r"));
+      expect(released.statusCode).toBe(200);
+      expect(store.getArtifact((released.json() as { agentFileId: string }).agentFileId)).toMatchObject({
+        metadata: expect.objectContaining({ folder: "Apps/Android", originalFilename: "Nous-Android-1.0.5.apk" }) });
       const second = await upload({ ...fields, versionName: "1.0.1", versionCode: "2" }, apk("b"));
       expect(second.statusCode).toBe(200);
       expect(store.getArtifact(artifactId)).toMatchObject({ pinnedAt: null, expiresAt: expect.any(String) });
@@ -166,11 +201,65 @@ describe("App Studio routes", () => {
       const third = await upload({ ...fields, versionName: "1.0.2", versionCode: "3", signedWith: "release" }, apk("c"));
       expect(third.statusCode).toBe(200);
       expect(store.getArtifact(third.json().artifactId)).toMatchObject({ metadata: expect.objectContaining({ signedWith: "release" }) });
+      // The build script's release of a release-signed app sends both (six fields): the route's field limit cut it as "interrupted".
+      await app.inject({ method: "POST", url: `${cli}/previews`, headers: { ...tokenFor(pane.id), "content-type": `multipart/form-data; boundary=${boundary}` },
+        payload: multipart({ route: "/", source: "APK", packageName: "com.oll4.nous", versionName: "1.0.6" }, [["android-412x915", pngOf(720, 1600)]]) });
+      const signedRelease = await upload({ ...fields, versionName: "1.0.6", versionCode: "6", signedWith: "release", release: "true" }, apk("s"));
+      expect(signedRelease.statusCode).toBe(200);
+      expect(store.getArtifact((signedRelease.json() as { agentFileId: string }).agentFileId)).toMatchObject({
+        metadata: expect.objectContaining({ folder: "Apps/Android", originalFilename: "Nous-Android-1.0.6.apk" }) });
       expect((await upload({ ...fields, signedWith: "my-own-key" }, apk("d"))).statusCode).toBe(409);
       expect((await upload(fields, Buffer.from("<html></html>"))).statusCode).toBe(409);
       expect((await upload({ ...fields, packageName: "../../x" }, apk("c"))).statusCode).toBe(409);
       const shell = store.createPane({ roomId: room.id, title: "Claude CLI", mode: "TERMINAL", terminalRuntimeId: "cli:claude" });
       expect((await upload(fields, apk("d"), tokenFor(shell.id))).statusCode).toBe(409);
+    } finally { await app.close(); }
+  });
+
+  it("refuses a release build while a brief done since the last release has no proof, and takes that proof later (31/10 proof gate)", async () => {
+    const repository = new InMemoryAppStudioRepository();
+    const { app, store, room, cli, pane, tokenFor } = await fixture({ repository });
+    try {
+      const owner = store.getRoom(room.id).ownerUserId!;
+      const token = tokenFor(pane.id);
+      const agent = { ...token, "content-type": "application/json" };
+      const multipartHeaders = { ...token, "content-type": `multipart/form-data; boundary=${boundary}` };
+      // Closed before the gate (Nous app 0.2.8): DONE with no items.
+      const old = await repository.createEvent({ ownerUserId: owner, paneId: pane.id, type: "BRIEF", status: "DONE", message: "Plan colours", payload: { requester: "NOUS", result: "plan colours YES" } });
+      const check = await app.inject({ method: "POST", url: `${cli}/release-check`, headers: agent, payload: {} });
+      expect(check.statusCode).toBe(409);
+      expect(check.json().error.message).toContain(`${old.id} "Plan colours"`);
+      const apk = Buffer.concat([Buffer.from("PK\x03\x04"), Buffer.from("x".repeat(64))]);
+      const fields = { packageName: "com.oll4.spaceapp.nous", versionName: "0.2.9", versionCode: "29", buildMs: "1000" };
+      const upload = (form: Record<string, string>) => app.inject({ method: "POST", url: `${cli}/apk`, headers: multipartHeaders, payload: multipart(form, [["apk", apk]]) });
+      expect((await upload({ ...fields, release: "true" })).statusCode).toBe(409);
+      // A test build still builds and names what lacks proof.
+      const test = await upload(fields);
+      expect(test.statusCode).toBe(200);
+      expect(test.json().unproven).toEqual([expect.objectContaining({ briefId: old.id, text: "Plan colours" })]);
+      // The agent previews the screen now and adds the proof to the closed brief.
+      const shot = (await app.inject({ method: "POST", url: `${cli}/previews`, headers: multipartHeaders, payload: multipart({ route: "/plans" }, [["android-412x915", pngOf(824, 1830)]]) }))
+        .json().previews[0].artifactId as string;
+      const proven = await app.inject({ method: "POST", url: `${cli}/briefs/${encodeURIComponent(old.id)}/done`, headers: agent,
+        payload: { summary: "Plan colours", items: [{ item: "Plan colours", previewArtifactIds: [shot] }] } });
+      expect(proven.json().event).toMatchObject({ type: "NOTE", payload: { briefId: old.id } });
+      expect((await app.inject({ method: "POST", url: `${cli}/release-check`, headers: agent, payload: {} })).json()).toEqual({ ok: true });
+      // B (Nous 31/10): a release only once that exact version was installed and opened on the lab emulator.
+      const unprovenRelease = await upload({ ...fields, versionName: "0.2.10", versionCode: "30", release: "true" });
+      expect(unprovenRelease.statusCode).toBe(409);
+      expect(unprovenRelease.json().error.message).toContain("needs that version installed and opened on the lab emulator");
+      const releaseCheck = (body: Record<string, string>) => app.inject({ method: "POST", url: `${cli}/release-check`, headers: agent, payload: body });
+      expect((await releaseCheck({ packageName: "com.oll4.spaceapp.nous", versionName: "0.2.10" })).statusCode).toBe(409);
+      await app.inject({ method: "POST", url: `${cli}/previews`, headers: multipartHeaders,
+        payload: multipart({ route: "/", source: "APK", packageName: "com.oll4.spaceapp.nous", versionName: "0.2.9", versionCode: "29", data: "SIGNED_OUT" }, [["android-412x915", pngOf(720, 1600)]]) });
+      expect((await releaseCheck({ packageName: "com.oll4.spaceapp.nous", versionName: "0.2.10" })).statusCode).toBe(409);
+      const installed = await app.inject({ method: "POST", url: `${cli}/previews`, headers: multipartHeaders,
+        payload: multipart({ route: "/", source: "APK", packageName: "com.oll4.spaceapp.nous", versionName: "0.2.10", versionCode: "30", data: "SIGNED_OUT" }, [["android-412x915", pngOf(720, 1600)]]) });
+      expect(store.getArtifact(installed.json().previews[0].artifactId).metadata).toMatchObject({ capturedFrom: "APK", versionCode: 30, data: "SIGNED_OUT" });
+      expect((await releaseCheck({ packageName: "com.oll4.spaceapp.nous", versionName: "0.2.10" })).json()).toEqual({ ok: true });
+      const release = await upload({ ...fields, versionName: "0.2.10", versionCode: "30", release: "true" });
+      expect(release.statusCode).toBe(200);
+      expect(release.json().unproven).toBeUndefined();
     } finally { await app.close(); }
   });
 
@@ -203,26 +292,29 @@ describe("App Studio service", () => {
     const pane = store.createPane({ roomId: room.id, title: "App Studio", mode: "APP_STUDIO", terminalRuntimeId: "cli:claude" });
     const notifications: Array<{ action: string; key: string; severity?: string }> = [];
     const kickoffs: string[] = [];
+    const fresh: boolean[] = [];
     const repository = new InMemoryAppStudioRepository(options.now ? () => new Date(options.now!()).toISOString() : undefined);
     const studio = createAppStudioService({ repository, store, artifactRoot: root, now: options.now,
-      kickoff: { ready: async () => options.ready ?? true, send: async (target: Pane) => { kickoffs.push(target.id); } },
+      kickoff: { ready: async () => options.ready ?? true, send: async (target: Pane, isFresh: boolean) => { kickoffs.push(target.id); fresh.push(isFresh); } },
       notifications: { raise: async (input) => { notifications.push({ action: "raise", key: input.dedupeKey!, severity: input.severity }); return {} as never; },
-        resolve: async (_owner, key) => { notifications.push({ action: "resolve", key }); return 1; } } });
-    return { store, pane, studio, notifications, kickoffs };
+        resolve: async (_owner, key) => { notifications.push({ action: "resolve", key }); return 1; }, list: async () => [] } });
+    return { store, pane, studio, notifications, kickoffs, fresh };
   }
 
   it("types the kickoff only into an idle pane at an empty prompt, at most once a minute", async () => {
     let clock = Date.parse("2026-10-19T10:00:00.000Z");
     const busy = await service({ ready: false });
     expect((await busy.studio.addBrief("user:operator", busy.pane, "One", "NOUS")).kickoffSent).toBe(false);
-    const { studio, pane, kickoffs } = await service({ now: () => clock });
+    const { studio, pane, kickoffs, fresh } = await service({ now: () => clock });
     expect((await studio.addBrief("user:operator", pane, "One", "NOUS")).kickoffSent).toBe(true);
     expect((await studio.addBrief("user:operator", pane, "Two", "OPERATOR")).kickoffSent).toBe(false);
     clock += 61_000;
     await studio.takeNext("user:operator", pane);
-    // The agent works on a brief: a new one waits for its loop.
-    expect((await studio.addBrief("user:operator", pane, "Three", "OPERATOR")).kickoffSent).toBe(false);
-    expect(kickoffs).toEqual([pane.id]);
+    // A TAKEN brief does not hold new work: the empty prompt (ready) is the guard against typing into the agent's turn.
+    expect((await studio.addBrief("user:operator", pane, "Three", "OPERATOR")).kickoffSent).toBe(true);
+    expect(kickoffs).toEqual([pane.id, pane.id]);
+    // Plan clipboard:qH5emwVaV6yO step 4: a batch with nothing TAKEN starts a fresh session; one beside a TAKEN brief keeps the session.
+    expect(fresh).toEqual([true, false]);
   });
 
   it("sends a PENDING brief's kickoff again once a minute, only to a ready pane whose run is not paused or stopped", async () => {
@@ -256,13 +348,63 @@ describe("App Studio service", () => {
     expect(kickoffs).toEqual([pane.id, pane.id, pane.id]);
   });
 
+  it("kicks a pane that never recorded a run at its empty prompt, past a TAKEN brief, and serves the PENDING ones first (31/10 Alex/Emma)", async () => {
+    let clock = Date.parse("2026-10-30T17:38:00.000Z");
+    const root = await tempRoot();
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Alex", initialPaneCount: 0 }, "trace:alex", "user:operator");
+    const pane = store.createPane({ roomId: room.id, title: "App Studio 20", mode: "APP_STUDIO", terminalRuntimeId: "cli:claude" });
+    const kickoffs: string[] = [];
+    let ready = false;
+    const studio = createAppStudioService({ repository: new InMemoryAppStudioRepository(() => new Date(clock).toISOString()), store, artifactRoot: root, now: () => clock,
+      kickoff: { ready: async () => ready, send: async (target: Pane) => { kickoffs.push(target.id); } } });
+    await studio.addBrief("user:operator", pane, "Icon v2", "NOUS");
+    await studio.takeNext("user:operator", pane);
+    clock = Date.parse("2026-10-30T17:50:00.000Z");
+    await studio.addBrief("user:operator", pane, "Quotas tab", "NOUS");
+    clock = Date.parse("2026-10-30T18:04:00.000Z");
+    await studio.addBrief("user:operator", pane, "Server parts", "NOUS");
+    expect((await studio.events("user:operator", pane)).some((event) => event.type.startsWith("RUN_"))).toBe(false);
+    expect(await studio.runStatus("user:operator", pane)).toBe("IDLE");
+    ready = true;
+    clock = Date.parse("2026-10-30T18:05:00.000Z");
+    // The icon brief was taken 27 minutes ago and parked; the prompt is empty, so the waiting briefs go in.
+    expect(await studio.dispatchPending()).toBe(1);
+    expect(await studio.dispatchPending()).toBe(0);
+    expect(kickoffs).toEqual([pane.id]);
+    clock = Date.parse("2026-10-30T18:15:00.000Z");
+    // The waiting briefs come first, oldest first; the taken one (37 minutes untouched) only once none waits, touched (2/11 Cleo/Iris: a brief
+    // worked on for hours came back first on every kickoff and 7 PENDING briefs were never taken).
+    expect(await studio.takeNext("user:operator", pane)).toMatchObject({ brief: { text: "Quotas tab" } });
+    expect(await studio.takeNext("user:operator", pane)).toMatchObject({ brief: { text: "Server parts" } });
+    expect(await studio.takeNext("user:operator", pane)).toMatchObject({ brief: { text: "Icon v2" } });
+    expect((await studio.events("user:operator", pane)).find((event) => event.message === "Icon v2")).toMatchObject({ status: "TAKEN", updatedAt: new Date(clock).toISOString() });
+  });
+
+  it("folds a burst of failed briefs into one card per pane, alerted once (operator 31/10 17:31 BKK: 12 pop-ups in 3 minutes)", async () => {
+    const { app, headers, url, cli, pane, tokenFor } = await fixture();
+    try {
+      const agent = { ...tokenFor(pane.id), "content-type": "application/json" };
+      for (const n of [1, 2, 3]) {
+        const { brief } = (await app.inject({ method: "POST", url: `${url}/briefs`, headers, payload: { text: `Old brief ${n}` } })).json();
+        expect((await app.inject({ method: "POST", url: `${cli}/briefs/${encodeURIComponent(brief.id)}/done`, headers: agent, payload: { summary: `Handed over ${n}`, failed: true } })).statusCode).toBe(200);
+      }
+      const failed = ((await app.inject({ method: "GET", url: "/api/notifications?status=OPEN", headers })).json().notifications as Array<{ kind: string }>)
+        .filter((row) => row.kind === "APP_STUDIO_FAILED");
+      expect(failed).toHaveLength(1);
+      expect(failed[0]).toMatchObject({ severity: "ATTENTION", dedupeKey: `app-studio:failed:${pane.id}`, title: "App Studio could not finish 3 briefs",
+        body: "3 briefs failed since this card was raised; the newest: Handed over 3" });
+    } finally { await app.close(); }
+  });
+
   it("raises and resolves its notifications by the pane's switches", async () => {
     const { studio, store, pane, notifications } = await service();
     const { brief } = await studio.addBrief("user:operator", pane, "Build it", "NOUS");
     const question = await studio.ask("user:operator", pane, { question: "Which name?" });
     await studio.answer("user:operator", pane, question.id, "Orbit", "NOUS");
     await studio.takeNext("user:operator", pane);
-    await studio.finishBrief("user:operator", pane, brief.id, { failed: false, summary: "Built" });
+    const [shot] = await studio.savePreviews("user:operator", pane, "/", [{ deviceId: "android-360x800", bytes: pngOf(720, 1600) }]);
+    await studio.finishBrief("user:operator", pane, brief.id, { failed: false, summary: "Built", items: [{ item: "Home", previewArtifactIds: [shot!.artifactId] }] });
     expect(notifications).toEqual([
       { action: "raise", key: `app-studio:question:${question.id}`, severity: "ATTENTION" },
       { action: "resolve", key: `app-studio:question:${question.id}` },
@@ -270,6 +412,71 @@ describe("App Studio service", () => {
     const quiet = store.updateAppStudioMetadata(pane.id, { version: 1, settings: { paused: false, devices: ["android-412x915"], notifications: { needsYou: false, done: false, telegram: false } } });
     await studio.ask("user:operator", quiet, { question: "Again?" });
     expect(notifications).toHaveLength(3);
+  });
+
+  it("closes a brief DONE only with a preview per item captured after it was taken, and tells Nous each item's previews (31/10 proof gate)", async () => {
+    let clock = Date.parse("2026-10-31T07:00:00.000Z");
+    const root = await tempRoot();
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Alex", initialPaneCount: 0 }, "trace:alex", "user:operator");
+    const pane = store.createPane({ roomId: room.id, title: "App Studio", mode: "APP_STUDIO", terminalRuntimeId: "cli:claude" });
+    const notices: string[] = [];
+    const studio = createAppStudioService({ repository: new InMemoryAppStudioRepository(() => new Date(clock).toISOString()), store, artifactRoot: root, now: () => clock,
+      notice: (_owner, key, line) => { notices.push(`${key} ${line}`); } });
+    const owner = "user:operator";
+    const capture = async () => (await studio.savePreviews(owner, pane, "/plans", [{ deviceId: "android-360x800", bytes: pngOf(720, 1600) }]))[0]!.artifactId;
+    const before = await capture();
+    clock += 60_000;
+    const { brief } = await studio.addBrief(owner, pane, "Plan colours", "NOUS");
+    await studio.takeNext(owner, pane);
+    clock += 60_000;
+    const close = (items?: Array<{ item: string; previewArtifactIds: string[] }>) => studio.finishBrief(owner, pane, brief.id, { failed: false, summary: "plan colours YES", items });
+    await expect(close()).rejects.toThrow(/is not done: A brief is done only with proof/);
+    await expect(close([{ item: "Plan colours", previewArtifactIds: [] }])).rejects.toThrow(/"Plan colours" has no preview/);
+    await expect(close([{ item: "Plan colours", previewArtifactIds: [before] }])).rejects.toThrow(/before this brief was taken/);
+    await expect(close([{ item: "Plan colours", previewArtifactIds: ["artifact:nosuchone"] }])).rejects.toThrow(/not one of this pane's current previews/);
+    const fresh = await capture();
+    // The capture it replaced (same phone and screen) proves nothing any more.
+    await expect(close([{ item: "Plan colours", previewArtifactIds: [before] }])).rejects.toThrow(/not one of this pane's current previews/);
+    const items = [{ item: "Plan colours", previewArtifactIds: [fresh] }];
+    expect(await close(items)).toMatchObject({ type: "BRIEF_DONE", payload: { briefId: brief.id, items } });
+    expect((await studio.events(owner, pane)).find((event) => event.id === brief.id)).toMatchObject({ status: "DONE", payload: { items, takenAt: "2026-10-31T07:01:00.000Z" } });
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain(`app-studio-done:${brief.id} `);
+    expect(notices[0]).toContain(`"Plan colours" → ${fresh} (web)`);
+    expect(notices[0]).toContain("space_look {artifactId}");
+    expect(notices[0]).toContain('"Plan colours" has only web captures');
+    // A failed brief needs no proof.
+    const { brief: listing } = await studio.addBrief(owner, pane, "Store listing", "NOUS");
+    await expect(studio.finishBrief(owner, pane, listing.id, { failed: true, summary: "Needs the operator's Play account" })).resolves.toMatchObject({ type: "BRIEF_FAILED" });
+    await expect(studio.assertReleaseProven(owner, pane)).resolves.toBeUndefined();
+  });
+
+  it("files a lab-emulator capture of the APK as an APK preview and tells Nous which items only web captures show (plan clipboard:VWt5sAXmYwgI)", async () => {
+    let clock = Date.parse("2026-10-31T07:00:00.000Z");
+    const root = await tempRoot();
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Alex", initialPaneCount: 0 }, "trace:alex", "user:operator");
+    const pane = store.createPane({ roomId: room.id, title: "App Studio", mode: "APP_STUDIO", terminalRuntimeId: "cli:claude" });
+    const notices: string[] = [];
+    const studio = createAppStudioService({ repository: new InMemoryAppStudioRepository(() => new Date(clock).toISOString()), store, artifactRoot: root, now: () => clock,
+      notice: (_owner, key, line) => { notices.push(`${key} ${line}`); } });
+    const owner = "user:operator";
+    const { brief } = await studio.addBrief(owner, pane, "Requests status filter", "NOUS");
+    await studio.takeNext(owner, pane);
+    clock += 60_000;
+    const [apkShot] = await studio.savePreviews(owner, pane, "/requests", [{ deviceId: "android-412x915", bytes: pngOf(720, 1600) }], { packageName: "com.oll4.spaceapp.nous", versionName: "0.2.11" });
+    const [webShot] = await studio.savePreviews(owner, pane, "/quotas", [{ deviceId: "android-360x800", bytes: pngOf(720, 1600) }]);
+    expect(store.getArtifact(apkShot!.artifactId).metadata).toMatchObject({ capturedFrom: "APK", packageName: "com.oll4.spaceapp.nous", versionName: "0.2.11", route: "/requests" });
+    expect(store.getArtifact(webShot!.artifactId).metadata).toMatchObject({ capturedFrom: "WEB" });
+    expect((await studio.events(owner, pane)).find((event) => event.type === "PREVIEW" && event.payload.route === "/requests"))
+      .toMatchObject({ message: "Preview of /requests on 1 device (APK com.oll4.spaceapp.nous 0.2.11 on the lab emulator)", payload: { source: "APK" } });
+    await studio.finishBrief(owner, pane, brief.id, { failed: false, summary: "Status filter and quotas",
+      items: [{ item: "Status filter", previewArtifactIds: [apkShot!.artifactId] }, { item: "Quota red icon", previewArtifactIds: [webShot!.artifactId] }] });
+    expect(notices[0]).toContain(`"Status filter" → ${apkShot!.artifactId} (APK); "Quota red icon" → ${webShot!.artifactId} (web)`);
+    expect(notices[0]).toContain('"Quota red icon" has only web captures');
+    expect(notices[0]).not.toContain('"Status filter" has only');
+    expect(notices[0]).toContain("space-app-studio-apk-proof.mjs");
   });
 
   it("keeps the newest twenty routes and unpins the previews it drops", async () => {

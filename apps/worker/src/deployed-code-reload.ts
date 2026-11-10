@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { Worker } from "@temporalio/worker";
 
-/** The deploy writes the commit it restarted the services on here (scripts/space-deploy-commit.sh), relative to /opt/spaceapp. */
+/** The deploy writes the commit it restarted the services on here (scripts/space-deploy-commit.sh), relative to the install root (SPACE_INSTALL_ROOT). */
 export const SERVICES_COMMIT_FILE = "var/deploy/services-commit";
 /** EX_TEMPFAIL: a failure exit, so the units' Restart=on-failure starts the worker again on the new code. */
 export const STALE_CODE_EXIT_CODE = 75;

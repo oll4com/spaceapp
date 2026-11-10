@@ -56,7 +56,7 @@ export const designGenerateBodySchema = z.object({
   description: designDescriptionSchema.nullable().optional()
 }).strict();
 export const designVariantsBodySchema = z.object({
-  formatIds: z.array(designFormatRefSchema).max(8).optional(),
+  formatIds: z.array(designFormatRefSchema).optional(),
   params: params.optional(),
   requestId: designRequestIdSchema.nullable().optional()
 }).strict();
@@ -65,9 +65,9 @@ export const designAssetQuerySchema = z.object({
   formatId: designFormatRefSchema.optional(),
   brandKitId: designBrandKitIdSchema.optional(),
   requestId: designRequestIdSchema.optional(),
-  limit: z.coerce.number().int().min(1).max(500).default(200)
+  limit: z.coerce.number().int().min(1).optional()
 }).strict();
-const deliverBodySchema = z.object({ assetIds: z.array(designAssetIdSchema).max(32).optional(), message: z.string().trim().max(2000).nullable().optional() }).strict();
+const deliverBodySchema = z.object({ assetIds: z.array(designAssetIdSchema).optional(), message: z.string().trim().max(2000).nullable().optional() }).strict();
 
 /** Operator routes of the Design pane: settings and view, the Studio's render and generate, the library, requests and brand kits. */
 export function registerDesignRoutes(app: FastifyInstance, service: DesignService, deps: DesignRouteDependencies): void {
@@ -117,7 +117,7 @@ export function registerDesignRoutes(app: FastifyInstance, service: DesignServic
   app.post("/api/panes/:id/design/generate", routeOptions, async (request) => {
     const { owner, pane } = await paneOf(request);
     const input = parseBody(designGenerateBodySchema, request.body ?? {});
-    const generated = await service.generateImage(owner, pane, { ...input, madeBy: OPERATOR_MADE_BY });
+    const generated = await service.generateImage(owner, pane, { ...input, madeBy: OPERATOR_MADE_BY, traceId: request.id });
     await deps.audit(request, "design.generate", generated.asset.id, { engine: input.engine, formatId: input.formatId, model: generated.asset.model });
     return generated;
   });
@@ -159,7 +159,7 @@ export function registerDesignRoutes(app: FastifyInstance, service: DesignServic
   // ---- requests ---------------------------------------------------------------------------------
   app.get("/api/panes/:id/design/requests", routeOptions, async (request) => {
     const { owner, pane } = await paneOf(request);
-    const query = parseQuery(z.object({ status: z.enum(DESIGN_REQUEST_STATUSES).optional(), limit: z.coerce.number().int().min(1).max(200).default(100) }).strict(), request.query ?? {});
+    const query = parseQuery(z.object({ status: z.enum(DESIGN_REQUEST_STATUSES).optional(), limit: z.coerce.number().int().min(1).optional() }).strict(), request.query ?? {});
     // This pane's requests and the ones no Design pane has taken yet.
     const requests = (await service.listRequests(owner, { status: query.status ? [query.status] : undefined, limit: query.limit }))
       .filter((entry) => entry.designPaneId === pane.id || entry.designPaneId === null);
@@ -175,7 +175,7 @@ export function registerDesignRoutes(app: FastifyInstance, service: DesignServic
   app.get("/api/panes/:id/design/requests/:requestId", routeOptions, async (request) => {
     const params = parseQuery(requestParamsSchema, request.params);
     const { owner } = await paneOf(request);
-    return { ...(await service.request(owner, params.requestId)), events: await service.events(owner, { requestId: params.requestId, limit: 100 }) };
+    return { ...(await service.request(owner, params.requestId)), events: await service.events(owner, { requestId: params.requestId }) };
   });
   for (const action of ["approve", "deliver"] as const) {
     app.post(`/api/panes/:id/design/requests/:requestId/${action}`, routeOptions, async (request) => {
@@ -203,7 +203,7 @@ export function registerDesignRoutes(app: FastifyInstance, service: DesignServic
   });
   app.get("/api/panes/:id/design/events", routeOptions, async (request) => {
     const { owner, pane } = await paneOf(request);
-    const query = parseQuery(z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }).strict(), request.query ?? {});
+    const query = parseQuery(z.object({ limit: z.coerce.number().int().min(1).optional() }).strict(), request.query ?? {});
     return { events: await service.events(owner, { paneId: pane.id, limit: query.limit }) };
   });
 

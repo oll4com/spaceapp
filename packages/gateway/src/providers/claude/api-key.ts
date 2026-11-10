@@ -1,4 +1,6 @@
 import type { GatewayAccountRecord } from "@space/db";
+import { detectProject } from "../../client-detect.js";
+import { NOUS_PROJECTS } from "../../router/balancer.js";
 import { CLAUDE_API_BASE_URL } from "./headers.js";
 
 /**
@@ -18,7 +20,9 @@ export const isClaudeApiKeyAccount = (account: Pick<GatewayAccountRecord, "provi
  * user agent, not `x-client` or the session header: Oh My Pi sends Claude Code's session header too.
  */
 export const isClaudeCodeRequest = (headers: Record<string, string | string[] | undefined>): boolean =>
-  /claude-code\/|claude-cli\/|claude-vscode\//i.test(String(headers["user-agent"] ?? ""));
+  /claude-code\/|claude-cli\/|claude-vscode\//i.test(String(headers["user-agent"] ?? ""))
+  // Nous never spends the key (operator decision 8/11), whatever its user agent: its "Claude via OpenCode" route sent Node's (~$158 in November).
+  || NOUS_PROJECTS.has(detectProject(headers) ?? "");
 
 /** Whether a key works: the model list costs nothing and answers 401 to a bad key. */
 export async function checkClaudeApiKey(apiKey: string, fetchImpl: typeof fetch = fetch, baseUrl = CLAUDE_API_BASE_URL): Promise<{ ok: boolean; status: number }> {

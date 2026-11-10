@@ -6,6 +6,7 @@ import { delimiter, extname, join } from "node:path";
 import { runNativeMetadataCommand } from "./task-title-native.js";
 import { taskTitleImagesMax } from "./task-title-images.js";
 import { runSqliteJson } from "./toolbar-model-stats.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
  * OpenCode Zen serves its free tier only to requests that carry OpenCode's
@@ -129,7 +130,7 @@ export async function resolveNativeOpenCodeRuntime(
     ? [command]
     : [
         ...(commandDir ? [join(commandDir, "opencode")] : []),
-        "/opt/spaceapp/var/cli-versions/opencode/current/node_modules/.bin/opencode",
+        `${SPACE_INSTALL_ROOT}/var/cli-versions/opencode/current/node_modules/.bin/opencode`,
         ...(process.env.PATH ?? "")
           .split(delimiter)
           .filter(Boolean)

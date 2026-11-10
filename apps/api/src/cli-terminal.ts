@@ -1,8 +1,10 @@
+import { autohandNativeSessionIdPattern } from "./autohand-native-session.js";
+import { droidNativeSessionIdPattern } from "./droid-native-session.js";
 import { codexChoosesDefaults } from "./codex-cli-mode-defaults.js";
 import { mayCreateCliSessionDirectory } from "./project-paths.js";
 import { WORKTREES_ROOT } from "./worktrees/worktree-service.js";
 import { findCodexWriterThreads } from "./codex-thread-writer.js";
-import { qoderNativeSessionId, qoderNativeSessionIdPattern } from "./qoder-native-session.js";
+import { copilotNativeSessionId, cursorNativeSessionId, grokNativeSessionId, qoderNativeSessionId, qoderNativeSessionIdPattern } from "./qoder-native-session.js";
 import { loadGeminiNativeTurns, geminiTurnActivity } from "./gemini-native-turns.js";
 import {
   findLatestGeminiConversationIdForWorkspace,
@@ -11,9 +13,9 @@ import {
   writeGeminiPaneConversation
 } from "./gemini-native-session.js";
 import { issueControlToken } from "./space-control-token.js";
-import { projectRoomTerminalScreen, restoreRoomTerminalGeometry } from "./room-terminal-screen.js";
+import { projectRoomTerminalRuns, projectRoomTerminalScreen, restoreRoomTerminalGeometry, type TerminalRun } from "./room-terminal-screen.js";
 import { CLAUDE_EFFORT_LEVELS, CLAUDE_PANE_MODEL_PREFIX } from "./cli-native-model-picker.js";
-import { readRoomHostScreen, readRoomHostScreenSnapshot } from "./room-host-screen.js";
+import { readRoomHostScreenSnapshot } from "./room-host-screen.js";
 import { randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { execFile } from "./safe-child-process.js";
@@ -82,6 +84,7 @@ import {
   codexDirectParityHome,
   isDirectOperatorParityRuntime,
   isCodexDirectParityRuntime,
+  publicPaneCwd,
   resolveDirectOperatorParityCwd
 } from "./cli-parity.js";
 import { findCliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
@@ -91,7 +94,10 @@ import { opencodeNativeSessionIdPattern } from "./opencode-native-session.js";
 import { reasonixNativeSessionRefPattern, resolveReasonixNativeSessionRef } from "./reasonix-native-session.js";
 import { recordCliHostHealth } from "./host-metrics.js";
 import { claudeNativeSessionIdPattern } from "./claude-native-turns.js";
-import { qwenNativeSessionIdPattern } from "./task-title-native.js";
+import { ompNativeSessionIdPattern } from "./omp-native-model.js";
+import { museNativeSessionIdPattern } from "./muse-native-session.js";
+import { hermesNativeSessionIdPattern, qwenNativeSessionIdPattern } from "./task-title-native.js";
+import { kimiNativeSessionIdPattern } from "./kimi-native-session.js";
 import {
   activeCliSessionObserverRuntime,
   isCliRuntimeTerminalLaunchable
@@ -104,6 +110,7 @@ import {
   type CodexCliTurnActivity
 } from "./codex-rollout-diagnostics.js";
 import { codexStateDbMissing, findCodexThreadInSessions } from "./codex-sessions.js";
+import { readSqliteRows } from "./sqlite-read.js";
 
 const execFileAsync = promisify(execFile);
 const codexThreadUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -168,6 +175,7 @@ function codexStartupProgressIndex(output: string): number {
     normalized.lastIndexOf("reconnecting"),
     normalized.lastIndexOf("connecting")
   );
+  // Kept on purpose (READINESS-001, Nous 2026-11-02): older Codex builds print this line (0.144.1 does), 0.165+ do not; unused it is harmless.
   for (const match of normalized.matchAll(/starting mcp servers\s*\((\d+)\/(\d+)\)/g)) {
     if (match.index !== undefined) {
       const current = Number.parseInt(match[1]!, 10);
@@ -266,10 +274,25 @@ const cliComposerReadyPatterns: Readonly<Record<string, RegExp>> = {
   "cli:claude": /\? for shortcuts|shift\+tab to cycle|(?:⏵⏵|⏸) [a-z ]+ on\b/,
   "cli:qwen": /type your message/,
   "cli:cursor": /plan, search, build anything|run everything/,
+  // Autohand 0.9.9-space.1 native readInstruction component, PTY at 100/42 columns (2026-11-03); not a signed-in CLI proof.
+  "cli:autohand": /❯ plan, search, build anything/,
   "cli:omp": /π >|⇧⇥ to change thinking/,
   "cli:droid": /\? for help/,
   "cli:hermes": /─ ready │|❯ try "/,
-  "cli:grok": /│\s*❯/
+  "cli:grok": /│\s*❯/,
+  // OpenCode (2.1.2, 2.2.5) draws `Ask anything… "<example>"` only on its home screen; a reopened session shows its prompt footer's
+  // "ctrl+p commands" (panes 44+ columns wide). 7/11 Bruno/Kate: a reopened pane's scheduled task waited 45 s for the placeholder each tick.
+  "cli:opencode": /ask anything|ctrl\+p commands/,
+  // Qoder: composer.placeholder.message "  Type your message or @path/to/file", or the shell-mode placeholder (qodercli bundle).
+  "cli:qoder": /type your message or @path\/to\/file|type your shell command/,
+  // Captured in tmux on 2026-10-29 from the installed binaries (no prompt sent): Copilot 1.0.105's footer under its composer,
+  // Reasonix 2.47.1's (DeepSeek) status line under its composer; each string appears once on the idle screen.
+  "cli:copilot": /\/ commands · \? help/,
+  "cli:deepseek": /· ready · shift\+tab/,
+  // Muse 1.4.14 (tmux 2026-11-03, echo provider, --yolo as its wrapper runs it): the footer under its composer ends "· YOLO"; its login chooser has none.
+  "cli:muse": /· yolo\b/,
+  // Kimi Code 2.4.1 (tmux 2026-11-03, --yolo as its wrapper runs it): the composer box row; its folder-trust menu has none.
+  "cli:kimi": /│ >/
 };
 
 // TUIs that redraw a ticking line every second (OpenCode's animation, Hermes' "─ ready │ … │ 5m 17s" status bar):
@@ -289,7 +312,23 @@ const codexHostReplayRoomScreen = (runtimeId: string, config: SpaceApiConfig) =>
 export function cliComposerReady(runtimeId: string, output: string): boolean | null {
   if (runtimeId === "cli:gemini") return geminiInputReady(output);
   const pattern = cliComposerReadyPatterns[runtimeId];
-  return pattern ? pattern.test(output.replace(codexControlAnsiPattern, "").toLowerCase()) : null;
+  if (!pattern) return null;
+  const text = output.replace(codexControlAnsiPattern, "").toLowerCase();
+  return pattern.test(text) && !(runtimeId === "cli:deepseek" && reasonixPanelOpen(text))
+    // Kimi draws its composer, then the `--session` picker over it, which owns input until a composer row follows its hint.
+    && !(runtimeId === "cli:kimi" && text.lastIndexOf("esc cancel") > text.lastIndexOf("│ >"))
+    // Autohand's captured login modal owns input after its navigation footer, until the composer redraws.
+    && !(runtimeId === "cli:autohand" && text.lastIndexOf("↑↓ navigate") > text.lastIndexOf("❯ plan, search, build anything"));
+}
+
+// ADAPTER-001: Reasonix (2.47-2.56) keeps its "· ready ·" status line on screen under its setup panels (connection picker,
+// "Enter credential"), which own input until a bare "❯" composer row is drawn after the panel's "· Esc cancel" footer.
+function reasonixPanelOpen(text: string): boolean {
+  const panel = text.lastIndexOf("· esc cancel");
+  if (panel < 0) return false;
+  let composer = -1;
+  for (const row of text.matchAll(/(?:^|\n)[ \t]*❯[ \t]*(?=\r?\n|\r|$)/g)) composer = row.index;
+  return composer < panel;
 }
 
 export function geminiInputReady(output: string): boolean {
@@ -393,7 +432,7 @@ interface ManagedCliSession {
   roomScreenRows: number;
   roomScreenGeometryKnown: boolean;
   roomScreenGeometryQueue: Promise<void>;
-  roomScreenSnapshot?: { generationId: string; revision: number; cols: number; rows: number; unwrap: boolean; text: string };
+  roomScreenSnapshot?: { generationId: string; revision: number; cols: number; rows: number; unwrap: boolean; text: string; runs?: TerminalRun[][] };
   reportedNullAgentMessageTurns: Set<string>;
   nullAgentMessageCheckSinceMs: number | null;
   nullAgentMessageCheckUntilMs: number;
@@ -622,6 +661,7 @@ export interface CliEnvironmentContext {
   modelId?: string | null;
   reasoningEffort?: string | null;
   geminiConversationId?: string | null;
+  nativeTaskRef?: string | null;
 }
 
 interface CliTerminalConnection {
@@ -734,11 +774,12 @@ export interface CliHostGateway {
     attachmentId: string,
     data: string,
     display?: "visible" | "hidden",
-    idempotencyKey?: string
+    idempotencyKey?: string,
+    traceId?: string
   ): Promise<CliHostInputResult | void>;
   resize(identity: CliHostIdentity, attachmentId: string, cols: number, rows: number): Promise<void>;
   detach(identity: CliHostIdentity, attachmentId: string): Promise<boolean>;
-  terminate(identity: CliHostIdentity): Promise<boolean>;
+  terminate(identity: CliHostIdentity, traceId?: string): Promise<boolean>;
   reapDetached?(): Promise<CliHostReapResult>;
   close(): Promise<void>;
 }
@@ -1001,6 +1042,8 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
     SPACE_CLI_SESSION_ID: context.cliSessionId ?? undefined,
     SPACE_CODEX_PER_SESSION_APP_SERVER: directCodexParity ? "1" : undefined,
     SPACE_CLI_WORKSPACE: context.cwd ?? undefined,
+    // ADAPTER-012: a wrapper keeps native state that dev and stable would otherwise share (Hermes runs a dev profile).
+    SPACE_CLI_INSTANCE: config.instance === "dev" ? "dev" : undefined,
     SPACE_PANE_ID: context.paneId ?? undefined,
     SPACE_ROOM_ID: context.roomId ?? undefined,
     SHELL: shell,
@@ -1048,6 +1091,24 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
     if (context.modelId) env.SPACE_GEMINI_MODEL = context.modelId;
     if (context.reasoningEffort) env.SPACE_GEMINI_EFFORT = context.reasoningEffort;
     if (context.geminiConversationId) env.SPACE_GEMINI_CONVERSATION_ID = context.geminiConversationId;
+  }
+  if (context.runtimeId === "cli:copilot" && context.cliSessionId && context.purpose !== "LOGIN") {
+    // The pane's own Copilot session: the wrapper starts or resumes it with --session-id (ADAPTER-006).
+    env.SPACE_COPILOT_SESSION_ID = context.nativeTaskRef && qoderNativeSessionIdPattern.test(context.nativeTaskRef)
+      ? context.nativeTaskRef
+      : copilotNativeSessionId(context.cliSessionId);
+  }
+  if (context.runtimeId === "cli:grok" && context.cliSessionId && context.purpose !== "LOGIN") {
+    // The pane's own Grok session: the wrapper starts it with --session-id or reopens it with --resume <id> (ADAPTER-006).
+    env.SPACE_GROK_SESSION_ID = context.nativeTaskRef && qoderNativeSessionIdPattern.test(context.nativeTaskRef)
+      ? context.nativeTaskRef
+      : grokNativeSessionId(context.cliSessionId);
+  }
+  if (context.runtimeId === "cli:cursor" && context.cliSessionId && context.purpose !== "LOGIN") {
+    // The pane's own Cursor chat: the wrapper starts or reopens it with --resume <id> (ADAPTER-006).
+    env.SPACE_CURSOR_SESSION_ID = context.nativeTaskRef && qoderNativeSessionIdPattern.test(context.nativeTaskRef)
+      ? context.nativeTaskRef
+      : cursorNativeSessionId(context.cliSessionId);
   }
   if (runtimeDescriptor?.loginBootstrapRuntimeEnv && config.cliLoginBootstrap[runtimeDescriptor.key]) {
     env[runtimeDescriptor.loginBootstrapRuntimeEnv] = "1";
@@ -1139,6 +1200,14 @@ export function buildCliSpawnArgs(
     // A bare --resume opens Claude's session picker; the recorded native session resumes exactly.
     return ["--resume", session.nativeTaskRef];
   }
+  if (session?.launchMode === "RESUME" && runtime.id === "cli:autohand" &&
+      session.nativeTaskRef && autohandNativeSessionIdPattern.test(session.nativeTaskRef)) {
+    return ["--resume", session.nativeTaskRef];
+  }
+  if (session?.launchMode === "RESUME" && runtime.id === "cli:droid" &&
+      session.nativeTaskRef && droidNativeSessionIdPattern.test(session.nativeTaskRef)) {
+    return ["--resume", session.nativeTaskRef];
+  }
   if (
     session?.launchMode === "RESUME" &&
     runtime.id === "cli:qwen" &&
@@ -1148,6 +1217,38 @@ export function buildCliSpawnArgs(
     // The ref is the session the metadata bridge bound to this pane's process; without one,
     // Qwen falls back to its provider-selection `--continue` below.
     return ["--resume", session.nativeTaskRef];
+  }
+  if (
+    session?.launchMode === "RESUME" &&
+    runtime.id === "cli:omp" &&
+    session.nativeTaskRef &&
+    ompNativeSessionIdPattern.test(session.nativeTaskRef)
+  ) {
+    // The session the pane's omp process ran (its terminal breadcrumb, recorded by the task titles); without one,
+    // omp falls back to its provider-selection `--continue` below.
+    return ["--resume", session.nativeTaskRef];
+  }
+  if (
+    session?.launchMode === "RESUME" &&
+    runtime.id === "cli:muse" &&
+    session.nativeTaskRef &&
+    museNativeSessionIdPattern.test(session.nativeTaskRef)
+  ) {
+    // The session the pane's Muse held open (recorded by the task titles); without one, `resume --last` below.
+    return ["resume", session.nativeTaskRef];
+  }
+  if (
+    session?.launchMode === "RESUME" &&
+    runtime.id === "cli:hermes" &&
+    session.nativeTaskRef &&
+    hermesNativeSessionIdPattern.test(session.nativeTaskRef)
+  ) {
+    // The session the pane's Hermes TUI ran (recorded by the task titles); without one, `--continue` below.
+    return ["--resume", session.nativeTaskRef];
+  }
+  if (session?.launchMode === "RESUME" && runtime.id === "cli:kimi" && session.nativeTaskRef && kimiNativeSessionIdPattern.test(session.nativeTaskRef)) {
+    // The session the pane's Kimi leased for a turn (recorded by the task titles); without one, the `--session` picker below.
+    return ["--session", session.nativeTaskRef];
   }
   if (runtime.id === "cli:qoder" && session?.sessionId) {
     // Qoder runs in a session Space can name: resume that exact one rather than the folder's latest.
@@ -1273,11 +1374,7 @@ export async function findSafeCodexThreadId(input: FindSafeCodexThreadIdInput): 
     LIMIT 1
   `;
   try {
-    const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json", stateDbPath, sql], {
-      timeout: 1_500,
-      maxBuffer: 64 * 1024
-    });
-    const rows = JSON.parse(String(stdout || "[]")) as Array<{ id?: unknown }>;
+    const rows = readSqliteRows<{ id?: unknown }>(stateDbPath, sql);
     const ids = rows.map((row) => (typeof row.id === "string" ? row.id : "")).filter((id) => codexThreadUuidPattern.test(id));
     return ids.length === 1 ? ids[0] ?? null : null;
   } catch {
@@ -1305,11 +1402,7 @@ export async function findSafeCodexThreadResumeSettings(
     LIMIT 2
   `;
   try {
-    const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json", stateDbPath, sql], {
-      timeout: 1_500,
-      maxBuffer: 64 * 1024
-    });
-    const rows = JSON.parse(String(stdout || "[]")) as Array<{ model?: unknown; reasoning_effort?: unknown }>;
+    const rows = readSqliteRows<{ model?: unknown; reasoning_effort?: unknown }>(stateDbPath, sql);
     if (rows.length !== 1) return null;
     const modelId = rows[0]?.model;
     const reasoningEffort = rows[0]?.reasoning_effort;
@@ -1367,9 +1460,11 @@ function cliHostLaneIndex(sessionId: string, laneCount: number): number {
 export class CliTerminalManager {
   private readonly tickets = new Map<string, TicketRecord>();
   private readonly sessions = new Map<string, ManagedCliSession>();
+  /** Sessions a server-side replacement is ending: their exit status waits for the successor's id (holdExitForReplacement). */
+  private readonly replacements = new Map<string, { managed: ManagedCliSession; held: PaneCliWebSocketServerMessage | null; timer: ReturnType<typeof setTimeout> }>();
   // Detached Claude panes are read by the room monitor, the limit-move check, task schedules and Nous: one live host read per
   // pane and view serves ~2 s of callers, and a host slower than 1.5 s leaves them the DB tail.
-  private readonly detachedRoomScreenReads = new Map<string, { expires: number; value: Promise<{ text: string; revision: number } | null> }>();
+  private readonly detachedRoomScreenReads = new Map<string, { expires: number; value: Promise<{ text: string; revision: number; runs?: TerminalRun[][] } | null> }>();
   private readonly terminalMutationQueues = new Map<string, Promise<void>>();
   private readonly sessionAttachPromises = new Map<string, Promise<ManagedCliSessionAttach>>();
   private readonly sessionAllocations = new Map<string, CliSessionAllocationRecord>();
@@ -1839,7 +1934,7 @@ export class CliTerminalManager {
       input: async (identity, ...rest) => (await pick(identity)).input(identity, ...rest),
       resize: async (identity, ...rest) => (await pick(identity)).resize(identity, ...rest),
       detach: async (identity, attachmentId) => (await pick(identity)).detach(identity, attachmentId),
-      terminate: async (identity) => (await pick(identity)).terminate(identity),
+      terminate: async (identity, traceId) => (await pick(identity)).terminate(identity, traceId),
       close: () => lane.close()
     };
   }
@@ -1932,7 +2027,9 @@ export class CliTerminalManager {
 
   async interrupt(
     sessionId: string,
-    transcript?: { content: string; traceId: string }
+    transcript?: { content: string; traceId: string },
+    // OBS-006: the request that stopped the CLI, for the pane host's terminate line when no transcript line names it.
+    traceId = transcript?.traceId
   ): Promise<boolean> {
     const managed = this.sessions.get(sessionId);
     if (managed && !managed.closed) {
@@ -1946,7 +2043,7 @@ export class CliTerminalManager {
       }
       let interrupted: boolean;
       try {
-        interrupted = await this.terminateManagedHostSession(managed);
+        interrupted = await this.terminateManagedHostSession(managed, traceId);
       } catch (error) {
         if (!cliHostSessionUnavailable(error)) throw error;
         interrupted = false;
@@ -1963,7 +2060,7 @@ export class CliTerminalManager {
     let interrupted: boolean;
     try {
       const host = this.hostForRuntime(session.runtimeId, session.sessionId);
-      interrupted = await this.terminateHostSession(host, await this.buildHostIdentity(session));
+      interrupted = await this.terminateHostSession(host, await this.buildHostIdentity(session), traceId);
     } catch (error) {
       if (!cliHostSessionUnavailable(error)) throw error;
       interrupted = false;
@@ -1998,13 +2095,58 @@ export class CliTerminalManager {
     }
   }
 
+  /**
+   * A server-side replacement (task resume, account switch, usage-limit move, policy restart) is about to end this session. Its open
+   * terminals get the successor's id (session_replaced, announceReplacement) instead of the exit, so they attach to it by themselves;
+   * 28/10 six panes moved off a usage limit kept showing the exit until the operator pressed Reconnect. Without a successor within
+   * 30 s the held exit goes out as before.
+   */
+  holdExitForReplacement(sessionId: string): void {
+    const managed = this.sessions.get(sessionId);
+    if (!managed || this.replacements.has(sessionId)) return;
+    const timer = setTimeout(() => this.announceReplacement(sessionId, null), 30_000);
+    timer.unref?.();
+    this.replacements.set(sessionId, { managed, held: null, timer });
+  }
+
+  announceReplacement(sessionId: string, successorId: string | null): void {
+    const entry = this.replacements.get(sessionId);
+    if (!entry) return;
+    this.replacements.delete(sessionId);
+    clearTimeout(entry.timer);
+    if (successorId) this.broadcast(entry.managed, { type: "session_replaced", sessionId: successorId });
+    else if (entry.held) this.broadcast(entry.managed, entry.held);
+  }
+
+  /** An ended session's status for its terminals, held while a replacement is announced. */
+  private broadcastExit(managed: ManagedCliSession, message: PaneCliWebSocketServerMessage) {
+    const replacing = this.replacements.get(managed.sessionId);
+    if (replacing) replacing.held = message;
+    else this.broadcast(managed, message);
+  }
+
   async replaceSessionForPolicyRestart(
     sessionId: string,
     runtime: AgentRuntime,
     traceId: string,
     createReplacement: () => Promise<PaneCliSession>
   ): Promise<PaneCliSession> {
-    const previousManaged = this.sessions.get(sessionId) ?? null;
+    this.holdExitForReplacement(sessionId);
+    try {
+      return await this.replaceHeldSession(sessionId, runtime, traceId, createReplacement);
+    } catch (error) {
+      // No successor: the held exit goes out at once.
+      this.announceReplacement(sessionId, null);
+      throw error;
+    }
+  }
+
+  private async replaceHeldSession(
+    sessionId: string,
+    runtime: AgentRuntime,
+    traceId: string,
+    createReplacement: () => Promise<PaneCliSession>
+  ): Promise<PaneCliSession> {
     const interrupted = await this.interrupt(sessionId, {
       content: "CLI session stopped for an explicit network policy restart.",
       traceId
@@ -2024,9 +2166,7 @@ export class CliTerminalManager {
 
     const replacement = await createReplacement();
     await this.getOrSpawnSession(replacement, runtime, traceId);
-    if (previousManaged) {
-      this.broadcast(previousManaged, { type: "session_replaced", sessionId: replacement.sessionId });
-    }
+    this.announceReplacement(sessionId, replacement.sessionId);
     return replacement;
   }
 
@@ -2102,6 +2242,7 @@ export class CliTerminalManager {
           if (room?.projectPath) targetPaneCwd = room.projectPath;
         } catch {}
       }
+      if (this.options.config.publicDistribution) targetPaneCwd = publicPaneCwd(targetPaneCwd, this.options.config.cliWorkspaceRoot, pane.roomId);
       let cwd = isDirectOperatorParityRuntime(runtime.id)
         ? resolveDirectOperatorParityCwd(targetPaneCwd, this.options.config.cliWorkspaceRoot)
         : targetPaneCwd ?? this.options.config.cliWorkspaceRoot;
@@ -2141,7 +2282,9 @@ export class CliTerminalManager {
     return (await this.options.store.getPaneCliSession(session.sessionId)) ?? session;
   }
 
-  async observeRoomScreen(sessionId: string, unwrap = false): Promise<{ text: string; revision: number }> {
+  /** `styled` adds each line's colour runs (`runs`), from the same replay as `text`. */
+  /** `signal` stops the read (host replay and projection) when its caller gives up. */
+  async observeRoomScreen(sessionId: string, unwrap = false, styled = false, signal?: AbortSignal): Promise<{ text: string; revision: number; runs?: TerminalRun[][] }> {
     const managed = this.sessions.get(sessionId);
     // A detached session's DB tail is drawn at the PTY's own stored size: at 100 columns a wider Claude screen read as two columns
     // (cursor moves past column 100 clamp there; round 4, 00:50 item b).
@@ -2153,9 +2296,10 @@ export class CliTerminalManager {
         const geometry = session.terminalGeometry;
         // A closed observer WebSocket need not leave an API-managed transport.
         // Read the independent host without spawning or taking browser control.
-        const snapshot = !geometry ? null : session.runtimeId === "cli:claude" ? await this.readDetachedRoomHostScreen(session, unwrap, false)
+        const snapshot = !geometry ? null : session.runtimeId === "cli:claude" ? await this.readDetachedRoomHostScreen(session, unwrap, false, styled)
           : await readRoomHostScreenSnapshot(this.hostForRuntime(session.runtimeId, sessionId), await this.buildHostIdentity(session),
-            geometry.cols, geometry.rows, unwrap, geometry.generationId).catch(() => null);
+            geometry.cols, geometry.rows, unwrap, geometry.generationId, false, styled, signal).catch(() => null);
+        signal?.throwIfAborted();
         // Hermes, Qoder and Claude keep the DB tail as their fallback: an empty screen would read as idle.
         if (snapshot || session.runtimeId === "cli:opencode") return snapshot ?? { text: "", revision: 0 };
       }
@@ -2167,31 +2311,33 @@ export class CliTerminalManager {
     const cols = managed?.roomScreenCols ?? stored?.cols ?? 100, rows = managed?.roomScreenRows ?? stored?.rows ?? 30;
     const revision = managed?.controlOutputRevision ?? chunks.at(-1)?.sequence ?? 0;
     const cached = managed?.roomScreenSnapshot;
-    if (cached && cached.generationId === managed?.generationId && cached.revision === revision && cached.cols === cols && cached.rows === rows && cached.unwrap === unwrap) return { text: cached.text, revision };
+    if (cached && cached.generationId === managed?.generationId && cached.revision === revision && cached.cols === cols && cached.rows === rows && cached.unwrap === unwrap && (!styled || cached.runs)) return { text: cached.text, revision, ...(styled ? { runs: cached.runs } : {}) };
     // OpenCode emits small animation deltas which can evict an unchanged
     // composer from the DB tail. Its existing host has a larger bounded replay.
     // This observer is separate from browser attachment/replay ownership.
-    let text: string | null = null;
+    let screen: { text: string; runs?: TerminalRun[][] } | null = null;
     if (managed && (hostReplayRoomScreenRuntimes.has(managed.runtimeId) || codexHostReplayRoomScreen(managed.runtimeId, this.options.config)) && managed.purpose === "NORMAL" && managed.roomScreenGeometryKnown) {
-      text = await readRoomHostScreen(this.hostForRuntime(managed.runtimeId, sessionId), managed.identity, cols, rows, unwrap, managed.generationId).catch(() => null);
+      screen = await readRoomHostScreenSnapshot(this.hostForRuntime(managed.runtimeId, sessionId), managed.identity, cols, rows, unwrap, managed.generationId, false, styled, signal).catch(() => null);
     }
-    const hostReadFailed = managed?.runtimeId === "cli:opencode" && text === null;
+    const hostReadFailed = managed?.runtimeId === "cli:opencode" && screen === null;
     if (hostReadFailed) return { text: "", revision };
-    text ??= await projectRoomTerminalScreen(output.map(chunk => chunk.content), cols, rows, unwrap);
-    if (managed && !hostReadFailed) managed.roomScreenSnapshot = { generationId: managed.generationId, revision, cols, rows, unwrap, text };
-    return { text, revision };
+    const chunkText = output.map(chunk => chunk.content);
+    screen ??= styled ? await projectRoomTerminalRuns(chunkText, cols, rows, unwrap, false, signal) : { text: await projectRoomTerminalScreen(chunkText, cols, rows, unwrap, false, signal) };
+    const { text, runs } = screen;
+    if (managed && !hostReadFailed) managed.roomScreenSnapshot = { generationId: managed.generationId, revision, cols, rows, unwrap, text, ...(runs ? { runs } : {}) };
+    return { text, revision, ...(runs ? { runs } : {}) };
   }
 
-  private readDetachedRoomHostScreen(session: PaneCliSession, unwrap: boolean, omitFaint: boolean): Promise<{ text: string; revision: number } | null> {
+  private readDetachedRoomHostScreen(session: PaneCliSession, unwrap: boolean, omitFaint: boolean, styled = false): Promise<{ text: string; revision: number; runs?: TerminalRun[][] } | null> {
     const geometry = session.terminalGeometry!;
-    const key = `${session.sessionId}|${geometry.generationId}|${geometry.cols}x${geometry.rows}|${unwrap}|${omitFaint}`;
+    const key = `${session.sessionId}|${geometry.generationId}|${geometry.cols}x${geometry.rows}|${unwrap}|${omitFaint}|${styled}`;
     const now = Date.now();
     const cached = this.detachedRoomScreenReads.get(key);
     if (cached && cached.expires > now) return cached.value;
     for (const [entryKey, entry] of this.detachedRoomScreenReads) if (entry.expires <= now) this.detachedRoomScreenReads.delete(entryKey);
     const value = (async () => {
       const read = readRoomHostScreenSnapshot(this.hostForRuntime(session.runtimeId, session.sessionId), await this.buildHostIdentity(session),
-        geometry.cols, geometry.rows, unwrap, geometry.generationId, omitFaint).catch(() => null);
+        geometry.cols, geometry.rows, unwrap, geometry.generationId, omitFaint, styled).catch(() => null);
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 1_500); timer.unref?.(); });
       try { return await Promise.race([read, timeout]); } finally { clearTimeout(timer); }
@@ -2320,7 +2466,9 @@ export class CliTerminalManager {
     turnMarker: string | null = null,
     inputIdempotencyKey?: string,
     /** A prompt waits for the CLI's composer; answers, keys and commands go to whatever is on screen. */
-    waitForComposer = false
+    waitForComposer = false,
+    /** Ends the composer wait of a caller that gave up (its watchdog), so it releases the pane's lock and types nothing. */
+    signal?: AbortSignal
   ): Promise<{ turnMarker: string | null; markerAtMs: number }> {
     const session = await this.options.store.getPaneCliSession(sessionId);
     if (!session) throw new SpaceNotFoundError(`CLI session ${sessionId} was not found.`);
@@ -2358,15 +2506,14 @@ export class CliTerminalManager {
     // An interrupt key goes to whatever is on screen: a busy Codex shows no ready composer, so waiting for one
     // timed out and the stop never reached it (stable live proof 2026-10-16).
     const interruptKey = terminalData === "\u001b" || terminalData === "\u0003";
-    if (terminalData.length > 0 && !interruptKey) await this.waitForInputReady(managed, waitForComposer);
+    if (terminalData.length > 0 && !interruptKey) await this.waitForInputReady(managed, waitForComposer, signal);
     await this.flushHostOutput(managed);
     await Promise.all((managed.pendingInputPersistence ?? []).map((pending) => pending.completion));
 
     const sendToHost = (candidate: ManagedCliSession) => {
+      signal?.throwIfAborted();
       const host = this.hostForRuntime(candidate.runtimeId, candidate.sessionId);
-      return inputIdempotencyKey
-        ? host.input(candidate.identity, candidate.attachmentId, terminalData, "visible", inputIdempotencyKey)
-        : host.input(candidate.identity, candidate.attachmentId, terminalData, "visible");
+      return host.input(candidate.identity, candidate.attachmentId, terminalData, "visible", inputIdempotencyKey, traceId);
     };
     let inputResult;
     try {
@@ -2378,7 +2525,7 @@ export class CliTerminalManager {
       if (this.sessions.get(session.sessionId) === managed) this.sessions.delete(session.sessionId);
       managed = (await this.getOrSpawnSession(session, runtime, traceId)).managed;
       activateTransport(managed);
-      if (terminalData.length > 0 && !interruptKey) await this.waitForInputReady(managed, waitForComposer);
+      if (terminalData.length > 0 && !interruptKey) await this.waitForInputReady(managed, waitForComposer, signal);
       await this.flushHostOutput(managed);
       inputResult = await sendToHost(managed);
     }
@@ -3035,7 +3182,8 @@ export class CliTerminalManager {
       accountProfileId: session.accountProfileId,
       modelId: boundSession.modelId,
       reasoningEffort: boundSession.reasoningEffort,
-      geminiConversationId: boundSession.codexThreadId ?? spawnSession.nativeTaskRef ?? undefined
+      geminiConversationId: boundSession.codexThreadId ?? spawnSession.nativeTaskRef ?? undefined,
+      nativeTaskRef: spawnSession.nativeTaskRef
     });
     if (env.TMPDIR && !isDirectOperatorParityRuntime(session.runtimeId)) {
       await mkdir(env.TMPDIR, { recursive: true });
@@ -3079,7 +3227,8 @@ export class CliTerminalManager {
             rows: initialGeometry?.rows ?? 30
           }
         : undefined,
-      afterSequence
+      afterSequence,
+      traceId
     };
     if (processLaunch) await this.assertHostSessionCapacity(hostClient);
     let replayContinuity: ManagedCliSessionAttach["replayContinuity"] = "COMPLETE";
@@ -3092,7 +3241,8 @@ export class CliTerminalManager {
       hostAttach = await hostClient.attach(
         {
           identity,
-          afterSequence: Math.max(-1, inspected.nextOutputSequence - 1)
+          afterSequence: Math.max(-1, inspected.nextOutputSequence - 1),
+          traceId
         },
         listener
       );
@@ -3417,18 +3567,25 @@ export class CliTerminalManager {
       lease.pageClientId === client.pageClientId;
   }
 
-  private createControlLease(
+  private async createControlLease(
     managed: ManagedCliSession,
     client: CliTerminalSocketContext,
     expectedActiveLeaseId: string | null
-  ): Promise<PaneCliTerminalControlLease> | PaneCliTerminalControlLease {
+  ): Promise<PaneCliTerminalControlLease> {
     if (!client.browserClientId || !client.tabLineageId || !client.pageClientId) {
       throw new SpaceConflictError("Protocol-v2 CLI control requires page identity.");
+    }
+    // Moving a pane updates its persisted session's room without replacing the
+    // running host. Its cached launch identity still names the source room;
+    // control leases must use the current room or the store rejects a live session.
+    const session = await this.options.store.getPaneCliSession(managed.sessionId);
+    if (!session || session.paneId !== managed.paneId) {
+      throw new SpaceNotFoundError(`CLI session ${managed.sessionId} was not found.`);
     }
     return this.options.store.createPaneCliTerminalControlLease({
       sessionId: managed.sessionId,
       paneId: managed.paneId,
-      roomId: managed.roomId,
+      roomId: session.roomId,
       userId: client.userId,
       browserClientId: client.browserClientId,
       tabLineageId: client.tabLineageId,
@@ -4461,7 +4618,7 @@ export class CliTerminalManager {
       await this.appendTranscriptNow(managed, "system", event.statusReason, "req:cli-host-status");
     });
     void persisted.catch(() => undefined);
-    this.broadcast(managed, {
+    this.broadcastExit(managed, {
       type: "status",
       status: event.status,
       statusReason: event.statusReason,
@@ -4661,9 +4818,9 @@ export class CliTerminalManager {
     return terminated;
   }
 
-  private async terminateManagedHostSession(managed: ManagedCliSession): Promise<boolean> {
+  private async terminateManagedHostSession(managed: ManagedCliSession, traceId?: string): Promise<boolean> {
     const host = this.hostForRuntime(managed.runtimeId, managed.sessionId);
-    const interrupted = await this.terminateHostSession(host, managed.identity);
+    const interrupted = await this.terminateHostSession(host, managed.identity, traceId);
     if (interrupted || managed.closed) return interrupted;
 
     const hostSession = await host.inspect(managed.identity);
@@ -4684,9 +4841,9 @@ export class CliTerminalManager {
     return interrupted;
   }
 
-  private async terminateHostSession(host: CliHostGateway, identity: CliHostIdentity): Promise<boolean> {
+  private async terminateHostSession(host: CliHostGateway, identity: CliHostIdentity, traceId?: string): Promise<boolean> {
     try {
-      return await host.terminate(identity);
+      return await host.terminate(identity, traceId);
     } catch (error) {
       if (!(error instanceof CliHostError) || error.code !== "CLI_HOST_IDENTITY_MISMATCH") throw error;
       const hostSession = (await host.health()).sessions.find(
@@ -4708,7 +4865,7 @@ export class CliTerminalManager {
         codexThreadId: hostSession.codexThreadId,
         modelId: hostSession.modelId,
         reasoningEffort: hostSession.reasoningEffort
-      });
+      }, traceId);
     }
   }
 
@@ -4717,7 +4874,7 @@ export class CliTerminalManager {
     const statusReason = "CLI host session was unavailable when interrupt was requested.";
     managed.closed = true;
     if (this.sessions.get(managed.sessionId) === managed) this.sessions.delete(managed.sessionId);
-    this.broadcast(managed, {
+    this.broadcastExit(managed, {
       type: "status",
       status: "EXITED",
       statusReason,
@@ -4753,7 +4910,7 @@ export class CliTerminalManager {
     }
   }
 
-  private async waitForInputReady(managed: ManagedCliSession, waitForComposer = true): Promise<void> {
+  private async waitForInputReady(managed: ManagedCliSession, waitForComposer = true, signal?: AbortSignal): Promise<void> {
     if (managed.runtimeId === "cli:gemini" && !managed.inputReady) {
       const deadline = Date.now() + (this.options.startupReadyTimeoutMs ?? cliStartupReadyTimeoutMs);
       while (!managed.closed && Date.now() < deadline) {
@@ -4779,6 +4936,7 @@ export class CliTerminalManager {
         return Boolean(cliComposerReady(managed.runtimeId, (await this.observeRoomScreen(managed.sessionId).catch(() => null))?.text ?? ""));
       };
       while (!managed.closed && Date.now() < deadline) {
+        signal?.throwIfAborted();
         if (await composerOpen()) {
           // The first frame shows the composer while the CLI is still mounting its input: Claude Code then keeps
           // typed text as "early input" and drops its Enter. Wait until the output has been quiet for 750 ms.

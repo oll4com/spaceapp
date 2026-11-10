@@ -1,15 +1,39 @@
 // @vitest-environment jsdom
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
-import { formatWorkingTime } from "../src/features/pane-working-time/usePaneWorkingTime.js";
+import { cleanup, render, renderHook, screen } from "@testing-library/react";
+import { formatWorkingTime, usePaneWorkingTime, WORKING_TIME_SYNC_MS } from "../src/features/pane-working-time/usePaneWorkingTime.js";
 import { extractTerminalScreenWorkingTimeMs } from "../src/features/terminal-pane/TerminalPane.js";
 import { PaneWorkingTimeBadge } from "../src/features/pane-working-time/PaneWorkingTimeBadge.js";
+import { learnServerClock } from "../src/server-clock.js";
 
 afterEach(() => {
   cleanup();
   localStorage.clear();
   vi.restoreAllMocks();
+});
+
+describe("Pane Working Time - server sync", () => {
+  it("asks the server once a minute, after the first read 4 s in (API audit 4/11: 15 s made it the most called route)", async () => {
+    const { installSpaceRuntime } = await import("../src/runtime/SpaceRuntime.js");
+    const { liveRuntime } = await import("../src/live/live-runtime.js");
+    installSpaceRuntime(liveRuntime);
+    const paneWorkingTime = vi.spyOn(liveRuntime.api, "paneWorkingTime").mockResolvedValue({ paneId: "pane:audit0001", cumulativeWorkingMs: 0, isWorking: false, state: "IDLE" });
+    vi.useFakeTimers();
+    try {
+      const { unmount } = renderHook(() => usePaneWorkingTime({ paneId: "pane:audit0001", isWorking: false }));
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(paneWorkingTime).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(WORKING_TIME_SYNC_MS - 1);
+      expect(paneWorkingTime).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(paneWorkingTime).toHaveBeenCalledTimes(2);
+      expect(WORKING_TIME_SYNC_MS).toBe(60_000);
+      unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("Pane Working Time - formatWorkingTime", () => {
@@ -174,6 +198,20 @@ describe("PaneWorkingTimeBadge component", () => {
 
     // Clamped to ~1h lifetime -> "1h 0m"
     expect(screen.getByText("1h 0m")).toBeTruthy();
+  });
+
+  it("measures the pane's age with the server's clock when the browser's runs 1 h behind (UX-004)", () => {
+    const HOUR_MS = 3600 * 1000;
+    learnServerClock(new Response(null, { headers: { date: new Date(Date.now() + HOUR_MS).toUTCString() } }));
+    try {
+      // Created 30 minutes ago on the server's clock, which the browser reads as 30 minutes from now.
+      const createdAt = new Date(Date.now() + HOUR_MS - 30 * 60 * 1000).toISOString();
+      localStorage.setItem("space.paneWorkingTime.v2:pane-test-skew", JSON.stringify({ paneId: "pane-test-skew", completedWorkingMs: 20 * 60 * 1000, lastSavedAt: Date.now() }));
+      render(<PaneWorkingTimeBadge paneId="pane-test-skew" paneCreatedAt={createdAt} isWorking={false} />);
+      expect(screen.getByText("20m")).toBeTruthy();
+    } finally {
+      learnServerClock(new Response(null, { headers: { date: new Date().toUTCString() } }));
+    }
   });
 
   it("synchronizes with authoritative server cumulative time and updates localStorage", async () => {

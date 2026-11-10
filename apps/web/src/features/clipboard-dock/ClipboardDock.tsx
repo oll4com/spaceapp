@@ -18,6 +18,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClipboardItem, ClipboardSource, PlanStep } from "@space/contracts";
 import { clipboardTextMaxCharacters } from "@space/contracts";
 import { api } from "../../api.js";
+import { fetchEveryPage } from "../../paged.js";
 import { loadPlanCompletion, PlanCompletionBar } from "./PlanCompletionBar.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import {
@@ -192,7 +193,6 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
     const base = {
       ...(search.trim() ? { q: search.trim() } : {}),
       includeCompleted: showCompleted,
-      page: 1,
       pageSize: 100
     };
     try {
@@ -202,22 +202,22 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
       if (sourceFilter === "NOTES") {
         // Notes are manual and agent notes; ask the server for each so the count covers every note.
         const [manual, agent] = await Promise.all([
-          api.clipboardItems({ ...base, source: "MANUAL_NOTE" }),
-          api.clipboardItems({ ...base, source: "AGENT_NOTE" })
+          fetchEveryPage((page) => api.clipboardItems({ ...base, page, source: "MANUAL_NOTE" })),
+          fetchEveryPage((page) => api.clipboardItems({ ...base, page, source: "AGENT_NOTE" }))
         ]);
         visible = [...manual.data, ...agent.data]
-          .sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt))
-          .slice(0, 100);
-        total = manual.pagination.totalItems + agent.pagination.totalItems;
+          .sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt));
+        total = manual.totalItems + agent.totalItems;
       } else {
-        const payload = await api.clipboardItems({
+        const payload = await fetchEveryPage((page) => api.clipboardItems({
           ...base,
+          page,
           ...(sourceFilter === "COPY" || sourceFilter === "PASTE" || sourceFilter === "PLANS"
             ? { source: sourceFilter === "PLANS" ? "PLAN" : sourceFilter }
             : {})
-        });
+        }));
         visible = payload.data;
-        total = payload.pagination.totalItems;
+        total = payload.totalItems;
       }
       const plans = await planCounts;
       setItems(visible);

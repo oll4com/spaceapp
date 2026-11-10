@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Pane, Room } from "@space/contracts";
 import { InMemoryNousPaneChecksRepository } from "@space/db";
-import { createNousPaneWatch, paneCheckedText, paneRoundLine, paneWatchEntries, paneWatchOverview, renderPanesNotChecked } from "../src/nous/pane-watch.js";
+import { createNousPaneWatch, paneCheckedText, waitsOnOperatorClaim, paneRoundLine, paneWatchEntries, paneWatchOverview, renderPanesNotChecked } from "../src/nous/pane-watch.js";
 import { renderNousWorld } from "../src/nous/digest.js";
 import { createNousTools, type NousToolDeps } from "../src/nous/tools.js";
 
@@ -41,6 +41,9 @@ describe("Nous's pane watch", () => {
     ]);
     expect(paneRoundLine(entries)).toBe("Pane round due: 2 panes overdue (Bruno/Andy, Bruno/Cody).");
     expect(paneRoundLine(entries.filter((entry) => !entry.overdue))).toBeNull();
+    // Every overdue pane is named (until 31/10 the first 10 and "…").
+    const many = Array.from({ length: 12 }, () => entries[0]!);
+    expect(paneRoundLine(many)).toBe(`Pane round due: 12 panes overdue (${Array(12).fill("Bruno/Andy").join(", ")}).`);
     expect(paneWatchOverview(entries)[3]).toMatchObject({ pane: "Dana", room: "Bruno", verdict: "WAITING_DATE", note: "Visa on 20 Oct", overdue: false });
     const world = renderNousWorld({ rooms: [{ room: bruno, sample: sample([andy], {}) }], notifications: [], plans: [], tasks: [], trains: "", decisions: [], notes: [],
       now: new Date(now).toISOString(), paneChecked: () => "checked 15:15 (ok working)", panesNotChecked: "## Panes not checked\n- Bruno/Andy · never checked" });
@@ -68,8 +71,10 @@ describe("Nous's pane watch", () => {
     const checks = new Map((await repository.list(owner)).map((check) => [check.paneId, check]));
     expect(checks.get(andy.id)).toMatchObject({ verdict: "OPERATOR_TEST", note: "The operator's login test", nextCheckAt: null });
     expect(checks.get(bob.id)).toMatchObject({ verdict: "WAITING_DATE", nextCheckAt: new Date(now + 90 * 60_000).toISOString() });
-    // KEEP_OPEN (standing orders 2026-10-21): a finished pane Nous keeps open needs its next check and says why.
-    expect((await tools.execute("space_pane_checked", { room: "Bruno", pane: "Bob", verdict: "KEEP_OPEN", note: "Waits for the promote" }, ctx)).result).toContain("KEEP_OPEN needs nextCheckInMinutes");
+    // KEEP_OPEN (standing orders 2026-10-21): a finished pane Nous keeps open says why; with no next check it looks again in 30 minutes
+    // (2026-11-06 REVIEW: 10 of 18 failed checks were KEEP_OPEN without nextCheckInMinutes).
+    expect(await tools.execute("space_pane_checked", { room: "Bruno", pane: "Bob", verdict: "KEEP_OPEN", note: "Waits for the promote" }, ctx))
+      .toMatchObject({ ok: true, result: `Recorded; next check ${new Date(now + 30 * 60_000).toISOString()}.` });
     expect(await tools.execute("space_pane_checked", { room: "Bruno", pane: "Bob", verdict: "KEEP_OPEN", note: "Waits for the promote", nextCheckInMinutes: 120 }, ctx))
       .toMatchObject({ ok: true, display: "Checked Bob in Bruno: keep open" });
     const kept = (await repository.list(owner)).find((check) => check.paneId === bob.id);
@@ -88,5 +93,30 @@ describe("Nous's pane watch", () => {
     expect(roomTool).toHaveBeenCalledWith("close_pane", { panes: [andy.id] }, expect.anything());
     expect((await tools.execute("space_pane_checked", { room: "Bruno", pane: "Andy", verdict: "OK_WORKING" }, { ...ctx, owner: "user:other" })).ok).toBe(false);
     expect((await tools.execute("space_pane_checked", { room: "Bruno", pane: "Andy", verdict: "FINE" }, ctx)).ok).toBe(false);
+  });
+
+  it("operator 8/11 20:04 BKK: KEEP_OPEN because the pane waits for the operator needs their Needs you card or an open decision on it", async () => {
+    expect(waitsOnOperatorClaim("Cloud Identity: waits on the operator's SMS code")).not.toBeNull();
+    expect(waitsOnOperatorClaim("Waits for the promote")).toBeNull();
+    const repository = new InMemoryNousPaneChecksRepository();
+    let cards: unknown[] = [];
+    let decisions: unknown[] = [];
+    const tools = createNousTools({ paneWatch: createNousPaneWatch({ repository, now: () => now }), rooms: async () => [bruno], listPanes: async () => [andy, bob],
+      paneNeeds: async () => cards, decisions: async (_who: string, _limit?: number, statuses?: string[]) => statuses?.includes("OPEN") ? decisions : [] } as unknown as NousToolDeps);
+    const ctx = { owner, turnId: "nous_turn:w2", callId: "toolu_k", traceId: "trace:k" };
+    const keep = (note: string) => tools.execute("space_pane_checked", { room: "Bruno", pane: "Andy", verdict: "KEEP_OPEN", note }, ctx);
+    expect(await keep("Iris: το πλάνο Cloud Identity περιμένει δικές σου ενέργειες")).toMatchObject({ ok: false, refused: true,
+      result: expect.stringContaining("Raise the card first (space_notify_operator) or give another reason.") });
+    expect(await repository.list(owner)).toEqual([]);
+    // Another pane's card or decision does not count; this pane's does; another reason needs none.
+    cards = [{ id: "notif:1", paneId: bob.id }];
+    decisions = [{ id: "nous_decision:1", status: "OPEN", refs: { paneId: bob.id } }];
+    expect((await keep("Waits for the operator's SMS code")).ok).toBe(false);
+    expect((await keep("Waits for the promote")).ok).toBe(true);
+    decisions = [{ id: "nous_decision:2", status: "OPEN", refs: { paneId: andy.id } }];
+    expect((await keep("Waits for the operator's SMS code")).ok).toBe(true);
+    decisions = [];
+    cards = [{ id: "notif:2", paneId: andy.id }];
+    expect(await keep("Η Iris σε περιμένει για τον κωδικό SMS")).toMatchObject({ ok: true, display: "Checked Andy in Bruno: keep open" });
   });
 });

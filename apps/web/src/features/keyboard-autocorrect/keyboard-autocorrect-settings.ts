@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
-import { api } from "../../api.js";
+import { saveUserSettingImmediate } from "../user-settings/user-settings-save-queue.js";
 
 export const KEYBOARD_AUTOCORRECT_SETTINGS_STORAGE_KEY = "space.keyboardAutocorrect.settings";
 export const KEYBOARD_AUTOCORRECT_SETTINGS_UPDATED_EVENT = "space:keyboard-autocorrect-settings-updated";
@@ -99,9 +99,7 @@ export function writeKeyboardAutocorrectSettings(settings: KeyboardAutocorrectSe
       JSON.stringify(persisted)
     );
     window.dispatchEvent(new CustomEvent(KEYBOARD_AUTOCORRECT_SETTINGS_UPDATED_EVENT, { detail: persisted }));
-    void api.updateUserSettings({ keyboardAutocorrect: persisted }).catch(() => {
-      // Session/offline fallback
-    });
+    void saveUserSettingImmediate("keyboardAutocorrect", persisted);
   } catch {
     // Ignore storage write errors
   }

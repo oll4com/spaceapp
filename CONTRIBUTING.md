@@ -7,7 +7,7 @@ operator instance or reuse its credentials, browser profiles, sockets or data.
 
 ## Development prerequisites
 
-The monorepo requires Node **>=22.12 <23**, as declared in the root
+The monorepo requires Node **>=26.13 <27**, as declared in the root
 `package.json`, and npm. Linux is the reference development environment;
 Windows contributors can use WSL. Building `node-pty` may require Python 3,
 Make and a C++ compiler if a compatible prebuilt binary is unavailable.
@@ -119,10 +119,9 @@ that you wrote the contribution or have the right to submit it under the MIT
 License. `git commit -s` adds the line. There is no separate contributor
 license agreement.
 
-## Reviews and payment
+## Reviews
 
 Pull requests are reviewed and merged by the maintainers named in the public repository's `MAINTAINERS`
 file. A merged pull request stays in every later release with its author.
 
-Contributions are voluntary; payment applies only to issues labelled 💎 Bounty, under the terms posted on
-that issue.
+Contributions are voluntary and unpaid; the bounty programme has ended.

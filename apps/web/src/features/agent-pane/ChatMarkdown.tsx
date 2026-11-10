@@ -2,10 +2,15 @@ import { isValidElement, memo, useContext, useEffect, useRef, useState, type Rea
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AgentFiles, Check, Copy } from "../ui-theme/app-icons.js";
-import { AgentFileMentionContext } from "../terminal-pane/AgentFileLinks.js";
+import { AgentFileMentionContext } from "../terminal-pane/agent-file-mention-context.js";
 import { writeClipboardText } from "../clipboard-dock/clipboard-events.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
-export function ChatCopyButton({ text, label }: { text: string; label: string }) {
+/** `label` is Space's English text (or already translated): it is looked up here so callers outside this folder need no change. */
+export function ChatCopyButton({ text, label: englishLabel }: { text: string; label: string }) {
+  const language = useUiLanguage();
+  const t = (value: string, vars?: Record<string, string | number>) => uiText(language, value, vars);
+  const label = t(englishLabel);
   const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
   const [pending, setPending] = useState(false);
   const mounted = useRef(true);
@@ -29,8 +34,8 @@ export function ChatCopyButton({ text, label }: { text: string; label: string })
       } finally {
         if (mounted.current) setPending(false);
       }
-    }}>{status === "copied" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}<span>{status === "copied" ? "Copied" : label}</span></button>
-    <span role="status" className={status === "failed" ? "chat-copy-error" : "sr-only"}>{status === "failed" ? "Copy failed. Select the text and copy it manually." : status === "copied" ? "Copied to clipboard" : ""}</span>
+    }}>{status === "copied" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}<span>{status === "copied" ? t("Copied") : label}</span></button>
+    <span role="status" className={status === "failed" ? "chat-copy-error" : "sr-only"}>{status === "failed" ? t("Copy failed. Select the text and copy it manually.") : status === "copied" ? t("Copied to clipboard") : ""}</span>
   </span>;
 }
 
@@ -40,22 +45,27 @@ export function safeChatUrl(url: string): string | undefined {
   if (/^(?:https?:\/\/|mailto:)/i.test(url)) return url;
   if (/^\/api\/artifacts\/[A-Za-z0-9%:_-]+\/download(?:\?[^\s]*)?$/.test(url)) return url;
   if (/^#[A-Za-z0-9_-]+$/.test(url)) return url;
+  // A workspace file's link (AgentFileLinks.tsx): opened only through the Agent Files preview, never navigated to.
+  if (/^\/api\/nous\/files\/agent-file\?path=[^\s]+$/.test(url)) return url;
   return undefined;
 }
 
 function ChatCodeBlock({ children }: { children?: ReactNode }) {
+  const language = useUiLanguage();
+  const t = (value: string) => uiText(language, value);
   const code = isValidElement<{ children?: ReactNode }>(children) ? children.props.children : "";
   const text = typeof code === "string" ? code : "";
-  return <div className="chat-code-block"><div className="chat-code-toolbar"><span>Code</span><ChatCopyButton text={text} label="Copy code" /></div><pre tabIndex={0} aria-label="Code block">{children}</pre></div>;
+  return <div className="chat-code-block"><div className="chat-code-toolbar"><span>{t("Code")}</span><ChatCopyButton text={text} label={t("Copy code")} /></div><pre tabIndex={0} aria-label={t("Code block")}>{children}</pre></div>;
 }
 
 function ChatLink({ href, children }: { href?: string; children?: ReactNode }) {
+  const language = useUiLanguage();
   const agentFiles = useContext(AgentFileMentionContext);
-  const artifact = href ? agentFiles?.artifact(href) : undefined;
-  if (agentFiles && artifact) {
-    return <a href={href} className="chat-agent-file-link" title="Open the Agent Files preview" onClick={(event) => {
+  // Agent Files names, `artifact:` ids and workspace paths open the preview (a path is filed in Agent Files on the click).
+  if (agentFiles && href && (agentFiles.artifact(href) || /^\/api\/(?:artifacts\/[^/?#]+\/download|nous\/files\/agent-file\?path=)/.test(href))) {
+    return <a href={href} className="chat-agent-file-link" title={uiText(language, "Open the Agent Files preview")} onClick={(event) => {
       event.preventDefault();
-      agentFiles.open(artifact);
+      agentFiles.openHref(href);
     }}>{children}<AgentFiles aria-hidden="true" /></a>;
   }
   return href
@@ -63,13 +73,23 @@ function ChatLink({ href, children }: { href?: string; children?: ReactNode }) {
     : <span>{children}</span>;
 }
 
+function ChatImage({ src, alt }: { src?: string | Blob; alt?: string }) {
+  const language = useUiLanguage();
+  return typeof src === "string" && src
+    ? <a href={src} target="_blank" rel="noopener noreferrer">{alt || uiText(language, "Open image")}</a>
+    : <span>{alt || uiText(language, "Image")}</span>;
+}
+
+function ChatTable({ children }: { children?: ReactNode }) {
+  const language = useUiLanguage();
+  return <div className="chat-table-scroll" tabIndex={0} role="region" aria-label={uiText(language, "Table")}><table>{children}</table></div>;
+}
+
 const components: Components = {
   a: ChatLink,
-  img: ({ src, alt }) => typeof src === "string" && src
-    ? <a href={src} target="_blank" rel="noopener noreferrer">{alt || "Open image"}</a>
-    : <span>{alt || "Image"}</span>,
+  img: ChatImage,
   pre: ({ children }) => <ChatCodeBlock>{children}</ChatCodeBlock>,
-  table: ({ children }) => <div className="chat-table-scroll" tabIndex={0} role="region" aria-label="Table"><table>{children}</table></div>
+  table: ChatTable
 };
 
 export const ChatMarkdown = memo(function ChatMarkdown({ content }: { content: string }) {

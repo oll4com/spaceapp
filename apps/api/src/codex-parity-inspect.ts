@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { join, resolve } from "node:path";
 import { readCodexEnvironmentMetadata } from "./codex-parity.js";
+import { SPACE_AGENT_HOME } from "@space/contracts";
 
-const codexHome = resolve(process.env.CODEX_HOME || "/var/lib/spaceapp-user/.codex");
+const codexHome = resolve(process.env.CODEX_HOME || `${SPACE_AGENT_HOME}/.codex`);
 const stateDbPath = resolve(process.env.SPACE_CODEX_STATE_DB_PATH || join(codexHome, "state_5.sqlite"));
 
 try {

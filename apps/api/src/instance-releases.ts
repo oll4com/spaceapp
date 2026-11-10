@@ -10,6 +10,7 @@ import {
 import { readDeployQueue } from "./deploy-queue.js";
 import { childProcessEnv } from "./child-process-env.js";
 import { signQueueOperatorGrant } from "./queue-operator-grants.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const execFileAsync = promisify(execFile);
 
@@ -27,11 +28,11 @@ export interface ReleasesOptions {
 }
 
 export const defaultReleasesOptions: ReleasesOptions = {
-  stableRepo: "/opt/spaceapp",
-  devRepo: "/opt/spaceapp-dev",
-  stableQueueRoot: "/opt/spaceapp/var/merge-queue",
-  devQueueRoot: "/opt/spaceapp/var/merge-queue-dev",
-  queueScript: "/opt/spaceapp/scripts/space-queue.mjs",
+  stableRepo: SPACE_INSTALL_ROOT,
+  devRepo: `${SPACE_INSTALL_ROOT}-dev`,
+  stableQueueRoot: `${SPACE_INSTALL_ROOT}/var/merge-queue`,
+  devQueueRoot: `${SPACE_INSTALL_ROOT}/var/merge-queue-dev`,
+  queueScript: `${SPACE_INSTALL_ROOT}/scripts/space-queue.mjs`,
   nodeBin: process.execPath,
   stableUrl: "http://127.0.0.1:4911",
   devUrl: "http://127.0.0.1:4911:4940",

@@ -1,0 +1,30 @@
+{
+  "note": "Pinned Android toolchain for App Studio APK builds (scripts/space-android-toolchain-setup.mjs installs it under <dir>, default /opt/spaceapp/var/toolchains/android; scripts/space-app-studio-build.mjs reads it there). The JDK, cmdline-tools and Gradle archives are checked by SHA-256 and size; sdkmanager installs the SDK packages at their exact revisions and checks each archive against Google's repository checksum. The versions are what Expo SDK 58 (React Native 0.88, expo-modules-autolinking 58.0.14 ExpoRootProjectPlugin defaults, expo-template-bare-minimum 58.0.26) builds with; another Expo SDK needs this file updated.",
+  "expoSdk": "58",
+  "jdk": {
+    "version": "17.0.21+9",
+    "dir": "jdk-17.0.21+9",
+    "url": "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.21%2B9/OpenJDK17U-jdk_x64_linux_hotspot_17.0.21_9.tar.gz",
+    "sha256": "8b9b611d917e3dfd8419d3566b5949226f69b052fed7e109c1368add1dfe8711",
+    "size": 193594705
+  },
+  "cmdlineTools": {
+    "version": "23.0 (16111833)",
+    "url": "https://dl.google.com/android/repository/commandlinetools-linux-16111833_latest.zip",
+    "sha256": "0877a1d048fe4a24efe2eff536ca4223f7adeb58648bb81909d33c446918cfa8",
+    "size": 181052239
+  },
+  "gradle": {
+    "version": "9.4.1",
+    "dir": "gradle-9.4.1",
+    "url": "https://services.gradle.org/distributions/gradle-9.4.1-bin.zip",
+    "sha256": "2ab2958f2a1e51120c326cad6f385153bb11ee93b3c216c5fccebfdfbb7ec6cb",
+    "size": 137878901
+  },
+  "sdkPackages": {
+    "platforms;android-37.0": "2",
+    "build-tools;37.0.0": "37.0.0",
+    "ndk;27.1.12297006": "27.1.12297006",
+    "cmake;3.22.1": "3.22.1"
+  }
+}

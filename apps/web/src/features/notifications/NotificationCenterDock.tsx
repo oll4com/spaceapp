@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { NOTIFICATION_SOURCES, NOTIFICATION_SOURCE_LABELS, type NotificationSource, type SpaceNotification } from "@space/contracts";
+import { findFileMentions, NOTIFICATION_SOURCES, NOTIFICATION_SOURCE_LABELS, type NotificationSource, type SpaceNotification } from "@space/contracts";
+import { AgentFileMentions, FileMentionText } from "../terminal-pane/AgentFileLinks.js";
 import { DockButton, DockChips, DockIconButton, DockState, DockToolbar } from "../dock-kit/DockKit.js";
 import { Bell, Check, CheckCircle2 } from "../ui-theme/app-icons.js";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
-import { ackNotification, isNousPaneCard, openNotification, readAllNotifications, refreshNotifications, useNotificationStore } from "./notification-store.js";
+import { ackNotification, isNousPaneCard, loadEarlierNotifications, openNotification, readAllNotifications, refreshNotifications, useNotificationStore } from "./notification-store.js";
 import { notificationSourceIcons } from "./notification-source-icons.js";
 import "./notifications.css";
 
@@ -36,6 +37,8 @@ function notificationRow(item: SpaceNotification) {
       {item.status === "OPEN" || item.status === "READ" ? (
         <DockIconButton label="Acknowledge" icon={Check} title="Acknowledge" onClick={() => void ackNotification(item.id)} />
       ) : null}
+      {/* nous_msg:8e7e6c25: the files a reminder or card names open from here (the row itself is a button, so they sit under it). */}
+      {findFileMentions(item.body).length ? <p className="notification-item-files"><FileMentionText text={findFileMentions(item.body).map((mention) => mention.text).join("  ")} /></p> : null}
     </>
   );
 }
@@ -47,7 +50,8 @@ export function NotificationCenterDock() {
   const [source, setSource] = useState<NotificationSource | "ALL">("ALL");
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   useEffect(() => { void refreshNotifications(); }, []);
-  const items = useMemo(() => store.items.filter((item) => (filter === "all" || item.status === "OPEN") && (source === "ALL" || item.source === source)), [filter, source, store.items]);
+  const all = useMemo(() => [...store.items, ...(store.earlier ?? []).filter((old) => !store.items.some((item) => item.id === old.id))], [store.items, store.earlier]);
+  const items = useMemo(() => all.filter((item) => (filter === "all" || item.status === "OPEN") && (source === "ALL" || item.source === source)), [filter, source, all]);
   // A pane with Nous's card shows one row (the card) with the pane's other notifications under it (plan clipboard:8FfXWclYUfOH).
   const paneCards = useMemo(() => new Map(items.filter(isNousPaneCard).map((card) => [card.paneId!, card])), [items]);
   const rows = useMemo(() => items.filter((item) => isNousPaneCard(item) || !item.paneId || !paneCards.has(item.paneId)), [items, paneCards]);
@@ -63,6 +67,7 @@ export function NotificationCenterDock() {
     .map((entry) => ({ id: entry, label: NOTIFICATION_SOURCE_LABELS[entry], count: store.pending.bySource[entry] ?? 0 }))], [filter, source, store.items, store.pending.bySource]);
 
   return (
+    <AgentFileMentions>
     <section className="notification-center dock-kit-dock" aria-label="Notification Center">
       <DockToolbar summary={store.pending.total ? `${store.pending.total} unread` : "Nothing waiting"}>
         <DockButton icon={CheckCircle2} disabled={!store.pending.total} onClick={() => void readAllNotifications()}>Mark all read</DockButton>
@@ -98,6 +103,8 @@ export function NotificationCenterDock() {
           );
         })}
       </ul>
+      {store.loaded && store.hasEarlier ? <DockButton onClick={() => void loadEarlierNotifications().catch(() => undefined)}>Load earlier notifications</DockButton> : null}
     </section>
+    </AgentFileMentions>
   );
 }

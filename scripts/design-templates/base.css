@@ -1,0 +1,20 @@
+/* Shared by every Design template. The renderer sets --w, --h, --u (1% of the safe box's shorter side, times --fit when text must shrink to fit), the brand colours
+   (--bg, --primary, --accent, --text), fonts, --headline-scale, --focal, --overlay, the safe-area insets and --bg-image. */
+*{box-sizing:border-box}
+html,body{margin:0;width:var(--w);height:var(--h);overflow:hidden}
+body{position:relative;background:var(--bg);color:var(--text);font-family:var(--font-body),"Liberation Sans","DejaVu Sans",sans-serif;-webkit-font-smoothing:antialiased}
+h1,h2,.heading{margin:0;font-family:var(--font-heading),"Liberation Sans","DejaVu Sans",sans-serif;font-weight:800;letter-spacing:-.02em;line-height:1.06}
+p{margin:0}
+.t:empty{display:none}
+.safe{position:absolute;top:var(--safe-top);right:var(--safe-right);bottom:var(--safe-bottom);left:var(--safe-left)}
+.photo{position:absolute;inset:0;background-image:var(--bg-image);background-size:cover;background-position:var(--focal)}
+.glow{position:absolute;inset:0;background:radial-gradient(circle at 18% 12%,color-mix(in srgb,var(--accent) 55%,transparent) 0,transparent 55%),
+  radial-gradient(circle at 88% 92%,color-mix(in srgb,var(--primary) 45%,transparent) 0,transparent 50%)}
+.stack{display:flex;flex-direction:column;gap:calc(var(--u)*2.4)}
+.logo{height:calc(var(--u)*8);width:auto;max-width:40%;object-fit:contain;align-self:flex-start}
+.badge{align-self:flex-start;padding:calc(var(--u)*1) calc(var(--u)*2.4);border-radius:999px;border:calc(var(--u)*.25) solid var(--primary);color:var(--primary);
+  font-weight:700;font-size:calc(var(--u)*2.8);letter-spacing:.06em;text-transform:uppercase}
+.headline{font-size:calc(var(--u)*11*var(--headline-scale))}
+.sub{font-size:calc(var(--u)*4);line-height:1.3;opacity:.86}
+.cta{align-self:flex-start;padding:calc(var(--u)*1.8) calc(var(--u)*3.6);border-radius:999px;background:var(--primary);color:var(--bg);font-weight:800;font-size:calc(var(--u)*3.6)}
+.url{font-size:calc(var(--u)*3);color:var(--primary);font-weight:600}

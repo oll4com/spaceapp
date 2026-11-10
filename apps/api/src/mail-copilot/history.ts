@@ -59,17 +59,22 @@ export function netThreadChanges(entries: readonly GmailHistoryEntry[]): ThreadC
   return [...threads].map(([threadId, change]) => ({ threadId, messageIds: [...change.messageIds], added: [...change.added], removed: [...change.removed], deleted: change.deleted, sent: change.sent }));
 }
 
+/** The `jobLabels` (Job Copilot's filing labels) one thread's net change added and removed: Space's own filing, never the operator's habit. */
+export function jobLabelChange(change: ThreadChange, jobLabels: ReadonlySet<string>): { added: string[]; removed: string[] } {
+  return { added: change.added.filter((label) => jobLabels.has(label)), removed: change.removed.filter((label) => jobLabels.has(label)) };
+}
+
 /**
  * The operator actions behind one thread's net change. Read marks, importance and categories are Gmail's own
- * bookkeeping (opening a message, automatic sorting) and say nothing. A change that adds one of `ignoredLabels`
- * (Job Copilot's filing labels) is Space's own work. A sent message reads as REPLY here; the caller tells a
- * forward or a new message apart from the thread.
+ * bookkeeping (opening a message, automatic sorting) and say nothing. A change that adds or removes one of
+ * `ignoredLabels` (Job Copilot's filing labels) is Space's own work (`jobLabelChange`). A sent message reads as
+ * REPLY here; the caller tells a forward or a new message apart from the thread.
  */
 export function classifyThreadChange(change: ThreadChange, ignoredLabels: ReadonlySet<string> = new Set()): Array<{ action: MailOperatorAction; labelIds: string[] }> {
   if (change.deleted) return [{ action: "DELETE", labelIds: [] }];
   const added = new Set(change.added);
   const removed = new Set(change.removed);
-  if ([...added].some((label) => ignoredLabels.has(label))) return [];
+  if ([...added, ...removed].some((label) => ignoredLabels.has(label))) return [];
   const userAdded = [...added].filter((label) => USER_LABEL.test(label));
   const userRemoved = [...removed].filter((label) => USER_LABEL.test(label));
   const actions: Array<{ action: MailOperatorAction; labelIds: string[] }> = [];

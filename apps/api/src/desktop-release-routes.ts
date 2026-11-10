@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { FastifyInstance, FastifyReply, RouteShorthandOptions } from "fastify";
-import { createDesktopLatestHandler, desktopReleaseDirectory } from "./desktop-release.js";
+import { createDesktopLatestHandler, desktopReleaseDirectory, clientSentryConfig, isSentryClientApp } from "./desktop-release.js";
 
 /**
  * Desktop launcher, update scripts and release downloads; the parent retains authentication, CSRF, errors and rate
@@ -20,6 +20,16 @@ export function registerDesktopReleaseRoutes(app: FastifyInstance, options: {
 }) {
   const { routeOptions: defaultRouteRateLimitOptions } = options;
   app.get("/api/desktop/latest", defaultRouteRateLimitOptions, createDesktopLatestHandler());
+  app.get("/api/desktop/sentry", defaultRouteRateLimitOptions, async (_request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    return clientSentryConfig("desktop");
+  });
+  app.get<{ Params: { app: string } }>("/api/mobile/sentry/:app", defaultRouteRateLimitOptions, async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    const client = request.params.app;
+    if (client === "desktop" || !isSentryClientApp(client)) return reply.code(404).send({ code: "UNKNOWN_APP", error: "Unknown app." });
+    return clientSentryConfig(client);
+  });
   app.get("/api/desktop/update.ps1", defaultRouteRateLimitOptions, async (_request, reply) => {
     const filePath = resolve(process.cwd(), "apps/desktop/release/update.ps1");
     const fileStat = await stat(filePath).catch(() => null);

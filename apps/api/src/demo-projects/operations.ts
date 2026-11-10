@@ -8,7 +8,7 @@ import type {
 import type { DemoOperationRecord, DemoOperationStepRecord, DemoProjectsRepository, DemoSheetsTargetRecord } from "@space/db";
 import type { DemoConnectionsService } from "./connections.js";
 import { DemoConnectionError } from "./connections.js";
-import { demoSheetHeaders, GoogleSheetsApi, GoogleSheetsError, type SpreadsheetMetadata } from "./google-sheets.js";
+import { demoSheetHeaders, GoogleSheetsError, type SpreadsheetMetadata } from "./google-sheets.js";
 import { SalesforceApi, SalesforceError } from "./salesforce.js";
 
 const maximumAutomaticAttempts = 5;
@@ -80,6 +80,7 @@ export class DemoOperationsService {
   private readonly log: (event: string, detail?: Record<string, unknown>) => void;
   private timer: NodeJS.Timeout | null = null;
   private processingChain: Promise<void> = Promise.resolve();
+  private interruptedRecovered = false;
 
   constructor(private readonly options: DemoOperationsServiceOptions) {
     this.now = options.now ?? (() => new Date());
@@ -188,11 +189,32 @@ export class DemoOperationsService {
   }
 
   private async processBatch(limit: number): Promise<void> {
+    // The first batch on the chain, before this process claims anything, so no RUNNING row it reads is its own.
+    if (!this.interruptedRecovered) {
+      await this.failInterruptedOperations();
+      this.interruptedRecovered = true;
+    }
     const claimed = await this.options.repository.claimDueOperations(nowIso(this.now), limit);
     for (const operation of claimed) {
       await this.processOperation(operation).catch((error) =>
         this.log("demo.operations.process_failed", { id: operation.id, message: String(error) })
       );
+    }
+  }
+
+  /**
+   * DATA-001: a sync is RUNNING only inside a batch of this process, so at its first batch any RUNNING row was cut by an API
+   * restart or deploy. Nothing claims it again (only PENDING rows are claimed) and the pane offers Retry only for FAILED or
+   * PARTIAL, so it is failed as interrupted, without an automatic retry: its step may already have reached Salesforce or the sheet.
+   */
+  private async failInterruptedOperations(): Promise<void> {
+    for (const operation of await this.options.repository.listRunningOperations()) {
+      await this.recordFailure(
+        operation,
+        operation.steps,
+        new DemoOperationError("DEMO_OPERATION_INTERRUPTED", "The sync was interrupted by a Space API restart; check Salesforce and the sheet, then retry.", 409)
+      );
+      this.log("demo.operations.interrupted", { id: operation.id });
     }
   }
 

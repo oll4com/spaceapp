@@ -12,7 +12,7 @@ export const newMailRunId = () => `mailrun:${randomBytes(9).toString("base64url"
 export type MailMemoryCreate = Omit<MailCopilotMemory, "id" | "uses" | "lastUsedAt" | "createdAt" | "updatedAt">;
 export type MailMemoryPatch = Partial<Pick<MailCopilotMemory, "kind" | "key" | "text" | "tags" | "confidence" | "pinned">>;
 export type MailEventCreate = Omit<MailCopilotEvent, "id" | "createdAt">;
-export interface MailEventFilter { paneId?: string | null; threadId?: string | null; accountEmail?: string | null; types?: string[]; status?: string[]; since?: string | null; limit: number }
+export interface MailEventFilter { paneId?: string | null; threadId?: string | null; accountEmail?: string | null; types?: string[]; status?: string[]; since?: string | null; /** No limit: every matching event. */ limit?: number }
 export type MailRunPatch = Partial<Pick<MailCopilotRun, "status" | "counters" | "currentEventId" | "kickoffSentAt" | "pausedAt" | "stoppedAt" | "lastActivityAt">>;
 export type MailRuleCreate = Omit<MailRule, "id" | "createdAt" | "updatedAt" | "appliedCount" | "lastAppliedAt" | "decidedAt">;
 export type MailRulePatch = Partial<Pick<MailRule, "status" | "decidedAt" | "appliedCount" | "lastAppliedAt">>;
@@ -21,10 +21,11 @@ const newMailRuleId = () => `mailrule:${randomBytes(9).toString("base64url")}`;
 const newMailActionId = () => `mailact:${randomBytes(9).toString("base64url")}`;
 export type MailActionCreate = Omit<MailActionRecord, "id" | "occurredAt"> & { occurredAt?: string };
 /** Newest first; every filter narrows. */
-export interface MailActionFilter { accountEmail?: string; threadId?: string; fromAddress?: string; fromDomain?: string; actions?: string[]; actors?: string[]; sources?: string[]; since?: string; limit: number }
+export interface MailActionFilter { accountEmail?: string; threadId?: string; fromAddress?: string; fromDomain?: string; actions?: string[]; actors?: string[]; sources?: string[]; since?: string; /** No limit: every matching action. */ limit?: number }
 
 export interface MailCopilotRepository {
-  listMemory(owner: string, query: MailCopilotMemoryQuery): Promise<MailCopilotMemory[]>;
+  /** No limit: every memory that matches, best first. */
+  listMemory(owner: string, query: Omit<MailCopilotMemoryQuery, "limit"> & { limit?: number }): Promise<MailCopilotMemory[]>;
   getMemory(owner: string, id: string): Promise<MailCopilotMemory | null>;
   /** Inserts, or replaces the memory with the same kind, key and scope. */
   upsertMemory(input: MailMemoryCreate): Promise<MailCopilotMemory>;
@@ -65,7 +66,7 @@ export class InMemoryMailCopilotRepository implements MailCopilotRepository {
   private events: MailCopilotEvent[] = [];
   private runs = new Map<string, MailCopilotRun>();
   constructor(private now: () => string = () => new Date().toISOString()) {}
-  async listMemory(owner: string, query: MailCopilotMemoryQuery) {
+  async listMemory(owner: string, query: Omit<MailCopilotMemoryQuery, "limit"> & { limit?: number }) {
     const words = tokens(query.query ?? "");
     const rows = [...this.memories.values()].filter((memory) => memory.ownerUserId === owner
       && (!query.kinds?.length || query.kinds.includes(memory.kind))
@@ -230,14 +231,14 @@ function searchText(query: string | null | undefined): string | null {
 export class PostgresMailCopilotRepository implements MailCopilotRepository {
   constructor(private pool: PgPoolLike) {}
   static fromConnectionString(url: string) { return new PostgresMailCopilotRepository(createSpacePgPool(url, { max: 2 })); }
-  async listMemory(owner: string, query: MailCopilotMemoryQuery) {
+  async listMemory(owner: string, query: Omit<MailCopilotMemoryQuery, "limit"> & { limit?: number }) {
     const text = searchText(query.query);
     const rows = (await this.pool.query<Record<string, unknown>>(`SELECT ${memoryColumns}, CASE WHEN $2::text IS NULL THEN 0 ELSE ts_rank(search, websearch_to_tsquery('simple', $2)) END AS rank
       FROM mail_copilot_memory WHERE owner_user_id=$1 AND ($3::text[] IS NULL OR kind = ANY($3::text[]))
         AND ($4::text IS NULL OR contact_email IS NULL OR lower(contact_email)=$4) AND ($5::text IS NULL OR domain IS NULL OR domain=$5) AND (NOT $6::boolean OR pinned)
         AND ($2::text IS NULL OR search @@ websearch_to_tsquery('simple', $2))
       ORDER BY pinned DESC, rank DESC, (contact_email IS NOT NULL) DESC, uses DESC, updated_at DESC LIMIT $7`,
-      [owner, text, query.kinds?.length ? query.kinds : null, query.contactEmail ?? null, query.domain ?? null, query.pinnedOnly === true, query.limit])).rows;
+      [owner, text, query.kinds?.length ? query.kinds : null, query.contactEmail ?? null, query.domain ?? null, query.pinnedOnly === true, query.limit ?? null])).rows;
     return rows.map(({ rank: _rank, ...row }) => memoryRow(row));
   }
   async getMemory(owner: string, id: string) {
@@ -377,7 +378,7 @@ export class PostgresMailCopilotRepository implements MailCopilotRepository {
         AND ($10::text[] IS NULL OR source = ANY($10::text[]))
       ORDER BY occurred_at DESC, id DESC LIMIT $9`,
       [owner, filter.accountEmail ?? null, filter.threadId ?? null, filter.fromAddress ?? null, filter.fromDomain ?? null, filter.actions?.length ? filter.actions : null,
-        filter.actors?.length ? filter.actors : null, filter.since ?? null, filter.limit, filter.sources?.length ? filter.sources : null]);
+        filter.actors?.length ? filter.actors : null, filter.since ?? null, filter.limit ?? null, filter.sources?.length ? filter.sources : null]);
     return rows.rows.map(actionRow);
   }
   async deleteActions(owner: string, ids: string[]) {

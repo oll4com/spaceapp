@@ -39,4 +39,19 @@ describe("a Nous turn's output, read the same in the worker and from the CLI con
     expect(() => createNousTurnReader(true).finish(77, "sudo: unable to mkdir /run/sudo\nClaude Code is not signed in.\n")).toThrow("Claude Code is not signed in.");
     expect(() => createNousTurnReader(false).finish(9, "")).toThrow("Claude Code exited with code 9.");
   });
+
+  it("keeps normalized Codex usage and refuses truncated or failed successful-looking output", () => {
+    const reader = createNousTurnReader(true);
+    reader.push(`${result({ provider: "codex", modelUsage: { "gpt-6-astra": { inputTokens: 12, outputTokens: 40 } } })}\n`);
+    expect(reader.finish(0, "")).toMatchObject({ isError: false, tokens: { "gpt-6-astra": { inputTokens: 12, outputTokens: 40 } } });
+    const truncated = createNousTurnReader(true);
+    truncated.push('{"type":"item.completed","item":{"type":"agent_message","text":"partial"}}\n');
+    expect(() => truncated.finish(0, "")).toThrow();
+    const failed = createNousTurnReader(true);
+    failed.push(`${result({ provider: "codex" })}\n`);
+    expect(() => failed.finish(9, "")).toThrow();
+    const error = createNousTurnReader(true);
+    error.push(`${result({ provider: "codex", is_error: true, subtype: "error_max_turns", result: "" })}\n`);
+    expect(error.finish(1, "")).toMatchObject({ isError: true, text: "Codex stopped (error_max_turns)." });
+  });
 });

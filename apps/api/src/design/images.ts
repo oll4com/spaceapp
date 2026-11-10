@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { crc32 } from "node:zlib";
 import { DESIGN_ENGINE_MODELS, nearestDesignAspectRatio, type DesignGeneratingEngine } from "@space/contracts";
 import { SpaceConflictError, SpaceFeatureDisabledError } from "@space/runtime";
+import { gatewayRequestIdHeader } from "../gateway-request-id.js";
 
 // Image bytes for the Design pane: what a file really is (never the declared type), its pixel size, and the Space Gateway
 // client of `POST /images/v1/generate` with the pane's own gateway key (`space-design`, image models only, a daily cost cap).
@@ -112,6 +113,8 @@ export interface DesignGenerateInput {
   width: number;
   height: number;
   references: Array<{ mimeType: "image/png" | "image/jpeg" | "image/webp"; bytes: Buffer }>;
+  /** The Space request id, sent as x-request-id so the gateway's log row carries it (EXT-G-5). */
+  traceId?: string | null;
 }
 export interface DesignGeneratedImage { bytes: Buffer; mimeType: DesignMimeType; model: string; text: string | null }
 export type DesignImageGenerator = (input: DesignGenerateInput) => Promise<DesignGeneratedImage>;
@@ -131,7 +134,7 @@ export function createGatewayImageGenerator(options: { gatewayUrl: string; keyFi
     try {
       response = await fetchImpl(`${options.gatewayUrl}/images/v1/generate`, {
         method: "POST",
-        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json", ...gatewayRequestIdHeader(input.traceId) },
         body: JSON.stringify({
           model, prompt: input.prompt, aspectRatio: nearestDesignAspectRatio(input.width, input.height),
           ...(input.engine === "GPT_IMAGE" ? {} : { imageSize: longest > 1600 ? "2K" : "1K" }),

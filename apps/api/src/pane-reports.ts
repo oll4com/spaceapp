@@ -1,8 +1,9 @@
 import { z } from "zod";
-import type { Pane, Room, RoomAgentEvent } from "@space/contracts";
+import { artifactIdsIn, NEEDS_YOU_GO_NOW, NEEDS_YOU_QUESTION_MORE, needsYouTargetSchema, type NotificationRaiseInput, type Pane, type Room, type RoomAgentEvent } from "@space/contracts";
 import { redactMemoryText, type SpaceStore } from "@space/runtime";
 import type { NewPaneReport, PaneReport, PaneReportStatus, PaneReportsRepository } from "@space/db";
 import type { NotificationService } from "./notifications/service.js";
+import { withCheckedBlock } from "./nous/pane-notices.js";
 
 /**
  * Pane reports to Nous (operator request 2026-10-17, plan clipboard:ot6-jLKOWDNC): every CLI pane's progress, so Nous has the
@@ -11,13 +12,46 @@ import type { NotificationService } from "./notifications/service.js";
  * their redacted screen tail). Agents add their own (space-progress, space_progress_report: started, blocked, done, ...).
  * Report text is the pane's own words: untrusted data, redacted and capped before it is stored.
  */
+/** The one line on the pane board and the world's pane line; what does not fit goes in `report` (whole). */
 export const PANE_REPORT_SUMMARY_MAX = 300;
-export const PANE_REPORT_BODY_MAX = 8_000;
-/** Agent reports per pane and hour; AUTO reports do not count. */
-export const PANE_REPORTS_PER_HOUR = 30;
+// No hourly count of agent reports and no cap on next, needs or the report body since operator 31/10 «Βγάλε όλα τα όρια» (until then 30 an hour, 300, 500, 8,000).
 export const PANE_PROGRESS_STATUSES = ["started", "progress", "blocked", "needs-decision", "needs-you", "waiting", "done", "failed"] as const;
 /** The one open needs-you notification of a pane (source AGENT), resolved by the pane's next report or its close. */
 export const agentNeedsYouKey = (paneId: string) => `agent:needs-you:${paneId}`;
+
+/**
+ * Queue item 43: a report names an ask when it holds at least half of the ask's own words (4+ letters, filler words left out), and two
+ * of them when the ask has two; a word counts by its first five letters (submit/submitted, pick/picked).
+ */
+const FILLER = new Set(["with", "your", "you're", "this", "that", "have", "from", "will", "what", "which", "need", "needs", "want", "please",
+  "would", "could", "should", "there", "their", "about", "into", "then", "than", "when", "them", "they", "these", "those", "been", "were", "here"]);
+const askWords = (value: string) => [...new Set(value.toLowerCase().match(/[\p{L}\p{N}']{4,}/gu) ?? [])].filter((word) => !FILLER.has(word));
+export function namesAsk(ask: string, text: string): boolean {
+  const have = askWords(text);
+  const wanted = askWords(ask);
+  const hits = wanted.filter((word) => have.some((other) => other.startsWith(word.slice(0, 5)) || word.startsWith(other.slice(0, 5)))).length;
+  return hits >= Math.min(2, wanted.length) && hits * 2 >= wanted.length;
+}
+
+export const AGENT_ASK_LAST_RULE = "needs-you needs checked (1-8 items, --checked \"A | B\"): find it yourself first (Space Memory, your copilot's memory, "
+  + "the Vault, mail, files, the web) and name each source you looked at and what it showed; ask the operator only for their hands, taste, money or a third party's approval.";
+/** A copilot question of the pane that no longer waits (answered by Nous or the operator, or closed): its item id and its words. */
+export interface AnsweredQuestion { id: string; question: string }
+/**
+ * Plan clipboard:7L5KyWp3kQsP step 4 (Dana's card still asked a birth date Nous had answered at 16:05 UTC): a pane's new ask leaves out the
+ * lines naming such a question, by its id or by its words both ways (`namesAsk`, a question of two words or more).
+ * shortcut: a line is the unit, so one line listing an answered item among others goes whole; split asks one per line if that bites.
+ */
+export function withoutAnswered(text: string, answered: readonly AnsweredQuestion[]): { text: string; dropped: string[] } {
+  const dropped = new Set<string>();
+  const kept = text.split("\n").filter((line) => {
+    const hit = answered.find((question) => line.includes(question.id)
+      || (askWords(question.question).length >= 2 && namesAsk(question.question, line) && namesAsk(line, question.question)));
+    if (hit) dropped.add(hit.id);
+    return !hit;
+  });
+  return { text: kept.join("\n").trim(), dropped: [...dropped] };
+}
 
 /** An agent's report (POST /api/cli/progress), the pane's own words. */
 export const paneProgressSchema = z.object({
@@ -27,17 +61,30 @@ export const paneProgressSchema = z.object({
   step: z.number().int().min(1).max(500).optional(),
   percent: z.number().int().min(0).max(100).optional(),
   ticket: z.string().trim().regex(/^q-[A-Za-z0-9_-]{4,80}$/).optional(),
-  next: z.string().trim().min(1).max(300).optional(),
-  needs: z.string().trim().min(1).max(500).optional(),
+  next: z.string().trim().min(1).optional(),
+  needs: z.string().trim().min(1).optional(),
   /** needs-you: the answers the operator picks from (Needs you as questions, plan clipboard:5AQvaoSR-IZa), the recommended one among them. */
   options: z.array(z.string().trim().min(1).max(80)).min(1).max(6).optional(),
   recommended: z.string().trim().min(1).max(80).optional(),
-  report: z.string().trim().min(1).max(PANE_REPORT_BODY_MAX).optional()
-}).strict().refine((input) => !input.recommended || (input.options ?? []).includes(input.recommended), { message: "recommended must be one of the options", path: ["recommended"] });
+  /** needs-you: what Go to pane opens (the mail thread, the page). */
+  target: needsYouTargetSchema.optional(),
+  report: z.string().trim().min(1).optional(),
+  /** needs-you: what you looked up before asking (plan clipboard:7L5KyWp3kQsP step 4), shown under "Checked first" like Nous's cards. */
+  checked: z.array(z.string().trim().min(3).max(200)).min(1).max(8).optional(),
+  /** needs-you: the Agent Files the ask is about (nous_msg:0cb8d563), shown on the card as chips that open them. */
+  files: z.array(z.string().trim().regex(/^artifact:[A-Za-z0-9_-]{6,80}$/)).min(1).optional()
+}).strict().refine((input) => !input.recommended || (input.options ?? []).includes(input.recommended), { message: "recommended must be one of the options", path: ["recommended"] })
+  // R20-asks-3 (30/10: 9 agent needs-you cards had options and no recommended one, so the operator's answer could not be scored): like Nous's cards (R12-11).
+  .refine((input) => !input.options?.length || Boolean(input.recommended), { message: "with options, name the one you recommend (--recommended): every question carries a prediction", path: ["recommended"] })
+  // Ask last (goal ee5a573e): an ask names what was checked first, like Nous's own cards (NOUS_ASK_LAST_RULE); "--needs none" asks nothing.
+  .refine((input) => input.status !== "needs-you" || /^(?:none|nothing|-)$/i.test(input.needs?.trim() ?? "") || Boolean(input.checked?.length),
+    { message: AGENT_ASK_LAST_RULE, path: ["checked"] });
 export type PaneProgressInput = z.infer<typeof paneProgressSchema>;
 const RETENTION_MS = 14 * 86_400_000;
 /** A working pane gets a heartbeat when it has been silent this long (and is tried again no sooner). */
 export const PANE_HEARTBEAT_MS = 10 * 60_000;
+/** A pane whose run failed this long ago and stays so reports BLOCKED once. */
+export const PANE_RUN_FAILED_MINUTES = 30;
 /** A working pane with no report for this long is flagged in Nous's world. */
 export const PANE_SILENT_MS = 20 * 60_000;
 const PRUNE_EVERY_MS = 3_600_000;
@@ -45,7 +92,7 @@ const SCREEN_TAIL_LINES = 60;
 
 export interface PaneReportsDeps {
   repository: PaneReportsRepository;
-  store: Pick<SpaceStore, "getRoom" | "getPane">;
+  store: Pick<SpaceStore, "getRoom" | "getPane" | "getArtifact">;
   /** A Claude Code or Codex pane's last answer from its transcript (nous/last-answer.ts), null for other CLIs; live: a running turn's newest text. */
   lastAnswer(pane: Pane, options?: { live?: boolean }): Promise<string | null>;
   /** The pane's redacted screen text (the room pane controller's inspect). */
@@ -54,6 +101,10 @@ export interface PaneReportsDeps {
   onReport?(owner: string, report: PaneReport): void;
   /** A `needs-you` report is the operator's notification (Needs you, operator request 2026-10-24); the next report resolves it. */
   notifications?: Pick<NotificationService, "raise" | "resolve">;
+  /** A sign-in card's Google account against the tab it opens (site-signin-account.ts): why no card forms, or null. */
+  signinCard?(input: NotificationRaiseInput): Promise<string | null>;
+  /** The pane's copilot questions that no longer wait, so its card update drops them (step 4 of plan clipboard:7L5KyWp3kQsP). */
+  answeredQuestions?(owner: string, paneId: string): Promise<AnsweredQuestion[]>;
   /** The transcript is written as the answer streams; the monitor can see the idle prompt a moment before its last line lands. */
   settleMs?: number;
   now?: () => number;
@@ -62,6 +113,17 @@ export interface PaneReportsDeps {
 
 const ownerOf = (room: Pick<Room, "ownerUserId">) => room.ownerUserId ?? "user:operator";
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
+/** The notification body's limit (contracts' 2,000). */
+const NOTIFICATION_BODY_MAX = 2_000;
+/** A card's question within its 300 characters: whole when it fits, else up to the last sentence or word end, the rest under Details. */
+export function askQuestion(text: string): string {
+  if (text.length <= 300) return text;
+  const more = NEEDS_YOU_QUESTION_MORE;
+  const head = text.slice(0, 300 - more.length);
+  const end = Math.max(head.lastIndexOf(". "), head.lastIndexOf("? "), head.lastIndexOf("; "));
+  const space = head.lastIndexOf(" ");
+  return `${end > 120 ? head.slice(0, end + 1) : space > 120 ? head.slice(0, space) : head}${more}`;
+}
 const cleanText = (text: string, max: number) => clip(redactMemoryText(text).trim(), max);
 
 /** The first lines of a report, flattened (markdown markers dropped), for the one-line summary. */
@@ -100,7 +162,6 @@ export function createPaneReports(deps: PaneReportsDeps) {
   const settleMs = deps.settleMs ?? 4_000;
   let lastPrune = 0;
   /** Per pane: when its agent reported in the last hour. */
-  const sent = new Map<string, number[]>();
   /** Per pane: the last heartbeat attempt, so a silent pane's transcript is read once per interval. */
   const beats = new Map<string, number>();
 
@@ -121,6 +182,13 @@ export function createPaneReports(deps: PaneReportsDeps) {
     return report;
   }
 
+  /** Whether a done or failed report names the pane's newest needs-you ask (its question, else its summary). */
+  async function namesOpenAsk(owner: string, paneId: string, report: PaneReport): Promise<boolean> {
+    // Every report of the pane (until 31/10 the newest 30: an ask behind 30 progress reports was never matched).
+    const ask = (await deps.repository.list(owner, paneId)).find((entry) => entry.status === "NEEDS_YOU" && entry.id !== report.id);
+    return ask ? namesAsk(`${ask.needs ?? ""} ${ask.summary}`, [report.summary, report.next, report.needs, report.body].filter(Boolean).join(" ")) : false;
+  }
+
   const reports = {
     /** A new FINISHED monitor event: the turn's last answer as an AUTO TURN_END report; null when there is nothing new to say. */
     async turnEnd(event: RoomAgentEvent): Promise<PaneReport | null> {
@@ -133,10 +201,10 @@ export function createPaneReports(deps: PaneReportsDeps) {
       const answer = await deps.lastAnswer(pane).catch(() => null);
       // shortcut: other CLIs report their visible screen tail (a TUI drawn at the pane's width garbles when re-projected wider); a transcript reader per CLI replaces it.
       const tail = answer ? null : await screenTail(pane, SCREEN_TAIL_LINES);
-      const body = cleanText(answer ?? tail ?? "", PANE_REPORT_BODY_MAX);
+      const body = cleanText(answer ?? tail ?? "", Infinity);
       if (!body) return null;
       // A turn that ended without a new answer (a question answered, a nudge) repeats the previous one: nothing new.
-      const previous = (await deps.repository.list(owner, pane.id, 10)).find((report) => report.status === "TURN_END");
+      const previous = (await deps.repository.list(owner, pane.id)).find((report) => report.status === "TURN_END");
       if (previous?.body === body) return null;
       const summary = (answer ? reportSummary(body) : screenSummary(body)) || reportSummary(body);
       return add(owner, { roomId: room.id, paneId: pane.id, at: new Date(now()).toISOString(), source: "AUTO", status: "TURN_END",
@@ -147,10 +215,10 @@ export function createPaneReports(deps: PaneReportsDeps) {
       if (event.kind !== "WAITING" || event.status !== "OPEN" || !event.paneId) return null;
       const found = await paneOf(event);
       if (!found) return null;
-      const body = cleanText(await screenTail(found.pane, 30), PANE_REPORT_BODY_MAX);
+      const body = cleanText(await screenTail(found.pane, 30), Infinity);
       if (!body) return null;
       const owner = ownerOf(found.room);
-      const previous = (await deps.repository.list(owner, found.pane.id, 10)).find((report) => report.status === "QUESTION");
+      const previous = (await deps.repository.list(owner, found.pane.id)).find((report) => report.status === "QUESTION");
       if (previous?.body === body) return null;
       const reason = /is waiting: (.+)$/.exec(event.title)?.[1] ?? null;
       return add(owner, { roomId: found.room.id, paneId: found.pane.id, at: new Date(now()).toISOString(), source: "AUTO", status: "QUESTION",
@@ -170,35 +238,83 @@ export function createPaneReports(deps: PaneReportsDeps) {
       if (!summary || summary === "(screen)" || summary === previous?.summary) return null;
       return add(ownerOf(room), { roomId: room.id, paneId: pane.id, at: new Date(now()).toISOString(), source: "AUTO", status: "HEARTBEAT", summary });
     },
-    /** An agent's own report for its pane; at most 30 an hour. */
+    /** An agent's own report for its pane, any number. */
     async report(room: Room, pane: Pane, input: PaneProgressInput): Promise<PaneReport> {
       const at = now();
-      const recent = (sent.get(pane.id) ?? []).filter((time) => at - time < 3_600_000);
-      if (recent.length >= PANE_REPORTS_PER_HOUR) {
-        throw Object.assign(new Error(`This pane sent ${PANE_REPORTS_PER_HOUR} reports in the last hour; report again later (Space records the end of every turn on its own).`), { statusCode: 429 });
-      }
-      sent.set(pane.id, [...recent, at]);
       const owner = ownerOf(room);
       const text = (value: string | undefined, max: number) => value ? cleanText(value, max) || null : null;
+      // R23-3: Needs you shows every artifact an ask names, so one that does not open for the owner is refused before anything is stored.
+      if (input.status === "needs-you") {
+        for (const id of artifactIdsIn([input.summary, input.needs ?? "", ...(input.options ?? []), ...(input.files ?? [])].join("\n"))) {
+          const artifact = await Promise.resolve().then(() => deps.store.getArtifact(id)).catch(() => null);
+          const home = artifact && !artifact.deletedAt && artifact.roomId ? await Promise.resolve().then(() => deps.store.getRoom(artifact.roomId!)).catch(() => null) : null;
+          const opens = home && ownerOf(home) === owner;
+          if (!opens) throw Object.assign(new Error(`${id} is no artifact of this owner's rooms (deleted, mistyped, or another owner's): Needs you shows each artifact an ask names. Name it by its exact id or leave it out. Nothing reported.`), { statusCode: 409 });
+        }
+        // A needs-you that clears the ask ("--needs none") raises nothing, so no sign-in check holds it.
+        const refused = /^(?:none|nothing|-)$/i.test(input.needs?.trim() ?? "") ? null : await deps.signinCard?.({ ownerUserId: owner, roomId: room.id, paneId: pane.id, source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION",
+          title: `${pane.paneName ?? pane.title} needs you`, body: [input.summary, input.needs ?? "", ...(input.options ?? [])].join("\n"),
+          link: { roomId: room.id, paneId: pane.id, ...(input.target ? { target: input.target } : {}) }, dedupeKey: null, payload: { checked: input.checked ?? [] }, telegram: null })
+          .catch((error: unknown) => { deps.log?.warn(error, "The sign-in card check failed."); return null; });
+        if (refused) throw Object.assign(new Error(refused.replace(/Nothing raised\.$/, "Nothing reported.")), { statusCode: 409 });
+      }
       const report = await add(owner, { roomId: room.id, paneId: pane.id, at: new Date(at).toISOString(), source: "AGENT",
         status: input.status.toUpperCase().replace("-", "_") as PaneReportStatus, summary: cleanText(input.summary.replace(/\s+/g, " "), PANE_REPORT_SUMMARY_MAX),
         planId: input.plan ?? null, step: input.step ?? null, percent: input.percent ?? null, ticket: input.ticket ?? null,
-        next: text(input.next, 300), needs: text(input.needs, 500), body: text(input.report, PANE_REPORT_BODY_MAX) });
-      // Needs you: only the operator can act or answer here. One notification per pane; a new ask alerts again; any later report ends it.
-      if (report.status === "NEEDS_YOU") {
-        const options = (input.options ?? []).map((option) => cleanText(option, 80)).filter(Boolean);
-        const recommended = input.recommended ? cleanText(input.recommended, 80) : null;
+        next: text(input.next, Infinity), needs: text(input.needs, Infinity), body: text(input.report, Infinity) });
+      // Needs you: only the operator can act or answer here. One notification per pane; a new ask alerts again. Queue item 43 (operator
+      // rule e2481906): it stays until the operator answers or acknowledges it, the pane closes, a needs-you says "none", or a done or
+      // failed report names the ask; other work the pane reports meanwhile keeps it (28/10 an MIT Solve ask vanished on a `started`).
+      const cleared = report.status === "NEEDS_YOU" && /^(?:none|nothing|-)$/i.test(input.needs?.trim() ?? "");
+      const answered = report.status === "NEEDS_YOU" && !cleared ? await deps.answeredQuestions?.(owner, pane.id).catch(() => []) ?? [] : [];
+      const needsLeft = report.needs ? withoutAnswered(report.needs, answered) : null;
+      const summaryLeft = withoutAnswered(cleanText(input.summary.replace(/\s+/g, " "), NOTIFICATION_BODY_MAX), answered);
+      const dropped = [...new Set([...needsLeft?.dropped ?? [], ...summaryLeft.dropped])];
+      const askedNothing = report.status === "NEEDS_YOU" && !cleared && !(needsLeft ?? summaryLeft).text;
+      if (askedNothing) {
+        await deps.notifications?.resolve(owner, agentNeedsYouKey(pane.id), `every item it asked was answered since (${dropped.join(", ")})`)
+          .catch((error: unknown) => deps.log?.warn(error, "The needs-you notification could not be resolved."));
+      } else if (report.status === "NEEDS_YOU" && !cleared) {
+        const given = (input.options ?? []).map((option) => cleanText(option, 80)).filter(Boolean);
+        // R37-2 (2/11: agent cards 81404235 and 9e39e296 asked with no options, so the operator's answer could not be scored): an ask without
+        // options takes R27-2's, "Go now" recommended; Go now opens the pane (and the first page the ask links), the others go to the pane.
+        const options = given.length ? given : [NEEDS_YOU_GO_NOW, "Failed", "Need links/steps"];
+        const recommended = given.length ? (input.recommended ? cleanText(input.recommended, 80) : null) : NEEDS_YOU_GO_NOW;
+        // R9-12 (28/10: the operator read "(2) Te…"): the card carries the whole ask, its full summary, what it needs and the report file,
+        // up to the notification's 2,000 characters; the question itself keeps the card's 300. Each once (operator 1/11 23:09 BKK: a card
+        // showed its report twice): the question is not repeated, a report that leads with the whole summary (space-progress past 300) stands
+        // for it, and the options are the card's buttons.
+        const summary = summaryLeft.text;
+        const needs = needsLeft?.text || null;
+        const page = /https:\/\/[^\s"'<>()[\]]+/.exec(`${needs ?? ""} ${summary}`)?.[0]?.replace(/[.,;:!?]+$/, "");
+        const target = input.target ?? (page ? needsYouTargetSchema.safeParse(`url:${page}`).data : undefined);
+        const question = askQuestion(needs ?? summary);
+        const leads = Boolean(summary && report.body?.replace(/\s+/g, " ").startsWith(summary.replace(/…$/, "")));
+        const checked = (input.checked ?? []).map((item) => cleanText(item, 200)).filter(Boolean);
+        const body = withCheckedBlock([!summary || summary === question || leads ? null : summary, needs && needs !== question ? needs : null, report.body]
+          .filter(Boolean).join("\n\n"), checked, NOTIFICATION_BODY_MAX);
         await deps.notifications?.raise({ ownerUserId: owner, roomId: room.id, paneId: pane.id, source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION",
-          title: clip(`${pane.paneName ?? pane.title} needs you`, 200), body: [report.summary, report.needs ? `Needs: ${report.needs}` : null].filter(Boolean).join("\n"),
-          link: { roomId: room.id, paneId: pane.id }, dedupeKey: agentNeedsYouKey(pane.id), telegram: null,
+          title: clip(`${pane.paneName ?? pane.title} needs you`, 200), body,
+          link: { roomId: room.id, paneId: pane.id, ...(target ? { target } : {}) }, dedupeKey: agentNeedsYouKey(pane.id), telegram: null,
           // The question the operator answers from the card; the answer becomes this pane's next prompt.
-          payload: { alertAt: report.at, ask: { question: clip(report.needs ?? report.summary, 300), ...(options.length ? { options } : {}),
+          // `checked` structured too, like Nous's cards (payload.checked), so a check on the card reads the list, not the body text.
+          payload: { alertAt: report.at, ...(checked.length ? { checked } : {}), ...(input.files ? { files: input.files } : {}), ...(report.planId ? { planId: report.planId } : {}), ...(dropped.length ? { answeredSince: dropped } : {}), ask: { question, ...(options.length ? { options } : {}),
             ...(recommended && options.includes(recommended) ? { recommended } : {}), answer: { kind: "PANE" } } } }, { realert: true })
           .catch((error: unknown) => deps.log?.warn(error, "The needs-you notification could not be raised."));
-      } else {
-        await deps.notifications?.resolve(owner, agentNeedsYouKey(pane.id)).catch((error: unknown) => deps.log?.warn(error, "The needs-you notification could not be resolved."));
+      } else if (cleared || ((report.status === "DONE" || report.status === "FAILED") && await namesOpenAsk(owner, pane.id, report))) {
+        await deps.notifications?.resolve(owner, agentNeedsYouKey(pane.id), cleared ? "the pane said it no longer needs the operator (needs-you --needs none)"
+          : `the pane's ${report.status.toLowerCase()} report named it ("${clip(report.summary, 120)}")`).catch((error: unknown) => deps.log?.warn(error, "The needs-you notification could not be resolved."));
       }
       return report;
+    },
+    /**
+     * 2026-10-30 REVIEW (Crypto: four OpenCode panes in "Run failed" 2.6 h with only ERROR lines): a run that failed 30 minutes ago and
+     * is still the pane's state is one AUTO BLOCKED report with the run's error, so Nous switches its model or restarts it.
+     */
+    async runFailed(room: Room, pane: Pane, failure: { since: string; error?: string | undefined }, previous: PaneReport | null): Promise<PaneReport | null> {
+      const minutes = Math.floor((now() - Date.parse(failure.since)) / 60_000);
+      if (!(minutes >= PANE_RUN_FAILED_MINUTES) || (previous?.status === "BLOCKED" && previous.at >= failure.since)) return null;
+      return reports.note(room, pane, "BLOCKED", `Run failed ${minutes} min ago${failure.error ? `: ${failure.error}` : ""}; switch its model or restart it.`);
     },
     /** Space's own word on a pane, e.g. its automatic move to Space Gateway at a usage limit (claude-limit-move.ts). */
     note: (room: Room, pane: Pane, status: "PROGRESS" | "BLOCKED", summary: string): Promise<PaneReport> =>

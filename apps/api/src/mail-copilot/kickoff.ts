@@ -1,7 +1,8 @@
 import type { MailCopilotRun, Pane } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
-import { submitCliPrompt } from "../cli-prompt-submit.js";
+import { clearIdleClaudeSession, submitCliPrompt } from "../cli-prompt-submit.js";
 import type { CliTerminalManager } from "../cli-terminal.js";
+import { idleWhy } from "../copilot-brief-watch.js";
 import { atEmptyPrompt } from "../room-agent-autopilot.js";
 import type { RoomPaneObservation } from "../room-pane-control.js";
 
@@ -16,9 +17,13 @@ export interface MailCopilotKickoff {
   /** A CLI runs at an empty prompt and no kickoff went in the last minute. */
   ready(pane: Pane): Promise<boolean>;
   send(pane: Pane, run: MailCopilotRun): Promise<void>;
-  /** Whether the pane's CLI runs at all, and its start (the daily pass starts a stopped CLI first). */
+  /** Whether the pane's CLI runs at all, and its start (false: started less than 10 minutes ago, not again yet). */
   cliRunning?(pane: Pane): Promise<boolean>;
-  startCli?(pane: Pane): Promise<void>;
+  startCli?(pane: Pane): Promise<boolean>;
+  /** Why a kickoff cannot go in now; null when it can, or while the CLI works on a turn (busy, not stuck). */
+  stuck?(pane: Pane): Promise<string | null>;
+  /** The pane's running CLI session never got a kickoff from Space (a restart by Space, Nous or the operator, or an API restart). */
+  newSession?(pane: Pane): Promise<boolean>;
 }
 
 /** The run's kickoff goes through the pane CLI input path Room Agent uses (typed line + Enter); tests replace `send`. */
@@ -26,6 +31,7 @@ export function createMailCopilotKickoff(deps: { store: Pick<SpaceStore, "getAct
   inspect?(pane: Pane): Promise<RoomPaneObservation>; start?(pane: Pane): Promise<unknown> }): MailCopilotKickoff {
   const lastKickoff = new Map<string, number>();
   const lastStart = new Map<string, number>();
+  const kickedSession = new Map<string, string>();
   const activeSession = async (pane: Pane) => {
     const session = await deps.store.getActivePaneCliSession(pane.id);
     return session && session.purpose === "NORMAL" && session.isActive && session.status !== "EXITED" && session.status !== "ERROR" ? session : null;
@@ -35,16 +41,26 @@ export function createMailCopilotKickoff(deps: { store: Pick<SpaceStore, "getAct
       && (!deps.inspect || atEmptyPrompt(await deps.inspect(pane).catch(() => ({ state: "UNKNOWN" }) as unknown as RoomPaneObservation)))),
     cliRunning: async (pane) => Boolean(deps.send) || Boolean(await activeSession(pane)),
     ...(deps.start ? { startCli: async (pane: Pane) => {
-      if (Date.now() - (lastStart.get(pane.id) ?? 0) < CLI_START_GAP_MS) return;
+      if (Date.now() - (lastStart.get(pane.id) ?? 0) < CLI_START_GAP_MS) return false;
       lastStart.set(pane.id, Date.now());
       await deps.start!(pane);
+      return true;
+    } } : {}),
+    ...(deps.send ? {} : { newSession: async (pane: Pane) => { const session = await activeSession(pane); return Boolean(session) && kickedSession.get(pane.id) !== session!.sessionId; } }),
+    ...(deps.inspect ? { stuck: async (pane: Pane) => {
+      if (!(await activeSession(pane))) return "its CLI is not running";
+      const observed = await deps.inspect!(pane).catch(() => null);
+      return observed ? idleWhy(observed) : "Space cannot read its screen";
     } } : {}),
     send: deps.send ?? (async (pane, run) => {
       const session = await activeSession(pane);
       if (!session) throw new SpaceConflictError("Open the copilot's terminal first: the pane has no running CLI session to receive the run.");
       lastKickoff.set(pane.id, Date.now());
+      kickedSession.set(pane.id, session.sessionId);
       const traceId = `mail-copilot:${run.id}`;
       await deps.terminal.runSerializedTerminalMutation(session.sessionId, async () => {
+        // A new run starts on an empty conversation (plan qH5emwVaV6yO step 9): habits, memory and answers come from the server with each item.
+        if (!run.kickoffSentAt) await clearIdleClaudeSession(deps.terminal, session, traceId, traceId);
         await submitCliPrompt(deps.terminal, session.sessionId, KICKOFF(run.id), traceId, `${traceId}:kickoff`);
       });
     })

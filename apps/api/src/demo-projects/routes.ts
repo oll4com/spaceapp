@@ -10,8 +10,11 @@ import {
   demoSelectionInputSchema,
   demoSheetsTargetInputSchema,
   demoStartRunInputSchema,
-  demoRunTokenHeader
+  demoRunTokenHeader,
+  NOUS_CLIENT_HEADER,
+  parseNousClientHeader
 } from "@space/contracts";
+import { DEMO_OAUTH_APP_STATE_SUFFIX } from "./connections.js";
 import type { DemoProjectsService } from "./service.js";
 
 const providerParamSchema = z.object({ provider: z.enum(["salesforce", "google-sheets"]) });
@@ -68,6 +71,13 @@ const oauthCallbackQuerySchema = z
     scope: z.string().max(1024).optional()
   })
   .loose();
+
+/** Google refuses its consent inside the app, so SpaceApp Android opens it in the system browser and takes the callback back here (R12). */
+const DEMO_OAUTH_APP_RETURN = "com.oll4.spaceapp:/oauth-return";
+const fromSpaceAppAndroid = (request: FastifyRequest) => {
+  const header = request.headers[NOUS_CLIENT_HEADER];
+  return parseNousClientHeader(Array.isArray(header) ? header[0] : header).app === "SPACEAPP_ANDROID";
+};
 
 function demoOAuthPopupHtml(provider: string, ok: boolean, errorCode: string | null): string {
   const payload = JSON.stringify({ type: "space.demo-projects.oauth", provider, ok, errorCode }).replaceAll("<", "\\u003c");
@@ -242,7 +252,8 @@ export function registerDemoProjectsRoutes(app: FastifyInstance, dependencies: D
         ownerUserId: owner,
         provider: params.provider,
         sessionToken: sessionToken(request),
-        publicOrigin: resolvePublicOrigin(request)
+        publicOrigin: resolvePublicOrigin(request),
+        returnToApp: fromSpaceAppAndroid(request)
       });
       return result;
     } catch (error) {
@@ -512,6 +523,11 @@ export function registerDemoProjectsRoutes(app: FastifyInstance, dependencies: D
     const params = providerParamSchema.safeParse(request.params);
     const provider = params.success ? params.data.provider : "salesforce";
     const html = demoOAuthPopupHtml(provider, true, null);
+    // The system browser (no app header): hand the whole callback to the app, which opens it with its own session.
+    const state = (request.query as { state?: unknown } | undefined)?.state;
+    if (params.success && typeof state === "string" && state.endsWith(DEMO_OAUTH_APP_STATE_SUFFIX) && !fromSpaceAppAndroid(request)) {
+      return reply.redirect(`${DEMO_OAUTH_APP_RETURN}?to=${encodeURIComponent(request.url)}`);
+    }
     if (!params.success || !request.user) return reply.type("text/html; charset=utf-8").send(demoOAuthPopupHtml(provider, false, "DEMO_OAUTH_SESSION_REQUIRED"));
     const query = oauthCallbackQuerySchema.safeParse(request.query);
     if (!query.success || query.data.error || !query.data.code || !query.data.state) {

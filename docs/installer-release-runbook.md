@@ -22,6 +22,10 @@ All commits go directly to main. The live host and public installer are separate
 
 ## Test the exact candidate
 
+From run-spaceapp 1.2.0, refresh the shared Nous memory seed for **every** version before candidate acceptance. Export only screened ACTIVE generic entries from the release host, review the entire diff, stamp the exact runtime version and run `node --experimental-strip-types scripts/space-shared-memory-seed.mjs verify --version <version>`. Follow [Shared Nous memory](runbooks/nous-shared-memory.md). The release-readiness CLI rejects a missing, private or stale seed.
+
+Sync the matching core implementation into this public Nous branch before testing: its startup imports the contracts seed and merges new keys while preserving admin edits, retirements and deletions. Prove a fresh install and an upgrade with all three admin choices in the lab. The core image already copies the complete contracts package, including the versioned JSON. Never put the release host's personal memory into setup.
+
 Build and load the candidate images into each runner before publication. Pass
 `--local-images` to the launcher to require those images without downloading
 registry versions; a missing image must fail. For the lab driver, set
@@ -74,11 +78,16 @@ Keep the existing environment review, signing/provenance and vulnerability gates
 Only a fully accepted published `next` package may be promoted to `latest` using
 the maintainer's npm session. Before that, install the published `next` package on
 each lab platform (it pulls the shipped image bytes and verifies their provenance)
-and run `node scripts/shipped-image-evidence.mjs --lock <its templates/images.lock.json>
-linux=<install>/image-attestations.json windows=... macos=...`; promote only when it
-passes. Do not bypass npm 2FA or protected environment review.
+and, with SpaceApp running there, save `docker inspect $(docker ps -q)` as that
+platform's running-image evidence. Then run `node scripts/shipped-image-evidence.mjs
+--lock <its templates/images.lock.json> linux=<install>/image-attestations.json
+windows=... macos=... --running linux=<inspect.json> --running windows=... --running
+macos=...`; promote only when it passes. The attestation record is written before the
+images are pulled, so it alone proves no install; every platform needs both. Do not bypass npm 2FA or protected environment review.
 
 Publish the final redacted report to the user's Agent Files dock and retain exact
 artifact IDs. Mark the existing task PLAN complete only after all required work
 is complete. If a runner or external gate is missing, record what is proven and
 what remains blocked; never claim all-platform completion.
+
+For 1.2.0 and later, release readiness also requires the exported shared-memory importer, repository, migration and Nous wiring. Packaging the seed without exporting the approved core cannot pass acceptance.

@@ -48,12 +48,13 @@ export class PostgresPlanExecutionRepository implements PlanExecutionRepository 
       await client.query("COMMIT");
       return result;
     } catch (error) {
-      rollbackFailed = await rollbackKeepingError(client);
+      const rollback = await rollbackKeepingError(client, error);
+      rollbackFailed = rollback.failed;
       if ((error as { code?: string }).code === "23505")
         throw new PlanExecutionConflictError(
           "An active execution already owns this pane or plan.",
         );
-      throw error;
+      throw rollback.error;
     } finally {
       client.release?.(rollbackFailed || undefined);
     }

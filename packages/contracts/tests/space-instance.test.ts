@@ -42,6 +42,14 @@ describe("space instance", () => {
     expect(instanceBackgroundJobEnabled(env, "telegram-bridge")).toBe(false);
   });
 
+  it("never runs the Space Gateway down card on a self-hosted install, which has no gateway (1.2.0 lab 2/11: a false card held Nous's goal)", () => {
+    expect(instanceBackgroundJobEnabled({ SPACE_PUBLIC_DISTRIBUTION: "true" }, "gateway-down-notify")).toBe(false);
+    // Nor the priority-pane push to the gateway it does not have (1.2.0 c13 lab 9/11: "Space Gateway answered 503" in its log).
+    expect(instanceBackgroundJobEnabled({ SPACE_PUBLIC_DISTRIBUTION: "true" }, "gateway-priority-panes")).toBe(false);
+    expect(instanceBackgroundJobEnabled({}, "gateway-priority-panes")).toBe(true);
+    expect(instanceBackgroundJobEnabled({ SPACE_PUBLIC_DISTRIBUTION: "true" }, "nous")).toBe(true);
+  });
+
   it("never blocks the stable instance", () => {
     expect(devInstanceIsolationProblems({}, "api")).toEqual([]);
     expect(assertDevInstanceIsolated({ SPACE_DATABASE_URL: "postgres://x@h/space" }, "worker")).toBe("stable");

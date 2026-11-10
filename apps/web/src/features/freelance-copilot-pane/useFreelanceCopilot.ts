@@ -3,6 +3,7 @@ import type { AgentRuntimeRegistry, BrowserHandoffRequest, FreelanceCopilotPaneM
 import { api } from "../../api.js";
 import { usePanePolling } from "../../use-pane-polling.js";
 import { withRefreshTimeout } from "../copilot-kit/refresh-timeout.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { subscribeFreelanceCopilotLiveEvents } from "./live-events.js";
 
 export interface FreelanceCopilotData {
@@ -35,6 +36,10 @@ export function useFreelanceCopilotData(pane: Pane, enabled: boolean): Freelance
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef<Promise<void> | null>(null);
+  // The refresh keeps one identity; it reads the language when an error happens.
+  const language = useUiLanguage();
+  const languageRef = useRef(language);
+  languageRef.current = language;
 
   const refresh = useCallback(async () => {
     if (inFlight.current) return inFlight.current;
@@ -56,7 +61,7 @@ export function useFreelanceCopilotData(pane: Pane, enabled: boolean): Freelance
         setHandoff(handoffResponse?.handoff ?? null);
         setError(null);
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "Freelance Copilot data could not be loaded.");
+        setError(caught instanceof Error ? caught.message : uiText(languageRef.current, "Freelance Copilot data could not be loaded."));
       } finally {
         setLoading(false);
         inFlight.current = null;

@@ -1,5 +1,6 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { InMemoryGatewayRepository } from "@space/db";
 import { AccountPool } from "../src/accounts/account-pool.js";
@@ -44,6 +45,36 @@ describe("local embedding models", () => {
     expect((await embed({ model: "bge-m3", input: [] })).statusCode).toBe(400);
     // Not a local model: it goes to the OpenAI key pool, which has no account here.
     expect((await embed({ model: "constructor", input: "x" })).statusCode).toBe(503);
+  });
+
+  it("starts the model worker without the gateway's Space credentials (EXT-C-F8)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "space-local-embeddings-env-"));
+    const saved = { secret: process.env.SPACE_SESSION_SECRET, database: process.env.SPACE_DATABASE_URL };
+    process.env.SPACE_SESSION_SECRET = "fake-session-secret-ext-c-f8";
+    process.env.SPACE_DATABASE_URL = "postgres://fake:fake@127.0.0.1/ext-c-f8";
+    try {
+      for (const file of [bge.model.path, bge.tokenizer.path]) {
+        const path = join(dir, "bge-m3", bge.revision, file);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, "");
+      }
+      // Stands in for the venv's python: records the environment it got, then answers one request like the real worker.
+      const python = join(dir, "python3");
+      writeFileSync(python, `#!/bin/sh\nenv > "${dir}/child.env"\necho '{"ready":true}'\nread line\necho '{"id":1,"vectors":[[1]],"tokens":1}'\n`);
+      chmodSync(python, 0o755);
+      const local = new LocalEmbeddings({ modelsDir: dir, python });
+      instances.push(local);
+      expect((await local.embed("bge-m3", ["x"], "query", null)).vectors).toEqual([[1]]);
+      const env = readFileSync(join(dir, "child.env"), "utf8");
+      expect(env).toMatch(/^PATH=/m);
+      expect(env).not.toContain("fake-session-secret-ext-c-f8");
+      expect(env).not.toContain("SPACE_DATABASE_URL=");
+    } finally {
+      for (const [name, value] of [["SPACE_SESSION_SECRET", saved.secret], ["SPACE_DATABASE_URL", saved.database]] as const) {
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it.skipIf(!installed)("embeds Greek and English on this server's CPU, unit length, zero-padded to the 1536 column", async () => {

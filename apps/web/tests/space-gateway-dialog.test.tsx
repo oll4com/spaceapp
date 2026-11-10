@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { GatewayAccount, GatewayApiKey, GatewayDashboard, GatewayRequestLog, GatewaySettings, GatewayStatus } from "@space/contracts";
+import { GATEWAY_DEFAULT_PROVIDER_ORDER } from "@space/contracts";
 import { SpaceGatewayDialog, type SpaceGatewayClient } from "../src/features/space-gateway/SpaceGatewayDialog.js";
+import { PoolModels } from "../src/features/space-gateway/PoolModels.js";
 
 const clipboard = vi.hoisted(() => ({ writes: [] as string[] }));
 vi.mock("../src/features/clipboard-dock/clipboard-events.js", async (importOriginal) => ({
@@ -11,7 +13,7 @@ vi.mock("../src/features/clipboard-dock/clipboard-events.js", async (importOrigi
 
 const settings: GatewaySettings = {
   routingStrategy: "CAPACITY_WEIGHTED", stickyThreadsEnabled: true, preferEarlierReset: false, planPriority: ["plus", "prolite", "pro"],
-  stickyReallocationBudgetThresholdPercent: 95, exhaustionFloorPercent: 3, compressionMode: "OFF", compressionProfile: "TOKEN", compressionCodeText: "OFF",
+  stickyReallocationBudgetThresholdPercent: 95, exhaustionFloorPercent: 3, claudeReservePercent: 20, subscriptionRouting: "FILL_FIRST", providerOrder: GATEWAY_DEFAULT_PROVIDER_ORDER, compressionMode: "OFF", compressionProfile: "TOKEN", compressionCodeText: "OFF",
   compressionTimeBudgetMs: 250, compressionProviders: { CLAUDE: { mode: "OFF", outputPolicy: "LEAN" } }, requestLogRetentionDays: 30, displayTimeFormat: "24H",
   displayAccountWindows: "BOTH", displayBurnProjection: true,
   upstreamStreamTransport: "DEFAULT", promptCacheTtlSeconds: 1800, importWithoutOverwrite: true, warmupEnabled: false, warmupWindows: "BOTH",
@@ -177,7 +179,16 @@ function client(overrides: Partial<SpaceGatewayClient> = {}): SpaceGatewayClient
     syncAnthropicBilling: vi.fn(async () => noAnthropicKey),
     report: vi.fn(async (from: string, to: string) => {
       const row = (key: string, requests: number) => ({ key, requests, errors: 1, inputTokens: 5000, cachedInputTokens: 1000, outputTokens: 300, reasoningTokens: 50, reasoningReported: 2, costUsd: 0.25, compressionTokensSaved: 0 });
-      return { from, to, days: [row("2026-10-10", 4), row("2026-10-11", 6)], models: [row("gpt-5.5", 10)], accounts: [row(account.id, 10)], totals: row("total", 10) };
+      const lost = { accountId: account.id, label: "Team A", provider: "CODEX" as const, planType: "plus", quotaKey: "", week: "2026-10-05",
+        resetAt: "2026-10-10T06:00:00.000Z", lastSampleAt: "2026-10-10T05:55:00.000Z", usedPercent: 69, lostPercent: 31, tokensPerPercent: 96_000_000,
+        costUsdPerPercent: 52.72, rateFrom: "own" as const, lostTokens: 2_976_000_000, lostCostUsd: 1634.32 };
+      const sums = { windows: 1, lostPercent: 31, lostTokens: 2_976_000_000, lostCostUsd: 1634.32, unpriced: 0 };
+      return { from, to, days: [row("2026-10-10", 4), row("2026-10-11", 6)], models: [row("gpt-5.5", 10)], accounts: [row(account.id, 10)],
+        providers: [{ ...row("CODEX", 10), rateLimited: 3 }], totals: { ...row("total", 10), rateLimited: 3 },
+        fallbacks: [{ fromProvider: "CLAUDE", toProvider: "CODEX", requests: 5, served: 4 }],
+        windows: [{ accountId: account.id, label: "Team A", provider: "CODEX" as const, status: "ACTIVE" as const, quotaKey: "",
+          primary: { usedPercent: 40, resetAt: "2026-10-11T12:00:00.000Z", windowMinutes: 300 }, secondary: { usedPercent: 88, resetAt: "2026-10-17T06:00:00.000Z", windowMinutes: 10080 } }],
+        lost: { from, to, windows: [lost], weeks: [{ week: "2026-10-05", provider: "CODEX" as const, ...sums }], totals: { ...sums, unobserved: 2 } } };
     }),
     ...overrides
   };
@@ -219,8 +230,32 @@ describe("SpaceGatewayDialog", () => {
     expect((await screen.findAllByText("Team A")).length).toBeGreaterThan(0);
     expect(screen.queryByText("team-a@example.test")).toBeNull();
     expect(screen.getAllByText("70%").length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    // A switch on every row (operator 6/11, nous_msg:71a41c2e) and the same one, "In use", in the account's detail.
+    fireEvent.click(screen.getByRole("switch", { name: "Use Team A" }));
     await waitFor(() => expect(api.setAccountPaused).toHaveBeenCalledWith(account.id, true));
+    fireEvent.click(screen.getByRole("switch", { name: "In use" }));
+    await waitFor(() => expect(api.setAccountPaused).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows a paused account switched off and a deactivated one locked off until it signs in again", async () => {
+    const api = client({ accounts: vi.fn(async () => ({ data: [{ ...account, status: "PAUSED" as const }, { ...account, id: `gw_account:${"2".repeat(32)}`, label: "Team B", status: "DEACTIVATED" as const }] })) });
+    render(<SpaceGatewayDialog client={api} initialTab="accounts" onClose={() => undefined} />);
+    const paused = await screen.findByRole("switch", { name: "Use Team A" }) as HTMLInputElement;
+    const deactivated = screen.getByRole("switch", { name: "Use Team B" }) as HTMLInputElement;
+    expect([paused.checked, paused.disabled, deactivated.checked, deactivated.disabled]).toEqual([false, false, false, true]);
+    fireEvent.click(paused);
+    await waitFor(() => expect(api.setAccountPaused).toHaveBeenCalledWith(account.id, false));
+    expect(await screen.findByText("Team A resumed.")).toBeTruthy();
+  });
+
+  it("turns an API key off from its row and back on from its detail", async () => {
+    const api = client();
+    render(<SpaceGatewayDialog client={api} initialTab="keys" onClose={() => undefined} />);
+    fireEvent.click(await screen.findByRole("switch", { name: "Use Codex CLI" }));
+    await waitFor(() => expect(api.updateKey).toHaveBeenCalledWith(key.id, { isActive: false }));
+    expect(await screen.findByText("Codex CLI disabled.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "In use" }));
+    await waitFor(() => expect(api.updateKey).toHaveBeenCalledTimes(2));
   });
 
   it("shows account details, saves an alias, opts into warm-up and exports auth.json only after confirming", async () => {
@@ -305,6 +340,31 @@ describe("SpaceGatewayDialog", () => {
     expect(anthropicBilling).toHaveBeenCalledWith(31);
   });
 
+  it("lists a key pool account's supported models, and reads them again after Refresh usage (7/11)", async () => {
+    const groq = { ...account, id: `gw_account:${"5".repeat(32)}`, label: "Groq key", provider: "GROQ" as const, planType: "api", email: null };
+    let listed = 0;
+    const poolModels = vi.fn(async () => { listed += 1; return { data: [{ provider: "GROQ" as const, models: listed === 1 ? ["llama-3.3-70b-versatile"] : ["llama-3.3-70b-versatile", "qwen/qwen3-32b"], error: null },
+      { provider: "NVIDIA" as const, models: ["meta/llama-4"], error: null }], fetchedAt: "2026-11-07T00:00:00.000Z" }; });
+    render(<SpaceGatewayDialog client={client({ accounts: vi.fn(async () => ({ data: [groq] })), poolModels })} initialTab="accounts" onClose={() => undefined} />);
+    expect(await screen.findByText("Supported models (1)")).toBeTruthy();
+    expect(screen.queryByText("meta/llama-4")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh usage" }));
+    expect(await screen.findByText("Supported models (2)")).toBeTruthy();
+    expect(screen.getByText("qwen/qwen3-32b")).toBeTruthy();
+  });
+
+  it("tags a pool's :free models free, first, and its other models paid; a pool with no :free id gets no tag (7/11)", () => {
+    const { container, rerender } = render(<PoolModels entry={{ provider: "OPENROUTER", models: ["openai/gpt-5", "qwen/qwen3-coder:free"], error: null }} />);
+    expect(screen.getByText("Supported models (2, 1 free)")).toBeTruthy();
+    expect([...container.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["qwen/qwen3-coder:free free", "openai/gpt-5 paid"]);
+    // Z.AI has no card: its free list is named in the contracts, the rest of its live ids are paid.
+    rerender(<PoolModels entry={{ provider: "ZAI", models: ["glm-4.5-flash", "glm-4.6"], error: null }} />);
+    expect([...container.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["glm-4.5-flash free", "glm-4.6 paid"]);
+    rerender(<PoolModels entry={{ provider: "GROQ", models: ["llama-3.3-70b-versatile"], error: null }} />);
+    expect(screen.getByText("Supported models (1)")).toBeTruthy();
+    expect(container.querySelector(".gw-model-free, .gw-model-paid")).toBeNull();
+  });
+
   it("jumps from Routing to the Claude API key form in Accounts", async () => {
     render(<SpaceGatewayDialog client={client()} initialTab="routing" onClose={() => undefined} />);
     fireEvent.click(await screen.findByRole("button", { name: "Add Claude API key" }));
@@ -385,10 +445,18 @@ describe("SpaceGatewayDialog", () => {
     const api = client();
     render(<SpaceGatewayDialog client={api} initialTab="routing" onClose={() => undefined} />);
     fireEvent.change(await screen.findByLabelText(/Routing strategy/), { target: { value: "FILL_FIRST" } });
+    expect(screen.getByText(/one account until about 93% of its 5 hours/)).toBeTruthy();
+    expect((screen.getByLabelText("Nous Claude reserve (%)") as HTMLInputElement).value).toBe("20");
+    fireEvent.change(screen.getByLabelText("Nous Claude reserve (%)"), { target: { value: "15" } });
+    fireEvent.change(screen.getByLabelText(/^Subscription accounts/), { target: { value: "WEEKLY_PACE" } });
     fireEvent.click(screen.getByRole("switch", { name: "Claude API key fallback" }));
+    // Nous's Space provider order: Claude → Codex → Claude via OpenCode → Gemini Argon → Gemini 3.8 Flash → Claude (Antigravity); Codex moved first.
+    expect(screen.getByRole("button", { name: "Move Claude up" }).hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Move Codex up" }));
     fireEvent.click(screen.getByRole("button", { name: "Save routing" }));
-    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ routingStrategy: "FILL_FIRST", planPriority: ["plus", "prolite", "pro"],
-      claudeApiKeyFallback: true })));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ routingStrategy: "FILL_FIRST", subscriptionRouting: "WEEKLY_PACE", claudeReservePercent: 15, planPriority: ["plus", "prolite", "pro"],
+      claudeApiKeyFallback: true, providerOrder: [{ route: "CODEX", enabled: true }, { route: "CLAUDE", enabled: true }, { route: "CLAUDE_OPENCODE", enabled: true },
+        { route: "ANTIGRAVITY", enabled: true }, { route: "ANTIGRAVITY_FLASH", enabled: true }, { route: "ANTIGRAVITY_CLAUDE", enabled: true }, { route: "BEDROCK", enabled: false }, { route: "VERTEX", enabled: false }] })));
     fireEvent.click(screen.getByRole("tab", { name: "Compression" }));
     fireEvent.click(await screen.findByLabelText("On"));
     // Shadow (measure without sending) is no longer offered anywhere.
@@ -669,6 +737,13 @@ describe("SpaceGatewayDialog", () => {
     expect(await screen.findByRole("table", { name: "Day" })).toBeTruthy();
     expect(screen.getByRole("table", { name: "Account" }).textContent).toContain("Team A");
     expect(screen.getByRole("table", { name: "Model" }).textContent).toContain("gpt-5.5");
+    // Every statistic on one page: 429s by provider, fallbacks, the windows now and the weekly lost tokens.
+    expect(screen.getByRole("table", { name: "Provider" }).textContent).toMatch(/Codex.*3/);
+    expect(screen.getByRole("table", { name: "Fallbacks" }).textContent).toMatch(/Claude.*Codex.*5.*4/);
+    expect(screen.getByRole("table", { name: "Usage windows" }).textContent).toMatch(/Team A.*40%.*88%/);
+    expect(screen.getByRole("table", { name: "Lost per week" }).textContent).toMatch(/2026-10-05.*31.*2\.98B.*\$1634\.32/);
+    expect(screen.getByRole("region", { name: "Lost tokens per week" }).textContent).toContain("2 resets without a sample near them left out")
+    expect(screen.getByRole("table", { name: "Lost per account" }).textContent).toMatch(/Team A.*69%.*31%.*2\.98B · \$1634\.32/);
     const [from, to] = (api.report as ReturnType<typeof vi.fn>).mock.calls[0] as [string, string];
     expect((Date.parse(to) - Date.parse(from)) / 86_400_000).toBe(6);
     fireEvent.click(screen.getByRole("tab", { name: "28 days" }));

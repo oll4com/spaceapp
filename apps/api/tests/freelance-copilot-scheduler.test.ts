@@ -14,6 +14,32 @@ function pane(id: string, paused = false): Pane {
   return { id, roomId: room.id, mode: "FREELANCE_COPILOT", title: "Freelance Copilot", isClosed: false, freelanceCopilotMetadata: { ...metadata, settings: { ...metadata.settings, paused } } } as Pane;
 }
 
+describe("a closed Freelance pane with follow-ups due (queue item 44)", () => {
+  it("reopens the owner's newest closed pane when follow-ups or approved messages are due and none is open; a refused reopen notifies", async () => {
+    const closed = { ...pane("pane:flclose01"), paneName: "Leo", isClosed: true, updatedAt: "2026-10-28T03:00:00.000Z" } as Pane;
+    let due = 1;
+    let refuse = false;
+    const reopened: string[] = [];
+    const notified: string[] = [];
+    const service = { settingsOf: (target: Pane) => ({ paused: Boolean(target.freelanceCopilotMetadata?.settings.paused) }), pollMail: async () => 0, weeklyDigest: async () => undefined,
+      runView: async () => ({ backlog: 0 }), followUpsDue: async () => Array.from({ length: due }, () => ({})), approvedDue: async () => [] } as never;
+    let panes: Pane[] = [closed];
+    let at = Date.parse("2026-10-28T06:00:00.000Z");
+    const scheduler = createFreelanceCopilotScheduler({ service, log: { warn: vi.fn() }, // Like the real store: closed panes only when asked (28/10 Cleo/Bob was never reopened: the scheduler did not ask).
+      store: { listRooms: () => [{ ...room, name: "Bruno" } as Room], listPanes: (_roomId: string, includeClosed = false) => includeClosed ? panes : panes.filter((entry) => !entry.isClosed) },
+      hasAgent: async () => true, hasActiveRun: async () => false, startRun: vi.fn(async () => {}), notifyBacklog: async (_owner, _room, target) => { notified.push(target.id); },
+      reopen: { reopen: async (_owner, target) => { if (refuse) throw new Error("refused"); reopened.push(target.id); }, now: () => at } });
+    await scheduler.tick();
+    expect(reopened).toEqual([closed.id]);
+    // Nothing due, or an open Freelance pane: it stays closed.
+    due = 0; at += 11 * 60_000; await scheduler.tick();
+    due = 1; panes = [closed, pane("pane:flopen001")]; at += 11 * 60_000; await scheduler.tick();
+    expect(reopened).toEqual([closed.id]);
+    panes = [closed]; refuse = true; at += 11 * 60_000; await scheduler.tick();
+    expect(notified).toEqual([closed.id]);
+  });
+});
+
 describe("freelance copilot scheduler", () => {
   it("turns new mail into work, starts a run where the agent runs, notifies elsewhere, and leaves paused panes alone", async () => {
     const inbox = [{ uid: 1, from: "donotreply@upwork.com", subject: "Old", receivedAt: new Date().toISOString(), snippet: "", text: "" }];

@@ -1,23 +1,36 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NousAttachment, NousDecision, NousMessage, NousState } from "@space/contracts";
-import { nousGoalsSettingsSchema, nousLowSpendSettingsSchema, nousModelsSettingsSchema, nousPaneBoardSettingsSchema, nousStandingOrdersSettingsSchema } from "@space/contracts";
+import { NOUS_TURN_KINDS, NOUS_CODEX_MODELS, NOUS_CLAUDE_MODELS, nousModelLabel, nousSettingsSchema, nousSettingsWithProvider, nousGoalsSettingsSchema, nousLowSpendSettingsSchema, nousModelsSettingsSchema, nousPaneBoardSettingsSchema, nousStandingOrdersSettingsSchema } from "@space/contracts";
 import { formatUserTime } from "../src/features/date-time-settings/date-time-settings.js";
 import { NousDock } from "../src/features/nous/NousDock.js";
 import { NousSettingsCard } from "../src/features/nous/NousSettingsCard.js";
-import { NOUS_FOCUS_EVENT, type NousFocusDetail } from "../src/features/nous-focus/nous-focus-events.js";
+import { announceNousFocusPhase, NOUS_FOCUS_EVENT, type NousFocusDetail } from "../src/features/nous-focus/nous-focus-events.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
+import { requestDoneView } from "../src/features/nous/nous-done-events.js";
+import { defaultVoiceComposerSettings } from "../src/voice-settings.js";
+import { announceAgentLanguage, announceUiLanguage } from "../src/features/ui-language/ui-language.js";
+// @ts-expect-error The proof module is plain JavaScript.
+import { readNeedsYouCards } from "./needs-you-cards.mjs";
+
+const voice = vi.hoisted(() => ({ current: null as unknown }));
+vi.mock("../src/features/voice-input/VoiceInputProvider.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../src/features/voice-input/VoiceInputProvider.js")>(),
+  useOptionalVoiceInput: () => voice.current
+}));
 
 const at = "2026-10-17T08:00:00.000Z";
 const paneBoard = nousPaneBoardSettingsSchema.parse({});
 const standingOrders = nousStandingOrdersSettingsSchema.parse({});
-const models = nousModelsSettingsSchema.parse({});
+const models = nousModelsSettingsSchema.parse(Object.fromEntries(NOUS_TURN_KINDS.map((kind) => [kind, { model: "claude-fable-5-1", effort: ["operator", "decision", "goal"].includes(kind) ? "max" : "high" }])));
 const goals = nousGoalsSettingsSchema.parse({});
 const state = (patch: Partial<NousState> = {}): NousState => ({
-  status: "IDLE", settings: { enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, shell: false, alwaysApprove: [], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false, copilotQuestionsNousFirst: true, goals }, model: "claude-fable-5-1", effort: "max", running: null,
+  status: "IDLE", settings: { enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, askOwnHostChanges: false, maySend: false, mayDeleteOwn: false, mayPublish: false, mayRestartHosts: false, neverRefuse: false, shell: false, alwaysApprove: [], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false, copilotQuestionsNousFirst: true, goals }, model: "claude-fable-5-1", effort: "max", running: null,
+  execution: { turnId: "nous_turn:served", model: "claude:claude-fable-5-1", effort: "max", phase: "completed" },
   turnsThisHour: 2, lastError: null, openDecisions: 1, inbox: 0, ...patch
 });
 const away = { id: "nous_away:a1", startedAt: "2026-10-17T16:29:00.000Z", until: null, reason: "Going to sleep", mandate: "Keep the plans moving", grant: [] as Array<"PROMOTE" | "TEST_PANES"> };
@@ -49,19 +62,23 @@ const attachment = (id: string, kind: NousAttachment["kind"], filename: string, 
 
 function serve(overrides: {
   state?: NousState; messages?: NousMessage[]; waiting?: string[]; decisions?: NousDecision[]; files?: Record<string, NousAttachment[]>;
-  upload?: (file: File) => Response; live?: unknown; panes?: unknown; board?: unknown; plans?: unknown[]; planHolds?: unknown; decisionFiles?: unknown[]; persistSettings?: boolean;
-  needs?: () => unknown[]; alwaysCounts?: unknown[];
+  upload?: (file: File) => Response | Promise<Response>; live?: unknown; panes?: unknown; board?: unknown; plans?: unknown[]; planHolds?: unknown; decisionFiles?: unknown[]; persistSettings?: boolean;
+  needs?: () => unknown[]; alwaysCounts?: unknown[]; providersGate?: Promise<void>; inProgress?: () => number; notDone?: () => number; taskRuns?: unknown; updates?: () => unknown[];
 } = {}) {
   const calls: Array<{ url: string; method: string; body: unknown }> = [];
   let savedSettings = structuredClone((overrides.state ?? state()).settings);
   let uploads = 0;
+  /** Clear conversation hides the rows before this index from the latest page; paging back still reaches them. */
+  let cleared = 0;
+  /** The server's mark: the dock hides the decisions asked before it too (operator 2/11). */
+  let clearedAt: string | null = null;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? "GET";
     const body = init?.body instanceof FormData ? init.body : init?.body ? JSON.parse(String(init.body)) : null;
     calls.push({ url, method, body });
     if (url === "/api/auth/csrf") return Response.json({ csrfToken: "csrf:nous", headerName: "x-space-csrf-token" });
-    if (url === "/api/nous") return Response.json({ state: overrides.state ?? state() });
+    if (url === "/api/nous") return Response.json({ state: overrides.persistSettings ? { ...(overrides.state ?? state()), settings: savedSettings } : overrides.state ?? state() });
     if (url === "/api/nous/attachments" && method === "POST") {
       const file = (body as FormData).get("file") as File;
       if (overrides.upload) return overrides.upload(file);
@@ -69,9 +86,22 @@ function serve(overrides: {
       return Response.json({ attachments: [attachment(`up${uploads}aaaaaa`, file.type.startsWith("image/") ? "IMAGE" : "DOCUMENT", file.name, { mimeType: file.type, byteSize: file.size })] }, { status: 201 });
     }
     if (url.startsWith("/api/nous/attachments/") && method === "DELETE") return Response.json({ removed: true });
-    if (url === "/api/nous/messages" && method === "GET") return Response.json({
-      messages: overrides.messages ?? [message("OPERATOR", "Τι τρέχει;", "a1b2c3d4"), message("ANSWER", "Όλα κινούνται.", "a1b2c3d5")], waiting: overrides.waiting ?? [], attachments: overrides.files ?? {}
-    });
+    if (url.startsWith("/api/nous/attachments/") && url.endsWith("?text=1")) return new Response("Ship on Friday.", { headers: { "content-type": "text/plain; charset=utf-8" } });
+    if (url.startsWith("/api/nous/messages") && method === "GET") {
+      // The server's paging (31/10): 200 rows a page, further back from `before`, and every operator message for "Go to my last message".
+      const all = overrides.messages ?? [message("OPERATOR", "Τι τρέχει;", "a1b2c3d4"), message("ANSWER", "Όλα κινούνται.", "a1b2c3d5")];
+      if (url === "/api/nous/messages/operator-index") return Response.json({ messages: all.filter((row) => row.kind === "OPERATOR").map(({ id, createdAt }) => ({ id, createdAt })) });
+      const query = new URL(url, "http://dock.test").searchParams, before = query.get("before");
+      const end = before ? all.findIndex((row) => row.id === before) : all.length;
+      const page = all.slice(Math.max(end - 200, before || query.has("cleared") ? 0 : cleared), end);
+      return Response.json({ messages: page, hasMore: end > page.length, waiting: before ? [] : overrides.waiting ?? [], attachments: overrides.files ?? {},
+        ...(before || query.has("cleared") ? {} : { clearedAt }) });
+    }
+    if (url === "/api/nous/messages" && method === "DELETE") {
+      cleared = (overrides.messages ?? []).length;
+      clearedAt = new Date(Math.max(...[...overrides.messages ?? [], ...overrides.decisions ?? [decision]].map((row) => Date.parse(row.createdAt))) + 1).toISOString();
+      return Response.json({ cleared });
+    }
     if (url === "/api/nous/messages" && method === "POST") return Response.json({ message: message("OPERATOR", body.content, "a1b2c3d6") }, { status: 202 });
     if (url === "/api/nous/decisions") return Response.json({ decisions: overrides.decisions ?? [decision] });
     if (url === "/api/nous/always-approve") return Response.json({ rules: overrides.alwaysCounts ?? [] });
@@ -89,23 +119,205 @@ function serve(overrides: {
     if (url.endsWith("/feedback")) return Response.json({ decision: { ...decision, status: "APPROVED", answeredAt: at, couldHaveDecided: body.couldHaveDecided } });
     if (url.startsWith("/api/notifications/") && url.endsWith("/answer")) return Response.json({ routed: "PANE", display: "Sent to Emma: it gets your answer as its next prompt.", notification: null });
     if (url.endsWith("/answer")) return Response.json({ decision: { ...decision, status: "APPROVED", outcome: "Approved the run-spaceapp release train at its candidate commit." } });
+    if (url === "/api/nous/providers") return (overrides.providersGate ?? Promise.resolve()).then(() => Response.json({ providers: [
+      { id: "codex", name: "Codex (OpenAI)", available: true, reason: null, room: "62% left now, 54% at the weekly reset, pace ON", atReset: { percent: 54, resetAt: new Date(Date.now() + 3 * 86_400_000).toISOString() }, models: NOUS_CODEX_MODELS.map((id) => ({ id, label: nousModelLabel(id), efforts: ["low", "medium", "high", "xhigh"] })) },
+      { id: "claude", name: "Claude (Anthropic)", available: true, reason: null, atReset: null, models: NOUS_CLAUDE_MODELS.map((id) => ({ id, label: nousModelLabel(id), efforts: ["low", "medium", "high", "xhigh", "max"] })) },
+      { id: "space", name: "Space (all providers)", available: true, reason: null, models: ["auto", "auto-balanced", "auto-light"].map((id) => ({ id, label: id, efforts: ["auto", "low", "medium", "high", "xhigh", "max"] })) },
+      { id: "openrouter", name: "OpenRouter", available: false, reason: "No active OpenRouter account in Space Gateway. Add one under Space Gateway → Accounts.", models: [] }
+    ] }));
     if (url === "/api/nous/settings") {
       savedSettings = { ...savedSettings, ...body };
-      return Response.json({ settings: overrides.persistSettings ? savedSettings : { enabled: body.enabled, maxTurnsPerHour: 20 } });
+      return Response.json({ settings: overrides.persistSettings ? savedSettings : { ...state().settings, enabled: body.enabled, maxTurnsPerHour: 20 } });
     }
     if (url.startsWith("/api/notifications?status=NEEDS_YOU")) return Response.json({ notifications: overrides.needs?.() ?? [] });
+    if (url.startsWith("/api/mail-copilot/threads/")) return Response.json({ thread: { account: "ntheogr@gmail.com", threadId: "1a1925b124bb7cb8", subject: "Your Zinc check is ready",
+      messages: [{ from: { name: "Mercor", address: "team@mercor.com" }, receivedAt: "2026-11-01T03:40:00.000Z" }] } });
+    if (url.startsWith("/api/artifacts/artifact%3A") && url.endsWith("/metadata")) {
+      const id = decodeURIComponent(url.split("/")[3]!);
+      return Response.json({ artifact: { id, filename: `${id}.bin`, mimeType: id.includes("cut") ? "video/mp4" : id.includes("doc") ? "application/pdf" : "image/png", byteSize: 1, sha256: "x",
+        createdAt: "2026-11-01T00:00:00.000Z", roomId: "room:work000001", metadata: {} }, image: null, embedded: {}, design: null });
+    }
     if (url === "/api/notifications/pending") return Response.json({ total: 0, bySource: {}, byRoom: {}, byPane: {}, latest: [] });
+    if (url.startsWith("/api/notifications?") && url.includes("kind=OPERATOR_UPDATE")) return Response.json({ notifications: overrides.updates?.() ?? [] });
     if (url.startsWith("/api/notifications?")) return Response.json({ notifications: [] });
     if (url === "/api/nous/away") return Response.json({ away: body.away ? { ...away, grant: body.grant ?? [] } : null });
+    if (url === "/api/nous/shared-files") return Response.json([]);
+    if (url.startsWith("/api/nous/requests")) return Response.json({ requests: [], hasMore: false, counts: { DONE: 0, ANSWERED: 0, IN_PROGRESS: overrides.inProgress?.() ?? 0, WAITS_FOR_YOU: 0, NOT_DONE: overrides.notDone?.() ?? 0, NOT_ANSWERED: 0 } });
+    if (url.startsWith("/api/tasks/runs")) return Response.json(overrides.taskRuns ?? { runs: [], hasMore: false, tasks: [],
+      counts: { RUNNING: 0, SUCCEEDED: 0, FAILED: 0, WAITING: 0, NO_REPORT: 0, SKIPPED: 0, REMINDER: 0 } });
+    if (url.startsWith("/api/nous/load")) return Response.json({ at: "2026-10-31T07:00:00.000Z", overall: 42, target: 90, level: "CALM", limit: null, range: "1h", parts: [],
+      series: [{ at: "2026-10-31T06:59:50.000Z", value: 40 }, { at: "2026-10-31T07:00:00.000Z", value: 42 }],
+      averages: { hour: { value: 41, previous: null }, today: { value: 38, previous: 30 }, week: { value: null, previous: null }, month: { value: null, previous: null }, bestDay: null } });
+    if (url.startsWith("/api/nous/score/history")) return Response.json({ range: "24h", points: [{ at: "2026-10-31T06:50:00.000Z", value: -8 }, { at: "2026-10-31T07:00:00.000Z", value: -12 }] });
+    if (url.startsWith("/api/nous/score")) return Response.json({ at: "2026-10-31T07:00:00.000Z", score: -12, change24h: -4, change7d: null, tiles: [
+      { key: "plans", label: "Open plans", points: -15, detail: "1 open", items: [{ id: "clipboard:p1", label: "Forgotten plan", points: -15, detail: "open 5 d · no working pane" }] },
+      { key: "response", label: "Response time", points: -5, detail: "Today: 3 messages", items: [] },
+      { key: "done", label: "Requests done", points: 8, detail: "1 in 7 days", items: [{ id: "n1", label: "Fixed", points: 8, detail: "recorded 2026-10-31" }] }],
+      breakdown: [{ label: "Open plans", points: -15, share: 75, detail: "1 open" }, { label: "Startup programs", points: -4.9, share: 24.5, detail: "2 of 31 applications approved, 6 % · 3 d" },
+        { label: "Response time", points: -0.1, share: 0.5, detail: "Today: 3 messages" }] });
     return Response.json({});
   }));
   return calls;
 }
 
 beforeEach(() => installSpaceRuntime(liveRuntime));
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); voice.current = null; });
 
 describe("Nous dock", () => {
+  it("offers one saved switch per optional dock tab and keeps Conversation always on", async () => {
+    const calls = serve({ persistSettings: true });
+    render(<NousDock canRun isAdmin />);
+    const views = await screen.findByRole("group", { name: "Nous views" });
+    const optionalTabs = within(views).getAllByRole("button").map((button) => button.querySelector(".dock-kit-chip-label")?.textContent).filter((label) => label !== "Conversation");
+    cleanup();
+    render(<NousSettingsCard />);
+    const group = await screen.findByRole("group", { name: "Dock tabs" });
+    const done = within(group).getByRole("switch", { name: "Show Done tab" }) as HTMLInputElement;
+    await waitFor(() => expect(done.disabled).toBe(false));
+    expect(within(group).getAllByRole("switch").map((toggle) => toggle.getAttribute("aria-label"))).toEqual(optionalTabs.map((label) => `Show ${label} tab`));
+    expect(within(group).getAllByRole("switch").every((toggle) => (toggle as HTMLInputElement).checked)).toBe(true);
+    expect(within(group).queryByRole("switch", { name: /Conversation/ })).toBeNull();
+    fireEvent.click(done);
+    await waitFor(() => expect(done.checked).toBe(false));
+    await waitFor(() => expect(done.disabled).toBe(false));
+    const quotas = within(group).getByRole("switch", { name: "Show Quotas tab" }) as HTMLInputElement;
+    fireEvent.click(quotas);
+    await waitFor(() => expect(quotas.checked).toBe(false));
+    await waitFor(() => expect(quotas.disabled).toBe(false));
+    expect(calls.filter((call) => call.url === "/api/nous/settings").map((call) => call.body)).toEqual([
+      { dockTabs: { done: false } }, { dockTabs: { done: false, quotas: false } }
+    ]);
+    cleanup();
+    render(<NousSettingsCard />);
+    await waitFor(() => expect((screen.getByRole("switch", { name: "Show Done tab" }) as HTMLInputElement).checked).toBe(false));
+    expect((screen.getByRole("switch", { name: "Show Quotas tab" }) as HTMLInputElement).checked).toBe(false);
+    cleanup();
+    render(<NousDock canRun />);
+    const savedViews = await screen.findByRole("group", { name: "Nous views" });
+    await waitFor(() => expect(within(savedViews).queryByRole("button", { name: "Done" })).toBeNull());
+    expect(within(savedViews).queryByRole("button", { name: "Quotas" })).toBeNull();
+    expect(within(savedViews).getAllByRole("button")).toHaveLength(16);
+  });
+
+  it("shows Conversation alone when every optional tab is off", async () => {
+    serve({ state: state({ settings: { ...state().settings, dockTabs: { needs: false, done: false, updates: false, requests: false, shared: false, decisions: false, overview: false, panes: false, plans: false, goals: false, startup: false, funding: false, jobs: false, crypto: false, marketing: false, quotas: false, load: false, score: false } } }) });
+    render(<NousDock canRun />);
+    const views = await screen.findByRole("group", { name: "Nous views" });
+    await waitFor(() => expect(within(views).getAllByRole("button")).toHaveLength(1));
+    expect(within(views).getByRole("button", { name: "Conversation" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("lists the operator's updates newest first with an unread count; a report opens only when selected, and Mark read reads one (R73, operator 4/11 15:04 BKK)", async () => {
+    const update = (id: string, status: string, title: string) => ({ id, ownerUserId: "user:operator", roomId: null, paneId: null, source: "NOUS", kind: "OPERATOR_UPDATE",
+      severity: "ATTENTION", status, title, body: "$10,000 Algolia credits · Search API for sites", link: { surface: "nous", target: "updates" }, dedupeKey: `nous:update:${id}`,
+      payload: { report: `${title}\nWhat it is: Search API for sites\nHow we use it and what it needs: SpaceApp docs search; needs the Grow plan and a card`,
+        links: [{ label: "2026-11-04 · Welcome to the Algolia Startup Program", url: "https://mail.google.com/mail/u/?authuser=crew%40spaceapp.dev#all/19a4algolia" }] },
+      createdAt: "2026-11-04T08:00:00.000Z", updatedAt: "2026-11-04T08:00:00.000Z", readAt: null, resolvedAt: null, telegram: null });
+    let rows = [update("notification:upd000002", "OPEN", "Approved: Algolia › Algolia Startup Program"), update("notification:upd000001", "READ", "Approved: Sentry › Sentry for Startups")];
+    const calls = serve({ updates: () => rows });
+    render(<NousDock canRun />);
+    const views = await screen.findByRole("group", { name: "Nous views" });
+    const tab = await within(views).findByRole("button", { name: /^Updates\s*1$/ });
+    // Nothing moves by itself: the conversation stays the view until he selects Updates.
+    expect(within(views).getByRole("button", { name: "Conversation" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(tab);
+    const algolia = await screen.findByRole("article", { name: "Approved: Algolia › Algolia Startup Program" });
+    expect(screen.getAllByRole("article").map((card) => card.getAttribute("aria-label"))).toEqual(["Approved: Algolia › Algolia Startup Program", "Approved: Sentry › Sentry for Startups"]);
+    expect(within(algolia).queryByText(/needs the Grow plan and a card/)).toBeNull();
+    fireEvent.click(within(algolia).getByRole("button", { name: "Full report" }));
+    expect(within(algolia).getByText(/needs the Grow plan and a card/)).toBeTruthy();
+    expect(within(algolia).getByRole("link", { name: "2026-11-04 · Welcome to the Algolia Startup Program" }).getAttribute("href")).toContain("#all/19a4algolia");
+    expect(within(screen.getByRole("article", { name: "Approved: Sentry › Sentry for Startups" })).queryByRole("button", { name: "Mark read" })).toBeNull();
+    rows = rows.map((row) => ({ ...row, status: "READ" }));
+    fireEvent.click(within(algolia).getByRole("button", { name: "Mark read" }));
+    await waitFor(() => expect(calls.some((call) => call.url === "/api/notifications/notification%3Aupd000002/read" && call.method === "POST")).toBe(true));
+    await waitFor(() => expect(within(views).getByRole("button", { name: "Updates" })).toBeTruthy());
+  });
+
+  it("leaves a disabled active view and ignores a hidden Done notification, including after re-enabling", async () => {
+    vi.useFakeTimers();
+    try {
+      const snapshot = state();
+      serve({ state: snapshot });
+      render(<NousDock canRun />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      const views = screen.getByRole("group", { name: "Nous views" });
+      fireEvent.click(within(views).getByRole("button", { name: "Done" }));
+      expect(within(views).getByRole("button", { name: "Done" }).getAttribute("aria-pressed")).toBe("true");
+      snapshot.settings = { ...snapshot.settings, dockTabs: { done: false } };
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(within(views).queryByRole("button", { name: "Done" })).toBeNull();
+      expect(within(views).getByRole("button", { name: "Conversation" }).getAttribute("aria-pressed")).toBe("true");
+      act(() => requestDoneView());
+      expect(within(views).getByRole("button", { name: "Conversation" }).getAttribute("aria-pressed")).toBe("true");
+      snapshot.settings = { ...snapshot.settings, dockTabs: { done: true } };
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(within(views).getByRole("button", { name: "Done" }).getAttribute("aria-pressed")).toBe("false");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("switches provider and filters normal and low-spend models, keeping Astra high after saving", async () => {
+    const calls = serve({ state: state(), persistSettings: true });
+    render(<NousSettingsCard />);
+    const provider = await screen.findByRole("combobox", { name: "Nous provider" }) as HTMLSelectElement;
+    await waitFor(() => expect(provider.disabled).toBe(false));
+    expect(provider.value).toBe("claude");
+    // An unavailable provider is listed with its reason, since a disabled option cannot be selected to read it.
+    const openrouter = [...provider.options].find((option) => option.value === "openrouter")!;
+    expect(openrouter.disabled).toBe(true);
+    expect(openrouter.textContent).toBe("OpenRouter (unavailable: No active OpenRouter account in Space Gateway. Add one under Space Gateway → Accounts.)");
+    // Each provider names the pickers' figure, its share free at the weekly reset (operator 31/10 16:59 BKK); the full room is the option's title.
+    const codex = [...provider.options].find((option) => option.value === "codex")!;
+    expect(codex.textContent).toMatch(/^Codex \(OpenAI\) · 54% free at \w{3} \d{1,2} \w{3} \d\d:\d\d$/);
+    expect(codex.title).toBe("62% left now, 54% at the weekly reset, pace ON");
+    expect([...provider.options].find((option) => option.value === "claude")!.textContent).toBe("Claude (Anthropic) · Unknown free at reset (no current weekly window)");
+    fireEvent.change(provider, { target: { value: "codex" } });
+    await waitFor(() => expect(provider.value).toBe("codex"));
+    const saved = calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body as any;
+    expect(saved.provider).toBe("codex");
+    for (const kind of NOUS_TURN_KINDS) {
+      expect(saved.models[kind]).toEqual({ model: "gpt-6-astra", effort: "high" });
+      const model = screen.getByRole("combobox", { name: `Nous model for ${kind} turns` }) as HTMLSelectElement;
+      expect(model.value).toBe("gpt-6-astra");
+      expect([...model.options].every((option) => option.value.startsWith("gpt-"))).toBe(true);
+    }
+    expect(saved.lowSpend.models.inbox.model).toBe("gpt-6.1-sol");
+    expect(saved.lowSpend.criticalModels.inbox.model).toBe("gpt-6-luna");
+    expect(screen.queryByRole("combobox", { name: "Nous fallback model" })).toBeNull();
+    expect((screen.getByRole("combobox", { name: "Nous low-spend model for inbox turns" }) as HTMLSelectElement).value).toBe("gpt-6.1-sol");
+    fireEvent.change(screen.getByRole("combobox", { name: "Nous model for operator turns" }), { target: { value: "gpt-6.1-terra" } });
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "Nous model for operator turns" }) as HTMLSelectElement).value).toBe("gpt-6.1-terra"));
+  });
+
+  it("names the saved provider and model while the provider catalog loads, never calling them unavailable (stable 29/10)", async () => {
+    let open!: () => void;
+    serve({ state: state(), providersGate: new Promise<void>((resolve) => { open = resolve; }) });
+    render(<NousSettingsCard />);
+    const provider = await screen.findByRole("combobox", { name: "Nous provider" }) as HTMLSelectElement;
+    await waitFor(() => expect(provider.selectedOptions[0]?.textContent).toBe("Claude (Anthropic) (checking…)"));
+    expect(screen.getByText("Checking the providers connected to Space Gateway…")).toBeTruthy();
+    expect((screen.getByRole("combobox", { name: "Nous model for operator turns" }) as HTMLSelectElement).selectedOptions[0]?.textContent).not.toContain("unavailable");
+    open();
+    await waitFor(() => expect(provider.selectedOptions[0]?.textContent).toBe("Claude (Anthropic) · Unknown free at reset (no current weekly window)"));
+    expect([...provider.options].map((option) => option.value)).toEqual(["codex", "claude", "space", "openrouter"]);
+  });
+
+  it("sets every turn to Auto model and Auto reasoning in one click, keeping the per-kind pickers (operator 8/11)", async () => {
+    const calls = serve({ state: state(), persistSettings: true });
+    render(<NousSettingsCard />);
+    const auto = await screen.findByRole("button", { name: "Set Nous to Auto model and Auto reasoning" }) as HTMLButtonElement;
+    await waitFor(() => expect(auto.disabled).toBe(false));
+    fireEvent.click(auto);
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "Nous provider" }) as HTMLSelectElement).value).toBe("space"));
+    const saved = calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body as any;
+    for (const kind of NOUS_TURN_KINDS) expect(saved.models[kind]).toEqual({ model: "auto", effort: "auto" });
+    expect(saved.lowSpend.models.inbox).toEqual({ model: "auto-balanced", effort: "medium" });
+    expect(saved.lowSpend.criticalModels.inbox).toEqual({ model: "auto-light", effort: "medium" });
+    const effort = screen.getByRole("combobox", { name: "Nous effort for operator turns" }) as HTMLSelectElement;
+    expect(effort.selectedOptions[0]?.textContent).toBe("Auto");
+    expect([...effort.options].map((option) => option.value)).toContain("xhigh");
+  });
+
   it("tells other roles that Nous is for administrators and operators", () => {
     render(<NousDock canRun={false} />);
     expect(screen.getByText("Nous is available to administrators and operators")).toBeTruthy();
@@ -128,15 +340,109 @@ describe("Nous dock", () => {
     }
   });
 
+  it("shows the current real route live and keeps each answer's own model with Auto only in settings", async () => {
+    vi.useFakeTimers();
+    try {
+      const old = message("ANSWER", "The Codex answer", "model0001");
+      old.meta = { model: "codex:gpt-6-astra", effort: "high" };
+      const options = { state: state({ model: "auto", status: "THINKING", running: { turnId: "nous_turn:live", startedAt: at, reason: "OPERATOR", draft: "Writing" },
+        execution: { turnId: "nous_turn:live", model: "codex:gpt-6-astra", effort: "high", phase: "responding" } }), messages: [old] };
+      serve(options); render(<NousDock canRun />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByRole("button", { name: "GPT-6 Astra · Codex · high" })).toBeTruthy();
+      options.state.execution = { turnId: "nous_turn:next", model: "claude:claude-opus-5-5", effort: "high", phase: "responding" };
+      await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+      expect(screen.getByRole("button", { name: "Claude Opus 5.5 · Claude · high" })).toBeTruthy();
+      expect(screen.getByTitle("GPT-6 Astra · Codex · high").textContent).toBe("GPT-6 Astra · Codex");
+      expect(screen.queryByText(/Auto: best/)).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("never shows effort none in the model line or an answer's title (operator nous_msg:5ba7a146)", async () => {
+    const old = message("ANSWER", "The Antigravity answer", "model0002");
+    old.meta = { model: "gemini:gemini-4-argon-high", effort: "none" };
+    serve({ state: state({ model: "auto", execution: { turnId: "nous_turn:none", model: "gemini:gemini-4-argon-high", effort: "none", phase: "responding" } }), messages: [old] });
+    render(<NousDock canRun />);
+    expect(await screen.findByRole("button", { name: "gemini-4-argon-high · Gemini Argon (Antigravity)" })).toBeTruthy();
+    expect(screen.getByTitle("gemini-4-argon-high · Gemini Argon (Antigravity)").textContent).toBe("gemini-4-argon-high · Gemini Argon (Antigravity)");
+    expect(screen.queryByText(/· none/)).toBeNull();
+  });
+
   it("shows the mind of SpaceApp with its fixed model and talks to it", async () => {
     const calls = serve();
     render(<NousDock canRun />);
     expect(await screen.findByText("Όλα κινούνται.")).toBeTruthy();
-    expect(screen.getByText("Claude Fable 5.1 · max")).toBeTruthy();
+    // The label names the provider and opens Settings at Nous, where the provider and model are chosen.
+    const model = screen.getByRole("button", { name: "Claude Fable 5.1 · Claude · max" });
+    const opened = vi.fn();
+    window.addEventListener("space:open-settings-section", opened);
+    fireEvent.click(model);
+    window.removeEventListener("space:open-settings-section", opened);
+    expect((opened.mock.calls[0]?.[0] as CustomEvent).detail).toMatchObject({ key: "nous" });
     expect(screen.getByRole("img", { name: "Nous, the mind of SpaceApp" })).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Message Nous"), { target: { value: "Φέρε όλα τα πλάνα στο 100%" } });
     fireEvent.keyDown(screen.getByLabelText("Message Nous"), { key: "Enter" });
     await waitFor(() => expect(calls.some((call) => call.url === "/api/nous/messages" && call.method === "POST" && (call.body as { content: string }).content === "Φέρε όλα τα πλάνα στο 100%")).toBe(true));
+  });
+
+  it("dictates into the composer with voice input and sends when the speech ends (operator 31/10)", async () => {
+    const start = vi.fn();
+    voice.current = { settings: { ...defaultVoiceComposerSettings }, serverSettings: { enabled: true }, settingsLoading: false, ownerId: null, status: "idle",
+      start, stop: vi.fn(), cancel: vi.fn(), prewarm: vi.fn() };
+    const calls = serve();
+    render(<NousDock canRun />);
+    fireEvent.change(await screen.findByLabelText("Message Nous"), { target: { value: "Γεια." } });
+    fireEvent.click(screen.getByRole("button", { name: "Start voice input Nous" }));
+    const target = start.mock.calls[0]?.[0] as { id: string; onTranscriptDelta(text: string): void; onTranscriptComplete(text: string): Promise<void> };
+    expect(target.id).toBe("nous-dock");
+    act(() => target.onTranscriptDelta("Τι κάνουν"));
+    expect((screen.getByLabelText("Message Nous") as HTMLTextAreaElement).value).toBe("Γεια.\nΤι κάνουν");
+    await act(async () => target.onTranscriptComplete("Τι κάνουν τα panes;"));
+    await waitFor(() => expect(calls.some((call) => call.url === "/api/nous/messages" && call.method === "POST"
+      && (call.body as { content: string }).content === "Γεια.\nΤι κάνουν τα panes;")).toBe(true));
+  });
+
+  it("quotes an operator message once across a turn's interim replies and final answer; two identical messages are each quoted", async () => {
+    // Operator 29/10 22:13 BKK «γιατι αναπαραγετε 3 φορες το μηνυμα μου?»: one message, two interim ANSWERs and the final one of turn 76c77877, all replyTo it.
+    const minute = (n: number) => `2026-10-29T15:${String(n).padStart(2, "0")}:00.000Z`;
+    const answer = (content: string, id: string, n: number, replyTo: string[]) => ({ ...message("ANSWER", content, id), createdAt: minute(n), turnId: "nous_turn:76c77877",
+      meta: { reason: "OPERATOR", replyTo } });
+    const asked = { ...message("OPERATOR", "Google billing and the AWS request", "b3e49acd"), createdAt: minute(0) };
+    const again1 = { ...message("OPERATOR", "Και τώρα;", "again001"), createdAt: minute(10) };
+    const again2 = { ...message("OPERATOR", "Και τώρα;", "again002"), createdAt: minute(20) };
+    serve({ messages: [asked, answer("Checking the billing first.", "interim1", 1, [asked.id]), answer("Billing read; now AWS.", "interim2", 3, [asked.id]),
+      answer("Both done: billing paid, AWS request sent.", "final001", 5, [asked.id]), again1, answer("Still running.", "reply0001", 11, [again1.id]),
+      again2, answer("Done now.", "reply0002", 21, [again2.id])] });
+    render(<NousDock canRun />);
+    await screen.findByText("Both done: billing paid, AWS request sent.");
+    for (const text of ["Checking the billing first.", "Billing read; now AWS."]) expect(screen.getByText(text)).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Google billing and the AWS request" })).toHaveLength(1);
+    expect(screen.getByText("Checking the billing first.").closest(".nous-message")!.querySelector(".nous-quote")).not.toBeNull();
+    expect(screen.getByText("Both done: billing paid, AWS request sent.").closest(".nous-message")!.querySelector(".nous-quote")).toBeNull();
+    // Genuine repeats are two messages: each keeps its own quote, and every operator message stays.
+    expect(screen.getAllByRole("button", { name: "Και τώρα;" })).toHaveLength(2);
+    expect(screen.getAllByText("Και τώρα;", { selector: "p" })).toHaveLength(2);
+  });
+
+  it("writes the conversation's steps in the agents' language and never shows NOTHING_NEW (operator 2/11 09:51 BKK)", async () => {
+    announceAgentLanguage("el");
+    try {
+      const tool = (content: string, id: string, translated?: string) => ({ ...message("TOOL", content, id), meta: translated ? { translation: { language: "el", text: translated } } : {} });
+      serve({ messages: [message("OPERATOR", "Τι τρέχει;", "a1b2c3d4"), tool("Read Zoe's reports", "t0000001"), tool("Checked Cody in Alex: ok working", "t0000002", "Έλεγξα τον Cody στο Alex: δουλεύει κανονικά"),
+        message("INBOX", "Room Alex pane Cody: FINISHED", "i0000001"), { ...message("ANSWER", "NOTHING_NEW", "n0000001"), meta: { reason: "STANDING" } },
+        { ...message("ANSWER", "NOTHING_NEW\n\nΗ Dana τελείωσε το Arc.", "n0000002"), meta: { reason: "INBOX" } }] });
+      render(<NousDock canRun />);
+      const steps = (await screen.findByText("2 βήματα")).closest("details")!;
+      expect(within(steps.querySelector("summary")!).getByText("Έλεγξα τον Cody στο Alex: δουλεύει κανονικά")).toBeTruthy();
+      // A step not translated yet reads as written until the next read carries it.
+      expect(within(steps).getByText("Read Zoe's reports")).toBeTruthy();
+      expect(screen.getByText("Από τα δωμάτια και τις ειδοποιήσεις")).toBeTruthy();
+      // The interface stays the interface's language (English here).
+      expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+      expect(await screen.findByText("Η Dana τελείωσε το Arc.")).toBeTruthy();
+      expect(screen.queryByText(/NOTHING_NEW/)).toBeNull();
+      expect(document.querySelectorAll(".nous-message.is-answer")).toHaveLength(1);
+    } finally { announceAgentLanguage("en"); }
   });
 
   it("keeps only the dialogue open: steps and helpers fold, an answer quotes what it answers, a waiting message says it is queued", async () => {
@@ -166,18 +472,20 @@ describe("Nous dock", () => {
       fireEvent.click(screen.getByRole("button", { name: "Έλεγξε τα panes" }));
       expect(scrolled.at(-1)).toBe(askedRow);
 
-      // Up walks back from the newest of the operator's messages, one per press; back at the end it starts over.
+      // Up walks back from the newest of the operator's messages, one per press; after the oldest it starts over at the newest.
       const up = screen.getByRole("button", { name: "Go to my last message (press again for the one before)" });
       fireEvent.click(up);
       expect(laterRow.hasAttribute("data-jumped")).toBe(true);
       fireEvent.click(up);
-      fireEvent.click(up);
       expect(askedRow.hasAttribute("data-jumped")).toBe(true);
       expect(laterRow.hasAttribute("data-jumped")).toBe(false);
+      fireEvent.click(up);
+      await waitFor(() => expect(laterRow.hasAttribute("data-jumped")).toBe(true));
+      expect(askedRow.hasAttribute("data-jumped")).toBe(false);
       const list = document.querySelector<HTMLElement>(".nous-messages")!;
       Object.defineProperty(list, "scrollTop", { configurable: true, writable: true, value: 400 });
       fireEvent.scroll(list);
-      expect(askedRow.hasAttribute("data-jumped")).toBe(false);
+      expect(laterRow.hasAttribute("data-jumped")).toBe(false);
       fireEvent.click(up);
       expect(laterRow.hasAttribute("data-jumped")).toBe(true);
       // Scrolled by hand mid-way (stable 2026-10-27: Up went to the wrong message): the nearest of the operator's messages above the view.
@@ -197,6 +505,57 @@ describe("Nous dock", () => {
     } finally {
       delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
     }
+  });
+
+  it("never loses a question past the newest 200 rows: Up loads earlier pages, Load earlier pages back (operator 31/10)", async () => {
+    // 260 rows: the newest 200 hold only the last question; the two before it are further back, the first one the oldest of all.
+    const row = (kind: NousMessage["kind"], content: string, n: number): NousMessage =>
+      ({ ...message(kind, content, `h${String(n).padStart(6, "0")}`), createdAt: new Date(Date.parse(at) + n * 1_000).toISOString() });
+    const rows = [row("OPERATOR", "First question", 0), ...Array.from({ length: 40 }, (_, n) => row("ANSWER", `Reply ${n + 1}`, n + 1)),
+      row("OPERATOR", "Second question", 41), ...Array.from({ length: 217 }, (_, n) => row("INBOX", `Line ${n + 42}`, n + 42)), row("OPERATOR", "Third question", 259)];
+    const calls = serve({ messages: rows, decisions: [] });
+    render(<NousDock canRun />);
+    const latest = await screen.findByText("Third question");
+    expect(screen.queryByText("Second question")).toBeNull();
+    const up = screen.getByRole("button", { name: "Go to my last message (press again for the one before)" });
+    const jumped = () => document.querySelector("[data-jumped]")?.textContent;
+    fireEvent.click(up);
+    expect(latest.closest(".nous-message")!.hasAttribute("data-jumped")).toBe(true);
+    fireEvent.click(up);
+    await waitFor(() => expect(jumped()).toContain("Second question"));
+    expect(calls.some((call) => call.url === `/api/nous/messages?before=${encodeURIComponent(rows[60]!.id)}`)).toBe(true);
+    fireEvent.click(up);
+    await waitFor(() => expect(jumped()).toContain("First question"));
+    // After the oldest, the newest again; everything is loaded, so no button is left.
+    fireEvent.click(up);
+    await waitFor(() => expect(jumped()).toContain("Third question"));
+    expect(screen.queryByRole("button", { name: "Load earlier messages" })).toBeNull();
+    expect(document.querySelectorAll(".nous-message.is-operator")).toHaveLength(3);
+  });
+
+  it("pages back with Load earlier messages, also after Clear conversation (operator 31/10)", async () => {
+    const row = (kind: NousMessage["kind"], content: string, n: number): NousMessage =>
+      ({ ...message(kind, content, `p${String(n).padStart(6, "0")}`), createdAt: new Date(Date.parse(at) + n * 1_000).toISOString() });
+    const rows = [row("OPERATOR", "Oldest question", 0), ...Array.from({ length: 205 }, (_, n) => row("ANSWER", `Reply ${n + 1}`, n + 1))];
+    // Operator 2/11: a decision asked among those rows leaves the conversation with them, and comes back with the window that holds it.
+    const asked: NousDecision = { ...decision, status: "APPROVED", answeredAt: at, createdAt: new Date(Date.parse(at) + 100_500).toISOString() };
+    const calls = serve({ messages: rows, decisions: [asked] });
+    render(<NousDock canRun />);
+    await screen.findByText("Reply 205");
+    expect(screen.getByRole("article", { name: asked.title })).toBeTruthy();
+    expect(screen.queryByText("Oldest question")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Load earlier messages" }));
+    expect(await screen.findByText("Oldest question")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Load earlier messages" })).toBeNull();
+    // Clear conversation hides the rows and deletes none: the empty conversation pages back to them.
+    fireEvent.click(screen.getByRole("button", { name: "Clear the conversation" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Clear" }));
+    await waitFor(() => expect(screen.queryByText("Reply 205")).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("article", { name: asked.title })).toBeNull());
+    fireEvent.click(await screen.findByRole("button", { name: "Load earlier messages" }));
+    expect(await screen.findByText("Reply 205")).toBeTruthy();
+    expect(screen.getByRole("article", { name: asked.title })).toBeTruthy();
+    expect(calls.some((call) => call.url === "/api/nous/messages?cleared=1")).toBe(true);
   });
 
   it("asks its open decisions in the conversation too", async () => {
@@ -219,18 +578,43 @@ describe("Nous dock", () => {
     expect(seen).toEqual([{ roomId: "room:work000001", paneId: "pane:emma0000001", immediate: true }]);
   });
 
-  it("asks each needs-you request's question with its options; the answer goes from the card, Go to pane and Dismiss stay (plan clipboard:5AQvaoSR-IZa)", async () => {
+  it("operator 3/11 19:25 and 19:30 BKK: a card with nothing to do in Space (a phone's steps) offers no Go now and no Go to pane; done or a problem go as his words", async () => {
+    const phone = { id: "notification:phone000001", ownerUserId: "user:operator", roomId: "room:work000001", paneId: "pane:iris0000001", source: "NOUS", kind: "NEEDS_HANDS",
+      severity: "ATTENTION", title: "SpaceApp 0.2.13: update on the phone", body: "1. Open the Play Store on the phone.\n2. Update SpaceApp.", link: { roomId: "room:work000001", paneId: "pane:iris0000001" },
+      dedupeKey: "nous:pane:pane:iris0000001", status: "OPEN", payload: { paneMode: "APP_STUDIO", ask: { question: "Is SpaceApp 0.2.13 on the phone?", options: ["Go now", "Failed", "Need links/steps"],
+        recommended: "Go now", answer: { kind: "NOUS" } } }, createdAt: at, updatedAt: at, readAt: null, resolvedAt: null };
+    const calls = serve({ needs: () => [phone], board: { rooms: [], paused: null, callsToday: 0, settings: {}, generatedAt: at } as never, decisions: [] });
+    render(<NousDock canRun />);
+    const views = await screen.findByRole("group", { name: "Nous views" });
+    await waitFor(() => expect(within(views).getByRole("button", { name: /^Needs you\s*1$/ })).toBeTruthy());
+    fireEvent.click(within(views).getByRole("button", { name: /^Needs you\s*1$/ }));
+    const card = await screen.findByRole("article", { name: "SpaceApp 0.2.13: update on the phone" });
+    // Plan clipboard:ytwWl09xNH0Z: grouped Off Space; closed it is the title, one answer and its chevron.
+    expect([...document.querySelectorAll(".ny-group-title")].map((title) => title.textContent)).toEqual(["Off Space1"]);
+    expect(within(card).getAllByRole("button").map((button) => button.getAttribute("aria-label") ?? button.textContent)).toEqual(["Details", "Done, all good"]);
+    fireEvent.click(within(card).getByRole("button", { name: "Details" }));
+    for (const name of [/^Go now/, "Go to pane", "Need links/steps", "Always answer like this"]) expect(within(card).queryByRole("button", { name })).toBeNull();
+    // Operator 4/11 18:42 BKK: every card takes his words too, off Space as well.
+    expect(within(card).getByRole("textbox", { name: "Your answer" })).toBeTruthy();
+    expect(within(card).getByRole("button", { name: "There is a problem" })).toBeTruthy();
+    fireEvent.click(within(card).getByRole("button", { name: "Done, all good" }));
+    await waitFor(() => expect(calls.find((call) => call.url === "/api/notifications/notification%3Aphone000001/answer")?.body).toEqual({ text: "Done, all good" }));
+  });
+
+  it("asks each needs-you request's question with its options; the answer goes from the card's Details, its page and It no longer needs me stay (plan clipboard:5AQvaoSR-IZa)", async () => {
     const request = { id: "notification:needs000001", ownerUserId: "user:operator", roomId: "room:work000001", paneId: "pane:emma0000001", source: "AGENT", kind: "NEEDS_YOU",
-      severity: "ATTENTION", title: "Emma needs you", body: "Pick the colour\nNeeds: Which colour?", link: { roomId: "room:work000001", paneId: "pane:emma0000001" }, dedupeKey: "agent:needs-you:pane:emma0000001",
+      severity: "ATTENTION", title: "Emma needs you", body: "Pick the colour\nNeeds: Which colour?\n• Step 1: open https://example.com/colours\n• Step 2: pick one\n\nChecked first:\n• Space Memory: no colour rule", link: { roomId: "room:work000001", paneId: "pane:emma0000001", target: "url:https://example.com/colours" }, dedupeKey: "agent:needs-you:pane:emma0000001",
       status: "READ", payload: { ask: { question: "Which colour?", options: ["Red", "Blue"], recommended: "Blue", answer: { kind: "PANE" } } }, createdAt: at, updatedAt: at, readAt: at, resolvedAt: null };
     const later = new Date(Date.parse(at) + 60_000).toISOString();
     const board = { rooms: [{ roomId: "room:work000001", name: "Work", panes: [{ paneId: "pane:emma0000001", roomId: "room:work000001", name: "Emma", mode: "TERMINAL", runtimeId: "cli:claude", model: null,
       state: "waiting", plan: null, summary: { line: "", waitsOn: "OPERATOR", needsOperator: true, until: null, detail: null, source: "FALLBACK", model: null, generatedAt: at },
       report: { at: later, status: "PROGRESS", summary: "Painted it grey for now" }, prompt: null, notifications: [], decisionIds: [], copilotItems: [] }] }], paused: null, callsToday: 0, settings: {}, generatedAt: at };
     // An older record without an ask reads as its body's first line, answered through Nous.
-    const plain = { ...request, id: "notification:needs000002", title: "Bob needs you", paneId: "pane:bob00000001", body: "Sign in to GitHub", payload: {} };
+    // R13-6: an answer that failed before keeps the card waiting and shows why.
+    const plain = { ...request, id: "notification:needs000002", title: "Bob needs you", paneId: "pane:bob00000001", body: "Sign in to GitHub",
+      payload: { answerError: { at, text: "The mail copilot could not send: Gmail answered 403." } } };
     let waiting: unknown[] = [request, plain];
-    const calls = serve({ needs: () => waiting, board: board as never });
+    const calls = serve({ needs: () => waiting, board: board as never, decisions: [] });
     const seen: NousFocusDetail[] = [];
     const onFocus = (event: Event) => seen.push((event as CustomEvent<NousFocusDetail>).detail);
     window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
@@ -241,17 +625,37 @@ describe("Nous dock", () => {
       fireEvent.click(within(views).getByRole("button", { name: /^Needs you\s*2$/ }));
       const card = await screen.findByRole("article", { name: "Emma needs you" });
       const other = screen.getByRole("article", { name: "Bob needs you" });
+      // Plan clipboard:ytwWl09xNH0Z: closed rows, one open at a time; the failed answer is said on the closed card.
       expect(within(other).getByRole("heading", { name: "Sign in to GitHub" })).toBeTruthy();
-      expect(within(other).queryByText("Details")).toBeNull();
+      expect(within(other).getByRole("alert").textContent).toBe("Last try failed: The mail copilot could not send: Gmail answered 403.");
       expect(within(card).getByRole("heading", { name: "Which colour?" })).toBeTruthy();
       expect(within(card).getByText("Agent")).toBeTruthy();
       expect(await within(card).findByText("Work · Emma")).toBeTruthy();
-      expect(within(card).getByText(/Since then .*: Painted it grey for now/)).toBeTruthy();
+      expect(within(card).queryByText("Steps")).toBeNull();
+      fireEvent.click(within(card).getByRole("button", { name: "Details" }));
+      expect(within(card).getByText("Since then").nextElementSibling?.textContent).toMatch(/: Painted it grey for now$/);
+      // The body keeps its lines (step 2 of plan clipboard:32etNsBgtbI-): what it needs, then the steps under their own label as a numbered list with a live link;
+      // what Nous checked folded apart below them (operator 1/11 23:09 BKK: each part once).
+      expect(within(card).getByText("What it needs").nextElementSibling?.textContent).toContain("Pick the colour");
+      const details = within(card).getByText("Steps").nextElementSibling as HTMLElement;
+      expect([...details.querySelectorAll("ol > li")].map((row) => row.textContent)).toEqual(["open https://example.com/colours", "pick one"]);
+      const link = within(details).getByRole("link", { name: "https://example.com/colours" });
+      expect([link.getAttribute("href"), link.getAttribute("target"), link.getAttribute("rel")]).toEqual(["https://example.com/colours", "_blank", "noopener noreferrer"]);
+      expect(details.textContent).not.toContain("Checked first");
+      // An agent's card names the agent as the one who checked (plan clipboard:7L5KyWp3kQsP step 4); Nous's cards keep "What Nous checked".
+      const checked = within(card).getByText("What the agent checked").closest("details")!;
+      expect([checked.open, checked.querySelector("li")?.textContent]).toEqual([false, "Space Memory: no colour rule"]);
       expect(within(card).getByRole("button", { name: "Blue (Recommended)" }).className).toContain("is-primary");
-      fireEvent.click(within(card).getByRole("button", { name: "Go to pane" }));
+      // A masked shot hides the request's own words and keeps Space's labels readable (plan clipboard:32etNsBgtbI- step 4).
+      const masked = (element: Element | null) => Boolean(element?.closest('[data-sensitive-masked="manual"]'));
+      for (const element of [within(card).getByRole("heading", { name: "Which colour?" }), details, within(card).getByRole("button", { name: "Blue (Recommended)" })]) expect(masked(element)).toBe(true);
+      for (const name of ["Open the page", "It no longer needs me"]) expect(masked(within(card).getByRole("button", { name }))).toBe(false);
+      expect(masked(checked.querySelector("summary"))).toBe(false);
+      // Its own answers make it a question answered here: no Go to pane, its page one click away inside Details (the approved §8.1 choice).
+      expect(within(card).queryByRole("button", { name: "Go to pane" })).toBeNull();
+      fireEvent.click(within(card).getByRole("button", { name: "Open the page" }));
       expect(seen).toEqual([expect.objectContaining({ roomId: "room:work000001", paneId: "pane:emma0000001", immediate: true })]);
-      // Goal 7365014c-d: a card with a recommended option offers "Always answer like this", only without a note; an ask-less one does not.
-      expect(within(other).queryByRole("button", { name: "Always answer like this" })).toBeNull();
+      // Goal 7365014c-d: a card with a recommended option offers "Always answer like this", only without a note.
       expect((within(card).getByRole("button", { name: "Always answer like this" }) as HTMLButtonElement).disabled).toBe(false);
       fireEvent.change(within(card).getByRole("textbox", { name: "Your answer" }), { target: { value: "the darker one" } });
       expect((within(card).getByRole("button", { name: "Always answer like this" }) as HTMLButtonElement).disabled).toBe(true);
@@ -259,12 +663,99 @@ describe("Nous dock", () => {
       await waitFor(() => expect(calls.find((call) => call.url === "/api/notifications/notification%3Aneeds000001/answer")?.body).toEqual({ option: "Blue", text: "the darker one" }));
       expect(await within(card).findByText("Sent to Emma: it gets your answer as its next prompt.")).toBeTruthy();
       waiting = [];
-      fireEvent.click(within(other).getByRole("button", { name: "Dismiss" }));
+      fireEvent.click(within(other).getByRole("button", { name: "Details" }));
+      // An ask-less card offers no "Always answer like this".
+      expect(within(other).queryByRole("button", { name: "Always answer like this" })).toBeNull();
+      fireEvent.click(within(other).getByRole("button", { name: "It no longer needs me" }));
       await waitFor(() => expect(calls.some((call) => call.url === "/api/notifications/notification%3Aneeds000002/ack" && call.method === "POST")).toBe(true));
       expect(await screen.findByText("Nothing waits for you")).toBeTruthy();
     } finally {
       window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
     }
+  });
+
+  it("R23-3 (operator «Θέλω να τα δω όλα αυτά»): a card asking about artifacts shows each one, under the option that names it", async () => {
+    const card = { id: "notification:needs000010", ownerUserId: "user:operator", roomId: "room:work000001", paneId: "pane:andy0000001", source: "AGENT", kind: "NEEDS_YOU",
+      severity: "ATTENTION", title: "Andy needs you", body: "Two icons and a cut are ready; the brief is artifact:doc0000001.", status: "OPEN", createdAt: at, updatedAt: at, readAt: null, resolvedAt: null,
+      link: { roomId: "room:work000001", paneId: "pane:andy0000001" }, dedupeKey: "agent:needs-you:pane:andy0000001",
+      payload: { ask: { question: "Which icon, and is the cut artifact:cut0000001 fine?", options: ["Blue artifact:icon000001", "Green artifact:icon000002", "Neither"],
+        recommended: "Blue artifact:icon000001", answer: { kind: "PANE" } } } };
+    serve({ needs: () => [card], decisions: [] });
+    render(<NousDock canRun />);
+    const views = await screen.findByRole("group", { name: "Nous views" });
+    await waitFor(() => expect(within(views).getByRole("button", { name: /^Needs you\s*1$/ })).toBeTruthy());
+    fireEvent.click(within(views).getByRole("button", { name: /^Needs you\s*1$/ }));
+    const article = await screen.findByRole("article", { name: "Andy needs you" });
+    fireEvent.click(within(article).getByRole("button", { name: "Details" }));
+    const blue = await within(article).findByRole("img", { name: "Blue artifact:icon000001" });
+    expect(blue.getAttribute("src")).toBe("/api/artifacts/artifact%3Aicon000001/file");
+    expect((await within(article).findByRole("img", { name: "Green artifact:icon000002" })).getAttribute("src")).toBe("/api/artifacts/artifact%3Aicon000002/file");
+    // A video plays in place, any other file is a link; ids the question or body name are captioned with their id.
+    const cut = await within(article).findByLabelText("artifact:cut0000001");
+    expect(cut.tagName).toBe("VIDEO");
+    expect((await within(article).findByRole("link", { name: "artifact:doc0000001.bin" })).getAttribute("href")).toBe("/api/artifacts/artifact%3Adoc0000001/file");
+    expect(article.querySelectorAll(".ny-previews figure")).toHaveLength(4);
+  });
+
+  it("says what a card is about on Details, reading the mail only then: the mail, the plan it unblocks with its date, its links (operator 1/11 11:58 BKK)", async () => {
+    const card = { id: "notification:needs000009", ownerUserId: "user:operator", roomId: "room:work000001", paneId: "pane:andy0000001", source: "NOUS", kind: "NEEDS_HANDS",
+      severity: "ATTENTION", title: "Mercor mail", body: "• Complete the Zinc check(s) link: https://app.zinc.work/checks/42", status: "OPEN", createdAt: at, updatedAt: at, readAt: null, resolvedAt: null,
+      link: { roomId: "room:work000001", paneId: "pane:andy0000001", target: "thread:ntheogr@gmail.com:1a1925b124bb7cb8" }, dedupeKey: "nous:pane:pane:andy0000001",
+      payload: { planId: "clipboard:planZinc0001", ask: { question: "Have you completed the Zinc check?", options: ["Done", "Need links/steps"], recommended: "Need links/steps", answer: { kind: "NOUS" } } } };
+    const calls = serve({ needs: () => [card], decisions: [],
+      plans: [{ id: "clipboard:planZinc0001", title: "Mercor application", progress: 60, status: "IN_PROGRESS", room: "Work", pane: null, nextStep: null, dueAt: "2026-11-03T09:00:00.000Z" }] });
+    render(<NousDock canRun />);
+    const views = await screen.findByRole("group", { name: "Nous views" });
+    await waitFor(() => expect(within(views).getByRole("button", { name: /^Needs you\s*1$/ })).toBeTruthy());
+    fireEvent.click(within(views).getByRole("button", { name: /^Needs you\s*1$/ }));
+    const article = await screen.findByRole("article", { name: "Mercor mail" });
+    // The plan's deadline is said on the closed card too.
+    expect(article.querySelector(".ny-meta")?.textContent).toMatch(/Due|Overdue/);
+    expect(calls.some((call) => call.url.startsWith("/api/mail-copilot/threads/"))).toBe(false);
+    fireEvent.click(within(article).getByRole("button", { name: "Details" }));
+    expect(await within(article).findByText(/^Your Zinc check is ready · Mercor · .* · ntheogr@gmail.com$/)).toBeTruthy();
+    expect(calls.some((call) => call.url.startsWith("/api/mail-copilot/threads/1a1925b124bb7cb8?") && call.url.includes("account=ntheogr%40gmail.com"))).toBe(true);
+    expect(await within(article).findByText("Mercor application")).toBeTruthy();
+    expect(within(article).getByText("Deadline").nextElementSibling?.textContent).toMatch(/\S/);
+    const facts = article.querySelector(".ny-facts")!;
+    expect(within(facts as HTMLElement).getByRole("link", { name: "app.zinc.work/checks/42" }).getAttribute("href")).toBe("https://app.zinc.work/checks/42");
+    expect(article.querySelector("details:not(.ny-checked)")).toBeNull();
+  });
+
+  it("counts and lists Nous's open decisions in Needs you, and a plan held on you shows what it needs from you (plan clipboard:PHmjUTRmWM6C)", async () => {
+    const request = { id: "notification:needs000003", ownerUserId: "user:operator", roomId: "room:work000001", paneId: "pane:emma0000001", source: "AGENT", kind: "NEEDS_YOU",
+      severity: "ATTENTION", title: "Emma needs you", body: "Which colour?", link: null, dedupeKey: null, status: "OPEN", createdAt: at, updatedAt: at, readAt: null, resolvedAt: null,
+      payload: { planId: "clipboard:planDock0001", ask: { question: "Which colour?", options: ["Red", "Blue"], recommended: "Blue", answer: { kind: "PANE" } } } };
+    serve({ needs: () => [request], decisions: [decision, planDecision], plans: [{ id: "clipboard:planDock0001", title: "Nous dock plans", progress: 50, status: "IN_PROGRESS",
+      room: "Work", pane: "Emma", paneId: "pane:emma0000001", nextStep: null, hold: { kind: "OPERATOR", what: "Pick the dock colour", until: null, source: "PANE" } }] });
+    render(<NousDock canRun />);
+    const views = await screen.findByRole("group", { name: "Nous views" });
+    await waitFor(() => expect(within(views).getByRole("button", { name: /^Needs you\s*3$/ })).toBeTruthy());
+    fireEvent.click(within(views).getByRole("button", { name: /^Needs you\s*3$/ }));
+    expect(await screen.findByRole("article", { name: "Emma needs you" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: decision.title })).toBeTruthy();
+    expect(screen.getByRole("article", { name: planDecision.title })).toBeTruthy();
+    // No filters in Needs you (operator 3/11 12:36 BKK, nous_msg:15e7b144).
+    expect(screen.queryByRole("combobox", { name: "Plan" })).toBeNull();
+    fireEvent.click(within(views).getByRole("button", { name: "Plans" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Open the plan Nous dock plans/ }));
+    const needs = await screen.findByRole("region", { name: "What it needs from you" });
+    expect(within(needs).getByText("Pick the dock colour")).toBeTruthy();
+    expect(await within(needs).findByRole("article", { name: "Emma needs you" })).toBeTruthy();
+    expect(within(needs).getByRole("article", { name: planDecision.title })).toBeTruthy();
+    expect(within(needs).queryByRole("article", { name: decision.title })).toBeNull();
+
+    // Operator 31/10 16:15 BKK (phone): the open plan is a history entry; Android's back closes it and stays in SpaceApp, so does Back.
+    expect((window.history.state as { nousPlan?: string } | null)?.nousPlan).toBe("clipboard:planDock0001");
+    window.history.back();
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Plan" })).toBeNull());
+    expect(within(screen.getByRole("group", { name: "Nous views" })).getByRole("button", { name: "Plans" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(await screen.findByRole("button", { name: /^Open the plan Nous dock plans/ }));
+    expect(screen.getByRole("region", { name: "Nous" }).className).toContain("has-plan");
+    fireEvent.click(screen.getByRole("button", { name: "Back to Plans" }));
+    expect(screen.queryByRole("region", { name: "Plan" })).toBeNull();
+    await waitFor(() => expect((window.history.state as { nousPlan?: string } | null)?.nousPlan).toBeUndefined());
+    expect(screen.queryByRole("region", { name: "Plan" })).toBeNull();
   });
 
   it("shows only the unanswered decisions first and all of them on request (operator request 2026-10-21)", async () => {
@@ -281,6 +772,28 @@ describe("Nous dock", () => {
     expect(screen.getByRole("article", { name: decision.title })).toBeTruthy();
   });
 
+  it("never asks a decision an allowance holds: no buttons, card or count, only when it runs by itself (operator 31/10 17:00 BKK)", async () => {
+    // «You are asking me for approve AGAIN!!!»: a guarded Browser Host restart held by "May run guarded host restarts" showed Approve / Not now.
+    const held: NousDecision = { ...decision, id: "nous_decision:held00000001", title: "Guarded Browser Host restart on stable",
+      body: 'Held for "May run guarded host restarts": runs by itself once this clears: a merge queue has a ticket in flight.',
+      action: { type: "PANE_TEXT", roomId: "room:main00001", paneId: "pane:bob0000001", text: "Run the guarded Browser Host restart.", mode: "PROMPT" },
+      runsWhen: "the stable merge queue has a ticket in flight" };
+    serve({ decisions: [held, decision] });
+    render(<NousDock canRun />);
+    const card = await screen.findByRole("article", { name: held.title });
+    expect(within(card).getByText("Runs by itself when this clears: the stable merge queue has a ticket in flight")).toBeTruthy();
+    expect(within(card).queryByRole("button")).toBeNull();
+    const views = screen.getByRole("group", { name: "Nous views" });
+    await waitFor(() => expect(within(views).getByRole("button", { name: /^Needs you\s*1$/ })).toBeTruthy());
+    expect(within(views).getByRole("button", { name: /^Decisions\s*1$/ })).toBeTruthy();
+    fireEvent.click(within(views).getByRole("button", { name: /^Needs you/ }));
+    expect(await screen.findByRole("article", { name: decision.title })).toBeTruthy();
+    expect(screen.queryByRole("article", { name: held.title })).toBeNull();
+    fireEvent.click(within(views).getByRole("button", { name: /^Decisions/ }));
+    expect(within(screen.getByRole("group", { name: "Show decisions" })).getByRole("button", { name: /^Unanswered\s*1$/ })).toBeTruthy();
+    expect(screen.queryByRole("article", { name: held.title })).toBeNull();
+  });
+
   it("brings a critical decision with its recommendation and the action Space runs on approval", async () => {
     const calls = serve();
     render(<NousDock canRun />);
@@ -291,6 +804,34 @@ describe("Nous dock", () => {
     expect(within(card).getByText(/approve the run-spaceapp release at its candidate commit/)).toBeTruthy();
     fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(calls.find((call) => call.url.endsWith("/answer"))?.body).toEqual({ answer: "APPROVE" }));
+  });
+
+  it("a decision reads in the operator's language: what Nous checked folds away like a card's, the action is said in Greek (stable 1/11: 6e9572b4)", async () => {
+    // Nous asks in Greek; Space's account facts, Nous's own "Checked first" sources and the text it sends a pane are English.
+    const external: NousDecision = { ...decision, id: "nous_decision:ext000000001", category: "EXTERNAL", title: "Να σταλεί το μήνυμα υποστήριξης στο partners.example.com;",
+      body: ["Vault: 2 logins for partners.example.com: Partners (Google account)", "Sign-ins for partners.example.com: GOOGLE with someone@example.com (3 successful)", "",
+        "Το Finn έγραψε το μήνυμα για την αίτηση συνεργασίας· περιμένει μόνο το ΟΚ σου για να το στείλει από τη φόρμα επικοινωνίας."].join("\n")
+        + "\n\nChecked first:\n• Space Memory: no rule about partner support messages or the partner programme\n• reports/finn/partner-message.md: the exact text, signed as the operator\n• Mail of 30 days: no answer from the partner team since the first form",
+      recommendation: "Έγκρινε: το κείμενο είναι αυτό που ζήτησες. «Πρόβλεψη: ναι (80 %)»",
+      action: { type: "PANE_TEXT", roomId: "room:main00001", paneId: "pane:finn000001", text: "Send the approved partner message through the contact form and report the confirmation page.", mode: "PROMPT" } };
+    announceUiLanguage("el"); announceAgentLanguage("el");
+    try {
+      serve({ decisions: [external] });
+      render(<NousDock canRun />);
+      fireEvent.click(await screen.findByRole("button", { name: /^Αποφάσεις/ }));
+      const card = await screen.findByRole("article", { name: external.title });
+      const checked = within(card).getByText("Τι έλεγξε ο Nous").closest("details")!;
+      expect([checked.open, checked.querySelectorAll("li").length]).toEqual([false, 3]);
+      expect(card.textContent!.split("Checked first").length - 1).toBe(0);
+      expect(within(card).getByText(/^Με την έγκριση το Space εκτελεί: αποστολή «Send the approved partner message/)).toBeTruthy();
+      // Account facts are Nous's, never the card's (operator 2/11 09:49 BKK): a stored body that carries them reads without.
+      expect([card.textContent!.includes("someone@example.com"), card.textContent!.includes("Vault: 2")]).toEqual([false, false]);
+      expect((readNeedsYouCards({ language: "el", why: "Τι χρειάζεται", steps: "Βήματα", original: "Δες το πρωτότυπο" }) as Array<{ type: string; inLanguage: boolean }>)
+        .filter((entry) => entry.type === "decision")).toEqual([expect.objectContaining({ inLanguage: true })]);
+      // "Show everything" keeps the whole body in place, what Nous checked included.
+      fireEvent.click(within(card).getByRole("button", { name: "Δείξε τα όλα" }));
+      expect((await screen.findByRole("dialog")).textContent).toContain("Space Memory: no rule about partner support messages");
+    } finally { announceUiLanguage("en"); announceAgentLanguage("en"); }
   });
 
   it("approves with the note typed on the card, so a written yes runs the action (stable 2026-10-22)", async () => {
@@ -315,7 +856,7 @@ describe("Nous dock", () => {
     cleanup();
 
     const rule = { key: "SPACE_CONTROL:resource media.publish", label: "run in Space Control: resource media.publish", at };
-    const served = { state: state({ settings: { enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, shell: false, alwaysApprove: [rule], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false, copilotQuestionsNousFirst: true, goals } }), alwaysCounts: [{ ...rule, count: 3 }] };
+    const served = { state: state({ settings: { enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, askOwnHostChanges: false, maySend: false, mayDeleteOwn: false, mayPublish: false, mayRestartHosts: false, neverRefuse: false, shell: false, alwaysApprove: [rule], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false, copilotQuestionsNousFirst: true, goals } }), alwaysCounts: [{ ...rule, count: 3 }] };
     const settingsCalls = serve(served);
     render(<NousSettingsCard />);
     const askAgain = await screen.findByRole("button", { name: `Ask me again: ${rule.label}` });
@@ -323,13 +864,13 @@ describe("Nous dock", () => {
     expect(await screen.findByText(/ran 3 times for you in 14 days/)).toBeTruthy();
     // A kind approved in the dock after the card loaded is not removed with the one asked again (Record Retention Invariant).
     const newer = { key: "SPACE_CONTROL:resource media.unpublish", label: "run in Space Control: resource media.unpublish", at };
-    served.state = state({ settings: { enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, shell: false, alwaysApprove: [rule, newer], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false, copilotQuestionsNousFirst: true, goals } });
+    served.state = state({ settings: { enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, askOwnHostChanges: false, maySend: false, mayDeleteOwn: false, mayPublish: false, mayRestartHosts: false, neverRefuse: false, shell: false, alwaysApprove: [rule, newer], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false, copilotQuestionsNousFirst: true, goals } });
     fireEvent.click(askAgain);
     await waitFor(() => expect(settingsCalls.find((call) => call.url === "/api/nous/settings")?.body).toEqual({ alwaysApprove: [newer] }));
   });
 
   it("turns working on the operator's behalf on with its power switch and shows the plans", async () => {
-    const calls = serve({ state: state({ status: "OFF", settings: { enabled: false, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, shell: false, alwaysApprove: [], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false, copilotQuestionsNousFirst: true, goals } }) });
+    const calls = serve({ state: state({ status: "OFF", settings: { enabled: false, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, askOwnHostChanges: false, maySend: false, mayDeleteOwn: false, mayPublish: false, mayRestartHosts: false, neverRefuse: false, shell: false, alwaysApprove: [], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false, copilotQuestionsNousFirst: true, goals } }) });
     render(<NousDock canRun />);
     const power = await screen.findByRole("switch", { name: "Nous works on my behalf" });
     await waitFor(() => expect((power as HTMLInputElement).disabled).toBe(false));
@@ -344,7 +885,7 @@ describe("Nous dock", () => {
   });
 
   it("shows the same switches in Settings and saves each one alone", async () => {
-    const calls = serve({ state: state({ settings: { enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, shell: false, alwaysApprove: [], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false, copilotQuestionsNousFirst: true, goals } }) });
+    const calls = serve({ state: state({ settings: { enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, askOwnHostChanges: false, maySend: false, mayDeleteOwn: false, mayPublish: false, mayRestartHosts: false, neverRefuse: false, shell: false, alwaysApprove: [], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false, copilotQuestionsNousFirst: true, goals } }) });
     render(<NousSettingsCard />);
     const warm = await screen.findByRole("switch", { name: "Nous may approve Warm changes" });
     await waitFor(() => expect((screen.getByRole("switch", { name: "Nous works on my behalf" }) as HTMLInputElement).checked).toBe(true));
@@ -357,6 +898,24 @@ describe("Nous dock", () => {
     expect((telegram as HTMLInputElement).checked).toBe(false);
     fireEvent.click(telegram);
     await waitFor(() => expect(calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body).toEqual({ telegramInbound: true }));
+    // "May send to third parties" (2026-10-28): off by default, its own switch.
+    const send = screen.getByRole("switch", { name: "Nous may send to third parties" });
+    expect((send as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(send);
+    await waitFor(() => expect(calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body).toEqual({ maySend: true }));
+    const deleteOwn = screen.getByRole("switch", { name: "Nous may delete what it created" });
+    expect((deleteOwn as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(deleteOwn);
+    await waitFor(() => expect(calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body).toEqual({ mayDeleteOwn: true }));
+    const publish = screen.getByRole("switch", { name: "Nous may publish after a green lab proof" });
+    expect((publish as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(publish);
+    await waitFor(() => expect(calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body).toEqual({ mayPublish: true }));
+    // "Never refuse my requests" (operator 2/11 BKK): off by default, its own switch.
+    const neverRefuse = screen.getByRole("switch", { name: "Nous never refuses my requests" });
+    expect((neverRefuse as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(neverRefuse);
+    await waitFor(() => expect(calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body).toEqual({ neverRefuse: true }));
   });
 
   it("saves low-spend control, cheaper-model switch and effort without changing normal models", async () => {
@@ -433,15 +992,12 @@ describe("Nous dock", () => {
     await waitFor(() => expect(saved()).toEqual({ models: { ...models, standing: { model: "claude-sonnet-5-5", effort: "high" } } }));
     fireEvent.change(screen.getByRole("combobox", { name: "Nous effort for inbox turns" }), { target: { value: "medium" } });
     await waitFor(() => expect(saved()).toEqual({ models: { ...models, inbox: { model: "claude-fable-5-1", effort: "medium" } } }));
-    // The fallback model is off by default (operator decision 2026-10-21) and the inbox turns an hour are a field here (2026-10-24).
+    // The fallback model is off by default (operator decision 2026-10-21); the inbox turns-an-hour field is gone (no NORMAL cap, operator 31/10 16:25 BKK).
     const fallback = screen.getByRole("combobox", { name: "Nous fallback model" }) as HTMLSelectElement;
     expect(fallback.value).toBe("none");
     fireEvent.change(fallback, { target: { value: "claude-opus-5-5" } });
     await waitFor(() => expect(saved()).toEqual({ fallbackModel: "claude-opus-5-5" }));
-    const turns = screen.getByRole("spinbutton", { name: "Inbox turns per hour" });
-    fireEvent.change(turns, { target: { value: "500" } });
-    fireEvent.blur(turns);
-    await waitFor(() => expect(saved()).toEqual({ maxTurnsPerHour: 120 }));
+    expect(screen.queryByRole("spinbutton", { name: "Inbox turns per hour" })).toBeNull();
   });
 
   it("saves the pane board's settings whole: model, interval within range, language and closed panes (plan clipboard:Y9cgKVHFaHrr)", async () => {
@@ -483,13 +1039,85 @@ describe("Nous dock", () => {
     expect((await screen.findByRole("status")).textContent).toBe(`On: watching every room · Away since ${formatUserTime(away.startedAt)}`);
   });
 
+  // Operator 2026-10-31 (plan clipboard:d8nCNBw2mzDK): what the operator opened or closed stays so after a reload or a dock close, per device.
+  it("keeps the view, fullscreen, folded steps, the inbox, Live stats and Show everything after a remount", async () => {
+    serve({ messages: [message("OPERATOR", "Τι τρέχει;", "a1b2c3d4"), message("TOOL", "Read Andy's screen", "t0000001"), message("INBOX", "Andy finished", "i0000001")] });
+    const { unmount } = render(<NousDock canRun />);
+    const steps = () => screen.getByText("1 step").closest("details")!;
+    const inbox = () => screen.getByText("From the rooms and the notifications").closest("details")!;
+    await screen.findByText("1 step");
+    fireEvent.click(steps().querySelector("summary")!);
+    fireEvent.click(inbox().querySelector("summary")!);
+    await waitFor(() => expect(steps().open && inbox().open).toBe(true));
+    fireEvent.click(within(await screen.findByRole("article", { name: decision.title })).getByRole("button", { name: "Show everything" }));
+    unmount();
+    const second = render(<NousDock canRun />);
+    expect(await screen.findByRole("dialog", { name: `Everything about: ${decision.title}` })).toBeTruthy();
+    expect(steps().open && inbox().open).toBe(true);
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Overview" }));
+    fireEvent.click(await screen.findByText("Live stats", { selector: "summary" }));
+    await waitFor(() => expect(localStorage.getItem("space.nous.ui.overview.liveStats")).toBe("false"));
+    fireEvent.click(screen.getByRole("button", { name: "Open Nous fullscreen" }));
+    second.unmount();
+    render(<NousDock canRun />);
+    expect(screen.getByRole("button", { name: "Overview" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("region", { name: "Nous" }).className).toContain("is-fullscreen");
+    expect(((await screen.findByText("Live stats", { selector: "summary" })).closest("details") as HTMLDetailsElement).open).toBe(false);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("opens Startup programs where the removed oll4.com funding tab was left open (operator 7/11, nous_msg:e9c06cd838de45f4bccda467)", async () => {
+    serve();
+    localStorage.setItem("space.nous.ui.tab", JSON.stringify("funding"));
+    render(<NousDock canRun />);
+    const views = await screen.findByRole("group", { name: "Nous views" });
+    expect(within(views).getByRole("button", { name: "Startup programs" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(views).queryByRole("button", { name: "oll4.com funding" })).toBeNull();
+  });
+
+  it("reopens the plan left open and drops a remembered plan or Show everything that no longer exists", async () => {
+    serve({ decisions: [] });
+    localStorage.setItem("space.nous.ui.plan", JSON.stringify("clipboard:planDock0001"));
+    const { unmount } = render(<NousDock canRun />);
+    expect(await within(await screen.findByRole("region", { name: "Plan" })).findByText("plan text")).toBeTruthy();
+    unmount();
+    localStorage.setItem("space.nous.ui.plan", JSON.stringify("clipboard:gone000001"));
+    localStorage.setItem("space.nous.ui.everything", JSON.stringify("nous_decision:gone00000001"));
+    render(<NousDock canRun />);
+    await waitFor(() => expect(localStorage.getItem("space.nous.ui.plan")).toBe("null"));
+    await waitFor(() => expect(localStorage.getItem("space.nous.ui.everything")).toBe("null"));
+    expect(screen.queryByRole("region", { name: "Plan" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Nous" }).className).not.toContain("is-fullscreen");
+  });
+
   it("maximizes to the whole window and leaves with Escape", async () => {
     serve();
     render(<NousDock canRun />);
     fireEvent.click(await screen.findByRole("button", { name: "Open Nous fullscreen" }));
     expect(screen.getByRole("region", { name: "Nous" }).className).toContain("is-fullscreen");
+    // The right column starts with the operator's appointments (2/11 15:22 BKK), above Live stats.
+    const board = screen.getByRole("complementary", { name: "Needs you and the plans" });
+    expect([...board.children].slice(0, 2).map((child) => child.getAttribute("aria-label"))).toEqual(["Appointments", "Live stats"]);
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(screen.getByRole("region", { name: "Nous" }).className).not.toContain("is-fullscreen"));
+  });
+
+  it("returns to the Needs you view in fullscreen after a visit, and forgets an abandoned visit", async () => {
+    serve();
+    render(<NousDock canRun />);
+    fireEvent.click(await screen.findByRole("button", { name: /Needs you/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Open Nous fullscreen" }));
+    act(() => announceNousFocusPhase("go"));
+    expect(screen.getByRole("region", { name: "Nous" }).className).not.toContain("is-fullscreen");
+    act(() => announceNousFocusPhase("back"));
+    expect(screen.getByRole("region", { name: "Nous" }).className).toContain("is-fullscreen");
+    expect(screen.getByRole("button", { name: /Needs you/ }).getAttribute("aria-pressed")).toBe("true");
+    act(() => announceNousFocusPhase("go"));
+    act(() => announceNousFocusPhase("stay"));
+    act(() => announceNousFocusPhase("go"));
+    act(() => announceNousFocusPhase("back"));
+    expect(screen.getByRole("region", { name: "Nous" }).className).not.toContain("is-fullscreen");
   });
 
   it("shows plan cards for a plan decision and a plan named in a reply, opens the plan fullscreen and answers there", async () => {
@@ -600,15 +1228,168 @@ describe("Nous dock", () => {
     expect(await screen.findByText("Fullscreen view")).toBeTruthy();
   });
 
-  it("has seven views, no Tokens view (operator request 2026-10-21; Needs you 2026-10-24; Goals 2026-10-27)", async () => {
+  it("prefetches Score and 24h history while Conversation is shown, then opens Score synchronously without a loading state", async () => {
+    const calls = serve();
+    render(<NousDock canRun />);
+    await screen.findByLabelText("Message Nous");
+    await waitFor(() => expect(calls.filter((call) => call.url.startsWith("/api/nous/score"))).toHaveLength(2));
+    // Let the two prefetches commit to the query cache before the operator clicks.
+    await act(async () => {});
+    const views = screen.getByRole("group", { name: "Nous views" });
+    expect(within(views).getByRole("button", { name: "Conversation" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(within(views).getByRole("button", { name: "Score" }));
+    expect(screen.getByRole("img", { name: /Score over the last 24 hours; −12 now/ })).toBeTruthy();
+    expect(screen.queryByText("Reading the score")).toBeNull();
+    expect(calls.filter((call) => call.url.startsWith("/api/nous/score"))).toHaveLength(2);
+  });
+
+  it("has eighteen views (Updates 2026-11-04, Marketing 2026-11-05, oll4.com funding gone 2026-11-07), no Tokens view (operator request 2026-10-21; Needs you 2026-10-24; Goals 2026-10-27; Quotas 2026-10-29; Shared, Requests and Load 2026-10-31; Startup programs, Job applications, Crypto and Score 2026-11-03)", async () => {
     const calls = serve();
     render(<NousDock canRun />);
     const views = await screen.findByRole("group", { name: "Nous views" });
-    expect(within(views).getAllByRole("button").map((button) => button.querySelector(".dock-kit-chip-label")?.textContent)).toEqual(["Conversation", "Needs you", "Decisions", "Overview", "Panes", "Plans", "Goals"]);
+    expect(within(views).getAllByRole("button").map((button) => button.querySelector(".dock-kit-chip-label")?.textContent)).toEqual(["Conversation", "Needs you", "Done", "Updates", "Requests", "Shared", "Decisions", "Overview", "Panes", "Plans", "Goals", "Startup programs", "Job applications", "Crypto", "Marketing", "Quotas", "Load", "Score"]);
     // One line of icon tabs (operator request 2026-10-27): every tab has its icon, its name as the tooltip, and the chosen one is pressed.
     expect(within(views).getAllByRole("button").every((button) => button.querySelector("svg.dock-kit-chip-icon") && button.getAttribute("title") === button.querySelector(".dock-kit-chip-label")?.textContent)).toBe(true);
     expect(within(views).getByRole("button", { name: "Conversation" }).getAttribute("aria-pressed")).toBe("true");
     expect(calls.some((call) => call.url.startsWith("/api/admin/") || call.url === "/api/codex/environment")).toBe(false);
+    fireEvent.click(within(views).getByRole("button", { name: "Done" }));
+    expect(await screen.findByText("You’re up to date")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Acknowledged" })).toBeNull();
+    fireEvent.click(within(views).getByRole("button", { name: "Requests" }));
+    expect(await screen.findByText("No requests yet")).toBeTruthy();
+    fireEvent.click(within(views).getByRole("button", { name: "Shared" }));
+    expect(await screen.findByText("Nothing shared")).toBeTruthy();
+    fireEvent.click(within(views).getByRole("button", { name: "Load" }));
+    expect(await screen.findByRole("img", { name: /Share of capacity in use over the last hour; 42% now, target 90%/ })).toBeTruthy();
+    // Score (operator 3/11 23:11 BKK; compact 5/11 10:36 BKK): one list, costs first by their share of the negative, then what gives points;
+    // a row's detail and items open only when clicked (operator rule 3/11 12:25).
+    fireEvent.click(within(views).getByRole("button", { name: "Score" }));
+    expect(await screen.findByRole("img", { name: /Score over the last 24 hours; −12 now/ })).toBeTruthy();
+    const breakdown = screen.getByRole("list", { name: "Breakdown" });
+    const rows = within(breakdown).getAllByRole("button");
+    expect(rows.map((row) => row.textContent)).toEqual(["Open plans−1575 %", "Response time−525 %", "Requests done+8"]);
+    // The bottom breakdown that repeated the same rows is gone.
+    expect(screen.queryByRole("list", { name: "Negative by variable" })).toBeNull();
+    expect(screen.queryByText("1 in 7 days")).toBeNull();
+    expect(document.activeElement?.closest(".nous-score-tiles")).toBeNull();
+    fireEvent.click(rows[0]!);
+    expect(rows[0]!.getAttribute("aria-expanded")).toBe("true");
+    expect(within(breakdown).getByText("75 % of the negative · 1 open")).toBeTruthy();
+    const items = within(breakdown).getByRole("list", { name: "Open plans: what gives or costs these points" });
+    expect(within(items).getByText("Forgotten plan")).toBeTruthy();
+    expect(within(items).getByText("open 5 d · no working pane")).toBeTruthy();
+    fireEvent.click(rows[2]!);
+    expect(rows[0]!.getAttribute("aria-expanded")).toBe("false");
+    expect(within(breakdown).getByText("1 in 7 days")).toBeTruthy();
+    fireEvent.click(rows[2]!);
+    expect(within(breakdown).queryByText("1 in 7 days")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(calls.some((call) => call.url === "/api/nous/score/history?range=24h")).toBe(true);
+  });
+
+  // Not done counts too (operator 6/11 nous_msg:2c610048).
+  it("badges the Requests tab with the In progress and Not done count, and shows none at 0 (operator 1/11 03:41 BKK)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let [inProgress, notDone] = [25, 3];
+      const calls = serve({ inProgress: () => inProgress, notDone: () => notDone });
+      render(<NousDock canRun />);
+      const views = await screen.findByRole("group", { name: "Nous views" });
+      expect(await within(views).findByRole("button", { name: /^Requests\s*28$/ })).toBeTruthy();
+      expect(calls.some((call) => call.url === "/api/nous/requests?limit=1")).toBe(true);
+      [inProgress, notDone] = [0, 0];
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      await waitFor(() => expect(within(views).getByRole("button", { name: "Requests" }).querySelector(".dock-kit-chip-count")).toBeNull());
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("shows every scheduled task run with how it ended, to an ADMIN only (plan clipboard:GA__W4qBxSPR)", async () => {
+    const run = (id: string, status: string, taskTitle: string, extra: Record<string, unknown> = {}) => ({ id, taskId: "task:hetzner0001", taskTitle, roomId: "room:alex00001",
+      roomName: "Alex", paneId: "pane:andy00001", paneName: "Andy", dueAt: "2026-10-31T10:00:00.000Z", at: "2026-10-31T10:00:10.000Z", status, typed: true,
+      detail: "Sent to the CLI at 2026-10-31T10:00:10.000Z.", reportAt: null, report: null, ...extra });
+    const calls = serve({ taskRuns: {
+      runs: [run("3", "SUCCEEDED", "Check the Hetzner ticket", { reportAt: "2026-10-31T10:20:00.000Z", report: "No human reply." }),
+        run("2", "FAILED", "Check the Hetzner ticket", { typed: false, detail: "Failed 2026-10-31T08:00:00.000Z: the task could not be typed into the CLI (socket closed)." }),
+        run("1", "REMINDER", "Stretch", { taskId: "task:stretch0001", roomId: null, roomName: null, paneId: null, paneName: null, typed: false, detail: "Reminder due." })],
+      hasMore: false, counts: { RUNNING: 0, SUCCEEDED: 1, FAILED: 1, WAITING: 0, NO_REPORT: 0, SKIPPED: 0, REMINDER: 1 },
+      tasks: [{ taskId: "task:hetzner0001", title: "Check the Hetzner ticket", runs: 2 }, { taskId: "task:stretch0001", title: "Stretch", runs: 1 }] } });
+    render(<NousDock canRun />);
+    expect(within(await screen.findByRole("group", { name: "Nous views" })).queryByRole("button", { name: "Task runs" })).toBeNull();
+    cleanup();
+    render(<NousDock canRun isAdmin />);
+    const views = await screen.findByRole("group", { name: "Nous views" });
+    expect(within(views).getAllByRole("button").at(-1)?.getAttribute("title")).toBe("Task runs");
+    fireEvent.click(within(views).getByRole("button", { name: "Task runs" }));
+    const succeeded = await screen.findByRole("article", { name: "Check the Hetzner ticket: Succeeded" });
+    expect(within(succeeded).getByText("Succeeded").className).toContain("is-succeeded");
+    expect(within(succeeded).getByText("Alex / Andy")).toBeTruthy();
+    expect(within(succeeded).getByText(formatUserTime("2026-10-31T10:00:10.000Z", { withDate: true }))).toBeTruthy();
+    expect(within(succeeded).getByText("No human reply.")).toBeTruthy();
+    const failed = screen.getByRole("article", { name: "Check the Hetzner ticket: Failed" });
+    expect(within(failed).getByText("Failed").className).toContain("is-failed");
+    expect(within(failed).getByText(/could not be typed into the CLI \(socket closed\)/)).toBeTruthy();
+    expect(screen.getByRole("article", { name: "Stretch: Reminder" })).toBeTruthy();
+    const status = screen.getByRole("combobox", { name: "Status" }) as HTMLSelectElement;
+    expect([...status.options].map((option) => option.textContent)).toEqual(["All (3)", "Succeeded (1)", "Failed (1)", "Waiting (0)", "Running (0)", "No report (0)", "Skipped (0)", "Reminder (1)"]);
+    expect([...(screen.getByRole("combobox", { name: "Task" }) as HTMLSelectElement).options].map((option) => option.textContent)).toEqual(["All tasks (2)", "Check the Hetzner ticket (2)", "Stretch (1)"]);
+    fireEvent.change(status, { target: { value: "FAILED" } });
+    await waitFor(() => expect(calls.some((call) => call.url === "/api/tasks/runs?status=FAILED")).toBe(true));
+    fireEvent.click(within(await screen.findByRole("article", { name: "Check the Hetzner ticket: Failed" })).getByRole("button", { name: "Check the Hetzner ticket" }));
+    await waitFor(() => expect(calls.some((call) => call.url === "/api/tasks/runs?status=FAILED&taskId=task%3Ahetzner0001")).toBe(true));
+  });
+
+  // Opt in under space-load-gate: JSDOM cannot measure clipping, media queries or scrolling.
+  // Operator 31/10: the tabs wrap to a second row instead of scrolling (a 410 px dock cut the last ones off); a wide dock keeps one row.
+  it.skipIf(process.env.SPACE_NOUS_TABS_BROWSER_PROOF !== "1").each([
+    { width: 390, dock: 0, rows: 2 }, { width: 480, dock: 0, rows: 2 }, { width: 1280, dock: 300, rows: 2 }, { width: 1280, dock: 410, rows: 2 }, { width: 1280, dock: 1000, rows: 1 }
+  ])("shows all twelve tabs, icons and badges without scrolling at $width px (dock $dock px) in $rows row(s)", async ({ width, dock: dockWidth, rows }) => {
+    serve({ state: state({ goals: { active: 8, nextAt: null, held: null } }) });
+    render(<NousDock canRun />);
+    const views = await screen.findByRole("group", { name: "Nous views" });
+    await within(views).findByRole("button", { name: /^Goals\s*8$/ });
+    // Include the operator's Needs you / Panes badges, plus a multi-digit count.
+    const fixture = views.cloneNode(true) as HTMLElement;
+    fixture.querySelector('[aria-pressed="true"]')!.setAttribute("aria-pressed", "false");
+    fixture.querySelector('button[title="Done"]')!.setAttribute("aria-pressed", "true");
+    for (const [label, count] of [["Needs you", "21"], ["Panes", "128"], ["Done", "125"]]) {
+      const chip = fixture.querySelector(`button[title="${label}"]`)!;
+      const badge = chip.querySelector(".dock-kit-chip-count") ?? chip.appendChild(document.createElement("span"));
+      badge.className = "dock-kit-chip-count"; badge.textContent = count!;
+    }
+    const badges = fixture.querySelectorAll(".dock-kit-chip-count").length;
+    const css = ["dock-kit/dock-kit.css", "nous/nous.css"].map(path => readFileSync(resolve(__dirname, `../src/features/${path}`), "utf8")).join("\n");
+    const srcdoc = `<style>*{box-sizing:border-box}body{margin:0;font:16px system-ui}${css}</style><section class="dock-panel nous-dock"${dockWidth ? ` style="width:${dockWidth}px"` : ""}><div class="nous-toolbar">${fixture.outerHTML}</div></section>`;
+    const base = "/var/lib/spaceapp-user/agent-workspace/active";
+    mkdirSync(base, { recursive: true });
+    const scratch = mkdtempSync(`${base}/nous-tabs-`);
+    try {
+      // An iframe gives Chrome a true phone layout viewport, below its minimum outer window width.
+      writeFileSync(`${scratch}/fixture.html`, `<iframe style="width:${width}px;height:844px;border:0"></iframe><pre id="result"></pre><script>
+        const frame = document.querySelector('iframe');
+        frame.onload = () => {
+          const doc = frame.contentDocument, group = doc.querySelector('.nous-views'), root = doc.querySelector('.nous-dock');
+          const chips = [...group.querySelectorAll('button')], bounds = group.getBoundingClientRect(), dock = root.getBoundingClientRect();
+          const inside = (r, b) => r.width > 0 && r.height > 0 && r.left >= b.left - .5 && r.right <= b.right + .5 && r.top >= b.top - .5 && r.bottom <= b.bottom + .5;
+          const reachable = chips.map(chip => {
+            const r = chip.getBoundingClientRect();
+            return inside(r, bounds) && [...chip.querySelectorAll('.dock-kit-chip-icon,.dock-kit-chip-count')].every(part => inside(part.getBoundingClientRect(),r));
+          });
+          document.querySelector('#result').textContent = JSON.stringify({width:frame.contentWindow.innerWidth, tabs:chips.length, badges:group.querySelectorAll('.dock-kit-chip-count').length,
+            left:bounds.left-dock.left,right:dock.right-bounds.right,reachable, rows:new Set(chips.map(chip => Math.round(chip.getBoundingClientRect().top))).size,
+            overflow:doc.documentElement.scrollWidth > frame.contentWindow.innerWidth || group.scrollWidth > group.clientWidth});
+        };
+        frame.srcdoc = ${JSON.stringify(srcdoc)};
+      </script>`);
+      const chrome = spawnSync("/usr/bin/google-chrome", ["--headless=new", "--no-sandbox", "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
+        `--user-data-dir=${scratch}/profile`, "--virtual-time-budget=1000", "--dump-dom", `file://${scratch}/fixture.html`], { encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024, env: { ...process.env, TMPDIR: scratch } });
+      expect(chrome.error).toBeUndefined();
+      expect(chrome.status, `${chrome.signal}: ${chrome.stderr.slice(-1500)}`).toBe(0);
+      const output = new DOMParser().parseFromString(chrome.stdout, "text/html").querySelector("#result")!.textContent!;
+      const measured = JSON.parse(output);
+      expect(measured).toMatchObject({ width, tabs: 12, badges, overflow: false, reachable: Array(12).fill(true), rows });
+      expect(measured.left).toBeGreaterThanOrEqual(dockWidth ? 8 : 12);
+      expect(measured.right).toBeGreaterThanOrEqual(dockWidth ? 8 : 12);
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
   });
 
   it("shows everything a decision sends before Approve: the whole body, the whole action and every file (operator request 2026-10-21)", async () => {
@@ -622,6 +1403,8 @@ describe("Nous dock", () => {
     render(<NousDock canRun />);
     const card = await screen.findByRole("article", { name: sends.title });
     expect(within(card).queryByText(/End of the instruction\./)).toBeNull();
+    // nous_msg:0cb8d563: the files it sends are chips on the card itself (needs-you-files.test.tsx opens them).
+    expect(within(card).getByRole("button", { name: /step8-outreach-emails\.md/ })).toBeTruthy();
     fireEvent.click(within(card).getByRole("button", { name: "Show everything" }));
     const everything = screen.getByRole("dialog", { name: `Everything about: ${sends.title}` });
     expect(within(everything).getByText(/Last line of the body\./)).toBeTruthy();
@@ -700,7 +1483,7 @@ describe("Nous dock", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open Nous fullscreen" }));
     const rail = screen.getByRole("complementary", { name: "Nous status" });
     expect(within(rail).getByText("Turns this hour")).toBeTruthy();
-    expect(within(rail).getByRole("button", { name: /Decisions/ })).toBeTruthy();
+    expect(within(rail).getByRole("button", { name: /^Decisions\s*1$/ })).toBeTruthy();
     const steps = screen.getByText("2 steps").closest("details")!;
     expect(steps.className).toContain("is-running");
     expect(within(steps.querySelector("summary")!).getByText("Read Bob's screen")).toBeTruthy();
@@ -714,6 +1497,28 @@ describe("Nous dock", () => {
     expect(screen.getByRole("region", { name: "Plan" })).toBeTruthy();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("region", { name: "Plan" })).toBeNull();
+  });
+
+  it("groups the maximized rail under Me, Work and System, colours only what waits on the operator and opens a view from its count", async () => {
+    serve({ state: state({ inbox: 3, turnsThisHour: 4 }), inProgress: () => 2 });
+    render(<NousDock canRun isAdmin />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open Nous fullscreen" }));
+    const views = screen.getByRole("group", { name: "Nous views" });
+    const section = (name: string) => [...within(views).getByRole("group", { name }).querySelectorAll(".dock-kit-chip-label")].map((label) => label.textContent);
+    expect(section("Me")).toEqual(["Conversation", "Needs you", "Decisions", "Done", "Updates", "Requests", "Shared"]);
+    expect(section("Work")).toEqual(["Overview", "Panes", "Plans", "Goals", "Startup programs", "Job applications", "Crypto", "Marketing"]);
+    expect(section("System")).toEqual(["Quotas", "Load", "Score", "Task runs"]);
+    const decisions = await within(views).findByRole("button", { name: /^Decisions\s*1$/ });
+    expect(decisions.querySelector(".dock-kit-chip-count")!.classList.contains("is-attention")).toBe(true);
+    const requests = await within(views).findByRole("button", { name: /^Requests\s*2$/ });
+    expect(requests.querySelector(".dock-kit-chip-count")!.classList.contains("is-attention")).toBe(false);
+    const counts = screen.getByRole("group", { name: "Live counts" });
+    fireEvent.click(await within(counts).findByRole("button", { name: "4 Turns this hour" }));
+    expect(within(views).getByRole("button", { name: "Load" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(within(counts).getByRole("button", { name: "3 Inbox" }));
+    expect(within(views).getByRole("button", { name: "Panes" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(within(counts).getByRole("button", { name: "1 Decisions waiting" }));
+    expect(decisions.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("lets the operator tell Nous it could have decided an answered decision itself", async () => {
@@ -730,6 +1535,24 @@ describe("Nous dock", () => {
     expect(within(screen.getByRole("article", { name: decision.title })).queryByRole("button", { name: "You could have decided this" })).toBeNull();
   });
 
+  it("wraps the view tabs to another row instead of scrolling them (operator 31/10)", () => {
+    const css = readFileSync(resolve(__dirname, "../src/features/nous/nous.css"), "utf8");
+    expect(css).toMatch(/\.nous-toolbar \.nous-views \{ flex-wrap: wrap;/);
+    expect(css).not.toMatch(/\.nous-views \{[^}]*overflow-x/);
+  });
+
+  it("clips an inline decision's clamped body so it never scrolls into overlapping lines (4/11)", () => {
+    const css = readFileSync(resolve(__dirname, "../src/features/nous/nous.css"), "utf8");
+    expect(css).toMatch(/\.nous-decision\.is-inline > \.chat-markdown \{[^}]*-webkit-line-clamp: 6;[^}]*overflow: clip; \}/);
+  });
+
+  it("keeps a decision's file chips in its one column instead of the Needs-you card's second (6/11)", () => {
+    const css = readFileSync(resolve(__dirname, "../src/features/nous/nous.css"), "utf8");
+    expect(css).toMatch(/\.nous-decision:not\(\.ny-card\) > \.ny-files \{ grid-column: 1 \/ -1; \}/);
+    // The Needs-you card is a .nous-decision too: an unscoped rule moved its chips under the icon tile (6/11).
+    expect(css).not.toMatch(/\.nous-decision > \.ny-files/);
+  });
+
   it("keeps a readable column in fullscreen for the conversation, decisions and overview", () => {
     const css = readFileSync(resolve(__dirname, "../src/features/nous/nous.css"), "utf8");
     const rule = /\.dock-panel\.nous-dock\.is-fullscreen :is\(([^)]*)\)\s*\{\s*padding-inline: max\(0\.5rem, calc\(\(100% - (\d+)ch\) \/ 2\)\);/.exec(css);
@@ -739,6 +1562,21 @@ describe("Nous dock", () => {
     expect(rule?.[1]).toContain(".nous-plan-view");
     expect(Number(rule?.[2])).toBeGreaterThanOrEqual(72);
     expect(Number(rule?.[2])).toBeLessThanOrEqual(80);
+    // The wide views (Load's graph, the pane board) keep a gutter instead of touching the stage's borders (nous_msg:e39eba86).
+    const wide = /\.dock-panel\.nous-dock\.is-fullscreen :is\(([^)]*)\)\s*\{\s*padding-inline: 1\.25rem; \}/.exec(css);
+    expect(wide?.[1]?.split(/,\s*/)).toEqual([".nous-load", ".nous-pane-board"]);
+  });
+
+  it("attaches the snips the Snip Tool hands over on Ctrl+V, through the composer's own uploads", async () => {
+    const calls = serve();
+    render(<NousDock canRun />);
+    await screen.findByText("Όλα κινούνται.");
+    expect(screen.getByLabelText("Message Nous").hasAttribute("data-nous-composer")).toBe(true);
+    const snip = (n: number) => new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, n])], `space-snip-${n}.png`, { type: "image/png" });
+    act(() => { window.dispatchEvent(new CustomEvent("space:nous-attach-files", { detail: [snip(1), snip(2), snip(3)] })); });
+    const list = await screen.findByRole("list", { name: "Attached files" });
+    await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(3));
+    await waitFor(() => expect(calls.filter((call) => call.url === "/api/nous/attachments" && call.method === "POST")).toHaveLength(3));
   });
 
   it("attaches a pasted screenshot, a picked file and a dropped file, removes one and sends the rest with the message", async () => {
@@ -760,6 +1598,12 @@ describe("Nous dock", () => {
     await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(3));
     await waitFor(() => expect(within(list).queryByText("Uploading…")).toBeNull());
     expect(calls.filter((call) => call.url === "/api/nous/attachments" && call.method === "POST")).toHaveLength(3);
+    // A file in the composer opens its preview before it is sent.
+    fireEvent.click(within(list).getByRole("button", { name: "Preview image.png" }));
+    const chipPreview = await screen.findByRole("dialog", { name: "Preview image.png" });
+    expect(within(chipPreview).getByRole("img", { name: "Preview of image.png" }).getAttribute("src")).toBe("/api/nous/attachments/nous_file%3Aup1aaaaaa");
+    fireEvent.click(within(chipPreview).getByRole("button", { name: "Close preview" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Preview image.png" })).toBeNull());
     fireEvent.click(within(list).getByRole("button", { name: "Remove extra.txt" }));
     await waitFor(() => expect(calls.some((call) => call.method === "DELETE" && call.url === "/api/nous/attachments/nous_file%3Aup3aaaaaa")).toBe(true));
 
@@ -775,23 +1619,76 @@ describe("Nous dock", () => {
     serve({ messages: [operator], files: { [operator.id]: [
       attachment("img0aaaaaa", "IMAGE", "shot.png", { messageId: operator.id, width: 1920, height: 1080 }),
       attachment("vid0aaaaaa", "VIDEO", "clip.mp4", { messageId: operator.id, durationSeconds: 12.4, byteSize: 4 * 1024 * 1024 }),
-      attachment("doc0aaaaaa", "DOCUMENT", "notes.txt", { messageId: operator.id })
+      attachment("doc0aaaaaa", "DOCUMENT", "notes.txt", { messageId: operator.id, readable: "PARTIAL: first 2 of 9 pages" }),
+      attachment("pdf0aaaaaa", "DOCUMENT", "report.pdf", { messageId: operator.id, mimeType: "application/pdf", readable: "FULL" }),
+      attachment("aud0aaaaaa", "FILE", "voice.m4a", { messageId: operator.id, mimeType: "audio/mp4" }),
+      attachment("bin0aaaaaa", "FILE", "data.bin", { messageId: operator.id, mimeType: "application/octet-stream" })
     ] } });
     render(<NousDock canRun />);
     const bubble = (await screen.findByText("Δες το")).closest(".nous-message")!;
     expect(bubble.textContent).not.toContain("[[Attachments");
     const files = within(bubble as HTMLElement).getByRole("list", { name: "Sent files" });
     expect((within(files).getByRole("img", { name: "shot.png" }) as HTMLImageElement).getAttribute("src")).toBe("/api/nous/attachments/nous_file%3Aimg0aaaaaa?preview=1");
-    const video = files.querySelector("video")!;
-    expect(video.getAttribute("src")).toBe("/api/nous/attachments/nous_file%3Avid0aaaaaa");
-    expect(video.hasAttribute("controls")).toBe(true);
+    expect((within(files).getByRole("img", { name: "clip.mp4" }) as HTMLImageElement).getAttribute("src")).toBe("/api/nous/attachments/nous_file%3Avid0aaaaaa?preview=1");
     expect(within(files).getByText("4.0 MB · 12 s")).toBeTruthy();
     expect(within(files).getByRole("link", { name: "Download notes.txt" }).getAttribute("href")).toBe("/api/nous/attachments/nous_file%3Adoc0aaaaaa?download=1");
-    fireEvent.click(within(files).getByRole("button", { name: "View shot.png" }));
-    const viewer = screen.getByRole("dialog", { name: "shot.png" });
-    expect(within(viewer).getByRole("img", { name: "shot.png" }).getAttribute("src")).toBe("/api/nous/attachments/nous_file%3Aimg0aaaaaa");
-    fireEvent.click(within(viewer).getByRole("button", { name: "Close" }));
-    expect(screen.queryByRole("dialog", { name: "shot.png" })).toBeNull();
+
+    // Every file opens its preview (plan clipboard:h90wb7l2Ns7q); Escape or Close ends it and focus goes back to the file.
+    const open = async (name: string) => {
+      const button = within(files).getByRole("button", { name: `Preview ${name}` });
+      button.focus();
+      fireEvent.click(button);
+      return { button, dialog: await screen.findByRole("dialog", { name: `Preview ${name}` }) };
+    };
+    let { button, dialog } = await open("shot.png");
+    expect(within(dialog).getByRole("img", { name: "Preview of shot.png" }).getAttribute("src")).toBe("/api/nous/attachments/nous_file%3Aimg0aaaaaa");
+    expect(within(dialog).getByText("2 KB · 1920×1080")).toBeTruthy();
+    fireEvent.keyDown(within(dialog).getByRole("button", { name: "Close preview" }), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(button);
+
+    ({ dialog } = await open("clip.mp4"));
+    const player = within(dialog).getByLabelText("Preview of clip.mp4");
+    expect(player.tagName).toBe("VIDEO");
+    expect(player.getAttribute("src")).toBe("/api/nous/attachments/nous_file%3Avid0aaaaaa");
+    expect(player.hasAttribute("controls")).toBe(true);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close preview" }));
+
+    ({ dialog } = await open("notes.txt"));
+    expect(await within(dialog).findByText("Ship on Friday.")).toBeTruthy();
+    expect(within(dialog).getByText("2 KB · Partial text: first 2 of 9 pages")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close preview" }));
+
+    ({ dialog } = await open("report.pdf"));
+    expect(within(dialog).getByTitle("Preview of report.pdf").getAttribute("src")).toBe("/api/nous/attachments/nous_file%3Apdf0aaaaaa");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close preview" }));
+
+    ({ dialog } = await open("voice.m4a"));
+    expect(within(dialog).getByLabelText("Preview of voice.m4a").tagName).toBe("AUDIO");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close preview" }));
+
+    ({ dialog } = await open("data.bin"));
+    expect(within(dialog).getByText("Preview is not available for this file type.")).toBeTruthy();
+    expect(within(dialog).getByRole("link", { name: "Download data.bin" }).getAttribute("href")).toBe("/api/nous/attachments/nous_file%3Abin0aaaaaa?download=1");
+    fireEvent.click(dialog);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("uploads the composer's files one at a time: the server takes at most 4 at once (31/10, the 5th of 5 got 429)", async () => {
+    let active = 0, most = 0, done = 0;
+    serve({ upload: async (file) => {
+      most = Math.max(most, ++active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return Response.json({ attachments: [attachment(`seq${++done}aaaaaa`, "DOCUMENT", file.name)] }, { status: 201 });
+    } });
+    const { container } = render(<NousDock canRun />);
+    await screen.findByText("Όλα κινούνται.");
+    const files = [1, 2, 3, 4, 5].map((n) => new File([`note ${n}`], `note-${n}.txt`, { type: "text/plain" }));
+    fireEvent.change(container.querySelector("input[type=file]")!, { target: { files } });
+    const list = await screen.findByRole("list", { name: "Attached files" });
+    await waitFor(() => expect(within(list).getAllByRole("button", { name: /^Preview note-/ })).toHaveLength(5));
+    expect(most).toBe(1);
   });
 
   it("refuses a file over its limit before uploading and shows why the server refused another", async () => {

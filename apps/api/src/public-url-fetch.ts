@@ -23,7 +23,7 @@ export class PublicUrlRefusedError extends Error {
   readonly code = "URL_NOT_ALLOWED";
 }
 
-export interface PublicUrlResponse { url: string; status: number; ok: boolean; headers: IncomingHttpHeaders; text: string }
+export interface PublicUrlResponse { url: string; status: number; ok: boolean; headers: IncomingHttpHeaders; text: string; /** The bytes as received (a PDF's text is read from them); optional so text-only stand-ins still fit. */ body?: Buffer }
 
 type Resolver = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
 
@@ -58,7 +58,7 @@ export async function fetchPublicUrl(input: string, options: PublicUrlFetchOptio
   try { url = new URL(input); } catch { throw new PublicUrlRefusedError("Invalid URL."); }
   for (let hop = 0; ; hop += 1) {
     const target = await publicTarget(url, resolver, allowAddress);
-    const response = await new Promise<{ status: number; headers: IncomingHttpHeaders; text: string }>((resolve, reject) => {
+    const response = await new Promise<{ status: number; headers: IncomingHttpHeaders; body: Buffer }>((resolve, reject) => {
       const request = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, {
         method: "GET", signal, headers: options.headers, family: target.family,
         lookup: (_hostname, lookupOptions, callback) => (lookupOptions as { all?: boolean }).all
@@ -68,7 +68,7 @@ export async function fetchPublicUrl(input: string, options: PublicUrlFetchOptio
         const status = incoming.statusCode ?? 0;
         if (status >= 300 && status < 400 && incoming.headers.location) {
           incoming.resume();
-          return resolve({ status, headers: incoming.headers, text: "" });
+          return resolve({ status, headers: incoming.headers, body: Buffer.alloc(0) });
         }
         const chunks: Buffer[] = [];
         let size = 0;
@@ -78,7 +78,7 @@ export async function fetchPublicUrl(input: string, options: PublicUrlFetchOptio
           chunks.push(chunk); size += chunk.length;
         });
         let done = false;
-        const finish = () => { if (!done) { done = true; resolve({ status, headers: incoming.headers, text: Buffer.concat(chunks).toString("utf8") }); } };
+        const finish = () => { if (!done) { done = true; resolve({ status, headers: incoming.headers, body: Buffer.concat(chunks) }); } };
         incoming.on("end", finish);
         incoming.on("error", error => done ? undefined : reject(error));
       });
@@ -90,6 +90,6 @@ export async function fetchPublicUrl(input: string, options: PublicUrlFetchOptio
       url = new URL(response.headers.location, url);
       continue;
     }
-    return { url: url.toString(), status: response.status, ok: response.status >= 200 && response.status < 300, headers: response.headers, text: response.text };
+    return { url: url.toString(), status: response.status, ok: response.status >= 200 && response.status < 300, headers: response.headers, text: response.body.toString("utf8"), body: response.body };
   }
 }

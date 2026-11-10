@@ -2,7 +2,9 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { appointmentsFor } from "../appointments.js";
 import { extractCvPhoto } from "./cv-photo.js";
+import { buildJobReport } from "./report.js";
 import {
   canTransitionJobApplication,
   fieldBecomesAnswerMemory,
@@ -56,6 +58,7 @@ import {
   type JobApplyMailboxInput,
   type JobApplyMailCategory,
   type JobApplyMailOrganizeInput,
+  type JobApplyMailCheckResult,
   type JobApplyMailTriageResult,
   type JobApplyMemory,
   type JobApplyMemoryCreate,
@@ -72,9 +75,14 @@ import {
   type JobApplyRunView,
   type JobApplyResetResult,
   type JobApplySite,
-  type JobApplyStats
+  type JobApplyStats,
+  ownerWorkingTimeZone,
+  type NousJobReport,
+  type TaskItem
 } from "@space/contracts";
 import type { JobApplicationFieldRecord, JobApplicationRecord, JobApplyEventRecord, JobApplyMemoryRecord, JobApplyProfileRecord, JobApplyRepository, JobApplyRunRecord } from "@space/db";
+import { forbiddenByMemoryText, forbiddingMemory, questionMemoryTerms } from "@space/db";
+import type { PinnedMemoryHit } from "../nous/operator-facts.js";
 import { SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import { localArtifactFilePath } from "../artifact-storage.js";
 import { readAttachment, type AttachmentReaderOptions } from "../attachment-readers.js";
@@ -82,9 +90,10 @@ import { connectorSealContext, type ConnectorCrypto } from "../dot-connectors.js
 import { createDiscovery, type Discovery } from "./discovery.js";
 import { createSalaryResearch, salaryResearchNote, type SalaryResearch, type SalaryResearchRequest, type SalaryResearchResult } from "./salary.js";
 import { CONFIRMATION_SEARCH_TERMS, companyKey, GmailMailboxError, matchConfirmationEmail, openGmailMailbox, searchGmail } from "./gmail-mailbox.js";
-import { ensureJobApplyLabels, gmailMessageText, labelGmailMessages, unlabelGmailMessages, listGmailTriageMessages } from "./gmail-organize.js";
+import { ensureJobApplyLabels, fileGmailThreads, gmailMessageText, gmailThreadIds, unlabelGmailMessages, listGmailTriageMessages } from "./gmail-organize.js";
+import { cleanupJobMailLabels, cleanupNote } from "./mail-label-cleanup.js";
 import { closeInterviewTask, findThreadTask, recordInterviewTask, remindInterviews, setInterviewDeadline, siblingDeadline, taskDeadline, type InterviewNotifications, type InterviewRequest, type PassMail } from "./interview-tasks.js";
-import { classifyApplicationMail, digestQuery, displaySender, hasReceiptSubject, isApplicationMail, isJobDigest, isJobReceipt, matchApplicationCompany, reportsCompletion, senderAddress, triageQueries } from "./mail-triage.js";
+import { classifyApplicationMail, digestQuery, displaySender, hasReceiptSubject, isApplicationMail, isJobAlert, isJobDigest, isJobReceipt, matchApplicationCompany, reportsCompletion, senderAddress, triageQueries } from "./mail-triage.js";
 import { extractCode, extractLinksFromText, type MailboxFactory, type MailboxMessageSummary, type MailboxReader } from "./mailbox.js";
 
 /** The owner's Google connector (Space Dots), used for the one Google account Job Copilot works with. */
@@ -123,6 +132,8 @@ export interface JobApplyServiceOptions {
   gmailFetch?: typeof fetch;
   /** Space notifications for the daily test and interview reminder; resolved late like Google. */
   notifications?: () => InterviewNotifications | null;
+  /** Plan clipboard:7L5KyWp3kQsP step 3: the operator's pinned Space Memory entries sharing a question's words (their rules answer it). */
+  operatorMemory?: (question: string) => Promise<PinnedMemoryHit[]>;
 }
 
 export class JobApplyMailboxError extends SpaceConflictError {}
@@ -266,6 +277,9 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
   const salary = options.salary ?? createSalaryResearch({ cacheFile: join(options.jobApplyRoot, "salary-research-cache.json") });
   /** owner|day the test and interview reminder went out. */
   const remindersSent = new Set<string>();
+  // shortcut: application mail no rule places carries no label now (3/11), so its ids are kept in memory and later passes skip it unread;
+  // an API restart reads it once more. Cleared past 20,000 (memory), when the next passes read it once more.
+  const unplaced = new Set<string>();
 
   async function profileRecord(owner: string): Promise<JobApplyProfileRecord> {
     return (await repository.getProfile(owner)) ?? repository.upsertProfile(owner, {});
@@ -274,7 +288,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
   async function record(owner: string, input: JobApplyEventInput & JobApplyEventContext & { type: JobApplyEventType }): Promise<JobApplyEvent> {
     const event = toEvent(await repository.createEvent({
       ownerUserId: owner, paneId: input.paneId ?? null, applicationId: input.applicationId ?? null, runId: input.runId ?? null,
-      type: input.type, message: input.message.slice(0, 1000), payload: input.payload ?? {}, artifactId: input.artifactId ?? null
+      type: input.type, message: input.message, payload: input.payload ?? {}, artifactId: input.artifactId ?? null
     }));
     try {
       options.onEvent?.(event);
@@ -324,7 +338,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
 
   async function notesBeforeParking(owner: string, application: JobApplicationRecord): Promise<string | null | undefined> {
     if (application.status !== "NEEDS_USER" || !application.notes) return undefined;
-    const events = await repository.listEvents(owner, { applicationId: application.id, limit: 200 });
+    const events = await repository.listEvents(owner, { applicationId: application.id });
     const parking = events.find((event) => (event.type === "QUESTION" && String(event.payload.question ?? "").slice(0, 4000) === application.notes)
       || (event.type === "REVIEW_REQUESTED" && application.notes === REVIEW_NOTE));
     if (!parking) return undefined;
@@ -346,6 +360,13 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     return toProfile(record, google, accounts, Boolean(options.google?.()?.googleConfigured));
   }
   /** A connector refusal in Job Copilot words: access is allowed again from the pane's Setup, not a Dot's Tools view. */
+  /** A short code for an account the mail check could not read in full (`accountErrors`). */
+  function mailCheckErrorCode(error: unknown): string {
+    const code = (error as { code?: unknown } | null)?.code;
+    if (code === "CONNECTOR_RECONNECT" || code === "CONNECTOR_NEEDS_CONNECTION" || (error instanceof GmailMailboxError && error.status === 401)) return "ACCESS";
+    if (error instanceof GmailMailboxError) return error.rateLimited ? "RATE_LIMITED" : error.status ? `HTTP_${error.status}` : "ERROR";
+    return "ERROR";
+  }
   function googleAccessError(email: string, error: unknown): JobApplyMailboxError {
     const code = (error as { code?: unknown } | null)?.code;
     if (code === "CONNECTOR_RECONNECT" || code === "CONNECTOR_NEEDS_CONNECTION" || (error instanceof GmailMailboxError && error.status === 401)) {
@@ -525,6 +546,12 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
         return null;
       }
     },
+    /** What the copilot may upload into a page, a Vault-fenced one too (31/10): its own folder (photo) and the CV and cover letter. */
+    async uploadableFiles(owner: string): Promise<{ dir: string; files: string[] }> {
+      const record = await repository.getProfile(owner);
+      const files = await Promise.all([record?.cvArtifactId, record?.coverLetterArtifactId].map((id) => id ? this.artifactPath(id) : null));
+      return { dir: ownerDirOf(owner), files: files.filter((path): path is string => Boolean(path)) };
+    },
     async artifactPath(artifactId: string): Promise<string | null> {
       try {
         return localArtifactFilePath({ artifactRoot: options.artifactRoot, artifact: await options.store.getArtifact(artifactId) });
@@ -608,32 +635,43 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
      * Check with Gmail: every SUBMITTED row without evidence is looked up among the confirmation emails in the Gmail
      * of each Google account that allowed reading mail. A matching email (company named, sent within days of the
      * application) makes the row VERIFIED with that email as its confirmation; the others stay SUBMITTED and say so.
+     * When an account could not be read in full (a rate limit that outlasted the retries, expired access), the result
+     * names it in `accountErrors` and the rows without a match stay unchecked: never "no confirmation email found".
      */
-    async checkWithMail(owner: string, context: JobApplyEventContext = {}): Promise<{ checked: number; confirmed: number; unconfirmed: number; accounts: string[] }> {
+    async checkWithMail(owner: string, context: JobApplyEventContext = {}): Promise<JobApplyMailCheckResult> {
       const google = options.google?.() ?? null;
       const accounts = (await googleMailAccounts(owner)).filter((account) => account.capabilities.includes("MAIL_READ")).map((account) => account.email);
       if (!google || !accounts.length) throw new JobApplyMailboxError("Allow Gmail for a Google account in Job Copilot Setup → Google account first.");
-      const candidates = (await repository.listApplications(owner, { status: "SUBMITTED", limit: 2000 }))
+      const candidates = (await repository.listApplications(owner, { status: "SUBMITTED" }))
         .filter((row) => row.appliedAt && !row.externalConfirmation && row.evidenceArtifactIds.length === 0);
-      if (!candidates.length) return { checked: 0, confirmed: 0, unconfirmed: 0, accounts };
+      if (!candidates.length) return { checked: 0, confirmed: 0, unconfirmed: 0, unchecked: 0, accounts, accountErrors: [] };
       const sentTimes = candidates.map((row) => Date.parse(row.appliedAt!));
       const gmailDay = (ms: number) => new Date(ms).toISOString().slice(0, 10).replace(/-/g, "/");
       const query = `after:${gmailDay(Math.min(...sentTimes) - 2 * 86_400_000)} before:${gmailDay(Math.max(...sentTimes) + 8 * 86_400_000)} {${CONFIRMATION_SEARCH_TERMS}}`;
+      // Each account has its own Gmail quota: the accounts are searched side by side, each search paced on its own.
       const searches = await Promise.allSettled(accounts.map(async (email) => {
-        try {
-          const hits = await searchGmail({ accessToken: await google.googleAccessToken(owner, email, "MAIL_READ"), query, max: 1000, fetchImpl: options.gmailFetch });
-          return hits.map((hit) => ({ ...hit, account: email }));
-        } catch (error) {
-          throw googleAccessError(email, error);
-        }
+        const accessToken = await google.googleAccessToken(owner, email, "MAIL_READ");
+        return searchGmail({ accessToken, query, max: 1000, fetchImpl: options.gmailFetch });
       }));
-      if (searches.every((search) => search.status === "rejected")) throw (searches[0] as PromiseRejectedResult).reason;
-      const hits = searches.flatMap((search) => search.status === "fulfilled" ? search.value : []);
-      const searched = accounts.filter((_email, index) => searches[index]!.status === "fulfilled");
+      const accountErrors: JobApplyMailCheckResult["accountErrors"] = [];
+      const searched: string[] = [];
+      const hits = searches.flatMap((search, index) => {
+        const account = accounts[index]!;
+        if (search.status === "rejected") {
+          accountErrors.push({ account, code: mailCheckErrorCode(search.reason), count: 1 });
+          return [];
+        }
+        if (search.value.failed > 0) accountErrors.push({ account, code: mailCheckErrorCode(search.value.failedError), count: search.value.failed });
+        else searched.push(account);
+        return search.value.hits.map((hit) => ({ ...hit, account }));
+      });
       const checkedOn = now().slice(0, 10);
       let confirmed = 0;
+      let unchecked = 0;
       for (const row of candidates) {
         const hit = matchConfirmationEmail(row, hits);
+        // A row with no match is only "not confirmed" when every account was read in full.
+        if (!hit && accountErrors.length) { unchecked += 1; continue; }
         // One current mail-check note: earlier results and the import's "not checked yet" give way to this one.
         const notes = (row.notes ?? "").split(" | ").filter(Boolean).map((segment) => segment.replace(/; no confirmation email checked yet$/, ""))
           .filter((segment) => !segment.startsWith(JOB_APPLY_NO_CONFIRMATION_NOTE) && !segment.startsWith("confirmation email "));
@@ -646,14 +684,17 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
           await repository.updateApplication(owner, row.id, { notes: [...notes, `${JOB_APPLY_NO_CONFIRMATION_NOTE} (checked ${checkedOn})`].join(" | ").slice(0, 4000) });
         }
       }
-      const result = { checked: candidates.length, confirmed, unconfirmed: candidates.length - confirmed, accounts: searched };
+      const checked = candidates.length - unchecked;
+      const result: JobApplyMailCheckResult = { checked, confirmed, unconfirmed: checked - confirmed, unchecked, accounts: searched, accountErrors };
+      const failures = accountErrors.map((error) => `${error.account} ${error.code}${error.count > 1 ? ` ×${error.count}` : ""}`).join(", ");
       await record(owner, { ...context, type: "NOTE", payload: result,
-        message: `Checked ${result.checked} sent applications against Gmail (${searched.join(", ")}): ${confirmed} confirmed by email, ${result.unconfirmed} without a confirmation email.` });
+        message: `Checked ${checked} sent applications against Gmail (${searched.join(", ") || "no account read in full"}): ${confirmed} confirmed by email, ${result.unconfirmed} without a confirmation email.`
+          + (unchecked ? ` ${unchecked} left unchecked because Gmail failed for ${failures}; check again later.` : "") });
       return result;
     },
     /**
-     * Files messages under a Job Applications label (MAIL_ORGANIZE): confirmations and rejections leave the inbox
-     * unless `archive` is false; action-needed, other and NONE (labels taken off) mail leave it only with `archive: true`.
+     * Files the threads of messages under a Job Applications label (MAIL_ORGANIZE), every other one off: confirmations and rejections
+     * leave the inbox unless `archive` is false; action-needed and NONE (labels taken off) mail leave it only with `archive: true`.
      * The copilot uses this for mail the rules missed.
      */
     /** The copilot records a deadline Space did not read from a test or interview mail (the thread's reminder task). */
@@ -677,8 +718,8 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       try {
         const accessToken = await google.googleAccessToken(owner, account, "MAIL_ORGANIZE");
         const labels = await ensureJobApplyLabels({ accessToken, fetchImpl: options.gmailFetch });
-        if (category === "NONE") await unlabelGmailMessages({ accessToken, fetchImpl: options.gmailFetch, messageIds: input.messageIds, labelIds: [...(archive ? ["INBOX"] : []), ...Object.values(labels)] });
-        else await labelGmailMessages({ accessToken, fetchImpl: options.gmailFetch, messageIds: input.messageIds, labelId: labels[category], archive, replaceLabelIds: Object.values(labels) });
+        const threadIds = await gmailThreadIds({ accessToken, fetchImpl: options.gmailFetch, messageIds: input.messageIds });
+        await fileGmailThreads({ accessToken, fetchImpl: options.gmailFetch, threadIds, labelId: category === "NONE" ? null : labels.ids[category], archive, jobLabelIds: labels.all });
       } catch (error) {
         throw googleAccessError(account, error);
       }
@@ -692,8 +733,10 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
      * One triage pass over the inbox of every Google account that allowed reading and organizing mail: recent
      * application mail is classified, filed under the Job Applications labels and, for receipts, stale codes and
      * rejections, archived. Action-needed mail (a test or an interview) stays in the inbox and becomes a MAIL event
-     * that the rail and Telegram show; other application mail stays in the inbox under its label, unannounced.
-     * Messages already under a Job Applications label are skipped, so passes are idempotent.
+     * that the rail and Telegram show; other application mail stays in the inbox with no label, unannounced.
+     * A thread is filed as its newest mail says, under one label. Messages already under a Job Applications label (or
+     * placed nowhere on an earlier pass) are skipped, so passes are idempotent. While the legacy Other label exists the
+     * pass first repairs the mail filed before 3/11 (`cleanupJobMailLabels`).
      * Job-alert digests leave the inbox without a Job Applications label.
      */
     async triageMail(owner: string, context: JobApplyEventContext = {}): Promise<JobApplyMailTriageResult> {
@@ -702,7 +745,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       const result: JobApplyMailTriageResult = { accounts: [], scanned: 0, confirmations: 0, rejections: 0, actionNeeded: 0, other: 0, skipped: 0, digests: 0 };
       if (!google || !accounts.length) return result;
       // Recent tracker rows name the companies whose own recruiters may write (imported history included).
-      const applications = (await repository.listApplications(owner, { limit: 2000 })).filter((row) => row.status !== "QUEUED")
+      const applications = (await repository.listApplications(owner, {})).filter((row) => row.status !== "QUEUED")
         .sort((left, right) => (right.appliedAt ?? right.updatedAt).localeCompare(left.appliedAt ?? left.updatedAt));
       // The newest row per company (the list is newest first and a Map keeps its last write; before 2026-10-27 the oldest won,
       // so Agoda's test task named an imported August row "Title not recorded").
@@ -712,11 +755,20 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       for (const email of accounts) {
         try {
           const accessToken = await google.googleAccessToken(owner, email, "MAIL_ORGANIZE");
-          const labels = await ensureJobApplyLabels({ accessToken, fetchImpl: options.gmailFetch });
-          const ours = new Set(Object.values(labels));
+          let labels = await ensureJobApplyLabels({ accessToken, fetchImpl: options.gmailFetch });
+          const cleanup = await cleanupJobMailLabels({ accessToken, fetchImpl: options.gmailFetch, account: email, labels, nowMs });
+          if (cleanup) {
+            await record(owner, { paneId, type: "MAIL", payload: { category: "CLEANUP", ...cleanup }, message: cleanupNote(cleanup) });
+            labels = await ensureJobApplyLabels({ accessToken, fetchImpl: options.gmailFetch });
+          }
+          const ours = new Set(Object.values(labels.ids));
+          if (unplaced.size > 20_000) unplaced.clear();
+          const unplacedKey = (messageId: string) => `${owner}\n${email}\n${messageId}`;
           const messages = (await listGmailTriageMessages({ accessToken, fetchImpl: options.gmailFetch, query: triageQueries(companies.map((row) => row.company)), max: 300 }))
-            .filter((message) => !message.labelIds.some((label) => ours.has(label)) && (isApplicationMail(message, companies) || hasReceiptSubject(message)));
-          const filed: Record<JobApplyMailCategory, string[]> = { CONFIRMATION: [], REJECTION: [], ACTION_NEEDED: [], OTHER: [] };
+            .filter((message) => !message.labelIds.some((label) => ours.has(label)) && !unplaced.has(unplacedKey(message.messageId)) && (isApplicationMail(message, companies) || hasReceiptSubject(message)));
+          const filed: Record<JobApplyMailCategory, string[]> = { CONFIRMATION: [], REJECTION: [], ACTION_NEEDED: [] };
+          // The newest placed mail of each thread decides its one label.
+          const threadFiling = new Map<string, { category: JobApplyMailCategory; at: string }>();
           const notices: Array<JobApplyEventInput & JobApplyEventContext & { type: JobApplyEventType }> = [];
           // Tests and interviews become reminder tasks per thread; a rejection or a "completed" receipt closes the thread's task.
           const threadMail: Array<{ threadId: string; messageId: string; ask: InterviewRequest | null }> = [];
@@ -728,10 +780,13 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
             result.scanned += 1;
             const category = classifyApplicationMail({ ...message, text }, nowMs);
             if (!category) { result.skipped += 1; continue; }
-            filed[category].push(message.messageId);
             const application = matchApplicationCompany(message, companies);
             const sender = displaySender(message.from);
             passMails.push({ threadId: message.threadId, company: application?.company ?? null, sentAt: message.receivedAt, from: message.from, subject: message.subject, text });
+            if (category === "NONE") { result.other += 1; unplaced.add(unplacedKey(message.messageId)); continue; }
+            filed[category].push(message.messageId);
+            const at = message.receivedAt ?? "";
+            if ((threadFiling.get(message.threadId)?.at ?? "") <= at) threadFiling.set(message.threadId, { category, at });
             if (category === "REJECTION" || (category === "CONFIRMATION" && reportsCompletion(text))) threadMail.push({ threadId: message.threadId, messageId: message.messageId, ask: null });
             if (category === "ACTION_NEEDED") {
               threadMail.push({ threadId: message.threadId, messageId: message.messageId, ask: { account: email, threadId: message.threadId, subject: message.subject, from: message.from, text, sentAt: message.receivedAt, application } });
@@ -740,33 +795,40 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
                 payload: { category, account: email, messageId: message.messageId, threadId: message.threadId, from: senderAddress(message.from), subject: message.subject.slice(0, 300), receivedAt: message.receivedAt } });
             } else if (category === "REJECTION" && application) {
               notices.push({ paneId, applicationId: application.id, type: "MAIL",
-                message: `Rejection email from ${sender}: ${message.subject || "(no subject)"}`.slice(0, 1000),
+                message: `Rejection email from ${sender}: ${message.subject || "(no subject)"}`,
                 payload: { category, account: email, messageId: message.messageId, subject: message.subject.slice(0, 300), receivedAt: message.receivedAt } });
             }
           }
           // Labels first: a message is announced only once it carries its label, so a failed pass never repeats a notice.
           for (const category of JOB_APPLY_MAIL_CATEGORIES) {
-            await labelGmailMessages({ accessToken, fetchImpl: options.gmailFetch, messageIds: filed[category], labelId: labels[category], archive: category === "CONFIRMATION" || category === "REJECTION" });
+            await fileGmailThreads({ accessToken, fetchImpl: options.gmailFetch, threadIds: [...threadFiling].filter(([, entry]) => entry.category === category).map(([threadId]) => threadId),
+              labelId: labels.ids[category], archive: category === "CONFIRMATION" || category === "REJECTION", jobLabelIds: labels.all });
           }
           // Oldest first (Gmail lists newest first), so a thread ends as its newest mail says. Task writes never cost a notice:
           // the labels are on, so a lost notice would not come back.
           for (const mail of threadMail.reverse()) {
             if (!mail.ask) { await closeInterviewTask(options.store, owner, mail.threadId).catch(() => null); continue; }
             const task = await recordInterviewTask(options.store, owner, mail.ask, siblingDeadline(mail.ask, passMails)).catch(() => null);
-            // The notice names the task, so Nous reads "deadline not stated" and goes to find it.
+            // The notice names the task, so Nous reads "deadline not stated", what was searched, and goes to find it.
             const notice = notices.find((item) => item.payload?.messageId === mail.messageId && item.payload?.category === "ACTION_NEEDED");
-            if (notice && task) notice.message = `${notice.message}. Task: ${task.title}${taskDeadline(task) ? "" : " (find the deadline in the mail and record it)"}`.slice(0, 1000);
+            const searched = `this mail${mail.ask.application ? ` and ${mail.ask.application.company}'s other mail within the hour` : ""}`;
+            if (notice && task) notice.message = `${notice.message}. Task: ${task.title}${taskDeadline(task) ? "" : ` (no date, time or "within/valid for N hours/days" in ${searched}: find the deadline in the thread and record it)`}`.slice(0, 1000);
           }
           for (const notice of notices) await record(owner, notice);
           const digests = (await listGmailTriageMessages({ accessToken, fetchImpl: options.gmailFetch, query: digestQuery(), max: 50 })).filter(isJobDigest).map((message) => message.messageId);
-          await unlabelGmailMessages({ accessToken, fetchImpl: options.gmailFetch, messageIds: digests, labelIds: ["INBOX", ...ours] });
+          await unlabelGmailMessages({ accessToken, fetchImpl: options.gmailFetch, messageIds: digests, labelIds: ["INBOX", ...labels.all] });
           result.digests += digests.length;
           // Backfill: mail filed as Action needed earlier (or by the copilot) whose thread has no task yet; the next pass retries a failure.
           await (async () => {
-            const filedEarlier = (await listGmailTriageMessages({ accessToken, fetchImpl: options.gmailFetch, query: "newer_than:60d", labelId: labels.ACTION_NEEDED, max: 25 }))
-              .filter((message) => message.labelIds.includes(labels.ACTION_NEEDED));
+            const filedEarlier = (await listGmailTriageMessages({ accessToken, fetchImpl: options.gmailFetch, query: "newer_than:60d", labelId: labels.ids.ACTION_NEEDED, max: 25 }))
+              .filter((message) => message.labelIds.includes(labels.ids.ACTION_NEEDED));
             const threads = new Set(threadMail.map((mail) => mail.threadId));
+            // A job alert filed as Action needed before 2026-10-28 loses the label (it stays in the inbox) and gets no task.
+            const alerts = filedEarlier.filter((message) => isJobAlert(message)).map((message) => message.messageId);
+            await fileGmailThreads({ accessToken, fetchImpl: options.gmailFetch, threadIds: filedEarlier.filter((message) => alerts.includes(message.messageId)).map((message) => message.threadId),
+              labelId: null, archive: false, jobLabelIds: labels.all });
             for (const message of filedEarlier) {
+              if (alerts.includes(message.messageId)) continue;
               if (threads.has(message.threadId)) continue;
               threads.add(message.threadId);
               if (await findThreadTask(options.store, owner, message.threadId)) continue;
@@ -778,7 +840,6 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
           result.confirmations += filed.CONFIRMATION.length;
           result.rejections += filed.REJECTION.length;
           result.actionNeeded += filed.ACTION_NEEDED.length;
-          result.other += filed.OTHER.length;
           result.accounts.push(email);
           const archived = filed.CONFIRMATION.length + filed.REJECTION.length + digests.length;
           if (archived) {
@@ -848,8 +909,21 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       const limit = Math.min(input.limit, 20);
       return readMailboxes(owner, (reader) => reader.recent({ ...input, limit }), limit);
     },
-    async listApplications(owner: string, filter: { status?: JobApplicationStatus; limit: number }): Promise<JobApplication[]> {
+    async listApplications(owner: string, filter: { status?: JobApplicationStatus; limit?: number }): Promise<JobApplication[]> {
       return (await repository.listApplications(owner, filter)).map(toApplication);
+    },
+    /** The Nous "Job applications" page (operator 3/11 22:33 BKK): every application, its company's mails and test/interview records, read now. */
+    async report(owner: string): Promise<NousJobReport> {
+      const [applications, events, settings] = await Promise.all([repository.listApplications(owner, {}), repository.listEvents(owner, { types: ["MAIL"] }),
+        options.store.getUserSettings(owner)]);
+      const tasks: TaskItem[] = [];
+      for (let page = 1; ; page += 1) {
+        const { items } = await options.store.listTaskItems(owner, { q: "Gmail thread: ", page, pageSize: 100 });
+        tasks.push(...items);
+        if (items.length < 100) break;
+      }
+      const appointments = await appointmentsFor(options.store)?.repository.list(owner, new Date(0).toISOString()) ?? [];
+      return buildJobReport({ applications, events, tasks, appointments, timeZone: ownerWorkingTimeZone(settings), now: new Date(now()) });
     },
     /**
      * "Reset and start over": counting starts again now. Nothing is deleted: open runs stop, queued and in-progress
@@ -868,7 +942,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       const closedNote = `Closed by reset on ${campaignStartedAt.slice(0, 10)}`;
       let closed = 0;
       for (const status of ["NEEDS_USER", "FILLING", "QUEUED"] as const) {
-        for (const row of await repository.listApplications(owner, { status, limit: 2000 })) {
+        for (const row of await repository.listApplications(owner, { status })) {
           await this.updateApplication(owner, row.id, { status: "FAILED", notes: (row.notes ? `${row.notes} | ${closedNote}` : closedNote).slice(0, 4000) }, context);
           closed += 1;
         }
@@ -984,7 +1058,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       const dayStart = new Date(now());
       dayStart.setUTCHours(0, 0, 0, 0);
       const todayCount = await repository.countApplications(owner, site, APPLIED_STATUSES, dayStart.toISOString());
-      const latest = (await repository.listApplications(owner, { limit: 50 }))
+      const latest = (await repository.listApplications(owner, {}))
         .filter((row) => row.ats === site && APPLIED_STATUSES.includes(row.status as JobApplicationStatus))
         .map((row) => row.appliedAt ?? row.updatedAt)
         .sort()
@@ -1071,7 +1145,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       const key = normalizeJobApplyKey(question);
       if (!key) return null;
       // The normalized key (300 characters) is the search text too: a question may be longer than the recall query allows.
-      const candidates = await this.listMemory(owner, { kinds: ["ANSWER"], keys: [key], query: key, site: scope.site ?? undefined, company: scope.company ?? undefined, limit: 20 });
+      const candidates = await this.listMemory(owner, { kinds: ["ANSWER"], keys: [key], query: key, site: scope.site ?? undefined, company: scope.company ?? undefined });
       const match = matchAnswerMemory(candidates, question);
       if (match) await repository.touchMemory(owner, [match.id], now());
       return match;
@@ -1112,7 +1186,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       if (input.applicationId && !await repository.getApplication(owner, input.applicationId)) throw new SpaceNotFoundError(`Application ${input.applicationId} was not found.`);
       return record(owner, { ...input, type: input.type });
     },
-    async listEvents(owner: string, filter: { applicationId?: string; runId?: string; paneId?: string; since?: string; limit: number }): Promise<JobApplyEvent[]> {
+    async listEvents(owner: string, filter: { applicationId?: string; runId?: string; paneId?: string; types?: string[]; since?: string; limit?: number }): Promise<JobApplyEvent[]> {
       return (await repository.listEvents(owner, filter)).map(toEvent);
     },
 
@@ -1120,10 +1194,10 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     /** Questions and reviews the operator has not answered yet, newest first. */
     async pendingItems(owner: string, paneId: string | null): Promise<JobApplyPendingItem[]> {
       // Only question/review events: a busy pane logs hundreds of other events an hour, which pushed open questions out of the window.
-      const events = await repository.listEvents(owner, { ...(paneId ? { paneId } : {}), types: ["QUESTION", "REVIEW_REQUESTED"], limit: 1000 });
+      const events = await repository.listEvents(owner, { ...(paneId ? { paneId } : {}), types: ["QUESTION", "REVIEW_REQUESTED"] });
       // Answers from every pane: before 2026-10-16 an answer was filed under the posting's pane, not always the pane that asked.
       const oldest = events.at(-1)?.createdAt;
-      const settled = oldest ? await repository.listEvents(owner, { types: ["ANSWERED", "REVIEW_DECIDED"], since: new Date(Date.parse(oldest) - 1).toISOString(), limit: 1000 }) : [];
+      const settled = oldest ? await repository.listEvents(owner, { types: ["ANSWERED", "REVIEW_DECIDED"], since: new Date(Date.parse(oldest) - 1).toISOString() }) : [];
       const answered = new Set<string>();
       for (const event of settled) {
         if ((event.type === "ANSWERED" && typeof event.payload.questionId === "string") || (event.type === "REVIEW_DECIDED" && typeof event.payload.reviewId === "string")) {
@@ -1253,8 +1327,8 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     async taskPacket(owner: string, application: JobApplication, settings: JobApplyPaneMetadata["settings"], run: JobApplyRunRecord, remaining: number) {
       const [profile, cv, photo, memories, answers] = await Promise.all([
         this.getProfile(owner), this.cvText(owner), this.photo(owner),
-        this.listMemory(owner, { site: application.ats, company: application.company, limit: 20 }),
-        this.listMemory(owner, { kinds: ["ANSWER"], site: application.ats, company: application.company, limit: 40 })
+        this.listMemory(owner, { site: application.ats, company: application.company }),
+        this.listMemory(owner, { kinds: ["ANSWER"], site: application.ats, company: application.company })
       ]);
       await repository.touchMemory(owner, [...new Set([...memories, ...answers].map((memory) => memory.id))], now());
       const coverLetterPath = profile.coverLetterArtifactId ? await this.artifactPath(profile.coverLetterArtifactId) : null;
@@ -1298,7 +1372,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     },
 
     // ---- questions and reviews ----------------------------------------------
-    async askQuestion(owner: string, applicationId: string, input: { question: string; options?: string[]; label?: string }, context: JobApplyEventContext = {}) {
+    async askQuestion(owner: string, applicationId: string, input: { question: string; options?: string[]; label?: string; afterMemory?: boolean }, context: JobApplyEventContext = {}) {
       const application = await repository.getApplication(owner, applicationId);
       if (!application) throw new SpaceNotFoundError(`Application ${applicationId} was not found.`);
       const known = await this.answerFor(owner, input.question, { site: application.ats as JobApplySite, company: application.company });
@@ -1309,6 +1383,29 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
           payload: { autoAnswered: true, question: input.question.slice(0, 1000), memoryId: known.id, memoryKey: known.key, answer: known.text.slice(0, 500) } });
         return { questionId: null, answered: true as const, answer: known.text, source: known.source, memoryId: known.id };
       }
+      // R12-5: a question the copilot's own memory forbids (scoped to the company or site, or about the same words) is never asked.
+      const ban = await forbiddingMemory((query) => this.listMemory(owner, { query, kinds: ["FACT", "LESSON", "PREFERENCE"], site: application.ats as JobApplySite, company: application.company }),
+        input.question, (memory) => Boolean(memory.site || memory.company));
+      if (ban) throw new SpaceConflictError(forbiddenByMemoryText("Job Copilot", ban));
+      // Plan clipboard:7L5KyWp3kQsP step 3: the operator's pinned Space Memory entries holding the question's words join the memories shown first.
+      const pinned = !input.afterMemory && options.operatorMemory ? await options.operatorMemory(input.question).catch(() => []) : [];
+      // Queue item 34 (28/10: on-call, Terraform and Go were asked while memory held all three): the question's words looked up first.
+      if (!input.afterMemory) {
+        const found = new Map<string, { memory: JobApplyMemory; hits: number }>();
+        for (const term of questionMemoryTerms(input.question)) {
+          // Every memory a word finds, up to the memory list's page of 200 (until 31/10 five a word, five in all, 300 characters each).
+          for (const memory of await this.listMemory(owner, { query: term, site: application.ats as JobApplySite, company: application.company })) {
+            found.set(memory.id, { memory, hits: (found.get(memory.id)?.hits ?? 0) + 1 });
+          }
+        }
+        const memoryHits = [...[...found.values()].sort((left, right) => right.hits - left.hits)
+          .map(({ memory }) => ({ id: memory.id, key: memory.key, text: memory.text, source: memory.source as string })),
+          ...pinned.map((entry) => ({ id: entry.id, key: entry.title, text: entry.body, source: entry.rule ? "SPACE_MEMORY_OPERATOR_RULE" : "SPACE_MEMORY_OPERATOR_FACT" }))];
+        if (memoryHits.length) {
+          return { questionId: null, answered: false as const, memoryHits,
+            note: "Nothing was asked yet: your memory may already answer this. If one of these fits, answer from it (and space_job_memory_remember the answer under this question). If none does, ask again with afterMemory: true." };
+        }
+      }
       const questionId = `jobq:${randomBytes(9).toString("base64url")}`;
       const parks = application.status === "FILLING" || application.status === "QUEUED";
       if (parks) await repository.updateApplication(owner, applicationId, { status: "NEEDS_USER", notes: input.question.slice(0, 4000), queuePosition: null });
@@ -1318,7 +1415,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     },
     /** by NOUS: Nous, the mind of SpaceApp, answered for the operator (its answer is the agent's memory, not the operator's voice). */
     async answerQuestion(owner: string, applicationId: string, input: { questionId: string; answer: string }, context: JobApplyEventContext = {}, by: "USER" | "NOUS" = "USER") {
-      const events = await repository.listEvents(owner, { applicationId, types: ["QUESTION"], limit: 200 });
+      const events = await repository.listEvents(owner, { applicationId, types: ["QUESTION"] });
       const question = events.find((event) => event.type === "QUESTION" && event.payload.questionId === input.questionId);
       if (!question) throw new SpaceNotFoundError("The question was not found.");
       // A question may run to 1000 characters; the memory key is the normalized question, which keeps 300 (as answerFor looks it up).
@@ -1338,7 +1435,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     async waitForAnswer(owner: string, applicationId: string, input: { questionId: string; waitMs: number }) {
       const deadline = Date.now() + Math.min(input.waitMs, NEXT_JOB_MAX_WAIT_MS);
       for (;;) {
-        const events = await repository.listEvents(owner, { applicationId, types: ["ANSWERED"], limit: 200 });
+        const events = await repository.listEvents(owner, { applicationId, types: ["ANSWERED"] });
         const answered = events.find((event) => event.type === "ANSWERED" && event.payload.questionId === input.questionId);
         if (answered) return { answered: true as const, answer: String(answered.payload.answer ?? ""), answeredAt: answered.createdAt };
         if (Date.now() >= deadline) return { answered: false as const, answer: null };
@@ -1357,7 +1454,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       return { reviewId };
     },
     async decideReview(owner: string, applicationId: string, input: JobApplyReviewDecision, context: JobApplyEventContext = {}) {
-      const events = await repository.listEvents(owner, { applicationId, types: ["REVIEW_REQUESTED"], limit: 200 });
+      const events = await repository.listEvents(owner, { applicationId, types: ["REVIEW_REQUESTED"] });
       const review = events.find((event) => event.type === "REVIEW_REQUESTED" && event.payload.reviewId === input.reviewId);
       if (!review) throw new SpaceNotFoundError("The review was not found.");
       const application = await repository.getApplication(owner, applicationId);
@@ -1380,7 +1477,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     async waitForReview(owner: string, applicationId: string, input: { reviewId: string; waitMs: number }) {
       const deadline = Date.now() + Math.min(input.waitMs, NEXT_JOB_MAX_WAIT_MS);
       for (;;) {
-        const events = await repository.listEvents(owner, { applicationId, types: ["REVIEW_DECIDED"], limit: 200 });
+        const events = await repository.listEvents(owner, { applicationId, types: ["REVIEW_DECIDED"] });
         const decided = events.find((event) => event.type === "REVIEW_DECIDED" && event.payload.reviewId === input.reviewId);
         if (decided) return { decided: true as const, decision: String(decided.payload.decision), edits: Array.isArray(decided.payload.edits) ? decided.payload.edits : [], note: decided.payload.note ?? null };
         if (Date.now() >= deadline) return { decided: false as const, decision: null, edits: [], note: null };
@@ -1395,7 +1492,11 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       if (input.applicationId && !application) throw new SpaceNotFoundError(`Application ${input.applicationId} was not found.`);
       const postingUrl = input.postingUrl ?? (application ? (isImportedJobApplication(application) ? importedJobPostingUrl(toApplication(application)) : application.url) : null);
       const { salaryBelowMarketPercent } = jobApplyCandidateSchema.parse((await profileRecord(owner)).candidate ?? {});
-      const result = await salary.research({ ...input, ...(postingUrl ? { postingUrl } : {}) }, salaryBelowMarketPercent);
+      const researched = await salary.research({ ...input, ...(postingUrl ? { postingUrl } : {}) }, salaryBelowMarketPercent);
+      // Queue 29/10 (Tide Bulgaria and Lithuania asked the operator while jobmem:HtUENSKHFfWw set a EUR 36,000 floor): the operator's salary rules come with every answer.
+      const rules = (await this.listMemory(owner, { query: "salary", kinds: ["FACT", "LESSON", "PREFERENCE"], site: (application?.ats as JobApplySite | undefined) ?? undefined,
+        company: application?.company ?? undefined })).map((memory) => ({ id: memory.id, text: memory.text }));
+      const result = rules.length ? { ...researched, askOperator: false, salaryRules: rules } : researched;
       if (application) {
         await record(owner, { ...context, paneId: context.paneId ?? application.paneId ?? null, applicationId: application.id, type: "NOTE", message: salaryResearchNote(result),
           payload: { salaryResearch: { recommended: result.recommended, confidence: result.confidence, postingRange: result.postingRange,
@@ -1408,7 +1509,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     // ---- discovery ----------------------------------------------------------
     /** Scans the requested boards plus every board token remembered as a SITE memory tagged board-token ("<ats>:<token>"). */
     async discover(owner: string, input: JobApplyDiscoverRequest) {
-      const remembered = await repository.listMemory(owner, { kinds: ["SITE"], limit: 200 });
+      const remembered = await repository.listMemory(owner, { kinds: ["SITE"] });
       const extra = remembered.flatMap((memory) => {
         if (!memory.tags.includes("board-token")) return [];
         const match = /^(greenhouse|lever|ashby):([a-z0-9][a-z0-9._-]{0,80})$/i.exec(memory.text.trim());

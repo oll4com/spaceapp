@@ -1,3 +1,4 @@
+import { createGatewayServer } from "../src/server.js";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryGatewayRepository } from "@space/db";
@@ -25,7 +26,7 @@ const reply = (text: string) => sse(
 const quotaError = () => json({ error: { code: 429, message: "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h3m17s.",
   status: "RESOURCE_EXHAUSTED" } }, 429);
 
-async function setup(upstream: (token: string, path: string, body: Record<string, unknown> | null) => Response, extra: Partial<AntigravityProxyOptions> = {}) {
+async function setup(upstream: (token: string, path: string, body: Record<string, unknown> | null, signal: AbortSignal | null | undefined) => Response | Promise<Response>, extra: Partial<AntigravityProxyOptions> = {}) {
   const repository = new InMemoryGatewayRepository();
   for (const [accountId, name, used] of [[accountA, "a", 10], [accountB, "b", 40]] as const) {
     const credentials: StoredCredentials = { accessToken: `token-${name}`, refreshToken: "rt", idToken: null, upstreamAccountId: `project-${name}`, accessExpiresAtMs: null };
@@ -38,32 +39,57 @@ async function setup(upstream: (token: string, path: string, body: Record<string
   await repository.updateSettings({ routingStrategy: "USAGE_WEIGHTED" });
   const pool = new AccountPool({ provider: "ANTIGRAVITY", repository, cipher: () => cipher, refresher: { needsRefresh: () => false, refresh: vi.fn() }, now: () => nowMs });
   const logs = new RequestLogWriter(repository, { intervalMs: 1 });
-  const calls: { token: string; path: string; body: Record<string, unknown> | null }[] = [];
+  const calls: { token: string; path: string; body: Record<string, unknown> | null; headers: Record<string, string> }[] = [];
   const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
     const token = String((init.headers as Record<string, string>).authorization ?? "").replace("Bearer ", "");
     const path = url.replace("https://code-assist.test", "");
     const body = init.body ? JSON.parse(Buffer.from(init.body as Uint8Array).toString("utf8")) as Record<string, unknown> : null;
-    calls.push({ token, path, body });
-    return upstream(token, path, body);
+    calls.push({ token, path, body, headers: init.headers as Record<string, string> });
+    return upstream(token, path, body, init.signal);
   }) as unknown as typeof fetch;
-  const app = Fastify();
-  registerAntigravityProxyRoutes(app, { pool, repository, logs, settings: () => repository.getSettings(), fetchImpl, now: () => nowMs,
+  const apiLog: Array<{ reqId: string; event: string }> = [];
+  const { app } = createGatewayServer({ repository, version: "test", credentialKeyPresent: () => true,
+    requestLog: (record) => apiLog.push(record),
+    routes: (app) => registerAntigravityProxyRoutes(app, { pool, repository, logs, settings: () => repository.getSettings(), fetchImpl, now: () => nowMs,
     upstreamBaseUrl: "https://code-assist.test", ...extra,
     verifyIdentity: async (token) => (token === "client-a-token" ? { subject: "sub-a", email: "a@example.com", clientId: null }
-      : token === "stranger" ? { subject: "sub-x", email: "x@example.com", clientId: null } : null) });
-  const post = (path: string, body: Record<string, unknown>, token = "client-a-token") => app.inject({ method: "POST", url: `/antigravity${path}`,
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "user-agent": "antigravity/1.3.1" }, payload: JSON.stringify(body) });
-  return { repository, pool, logs, calls, post, app };
+      : token === "stranger" ? { subject: "sub-x", email: "x@example.com", clientId: null } : null) }) });
+  const post = (path: string, body: Record<string, unknown>, token = "client-a-token", headers: Record<string, string> = {}) => app.inject({ method: "POST", url: `/antigravity${path}`,
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "user-agent": "antigravity/1.3.1", ...headers }, payload: JSON.stringify(body) });
+  return { repository, pool, logs, calls, post, app, apiLog };
 }
 
 const generate = (model = "gemini-3.8-flash-high") => ({ project: "project-a", requestId: "r1", model, userAgent: "antigravity", requestType: "agent",
   request: { contents: [{ role: "user", parts: [{ text: "hi" }] }], sessionId: "session-1" } });
+
+it("correlates pooled and passthrough Antigravity CLI calls with the Gateway API id (OBS-006)", async () => {
+  const f = await setup(() => { const response = reply("hello"); response.headers.set("x-request-id", "upstream-only-id"); return response; });
+  try {
+    const ids: string[] = [];
+    for (const token of ["client-a-token", "stranger"]) {
+      for (const supplied of [`req:antigravity-${token}`, "x".repeat(121), undefined]) {
+        const response = await f.post("/v1internal:streamGenerateContent", generate(), token, supplied ? { "x-request-id": supplied } : {});
+        expect(response.statusCode).toBe(200);
+        const id = String(response.headers["x-request-id"]);
+        if (supplied?.startsWith("req:")) expect(id).toBe(supplied);
+        else expect(id).toMatch(/^req_[0-9a-f]{32}$/);
+        ids.push(id);
+      }
+    }
+    await f.logs.flush();
+    expect((await f.repository.listRequestLogs({ limit: 10 })).map((row) => row.requestId).reverse()).toEqual(ids);
+    expect(f.apiLog.map((row) => row.reqId)).toEqual(ids);
+    expect(f.calls.map((call) => call.headers["x-request-id"])).toEqual(ids);
+  } finally { await f.app.close(); }
+});
 
 describe("Antigravity helpers", () => {
   it("reads the CLI sign-in file, quota groups, reset hints and the model's quota group", () => {
     const idToken = `x.${Buffer.from(JSON.stringify({ email: "a@example.com", sub: "sub-a" })).toString("base64url")}.y`;
     expect(parseAntigravityTokenFile(JSON.stringify({ token: { access_token: "at", refresh_token: "rt", expiry: "2030-01-10T01:00:00Z" }, id_token: idToken })))
       .toEqual({ accessToken: "at", refreshToken: "rt", expiresAtMs: Date.parse("2030-01-10T01:00:00Z"), email: "a@example.com", subject: "sub-a" });
+    expect(parseAntigravityTokenFile(JSON.stringify({ token: { access_token: "at", refresh_token: "rt", expiry: "2030-01-10T01:00:00Z" }, id_token_email: "b@example.com" })))
+      .toEqual({ accessToken: "at", refreshToken: "rt", expiresAtMs: Date.parse("2030-01-10T01:00:00Z"), email: "b@example.com", subject: null });
     expect(() => parseAntigravityTokenFile("{}")).toThrow(/refresh token/);
     expect(parseQuotaSummary({ groups: [
       { displayName: "Gemini Models", buckets: [{ window: "5h", remainingFraction: 0.25, resetTime: "2030-01-10T05:00:00Z" }, { window: "weekly", remainingFraction: 0.9 }] },
@@ -72,6 +98,11 @@ describe("Antigravity helpers", () => {
       gemini: { fiveHourUsedPercent: 75, fiveHourResetAt: "2030-01-10T05:00:00Z", weeklyUsedPercent: 10, weeklyResetAt: null },
       claude: { fiveHourUsedPercent: 0, fiveHourResetAt: null, weeklyUsedPercent: null, weeklyResetAt: null }
     });
+    expect(parseQuotaSummary(
+      { groups: [{ displayName: "Claude and GPT models", buckets: [{ bucketId: "3p-5h", remainingFraction: 1 }] }] },
+      { buckets: [{ modelId: "gemini-3.8-flash-tiered", remainingFraction: 0.962, resetTime: "2030-01-10T04:00:00Z" }] },
+      Date.parse("2030-01-10T00:00:00Z")
+    ).gemini).toEqual({ fiveHourUsedPercent: 3.8, fiveHourResetAt: "2030-01-10T04:00:00Z", weeklyUsedPercent: null, weeklyResetAt: null });
     expect(parseResetsIn("Individual quota reached. Resets in 4h3m17s.")).toBe(4 * 3600 + 3 * 60 + 17);
     expect(quotaGroupForModel("claude-opus-5-5-high")).toBe("claude");
     expect(quotaGroupForModel("gemini-3.8-flash-high")).toBe("gemini");
@@ -95,6 +126,71 @@ describe("Antigravity helpers", () => {
 });
 
 describe("Antigravity proxy", () => {
+  it.each(["before headers", "during the body"])("cancels a Nous upstream request %s without trying another pooled account", async (phase) => {
+    let began!: () => void;
+    const started = new Promise<void>((resolve) => { began = resolve; });
+    let upstreamAborted = false;
+    const { app, calls, logs, repository } = await setup((_token, _path, _body, signal) => new Promise<Response>((resolve, reject) => {
+      let body: ReadableStreamDefaultController<Uint8Array> | null = null;
+      const stop = (error: Error) => { if (body) body.error(error); else reject(error); };
+      const fallback = setTimeout(() => stop(new Error("The client failed to cancel its upstream request.")), 2_000);
+      signal!.addEventListener("abort", () => { upstreamAborted = true; clearTimeout(fallback); stop(new DOMException("Cancelled", "AbortError")); }, { once: true });
+      if (phase === "during the body") resolve(new Response(new ReadableStream<Uint8Array>({ start(controller) { body = controller; } }), { headers: { "content-type": "application/json" } }));
+      began();
+    }));
+    const controller = new AbortController();
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const port = (app.server.address() as { port: number }).port;
+    const pending = fetch(`http://127.0.0.1:${port}/antigravity/v1internal:generateContent`, {
+      method: "POST", signal: controller.signal,
+      headers: { authorization: "Bearer client-a-token", "content-type": "application/json", "x-space-gateway-require-pool": "true" },
+      body: JSON.stringify(generate())
+    });
+    try {
+      await started;
+      controller.abort();
+      await expect(pending).rejects.toThrow();
+      await vi.waitFor(() => expect(upstreamAborted).toBe(true));
+      await logs.flush();
+      expect(calls).toHaveLength(1);
+      expect(await repository.listRequestLogs({ limit: 5 })).toEqual([expect.objectContaining({ errorCode: "client_closed", accountId: accountA })]);
+    } finally { controller.abort(); await pending.catch(() => undefined); await app.close(); }
+  }, 15_000); // a real local server and fetch: the 5 s default timed out on a loaded host
+
+  it("keeps Nous model requests inside the pool and strips private routing/project headers upstream", async () => {
+    const { app, calls, logs, repository } = await setup(() => reply("pooled"));
+    const headers = { authorization: "Bearer stranger", "content-type": "application/json", "x-space-gateway-require-pool": "true", "x-space-project": "nous" };
+    const outside = await app.inject({ method: "POST", url: "/antigravity/v1internal:generateContent", headers, payload: JSON.stringify(generate()) });
+    expect(outside.statusCode).toBe(403);
+    expect(calls).toHaveLength(0);
+    const accountCall = await app.inject({ method: "POST", url: "/antigravity/v1internal:loadCodeAssist", headers, payload: "{}" });
+    expect(accountCall.statusCode).toBe(400);
+    const malformed = await app.inject({ method: "POST", url: "/antigravity/v1internal:generateContent",
+      headers: { ...headers, authorization: "Bearer client-a-token" }, payload: "{" });
+    expect(malformed.statusCode).toBe(400);
+    expect(calls).toHaveLength(0);
+    const pooled = await app.inject({ method: "POST", url: "/antigravity/v1internal:generateContent",
+      headers: { ...headers, authorization: "Bearer client-a-token" }, payload: JSON.stringify(generate()) });
+    expect(pooled.statusCode).toBe(200);
+    expect(calls[0]).toMatchObject({ token: "token-a", body: { project: "project-a" } });
+    expect(calls[0]!.headers["x-space-project"]).toBeUndefined();
+    expect(calls[0]!.headers["x-space-gateway-require-pool"]).toBeUndefined();
+    await logs.flush();
+    expect(await repository.listRequestLogs({ limit: 5 })).toEqual([expect.objectContaining({ project: "nous", accountId: accountA })]);
+  });
+
+  it("tags a pane CLI's calls with the pane its base URL names, and sends the path upstream without it", async () => {
+    const { post, calls, logs, repository } = await setup(() => reply("pooled"));
+    expect((await post("/project/pane:abc_DEF-1/v1internal:streamGenerateContent?alt=sse", generate())).statusCode).toBe(200);
+    expect(calls[0]).toMatchObject({ path: "/v1internal:streamGenerateContent?alt=sse" });
+    expect(calls[0]!.headers["x-space-project"]).toBeUndefined();
+    // Only a pane id names a project; anything else is passed on as the path it is.
+    await post("/project/nous/v1internal:loadCodeAssist", {});
+    expect(calls[1]!.path).toBe("/project/nous/v1internal:loadCodeAssist");
+    await logs.flush();
+    expect((await repository.listRequestLogs({ limit: 5 })).map((log) => log.project)).toContain("pane:abc_DEF-1");
+  });
+
   it("logs the usage of a non-stream model call (agy's image call)", async () => {
     const { post, logs, repository } = await setup(() => json({ response: { candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: "QUJD" } }] },
       finishReason: "STOP" }], usageMetadata: { promptTokenCount: 9, candidatesTokenCount: 1290 }, modelVersion: "gemini-3.1-flash-image" } }));
@@ -160,6 +256,17 @@ describe("Antigravity proxy", () => {
     await logs.flush();
     expect(await repository.listRequestLogs({ limit: 5 })).toEqual([expect.objectContaining({ provider: "ANTIGRAVITY", accountId: null,
       model: "gemini-3.8-flash-high", inputTokens: 1200, outputTokens: 7, reasoningTokens: 3, status: "success", clientName: expect.any(String) })]);
+  });
+
+  it("lists a pooled client's models from a pool account, a stranger's from its own (3/11: Claude Opus 4.6 retired on the pool only)", async () => {
+    const { post, calls, app } = await setup((token) => json({ models: { [token === "client-a-token" || token === "stranger" ? "claude-opus-4-6-thinking" : "claude-opus-5-5-high"]: {} } }));
+    const pooled = await post("/v1internal:fetchAvailableModels", { project: "own-project" });
+    expect(pooled.json()).toEqual({ models: { "claude-opus-5-5-high": {} } });
+    expect(calls[0]).toMatchObject({ token: expect.stringMatching(/^token-[ab]$/), body: { project: expect.stringMatching(/^project-[ab]$/) } });
+    const stranger = await post("/v1internal:fetchAvailableModels", { project: "project-x" }, "stranger");
+    expect(stranger.json()).toEqual({ models: { "claude-opus-4-6-thinking": {} } });
+    expect(calls[1]).toMatchObject({ token: "stranger", body: { project: "project-x" } });
+    await app.close();
   });
 });
 
@@ -254,5 +361,13 @@ describe("Antigravity import", () => {
     expect(JSON.parse(cipher.decrypt(account!.credentialsEncrypted, account!.id))).toMatchObject({ accessToken: "fresh", refreshToken: "rt-9", upstreamAccountId: "proj-9" });
     const test = await antigravityAccountActions({ repository, pool, fetchImpl }).test(account!, {});
     expect(test).toMatchObject({ ok: true, planType: "google-ai-pro" });
+
+    // Re-importing with Antigravity 1.5.x `id_token_email` matches the existing `sub`-keyed account and unpauses free-plan auto-pause.
+    await repository.setAccountStatus(account!.id, "PAUSED", "Free plan: paused automatically and never used. Sign in again on a paid plan, then resume.");
+    const emailOnlyTokenJson = JSON.stringify({ token: { access_token: "old", refresh_token: "rt-9", expiry: "2029-01-01T00:00:00Z" }, id_token_email: "pro@example.com" });
+    const reimported = await app.inject({ method: "POST", url: "/__space-gateway/admin/antigravity/import", remoteAddress: "127.0.0.1",
+      headers: { "x-space-internal-token": "internal" }, payload: { tokenJson: emailOnlyTokenJson, sourceRef: "google-4" } });
+    expect(reimported.json()).toMatchObject({ status: "CONNECTED", account: { id: account!.id, status: "ACTIVE", planType: "google-ai-pro" } });
+    expect(await repository.listAccounts()).toHaveLength(1);
   });
 });

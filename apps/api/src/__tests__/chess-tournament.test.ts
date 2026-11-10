@@ -140,12 +140,16 @@ describe("chess pairings", () => {
 describe("chess tournament runner", () => {
   it("plays a full Swiss tournament with parallel games and consistent standings", async () => {
     const players = ["alpha", "greedy-beta", "gamma", "greedy-delta", "epsilon"].map((name) => contestant(name));
-    const runner = new ChessTournamentRunner({ requestMove: firstLegal, stateFile: join(dir, "state.json") });
+    const traced: Array<string | undefined> = [];
+    const runner = new ChessTournamentRunner({ requestMove: async (request) => { traced.push(request.traceId); return firstLegal(request); }, stateFile: join(dir, "state.json") });
     await runner.start(fast, players);
     await runner.idle();
 
     const snapshot = (await runner.snapshot())!;
     expect(snapshot.status).toBe("completed");
+    // OBS-006: each move names "<tournament>:<game>" for the worker's worker.socket_request line.
+    expect(traced.length).toBeGreaterThan(0);
+    expect(traced.every((id) => id?.startsWith(`${snapshot.id}:r`))).toBe(true);
     expect(snapshot.totals.games).toBe(3 * 2);
     expect(snapshot.totals.finished).toBe(6);
     expect(snapshot.standings).toHaveLength(5);
@@ -614,8 +618,10 @@ describe("chess CLI providers", () => {
     const { createWorkerCliMoveRunner } = await import("../chess/chess-cli.js");
     const socketPath = join(dir, "worker.sock");
     let lastBody: Record<string, unknown> = {};
+    let lastRequestId: unknown;
     let closedEarly = false;
     const server = createServer((request, response) => {
+      lastRequestId = request.headers["x-request-id"];
       let body = "";
       request.on("data", (chunk) => (body += chunk));
       request.on("end", () => {
@@ -639,6 +645,25 @@ describe("chess CLI providers", () => {
       const input = { runtimeId: "cli:claude", model: "sonnet", effort: "low", claudeProfile: "crew", prompt: "move", signal: new AbortController().signal };
       expect(await run(input)).toBe('{"move":"d2d4"}');
       expect(lastBody).toMatchObject({ runtimeId: "cli:claude", model: "sonnet", effort: "low", claudeProfile: "crew", prompt: "move" });
+      expect(lastBody).not.toHaveProperty("traceId");
+      expect(lastRequestId).toBeUndefined();
+      expect(lastBody).not.toHaveProperty("traceparent"); // OTLP export off: no API span, the worker's is a root
+      await run({ ...input, traceId: "council_run:0123456789abcdef01234567" });
+      expect(lastBody.traceId).toBe("council_run:0123456789abcdef01234567");
+      expect(lastRequestId).toBe("council_run:0123456789abcdef01234567"); // OBS-006: also the x-request-id the worker logs
+      // OBS-006: with export on, each call is one CLIENT span whose traceparent the worker's span sits under.
+      const recorded: Array<Record<string, unknown>> = [];
+      const spans = { record: (span: Record<string, unknown>) => void recorded.push(span), flush: async () => {}, close: async () => {}, stats: () => ({ exported: 0, dropped: 0, failed: 0 }) };
+      const traced = createWorkerCliMoveRunner(socketPath, spans as never);
+      await traced({ ...input, traceId: "council_run:0123456789abcdef01234567" });
+      const [, traceId, spanId] = String(lastBody.traceparent).split("-");
+      expect(recorded[0]).toMatchObject({
+        traceId, spanId, parentSpanId: null, name: "api.worker_socket /move", kind: 3, error: false,
+        attributes: { "space.route": "move", "space.outcome": "COMPLETED", "space.trace_id": "council_run:0123456789abcdef01234567" }
+      });
+      await expect(traced({ ...input, prompt: "quota" })).rejects.toThrow("quota exhausted");
+      expect(recorded[1]).toMatchObject({ error: true, attributes: { "space.outcome": "FAILED" } });
+      expect(recorded[1]!.traceId).not.toBe(traceId);
       await expect(run({ ...input, prompt: "quota" })).rejects.toThrow("quota exhausted");
       const controller = new AbortController();
       const slow = run({ ...input, prompt: "slow", signal: controller.signal });

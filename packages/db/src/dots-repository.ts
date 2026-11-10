@@ -320,7 +320,7 @@ export class PostgresDotsRepository implements DotsRepository {
   async listDotBrowserPanes(owner: string, dotId: string) {
     return (await this.pool.query<{ roomId: string; roomName: string | null; paneId: string }>(`SELECT b.room_id AS "roomId", r.name AS "roomName",
       b.pane_id AS "paneId" FROM dot_browser_panes b JOIN panes p ON p.id=b.pane_id AND p.is_closed=false AND p.room_id=b.room_id
-      JOIN rooms r ON r.id=b.room_id AND r.owner_user_id=$1 WHERE b.dot_id=$2 AND b.owner_user_id=$1 ORDER BY b.created_at DESC LIMIT 20`,
+      JOIN rooms r ON r.id=b.room_id AND r.owner_user_id=$1 WHERE b.dot_id=$2 AND b.owner_user_id=$1 ORDER BY b.created_at DESC`,
       [owner, dotId])).rows;
   }
   async dispose() { await (this.pool as PgPoolLike & { end?: () => Promise<void> }).end?.(); }

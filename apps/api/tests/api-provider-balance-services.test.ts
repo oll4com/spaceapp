@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import type { GatewayAnthropicBillingReport } from "@space/contracts";
+import type { ApiProviderAccount, GatewayAnthropicBillingReport } from "@space/contracts";
 import {
   anthropicProviderAccount,
   createApiProviderAccountProvider,
-  discoverApiProviderKeys
+  discoverApiProviderKeys,
+  gatewayPoolProviderAccounts,
+  makeProviderAccount,
+  withGatewayOpenAi
 } from "../src/api-provider-balance-services.js";
 
 const now = Date.parse("2026-10-24T12:00:00.000Z");
@@ -85,10 +88,60 @@ describe("api provider balance services", () => {
     const provider = createApiProviderAccountProvider({ now: () => new Date(now), anthropic: { billing: async () => bill(),
       settings: async () => ({ anthropicMonthlyBudgetUsd: null, anthropicCreditsUsd: 1500 }),
       // Cents, as Anthropic's cost report stores them; usage rows hold tokens and are not money.
-      usage: async () => [{ source: "COST", value: 12_861 }, { source: "COST", value: 5_842 }, { source: "COST", value: 1_000 }, { source: "USAGE", value: 999_999 }] } });
+      usage: async () => [{ source: "COST", value: 12_861 }, { source: "COST", value: 5_842 }, { source: "COST", value: 1_000 }, { source: "USAGE", value: 999_999 }], configured: async () => true } });
     expect((await provider()).data[0]).toMatchObject({ id: "anthropic", balance: "$1241.79" });
-    const failing = createApiProviderAccountProvider({ anthropic: { billing: async () => { throw new Error("gateway down"); },
-      settings: async () => ({ anthropicMonthlyBudgetUsd: null, anthropicCreditsUsd: null }), usage: async () => [] } });
-    expect((await failing()).data[0]).toMatchObject({ id: "anthropic", status: "ERROR", detail: "Anthropic bill unavailable: gateway down" });
+    const failing = (configured: () => Promise<boolean>) => createApiProviderAccountProvider({ anthropic: { billing: async () => { throw new Error("gateway down"); },
+      settings: async () => ({ anthropicMonthlyBudgetUsd: null, anthropicCreditsUsd: null }), usage: async () => [], configured } });
+    expect((await failing(async () => true)()).data[0]).toMatchObject({ id: "anthropic", status: "ERROR", detail: "Anthropic bill unavailable: gateway down" });
+    // A clean install (no Anthropic key) whose read fails keeps the card hidden; so does one where even the key check fails.
+    expect((await failing(async () => false)()).data[0]).toMatchObject({ id: "anthropic", status: "UNCONFIGURED" });
+    expect((await failing(async () => { throw new Error("db down"); })()).data[0]).toMatchObject({ id: "anthropic", status: "UNCONFIGURED" });
+  });
+
+  it("meters Make credits against the allowance Make reports, never a fixed figure", () => {
+    // Org 9526068 on 5/11: the Free plan, 10.00 credits used of 1,000.
+    const org = { id: 9526068, name: "My Organization", productName: "Free", centicreditsConsumed: "1000",
+      nextReset: "2026-12-04T11:35:06.808Z", license: { operations: 1000 } };
+    expect(makeProviderAccount(org, "2026-11-05T08:00:00.000Z")).toMatchObject({
+      id: "make-9526068", providerId: "make", status: "CONNECTED", usage: "10 credits", limit: "1,000 credits", remainingPercent: 99,
+      detail: "Free plan · My Organization · 10 of 1,000 credits used · Resets 2026-12-04"
+    });
+    // A paid plan shows its own allowance; a spent allowance reads exhausted.
+    expect(makeProviderAccount({ ...org, productName: "Teams", license: { operations: 80_000 } }, "2026-11-05T08:00:00.000Z"))
+      .toMatchObject({ limit: "80,000 credits", remainingPercent: 100, detail: expect.stringContaining("Teams plan") });
+    expect(makeProviderAccount({ ...org, centicreditsConsumed: "100050" }, "2026-11-05T08:00:00.000Z"))
+      .toMatchObject({ status: "EXHAUSTED", usage: "1,000.5 credits", remainingPercent: 0 });
+  });
+
+  it("lists Space Gateway's key pools one row per provider; Pause in the Gateway takes one out (operator 6/11 21:49 BKK, nous_msg:71a41c2e)", async () => {
+    const at = "2026-11-06T15:00:00.000Z";
+    const rows = gatewayPoolProviderAccounts([
+      { provider: "ADAPTION", status: "ACTIVE" }, { provider: "ADAPTION", status: "QUOTA_EXCEEDED" },
+      { provider: "AMD_TOKEN_LAB", status: "PAUSED" }, { provider: "NVIDIA", status: "RATE_LIMITED" }, { provider: "GROQ", status: "QUOTA_EXCEEDED" },
+      { provider: "CLOUDFLARE_AI", status: "REAUTH_REQUIRED" }, { provider: "CLOUDFLARE_AI", status: "DEACTIVATED" },
+      // Subscriptions and keys a balance service already reads are not pools here.
+      { provider: "CLAUDE", status: "ACTIVE" }, { provider: "OPENROUTER", status: "ACTIVE" }, { provider: "DEEPSEEK", status: "ACTIVE" }
+    ], at);
+    expect(rows.map((row) => [row.label, row.status, row.detail])).toEqual([
+      ["Adaption Labs", "CONNECTED", "Space Gateway key pool"], ["NVIDIA NIM", "CONNECTED", "Space Gateway key pool"],
+      ["Groq", "EXHAUSTED", "Space Gateway key pool · out of credits"], ["Cloudflare Workers AI", "ERROR", "Space Gateway key pool · its key needs replacing in Space Gateway"]]);
+    expect(rows[0]).toMatchObject({ id: "gateway-adaption", providerId: "adaption", balance: null, sampledAt: at });
+    // Resumed, it is back by itself, next to the balance services' rows.
+    const list = createApiProviderAccountProvider({ now: () => new Date(at), gatewayAccounts: async () => [{ provider: "AMD_TOKEN_LAB", status: "ACTIVE" }] });
+    expect((await list()).data.filter((row) => row.id.startsWith("gateway-")).map((row) => row.label)).toEqual(["AMD Token Lab"]);
+  });
+
+  it("lists the OpenAI key as out of credit while none of Space Gateway's OpenAI accounts serves (nous_msg:71a41c2e)", () => {
+    // Its own check only lists the models, which a key with no credit still can: it said "Configured" with the gateway QUOTA_EXCEEDED.
+    const openai: ApiProviderAccount = { id: "openai", providerId: "openai", label: "OpenAI", status: "CONNECTED", balance: "Configured", currency: null, sampledAt: null };
+    const deepseek: ApiProviderAccount = { id: "deepseek", providerId: "deepseek", label: "DeepSeek", status: "CONNECTED", balance: "$4.00", currency: null, sampledAt: null };
+    for (const status of ["QUOTA_EXCEEDED", "PAUSED"] as const) {
+      expect(withGatewayOpenAi([openai, deepseek], [{ provider: "OPENAI_API", status }]).map((row) => [row.id, row.status, row.balance]))
+        .toEqual([["openai", "EXHAUSTED", null], ["deepseek", "CONNECTED", "$4.00"]]);
+    }
+    // One serving account, or no gateway account (or a failed gateway read: none), leaves the row as its check found it.
+    for (const gateway of [[{ provider: "OPENAI_API" as const, status: "PAUSED" as const }, { provider: "OPENAI_API" as const, status: "ACTIVE" as const }], []]) {
+      expect(withGatewayOpenAi([openai], gateway)[0]).toBe(openai);
+    }
   });
 });

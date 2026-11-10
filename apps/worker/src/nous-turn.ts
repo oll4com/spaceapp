@@ -1,18 +1,21 @@
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
-import { createNousTurnReader, type NousTurnEvent, type NousTurnResult } from "@space/contracts";
+import { createNousTurnReader, NOUS_PROMPT_MAX_CHARS, NOUS_SYSTEM_MAX_CHARS, type NousTurnEvent, type NousTurnResult } from "@space/contracts";
 import { CHESS_CLI_WORKSPACE } from "./chess-cli-move.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // The reader is shared with the public install's path (the CLI container's credential agent): one parser for both.
 export { parseNousTurnOutput, readNousStreamLine, splitNousStreamLines, type NousTurnEvent, type NousTurnResult } from "@space/contracts";
 
 /**
- * Nous, the mind of SpaceApp (operator decision 2026-10-17): one turn of headless Claude Code (Opus 5.5, xhigh) whose
+ * Nous, the mind of SpaceApp: one turn of the selected CLI provider whose
  * only tools are Nous's, served by the API over HTTP MCP with a token for that turn. It runs here, not in the API,
  * because CLI processes must never live in the space-api cgroup; the path is the chess moves' (sudo -> CLI broker ->
- * runtime namespace -> the Claude wrapper as the operator), in the wrapper's agent-tools mode.
+ * runtime namespace -> the provider wrapper as the operator), in the wrapper's agent-tools mode.
  */
 export interface NousTurnInput {
+  /** Omitted by older callers, which continue to use Claude Code. "opencode": Claude on the API-key account run by OpenCode (Space provider's third route). */
+  provider?: "claude" | "codex" | "gemini" | "openai" | "openrouter" | "deepseek" | "opencode";
   model: string;
   effort: string;
   /** Claude Code account profile (not "main"), passed as SPACE_CLAUDE_ACCOUNT_PROFILE. */
@@ -30,17 +33,17 @@ export interface NousTurnInput {
   /** Stream the answer's text as it is written (stream-json with partial messages); the API shows it in the dock as a draft. */
   stream: boolean;
   /** Who runs it, tagged on its Space Gateway requests (x-space-project) so the request logs tell turns and helpers apart. */
-  caller: "nous" | "nous-helper";
+  caller: "nous" | "nous-helper" | "nous-operator";
 }
 
-const BROKER = "/opt/spaceapp/bin/space-cli-vpn-broker";
+const BROKER = `${SPACE_INSTALL_ROOT}/bin/space-cli-vpn-broker`;
 const PATH_ENV = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 export const NOUS_TURN_MAX_BODY_BYTES = 640 * 1024;
-const MAX_PROMPT_CHARS = 400_000;
-const MAX_SYSTEM_CHARS = 20_000;
+const MAX_PROMPT_CHARS = NOUS_PROMPT_MAX_CHARS;
+const MAX_SYSTEM_CHARS = NOUS_SYSTEM_MAX_CHARS;
 const MAX_TIMEOUT_MS = 20 * 60_000;
 const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,159}$/;
-const EFFORT_PATTERN = /^(?:low|medium|high|xhigh|max)$/;
+const EFFORT_PATTERN = /^(?:none|minimal|low|medium|high|xhigh|max)$/;
 const CLAUDE_PROFILE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const MCP_URL_PATTERN = /^https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?\/api\/cli\/nous\/mcp$/;
 const TOKEN_PATTERN = /^[A-Za-z0-9._-]{20,512}$/;
@@ -49,6 +52,8 @@ export class NousTurnInputError extends Error {}
 
 export function validateNousTurnInput(raw: unknown): NousTurnInput {
   const input = (raw ?? {}) as Partial<NousTurnInput>;
+  const provider = input.provider ?? "claude";
+  if (!["claude", "codex", "gemini", "openai", "openrouter", "deepseek", "opencode"].includes(provider)) throw new NousTurnInputError("Invalid Nous provider.");
   const text = (value: unknown, max: number, label: string, allowEmpty = false) => {
     if (typeof value !== "string" || (!allowEmpty && !value.trim()) || value.length > max) throw new NousTurnInputError(`Invalid ${label}.`);
     return value;
@@ -64,11 +69,11 @@ export function validateNousTurnInput(raw: unknown): NousTurnInput {
   const maxTurns = Math.round(Number(input.maxTurns));
   if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 99) throw new NousTurnInputError("Invalid turn limit.");
   return {
-    model: input.model, effort: input.effort, claudeProfile, maxTurns,
+    provider, model: input.model, effort: input.effort, claudeProfile, maxTurns,
     system: text(input.system, MAX_SYSTEM_CHARS, "system prompt", true),
     prompt: text(input.prompt, MAX_PROMPT_CHARS, "prompt"),
     mcpUrl: input.mcpUrl, mcpToken: input.mcpToken, shell: input.shell === true, fallbackModel, stream: input.stream === true,
-    caller: input.caller === "nous-helper" ? "nous-helper" : "nous",
+    caller: input.caller === "nous-helper" || input.caller === "nous-operator" ? input.caller : "nous",
     timeoutMs: Math.max(10_000, Math.min(MAX_TIMEOUT_MS, Math.round(Number(input.timeoutMs)) || MAX_TIMEOUT_MS))
   };
 }
@@ -77,13 +82,15 @@ export async function runNousTurn(input: NousTurnInput, signal: AbortSignal, onE
   signal.throwIfAborted();
   await mkdir(CHESS_CLI_WORKSPACE, { recursive: true, mode: 0o755 });
   return new Promise<NousTurnResult>((resolve, reject) => {
-    const child = spawn("/usr/bin/sudo", ["-n", BROKER, "exec", "cli:claude", "agent-tools"], {
+    // Key-pool providers run in the Codex wrapper's agent-tools mode, whose runner owns their chat tool loop.
+    const runtime = input.provider === "gemini" ? "cli:gemini" : input.provider === "opencode" ? "cli:opencode" : !input.provider || input.provider === "claude" ? "cli:claude" : "cli:codex";
+    const child = spawn("/usr/bin/sudo", ["-n", BROKER, "exec", runtime, "agent-tools"], {
       cwd: CHESS_CLI_WORKSPACE,
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         PATH: PATH_ENV, LANG: "C.UTF-8", SPACE_CLI_WORKSPACE: CHESS_CLI_WORKSPACE,
         SPACE_AGENT_CHAT_MODEL: input.model, SPACE_AGENT_CHAT_REASONING_EFFORT: input.effort,
-        ...(input.claudeProfile && input.claudeProfile !== "main" ? { SPACE_CLAUDE_ACCOUNT_PROFILE: input.claudeProfile } : {})
+        ...((!input.provider || input.provider === "claude") && input.claudeProfile && input.claudeProfile !== "main" ? { SPACE_CLAUDE_ACCOUNT_PROFILE: input.claudeProfile } : {})
       }
     });
     const reader = createNousTurnReader(input.stream, onEvent);
@@ -117,7 +124,7 @@ export async function runNousTurn(input: NousTurnInput, signal: AbortSignal, onE
       }
     });
     child.stdin.on("error", () => {});
-    child.stdin.end(JSON.stringify({ prompt: input.prompt, system: input.system, mcpUrl: input.mcpUrl, mcpToken: input.mcpToken, maxTurns: input.maxTurns, shell: input.shell, caller: input.caller,
+    child.stdin.end(JSON.stringify({ provider: input.provider ?? "claude", model: input.model, effort: input.effort, timeoutMs: input.timeoutMs, prompt: input.prompt, system: input.system, mcpUrl: input.mcpUrl, mcpToken: input.mcpToken, maxTurns: input.maxTurns, shell: input.shell, caller: input.caller,
       ...(input.fallbackModel ? { fallbackModel: input.fallbackModel } : {}), ...(input.stream ? { stream: true } : {}) }));
   });
 }

@@ -2,7 +2,7 @@ import type {} from "../request-context.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
-  monitoringAnswerSchema, monitoringBriefCreateSchema, monitoringCopilotPaneMetadataSchema, monitoringEventIdSchema, monitoringLogQuerySchema, monitoringMemoryCreateSchema,
+  MONITORING_CHART_WINDOWS, monitoringAnswerSchema, monitoringBriefCreateSchema, monitoringCopilotPaneMetadataSchema, monitoringEventIdSchema, monitoringLogQuerySchema, monitoringMemoryCreateSchema,
   monitoringMemoryIdSchema, monitoringMemoryKindSchema, monitoringMemoryUpdateSchema, monitoringPromQuerySchema, monitoringReviewDecisionSchema, type Pane
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
@@ -46,7 +46,7 @@ export function registerMonitoringCopilotRoutes(app: FastifyInstance, service: M
   }
   const param = (request: FastifyRequest, name: string, schema: z.ZodType<string>): string => (parseQuery(z.object({ id: paneIdSchema, [name]: schema }).strict(), request.params) as Record<string, string>)[name]!;
 
-  app.get(`${base}/settings`, routeOptions, async (request) => ({ metadata: service.metadata((await paneOf(request)).pane) }));
+  app.get(`${base}/settings`, routeOptions, async (request) => ({ metadata: service.metadata((await paneOf(request)).pane), collectorConfig: service.collectorConfig() }));
   app.put(`${base}/settings`, routeOptions, async (request) => {
     const { owner, pane } = await paneOf(request);
     const next = parseBody(monitoringCopilotPaneMetadataSchema, request.body ?? {});
@@ -60,11 +60,16 @@ export function registerMonitoringCopilotRoutes(app: FastifyInstance, service: M
     const { owner, pane } = await paneOf(request);
     const [run, summary, alerts, actions, events] = await Promise.all([service.runView(owner, pane), service.summary(owner), service.alerts(owner, { firing: false, limit: 300 }),
       service.actions(owner, { limit: 50 }), service.events(owner, pane, 150)]);
-    return { metadata: service.metadata(pane), run, summary, alerts, actions, events };
+    return { metadata: service.metadata(pane), collectorConfig: service.collectorConfig(), run, summary, alerts, actions, events };
   });
   app.get(`${base}/targets`, routeOptions, async (request) => {
     const { owner, pane } = await paneOf(request);
     return { targets: await service.targets(owner, pane) };
+  });
+  // The Charts tab: a window name only; the queries are the server's (MONITORING_CHARTS), never the page's.
+  app.get(`${base}/charts`, routeOptions, async (request) => {
+    const { pane } = await paneOf(request);
+    return service.charts(pane, parseQuery(z.object({ window: z.enum(MONITORING_CHART_WINDOWS).default("6h") }).strict(), request.query ?? {}).window);
   });
   app.post(`${base}/query`, routeOptions, async (request) => {
     const { owner, pane } = await paneOf(request);

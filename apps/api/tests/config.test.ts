@@ -9,6 +9,11 @@ describe("Space API config", () => {
     expect(getApiConfig({ npm_package_version: "0.0.1" }).version).toBe(expected);
   });
 
+  it("runs no Space Gateway down watch on a self-hosted install (1.2.0 lab 2/11: the flag never reached the job gate)", () => {
+    expect(getApiConfig({ SPACE_PUBLIC_DISTRIBUTION: "true" }).instanceJobs["gateway-down-notify"]).toBe(false);
+    expect(getApiConfig({}).instanceJobs["gateway-down-notify"]).toBe(true);
+  });
+
   it("parses MCP server configs while keeping execution fail-closed", () => {
     const config = getApiConfig({
       SPACE_MCP_SERVERS_JSON: JSON.stringify([
@@ -49,6 +54,22 @@ describe("Space API config", () => {
     for (const bad of ["file:///run/api", "http://spaceapp-core:4911/api", "http://user:pw@spaceapp-core:4911", "http://spaceapp-core:4911?x=1"]) {
       expect(() => getApiConfig({ SPACE_CLI_API_BASE_URL: bad })).toThrow("SPACE_CLI_API_BASE_URL must be an http(s) origin.");
     }
+  });
+
+  it("leaves the Nous Pro relay and push off unless set, and takes only a wss/https origin (plain only on loopback)", () => {
+    expect(getApiConfig({})).toMatchObject({ mobileRelayUrl: null, mobilePushUrl: null });
+    expect(getApiConfig({ SPACE_MOBILE_RELAY_URL: "wss://example.invalid", SPACE_MOBILE_PUSH_URL: "http://127.0.0.1:8090" }))
+      .toMatchObject({ mobileRelayUrl: "wss://example.invalid", mobilePushUrl: "http://127.0.0.1:8090" });
+    for (const bad of ["ws://example.invalid", "wss://example.invalid/v1", "https://example.invalid", "relay"]) {
+      expect(() => getApiConfig({ SPACE_MOBILE_RELAY_URL: bad })).toThrow("SPACE_MOBILE_RELAY_URL must be a wss:// origin.");
+    }
+    expect(() => getApiConfig({ SPACE_MOBILE_PUSH_URL: "http://example.invalid" })).toThrow("SPACE_MOBILE_PUSH_URL must be a https:// origin.");
+  });
+
+  it("turns the mobile demo on only on a public install (stable and dev can never serve a public pairing offer)", () => {
+    expect(getApiConfig({ SPACE_MOBILE_DEMO: "1" }).mobileDemo).toBe(false);
+    expect(getApiConfig({ SPACE_PUBLIC_DISTRIBUTION: "true" }).mobileDemo).toBe(false);
+    expect(getApiConfig({ SPACE_MOBILE_DEMO: "1", SPACE_PUBLIC_DISTRIBUTION: "true" }).mobileDemo).toBe(true);
   });
 
   it("uses bounded Postgres pool defaults and accepts explicit API overrides", () => {

@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { NOUS_ATTACHMENTS_MARKER, NOUS_ATTACHMENTS_PER_MESSAGE, type NousAttachment } from "@space/contracts";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { NOUS_ATTACHMENTS_MARKER, type NousAttachment } from "@space/contracts";
 import { api } from "../../api.js";
 import { DockIconButton } from "../dock-kit/DockKit.js";
 import { Download, File, FileText, Film, Loader2, X } from "../ui-theme/app-icons.js";
 
 // Files the operator sends Nous (plan clipboard:hQg9iKGYDqx7): the composer's pending files and a sent message's files.
+// Each opens the Agent Files preview on click (plan clipboard:h90wb7l2Ns7q).
+
+const LazyFilePreviewDialog = lazy(() => import("../agent-files/AgentFilesDock.js").then((module) => ({ default: module.FilePreviewDialog })));
 
 const MB = 1024 * 1024;
 // The server's limits (NOUS_ATTACHMENT_LIMITS); checked here first so a large file fails before it uploads.
@@ -48,23 +51,23 @@ export function usePendingFiles(onError: (message: string) => void) {
   const [files, setFiles] = useState<PendingFile[]>([]);
   const filesRef = useRef(files);
   filesRef.current = files;
+  // One upload at a time: the server takes at most 4 at once (fileUploadLimits.concurrent) and a message carries up to 10 files.
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
   useEffect(() => () => { for (const file of filesRef.current) if (file.previewUrl) URL.revokeObjectURL(file.previewUrl); }, []);
 
   const add = useCallback((incoming: File[]) => {
     if (!incoming.length) return;
-    const room = NOUS_ATTACHMENTS_PER_MESSAGE - filesRef.current.length;
-    if (room <= 0 || incoming.length > room) onError(`A message can carry at most ${NOUS_ATTACHMENTS_PER_MESSAGE} files.`);
-    for (const file of incoming.slice(0, Math.max(0, room))) {
+    for (const file of incoming) {
       const limit = limitFor(file);
       if (file.size > limit.bytes) { onError(`${file.name || "The file"} is ${formatBytes(file.size)}; ${limit.label.toLowerCase()} can be at most ${formatBytes(limit.bytes)}.`); continue; }
       if (!file.size) { onError(`${file.name || "The file"} is empty.`); continue; }
       const key = `nous-file-${++pendingKey}`;
       const previewUrl = IMAGE_TYPES.has(file.type) && typeof URL.createObjectURL === "function" ? URL.createObjectURL(file) : null;
       setFiles((current) => [...current, { key, name: file.name || "Pasted image", size: file.size, status: "uploading", attachment: null, error: null, previewUrl }]);
-      api.uploadNousAttachments([file]).then(
+      queue.current = queue.current.then(() => api.uploadNousAttachments([file]).then(
         ({ attachments: [attachment] }) => setFiles((current) => current.map((entry) => entry.key === key ? { ...entry, status: "ready", attachment: attachment ?? null } : entry)),
         (error: unknown) => setFiles((current) => current.map((entry) => entry.key === key ? { ...entry, status: "failed", error: messageOf(error, "The file could not be uploaded.") } : entry))
-      );
+      ));
     }
   }, [onError]);
 
@@ -95,19 +98,33 @@ export function clipboardFiles(data: DataTransfer | null): File[] {
 }
 
 export function NousPendingFiles({ files, onRemove }: { files: PendingFile[]; onRemove(key: string): void }) {
+  const [viewing, setViewing] = useState<NousAttachment | null>(null);
   if (!files.length) return null;
+  // A file removed or sent while open closes its preview.
+  const open = viewing && files.some((file) => file.attachment?.id === viewing.id) ? viewing : null;
   return (
-    <ul className="nous-files is-pending" aria-label="Attached files">
-      {files.map((file) => (
-        <li key={file.key} className={`nous-file-chip is-${file.status}`} title={file.error ?? file.name}>
-          {file.previewUrl ? <img src={file.previewUrl} alt="" /> : <FileGlyph kind={file.attachment?.kind ?? null} name={file.name} />}
-          <span className="nous-file-name">{file.name}</span>
-          <span className="nous-file-size">{file.status === "failed" ? file.error : file.status === "uploading" ? "Uploading…" : formatBytes(file.size)}</span>
-          {file.status === "uploading" ? <Loader2 className="nous-file-spin" aria-hidden="true" /> : null}
-          <DockIconButton label={`Remove ${file.name}`} icon={X} onClick={() => onRemove(file.key)} />
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul className="nous-files is-pending" aria-label="Attached files">
+        {files.map((file) => {
+          const body = (
+            <>
+              {file.previewUrl ? <img src={file.previewUrl} alt="" /> : <FileGlyph kind={file.attachment?.kind ?? null} name={file.name} />}
+              <span className="nous-file-name">{file.name}</span>
+              <span className="nous-file-size">{file.status === "failed" ? file.error : file.status === "uploading" ? "Uploading…" : formatBytes(file.size)}</span>
+            </>
+          );
+          const ready = file.status === "ready" ? file.attachment : null;
+          return (
+            <li key={file.key} className={`nous-file-chip is-${file.status}`} title={file.error ?? file.name}>
+              {ready ? <button type="button" className="nous-file-open" aria-label={`Preview ${file.name}`} onClick={() => setViewing(ready)}>{body}</button> : body}
+              {file.status === "uploading" ? <Loader2 className="nous-file-spin" aria-hidden="true" /> : null}
+              <DockIconButton label={`Remove ${file.name}`} icon={X} onClick={() => onRemove(file.key)} />
+            </li>
+          );
+        })}
+      </ul>
+      {open ? <NousFilePreview file={open} onClose={() => setViewing(null)} /> : null}
+    </>
   );
 }
 
@@ -116,7 +133,34 @@ function FileGlyph({ kind, name }: { kind: NousAttachment["kind"] | null; name: 
   return <Icon className="nous-file-glyph" aria-hidden="true" />;
 }
 
-/** A sent message's files: image thumbnails that open full size, a video player, documents and files to download. */
+/** What the preview shows: images, video and audio play, a PDF in the browser's viewer, a document's extracted text; the rest downloads. */
+function previewOf(file: NousAttachment): { kind: "IMAGE" | "VIDEO" | "AUDIO" | "PDF" | "TEXT" | "NONE"; url: string } {
+  const mime = file.mimeType.toLowerCase();
+  const kind = file.kind === "IMAGE" || file.kind === "VIDEO" ? file.kind
+    : mime.startsWith("audio/") ? "AUDIO"
+    : mime === "application/pdf" ? "PDF"
+    : file.kind === "DOCUMENT" && file.readable && !file.readable.startsWith("UNAVAILABLE") ? "TEXT" : "NONE";
+  return { kind, url: api.nousAttachmentUrl(file.id, kind === "TEXT" ? "text" : undefined) };
+}
+
+function NousFilePreview({ file, onClose }: { file: NousAttachment; onClose(): void }) {
+  const { kind, url } = previewOf(file);
+  const facts = [formatBytes(file.byteSize), file.width && file.height ? `${file.width}×${file.height}` : null,
+    file.durationSeconds !== null ? `${Math.round(file.durationSeconds)} s` : null,
+    kind === "TEXT" && file.readable?.startsWith("PARTIAL") ? `Partial text${file.readable.slice(7)}` : null];
+  return (
+    <Suspense fallback={null}>
+      <LazyFilePreviewDialog filename={file.filename} meta={facts.filter(Boolean).join(" · ")} kind={kind} url={url} closeLabel="Close preview" onClose={onClose}
+        actions={(
+          <a href={api.nousAttachmentUrl(file.id, "download")} download={file.filename} className="dock-kit-icon-button" aria-label={`Download ${file.filename}`} title={`Download ${file.filename}`}>
+            <Download aria-hidden="true" />
+          </a>
+        )} />
+    </Suspense>
+  );
+}
+
+/** A sent message's files: image and video stills, documents and files; each opens its preview, each downloads. */
 export function NousMessageFiles({ files }: { files: NousAttachment[] }) {
   const [viewing, setViewing] = useState<NousAttachment | null>(null);
   if (!files.length) return null;
@@ -125,14 +169,15 @@ export function NousMessageFiles({ files }: { files: NousAttachment[] }) {
       <ul className="nous-files" aria-label="Sent files">
         {files.map((file) => (
           <li key={file.id} className={`nous-file is-${file.kind.toLowerCase()}`}>
-            {file.kind === "IMAGE" ? (
-              <button type="button" className="nous-file-thumb" onClick={() => setViewing(file)} aria-label={`View ${file.filename}`}>
+            {file.kind === "IMAGE" || file.kind === "VIDEO" ? (
+              <button type="button" className="nous-file-thumb" onClick={() => setViewing(file)} aria-label={`Preview ${file.filename}`}>
                 <img src={api.nousAttachmentUrl(file.id, "preview")} alt={file.filename} loading="lazy" />
+                {file.kind === "VIDEO" ? <Film className="nous-file-play" aria-hidden="true" /> : null}
               </button>
-            ) : file.kind === "VIDEO" ? (
-              <video className="nous-file-video" src={api.nousAttachmentUrl(file.id)} poster={api.nousAttachmentUrl(file.id, "preview")} controls preload="metadata" aria-label={file.filename} />
             ) : (
-              <span className="nous-file-doc"><FileGlyph kind={file.kind} name={file.filename} /><span className="nous-file-name">{file.filename}</span></span>
+              <button type="button" className="nous-file-doc" onClick={() => setViewing(file)} aria-label={`Preview ${file.filename}`}>
+                <FileGlyph kind={file.kind} name={file.filename} /><span className="nous-file-name">{file.filename}</span>
+              </button>
             )}
             <span className="nous-file-meta">
               <span className="nous-file-size">{formatBytes(file.byteSize)}{file.durationSeconds !== null ? ` · ${Math.round(file.durationSeconds)} s` : ""}</span>
@@ -143,12 +188,7 @@ export function NousMessageFiles({ files }: { files: NousAttachment[] }) {
           </li>
         ))}
       </ul>
-      {viewing ? (
-        <div className="nous-file-viewer" role="dialog" aria-label={viewing.filename} onClick={() => setViewing(null)}>
-          <img src={api.nousAttachmentUrl(viewing.id)} alt={viewing.filename} onClick={(event) => event.stopPropagation()} />
-          <DockIconButton label="Close" icon={X} className="nous-file-viewer-close" onClick={() => setViewing(null)} />
-        </div>
-      ) : null}
+      {viewing ? <NousFilePreview file={viewing} onClose={() => setViewing(null)} /> : null}
     </>
   );
 }

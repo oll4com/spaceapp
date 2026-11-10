@@ -12,6 +12,7 @@ import {
 } from "./cli-browser-bridge.js";
 import type { SpaceApiConfig } from "./config.js";
 import { browserProfilePathForIdentity, readBrowserAccountTabIdentities } from "./browser-sessions.js";
+import { ownBrowserPane, type BrowserControlActivity } from "./browser-control-activity.js";
 import { isT3AgentSessionId, t3AgentPrincipal } from "./t3code/agent-tokens.js";
 import { harnessAgentPrincipal, isHarnessAgentSessionId } from "./harness-agent-tokens.js";
 import { vaultFencedTargets } from "./vault/fence-hooks.js";
@@ -33,15 +34,30 @@ export const cliBrowserCdpCloseCodes = Object.freeze({
   PANE_NOT_FOUND: 4404,
   BROWSER_NOT_RUNNING: 4409,
   BROWSER_CONTROL_HELD: 4423,
+  // An agent's handoff (sign-in, code, CAPTCHA) waits for the operator in this browser; only the agent that asked drives it.
+  BROWSER_HANDOFF_PENDING: 4425,
   // A Vault-protected browser (vault/protection.ts) has no automation endpoint.
   VAULT_PROTECTED: 4424,
   // The pane's active tab moved into another Google account's Chrome (or back); the client reconnects there.
   ACTIVE_TAB_MOVED: 4410,
+  // Same profile, new Chrome/session or restored targets: rediscover them on the next connection.
+  BROWSER_CHANGED: 4411,
   ENDPOINT_UNAVAILABLE: 4502
 });
 export type CliBrowserCdpRefusal = keyof typeof cliBrowserCdpCloseCodes;
 
 const paneIdPattern = /^pane:[A-Za-z0-9_-]{6,80}$/;
+
+export const browserHandoffPendingReason = "The operator is finishing a sign-in, code or CAPTCHA in this browser; wait until the handoff ends.";
+
+/**
+ * While an agent's handoff waits (or the operator works in it), any other agent is refused: the tab the operator was sent to
+ * stays as they left it. shortcut: a restarted requester CLI gets a new session id and waits like the others; key it on the pane if that bites.
+ */
+export async function handoffHeldFrom(store: Pick<SpaceStore, "getActiveBrowserHandoffRequest">, sessionId: string, actorId: string): Promise<string | null> {
+  const handoff = await store.getActiveBrowserHandoffRequest(sessionId);
+  return handoff && handoff.requestedById !== actorId ? browserHandoffPendingReason : null;
+}
 
 /** Chrome writes "<port>\n<browser websocket path>" once DevTools listens on the loopback port. */
 export async function readChromeAutomationEndpoint(profilePath: string): Promise<string | null> {
@@ -83,6 +99,8 @@ export interface CliBrowserCdpProxyOptions {
   store: SpaceStore;
   config: Pick<SpaceApiConfig, "browserToolBridgeEnabled" | "internalApiToken" | "agentTokenSecret" | "browserSessionsProfileRoot">;
   isBrowserPane(pane: Pick<Pane, "mode">): boolean;
+  /** Who drives each pane browser: a plain CLI pane gets only its own browser (ownBrowserPane). */
+  controlActivity?: Pick<BrowserControlActivity, "agentFor">;
   assertRuntimeEnabled?(runtimeId: string): Promise<void>;
   /** The Vault fence of the pane a connection lands in (vault/protection.ts); without it no fence is checked here. */
   vaultProtection?: Pick<VaultProtection, "ownerOf" | "release">;
@@ -93,11 +111,13 @@ export interface CliBrowserCdpProxyOptions {
 export interface CliBrowserCdpProxy {
   resolve(request: FastifyRequest): Promise<CliBrowserCdpResolution | CliBrowserCdpRefused>;
   register(app: FastifyInstance, routeOptions: Record<string, unknown>): void;
-  /** Drops every automation connection of a pane; used when an operator takes control. */
-  closeForPane(paneId: string, refusal: CliBrowserCdpRefusal, reason: string): number;
+  /** Drops every automation connection of a pane (but `keepCliSessionId`'s); used when an operator takes control or a handoff starts. */
+  closeForPane(paneId: string, refusal: CliBrowserCdpRefusal, reason: string, keepCliSessionId?: string): number;
   connectionCount(paneId: string): number;
   /** Whether an agent session scripted or changed this document in the page's own world (a sealed fill then starts from a fresh one). */
   documentDirty(paneId: string, targetId: string, loaderId: string | null): boolean;
+  /** The CDP method that first made it dirty, for the fill's answer; null when it is clean. */
+  documentDirtiedBy(paneId: string, targetId: string, loaderId: string | null): string | null;
 }
 
 function queryString(query: unknown, key: string): string | null {
@@ -150,7 +170,7 @@ const playwrightUtilityWorld = "__playwright_utility_world_";
  * left paused. Once the store lists this pane's own pages, a page no live pane owns that was already open when the
  * client came (a tab of a pane long gone) is hidden the same way: Playwright's connectOverCDP waits for every page it
  * sees, and a tab blocked on a dialog or a busy script never answers (Clara/Nik 2026-10-21: initializeServer timed out).
- * Pages opened while the client is connected (popups, new tabs: Chrome holds them for the debugger) pass.
+ * Popups of this pane pass immediately. Other new tabs wait until the store lists their owner before discovery.
  */
 /**
  * Which documents an agent's automation touched in the page's own world (Vault review 2026-10-22, plan clipboard:HIPO0ALNjfsP
@@ -160,25 +180,35 @@ const playwrightUtilityWorld = "__playwright_utility_world_";
  * init script, a non-web navigation or an unknown document latches the whole pane. At most 50 documents per pane; more latch it.
  */
 export function createCliBrowserDocumentMarks() {
-  const panes = new Map<string, { documents: Set<string>; latched: boolean }>();
-  const of = (paneId: string) => { const known = panes.get(paneId); if (known) return known; const made = { documents: new Set<string>(), latched: false }; panes.set(paneId, made); return made; };
+  // Each dirty document (and a latched pane) keeps the CDP method that first dirtied it, so a fill's answer can name it (28/10).
+  const panes = new Map<string, { documents: Map<string, string>; latched: string | null }>();
+  const of = (paneId: string) => { const known = panes.get(paneId); if (known) return known; const made = { documents: new Map<string, string>(), latched: null }; panes.set(paneId, made); return made; };
   return {
-    mark(paneId: string, targetId: string, loaderId: string | null): void {
+    mark(paneId: string, targetId: string, loaderId: string | null, method = "UNKNOWN"): void {
       const pane = of(paneId);
-      if (!loaderId || pane.documents.size >= 50) { pane.latched = true; return; }
-      pane.documents.add(`${targetId}|${loaderId}`);
+      if (!loaderId || pane.documents.size >= 50) { pane.latched ??= method; return; }
+      const key = `${targetId}|${loaderId}`;
+      if (!pane.documents.has(key)) pane.documents.set(key, method);
     },
-    latch(paneId: string): void { of(paneId).latched = true; },
+    latch(paneId: string, method = "UNKNOWN"): void { of(paneId).latched ??= method; },
+    latchedBy(paneId: string): string | null { return panes.get(paneId)?.latched ?? null; },
     /** True when a fill of this document must start from a fresh one; a pane no automation touched is clean. */
     isDirty(paneId: string, targetId: string, loaderId: string | null): boolean {
       const pane = panes.get(paneId);
-      return pane !== undefined && (pane.latched || !loaderId || pane.documents.has(`${targetId}|${loaderId}`));
+      return pane !== undefined && (pane.latched !== null || !loaderId || pane.documents.has(`${targetId}|${loaderId}`));
+    },
+    /** The CDP method that first made this document dirty (or latched the pane), null when it is clean. */
+    dirtiedBy(paneId: string, targetId: string, loaderId: string | null): string | null {
+      const pane = panes.get(paneId);
+      if (!pane) return null;
+      return pane.latched ?? (loaderId ? pane.documents.get(`${targetId}|${loaderId}`) ?? null : "UNKNOWN_DOCUMENT");
     }
   };
 }
 export type CliBrowserDocumentMarks = ReturnType<typeof createCliBrowserDocumentMarks>;
 
 // Commands that run or change nothing in the page's own world. Everything else marks the document (fail closed).
+// DOM.setFileInputFiles (31/10) runs no agent code: like typing, it sets a value and the page's own listeners see the change.
 const SAFE_CDP_DOMAINS = ["Input.", "Accessibility.", "Emulation.", "Network.", "Target.", "Browser.", "Log.", "Security.", "Inspector.", "Console.", "IO.", "Overlay.",
   "Performance.", "Storage.", "DOMStorage.", "IndexedDB.", "CacheStorage.", "Schema.", "SystemInfo.", "Tracing."];
 const SAFE_CDP_METHODS = new Set([
@@ -189,32 +219,44 @@ const SAFE_CDP_METHODS = new Set([
   "Runtime.discardConsoleEntries", "Runtime.getProperties", "Runtime.awaitPromise", "Runtime.setAsyncCallStackDepth", "Runtime.getHeapUsage", "Runtime.getIsolateId",
   "DOM.enable", "DOM.disable", "DOM.getDocument", "DOM.getFlattenedDocument", "DOM.querySelector", "DOM.querySelectorAll", "DOM.describeNode", "DOM.getBoxModel", "DOM.getContentQuads",
   "DOM.getNodeForLocation", "DOM.getOuterHTML", "DOM.getAttributes", "DOM.requestNode", "DOM.requestChildNodes", "DOM.resolveNode", "DOM.scrollIntoViewIfNeeded", "DOM.focus",
-  "DOM.getFrameOwner", "DOM.pushNodesByBackendIdsToFrontend", "CSS.enable", "CSS.disable", "CSS.getComputedStyleForNode", "CSS.getMatchedStylesForNode", "CSS.getInlineStylesForNode"
+  "DOM.getFrameOwner", "DOM.pushNodesByBackendIdsToFrontend", "DOM.setFileInputFiles", "CSS.enable", "CSS.disable", "CSS.getComputedStyleForNode", "CSS.getMatchedStylesForNode", "CSS.getInlineStylesForNode"
 ]);
 /** Code runs where these say: safe only in an isolated world this session made or saw created. */
 const CONTEXT_CDP_METHODS = new Set(["Runtime.evaluate", "Runtime.callFunctionOn", "Runtime.compileScript", "Runtime.runScript"]);
 
-export function createCliBrowserCdpTargetFilter(sendToChrome: (message: Record<string, unknown>) => void, documents?: { paneId: string; marks: CliBrowserDocumentMarks }) {
+type DocumentMarkSource = { method: string; sessionId: string; targetId: string; loaderId: string | null; scope: "DOCUMENT" | "PANE" };
+export function createCliBrowserCdpTargetFilter(sendToChrome: (message: Record<string, unknown>) => void, documents?: {
+  paneId: string; marks: CliBrowserDocumentMarks; onDirty?(source: DocumentMarkSource): void;
+}) {
   let foreign = new Set<string>();
   let own = new Set<string>();
   // Pages Chrome created while this client is connected, and pages this filter hid (their ids, for id-only events).
   const opened = new Set<string>();
   const hiddenPages = new Set<string>();
   let nextId = cliBrowserCdpProxyIdBase;
-  const getTargetsIds = new Set<number>();
+  const getTargetsIds = new Set<string>();
   const hiddenSessions = new Set<string>();
   // Document marks: which session drives which target, the isolated worlds each session knows, and the replies to wait for.
   const sessionTargets = new Map<string, string>();
-  const isolated = new Map<string, { ids: Set<number>; unique: Set<string> }>();
-  const worldRequests = new Map<number, string>();
-  const attachRequests = new Map<number, string>();
+  const sessionParents = new Map<string, string>();
+  const pageSessions = new Set<string>();
+  const browserSessions = new Set<string>();
+  const isolated = new Map<string, { ids: Set<number>; unique: Set<string>; objects: Set<string> }>();
+  // Playwright calls its utility script by objectId, without a context id. Trust only handles returned by Chrome from
+  // code in a world this session made or saw; object ids are opaque and never evidence of their own context.
+  const objectRequests = new Set<string>();
+  const requestKey = (session: string, id: number) => `${session}|${id}`;
+  const forgetObjectRequests = (session: string) => { for (const key of objectRequests) if (key.startsWith(`${session}|`)) objectRequests.delete(key); };
+  const worldRequests = new Map<string, string>();
+  const attachRequests = new Map<string, { targetId: string | null; parent?: string }>();
   const proxyReplies = new Map<number, (message: { result?: Record<string, unknown> }) => void>();
-  const worldsOf = (session: string) => { const known = isolated.get(session); if (known) return known; const made = { ids: new Set<number>(), unique: new Set<string>() }; isolated.set(session, made); return made; };
+  const worldsOf = (session: string) => { const known = isolated.get(session); if (known) return known; const made = { ids: new Set<number>(), unique: new Set<string>(), objects: new Set<string>() }; isolated.set(session, made); return made; };
   const classify = (method: string, params: Record<string, unknown>, session: string | undefined): "safe" | "dirty" | "latch" => {
     if (typeof session !== "string") return "safe";
     if (CONTEXT_CDP_METHODS.has(method)) {
       const id = params.contextId ?? params.executionContextId;
       const worlds = isolated.get(session);
+      if (method === "Runtime.callFunctionOn" && typeof params.objectId === "string") return worlds?.objects.has(params.objectId) ? "safe" : "dirty";
       return (typeof id === "number" && worlds?.ids.has(id)) || (typeof params.uniqueContextId === "string" && worlds?.unique.has(params.uniqueContextId)) ? "safe" : "dirty";
     }
     if (method === "Page.addScriptToEvaluateOnNewDocument") return typeof params.worldName === "string" && params.worldName.length > 0 ? "safe" : "latch";
@@ -222,16 +264,24 @@ export function createCliBrowserCdpTargetFilter(sendToChrome: (message: Record<s
     if (method === "Page.setDocumentContent") return "latch";
     return SAFE_CDP_METHODS.has(method) || SAFE_CDP_DOMAINS.some((domain) => method.startsWith(domain)) ? "safe" : "dirty";
   };
-  const markDocument = (session: string) => {
+  const markDocument = (session: string, method: string) => {
     if (!documents) return;
-    const targetId = sessionTargets.get(session);
-    if (!targetId) { documents.marks.latch(documents.paneId); return; }
+    const pageSession = owningPageSession(session);
+    const targetId = pageSession && sessionTargets.get(pageSession);
+    if (!pageSession || !targetId) return;
     const id = ++nextId;
     proxyReplies.set(id, (reply) => {
+      // A closing/hidden target cannot execute this call anymore. Its late lookup error must not latch unrelated new tabs.
+      if (blockedSession(session) || owningPageSession(session) !== pageSession || sessionTargets.get(pageSession) !== targetId) return;
       const frame = (reply.result as { frameTree?: { frame?: { loaderId?: unknown } } } | undefined)?.frameTree?.frame;
-      documents.marks.mark(documents.paneId, targetId, typeof frame?.loaderId === "string" ? frame.loaderId.slice(0, 128) : null);
+      const loaderId = typeof frame?.loaderId === "string" ? frame.loaderId.slice(0, 128) : null;
+      const previous = documents.marks.dirtiedBy(documents.paneId, targetId, loaderId);
+      const previousLatch = documents.marks.latchedBy(documents.paneId);
+      documents.marks.mark(documents.paneId, targetId, loaderId, method);
+      const latched = documents.marks.latchedBy(documents.paneId) !== null;
+      if (!previous || (!previousLatch && latched)) documents.onDirty?.({ method, sessionId: session, targetId, loaderId, scope: latched ? "PANE" : "DOCUMENT" });
     });
-    sendToChrome({ id, method: "Page.getFrameTree", params: {}, sessionId: session });
+    sendToChrome({ id, method: "Page.getFrameTree", params: {}, sessionId: pageSession });
   };
   const isForeignPage = (info: unknown): boolean => {
     const target = info as { type?: unknown; targetId?: unknown } | null;
@@ -242,12 +292,37 @@ export function createCliBrowserCdpTargetFilter(sendToChrome: (message: Record<s
     return hidden;
   };
   const isHiddenId = (id: string) => foreign.has(id) || (hiddenPages.has(id) && !own.has(id) && !opened.has(id));
+  const owningPageSession = (session: string): string | null => {
+    const seen = new Set<string>();
+    for (let current: string | undefined = session; current && !seen.has(current); current = sessionParents.get(current)) {
+      seen.add(current);
+      if (pageSessions.has(current)) return current;
+    }
+    return null;
+  };
+  const blockedSession = (session: string): boolean => {
+    if (hiddenSessions.has(session) || (!sessionTargets.has(session) && !browserSessions.has(session))) return true;
+    const page = owningPageSession(session);
+    return page !== null && isHiddenId(sessionTargets.get(page)!);
+  };
+  const forgetSession = (session: string) => {
+    for (const [child, parent] of sessionParents) if (parent === session) forgetSession(child);
+    isolated.delete(session); forgetObjectRequests(session); sessionTargets.delete(session);
+    sessionParents.delete(session); pageSessions.delete(session); browserSessions.delete(session);
+  };
+  const refusedCommand = (id: unknown, session?: string) => ({ forward: false as const, reply: JSON.stringify({ id,
+    ...(session ? { sessionId: session } : {}), error: { code: -32000, message: "This CDP session or page is not available to this pane; reconnect or open tabs through Space (space_browser_tab_create)." } }) });
   const proxyCommand = (method: string, params: Record<string, unknown>, sessionId?: string) =>
     sendToChrome({ id: ++nextId, method, params, ...(sessionId ? { sessionId } : {}) });
   return {
     setForeignPages(pageIds: Iterable<string>) { foreign = new Set(pageIds); },
-    /** This pane's own pages (the store's list); while it is empty, pages no pane owns pass as before. */
-    setOwnPages(pageIds: Iterable<string>) { own = new Set(pageIds); },
+    /** A previously hidden target needs fresh discovery: changing this set cannot replay its lost attach events. */
+    setOwnPages(pageIds: Iterable<string>): boolean {
+      const next = new Set(pageIds);
+      const needsDiscovery = [...next].some((id) => hiddenPages.has(id) && !own.has(id) && !opened.has(id) && !foreign.has(id));
+      own = next;
+      return needsDiscovery;
+    },
     /** A client command: forward (returns the frame) or answer it locally (returns a reply for the client). */
     fromClient(text: string): { forward: true } | { forward: false; reply: string } {
       let message: { id?: unknown; method?: unknown; params?: { targetId?: unknown }; sessionId?: unknown };
@@ -255,43 +330,90 @@ export function createCliBrowserCdpTargetFilter(sendToChrome: (message: Record<s
       if (typeof message.method !== "string") return { forward: true };
       const params = (message.params ?? {}) as Record<string, unknown>;
       const session = typeof message.sessionId === "string" ? message.sessionId : undefined;
+      // Browser-wide auto-attach also sees other panes. Refuse their sessions, and stale/unknown ids, before classifying
+      // commands: forwarding first would let them change a foreign page and a failed lookup could latch this entire pane.
+      if (session && blockedSession(session)) return refusedCommand(message.id, session);
+      if (pageTargetCommands.has(message.method) && typeof params.targetId === "string" && isHiddenId(params.targetId)) return refusedCommand(message.id, session);
+      const verdict = classify(message.method, params, session);
+      if (session && verdict !== "safe" && !owningPageSession(session)) return refusedCommand(message.id, session);
+      if (typeof message.id === "number") {
+        const key = requestKey(session ?? "", message.id);
+        if (message.method === "Target.attachToTarget" && typeof params.targetId === "string") attachRequests.set(key, { targetId: params.targetId, parent: session });
+        if (message.method === "Target.attachToBrowserTarget") attachRequests.set(key, { targetId: null });
+      }
       if (documents) {
-        if (typeof message.id === "number" && session && message.method === "Page.createIsolatedWorld") worldRequests.set(message.id, session);
-        if (typeof message.id === "number" && message.method === "Target.attachToTarget" && typeof params.targetId === "string") attachRequests.set(message.id, params.targetId);
-        const verdict = classify(message.method, params, session);
-        if (verdict === "latch") documents.marks.latch(documents.paneId);
-        else if (verdict === "dirty" && session) markDocument(session);
+        if (typeof message.id === "number" && session && message.method === "Page.createIsolatedWorld") worldRequests.set(requestKey(session, message.id), session);
+        if (session && typeof message.id === "number" && verdict === "safe" && (message.method === "Runtime.evaluate" || message.method === "Runtime.callFunctionOn"
+          || (message.method === "DOM.resolveNode" && typeof params.executionContextId === "number" && isolated.get(session)?.ids.has(params.executionContextId)))) {
+          objectRequests.add(requestKey(session, message.id));
+        }
+        if (session && message.method === "Runtime.releaseObject" && typeof params.objectId === "string") isolated.get(session)?.objects.delete(params.objectId);
+        if (session && message.method === "Runtime.releaseObjectGroup") { isolated.get(session)?.objects.clear(); forgetObjectRequests(session); }
+        if (verdict === "latch" && session) {
+          const targetId = sessionTargets.get(owningPageSession(session)!)!;
+          const previous = documents.marks.latchedBy(documents.paneId);
+          documents.marks.latch(documents.paneId, message.method);
+          if (!previous) documents.onDirty?.({ method: message.method, sessionId: session, targetId, loaderId: null, scope: "PANE" });
+        }
+        else if (verdict === "dirty" && session) markDocument(session, message.method);
       }
-      if (session !== undefined) return { forward: true };
-      if (message.method === "Target.getTargets" && typeof message.id === "number") getTargetsIds.add(message.id);
-      if (pageTargetCommands.has(message.method) && typeof message.params?.targetId === "string" && isHiddenId(message.params.targetId)) {
-        return { forward: false, reply: JSON.stringify({ id: message.id, error: { code: -32000, message: "This page belongs to another pane of this browser; open tabs through Space (space_browser_tab_create)." } }) };
-      }
+      if (message.method === "Target.getTargets" && typeof message.id === "number") getTargetsIds.add(requestKey(session ?? "", message.id));
       return { forward: true };
     },
     /** A Chrome frame: the text to send to the client, or null to drop it. */
     fromChrome(text: string): string | null {
+      let outer: { id?: number; sessionId?: string; method?: string; params?: Record<string, unknown>; result?: Record<string, unknown> };
+      try { outer = JSON.parse(text); } catch { return text; }
+      if (typeof outer.id === "number" && outer.id > cliBrowserCdpProxyIdBase) {
+        const waiting = proxyReplies.get(outer.id);
+        proxyReplies.delete(outer.id);
+        waiting?.(outer);
+        return null;
+      }
+      if (typeof outer.sessionId === "string" && blockedSession(outer.sessionId)) {
+        // Even a hidden parent's late auto-attach must be released, never left waiting for the debugger.
+        if (outer.method === "Target.attachedToTarget" && typeof outer.params?.sessionId === "string") {
+          hiddenSessions.add(outer.params.sessionId);
+          if (outer.params.waitingForDebugger === true) proxyCommand("Runtime.runIfWaitingForDebugger", {}, outer.params.sessionId);
+          proxyCommand("Target.detachFromTarget", { sessionId: outer.params.sessionId });
+        }
+        return null;
+      }
       const head = text.slice(0, 32);
       const reply = /^\{"id":(\d+)/.exec(head);
       if (reply) {
         const id = Number(reply[1]);
-        if (id > cliBrowserCdpProxyIdBase) {
-          const waiting = proxyReplies.get(id);
-          if (waiting) { proxyReplies.delete(id); try { waiting(JSON.parse(text)); } catch { waiting({}); } }
-          return null;
+        if (objectRequests.size > 0) {
+          try {
+            const message = JSON.parse(text) as { sessionId?: unknown; result?: { result?: { objectId?: unknown }; object?: { objectId?: unknown }; exceptionDetails?: unknown } };
+            if (typeof message.sessionId === "string" && objectRequests.delete(requestKey(message.sessionId, id)) && !message.result?.exceptionDetails) {
+              const objectId = message.result?.result?.objectId ?? message.result?.object?.objectId;
+              if (typeof objectId === "string") isolated.get(message.sessionId)?.objects.add(objectId);
+            }
+          } catch { /* not a reply this filter reads */ }
         }
-        const world = worldRequests.get(id);
-        const attaching = attachRequests.get(id);
+        const key = requestKey(outer.sessionId ?? "", id);
+        const world = worldRequests.get(key);
+        const attaching = attachRequests.get(key);
         if (world !== undefined || attaching !== undefined) {
-          worldRequests.delete(id); attachRequests.delete(id);
+          worldRequests.delete(key); attachRequests.delete(key);
           try {
             const message = JSON.parse(text) as { result?: { executionContextId?: unknown; sessionId?: unknown } };
             if (world !== undefined && typeof message.result?.executionContextId === "number") worldsOf(world).ids.add(message.result.executionContextId);
-            if (attaching !== undefined && typeof message.result?.sessionId === "string") sessionTargets.set(message.result.sessionId, attaching);
+            if (attaching !== undefined && typeof message.result?.sessionId === "string") {
+              const session = message.result.sessionId;
+              if (attaching.targetId === null) browserSessions.add(session);
+              else {
+                sessionTargets.set(session, attaching.targetId);
+                if (attaching.parent) sessionParents.set(session, attaching.parent);
+                // Page.attach replies may precede their target event. Only listed pages can authorize this shortcut.
+                if (own.has(attaching.targetId) || opened.has(attaching.targetId)) pageSessions.add(session);
+              }
+            }
           } catch { /* not a reply this filter reads */ }
           return text;
         }
-        if (!getTargetsIds.delete(id)) return text;
+        if (!getTargetsIds.delete(key)) return text;
         try {
           const message = JSON.parse(text) as { result?: { targetInfos?: unknown[] } };
           if (!Array.isArray(message.result?.targetInfos)) return text;
@@ -317,22 +439,53 @@ export function createCliBrowserCdpTargetFilter(sendToChrome: (message: Record<s
         } catch { /* not a frame this filter reads */ }
         return text;
       }
+      if (text.startsWith('{"method":"Runtime.executionContextDestroyed"') || text.startsWith('{"method":"Runtime.executionContextsCleared"')) {
+        try {
+          const event = JSON.parse(text) as { method?: string; sessionId?: string; params?: { executionContextId?: number; executionContextUniqueId?: string } };
+          if (event.sessionId) {
+            const worlds = isolated.get(event.sessionId);
+            // Invalidate pending replies too: a late handle from the old document must never become trusted again.
+            forgetObjectRequests(event.sessionId);
+            if (event.method === "Runtime.executionContextsCleared") isolated.delete(event.sessionId);
+            else if (worlds) {
+              if (event.params?.executionContextId !== undefined) worlds.ids.delete(event.params.executionContextId);
+              if (event.params?.executionContextUniqueId !== undefined) worlds.unique.delete(event.params.executionContextUniqueId);
+              else worlds.unique.clear();
+              worlds.objects.clear();
+            }
+          }
+        } catch { /* not a frame this filter reads */ }
+        return text;
+      }
       if (!head.startsWith('{"method":"Target.')) return text;
       let event: { method: string; params?: Record<string, unknown>; sessionId?: unknown };
       try { event = JSON.parse(text); } catch { return text; }
       const params = event.params ?? {};
       const attachedId = (params.targetInfo as { targetId?: unknown } | undefined)?.targetId;
-      if (event.method === "Target.attachedToTarget" && typeof params.sessionId === "string" && typeof attachedId === "string") sessionTargets.set(params.sessionId, attachedId);
-      if (event.sessionId !== undefined) return text;
-      // Auto-attach holds a target created after it was set for the debugger; one already open is not held.
-      if (event.method === "Target.attachedToTarget" && params.waitingForDebugger === true && typeof attachedId === "string" && !foreign.has(attachedId)) opened.add(attachedId);
-      if (event.method === "Target.attachedToTarget" && isForeignPage(params.targetInfo) && typeof params.sessionId === "string") {
-        hiddenSessions.add(params.sessionId);
-        if (params.waitingForDebugger === true) proxyCommand("Runtime.runIfWaitingForDebugger", {}, params.sessionId);
-        proxyCommand("Target.detachFromTarget", { sessionId: params.sessionId });
-        return null;
+      if (event.method === "Target.attachedToTarget" && typeof params.sessionId === "string" && typeof attachedId === "string") {
+        const opener = (params.targetInfo as { openerId?: unknown }).openerId;
+        if (params.waitingForDebugger === true && !foreign.has(attachedId) && (own.has(attachedId)
+          || (typeof opener === "string" && (own.has(opener) || opened.has(opener)) && !isHiddenId(opener)))) opened.add(attachedId);
+        // Apply ownership to nested attaches too. A parent session never authorizes another pane's page.
+        if (isForeignPage(params.targetInfo)) {
+          hiddenSessions.add(params.sessionId);
+          if (params.waitingForDebugger === true) proxyCommand("Runtime.runIfWaitingForDebugger", {}, params.sessionId);
+          proxyCommand("Target.detachFromTarget", { sessionId: params.sessionId }, typeof event.sessionId === "string" ? event.sessionId : undefined);
+          return null;
+        }
+        sessionTargets.set(params.sessionId, attachedId);
+        if (typeof event.sessionId === "string") sessionParents.set(params.sessionId, event.sessionId);
+        if ((params.targetInfo as { type?: unknown }).type === "page") pageSessions.add(params.sessionId);
       }
-      if (event.method === "Target.detachedFromTarget" && typeof params.sessionId === "string" && hiddenSessions.delete(params.sessionId)) return null;
+      if (event.method === "Target.detachedFromTarget" && typeof params.sessionId === "string") {
+        forgetSession(params.sessionId);
+        if (hiddenSessions.delete(params.sessionId)) return null;
+      }
+      if (event.method === "Target.targetDestroyed" && typeof params.targetId === "string") {
+        for (const [session, target] of sessionTargets) if (target === params.targetId) forgetSession(session);
+        opened.delete(params.targetId);
+      }
+      if (event.sessionId !== undefined) return text;
       if (targetInfoEvents.has(event.method) && isForeignPage(params.targetInfo)) return null;
       if (targetIdEvents.has(event.method) && typeof params.targetId === "string" && isHiddenId(params.targetId)) return null;
       return text;
@@ -357,6 +510,7 @@ async function foreignPageIds(store: SpaceStore, paneId: string, profilePath: st
 export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): CliBrowserCdpProxy {
   const profileRoot = options.config.browserSessionsProfileRoot;
   const connections = new Map<string, Set<WsSocket>>();
+  const socketCliSession = new WeakMap<WsSocket, string>();
   const marks = createCliBrowserDocumentMarks();
 
   async function resolve(request: FastifyRequest): Promise<CliBrowserCdpResolution | CliBrowserCdpRefused> {
@@ -403,9 +557,11 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
     } catch {
       return { refused: "PANE_NOT_FOUND", reason: "Browser pane was not found." };
     }
-    // A plain CLI pane (the wrapper sends its own id) drives the room's browser pane, the one space_browser_start uses.
+    // A plain CLI pane (the wrapper sends its own id) drives its own browser pane, the one space_browser_start uses; never another agent's.
     if (pane.id === claims.paneId && !options.isBrowserPane(pane)) {
-      pane = (await options.store.listPanes(claims.roomId, false)).find((candidate) => candidate.mode === "BROWSER") ?? pane;
+      const own = ownBrowserPane(await options.store.listPanes(claims.roomId, false), claims.paneId, options.controlActivity);
+      if (!own) return { refused: "PANE_NOT_FOUND", reason: "This pane has no browser of its own and the room's browsers are other agents': start yours with space_browser_start." };
+      pane = own;
     }
     if (pane.roomId !== claims.roomId || pane.isClosed || !options.isBrowserPane(pane)) {
       return { refused: "PANE_NOT_FOUND", reason: "Browser pane was not found in the CLI session room." };
@@ -423,6 +579,8 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
     if (lease) {
       return { refused: "BROWSER_CONTROL_HELD", reason: "An operator holds browser control; wait for the handoff to finish." };
     }
+    const handoffHeld = await handoffHeldFrom(options.store, session.sessionId, `cli:${claims.cliSessionId}`);
+    if (handoffHeld) return { refused: "BROWSER_HANDOFF_PENDING", reason: handoffHeld };
     return { claims, pane, session };
   }
 
@@ -444,9 +602,13 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
     let clientClosed = false;
     // The pane is known only after resolve(); the first client frames are buffered until Chrome answers, after resolve().
     let paneId: string | null = null;
+    let principal: CliBrowserBridgeTokenPayload | null = null;
     const filter = createCliBrowserCdpTargetFilter((message) => {
       if (upstream && upstream.readyState === upstream.OPEN) upstream.send(JSON.stringify(message));
-    }, { get paneId() { return paneId ?? ""; }, marks });
+    }, { get paneId() { return paneId ?? ""; }, marks,
+      // Metadata only: enough to attribute a future mark without logging code, object handles, URLs or page contents.
+      onDirty: (source) => options.log?.warn({ event: "cli_browser.document_dirty", paneId, cliPaneId: principal?.paneId,
+        cliSessionId: principal?.cliSessionId, ...source }, "CLI browser document marked dirty.") });
     const forward = (data: RawData, isBinary: boolean) => {
       if (!upstream) return;
       if (!isBinary) {
@@ -472,6 +634,8 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
     // Tracked before any further await so an operator taking control meanwhile
     // can drop this socket; the lease is re-read afterwards to close the gap.
     paneId = resolution.pane.id;
+    principal = resolution.claims;
+    socketCliSession.set(socket, resolution.claims.cliSessionId);
     const untrack = track(resolution.pane.id, socket);
     const profilePath = await activeTabProfilePath(profileRoot, resolution.pane, resolution.session);
     const endpoint = await readChromeAutomationEndpoint(profilePath);
@@ -482,23 +646,46 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
       else if (!endpoint) socket.close(cliBrowserCdpCloseCodes.ENDPOINT_UNAVAILABLE, "Browser automation endpoint is unavailable.");
       return;
     }
-    const refreshForeign = () => Promise.all([foreignPageIds(options.store, resolution.pane.id, profilePath), options.store.getActivePaneBrowserSession(resolution.pane.id)])
-      .then(([ids, session]) => { filter.setForeignPages(ids); filter.setOwnPages((session?.pages ?? []).map((page) => page.pageId)); }, () => undefined);
-    const activeTabMoved = async () => {
-      const session = await options.store.getActivePaneBrowserSession(resolution.pane.id);
-      return session !== null && await activeTabProfilePath(profileRoot, resolution.pane, session) !== profilePath;
+    const refreshPages = async (session: PaneBrowserSession) => {
+      filter.setForeignPages(await foreignPageIds(options.store, resolution.pane.id, profilePath));
+      return filter.setOwnPages(session.pages.map((page) => page.pageId));
     };
-    await refreshForeign();
-    // Panes open and close tabs while the automation runs; the hidden set follows the store. When the active tab
-    // moves into another account's Chrome, the client is closed and reconnects there on its next command.
+    try {
+      await refreshPages(resolution.session);
+    } catch {
+      untrack();
+      socket.close(cliBrowserCdpCloseCodes.ENDPOINT_UNAVAILABLE, "Browser automation state is unavailable; reconnect.");
+      return;
+    }
+    const refreshConnection = async () => {
+      const session = await options.store.getActivePaneBrowserSession(resolution.pane.id);
+      if (!session || !session.isActive || session.status === "CLOSED" || session.status === "ERROR") {
+        finish(cliBrowserCdpCloseCodes.BROWSER_NOT_RUNNING, "The pane browser stopped; reconnect after it starts.");
+      } else if (session.sessionId !== resolution.session.sessionId) {
+        finish(cliBrowserCdpCloseCodes.BROWSER_CHANGED, "The pane browser session changed; reconnect to its current Chrome.");
+      } else if (await activeTabProfilePath(profileRoot, resolution.pane, session) !== profilePath) {
+        finish(cliBrowserCdpCloseCodes.ACTIVE_TAB_MOVED, "The active tab moved into another Google account's browser.");
+      } else if (await readChromeAutomationEndpoint(profilePath) !== endpoint) {
+        finish(cliBrowserCdpCloseCodes.BROWSER_CHANGED, "The pane Chrome endpoint changed; reconnect to its current browser.");
+      } else if (await refreshPages(session)) {
+        finish(cliBrowserCdpCloseCodes.BROWSER_CHANGED, "The pane's restored tabs need fresh discovery; reconnect to its browser.");
+      }
+    };
+    // Reuse the existing cadence, with no overlapping reads. A host restart may keep the profile path and stored
+    // session id while replacing Chrome's endpoint or targets. Never splice a new upstream into old CDP sessions:
+    // closing invalidates Playwright's cached backend, so its next tool call resolves and discovers the live browser.
+    let settled = false;
+    let refreshing = false;
     const refresher = setInterval(() => {
-      void activeTabMoved().then((moved) => moved ? finish(cliBrowserCdpCloseCodes.ACTIVE_TAB_MOVED, "The active tab moved into another Google account's browser.") : refreshForeign(), () => undefined);
+      if (settled || refreshing) return;
+      refreshing = true;
+      void refreshConnection().catch(() => finish(cliBrowserCdpCloseCodes.ENDPOINT_UNAVAILABLE, "Browser automation state is unavailable; reconnect."))
+        .finally(() => { refreshing = false; });
     }, 3_000);
     refresher.unref();
     // CDP responses (snapshots, screenshots) are large; the client side keeps the server limit.
     const chrome = new WsClient(endpoint, { perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
     upstream = chrome;
-    let settled = false;
     const finish = (code: number, reason: string) => {
       if (settled) return;
       settled = true;
@@ -550,10 +737,10 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
         return { ready: true, reason: null, detail: null, paneId: resolution.pane.id, sessionId: resolution.session.sessionId };
       });
     },
-    closeForPane(paneId, refusal, reason) {
+    closeForPane(paneId, refusal, reason, keepCliSessionId) {
       const bucket = connections.get(paneId);
       if (!bucket) return 0;
-      const sockets = [...bucket];
+      const sockets = [...bucket].filter((socket) => !keepCliSessionId || socketCliSession.get(socket) !== keepCliSessionId);
       for (const socket of sockets) {
         try { socket.close(cliBrowserCdpCloseCodes[refusal], reason.slice(0, 120)); } catch { /* already closed */ }
       }
@@ -562,6 +749,7 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
     connectionCount(paneId) {
       return connections.get(paneId)?.size ?? 0;
     },
-    documentDirty: (paneId, targetId, loaderId) => marks.isDirty(paneId, targetId, loaderId)
+    documentDirty: (paneId, targetId, loaderId) => marks.isDirty(paneId, targetId, loaderId),
+    documentDirtiedBy: (paneId, targetId, loaderId) => marks.dirtiedBy(paneId, targetId, loaderId)
   };
 }

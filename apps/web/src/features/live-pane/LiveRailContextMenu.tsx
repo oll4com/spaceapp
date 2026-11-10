@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { Captions, CaptionsOff, ChartColumn, Eye, EyeOff, MessageSquareText, Trash2 } from "../ui-theme/app-icons.js";
 import { createPortal } from "react-dom";
 import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export const LIVE_RAIL_CAPTIONS_DISABLED_STORAGE_KEY = "space.liveRail.captionsDisabled.v1";
 
@@ -18,6 +19,8 @@ export function LiveRailContextMenu({
   isGraphicDisabled?: boolean;
   onToggleGraphic?: () => void;
 }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const ref = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ left: x, top: y, ready: false });
 
@@ -65,9 +68,9 @@ export function LiveRailContextMenu({
 
   return createPortal(
     <div ref={ref} className="live-rail-context-menu" role="menu" style={{ left: position.left, top: position.top, visibility: position.ready ? "visible" : "hidden" }}>
-      {item("space-live-rail-conversation-toggle", "Show Live conversation window", <MessageSquareText aria-hidden="true" />)}
-      {item("space-live-rail-stats-toggle", "Show Live statistics", <ChartColumn aria-hidden="true" />)}
-      {item("space-live-rail-captions-toggle", captionsDisabled ? "Show live captions" : "Hide live captions", captionsDisabled ? <Captions aria-hidden="true" /> : <CaptionsOff aria-hidden="true" />)}
+      {item("space-live-rail-conversation-toggle", t("Show Live conversation window"), <MessageSquareText aria-hidden="true" />)}
+      {item("space-live-rail-stats-toggle", t("Show Live statistics"), <ChartColumn aria-hidden="true" />)}
+      {item("space-live-rail-captions-toggle", captionsDisabled ? t("Show live captions") : t("Hide live captions"), captionsDisabled ? <Captions aria-hidden="true" /> : <CaptionsOff aria-hidden="true" />)}
       <div className="live-rail-context-menu-separator" role="separator" />
       <button
         type="button"
@@ -82,9 +85,9 @@ export function LiveRailContextMenu({
           onClose();
         }}
       >
-        {disabled ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}<span>{disabled ? `Enable` : `Disable`}</span>
+        {disabled ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}<span>{disabled ? t("Enable") : t("Disable")}</span>
       </button>
-      {item("space-live-rail-clear-conversation", "Clear conversation", <Trash2 aria-hidden="true" />, "is-danger")}
+      {item("space-live-rail-clear-conversation", t("Clear conversation"), <Trash2 aria-hidden="true" />, "is-danger")}
     </div>,
     document.body
   );

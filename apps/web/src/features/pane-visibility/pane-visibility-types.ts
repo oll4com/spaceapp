@@ -19,7 +19,8 @@ export type NonCliPaneType =
   | "app-studio"
   | "video"
   | "security"
-  | "monitoring";
+  | "monitoring"
+  | "appointments";
 
 export interface PaneItemConfig {
   id: NonCliPaneType;

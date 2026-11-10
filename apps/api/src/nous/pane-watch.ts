@@ -10,15 +10,32 @@ import { paneLabel } from "./digest.js";
  * never checked, at its next check, or after 30 minutes (60 while it works). AGENT_PROOF rooms are other agents' tests.
  */
 const MINUTE = 60_000;
+/** A KEEP_OPEN check given no nextCheckInMinutes looks again after this long. */
+export const KEEP_OPEN_DEFAULT_MINUTES = 30;
 export const PANE_DUE_IDLE_MS = 30 * MINUTE;
 export const PANE_DUE_WORKING_MS = 60 * MINUTE;
+
+/**
+ * Operator 8/11 20:04 BKK (nous_msg:67c4b21b: "the Cloud Identity plan waits for your actions", with no Needs you card behind it): the first
+ * sentence saying something waits for the operator, or null. Negated ones ("δεν σε περιμένει τίποτα", "nothing waits for you") say none.
+ * Here, not in service.ts, because tools.ts uses it too (service.ts imports tools.ts).
+ */
+const WAITS_ON_OPERATOR = /(?<!\p{L})(?:περιμεν(?:ει|ουν) (?:εσενα|δικες σου|τα χερια σου|απο ε?σενα|τον (?:operator|χειριστη))|σε περιμεν(?:ει|ουν))(?!\p{L})|\bwait(?:s|ing)? (?:for|on) (?:your?|the operator)\b|\bneeds? (?:your (?:hands|actions?)|the operator)\b/gu;
+const NOT_WAITING = /(?:^|\s)(?:δεν|μην|ουτε|τιποτα|nothing|no|not|never|doesn't|don't|isn't)(?: \S+){0,2} $/u;
+export function waitsOnOperatorClaim(text: string): string | null {
+  const fold = (value: string) => value.normalize("NFD").replace(/\p{M}/gu, "").replace(/’/g, "'").replace(/[*_`]/g, "").toLowerCase();
+  return text.split(/(?<=[.!?;…])\s+|\n+/).map((sentence) => sentence.trim()).find((sentence) => {
+    const plain = fold(sentence);
+    return [...plain.matchAll(WAITS_ON_OPERATOR)].some((match) => !NOT_WAITING.test(plain.slice(0, match.index)));
+  }) ?? null;
+}
 
 export const paneCheckedArgsSchema = z.object({
   room: z.string().trim().min(1).max(200).describe("The room's name as shown in the world (or its id)."),
   pane: z.string().trim().min(1).max(160).describe("The pane's name in that room."),
   verdict: z.enum(NOUS_PANE_VERDICTS).describe("OK_WORKING, WAITING_OPERATOR, WAITING_DATE (give nextCheckInMinutes), NEEDS_ACTION, BLOCKED, OPERATOR_TEST (the operator's own test pane: drive it while its task runs; once that task is done it is saved and closed like any finished pane), or KEEP_OPEN (a finished pane Space must not list for closing until nextCheckInMinutes: say why in the note)."),
-  note: z.string().trim().max(200).optional().describe("One line: what you saw or what it waits for."),
-  nextCheckInMinutes: z.number().int().min(1).max(20_160).optional().describe("When to look again; without it the 30/60-minute rule applies.")
+  note: z.string().trim().optional().describe("One line: what you saw or what it waits for."),
+  nextCheckInMinutes: z.number().int().min(1).max(20_160).optional().describe("When to look again. Required with WAITING_DATE; KEEP_OPEN without it looks again in 30 minutes; other verdicts without it follow the 30/60-minute rule.")
 });
 export type PaneCheckedArgs = z.infer<typeof paneCheckedArgsSchema>;
 
@@ -71,8 +88,8 @@ export function renderPanesNotChecked(entries: PaneWatchEntry[], clock: (iso: st
 export function paneRoundLine(entries: PaneWatchEntry[]): string | null {
   const due = entries.filter((entry) => entry.overdue);
   if (!due.length) return null;
-  const names = due.slice(0, 10).map(where).join(", ");
-  return `Pane round due: ${due.length} pane${due.length === 1 ? "" : "s"} overdue (${names}${due.length > 10 ? ", …" : ""}).`;
+  const names = due.map(where).join(", ");
+  return `Pane round due: ${due.length} pane${due.length === 1 ? "" : "s"} overdue (${names}).`;
 }
 
 /** The dock's Panes cards. */
@@ -88,12 +105,21 @@ export function createNousPaneWatch(deps: { repository: NousPaneChecksRepository
   const now = deps.now ?? Date.now;
   return {
     list: (owner: string) => deps.repository.list(owner),
+    /** A done report ends an OK_WORKING verdict (operator 28/10): the pane is no longer working, whatever was recorded. */
+    async clearWorking(owner: string, roomId: string, paneId: string): Promise<boolean> {
+      const check = (await deps.repository.list(owner)).find((entry) => entry.paneId === paneId);
+      if (check?.verdict !== "OK_WORKING") return false;
+      await deps.repository.record(owner, { paneId, roomId, at: new Date(now()).toISOString(), verdict: { verdict: null, note: null, nextCheckAt: null } });
+      return true;
+    },
     /** Any read of a pane by Nous. */
     read: (owner: string, roomId: string, paneId: string) => deps.repository.record(owner, { paneId, roomId, at: new Date(now()).toISOString() }),
     async checked(owner: string, room: Room, pane: Pane, args: PaneCheckedArgs): Promise<{ ok: boolean; display: string; result: string }> {
       const at = now();
-      const nextCheckAt = args.nextCheckInMinutes ? new Date(at + args.nextCheckInMinutes * MINUTE).toISOString() : null;
-      if ((args.verdict === "WAITING_DATE" || args.verdict === "KEEP_OPEN") && !nextCheckAt) {
+      // 2026-11-06 REVIEW (10 of 18 failed checks: KEEP_OPEN without nextCheckInMinutes): KEEP_OPEN looks again in 30 minutes by default.
+      const minutes = args.nextCheckInMinutes ?? (args.verdict === "KEEP_OPEN" ? KEEP_OPEN_DEFAULT_MINUTES : undefined);
+      const nextCheckAt = minutes ? new Date(at + minutes * MINUTE).toISOString() : null;
+      if (args.verdict === "WAITING_DATE" && !nextCheckAt) {
         return { ok: false, display: "Give the next check", result: `${args.verdict} needs nextCheckInMinutes: when to look again.` };
       }
       await deps.repository.record(owner, { paneId: pane.id, roomId: room.id, at: new Date(at).toISOString(),

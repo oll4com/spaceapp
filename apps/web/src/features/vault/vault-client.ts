@@ -3,7 +3,7 @@ import { hkdf } from "@noble/hashes/hkdf.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
-  VAULT_KDF_DEFAULTS, generateVaultSigningKey, generateVaultTransportKey, joinVaultRootKey, newVaultHandle, openPasswordEnvelope,
+  VAULT_KDF_DEFAULTS, vaultDelegationOrigins, generateVaultSigningKey, generateVaultTransportKey, joinVaultRootKey, newVaultHandle, openPasswordEnvelope,
   openRecoveryEnvelope, openVaultEnvelope, openWithVaultPrivateKey, sealPasswordEnvelope, sealRecoveryEnvelope, sealToVaultPublicKey, sealVaultEnvelope,
   signVaultMessage, splitVaultRootKey, vaultPublicKeyOf, vaultDelegationOperatorMessage, vaultDigest, vaultBase64url, vaultRandomBytes, vaultSignupGrantOperatorMessage, vaultUnlockChallengeMessage, wipeVaultBytes,
   vaultOperatorRequestMessage, VaultCryptoError, type VaultOperatorSignedKind, type VaultPendingSecret, type VaultSignupGrantRequest, type VaultUnlockSecrets,
@@ -123,8 +123,10 @@ export async function changeMasterPassword(client: VaultApi, unlocked: UnlockedV
 }
 
 export interface VaultItemSecrets { USERNAME?: string; PASSWORD?: string; OTP?: string }
-export interface VaultItemDraft extends Omit<VaultItemMetadata, "id" | "fieldRoles" | "status" | "googleAccountId" | "loginKey"> {
+export interface VaultItemDraft extends Omit<VaultItemMetadata, "id" | "fieldRoles" | "status" | "googleAccountId" | "loginKey" | "loginPage"> {
   id?: string; status?: VaultItemMetadata["status"]; googleAccountId?: string | null; loginKey?: string | null; secrets: VaultItemSecrets;
+  /** Absent keeps the saved item's login page (an import, a password change); null clears it. */
+  loginPage?: string | null;
 }
 
 /**
@@ -158,7 +160,8 @@ export async function encryptVaultItem(unlocked: UnlockedVault, draft: VaultItem
     return {
       metadata: { id, label: draft.label, origins: draft.origins, fieldRoles: roles, policy: draft.policy, status: draft.status ?? "ACTIVE",
         googleAccountId: draft.googleAccountId ?? previous?.metadata.googleAccountId ?? null,
-        loginKey: draft.secrets.USERNAME && draft.origins[0] ? vaultLoginKey(unlocked, draft.origins[0], draft.secrets.USERNAME) : null },
+        loginKey: draft.secrets.USERNAME && draft.origins[0] ? vaultLoginKey(unlocked, draft.origins[0], draft.secrets.USERNAME) : null,
+        loginPage: draft.loginPage === undefined ? previous?.metadata.loginPage ?? null : draft.loginPage },
       keyVersion: 1, dekEnvelope: previous?.dekEnvelope ?? await sealVaultEnvelope(unlocked.vrk, dek, { ...scope, purpose: "ITEM_KEY" }), fields, history
     };
   } finally {
@@ -241,7 +244,9 @@ export const VAULT_AGENT_POLICY = { agentUse: true, approvalMode: "FULL", submit
 export interface VaultImportResult {
   imported: number;
   /** Waiting logins sealed to a key this inbox does not hold: they stay waiting and are reported, never dropped silently. */
-  unreadable: Array<Pick<VaultPendingSecret, "kind" | "label" | "origin">>;
+  unreadable: Array<Pick<VaultPendingSecret, "id" | "kind" | "label" | "origin">>;
+  /** Waiting logins whose import failed otherwise: they stay waiting, are reported and never stop the ones after them. */
+  failed: Array<Pick<VaultPendingSecret, "id" | "kind" | "label" | "origin"> & { reason: string }>;
 }
 
 /**
@@ -253,7 +258,8 @@ export async function importVaultPending(client: VaultInboxApi, unlocked: Unlock
   const open = async (envelope: unknown) => envelope ? new TextDecoder().decode(await openWithVaultPrivateKey(inbox.privateKey, inbox.publicKey, envelope, scope)) : undefined;
   const pending = [...(await client.vaultPending()).pending].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const unreadable: VaultImportResult["unreadable"] = [];
-  if (pending.length === 0) return { imported: 0, unreadable };
+  const failed: VaultImportResult["failed"] = [];
+  if (pending.length === 0) return { imported: 0, unreadable, failed };
   // A reset of a site the Vault already holds arrives as a new account (2026-10-19: three Braintrust resets became three
   // items): the same site and username updates that login instead, the newest entry last, so it ends with the newest password.
   const listed = await client.vaultItems();
@@ -266,6 +272,9 @@ export async function importVaultPending(client: VaultInboxApi, unlocked: Unlock
   const sameLogin = (origin: string, username: string | undefined) => username
     ? logins.filter((login) => login.origins.includes(origin) && login.username?.toLowerCase() === username.toLowerCase())
       .sort((a, b) => b.changedAt.localeCompare(a.changedAt))[0] ?? null : null;
+  const items = new Set(listed.items.map((item) => item.id));
+  // A new login merged into an existing one keeps no item of its own; a later password change of its handle goes there.
+  const merged = new Map<string, string>();
   let imported = 0;
   for (const entry of pending) {
     let password: string | undefined;
@@ -274,26 +283,36 @@ export async function importVaultPending(client: VaultInboxApi, unlocked: Unlock
       password = await open(entry.sealedPassword);
       username = entry.kind === "NEW_ACCOUNT" ? await open(entry.sealedUsername) : undefined;
     } catch {
-      unreadable.push({ kind: entry.kind, label: entry.label, origin: entry.origin });
+      unreadable.push({ id: entry.id, kind: entry.kind, label: entry.label, origin: entry.origin });
       continue;
     }
-    const existing = entry.kind === "CHANGE_PASSWORD" ? entry.handle : sameLogin(entry.origin, username)?.id ?? null;
-    if (existing) {
-      const previous = (await client.vaultItem(existing)).item;
-      const secrets = await decryptVaultItem(unlocked, previous);
-      const { id: _id, fieldRoles: _roles, ...metadata } = previous.metadata;
-      await client.vaultSaveItem(await encryptVaultItem(unlocked, { ...metadata, status: "ACTIVE", secrets: { ...secrets, PASSWORD: password } }, previous));
-      const login = logins.find((candidate) => candidate.id === existing);
-      if (login) login.changedAt = entry.createdAt;
-    } else {
-      await client.vaultSaveItem(await encryptVaultItem(unlocked, { id: entry.handle, label: entry.label, origins: [entry.origin], status: "ACTIVE",
-        secrets: { USERNAME: username, PASSWORD: password }, policy: { ...VAULT_AGENT_POLICY, acceptedOriginRisks: [] } }));
-      logins.push({ id: entry.handle, origins: [entry.origin], username: username ?? null, changedAt: entry.createdAt });
+    try {
+      const handle = merged.get(entry.handle) ?? entry.handle;
+      // A changed password of a login that is no item (its new account was merged before this run, or it was deleted)
+      // becomes a login of its own: the site now has that password, so it is never lost (stable 25-30/10: one such row
+      // answered 404 and stopped every import behind it).
+      const existing = entry.kind === "CHANGE_PASSWORD" ? (items.has(handle) ? handle : null) : sameLogin(entry.origin, username)?.id ?? null;
+      if (existing) {
+        const previous = (await client.vaultItem(existing)).item;
+        const secrets = await decryptVaultItem(unlocked, previous);
+        const { id: _id, fieldRoles: _roles, ...metadata } = previous.metadata;
+        await client.vaultSaveItem(await encryptVaultItem(unlocked, { ...metadata, status: "ACTIVE", secrets: { ...secrets, PASSWORD: password } }, previous));
+        const login = logins.find((candidate) => candidate.id === existing);
+        if (login) login.changedAt = entry.createdAt;
+        if (entry.kind === "NEW_ACCOUNT") merged.set(entry.handle, existing);
+      } else {
+        await client.vaultSaveItem(await encryptVaultItem(unlocked, { id: handle, label: entry.label, origins: [entry.origin], loginPage: entry.loginPage, status: "ACTIVE",
+          secrets: { USERNAME: username, PASSWORD: password }, policy: { ...VAULT_AGENT_POLICY, acceptedOriginRisks: [] } }));
+        logins.push({ id: handle, origins: [entry.origin], username: username ?? null, changedAt: entry.createdAt });
+        items.add(handle);
+      }
+      await client.vaultDeletePending(entry.id);
+      imported += 1;
+    } catch (error) {
+      failed.push({ id: entry.id, kind: entry.kind, label: entry.label, origin: entry.origin, reason: error instanceof Error ? error.message : String(error) });
     }
-    await client.vaultDeletePending(entry.id);
-    imported += 1;
   }
-  return { imported, unreadable };
+  return { imported, unreadable, failed };
 }
 
 /**
@@ -334,7 +353,7 @@ export async function delegateVaultItems(client: Pick<typeof liveApi, "vaultBrok
         fillEnvelopes[handle]![role] = await sealVaultEnvelope(fillKey, utf8.encode(secrets[role]!), { ...scope, purpose: "FILL_FIELD", itemId: handle, field: role, generation });
       }
       // The broker's signed format still names an approval mode; every agent use is FULL now.
-      items.push({ handle, origins: record.metadata.origins, fields, approvalMode: "FULL", submit: true });
+      items.push({ handle, origins: vaultDelegationOrigins(record.metadata.origins), fields, approvalMode: "FULL", submit: true });
     }
     const expiresAt = new Date(Date.now() + (input.days ?? 3650) * 86_400_000).toISOString();
     const envelopeDigest = await vaultDigest(fillEnvelopes);

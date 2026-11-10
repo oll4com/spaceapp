@@ -79,6 +79,8 @@ describe("reopening a CLI pane", () => {
   it("resumes the pane's exact Claude conversation, so it opens working instead of an empty terminal", async () => {
     const store = new InMemorySpaceStore();
     const { pane, session, close } = claudePane(store, claudeConversationId);
+    store.createCliAccountProfile("cli:claude", { runtimeId: "cli:claude", profileId: "space-gateway", displayName: "Space Gateway" }, "user:admin");
+    store.updatePaneCliSession(session.sessionId, { accountProfileId: "space-gateway" });
     close();
     const app = await setup(store);
     const headers = adminHeaders();
@@ -93,7 +95,7 @@ describe("reopening a CLI pane", () => {
     expect(reopened.statusCode).toBe(200);
     expect(reopened.json()).toMatchObject({ id: pane.id, isClosed: false });
     const resumed = store.getActivePaneCliSession(pane.id);
-    expect(resumed).toMatchObject({ runtimeId: "cli:claude", launchMode: "RESUME", cliTaskId: session.cliTaskId, isActive: true });
+    expect(resumed).toMatchObject({ runtimeId: "cli:claude", launchMode: "RESUME", cliTaskId: session.cliTaskId, isActive: true, accountProfileId: "space-gateway" });
     expect(store.getCliTaskRevision(resumed!.cliTaskRevisionId!)?.nativeTaskRef).toBe(claudeConversationId);
 
     const active = await app.inject({ method: "GET", url: `/api/panes/${encodeURIComponent(pane.id)}/cli/session`, headers });

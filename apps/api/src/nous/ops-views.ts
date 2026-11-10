@@ -13,7 +13,7 @@ export interface NousOpsDeps {
   tokenUsage?: (range: NousUsageRange) => Promise<SystemAnalyticsModelsResponse>;
   gateway?: () => Promise<GatewayStatus>;
   /** Space Gateway's admin reads (gap audit, plan clipboard:ajcJqa3IW6Eh): never a key secret, never a request body. */
-  gatewayAdmin?: Pick<GatewayAdminService, "listAccounts" | "listApiKeys" | "listRequestLogs" | "report" | "anthropicBilling"> & Partial<Pick<GatewayAdminService, "getSettings">>;
+  gatewayAdmin?: Pick<GatewayAdminService, "listAccounts" | "listApiKeys" | "listRequestLogs" | "report" | "lostTokens" | "anthropicBilling"> & Partial<Pick<GatewayAdminService, "getSettings" | "tokenReview" | "projectUsage" | "gatewayAdmin">>;
 }
 
 export const nousUsageRangeSchema = z.enum(["1h", "24h", "7d", "30d"]);
@@ -21,8 +21,12 @@ export type NousUsageRange = z.infer<typeof nousUsageRangeSchema>;
 export const nousOpsServicesArgsSchema = z.object({});
 export const nousOpsUsageArgsSchema = z.object({ range: nousUsageRangeSchema.optional().describe("Token usage period (default 24h).") });
 export const nousOpsGatewayArgsSchema = z.object({
-  view: z.enum(["accounts", "keys", "logs", "report", "billing"]).describe("accounts: status and usage windows; keys: names, models, limits (never the key); logs: newest request metadata; report: daily rollups; billing: Anthropic's bill next to the estimate."),
-  days: z.number().int().min(1).max(31).optional().describe("report and billing: days back (default 7)."),
+  view: z.enum(["accounts", "keys", "logs", "report", "lost", "billing"]).describe("accounts: status and usage windows; keys: names, models, limits (never the key); logs: newest request metadata; "
+    + "report: every statistic (requests, tokens in/out/cache and API value by day, model, account and provider, errors and 429s, fallbacks between providers, "
+    + "5-hour and weekly windows with reset times, weekly lost tokens); lost: the tokens lost per week, per account and provider (lost %, tokens, API value); "
+    + "billing: Anthropic's bill next to the estimate."),
+  // Technical: the history period's maximum (history.periodDays, at most 90).
+  days: z.number().int().min(1).max(90).optional().describe("report, lost and billing: days back (default 7; lost 90, every past week)."),
   limit: z.number().int().min(1).max(100).optional().describe("logs: how many (default 30).")
 });
 
@@ -30,12 +34,12 @@ export const nousOpsGatewayArgsSchema = z.object({
 export async function nousOpsGatewayText(deps: NousOpsDeps, args: z.infer<typeof nousOpsGatewayArgsSchema>): Promise<string> {
   const admin = deps.gatewayAdmin;
   if (!admin) return "Space Gateway's admin views are not available here.";
-  const days = args.days ?? 7;
+  const days = args.days ?? (args.view === "lost" ? 90 : 7);
   const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
   const today = new Date().toISOString().slice(0, 10);
   if (args.view === "accounts") {
     return (await admin.listAccounts()).data.map((account) => `- ${account.provider} · ${account.alias ?? account.label}${account.email ? ` <${account.email}>` : ""} · ${account.status}`
-      + `${account.statusReason ? ` (${account.statusReason.slice(0, 120)})` : ""} · windows ${JSON.stringify(account.primaryWindow)} / ${JSON.stringify(account.secondaryWindow)} · last used ${account.lastUsedAt?.slice(0, 16) ?? "never"}`).join("\n") || "No accounts.";
+      + `${account.statusReason ? ` (${account.statusReason})` : ""} · windows ${JSON.stringify(account.primaryWindow)} / ${JSON.stringify(account.secondaryWindow)} · last used ${account.lastUsedAt?.slice(0, 16) ?? "never"}`).join("\n") || "No accounts.";
   }
   if (args.view === "keys") {
     return (await admin.listApiKeys()).data.map((key) => `- ${key.name} (${key.keyPrefix}…) · ${key.isActive ? "active" : "off"} · ${key.trafficClass}`
@@ -47,8 +51,10 @@ export async function nousOpsGatewayText(deps: NousOpsDeps, args: z.infer<typeof
     return logs.data.map((log) => `- ${log.requestedAt.slice(0, 19)} · ${log.provider} ${log.model} · ${log.status}${log.errorCode ? ` ${log.errorCode}` : ""} · in ${count(log.inputTokens)} out ${count(log.outputTokens)} · ${usd(log.costUsd)}`
       + `${log.latencyMs != null ? ` · ${log.latencyMs} ms` : ""}`).join("\n") || "No requests.";
   }
-  if (args.view === "report") return JSON.stringify(await admin.report(since, today)).slice(0, 11_000);
-  return JSON.stringify(await admin.anthropicBilling(days)).slice(0, 11_000);
+  // Whole (until 31/10 cut at 11,000): execute pages a long answer (space_tool_result).
+  if (args.view === "report") return JSON.stringify(await admin.report(since, today));
+  if (args.view === "lost") return JSON.stringify(await admin.lostTokens(since, today));
+  return JSON.stringify(await admin.anthropicBilling(days));
 }
 
 const usd = (value: number | null | undefined) => value == null ? "n/a" : `$${value.toFixed(2)}`;
@@ -60,7 +66,7 @@ export async function nousOpsServicesText(deps: NousOpsDeps): Promise<string> {
   if (health) {
     const notHealthy = health.services.filter((service) => service.status !== "healthy" && service.status !== "disabled");
     lines.push(`Health ${health.sampledAt.slice(0, 16)} UTC: ${health.services.length - notHealthy.length} of ${health.services.length} checks healthy.`,
-      ...notHealthy.map((service) => `- ${service.label}: ${service.status}${service.detail ? ` (${service.detail.replace(/\s+/g, " ").slice(0, 200)})` : ""}`));
+      ...notHealthy.map((service) => `- ${service.label}: ${service.status}${service.detail ? ` (${service.detail.replace(/\s+/g, " ")})` : ""}`));
     const { requests } = health;
     lines.push(`API requests in the last 5 minutes: ${requests.requestCount}, errors ${requests.errorCount}${requests.errorRatePercent != null ? ` (${requests.errorRatePercent.toFixed(1)}%)` : ""}${requests.p95Ms != null ? `, p95 ${Math.round(requests.p95Ms)} ms` : ""}.`);
   } else lines.push("Health checks could not be read now.");
@@ -68,8 +74,8 @@ export async function nousOpsServicesText(deps: NousOpsDeps): Promise<string> {
     const failed = units.units.filter((unit) => unit.activeState === "failed");
     const stopped = units.units.filter((unit) => unit.type === "service" && unit.activeState === "inactive" && unit.unitFileState === "enabled");
     lines.push(`Services: ${units.summary.active} active, ${units.summary.failed} failed of ${units.summary.total} units.`,
-      ...failed.slice(0, 20).map((unit) => `- failed: ${unit.unit}${unit.description ? ` (${unit.description})` : ""}`),
-      ...stopped.slice(0, 20).map((unit) => `- enabled but not running: ${unit.unit}`));
+      ...failed.map((unit) => `- failed: ${unit.unit}${unit.description ? ` (${unit.description})` : ""}`),
+      ...stopped.map((unit) => `- enabled but not running: ${unit.unit}`));
   } else lines.push("Service units could not be read now.");
   return lines.join("\n");
 }
@@ -80,12 +86,12 @@ export async function nousOpsUsageText(deps: NousOpsDeps, range: NousUsageRange 
   if (usage) {
     const routes = usage.routes;
     lines.push(`Token usage, last ${range}${routes ? `: Space Gateway ${count(routes.gateway.tokensIn + routes.gateway.tokensOut)} tokens ${usd(routes.gateway.costUsd)}, direct ${count(routes.direct.tokensIn + routes.direct.tokensOut)} tokens ${usd(routes.direct.costUsd)} (API value)` : ""}.`);
-    const models = [...usage.models].sort((left, right) => (right.costUsd ?? 0) - (left.costUsd ?? 0)).slice(0, 12);
+    const models = [...usage.models].sort((left, right) => (right.costUsd ?? 0) - (left.costUsd ?? 0));
     lines.push(...models.map((model) => `- ${model.providerId}/${model.modelId}: in ${count(model.tokensIn)}, out ${count(model.tokensOut)}, ${usd(model.costUsd)}, ${model.completedTurns} turns`));
   } else lines.push("Token usage could not be read now.");
   if (gateway) {
     const { service, accounts, apiKeys, last24h } = gateway;
-    lines.push(`Space Gateway: ${service.state}${service.version ? ` ${service.version}` : ""}${service.error ? ` (${service.error.slice(0, 200)})` : ""}; accounts ${accounts.active}/${accounts.total} active`
+    lines.push(`Space Gateway: ${service.state}${service.version ? ` ${service.version}` : ""}${service.error ? ` (${service.error})` : ""}; accounts ${accounts.active}/${accounts.total} active`
       + ` (${accounts.byProvider.map((entry) => `${entry.provider} ${entry.active}/${entry.total}`).join(", ")}); keys ${apiKeys.active}/${apiKeys.total} active.`,
     `Gateway last 24 h: ${last24h.requests} requests, ${last24h.errors} errors, ${count(last24h.inputTokens)} in, ${count(last24h.outputTokens)} out, ${usd(last24h.costUsd)}.`);
   } else lines.push("Space Gateway status could not be read now.");

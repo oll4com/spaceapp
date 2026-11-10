@@ -1,4 +1,9 @@
-import { qwenNativeSessionIdPattern, type NativeTaskTitles } from "./task-title-native.js";
+import { autohandNativeSessionIdPattern } from "./autohand-native-session.js";
+import { droidNativeSessionIdPattern } from "./droid-native-session.js";
+import { hermesNativeSessionIdPattern, qwenNativeSessionIdPattern, type NativeTaskTitles } from "./task-title-native.js";
+import { ompNativeSessionIdPattern } from "./omp-native-model.js";
+import { museNativeSessionIdPattern } from "./muse-native-session.js";
+import { kimiNativeSessionIdPattern } from "./kimi-native-session.js";
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import {
@@ -543,18 +548,23 @@ export class TaskTitleService {
             nativeManual = native.manual ?? false;
             if (native.requests?.length) requests = native.requests;
             // The bridge proved this session belongs to the pane's process, so host-loss
-            // restore and task-history resume can reopen it exactly (`qwen --resume <id>`).
+            // restore and task-history resume can reopen it exactly (`qwen --resume <id>`, `omp --resume <id>`, `muse resume <id>`,
+            // `hermes --resume <id>`, `kimi --session <id>`).
+            const exact = runtimeId === "cli:qwen" ? qwenNativeSessionIdPattern : runtimeId === "cli:omp" ? ompNativeSessionIdPattern
+              : runtimeId === "cli:muse" ? museNativeSessionIdPattern : runtimeId === "cli:hermes" ? hermesNativeSessionIdPattern
+              : runtimeId === "cli:kimi" ? kimiNativeSessionIdPattern : runtimeId === "cli:autohand" ? autohandNativeSessionIdPattern
+              : runtimeId === "cli:droid" ? droidNativeSessionIdPattern : null;
             if (
-              runtimeId === "cli:qwen" &&
+              exact &&
               revisionId &&
               revision &&
               revision.nativeTaskRef !== native.nativeId &&
-              qwenNativeSessionIdPattern.test(native.nativeId)
+              exact.test(native.nativeId)
             ) {
               await this.options.store.updateCliTaskRevision(
                 revisionId,
                 { nativeTaskRef: native.nativeId },
-                "trace:qwen-native-ref",
+                `trace:${runtimeId.slice(4)}-native-ref`,
               );
             }
           }
@@ -1329,6 +1339,7 @@ export class TaskTitleService {
                 titleSummaryPrompt(state, { shown: shown.length, unseen: images.length - shown.length }),
                 AbortSignal.any([signal, AbortSignal.timeout(45_000)]),
                 shown.length ? shown : undefined,
+                state.key,
               ),
             );
             this.applyTitleLine(state, context, parsed, images.length > 0);

@@ -726,6 +726,38 @@ describe("Codex model settings", () => {
     } finally { await app.close(); await rm(commandDir, { recursive: true, force: true }); }
   });
 
+  // PERF-004: the A2/B3 full proofs failed on HTTP 500 "Codex App Server socket could not be connected." from this read.
+  it("reports model control as unavailable when the current-thread read cannot connect", async () => {
+    const commandDir = await makeOwnedDirectory(join(tmpdir(), "space-cli-current-thread-unavailable-"));
+    await writeFile(join(commandDir, "codex-vscode-parity"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Current thread unavailable", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Codex", mode: "TERMINAL", cwd: "/etc" });
+    store.createPaneCliSession({ sessionId: "cli_session:current-thread-unavailable", paneId: pane.id, roomId: room.id,
+      runtimeId: "cli:codex", providerId: "openai", agentId: "codex", modelId: "gpt-5.5", reasoningEffort: "medium",
+      cwd: "/etc", codexThreadId: "44444444-4444-4444-8444-444444444444", status: "RUNNING",
+      statusReason: "Active Codex pane.", isActive: true });
+    const { app, cookie } = await authedApp({ store, config: await enabledCliConfig(commandDir),
+      codexSessionSocketProbe: async () => true,
+      codexSocketControlFactory: () => ({
+        listModels: async () => [{ id: "gpt-5.5", displayName: "GPT", isDefault: true, defaultReasoningEffort: "medium", supportedReasoningEfforts: ["medium", "high"] }],
+        readCurrentThreadId: async () => { throw new Error("Codex App Server socket could not be connected."); },
+        updateThreadSettings: async () => undefined,
+        interruptTurn: async () => undefined,
+        startTurn: async () => ({ turnId: "turn:unused", status: "inProgress" as const })
+      })
+    });
+    try {
+      const status = await app.inject({
+        method: "GET",
+        url: `/api/panes/${encodeURIComponent(pane.id)}/cli/model-settings/status`,
+        headers: { cookie }
+      });
+      expect(status.statusCode).toBe(200);
+      expect(status.json()).toMatchObject({ status: "UNAVAILABLE", reasonCode: "CODEX_SESSION_CONTROL_UNAVAILABLE" });
+    } finally { await app.close(); await rm(commandDir, { recursive: true, force: true }); }
+  });
+
   it("leaves the active Codex session unchanged when the private socket rejects direct RPC", async () => {
     const commandDir = await makeOwnedDirectory(join(tmpdir(), "space-cli-model-control-unavailable-"));
     const commandPath = join(commandDir, "codex-vscode-parity");

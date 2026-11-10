@@ -2,9 +2,10 @@ import { readFileSync } from "node:fs";
 import { execFile } from "./safe-child-process.js";
 import { promisify } from "node:util";
 import { normalizeCodexThreadTitle } from "./codex-parity.js";
+import { SPACE_AGENT_HOME } from "@space/contracts";
 
 const execFileAsync = promisify(execFile);
-const stateDbPath = process.env.CODEX_STATE_DB_PATH || "/var/lib/spaceapp-user/.codex/state_5.sqlite";
+const stateDbPath = process.env.CODEX_STATE_DB_PATH || `${SPACE_AGENT_HOME}/.codex/state_5.sqlite`;
 
 function sqliteQuote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;

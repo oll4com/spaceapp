@@ -119,5 +119,12 @@ describe("deploy queue report", () => {
     expect(allowed.json().active).toHaveLength(2);
     // Panes that no longer exist leave the name empty instead of failing the report.
     expect(allowed.json().active[0].submitter).toMatchObject({ paneId: "pane:one", paneTitle: null, roomName: null });
+    const ticketUrl = "/api/admin/deploy-queue/tickets/q-20261011-030000-0001";
+    expect((await app.inject({ method: "GET", url: ticketUrl, headers: authHeaders("OPERATOR") })).statusCode).toBe(403);
+    const ticket = await app.inject({ method: "GET", url: ticketUrl, headers: authHeaders("ADMIN") });
+    expect(ticket.json().ticket).toMatchObject({ id: "q-20261011-030000-0001", status: "DEPLOYING" });
+    expect(ticket.json().ticket.worktree).toBeUndefined();
+    expect((await app.inject({ method: "GET", url: "/api/admin/deploy-queue/tickets/q-20261011-030000-ffff", headers: authHeaders("ADMIN") })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: "/api/admin/deploy-queue/tickets/not-a-ticket", headers: authHeaders("ADMIN") })).statusCode).toBe(422);
   });
 });

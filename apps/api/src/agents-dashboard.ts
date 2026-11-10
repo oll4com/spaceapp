@@ -1,6 +1,7 @@
 import type { Pane, PaneCliSession } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
 import { isCliPane } from "./pane-guards.js";
+import { geminiTurnRunning } from "./gemini-native-turns.js";
 
 export type DashboardStatus = "working" | "waiting" | "done" | "idle";
 
@@ -15,10 +16,14 @@ export interface DashboardActivityDetail {
   /** When the current status began: turn start, completion or block. */
   since?: string | null;
   modelId?: string | null;
+  /** The pane's current CLI session (`cli_session:<id>`), so Nous and the Room Agent can name it (R9-5). */
+  sessionId?: string;
   /** native: the CLI's own state; screen: terminal heuristic; session/run: Space records. */
   source: "native" | "screen" | "session" | "run";
   /** Fixed id of the screen rule that decided a screen status, for diagnostics; never screen text. */
   rule?: string;
+  /** A failed OpenCode run's own error (its provider's message), at most 200 characters. */
+  error?: string;
 }
 
 export type DashboardCliActivity = DashboardStatus | DashboardActivityDetail | null;
@@ -37,6 +42,29 @@ export function dashboardDetail(value: DashboardStatus | DashboardActivityDetail
 }
 
 // Metadata reads only: never start a CLI, attach a transport or mount a room.
+/**
+ * A room's dashboard sample, kept 2.5 s; callers during a read share it (API audit 4/11: 79 s a read before the 01:33 UTC heap crash, each
+ * caller of the Agents dashboard, the Live pane and every Nous world started its own). `invalidate` drops both, so a read it overtook is not kept.
+ */
+export function createDashboardAgentsReader<T>(load: (roomId: string) => Promise<T>, keepMs = 2500, now: () => number = Date.now) {
+  const kept = new Map<string, { expires: number; data: T }>();
+  const reads = new Map<string, Promise<T>>();
+  return {
+    read(roomId: string): Promise<T> {
+      const cached = kept.get(roomId);
+      if (cached && cached.expires > now()) return Promise.resolve(cached.data);
+      const pending = reads.get(roomId);
+      if (pending) return pending;
+      const read = load(roomId);
+      reads.set(roomId, read);
+      void read.then((data) => { if (reads.get(roomId) === read) kept.set(roomId, { expires: now() + keepMs, data }); }, () => undefined)
+        .finally(() => { if (reads.get(roomId) === read) reads.delete(roomId); });
+      return read;
+    },
+    invalidate(roomId: string): void { kept.delete(roomId); reads.delete(roomId); }
+  };
+}
+
 export async function readDashboardActivity(panes: Pane[], store: SpaceStore,
   readCliStatus: (session: PaneCliSession) => Promise<DashboardCliActivity>) {
   const activity: Record<string, DashboardStatus> = {};
@@ -54,13 +82,13 @@ export async function readDashboardActivity(panes: Pane[], store: SpaceStore,
         } else if (session.purpose !== "NORMAL") {
           set(pane.id, { status: "idle", reason: session.purpose === "LOGIN" ? "Sign-in session" : "Not running", source: "session" });
         } else if (session.status === "ERROR") {
-          set(pane.id, { status: "waiting", reason: "CLI error", since: iso(session.updatedAt), source: "session" });
+          set(pane.id, { status: "waiting", reason: "CLI error", since: iso(session.updatedAt), source: "session", sessionId: session.sessionId });
         } else {
           // One unreadable CLI must not fail the whole room; its pane keeps the client fallback.
           const status = await readCliStatus(session).catch(() => null);
           if (status !== null) {
             const detail = dashboardDetail(status);
-            set(pane.id, { ...detail, modelId: detail.modelId ?? session.modelId ?? null });
+            set(pane.id, { ...detail, modelId: detail.modelId ?? session.modelId ?? null, sessionId: session.sessionId });
           }
         }
       } else if (pane.mode === "CHAT") {
@@ -85,10 +113,15 @@ export async function readDashboardActivity(panes: Pane[], store: SpaceStore,
   return { activity, details };
 }
 
+/** The dashboard's reason for a pane Space Gateway's pace cap holds: "Pace cap until 21:00 UTC" (room-agent-monitor reads its prefix). */
+export const PACE_CAP_REASON_PREFIX = "Pace cap until ";
+export const paceHoldReason = (resumesAt: string) => `${PACE_CAP_REASON_PREFIX}${resumesAt.slice(11, 16)} UTC`;
+
 /** Claude Code's own session status is authoritative over screen heuristics. */
 export function claudeDashboardActivity(native: {
   status?: string | null; busy: boolean; waitingFor?: string | null; statusUpdatedAt?: string | null; modelId?: string | null; apiError?: boolean;
   tasks: Array<{ status: string; timing: { startedAt: string | null; completedAt: string | null } }>;
+  paceHold?: { at: string | null; resumesAt: string } | null;
 }): DashboardActivityDetail {
   const latest = native.tasks.at(-1);
   const modelId = native.modelId ?? null;
@@ -98,6 +131,8 @@ export function claudeDashboardActivity(native: {
   if (native.status === "waiting") {
     return { status: "waiting", reason: waitingReason(native.waitingFor), since: iso(native.statusUpdatedAt), modelId, source: "native" };
   }
+  // Space Gateway's pace hold refused the turn: it waits for the pace day's opening, it did not finish (operator 6/11, Cleo/Finn).
+  if (native.paceHold) return { status: "waiting", reason: paceHoldReason(native.paceHold.resumesAt), since: iso(native.paceHold.at) ?? iso(native.statusUpdatedAt), modelId, source: "native" };
   // Claude ends a turn cut off by a server error like a finished one; the Room Agent tells it to continue.
   if (native.apiError) return { status: "waiting", reason: "API error", since: iso(native.statusUpdatedAt), modelId, source: "native" };
   if (latest?.status === "COMPLETED") {
@@ -125,8 +160,11 @@ export function openCodeDashboardActivity(messages: unknown[]): DashboardActivit
   const time = record(last.time);
   const modelId = typeof last.modelID === "string" && last.modelID ? last.modelID : null;
   if (last.error) {
-    const aborted = record(last.error).name === "MessageAbortedError";
-    return { status: aborted ? "idle" : "waiting", reason: aborted ? "Interrupted" : "Run failed", since: iso(time.completed ?? time.created), modelId, source: "native" };
+    const failure = record(last.error);
+    const aborted = failure.name === "MessageAbortedError";
+    const message = record(failure.data).message;
+    return { status: aborted ? "idle" : "waiting", reason: aborted ? "Interrupted" : "Run failed", since: iso(time.completed ?? time.created), modelId, source: "native",
+      ...(aborted ? {} : { error: String(typeof message === "string" && message.trim() ? message : failure.name ?? "unknown error").replace(/\s+/g, " ").trim().slice(0, 200) }) };
   }
   if (iso(time.completed) && last.finish && last.finish !== "tool-calls") {
     return { status: "done", since: iso(time.completed), modelId, source: "native" };
@@ -161,9 +199,9 @@ const screenRules: ReadonlyArray<{ id: string; state: ScreenState; lines: number
 
 /**
  * A turn that stopped on the account's quota, plan or balance (Grok's upgrade menu, Cursor's usage limit and
- * free-plan model refusal, Droid without a subscription, DeepSeek's insufficient balance). Qoder's "Credits exhausted" is only a notice: it keeps answering on a fallback model.
+ * free-plan model refusal, Droid without a subscription, DeepSeek's insufficient balance, Antigravity's "Individual quota reached"). Qoder's "Credits exhausted" is only a notice: it keeps answering on a fallback model.
  */
-const usageLimitPattern = /\bmonthly quota\b|\byou(?:'ve| have)? (?:hit|reached|exceeded|run out of) (?:your |the )?(?:free |daily |weekly |monthly )?(?:usage|rate|quota|credit)s?(?: limit)?\b|\b(?:usage|quota) limit (?:reached|exceeded)\b|\bquota (?:exceeded|exhausted)\b|\bupgrade (?:your )?plans? to continue\b|\bno active subscription\b|\binsufficient (?:balance|credits?|funds|quota)\b|\byou(?:'ve| have)? hit your (?:session |weekly |opus |sonnet )?limit\b|\/rate-limit-options\b/i;
+const usageLimitPattern = /\bmonthly quota\b|\byou(?:'ve| have)? (?:hit|reached|exceeded|run out of) (?:your |the )?(?:free |daily |weekly |monthly )?(?:usage|rate|quota|credit)s?(?: limit)?\b|\b(?:usage|quota) limit (?:reached|exceeded)\b|\bquota (?:reached|exceeded|exhausted)\b|\bupgrade (?:your )?plans? to continue\b|\bno active subscription\b|\binsufficient (?:balance|credits?|funds|quota)\b|\byou(?:'ve| have)? hit your (?:session |weekly |opus |sonnet )?limit\b|\/rate-limit-options\b/i;
 
 const signInPattern = /\bsign in at\b|\bdevice (?:login|code)\b|\blogin code\b|\b(?:log|sign) in to continue\b/i;
 
@@ -176,13 +214,18 @@ export function screenShowsAccountLimit(screen: string): boolean {
  * The CLI stopped at its account's usage limit. Claude's transcript says it exactly: this session's latest answer is a 429 rate
  * limit whose reset has not passed, so a limit an earlier session (before a move or restart) hit, or one already reset, no longer
  * counts while its text is still on screen. Other CLIs, and Claude reads without the field, go by the screen.
+ * A limit with no reset time (Space Gateway's own pool 429 carries none) counts for UNKNOWN_RESET_MS: on 31/10 one such 429 at
+ * 07:09 UTC held Cleo/Andy's Mail Copilot as "limited" until its CLI exited at 14:58, so nothing was typed into it for 8 hours.
+ * Typing after it costs one fast 429 when the pool is still out, and that 429 starts the wait again.
  */
+export const UNKNOWN_RESET_MS = 5 * 60_000;
 export function cliUsageLimited(screen: string, native?: { rateLimit?: { at: string | null; resetsAt: string | null } | null } | null,
   sessionStartedAt?: string | null, now = Date.now()): boolean {
   if (!native || native.rateLimit === undefined) return screenShowsAccountLimit(screen);
   const limit = native.rateLimit;
+  const resetsAt = limit?.resetsAt ? Date.parse(limit.resetsAt) : limit?.at ? Date.parse(limit.at) + UNKNOWN_RESET_MS : Number.NaN;
   return Boolean(limit && !(limit.at && sessionStartedAt && Date.parse(limit.at) < Date.parse(sessionStartedAt))
-    && !(limit.resetsAt && Date.parse(limit.resetsAt) <= now));
+    && !(resetsAt <= now));
 }
 
 /** Classify a bounded room screen for the dashboard; returns the fixed id of the deciding rule. */
@@ -206,11 +249,13 @@ export function dashboardScreenState(screen: string): { state: ScreenState; rule
 export interface CliDashboardActivityReaders {
   /** Bounded room screen text; never starts or attaches a CLI. */
   screenText(session: PaneCliSession): Promise<string>;
-  codexTurn(session: PaneCliSession): Promise<{ status: "PENDING" | "RUNNING" | "COMPLETED" | "ABORTED"; lastActivityAtMs?: number }>;
+  codexTurn(session: PaneCliSession): Promise<{ status: "PENDING" | "RUNNING" | "COMPLETED" | "ABORTED"; lastActivityAtMs?: number; apiError?: boolean }>;
   /** Null when the OpenCode server is unavailable; `messages` holds at most the latest few. */
   openCode(session: PaneCliSession): Promise<{ busy: boolean; messages: () => Promise<unknown[]> } | null>;
   geminiTurns(session: PaneCliSession): Promise<NativeTurnLike[] | null>;
   claude(session: PaneCliSession): Promise<Parameters<typeof claudeDashboardActivity>[0] | null>;
+  /** The model a CLI's own record says answered differs from its session row: the row is corrected. */
+  observedModel?(session: PaneCliSession, modelId: string): void;
 }
 
 const screenActivity = ({ state, rule, reason }: { state: ScreenState; rule: string; reason?: string }): DashboardActivityDetail =>
@@ -259,13 +304,15 @@ function createActivityTracker(now: () => number) {
 /** One status resolver for every CLI runtime: native state first, the room screen as fallback. */
 export function createCliDashboardActivityReader(read: CliDashboardActivityReaders, now: () => number = Date.now) {
   const track = createActivityTracker(now);
+  const corrected = new Map<string, string>();
   const resolve = async (session: PaneCliSession): Promise<DashboardActivityDetail> => {
     const screen = async () => screenActivity(dashboardScreenState(await read.screenText(session).catch(() => "")));
     if (session.runtimeId === "cli:codex") {
       const turn = await read.codexTurn(session);
       const at = iso(turn.lastActivityAtMs);
       if (turn.status === "RUNNING") return { status: "working", source: "native" };
-      if (turn.status === "COMPLETED") return { status: "done", since: at, source: "native" };
+      // A turn ended on a transient server error (model at capacity) waits like Claude's: the Room Agent tells it to continue (R9-7).
+      if (turn.status === "COMPLETED") return turn.apiError ? { status: "waiting", reason: "API error", since: at, source: "native" } : { status: "done", since: at, source: "native" };
       if (turn.status === "ABORTED") return { status: "waiting", reason: "Interrupted", since: at, source: "native" };
       return screen();
     }
@@ -278,11 +325,11 @@ export function createCliDashboardActivityReader(read: CliDashboardActivityReade
     }
     if (session.runtimeId === "cli:gemini") {
       const latest = (await read.geminiTurns(session).catch(() => null))?.at(-1);
-      if (latest?.status === "RUNNING") return { status: "working", since: iso(latest.timing.startedAt), source: "native" };
+      const fromScreen = await screen();
+      if (geminiTurnRunning(latest, fromScreen.status === "idle")) return { status: "working", since: iso(latest!.timing.startedAt), source: "native" };
       if (latest && (latest.status === "INTERRUPTED" || latest.aborted)) {
         return { status: "waiting", reason: "Interrupted", since: iso(latest.timing.completedAt), source: "native" };
       }
-      const fromScreen = await screen();
       if (latest?.status === "COMPLETED" && fromScreen.status === "idle") {
         return { status: "done", since: iso(latest.timing.completedAt), source: "native" };
       }
@@ -290,6 +337,12 @@ export function createCliDashboardActivityReader(read: CliDashboardActivityReade
     }
     if (session.runtimeId === "cli:claude") {
       const native = await read.claude(session).catch(() => null);
+      // Space never passes Claude a model at launch, so a row written from the runtime's default ("sonnet") is a guess; the
+      // transcript's model is what answered (R9-8, 28/10: Cleo/Emma's row said sonnet while every turn ran Opus 5.5).
+      if (native?.modelId && native.modelId !== session.modelId && corrected.get(session.sessionId) !== native.modelId) {
+        corrected.set(session.sessionId, native.modelId);
+        read.observedModel?.(session, native.modelId);
+      }
       if (native) return claudeDashboardActivity(native);
     }
     return screen();

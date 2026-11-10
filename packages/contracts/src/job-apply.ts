@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { connectorCapabilitySchema } from "./dot-connectors.js";
 import { copilotAccountProfileIdSchema } from "./copilot.js";
+import { orderedRange } from "./range-rules.js";
+import { isValidTimeZone } from "./dot-schedules.js";
 
 // Job Applications pane: one pane owns a managed browser session (live view,
 // operator handoff) and a CLI agent session. Pane metadata holds only pane-level
@@ -39,7 +41,7 @@ export const jobApplyPaneSettingsSchema = z.object({
     inApp: z.boolean().default(true),
     telegram: z.boolean().default(false)
   }).strict().default({ inApp: true, telegram: false })
-}).strict().refine(value => value.minDelayMs <= value.maxDelayMs, "Minimum delay must not exceed the maximum delay.");
+}).strict().refine(...orderedRange("minDelayMs", "maxDelayMs", "Minimum delay must not exceed the maximum delay."));
 export type JobApplyPaneSettings = z.infer<typeof jobApplyPaneSettingsSchema>;
 
 /** A CLI account profile id ("main", a named profile or "space-gateway"); shared with every copilot pane. */
@@ -318,14 +320,13 @@ export type JobApplicationUpdate = z.infer<typeof jobApplicationUpdateSchema>;
 
 export const jobApplicationListQuerySchema = z.object({
   status: jobApplicationStatusSchema.optional(),
-  limit: z.coerce.number().int().min(1).max(2000).default(200)
+  // Every application when omitted (until 31/10 the newest 200, at most 2,000; the tracker asked for 1,000).
+  limit: z.coerce.number().int().min(1).optional()
 }).strict();
 
 /** The browser's IANA zone: the per-day history is counted in the operator's own days. */
 export const jobApplyStatsQuerySchema = z.object({
-  tz: z.string().min(1).max(64).refine((zone) => {
-    try { new Intl.DateTimeFormat("en", { timeZone: zone }); return true; } catch { return false; }
-  }, "Unknown time zone").default("UTC")
+  tz: z.string().min(1).max(64).refine(isValidTimeZone, "Unknown time zone").default("UTC")
 }).strict();
 const jobApplyDayCountsSchema = z.object({
   applied: z.number().int().min(0),
@@ -367,31 +368,39 @@ export const jobApplyMailCheckResultSchema = z.object({
   checked: z.number().int().min(0),
   confirmed: z.number().int().min(0),
   unconfirmed: z.number().int().min(0),
-  accounts: z.array(z.string()).max(20)
+  /** Rows left as they were because an account could not be read in full (see accountErrors). */
+  unchecked: z.number().int().min(0),
+  /** Accounts read in full. */
+  accounts: z.array(z.string()).max(20),
+  /** Accounts Gmail did not answer in full: RATE_LIMITED, ACCESS, HTTP_<status> or ERROR, and how many reads failed. */
+  accountErrors: z.array(z.object({ account: z.string().max(320), code: z.string().max(40), count: z.number().int().min(1) }).strict()).max(20)
 }).strict();
 export type JobApplyMailCheckResult = z.infer<typeof jobApplyMailCheckResultSchema>;
 
 /**
- * Mail triage: application emails are filed under Gmail labels. Confirmations and rejections are archived;
- * a request to take a test or an interview (ACTION_NEEDED) and every other application mail (OTHER: questions,
- * offers, surveys, unknown) stay in the inbox.
+ * Mail triage: application emails are filed under Gmail labels. Confirmations and rejections are archived; a request to
+ * take a test or an interview (ACTION_NEEDED) stays in the inbox. Every other application mail (questions, offers, surveys,
+ * unknown) gets no Job Applications label and stays in the inbox for the operator (operator 3/11 «γιατί υπάρχει το label
+ * Other???»: "Job Applications/Other" is gone). A thread carries at most one Job Applications label.
  */
-export const JOB_APPLY_MAIL_CATEGORIES = ["CONFIRMATION", "REJECTION", "ACTION_NEEDED", "OTHER"] as const;
+export const JOB_APPLY_MAIL_CATEGORIES = ["CONFIRMATION", "REJECTION", "ACTION_NEEDED"] as const;
 export const jobApplyMailCategorySchema = z.enum(JOB_APPLY_MAIL_CATEGORIES);
 export type JobApplyMailCategory = z.infer<typeof jobApplyMailCategorySchema>;
 export const JOB_APPLY_MAIL_ROOT_LABEL = "Job Applications";
 export const JOB_APPLY_MAIL_LABELS: Record<JobApplyMailCategory, string> = {
   CONFIRMATION: "Job Applications/Confirmations",
   REJECTION: "Job Applications/Rejections",
-  ACTION_NEEDED: "Job Applications/Action needed",
-  OTHER: "Job Applications/Other"
+  ACTION_NEEDED: "Job Applications/Action needed"
 };
-/** Organize categories: NONE takes the Job Applications labels off mail filed by mistake (archived only with `archive: true`). */
+/** The label filed before 3/11 for mail the rules could not place; Space only takes it off and deletes it once empty. */
+export const JOB_APPLY_MAIL_LEGACY_OTHER_LABEL = "Job Applications/Other";
+/** Organize categories: NONE takes the Job Applications labels off (archived only with `archive: true`). */
 export const JOB_APPLY_MAIL_ORGANIZE_CATEGORIES = [...JOB_APPLY_MAIL_CATEGORIES, "NONE"] as const;
 export const jobApplyMailOrganizeSchema = z.object({
   messageIds: z.array(z.string().trim().min(1).max(300)).min(1).max(50),
-  category: z.enum(JOB_APPLY_MAIL_ORGANIZE_CATEGORIES),
-  /** Defaults to true for confirmations and rejections; action-needed, other and NONE mail leave the inbox only when true. */
+  // A session started before 3/11 still offers OTHER: it means no Job Applications label now.
+  category: z.preprocess((value) => value === "OTHER" ? "NONE" : value, z.enum(JOB_APPLY_MAIL_ORGANIZE_CATEGORIES)),
+  /** Defaults to true for confirmations and rejections; action-needed and NONE mail leave the inbox only when true. */
   archive: z.boolean().optional(),
   account: z.string().trim().toLowerCase().email().max(320).optional()
 }).strict();
@@ -408,6 +417,7 @@ export const jobApplyMailTriageResultSchema = z.object({
   confirmations: z.number().int().min(0),
   rejections: z.number().int().min(0),
   actionNeeded: z.number().int().min(0),
+  /** Application mail no rule could place: left in the inbox with no Job Applications label (until 3/11 filed as Other). */
   other: z.number().int().min(0),
   skipped: z.number().int().min(0),
   /** Job-alert digests archived without a Job Applications label. */
@@ -569,9 +579,10 @@ export const jobApplyMemoryQuerySchema = z.object({
   company: z.string().trim().min(1).max(200).optional(),
   kinds: kindList.optional(),
   /** Exact answer-bank keys to fetch (normalized labels of a form); unioned with the text query. */
-  keys: z.array(z.string().trim().min(1).max(300)).max(100).optional(),
+  keys: z.array(z.string().trim().min(1).max(300)).optional(),
   pinnedOnly: z.coerce.boolean().optional(),
-  limit: z.coerce.number().int().min(1).max(200).default(20)
+  // Every match when omitted (until 1/11 the best 20, at most 200; a form's keys at most 100).
+  limit: z.coerce.number().int().min(1).optional()
 }).strict();
 export type JobApplyMemoryQuery = z.infer<typeof jobApplyMemoryQuerySchema>;
 
@@ -651,7 +662,7 @@ export const jobApplyEventSchema = z.object({
   applicationId: jobApplicationIdSchema.nullable(),
   runId: runIdSchema.nullable(),
   type: jobApplyEventTypeSchema,
-  message: z.string().trim().min(1).max(1000),
+  message: z.string().trim().min(1),
   payload: z.record(z.string(), z.unknown()).default({}),
   artifactId: artifactIdSchema.nullable(),
   createdAt: isoDateTime
@@ -661,7 +672,7 @@ export type JobApplyEvent = z.infer<typeof jobApplyEventSchema>;
 export const jobApplyEventInputSchema = z.object({
   applicationId: jobApplicationIdSchema.nullable().optional(),
   type: jobApplyEventTypeSchema.default("NOTE"),
-  message: z.string().trim().min(1).max(1000),
+  message: z.string().trim().min(1),
   payload: z.record(z.string(), z.unknown()).optional(),
   artifactId: artifactIdSchema.nullable().optional()
 }).strict();
@@ -733,7 +744,9 @@ export const jobApplyQuestionAskSchema = z.object({
   question: z.string().trim().min(1).max(1000),
   options: z.array(z.string().trim().min(1).max(200)).max(12).optional(),
   /** Which form control the answer is for, so the Fields tab can show it. */
-  label: z.string().trim().min(1).max(300).optional()
+  label: z.string().trim().min(1).max(300).optional(),
+  /** Queue item 34: the agent read the memory hits the first ask returned and none answers it; the question is recorded now. */
+  afterMemory: z.boolean().optional()
 }).strict();
 export const jobApplyQuestionWaitSchema = z.object({
   questionId: questionIdSchema,
@@ -770,7 +783,7 @@ export const jobApplyPendingItemSchema = z.object({
   kind: z.enum(["QUESTION", "REVIEW"]),
   id: z.string().min(1).max(120),
   applicationId: jobApplicationIdSchema.nullable(),
-  message: z.string().min(1).max(1000),
+  message: z.string().min(1),
   payload: z.record(z.string(), z.unknown()),
   createdAt: isoDateTime
 }).strict();

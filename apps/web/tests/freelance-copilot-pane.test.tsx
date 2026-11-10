@@ -4,6 +4,7 @@ import type { AgentRuntime, FreelanceCopilotPaneMetadata, FreelanceLead, Freelan
 import { defaultFreelanceCopilotPaneMetadata } from "@space/contracts";
 import { FreelanceCopilotPane, resolveActiveTab, tabsForLayout } from "../src/features/freelance-copilot-pane/FreelanceCopilotPane.js";
 import { FREELANCE_COPILOT_KIND, copilotKindForMode } from "../src/features/copilot-kit/copilot-kind.js";
+import { resetNousReviewing } from "../src/features/copilot-kit/nous-reviewing.js";
 
 const apiMock = vi.hoisted(() => ({
   freelanceCopilotSettings: vi.fn(),
@@ -34,7 +35,8 @@ const apiMock = vi.hoisted(() => ({
   cliGlobalEgress: vi.fn(),
   marketingBookmarks: vi.fn(),
   openMarketingBookmark: vi.fn(),
-  browserAccounts: vi.fn()
+  browserAccounts: vi.fn(),
+  nousApprovals: vi.fn()
 }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
 vi.mock("../src/runtime/SpaceRuntime.js", () => ({ getSpaceRuntime: () => ({ platform: { localStorage: window.localStorage } }) }));
@@ -89,6 +91,8 @@ describe("FreelanceCopilotPane", () => {
     apiMock.navigateBrowser.mockResolvedValue({});
     const connection = (status: string, ip: string | null) => ({ status, egressIpv4: ip });
     apiMock.cliGlobalEgress.mockResolvedValue({ profiles: { greece: connection("CONNECTED", "9.246.61.89"), thailand: connection("CONNECTED", "186.247.190.68"), mullvad: connection("DISCONNECTED", null), nord: connection("CONNECTED", "187.13.6.25") } });
+    apiMock.nousApprovals.mockResolvedValue({ nousReviewing: false });
+    resetNousReviewing();
   });
   afterEach(() => cleanup());
 
@@ -106,7 +110,7 @@ describe("FreelanceCopilotPane", () => {
     expect(screen.getByTestId("browser")).toBeTruthy();
     expect(screen.getByTestId("terminal")).toBeTruthy();
     expect(await screen.findByText("Idle · Full")).toBeTruthy();
-    expect(screen.getByText("6/6 platforms")).toBeTruthy();
+    expect(screen.getByText("8/8 platforms")).toBeTruthy();
     const ready = await screen.findByRole("region", { name: "Clients ready for you" });
     expect(within(ready).getByText("Offer coming: $2,000 fixed, start Monday.")).toBeTruthy();
     fireEvent.change(within(ready).getByRole("spinbutton", { name: "Contract value in USD" }), { target: { value: "2000" } });
@@ -166,11 +170,22 @@ describe("FreelanceCopilotPane", () => {
     expect((within(review).getByRole("button", { name: /Send back/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("shows a message Nous decides under \"May send\" as Nous reviewing, read only, with no needs-you chip (operator 2/11 15:08 BKK)", async () => {
+    apiMock.nousApprovals.mockResolvedValue({ nousReviewing: true });
+    apiMock.freelanceCopilotRun.mockResolvedValue({ run: null, status: "IDLE", backlog: 0, pending: [{ kind: "REVIEW", id: message.id, message: "Review", payload: { message, lead: null, wordingIssues: [] }, createdAt: at }] });
+    render(<FreelanceCopilotPane pane={pane} isVisible terminal={<div />} browser={<div />} />);
+    const held = await screen.findByRole("region", { name: "Nous reviewing" });
+    expect(within(held).getByText(message.body)).toBeTruthy();
+    expect(within(held).queryByRole("button", { name: /Approve|Send back|Reject/ })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Needs your review" })).toBeNull();
+    expect(screen.queryByText(/needs? you$/)).toBeNull();
+  });
+
   it("sets up platforms (account status, login page, caps) and connects the mailbox", async () => {
     render(<FreelanceCopilotPane pane={pane} isVisible terminal={<div />} browser={<div />} />);
     fireEvent.click(await screen.findByRole("tab", { name: /Setup/ }));
     const list = await screen.findByRole("list", { name: "Platforms" });
-    expect(within(list).getAllByRole("listitem")).toHaveLength(6);
+    expect(within(list).getAllByRole("listitem")).toHaveLength(8);
     await waitFor(() => expect((screen.getByRole("combobox", { name: "Upwork account status" }) as HTMLSelectElement).value).toBe("NEEDS_OPERATOR"));
     expect(within(list).getByText("Identity check")).toBeTruthy();
     fireEvent.change(screen.getByRole("combobox", { name: "Upwork account status" }), { target: { value: "ACTIVE" } });

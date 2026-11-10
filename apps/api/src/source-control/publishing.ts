@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { GitOperationInput, ProviderProjectBinding, RepositoryProviderId, RepositoryTarget } from "@space/contracts";
-import type { PersonalGitConnectionRecord, RepositoryPublishOperation, SourceControlRepository } from "@space/db";
+import type { PersonalGitConnectionRecord, SourceControlRepository } from "@space/db";
 import type { GitProviderClient } from "./providers.js";
 import { GitEngine } from "./git-engine.js";
 import { GitControlError } from "./errors.js";

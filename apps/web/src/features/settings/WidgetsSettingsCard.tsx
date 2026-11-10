@@ -10,6 +10,7 @@ import {
   Timer
 } from "../ui-theme/app-icons.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import {
   useDesktopWidgets,
   useWidgetsVisibility,
@@ -67,6 +68,8 @@ export const WIDGET_DEFINITIONS: WidgetItemConfig[] = [
 export function WidgetsSettingsCard() {
   const { isWidgetVisible, showWidget, hideWidget, resetWidgets } = useWidgetsVisibility();
   const { toggleWidget } = useDesktopWidgets();
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
 
   const visibleCount = useMemo(() => {
     return WIDGET_DEFINITIONS.filter((w) => isWidgetVisible(w.id)).length;
@@ -75,22 +78,22 @@ export function WidgetsSettingsCard() {
   return (
     <section
       className="agent-settings-card settings-flat-card docks-settings-card widgets-settings-card"
-      aria-label="Desktop widgets visibility settings"
+      aria-label={t("Desktop widgets visibility settings")}
     >
       <div className="agent-settings-section-title settings-flat-heading docks-settings-heading">
         <Sparkles aria-hidden="true" />
         <span>
-          <strong>Desktop widgets</strong>
+          <strong>{t("Desktop widgets")}</strong>
           <small>
-            Choose which desktop widgets appear in your tools menu and workspace ({visibleCount} enabled).
+            {t("Choose which desktop widgets appear in your tools menu and workspace ({count} enabled).", { count: visibleCount })}
           </small>
         </span>
         <div className="settings-flat-heading-actions">
           <button
             type="button"
             className="docks-settings-reset-btn"
-            title="Reset widget visibility to defaults"
-            aria-label="Reset widget visibility to defaults"
+            title={t("Reset widget visibility to defaults")}
+            aria-label={t("Reset widget visibility to defaults")}
             onClick={resetWidgets}
           >
             <RotateCcw aria-hidden="true" />
@@ -98,7 +101,7 @@ export function WidgetsSettingsCard() {
         </div>
       </div>
 
-      <div className="docks-toggle-list" role="group" aria-label="Widget toggles">
+      <div className="docks-toggle-list" role="group" aria-label={t("Widget toggles")}>
         {WIDGET_DEFINITIONS.map((widget) => {
           const isVisible = isWidgetVisible(widget.id);
 
@@ -107,14 +110,14 @@ export function WidgetsSettingsCard() {
               <SpaceToggle
                 className="settings-flat-row settings-flat-toggle-row dock-visibility-row"
                 name={`widget-visibility-${widget.id}`}
-                ariaLabel={`Toggle ${widget.label} visibility`}
+                ariaLabel={t("Toggle {label} visibility", { label: t(widget.label) })}
                 label={
                   <span className="docks-toggle-label-wrap">
                     <widget.icon className="dock-toggle-icon" aria-hidden="true" />
-                    <span>{widget.label}</span>
+                    <span>{t(widget.label)}</span>
                   </span>
                 }
-                detail={widget.description}
+                detail={t(widget.description)}
                 checked={isVisible}
                 onChange={(checked) => {
                   if (checked) {

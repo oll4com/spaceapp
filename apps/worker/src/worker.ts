@@ -1,3 +1,4 @@
+import { initNodeSentry, captureSentryException, flushSentry } from "@space/contracts/sentry-node";
 import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
 import { assertDevInstanceIsolated, instanceBackgroundJobEnabled } from "@space/contracts";
@@ -15,8 +16,10 @@ import { runTelegramNotificationCycle, TelegramNotificationLoop } from "./telegr
 import { StreamingBotLoop, createSpaceBotMemoryStore, runStreamingBotCycle } from "./streaming-bot-runtime.js";
 import { CHESS_MOVE_SOCKET, startChessMoveServer } from "./chess-cli-move.js";
 import { NOUS_TURN_MAX_BODY_BYTES, NousTurnInputError, runNousTurn, validateNousTurnInput } from "./nous-turn.js";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 assertDevInstanceIsolated(process.env, "worker");
+initNodeSentry("worker");
 const address = process.env.SPACE_TEMPORAL_ADDRESS ?? DEFAULT_TEMPORAL_ADDRESS;
 const namespace = process.env.SPACE_TEMPORAL_NAMESPACE ?? DEFAULT_TEMPORAL_NAMESPACE;
 const taskQueue = process.env.SPACE_TEMPORAL_TASK_QUEUE ?? DEFAULT_TASK_QUEUE;
@@ -45,7 +48,7 @@ const worker = await Worker.create({
   activities,
   // Structured, correlated activity records and worker metrics. Activity-side
   // only: the workflow sandbox and its replay behaviour are unchanged.
-  interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+  interceptors: { activity: [createActivityObservabilityInterceptors({ spans, reportError: captureSentryException })] }
 });
 
 // Optional loopback-only Prometheus endpoint for worker metrics.
@@ -74,7 +77,7 @@ if (databaseUrl && telegramBridgeEnabled) {
   const workerId = `space-worker:${hostname()}:${process.pid}`;
   const deliveryWorker = new TelegramDeliveryWorker({
     persistence: telegramPersistence,
-    secrets: new TelegramSecretStore(process.env.SPACE_TELEGRAM_SECRET_ROOT || "/opt/spaceapp/secrets/telegram"),
+    secrets: new TelegramSecretStore(process.env.SPACE_TELEGRAM_SECRET_ROOT || `${SPACE_INSTALL_ROOT}/secrets/telegram`),
     workerId,
     log: (record) => console.log(JSON.stringify({
       service: "space-worker",
@@ -91,11 +94,11 @@ if (databaseUrl && telegramBridgeEnabled) {
         deliveryWorker,
         manifestPath:
           process.env.SPACE_TELEGRAM_OWNERSHIP_MANIFEST ||
-          "/opt/spaceapp/var/integrations/telegram/space-codex-thread-ownership.json",
+          `${SPACE_INSTALL_ROOT}/var/integrations/telegram/space-codex-thread-ownership.json`,
         sweep: () => sweepCodexCliCompletions({
           store: spaceStore,
           workerId,
-          codexHome: process.env.SPACE_CODEX_HOME || "/var/lib/spaceapp-user/.codex",
+          codexHome: process.env.SPACE_CODEX_HOME || `${SPACE_AGENT_HOME}/.codex`,
           log: (record) => console.log(JSON.stringify({
             service: "space-worker",
             component: "telegram-terminal-sweep",
@@ -136,7 +139,7 @@ if (databaseUrl && streamingBotEnabled) {
         spaceStore: notificationStore!,
         botRepository,
         credentialStore: new StreamingCredentialStore(
-          process.env.SPACE_STREAMING_SECRET_ROOT || "/opt/spaceapp/var/streaming-secrets"
+          process.env.SPACE_STREAMING_SECRET_ROOT || `${SPACE_INSTALL_ROOT}/var/streaming-secrets`
         ),
         memoryStore: createSpaceBotMemoryStore(botRepository),
         youtubeDailyBudget: Number.parseInt(process.env.SPACE_STREAMING_YOUTUBE_DAILY_QUOTA_BUDGET ?? "8000", 10),
@@ -165,7 +168,7 @@ const chessMoveServer = process.env.SPACE_CHESS_MOVE_SOCKET === "disabled"
   : await startChessMoveServer(process.env.SPACE_CHESS_MOVE_SOCKET || CHESS_MOVE_SOCKET, undefined, {
     "/nous-turn": { maxBodyBytes: NOUS_TURN_MAX_BODY_BYTES, isInputError: (error) => error instanceof NousTurnInputError,
       handle: (body, signal, emit) => runNousTurn(validateNousTurnInput(body), signal, emit) }
-  }).catch((error: unknown) => {
+  }, spans).catch((error: unknown) => {
       workerLog("warn", "worker.chess_move_server", { status: "UNAVAILABLE", error: error instanceof Error ? error.message : String(error) });
       return null;
     });
@@ -178,4 +181,5 @@ try {
   streamingBotLoop?.stop();
   chessMoveServer?.close();
   await spans?.close();
+  await flushSentry();
 }

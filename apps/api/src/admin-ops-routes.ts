@@ -350,15 +350,17 @@ export function registerAdminIntegrationRoutes(app: FastifyInstance, options: {
   );
   app.get("/api/admin/audit", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(paginationRequestSchema, request.query);
-    const events = await store.listAuditEvents();
     const start = (page.page - 1) * page.pageSize;
+    // Real paging over every audit event (until 31/10 the pages ran inside the newest 500).
+    const { items, total } = store.listAuditEventsPage ? await store.listAuditEventsPage({ offset: start, limit: page.pageSize })
+      : await Promise.resolve(store.listAuditEvents()).then((events) => ({ items: events.slice(start, start + page.pageSize), total: events.length }));
     return {
-      data: events.slice(start, start + page.pageSize),
+      data: items,
       pagination: {
         page: page.page,
         pageSize: page.pageSize,
-        totalItems: events.length,
-        totalPages: Math.ceil(events.length / page.pageSize)
+        totalItems: total,
+        totalPages: Math.ceil(total / page.pageSize)
       }
     };
   });

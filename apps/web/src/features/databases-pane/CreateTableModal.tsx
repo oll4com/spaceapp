@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Plus, Trash2, X, Table as TableIcon } from "../ui-theme/app-icons.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export interface CreateTableModalProps {
   schemas?: string[];
@@ -25,6 +26,8 @@ export function CreateTableModal({
   onClose,
   onSubmit
 }: CreateTableModalProps) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [tableName, setTableName] = useState("");
   const [schema, setSchema] = useState(defaultSchema || "public");
   const [columns, setColumns] = useState<
@@ -75,7 +78,7 @@ export function CreateTableModal({
       });
       onClose();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to create table");
+      alert(err instanceof Error ? err.message : t("Failed to create table"));
     } finally {
       setIsSubmitting(false);
     }
@@ -87,7 +90,7 @@ export function CreateTableModal({
         <div className="db-modal-header">
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <TableIcon size={16} style={{ color: "var(--modern-accent)" }} />
-            <span>Create New Table</span>
+            <span>{t("Create New Table")}</span>
           </div>
           <button className="db-crumb-btn" onClick={onClose}>
             <X size={15} />
@@ -97,11 +100,11 @@ export function CreateTableModal({
         <div className="db-modal-body">
           <div style={{ display: "flex", gap: 10 }}>
             <div className="db-form-group" style={{ flex: 2 }}>
-              <label className="db-form-label">Table Name</label>
+              <label className="db-form-label">{t("Table Name")}</label>
               <input
                 type="text"
                 className="db-input"
-                placeholder="e.g. users, products, orders"
+                placeholder={t("e.g. users, products, orders")}
                 value={tableName}
                 onChange={(e) => setTableName(e.target.value)}
               />
@@ -109,7 +112,7 @@ export function CreateTableModal({
 
             {schemas && schemas.length > 1 && (
               <div className="db-form-group" style={{ flex: 1 }}>
-                <label className="db-form-label">Schema</label>
+                <label className="db-form-label">{t("Schema")}</label>
                 <select
                   className="db-select"
                   value={schema}
@@ -128,11 +131,11 @@ export function CreateTableModal({
           <div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
               <label className="db-form-label" style={{ fontWeight: 600 }}>
-                Columns Definition
+                {t("Columns Definition")}
               </label>
               <button type="button" className="db-btn" onClick={handleAddCol} style={{ padding: "3px 8px" }}>
                 <Plus size={12} />
-                <span>Add Column</span>
+                <span>{t("Add Column")}</span>
               </button>
             </div>
 
@@ -153,7 +156,7 @@ export function CreateTableModal({
                   <input
                     type="text"
                     className="db-input"
-                    placeholder="Column name"
+                    placeholder={t("Column name")}
                     style={{ flex: 2 }}
                     value={col.name}
                     onChange={(e) => handleColChange(idx, "name", e.target.value)}
@@ -206,7 +209,7 @@ export function CreateTableModal({
 
         <div className="db-modal-footer">
           <button type="button" className="db-btn" onClick={onClose}>
-            Cancel
+            {t("Cancel")}
           </button>
           <button
             type="button"
@@ -214,7 +217,7 @@ export function CreateTableModal({
             onClick={handleSubmit}
             disabled={isSubmitting || !tableName.trim() || columns.length === 0}
           >
-            {isSubmitting ? "Creating..." : "Create Table"}
+            {isSubmitting ? t("Creating...") : t("Create Table")}
           </button>
         </div>
       </div>

@@ -260,6 +260,23 @@ describe("Demo Projects pane", () => {
     expect(screen.getByText("server/index.mjs")).toBeTruthy();
   });
 
+  it("labels a saved client that is not connected CONFIGURED, not UNCONFIGURED (R12b)", async () => {
+    const [salesforce, google] = state().connections;
+    for (const [googleRow, googleLabel] of [
+      [{ ...google!, configured: false }, "UNCONFIGURED"],
+      [{ ...google!, configured: true, status: "CONNECTED" as const }, "CONNECTED"]
+    ] as const) {
+      apiMock.demoState.mockResolvedValue(state({ connections: [{ ...salesforce!, configured: true }, googleRow] }));
+      const view = render(<DemosPane pane={pane} />);
+      fireEvent.click(await screen.findByRole("tab", { name: /Connections/ }));
+      const rows = await screen.findAllByRole("row");
+      const badge = (name: string) => rows.find((row) => row.textContent?.includes(name))!.querySelector(".demos-pill")!.textContent;
+      expect(badge("Salesforce")).toBe("CONFIGURED");
+      expect(badge("Google Sheets")).toBe(googleLabel);
+      view.unmount();
+    }
+  });
+
   it("renders direct Open in Google Sheets link in Connections tab when sheet configured", async () => {
     apiMock.demoState.mockResolvedValue(
       state({

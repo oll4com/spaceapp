@@ -130,7 +130,7 @@ export async function executeMemoryActionBridge(input: {
     try {
       if (request.action.type === "search") {
         const query = listMemoryQuerySchema.parse({
-          page: 1,
+          page: request.action.page,
           pageSize: request.action.pageSize,
           sortOrder: "desc",
           scope: request.action.scope,
@@ -141,7 +141,9 @@ export async function executeMemoryActionBridge(input: {
         const entries = input.canonicalMemory
           ? await input.canonicalMemory.list(query)
           : await input.store.listMemoryEntries(query);
-        lines.push(formatSearchResult(request.action.q, entries.slice(0, request.action.pageSize)));
+        // The canonical reader answers every match, so its page is cut here; the store pages itself.
+        const from = (request.action.page - 1) * request.action.pageSize;
+        lines.push(formatSearchResult(request.action.q, input.canonicalMemory ? entries.slice(from, from + request.action.pageSize) : entries.slice(0, request.action.pageSize)));
         executedActionCount += 1;
         continue;
       }

@@ -1,7 +1,6 @@
-import os from "node:os";
 import type { VideoJobOp } from "@space/contracts";
 import { SpaceConflictError } from "@space/runtime";
-import { classifyLoad } from "../nous/server-load.js";
+import { classifyLoad, createHostSwap, type HostSwapReader } from "../nous/server-load.js";
 import { spawn } from "../safe-child-process.js";
 
 // The Video pane's engine runner (plan clipboard:-HpLbbtWKj53, Phase 3): one engine process per op, like the Design renderer,
@@ -23,12 +22,9 @@ export interface VideoEngineOptions {
   /** Test seam: runs the engine with the JSON job on stdin, feeds progress lines, and returns the final result line. */
   run?(request: string, timeoutMs: number, onProgress: (progress: VideoEngineProgress) => void): Promise<string>;
   /** Test seam: the server's load level; OVERLOADED refuses new jobs. */
-  load?(): { level: string; reasons: string[] };
-}
-
-/** A 5-minute load average above 1.5 × cores, or less than 4 GiB free, is OVERLOADED (the same rule as the load gate and Nous). */
-export function currentLoad(): { level: string; reasons: string[] } {
-  return classifyLoad({ cpuPercent: null, load5: os.loadavg()[1] ?? 0, cores: os.cpus().length, memAvailableBytes: os.freemem(), swapPercent: null });
+  load?(): { level: string; reasons: string[] } | Promise<{ level: string; reasons: string[] }>;
+  /** The physical host's swap (Nous's rule: only its swap past 90% is OVERLOADED); without it, this machine's. */
+  hostSwap?: HostSwapReader;
 }
 
 /** Runs the engine in its own process group so a timeout also ends the ffmpeg and Python it started. */
@@ -78,8 +74,10 @@ function runEngine(request: string, timeoutMs: number, onProgress: (progress: Vi
  */
 export function createVideoEngine(options: VideoEngineOptions = {}): VideoEngineRun {
   let running = 0;
+  const hostSwap = options.hostSwap ?? createHostSwap({});
+  const currentLoad = async () => { const host = await hostSwap.read(); return classifyLoad({ swapPercent: host.percent, host: host.host }); };
   return async (job, onProgress) => {
-    const load = (options.load ?? currentLoad)();
+    const load = await (options.load ?? currentLoad)();
     if (load.level === "OVERLOADED") throw new SpaceConflictError(`The server is overloaded (${load.reasons.join(", ")}); try the video job again in a few minutes.`);
     if (running >= VIDEO_ENGINE_MAX_CONCURRENT) throw new SpaceConflictError("Two video jobs are already running; try again when one ends.");
     running += 1;

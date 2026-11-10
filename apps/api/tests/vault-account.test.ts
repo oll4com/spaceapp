@@ -11,7 +11,7 @@ const HOME = "google_account:home-1";
 const KEY = "A".repeat(22);
 const BROWSER = { id: "pane:browser0001", roomId: "room:vaultroom1", mode: "BROWSER", isClosed: false } as Pane;
 
-async function harness(paneAccount: string | null, undelegated: Array<"home" | "work" | "plain"> = []) {
+async function harness(paneAccount: string | null, undelegated: Array<"home" | "work" | "plain"> = [], site = { stored: LOGIN, target: LOGIN, delegated: [LOGIN] }) {
   const repository = fakeRepository();
   const { body } = await enrollment((await generateVaultTransportKey()).publicKey, "user:alice");
   const { sealedServerShare: _sealed, ...rest } = body;
@@ -19,18 +19,18 @@ async function harness(paneAccount: string | null, undelegated: Array<"home" | "
   await repository.enableAgentAccess("user:alice");
   const add = async (googleAccountId: string | null, loginKey: string | null) => {
     const record = await itemRecord("user:alice", body.vaultId);
-    const item: VaultItemRecord = { ...record, metadata: { ...record.metadata, origins: [LOGIN], googleAccountId, loginKey } };
+    const item: VaultItemRecord = { ...record, metadata: { ...record.metadata, origins: [site.stored], googleAccountId, loginKey } };
     await repository.saveItem("user:alice", item);
     return item.metadata.id;
   };
   const items = { home: await add(HOME, KEY), work: await add(WORK, KEY), plain: await add(null, null) };
   await repository.createDelegation("user:alice", { keyEnvelope: { sealed: "key" }, fillEnvelopes: {}, certificate: { claims: { generation: 1, vaultId: body.vaultId,
-    items: Object.entries(items).filter(([name]) => !undelegated.includes(name as never)).map(([, handle]) => ({ handle, origins: [LOGIN], fields: ["USERNAME", "PASSWORD", "OTP"], approvalMode: "FULL", submit: true })) } } } as never);
+    items: Object.entries(items).filter(([name]) => !undelegated.includes(name as never)).map(([, handle]) => ({ handle, origins: site.delegated, fields: ["USERNAME", "PASSWORD", "OTP"], approvalMode: "FULL", submit: true })) } } } as never);
   const issueUse = vi.fn(async (_input: { handle: string }) => ({ capability: { claims: "signed by the broker" } }));
   const vaultFill = vi.fn(async () => ({ status: "FILLED" as const, reason: null, sealedGenerated: null }));
   const protection = { ownerOf: async () => null, protect: async () => true, unprotect: async () => true };
   const agent = createVaultAgent({ repository, broker: { issueUse } as never, protection: protection as never, listPanes: async () => [BROWSER], paneOwner: async () => "user:alice",
-    browser: { vaultTarget: async () => ({ eligible: true, reason: null, targetId: "t", frameId: "f", origin: LOGIN, document: "d" }), vaultFill },
+    browser: { vaultTarget: async () => ({ eligible: true, reason: null, targetId: "t", frameId: "f", origin: site.target, document: "d" }), vaultFill },
     googleAccounts: async () => [{ id: WORK, email: "work@example.com" }, { id: HOME, email: "home@example.com" }], paneAccount: async () => paneAccount });
   const call = (path: "list" | "fill" | "totp-fill", body: Record<string, unknown>) =>
     agent.call({ owner: "user:alice", paneId: "pane:cliterminal1", roomId: BROWSER.roomId, path, body, traceId: "trace" });
@@ -39,6 +39,20 @@ async function harness(paneAccount: string | null, undelegated: Array<"home" | "
 }
 
 describe("Vault logins mapped to a Google account", () => {
+  it("fills GSIS on any https origin of gsis.gr, never across domains, http or a port (operator 2026-10-30)", async () => {
+    const stored = "https://login.gsis.gr";
+    for (const target of ["https://oauth2.gsis.gr", "https://www.gsis.gr", stored]) {
+      const allowed = await harness(null, [], { stored, target, delegated: [stored] });
+      expect(await allowed.call("fill", { handle: allowed.items.plain, fields: ["PASSWORD"] })).toMatchObject({ status: "FILLED" });
+      expect(allowed.issueUse).toHaveBeenCalledWith(expect.objectContaining({ origin: target, handle: allowed.items.plain }));
+    }
+    for (const target of ["https://www.aade.gr", "http://oauth2.gsis.gr", "https://oauth2.gsis.gr:444", "https://login.gsis.gr.evil.test"]) {
+      const denied = await harness(null, [], { stored, target, delegated: [stored] });
+      expect(await denied.call("fill", { handle: denied.items.plain, fields: ["PASSWORD"] })).toMatchObject({ status: "ORIGIN_MISMATCH", reason: "ORIGIN_NOT_DELEGATED" });
+      expect(denied.issueUse).not.toHaveBeenCalled();
+    }
+  });
+
   it("lists the account's address per handle, and none for a login without one", async () => {
     const { items, call } = await harness(null);
     const listed = (await call("list", {})) as { items: Array<{ handle: string; account?: string }> };
@@ -48,7 +62,8 @@ describe("Vault logins mapped to a Google account", () => {
   it("filters the list by site (its subdomains too) and by account, so a large Vault answers short", async () => {
     const { items, call } = await harness(null);
     const handles = async (body: Record<string, unknown>) => ((await call("list", body)) as { items: Array<{ handle: string }> }).items.map((item) => item.handle).sort();
-    expect(await handles({ site: "sub.login.example" })).toEqual([]);
+    // A page on another origin of the same registrable domain is where these logins fill, so they are listed for it (2026-10-30).
+    expect(await handles({ site: "sub.login.example" })).toEqual(Object.values(items).sort());
     expect(await handles({ site: "login.example" })).toEqual(Object.values(items).sort());
     expect(await handles({ site: "https://login.example/signin?x=1" })).toEqual(Object.values(items).sort());
     expect(await handles({ site: "other.example" })).toEqual([]);

@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import {
+  CODEX_STALE_TURN_MS,
+  codexStaleTurnActivity,
+  onCodexTurnInterrupted,
   detectNullAgentMessageRollout,
   findRecentCodexCliTurnActivity,
   findCodexCliTurnFinalResult,
@@ -111,6 +114,17 @@ describe("Codex rollout diagnostics", () => {
     );
 
     expect(activity).toEqual({ status: "RUNNING", turnId: "turn:running" });
+  });
+
+  it("marks a Codex turn that ended on a transient server error, never on a policy error, until the next turn starts (R9-7)", () => {
+    // Alex/Finn 28/10 07:55 UTC: task_complete with no answer and "Selected model is at capacity" (server_overloaded).
+    const ended = (info: string) => JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn:cut", last_agent_message: null,
+      error: { message: "Selected model is at capacity. Please try a different model.", codex_error_info: info } } });
+    const start = JSON.stringify({ type: "turn_context", payload: { turn_id: "turn:cut" } });
+    expect(inspectCurrentCodexCliTurnActivity([start, ended("server_overloaded")].join("\n"))).toEqual({ status: "COMPLETED", turnId: "turn:cut", apiError: true });
+    expect(inspectCurrentCodexCliTurnActivity([start, ended("cyber_policy")].join("\n"))).toEqual({ status: "COMPLETED", turnId: "turn:cut" });
+    const next = JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "turn:next" } });
+    expect(inspectCurrentCodexCliTurnActivity([start, ended("server_overloaded"), next].join("\n"))).toEqual({ status: "RUNNING", turnId: "turn:next" });
   });
 
   it("recognizes a completed tail even when its turn context is outside the read window", () => {
@@ -568,5 +582,34 @@ describe("Codex rollout diagnostics", () => {
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
+  });
+});
+
+describe("a Codex turn Codex never finished (R16-5)", () => {
+  it("ends it after 2 idle minutes behind \"Conversation interrupted\" or with no turn on the app-server, telling listeners once", () => {
+    // 29/10: Alex/Dana's Codex lost its app-server link at 14:04 BKK; its turn stayed RUNNING until a restart at 16:49.
+    const heard: string[] = [];
+    const stop = onCodexTurnInterrupted((event) => heard.push(`${event.paneId} ${event.threadId}`));
+    const idle = "■ Conversation interrupted - tell the model what to do differently\n\n› Ask Codex to do anything\n\n  gpt-6.1-sol xhigh · /opt/spaceapp";
+    const running = "• Working (2m 10s • esc to interrupt)\n\n› \n\n  gpt-6.1-sol xhigh · /opt/spaceapp";
+    const turn = { status: "RUNNING" as const, turnId: "turn-7", lastActivityAtMs: 1000 };
+    const t0 = Date.parse("2026-10-29T07:04:00.000Z");
+    expect(codexStaleTurnActivity("pane:dana0001", "thread-a", turn, null, idle, t0).status).toBe("RUNNING");
+    expect(codexStaleTurnActivity("pane:dana0001", "thread-a", turn, null, idle, t0 + 60_000).status).toBe("RUNNING");
+    expect(codexStaleTurnActivity("pane:dana0001", "thread-a", turn, null, idle, t0 + CODEX_STALE_TURN_MS).status).toBe("ABORTED");
+    expect(codexStaleTurnActivity("pane:dana0001", "thread-a", turn, null, idle, t0 + 200_000).status).toBe("ABORTED");
+    expect(heard).toEqual(["pane:dana0001 thread-a"]);
+    // New rollout activity is a new turn: counted again; a working screen never ends one.
+    const next = { ...turn, lastActivityAtMs: 2000 };
+    expect(codexStaleTurnActivity("pane:dana0001", "thread-a", next, null, idle, t0 + 300_000).status).toBe("RUNNING");
+    expect(codexStaleTurnActivity("pane:dana0001", "thread-a", next, null, running, t0 + 500_000).status).toBe("RUNNING");
+    // The app-server reports no turn on an idle screen without the notice: ended after 2 minutes too.
+    const quiet = "› Ask Codex to do anything\n\n  gpt-6.1-sol xhigh · /opt/spaceapp";
+    const other = { status: "RUNNING" as const, turnId: "turn-9", lastActivityAtMs: 3000 };
+    expect(codexStaleTurnActivity("pane:eve00001", "thread-b", other, false, quiet, t0).status).toBe("RUNNING");
+    expect(codexStaleTurnActivity("pane:eve00001", "thread-b", other, false, quiet, t0 + CODEX_STALE_TURN_MS).status).toBe("ABORTED");
+    expect(codexStaleTurnActivity("pane:fay00001", "thread-c", { ...other, turnId: "turn-10" }, true, quiet, t0 + 900_000).status).toBe("RUNNING");
+    expect(heard).toEqual(["pane:dana0001 thread-a", "pane:eve00001 thread-b"]);
+    stop();
   });
 });

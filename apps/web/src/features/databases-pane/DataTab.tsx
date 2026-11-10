@@ -23,6 +23,7 @@ import {
   Table as TableIcon
 } from "../ui-theme/app-icons.js";
 import type { DatabaseColumnMeta, DatabaseTableDataResponse } from "@space/contracts";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export function formatCellDisplay(val: unknown): string {
   if (val === null || val === undefined) return "";
@@ -89,6 +90,8 @@ export function DataTab({
   onDeleteRow,
   onInsertRow
 }: DataTabProps) {
+  const language = useUiLanguage();
+  const t = useCallback((text: string, vars?: Record<string, string | number>) => uiText(language, text, vars), [language]);
   // Pending row edits: rowKey -> { keys, values }
   const [pendingEdits, setPendingEdits] = useState<Record<string, { keys: Record<string, unknown>; values: Record<string, unknown> }>>({});
   const [editingCell, setEditingCell] = useState<{ rowKey: string; colName: string } | null>(null);
@@ -147,11 +150,11 @@ export function DataTab({
           <button
             type="button"
             className="db-table-action-btn"
-            title="Delete row"
+            title={t("Delete row")}
             onClick={(e) => {
               e.stopPropagation();
               const keys = getRowKeyObject(row.original);
-              if (confirm("Are you sure you want to delete this row?")) {
+              if (confirm(t("Are you sure you want to delete this row?"))) {
                 void onDeleteRow(keys);
               }
             }}
@@ -183,7 +186,7 @@ export function DataTab({
           return (
             <div
               className="db-th-inner"
-              title={`${c.name} (${c.type || "unknown"})${c.isPrimaryKey ? " - Primary Key" : ""}`}
+              title={t(c.isPrimaryKey ? "{name} ({type}) - Primary Key" : "{name} ({type})", { name: c.name, type: c.type || t("unknown") })}
               style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", width: "100%", overflow: "hidden" }}
               onClick={() => {
                 if (!isSorted) {
@@ -271,7 +274,7 @@ export function DataTab({
     }
 
     return cols;
-  }, [columnsMeta, sortColumn, sortDirection, isReadOnly, editingCell, cellEditValue, pendingEdits, getRowKey, getRowKeyObject, onSortChange, onDeleteRow]);
+  }, [columnsMeta, sortColumn, sortDirection, isReadOnly, editingCell, cellEditValue, pendingEdits, getRowKey, getRowKeyObject, onSortChange, onDeleteRow, t]);
 
   const table = useReactTable({
     data: rows,
@@ -344,7 +347,7 @@ export function DataTab({
               type="text"
               className="db-input"
               style={{ width: 140 }}
-              placeholder="Search data..."
+              placeholder={t("Search data...")}
               value={searchVal}
               onChange={(e) => setSearchVal(e.target.value)}
               onKeyDown={(e) => {
@@ -361,7 +364,7 @@ export function DataTab({
               value={filterCol}
               onChange={(e) => setFilterCol(e.target.value)}
             >
-              <option value="">Filter column...</option>
+              <option value="">{t("Filter column...")}</option>
               {columnsMeta.map((col) => (
                 <option key={col.name} value={col.name}>
                   {col.name}
@@ -378,18 +381,18 @@ export function DataTab({
                 >
                   <option value="eq">=</option>
                   <option value="neq">!=</option>
-                  <option value="like">contains</option>
+                  <option value="like">{t("contains")}</option>
                   <option value="gt">&gt;</option>
                   <option value="lt">&lt;</option>
-                  <option value="null">is null</option>
-                  <option value="notnull">is not null</option>
+                  <option value="null">{t("is null")}</option>
+                  <option value="notnull">{t("is not null")}</option>
                 </select>
 
                 {!["null", "notnull"].includes(filterOp) && (
                   <input
                     type="text"
                     className="db-input"
-                    placeholder="Value..."
+                    placeholder={t("Value...")}
                     value={filterVal}
                     onChange={(e) => setFilterVal(e.target.value)}
                     onKeyDown={(e) => {
@@ -398,10 +401,10 @@ export function DataTab({
                   />
                 )}
 
-                <button className="db-btn" onClick={handleApplyFilter} title="Apply Filter">
+                <button className="db-btn" onClick={handleApplyFilter} title={t("Apply Filter")}>
                   <Check size={12} />
                 </button>
-                <button className="db-btn" onClick={handleClearFilter} title="Clear Filter">
+                <button className="db-btn" onClick={handleClearFilter} title={t("Clear Filter")}>
                   <X size={12} />
                 </button>
               </>
@@ -419,7 +422,7 @@ export function DataTab({
               }}
             >
               <Plus size={13} />
-              <span>Add Row</span>
+              <span>{t("Add Row")}</span>
             </button>
           )}
         </div>
@@ -429,22 +432,22 @@ export function DataTab({
       <div className="db-table-wrapper" ref={tableContainerRef}>
         {isLoading ? (
           <div style={{ padding: 24, textAlign: "center", color: "var(--modern-muted)" }}>
-            Loading table data...
+            {t("Loading table data...")}
           </div>
         ) : !tableName ? (
           <div style={{ padding: 32, textAlign: "center", color: "var(--modern-muted)" }}>
             <TableIcon size={24} style={{ display: "block", margin: "0 auto 8px auto", opacity: 0.6 }} />
-            <div style={{ fontWeight: 500 }}>No table selected</div>
-            <div style={{ fontSize: "0.8rem", marginTop: 4 }}>Select a table from the sidebar to view records.</div>
+            <div style={{ fontWeight: 500 }}>{t("No table selected")}</div>
+            <div style={{ fontSize: "0.8rem", marginTop: 4 }}>{t("Select a table from the sidebar to view records.")}</div>
           </div>
         ) : rows.length === 0 ? (
           <div style={{ padding: 36, textAlign: "center", color: "var(--modern-muted)" }}>
             <TableIcon size={24} style={{ display: "block", margin: "0 auto 8px auto", opacity: 0.6 }} />
             <div style={{ fontWeight: 600, fontSize: "0.95rem", color: "var(--modern-text)" }}>
-              Table "{tableName}" has 0 records
+              {t('Table "{name}" has 0 records', { name: tableName })}
             </div>
             <div style={{ fontSize: "0.82rem", marginTop: 4, color: "var(--modern-muted)" }}>
-              This table is currently empty in the database.
+              {t("This table is currently empty in the database.")}
             </div>
             <div style={{ marginTop: 16, display: "flex", gap: 8, justifyContent: "center" }}>
               {onBrowseTables && (
@@ -453,7 +456,7 @@ export function DataTab({
                   className="db-btn db-btn-primary"
                   onClick={onBrowseTables}
                 >
-                  Browse other tables
+                  {t("Browse other tables")}
                 </button>
               )}
             </div>
@@ -534,7 +537,7 @@ export function DataTab({
       {pendingCount > 0 && (
         <div className="db-pending-bar">
           <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "var(--modern-text)" }}>
-            {pendingCount} unsaved row {pendingCount === 1 ? "change" : "changes"}
+            {t(pendingCount === 1 ? "{count} unsaved row change" : "{count} unsaved row changes", { count: pendingCount })}
           </span>
           <button
             className="db-btn db-btn-primary"
@@ -542,7 +545,7 @@ export function DataTab({
             disabled={isSaving}
           >
             <Save size={13} />
-            <span>{isSaving ? "Saving..." : "Save All"}</span>
+            <span>{isSaving ? t("Saving...") : t("Save All")}</span>
           </button>
           <button
             className="db-btn"
@@ -550,7 +553,7 @@ export function DataTab({
             disabled={isSaving}
           >
             <RotateCcw size={13} />
-            <span>Discard</span>
+            <span>{t("Discard")}</span>
           </button>
         </div>
       )}
@@ -559,13 +562,13 @@ export function DataTab({
       <div className="db-pagination-bar">
         <div>
           {!tableName
-            ? "No table selected"
-            : `Showing ${rows.length > 0 ? (page - 1) * pageSize + 1 : 0} to ${Math.min(page * pageSize, totalRows)} of ${totalRows} records`}
+            ? t("No table selected")
+            : t("Showing {from} to {to} of {total} records", { from: rows.length > 0 ? (page - 1) * pageSize + 1 : 0, to: Math.min(page * pageSize, totalRows), total: totalRows })}
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <span>Rows per page:</span>
+            <span>{t("Rows per page:")}</span>
             <select
               className="db-select"
               style={{ padding: "2px 6px" }}
@@ -584,18 +587,18 @@ export function DataTab({
               className="db-btn db-btn-icon-only"
               onClick={() => onPageChange(page - 1)}
               disabled={page <= 1}
-              title="Previous Page"
+              title={t("Previous Page")}
             >
               <ChevronLeft size={14} />
             </button>
             <span style={{ padding: "0 6px" }}>
-              Page {page} of {totalPages}
+              {t("Page {page} of {total}", { page, total: totalPages })}
             </span>
             <button
               className="db-btn db-btn-icon-only"
               onClick={() => onPageChange(page + 1)}
               disabled={page >= totalPages}
-              title="Next Page"
+              title={t("Next Page")}
             >
               <ChevronRight size={14} />
             </button>
@@ -608,7 +611,7 @@ export function DataTab({
         <div className="db-modal-overlay">
           <div className="db-modal">
             <div className="db-modal-header">
-              <span>Insert New Row</span>
+              <span>{t("Insert New Row")}</span>
               <button className="db-crumb-btn" onClick={() => setShowAddRowModal(false)}>
                 <X size={15} />
               </button>
@@ -625,7 +628,7 @@ export function DataTab({
                     <input
                       type="text"
                       className="db-input"
-                      placeholder={col.nullable ? "NULL (leave empty)" : "Value..."}
+                      placeholder={col.nullable ? t("NULL (leave empty)") : t("Value...")}
                       value={newRowValues[col.name] || ""}
                       onChange={(e) =>
                         setNewRowValues((prev) => ({ ...prev, [col.name]: e.target.value }))
@@ -637,7 +640,7 @@ export function DataTab({
             </div>
             <div className="db-modal-footer">
               <button className="db-btn" onClick={() => setShowAddRowModal(false)}>
-                Cancel
+                {t("Cancel")}
               </button>
               <button
                 className="db-btn db-btn-primary"
@@ -650,7 +653,7 @@ export function DataTab({
                   setShowAddRowModal(false);
                 }}
               >
-                Insert Row
+                {t("Insert Row")}
               </button>
             </div>
           </div>

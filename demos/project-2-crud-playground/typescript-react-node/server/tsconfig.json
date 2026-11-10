@@ -11,7 +11,8 @@
     "declaration": false,
     "sourceMap": false,
     "outDir": "../server-dist",
-    "rootDir": "."
+    "rootDir": ".",
+    "types": ["node"]
   },
   "include": ["**/*.ts"]
 }

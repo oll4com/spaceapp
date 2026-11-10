@@ -5,6 +5,7 @@ import type { Pane } from "@space/contracts";
 import type { SpaceApiConfig } from "../config.js";
 import { cliAgentFilesApiBaseUrl, issueCliAgentFilesToken } from "../cli-agent-files.js";
 import { cliBrowserBridgeApiBaseUrl, issueCliBrowserBridgeToken } from "../cli-browser-bridge.js";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // A T3 agent has no Space CLI session. Its pane-bound tools (space_browser,
 // Agent Files) act for the T3 pane under this principal, verified against the
@@ -13,8 +14,8 @@ export const T3_AGENT_SESSION_PREFIX = "t3code:";
 export const T3_AGENT_RUNTIME_ID = "cli:t3code";
 // One file per T3 workspace (the agents' working directory), readable by the
 // T3 service group only; the Space tools find it from their working directory.
-export const T3_AGENT_TOKEN_DIR = "/opt/spaceapp/var/t3code-agent-tokens";
-const T3_DATA_DIR = "/opt/spaceapp/var/t3code";
+export const T3_AGENT_TOKEN_DIR = `${SPACE_INSTALL_ROOT}/var/t3code-agent-tokens`;
+const T3_DATA_DIR = `${SPACE_INSTALL_ROOT}/var/t3code`;
 const REFRESH_BEFORE_MS = 6 * 60 * 60 * 1000;
 
 export const t3AgentSessionId = (paneId: string) => T3_AGENT_SESSION_PREFIX + paneId;

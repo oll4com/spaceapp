@@ -48,3 +48,30 @@
 .mc-action .jc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .mc-action .jc-row-meta { margin-left: auto; font-size: 11px; color: var(--jc-muted); }
 .mc-action[data-status="failed"] .jc-pill, .mc-action[data-status="rolled_back"] .jc-pill { color: var(--danger, #e5484d); }
+
+/* Charts: the gateway's TrendChart (its own sheet, space-gateway.css, is the gateway dialog's and dark only) drawn on the pane's theme. */
+.mc-charts {
+  --gw-series-1: #3987e5; --gw-series-2: #d95926; --gw-series-3: #199e70; --gw-series-4: #c98500; --gw-series-5: #d55181; --gw-series-other: #6b7475;
+  display: grid; gap: 14px; align-content: start; padding: 12px; overflow: auto;
+}
+.mc-chart { display: grid; gap: 6px; min-width: 0; padding-bottom: 10px; border-bottom: 1px solid var(--jc-border); }
+.mc-chart h3 { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: 13px; font-weight: 600; }
+.mc-chart-now { margin-left: auto; color: var(--jc-muted); font-weight: 500; font-variant-numeric: tabular-nums; }
+.mc-charts .gw-trend { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; margin: 0; }
+.mc-charts .gw-trend-axis, .mc-charts .gw-trend-x { display: flex; justify-content: space-between; font-size: 11px; color: var(--jc-muted); font-variant-numeric: tabular-nums; }
+.mc-charts .gw-trend-axis { flex-direction: column; text-align: right; }
+.mc-charts .gw-trend-x, .mc-charts .gw-trend .gw-legend { grid-column: 2; }
+.mc-charts .gw-trend-plot { position: relative; min-width: 0; }
+.mc-charts .gw-trend-plot svg { display: block; width: 100%; height: 7.5rem; }
+.mc-charts .gw-grid, .mc-charts .gw-baseline, .mc-charts .gw-crosshair { stroke: var(--jc-border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.mc-charts .gw-crosshair { stroke: var(--jc-muted); }
+.mc-charts .gw-trend-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.mc-charts .gw-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; padding: 0; list-style: none; }
+.mc-charts .gw-legend li { display: grid; grid-template-columns: 0.6rem auto auto; align-items: center; gap: 6px; font-size: 12px; }
+.mc-charts .gw-legend i, .mc-charts .gw-tooltip i { width: 0.6rem; height: 0.6rem; border-radius: 2px; }
+.mc-charts .gw-legend-value, .mc-charts .gw-tooltip b { font-weight: 500; font-variant-numeric: tabular-nums; }
+.mc-charts .gw-tooltip {
+  position: absolute; top: 4px; z-index: 2; display: grid; gap: 2px; min-width: 9rem; padding: 6px 8px; transform: translateX(-50%); pointer-events: none;
+  border: 1px solid var(--jc-border); border-radius: 6px; background: var(--jc-bg); color: var(--jc-text); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); font-size: 11px;
+}
+.mc-charts .gw-tooltip span { display: grid; grid-template-columns: 0.6rem minmax(0, 1fr) auto; gap: 6px; align-items: center; }

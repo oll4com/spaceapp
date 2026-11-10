@@ -22,6 +22,8 @@ const openCodeWrapper = "opencode-vscode-parity";
 // Nor Claude Code: Nous's turns run the CLI container's, on the owner's own login (operator decision 2026-10-27, B+C3).
 export const CLAUDE_CLI_WRAPPER = "claude-vscode-parity";
 const NOUS_AGENT_TURN_MS = 21 * 60_000;
+// How long a credential-status probe asks again while the CLI container's agent answers 'busy' (its credential pool is full).
+const CREDENTIAL_STATUS_BUSY_WAIT_MS = 20_000;
 
 /** One Nous turn for the CLI container's Claude Code (deploy/docker/claude-agent.mjs checks it again). */
 export interface NousAgentRequest {
@@ -141,8 +143,19 @@ export function createPublicCredentialHost(config: Pick<SpaceApiConfig, "publicD
   return {
     run,
     status: async (commandPath) => {
-      const answer = await run(commandPath, "credential-status").catch(() => null);
-      return answer?.exitCode === 0 ? parseCredentialStatus(answer.stdout) : null;
+      // A discovery probes every CLI at once and the agent runs 4 actions, answering the rest 'busy' (exit 75). Read as signed
+      // out, that kept a signed-in Codex on "sign-in is required" for 10 minutes (c13 lab 9/11), so a busy answer is asked again.
+      // Bound: CREDENTIAL_STATUS_BUSY_WAIT_MS, so a discovery never waits on an agent busy with long smokes; past it the status
+      // stays unknown (null) as before and the registry's next refresh asks again.
+      const deadline = Date.now() + CREDENTIAL_STATUS_BUSY_WAIT_MS;
+      for (;;) {
+        const answer = await run(commandPath, "credential-status").catch(() => null);
+        if (answer?.exitCode === 75 && answer.stdout.startsWith("FAILED busy") && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          continue;
+        }
+        return answer?.exitCode === 0 ? parseCredentialStatus(answer.stdout) : null;
+      }
     },
     execute: async (commandPath, args, options) => {
       const action = args.length === 1 && (args[0] === "credential-smoke" || args[0] === "credential-observation") ? args[0] : null;

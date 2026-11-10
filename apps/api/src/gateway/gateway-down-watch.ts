@@ -49,6 +49,8 @@ export function createGatewayDownWatch(input: {
 
   return {
     tick,
+    /** A self-hosted install has no Space Gateway: closes the card an earlier version raised there (every 1.1.9 install held one). */
+    async clearStale() { for (const owner of await input.admins()) await input.resolve(owner, dedupeKey); },
     start() {
       timer ??= setInterval(() => { void tick().catch((error: unknown) => input.log.warn({ err: error }, "Space Gateway down watch failed.")); }, input.intervalMs ?? 20_000);
       timer.unref();
@@ -62,7 +64,7 @@ export function createGatewayDownWatch(input: {
 
 /** Starts the watch on the instance that runs the `gateway-down-notify` job (stable: dev shares stable's gateway). */
 export function registerGatewayDownWatch(app: FastifyInstance, input: {
-  enabled: boolean; gatewayUrl: string; store: Pick<SpaceStore, "listUsersWithRoomCounts">;
+  enabled: boolean; publicDistribution?: boolean; gatewayUrl: string; store: Pick<SpaceStore, "listUsersWithRoomCounts">;
   notifications: { raise(notification: NotificationRaiseInput): Promise<unknown>; resolve(owner: string, dedupeKey: string): Promise<unknown> };
 }): void {
   const watch = createGatewayDownWatch({
@@ -72,6 +74,9 @@ export function registerGatewayDownWatch(app: FastifyInstance, input: {
     log: app.log,
     admins: async () => ((await input.store.listUsersWithRoomCounts?.()) ?? []).filter((user) => user.role === "ADMIN").map((user) => user.id)
   });
-  app.addHook("onReady", async () => { if (input.enabled) watch.start(); });
+  app.addHook("onReady", async () => {
+    if (input.enabled) watch.start();
+    else if (input.publicDistribution) await watch.clearStale().catch((error: unknown) => app.log.warn({ err: error }, "Closing a stale Space Gateway card failed."));
+  });
   app.addHook("onClose", async () => watch.stop());
 }

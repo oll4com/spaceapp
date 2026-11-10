@@ -2,6 +2,7 @@ import { execFile } from "./safe-child-process.js";
 import { chmod, mkdir, readFile, readdir, readlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 const execFileAsync = promisify(execFile);
 
@@ -11,7 +12,7 @@ export const geminiNativeConversationIdPattern =
 const geminiProcessTreeMaxProcesses = 2_048;
 const geminiProcessTreeMaxTasks = 512;
 const geminiConversationPattern = /(?:presence|conversations)\/([0-9a-fA-F-]{36})\.(?:lock|db)/;
-const geminiPaneConversationsDir = "/opt/spaceapp/var/gemini-pane-conversations";
+const geminiPaneConversationsDir = `${SPACE_INSTALL_ROOT}/var/gemini-pane-conversations`;
 
 export function normalizeGeminiPaneId(paneId: string): string {
   return paneId.replace(/^pane:+/, "");
@@ -134,7 +135,7 @@ export async function findLatestGeminiConversationIdForWorkspace(
   accountProfileId?: string | null
 ): Promise<string | null> {
   if (!workspaceCwd || workspaceCwd === "/") return null;
-  const geminiCliHome = process.env.SPACE_GEMINI_CLI_HOME || "/var/lib/spaceapp-user/.codex/space-gemini";
+  const geminiCliHome = process.env.SPACE_GEMINI_CLI_HOME || `${SPACE_AGENT_HOME}/.codex/space-gemini`;
   const candidateDbs: string[] = [];
   if (accountProfileId && accountProfileId !== "main") {
     candidateDbs.push(join(geminiCliHome, "profiles", accountProfileId, "home", ".gemini", "antigravity-cli", "conversation_summaries.db"));

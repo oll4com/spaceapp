@@ -12,13 +12,14 @@
   --active-icon-background: transparent; --active-icon-border: transparent;
   color-scheme: dark;
   position: fixed;
-  top: max(calc(var(--workspace-board-padding, 0.375rem) - 1px), env(safe-area-inset-top));
+  /* Below the desktop app's title bar: without it the header sat under the Windows caption (desktop 0.1.26, 5/11). */
+  top: calc(var(--desktop-titlebar-height, 0px) + max(calc(var(--workspace-board-padding, 0.375rem) - 1px), env(safe-area-inset-top)));
   bottom: max(calc(var(--workspace-board-padding, 0.375rem) - 1px), env(safe-area-inset-bottom));
   right: max(6px, env(safe-area-inset-right));
   left: auto;
   z-index: 310;
   width: min(480px, calc(100vw - 24px)); max-width: none;
-  height: calc(100dvh - max(calc(var(--workspace-board-padding, 0.375rem) - 1px), env(safe-area-inset-top)) - max(calc(var(--workspace-board-padding, 0.375rem) - 1px), env(safe-area-inset-bottom)));
+  height: calc(100dvh - var(--desktop-titlebar-height, 0px) - max(calc(var(--workspace-board-padding, 0.375rem) - 1px), env(safe-area-inset-top)) - max(calc(var(--workspace-board-padding, 0.375rem) - 1px), env(safe-area-inset-bottom)));
   max-height: none; margin: 0; padding: 0; overflow: hidden;
   color: var(--dashboard-text); background: var(--dashboard-bg);
   border: 1px solid var(--dashboard-border); border-radius: 16px; box-shadow: 0 24px 80px #0009, 0 0 0 1px #0003;
@@ -233,11 +234,11 @@
 }
 @media (max-width: 767px), (pointer: coarse) {
   .agents-dashboard, .agents-dashboard.is-maximized {
-    inset: 0 !important;
+    inset: var(--desktop-titlebar-height, 0px) 0 0 0 !important;
     width: 100vw !important;
     max-width: 100vw !important;
-    height: 100dvh !important;
-    max-height: 100dvh !important;
+    height: calc(100dvh - var(--desktop-titlebar-height, 0px)) !important;
+    max-height: calc(100dvh - var(--desktop-titlebar-height, 0px)) !important;
     border-radius: 0 !important;
     border: none !important;
     margin: 0 !important;
@@ -256,11 +257,11 @@
 
 :is(.space-shell[data-shell-mode="mobile"], [data-shell-mode="mobile"]) ~ * .agents-dashboard,
 :is(.space-shell[data-shell-mode="mobile"], [data-shell-mode="mobile"]) .agents-dashboard {
-  inset: 0 !important;
+  inset: var(--desktop-titlebar-height, 0px) 0 0 0 !important;
   width: 100vw !important;
   max-width: 100vw !important;
-  height: 100dvh !important;
-  max-height: 100dvh !important;
+  height: calc(100dvh - var(--desktop-titlebar-height, 0px)) !important;
+  max-height: calc(100dvh - var(--desktop-titlebar-height, 0px)) !important;
   border-radius: 0 !important;
   border: none !important;
   margin: 0 !important;

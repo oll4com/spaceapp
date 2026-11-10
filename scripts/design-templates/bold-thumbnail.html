@@ -1,0 +1,15 @@
+<body class="{{has-background}}">
+<style>
+/* Video thumbnails: few words, very large, readable at small sizes. */
+.shade{position:absolute;inset:0;background:linear-gradient(90deg,color-mix(in srgb,var(--bg) calc(var(--overlay)*100% + 35%),transparent) 0,transparent 70%)}
+body:not(.has-background) .shade{display:none}
+.content{position:absolute;inset:calc(var(--u)*6);justify-content:center;max-width:72%}
+.headline{font-size:calc(var(--u)*16*var(--headline-scale));font-weight:900;text-transform:uppercase;line-height:.98;
+  text-shadow:0 calc(var(--u)*.6) calc(var(--u)*2.4) rgba(0,0,0,.55)}
+.bar{width:calc(var(--u)*18);height:calc(var(--u)*1.6);border-radius:999px;background:var(--primary)}
+.badge{background:var(--accent);border-color:var(--accent);color:var(--text)}
+.safe > .logo{position:absolute;right:calc(var(--u)*5);bottom:calc(var(--u)*5);height:calc(var(--u)*9)}
+</style>
+<div class="photo"></div><div class="shade"></div>
+<div class="safe"><div class="content stack"><div class="t badge">{{badge}}</div><h1 class="t headline">{{headline}}</h1><div class="bar"></div><p class="t sub">{{subline}}</p></div>{{logo}}</div>
+</body>

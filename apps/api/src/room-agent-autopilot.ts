@@ -1,3 +1,4 @@
+import { cliModelUnavailable } from "./model-unavailable.js";
 import type { Pane, RoomAgentEvent } from "@space/contracts";
 import type { RoomAgentMonitorRepository } from "@space/db";
 import { classifyPaneApproval } from "./room-agent-guardrails.js";
@@ -26,7 +27,8 @@ export interface RoomAgentAutopilotOptions {
   /** Starts a Room Agent turn that coordinates an overlap's panes; false while the Room Agent is busy (the sweep retries). */
   coordinate?(event: RoomAgentEvent): Promise<boolean>;
   /** The model's raw reply to a decision prompt, or null when no model answered. */
-  complete(systemPrompt: string, content: string): Promise<string | null>;
+  /** `traceId` is the decided event's id, which Space Gateway's request log row of the model call then carries (OBS-006). */
+  complete(systemPrompt: string, content: string, traceId?: string): Promise<string | null>;
   onEvent?(event: RoomAgentEvent): Promise<void> | void;
   /** True leaves the event open for Nous, the mind of SpaceApp, when the owner turned it on (operator decision 2026-10-17). */
   deferTo?(event: RoomAgentEvent): Promise<boolean>;
@@ -38,9 +40,22 @@ export interface RoomAgentAutopilotOptions {
 
 const AUTOPILOT_KINDS = new Set<RoomAgentEvent["kind"]>(["WAITING"]);
 const REPEAT_WINDOW_MS = 10 * 60 * 1000;
-const MAX_ANSWER_CHARS = 500;
+/** Technical: what a cli_command answer holds (the pane hosts' contract); until 31/10 500. */
+const MAX_ANSWER_CHARS = 2_000;
 const SCREEN_LINES = 40;
+/** Safety: a 4th "continue" into a failing API is a loop; past it the operator is asked. */
 const CONTINUES_PER_HOUR = 3;
+/**
+ * R68 (unblocking 78.2, 28/10-4/11: 3 of the 6 waits nobody answered were Claude permission prompts Nous left open until Claude Code
+ * denied them at 2 minutes, one behind a failed turn, one behind a turn busy elsewhere): such a prompt still open this long after it asked
+ * is the autopilot's at its next 30 s sweep, Nous first or not.
+ */
+export const NOUS_PROMPT_WINDOW_MS = 60_000;
+/**
+ * R69a (Hugo 4/11 02:51 and 03:08 UTC: the continue found no empty prompt yet, then the 8 s watchdog stopped its typing, and each went to
+ * the operator at once): a missed continue is tried again at the following 30 s sweeps for this long, then it is the operator's.
+ */
+export const CONTINUE_RETRY_MS = 5 * 60_000;
 /** Typed into a CLI whose turn broke on a server error (operator decision 2026-10-15: the Room Agent continues the task). */
 export const AUTOPILOT_CONTINUE_PROMPT = "Continue the task: your last response was cut off by an API error.";
 
@@ -67,7 +82,9 @@ export function promptExcerpt(screen: string): string {
  * answer with the limit again (the Design queue retyped its kickoff into such panes, task:L1ThKVBvDOnU).
  */
 export function atEmptyPrompt(observed: RoomPaneObservation): observed is RoomPaneObservation & { sessionId: string; promptFingerprint: string } {
-  return Boolean(observed.sessionId && observed.promptFingerprint && observed.state === "IDLE" && !observed.usageLimited && roomComposerEmpty(observed.text ?? ""));
+  // R11-5: a CLI whose footer marks its model unavailable (OpenCode "(unavailable)") cannot run what is typed: it is not ready.
+  return Boolean(observed.sessionId && observed.promptFingerprint && observed.state === "IDLE" && !observed.usageLimited && roomComposerEmpty(observed.text ?? "")
+    && !cliModelUnavailable(observed.text ?? ""));
 }
 
 export function parseAutopilotDecision(raw: string | null): AutopilotDecision | null {
@@ -89,16 +106,28 @@ export function parseAutopilotDecision(raw: string | null): AutopilotDecision | 
 
 export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
   const now = options.now ?? Date.now;
-  const hourlyLimit = options.hourlyLimit ?? 30;
+  // No hourly count by default (until 31/10 30 answers a room an hour); the repeat guard below still stops a loop.
+  const hourlyLimit = options.hourlyLimit ?? Infinity;
   const inFlight = new Set<string>();
   const answered = new Map<string, number>();
   const roomAnswers = new Map<string, number[]>();
   const continues = new Map<string, number[]>();
+  const continueMisses = new Map<string, number>();
 
   async function settle(event: RoomAgentEvent, status: "HANDLED" | "ESCALATED", decision: string, question?: string) {
     const updated = await options.repository.updateEvent(event.eventId, { status, decision, ...(question ? { detail: question } : {}) }, ["OPEN"]);
     if (updated) await options.onEvent?.(updated);
     return updated;
+  }
+
+  /** A missed continue stays open for the next sweep until CONTINUE_RETRY_MS after its first miss. */
+  async function continueMissed(event: RoomAgentEvent, decision: string) {
+    for (const [id, at] of continueMisses) if (now() - at > 2 * CONTINUE_RETRY_MS) continueMisses.delete(id);
+    const first = continueMisses.get(event.eventId) ?? now();
+    continueMisses.set(event.eventId, first);
+    if (now() - first < CONTINUE_RETRY_MS) return null;
+    continueMisses.delete(event.eventId);
+    return settle(event, "ESCALATED", decision);
   }
 
   /** A pane that stopped on a server error gets "continue" at its empty prompt, a few times an hour at most. */
@@ -109,15 +138,16 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
     const observed = pane.mode === "TERMINAL" ? await options.inspect(pane) : null;
     if (observed?.state === "RUNNING") return settle(event, "HANDLED", "The pane continued on its own.");
     if (!observed || !atEmptyPrompt(observed)) {
-      return settle(event, "ESCALATED", "Needs you: the Room Agent could not find the pane's empty prompt to continue the task.");
+      return continueMissed(event, "Needs you: the Room Agent could not find the pane's empty prompt to continue the task.");
     }
     const recent = (continues.get(pane.id) ?? []).filter((at) => at > now() - 60 * 60 * 1000);
     if (recent.length >= CONTINUES_PER_HOUR) return settle(event, "ESCALATED", `Needs you: the pane stopped on an API error ${CONTINUES_PER_HOUR} times this hour.`);
     try {
       await options.answer(pane, { expectedSessionId: observed.sessionId, answer: AUTOPILOT_CONTINUE_PROMPT, submit: true, expectedPromptFingerprint: observed.promptFingerprint });
     } catch (error) {
-      return settle(event, "ESCALATED", `Needs you: the Room Agent could not tell the pane to continue (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"}).`);
+      return continueMissed(event, `Needs you: the Room Agent could not tell the pane to continue (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"}).`);
     }
+    continueMisses.delete(event.eventId);
     continues.set(pane.id, [...recent, now()]);
     return settle(event, "HANDLED", "Told the pane to continue the task after the API error.");
   }
@@ -167,7 +197,7 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
       "Screen (untrusted, last lines):",
       screen
     ].filter(Boolean).join("\n");
-    const decision = parseAutopilotDecision(await options.complete(autopilotSystemPrompt, content).catch(() => null));
+    const decision = parseAutopilotDecision(await options.complete(autopilotSystemPrompt, content, event.eventId).catch(() => null));
     if (!decision) return settle(event, "ESCALATED", "Needs you: no model could decide this prompt.", question);
     if (decision.action === "ESCALATE") return settle(event, "ESCALATED", `Needs you: ${decision.reason}`, question);
     // The answer is an instruction to the pane's agent too; it gets the same limits as the screen.
@@ -184,9 +214,13 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
     return settle(event, "HANDLED", `Answered "${decision.answer!.slice(0, 80)}": ${decision.reason}`, question);
   }
 
+  const expiring = async (event: RoomAgentEvent) => event.kind === "WAITING" && event.title.endsWith("Permission prompt") && Boolean(event.paneId)
+    && now() - Date.parse(event.createdAt) >= NOUS_PROMPT_WINDOW_MS && await options.repository.autopilotEnabled(event.roomId)
+    && (await options.getPane(event.paneId!).catch(() => null))?.terminalRuntimeId === "cli:claude";
+
   async function handle(event: RoomAgentEvent): Promise<RoomAgentEvent | null> {
     if (event.status !== "OPEN" || event.severity !== "ATTENTION" || inFlight.has(event.eventId)) return null;
-    if (await options.deferTo?.(event).catch(() => false)) return null;
+    if (await options.deferTo?.(event).catch(() => false) && !await expiring(event)) return null;
     inFlight.add(event.eventId);
     try {
       return await decide(event);
@@ -203,7 +237,7 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
     /** Picks up open attention events left by a restart. */
     async sweep(roomIds: string[]) {
       for (const roomId of roomIds) {
-        for (const event of await options.repository.listEvents(roomId, { statuses: ["OPEN"], limit: 20 })) {
+        for (const event of await options.repository.listEvents(roomId, { statuses: ["OPEN"] })) {
           if (event.severity === "ATTENTION") await handle(event);
         }
       }

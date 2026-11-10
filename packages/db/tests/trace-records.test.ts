@@ -34,6 +34,9 @@ class RecordingPool implements PgPoolLike {
       return { rows: [{ runId: "room_agent_task_run:abcdef01", missionId: "room_agent_mission:abcdef01", roomId: "room:abcdef01",
         status: "COMPLETED", errorCode: null, queuedAt: now, completedAt: null }] as T[], rowCount: 1 };
     }
+    if (sql.includes("FROM space_gateway_request_logs")) {
+      return { rows: [{ provider: "ANTIGRAVITY", model: "gemini-3.8-flash-tiered", status: "error", errorCode: "http_429", latencyMs: 812, requestedAt: now }] as T[], rowCount: 1 };
+    }
     if (sql.includes("FROM audit_events")) {
       return { rows: [{ id: "audit:abcdef01", actorUserId: null, traceId: values[0], action: "turn.queue", targetType: "workflow",
         targetId: "workflow:abcdef01", metadata: {}, createdAt: now }] as T[], rowCount: 1 };
@@ -78,9 +81,13 @@ describe("PostgresSpaceStore.listTraceRecords", () => {
     for (const call of pool.calls.filter((entry) => entry !== runCall && !byRunId(entry))) {
       expect(call.values[0]).toBe("req:abcdefghijkl");
       expect(call.sql).not.toContain("req:abcdefghijkl");
-      expect(call.sql).toMatch(/trace_id = \$1/);
+      expect(call.sql).toMatch(/(trace_id|request_id) = \$1/);
       expect(call.sql).toMatch(/LIMIT \$\d/);
     }
+    // EXT-G-5: Space Gateway's rows whose request id is the trace (OBS-006 keeps a caller's x-request-id), codes and times only.
+    expect(records.gatewayRequests).toEqual([{ provider: "ANTIGRAVITY", model: "gemini-3.8-flash-tiered", status: "error", errorCode: "http_429",
+      latencyMs: 812, requestedAt: "2026-10-11T10:00:00.000Z" }]);
+    expect(pool.calls.find((call) => call.sql.includes("FROM space_gateway_request_logs"))!.sql).not.toContain("error_message");
     const eventCall = pool.calls.find((call) => call.sql.includes("FROM events"))!;
     // Limits are clamped: 500 rows at most, default 14-day event window for invalid input.
     expect(eventCall.values).toEqual(["req:abcdefghijkl", 14, 500]);

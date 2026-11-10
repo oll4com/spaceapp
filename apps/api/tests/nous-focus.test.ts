@@ -20,19 +20,22 @@ describe("space_focus_pane", () => {
       recordRoomEvent: async (input) => eventSchema.parse({ ...input, id: makeSpaceId("event"), workflowId: null, createdAt: new Date().toISOString() }) });
     const tools = createNousTools({ paneNotices: createNousPaneNotices({ notifications }), rooms: async () => [room], listPanes: async () => [pane] } as unknown as NousToolDeps);
     const ctx = { owner, turnId: "nous_turn:f1", callId: "toolu_f", traceId: "trace:f" };
-    const first = await tools.execute("space_focus_pane", { room: "Main", pane: "Emma", reason: "CAPTCHA on Upwork", checked }, ctx);
+    const first = await tools.execute("space_focus_pane", { room: "Main", pane: "Emma", reason: "CAPTCHA on Upwork", checked, steps: ["Open https://www.upwork.com/nx/find-work/ in Emma's browser", "Tick the Cloudflare box"] }, ctx);
     expect(first.ok).toBe(true);
     const open = () => repository.list(owner, { status: "OPEN", limit: 10 });
     expect(await open()).toHaveLength(1);
-    expect((await open())[0]).toMatchObject({ source: "NOUS", kind: "NEEDS_HANDS", severity: "ATTENTION", title: "Emma needs you", body: "• CAPTCHA on Upwork\n\nChecked first:\n• Vault: no login for Upwork",
+    expect((await open())[0]).toMatchObject({ source: "NOUS", kind: "NEEDS_HANDS", severity: "ATTENTION", title: "Emma needs you", body: "• CAPTCHA on Upwork\n  1. Open https://www.upwork.com/nx/find-work/ in Emma's browser\n  2. Tick the Cloudflare box\n\nChecked first:\n• Vault: no login for Upwork",
       paneId: pane.id, roomId: room.id, dedupeKey: `nous:pane:${pane.id}`, link: { roomId: room.id, paneId: pane.id } });
-    const again = await tools.execute("space_focus_pane", { room: "Main", pane: "Emma", reason: "CAPTCHA on Upwork", checked }, ctx);
+    const again = await tools.execute("space_focus_pane", { room: "Main", pane: "Emma", reason: "CAPTCHA on Upwork", checked, steps: ["Open https://www.upwork.com/nx/find-work/ in Emma's browser", "Tick the Cloudflare box"] }, ctx);
     expect(again.result).toContain("Unchanged");
     expect(await open()).toHaveLength(1);
-    const changed = await tools.execute("space_focus_pane", { room: "Main", pane: "Emma", reason: "Sign in to Upwork", checked }, ctx);
+    // R20-asks-2: a hands reason without its link and steps raises nothing.
+    expect(await tools.execute("space_focus_pane", { room: "Main", pane: "Emma", reason: "Sign in to Upwork", checked }, ctx)).toMatchObject({ ok: false, refused: true });
+    const changed = await tools.execute("space_focus_pane", { room: "Main", pane: "Emma", reason: "Sign in to Upwork", checked,
+      steps: ["Open https://www.upwork.com/ab/account-security/login", "Continue with Google (ntheogr@gmail.com)"] }, ctx);
     expect(changed.display).toContain("Updated");
     expect(await open()).toHaveLength(1);
-    expect((await open())[0]).toMatchObject({ body: "• Sign in to Upwork\n\nChecked first:\n• Vault: no login for Upwork" });
+    expect((await open())[0]).toMatchObject({ body: "• Sign in to Upwork\n  1. Open https://www.upwork.com/ab/account-security/login\n  2. Continue with Google (ntheogr@gmail.com)\n\nChecked first:\n• Vault: no login for Upwork" });
     expect(await tools.execute("space_focus_pane", { room: "Main", pane: "Zed", reason: "x", checked }, ctx)).toMatchObject({ ok: false });
   });
 

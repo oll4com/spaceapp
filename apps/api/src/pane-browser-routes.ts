@@ -11,8 +11,9 @@ import {
   browserHandoffRequestResponseSchema, browserNavigateInputSchema, type BrowserRecordingFrameSummary,
   browserRecordingFrameSummarySchema, browserRuntimeInputSchema, browserSetViewportInputSchema,
   type BrowserTimelineEventSummary, browserToolActionInputSchema, createBrowserBookmarkInputSchema,
-  createBrowserCaptureJobRequestSchema, createBrowserPageInputSchema, createPaneBrowserSessionRequestSchema, idSchema,
-  openBrowserBookmarkInputSchema, type Pane, type PaneBrowserSessionResponse, updatePaneBrowserSessionRequestSchema
+  createBrowserCaptureJobRequestSchema, createBrowserPageInputSchema, createPaneBrowserSessionRequestSchema, type FreelanceEgressRoute,
+  FREELANCE_EGRESS_ROUTES, freelanceEgressRouteSchema, idSchema, openBrowserBookmarkInputSchema, type Pane, type PaneBrowserSessionResponse, resolveFreelanceCopilotPaneMetadata,
+  updatePaneBrowserSessionRequestSchema
 } from "@space/contracts";
 import {
   type GoogleAccount, SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, type SpaceStore
@@ -25,13 +26,15 @@ import {
 } from "./browser-bookmarks.js";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
 import { assertBrowserHostPressKey, assertSafeBrowserTargetUrl, browserSessionRestoreUrls } from "./browser-sessions.js";
+import { executeBrowserSelectAction } from "./browser-select-action.js";
+import { revealBrowserNeed } from "./browser-reveal.js";
 import type { SpaceApiConfig } from "./config.js";
 import { sendApiError } from "./http-errors.js";
 import { readStagedUpload, withStagedUploads } from "./multipart-upload.js";
 import type { PaneBrowserAccount } from "./pane-browser-account.js";
 import { assertBrowserPaneCompatible, getActiveBrowserSessionForPane, getPaneById } from "./pane-guards.js";
 import { recordAudit } from "./request-audit.js";
-import { BROWSER_CONTROL_IDLE_RELEASE_MS, SIGN_IN_HANDOFF_REASON, browserAgentOf, countsAsOperatorInput, createBrowserControlActivity, releaseBrowserControlLease, startBrowserControlIdleRelease, type BrowserControlActivity } from "./browser-control-activity.js";
+import { BROWSER_CONTROL_IDLE_RELEASE_MS, BROWSER_CONTROL_PRESENCE_HOLD_MAX_MS, SIGN_IN_HANDOFF_REASON, browserAgentOf, countsAsOperatorInput, createBrowserControlActivity, releaseBrowserControlLease, startBrowserControlIdleRelease, type BrowserControlActivity } from "./browser-control-activity.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
 import {
   googleAccountSignInUrl, privatePaneProfileId, selectYouTubeAccountSchema, youtubeAccountSignInUrl,
@@ -125,8 +128,10 @@ function correlateBrowserTimelineEvents(
  * limits.
  */
 /** Choosing and opening a Browser pane's saved Google sign-in; the pane routes and the CLI browser bridge share it. */
+/** One saved Google sign-in a pane can open: its email and browser sign-in state when known (proof rooms show neither). */
+export interface BrowserAccountChoice { profileId: string; displayName: string; label?: string; email?: string | null; browserStatus?: string }
 export interface PaneBrowserAccountControl {
-  list(userId: string, pane: Pane): Promise<{ selectedProfileId: string | null; effectiveProfileId: string | null; profiles: Array<{ profileId: string; displayName: string }> }>;
+  list(userId: string, pane: Pane): Promise<{ selectedProfileId: string | null; effectiveProfileId: string | null; profiles: BrowserAccountChoice[] }>;
   /** `email` is the chosen account's address when known (null for the private pane profile). */
   select(userId: string, pane: Pane, profileId: string | null, signIn: boolean | undefined, traceId: string, actor: BrowserHostActorContext): Promise<{ selectedProfileId: string | null; targetUrl: string; email: string | null }>;
   /** Moves one tab of the running browser into another Google account (null: back to the pane's account). */
@@ -134,7 +139,13 @@ export interface PaneBrowserAccountControl {
   /** Opens a URL in a new, active tab of the running browser in one Google account (null: the pane's own). */
   openTab(userId: string, pane: Pane, url: string, profileId: string | null, traceId: string, actor: BrowserHostActorContext): Promise<BrowserHostPageList>;
   start(userId: string, pane: Pane, input: z.infer<typeof createPaneBrowserSessionRequestSchema>, traceId: string, actor: BrowserHostActorContext): Promise<PaneBrowserSessionResponse>;
+  /** The pane browser's network route (plan clipboard:iLvBs5eOMZjF); a Freelance Copilot's is its Setup route, never chosen is "direct". */
+  route(pane: Pane): Promise<FreelanceEgressRoute>;
+  /** Saves the route; a running browser restarts on it (same account and page; panes sharing that Chrome come back on it). */
+  setRoute(userId: string, pane: Pane, route: FreelanceEgressRoute, traceId: string, actor: BrowserHostActorContext): Promise<{ route: FreelanceEgressRoute; restarted: boolean }>;
 }
+
+const browserRouteInputSchema = z.object({ route: freelanceEgressRouteSchema }).strict();
 
 export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
   config: SpaceApiConfig;
@@ -154,7 +165,7 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
   resolvePaneBrowserAccount: (userId: string, pane: Pane, choice?: string | null) => Promise<PaneBrowserAccount>;
   adoptPaneSignIn: (userId: string, pane: Pane, resolved: PaneBrowserAccount, actor: BrowserHostActorContext) => Promise<PaneBrowserAccount>;
   effectivePaneProfileId: (userId: string, pane: Pane) => Promise<string | null>;
-  browserAccountChoices: (userId: string, pane: Pane) => Promise<{ profileId: string; displayName: string; }[]>;
+  browserAccountChoices: (userId: string, pane: Pane) => Promise<BrowserAccountChoice[]>;
   /** The operator chose a Google account in a Job Copilot pane; the copilot reads mail and calendar through it. */
   onJobCopilotAccountSelected?: (userId: string, email: string) => Promise<void>;
   /** The Job Copilot pane a new one continues (its tabs and view); null when there is none. */
@@ -317,8 +328,46 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
         finally { if (youtubeSessionStarts.get(pane.id) === starting) youtubeSessionStarts.delete(pane.id); }
       };
       return withYouTubeAccountLock(pane.id, startSession);
+    },
+    async route(pane) {
+      return pane.mode === "FREELANCE_COPILOT" ? resolveFreelanceCopilotPaneMetadata(pane.freelanceCopilotMetadata).settings.browserEgress
+        : await store.getPaneBrowserRoute(pane.id) ?? "direct";
+    },
+    async setRoute(userId, pane, route, traceId, actor) {
+      assertBrowserPaneCompatible(pane);
+      // The VPN routes (space-browser-egress@) exist only on the SpaceApp developer server; a self-hosted install has none.
+      if (options.config.publicDistribution && route !== "direct") throw new SpaceConflictError("A self-hosted install has no VPN routes: its browsers leave from this server.");
+      if (pane.mode === "FREELANCE_COPILOT") {
+        // The existing Setup key: no new pane metadata for the running Browser Host to refuse (R9 item 4).
+        const metadata = resolveFreelanceCopilotPaneMetadata(pane.freelanceCopilotMetadata);
+        await store.updateFreelanceCopilotMetadata(pane.id, { ...metadata, settings: { ...metadata.settings, browserEgress: route } });
+      } else await store.setPaneBrowserRoute(pane.id, route);
+      const current = await store.getActivePaneBrowserSession(pane.id);
+      if (!current) return { route, restarted: false };
+      await withYouTubeAccountLock(pane.id, async () => {
+        await youtubeSessionStarts.get(pane.id)?.catch(() => undefined);
+        await browserSessionManager.stopPane(pane.id, traceId, actor);
+      });
+      const shown = current.currentUrl ?? current.targetUrl;
+      await accountControl.start(userId, pane, { viewport: current.viewport, ...(shown && /^https?:/.test(shown) ? { targetUrl: shown } : {}), streamMode: current.streamMode,
+        includeInitialFrame: false, ownerAgentId: actor.holderType === "AGENT" ? actor.holderId : null }, traceId, actor);
+      return { route, restarted: true };
     }
   };
+  // Network route (operator 31/10 01:00 BKK, plan clipboard:iLvBs5eOMZjF): where a pane browser's traffic leaves from, through the CLI VPN
+  // routes; ADMIN only, like the routes themselves. The Browser Host applies it from its next start of the pane's Chrome.
+  app.get("/api/panes/:id/browser/route", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "The browser's network route requires the ADMIN role.");
+    const pane = await getPaneById(store, parseQuery(idParamSchema, request.params).id);
+    assertBrowserPaneCompatible(pane);
+    return { route: await accountControl.route(pane), routes: options.config.publicDistribution ? ["direct"] : FREELANCE_EGRESS_ROUTES };
+  });
+  app.put("/api/panes/:id/browser/route", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "The browser's network route requires the ADMIN role.");
+    const pane = await getPaneById(store, parseQuery(idParamSchema, request.params).id);
+    const { route } = parseBody(browserRouteInputSchema, request.body);
+    return accountControl.setRoute(request.user.id, pane, route, request.requestIdForSpace, operatorBrowserActor(request));
+  });
   app.get("/api/panes/:id/browser/accounts", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires the ADMIN role.");
     const { id } = parseQuery(idParamSchema, request.params);
@@ -440,7 +489,7 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     const pane = await getPaneById(store, id);
     if (pane.mode !== "YOUTUBE") throw new SpaceConflictError("A video summary or full text requires a YouTube pane.");
     const { youtubeSummaryModel } = await store.getUserSettings(request.user!.id);
-    return youtubeVideoText({ gatewayUrl: config.gatewayUrl, keyFile: config.codexLbKeyFile, model: youtubeSummaryModel, videoId, kind,
+    return youtubeVideoText({ gatewayUrl: config.gatewayUrl, keyFile: config.codexLbKeyFile, model: youtubeSummaryModel, videoId, kind, traceId: request.id,
       captions: (id) => youtubeCaptions({ workRoot: config.videoWorkRoot, toolsDir: config.videoToolsDir, videoId: id, engine: options.videoEngine }) });
   });
   app.post("/api/panes/:id/youtube/watch", defaultRouteRateLimitOptions, async (request) => {
@@ -586,6 +635,13 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     }
     return browserSessionManager.activatePage(pane, params.pageId, request.requestIdForSpace, operatorBrowserActor(request));
   });
+  // Go now lands on the spot (operator 3/11 12:40 BKK): what waits for the operator on that tab (a reCAPTCHA, a code, an empty required field) is scrolled into view.
+  app.post("/api/panes/:id/browser/pages/:pageId/reveal", defaultRouteRateLimitOptions, async (request) => {
+    const params = parseQuery(browserPageParamSchema, request.params);
+    const pane = await getPaneById(store, params.id);
+    assertBrowserPaneCompatible(pane);
+    return revealBrowserNeed({ config, pane, session: await getActiveBrowserSessionForPane(store, pane), pageId: params.pageId });
+  });
   app.post("/api/panes/:id/browser/pages/:pageId/close", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(browserPageParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
@@ -634,8 +690,9 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     const { present, ...hostInput } = input;
     const current = await store.getBrowserControlLease(input.leaseId);
     const handoff = current?.status === "ACTIVE" && current.holderType === "OPERATOR" ? await store.getActiveBrowserHandoffRequest(current.sessionId) : null;
-    const presenceHold = handoff?.status === "ACCEPTED" && handoff.controlLeaseId === current!.leaseId && SIGN_IN_HANDOFF_REASON.test(handoff.reason);
-    if (presenceHold && present) controlActivity.noteInput(current!.leaseId);
+    const presenceHold = current?.paneId === pane.id && handoff?.status === "ACCEPTED" && handoff.controlLeaseId === current.leaseId
+      && SIGN_IN_HANDOFF_REASON.test(handoff.reason) && controlActivity.inputIdleMs(current) < BROWSER_CONTROL_PRESENCE_HOLD_MAX_MS;
+    if (presenceHold && present) controlActivity.notePresence(current.leaseId);
     // A heartbeat alone (an open tab, an old web bundle) does not keep an operator lease nobody has touched.
     if (current?.status === "ACTIVE" && current.holderType === "OPERATOR" && current.paneId === pane.id
       && controlActivity.idleMs(current) >= BROWSER_CONTROL_IDLE_RELEASE_MS) {
@@ -936,7 +993,9 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
     await assertBrowserHostPressKey(browserSessionManager, input);
-    const result = await browserSessionManager.action(pane, input, request.requestIdForSpace, operatorBrowserActor(request));
+    const result = input.type === "select_state" || input.type === "select_choose"
+      ? await executeBrowserSelectAction({ manager: browserSessionManager, config, pane, input, traceId: request.requestIdForSpace, context: operatorBrowserActor(request) })
+      : await browserSessionManager.action(pane, input, request.requestIdForSpace, operatorBrowserActor(request));
     await recordAudit(store, request, {
       action: "pane.browser.action",
       targetType: "pane",

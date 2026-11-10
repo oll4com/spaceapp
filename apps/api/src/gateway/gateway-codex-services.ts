@@ -29,7 +29,8 @@ export function createGatewayCodexUsageProvider(options: { repository: GatewayRe
           return {
             id: account.id, label: account.label, planType: account.planType,
             fiveHourRemainingPercent: remaining(fiveHour?.usedPercent ?? null), weeklyRemainingPercent: remaining(weekly.usedPercent),
-            fiveHourResetAt: fiveHour?.resetAt ?? null, weeklyResetAt: weekly.resetAt, sampledAt: account.lastRefreshAt ?? account.lastUsedAt
+            fiveHourResetAt: fiveHour?.resetAt ?? null, weeklyResetAt: weekly.resetAt, sampledAt: account.lastRefreshAt ?? account.lastUsedAt,
+            resetCredits: account.resetCreditsAvailable
           };
         }),
         pagination: { page: 1, pageSize: 100, totalItems: Math.min(accounts.length, 100), totalPages: 1 },

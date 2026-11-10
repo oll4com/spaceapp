@@ -18,7 +18,10 @@ import {
 import { browserGateway } from "../../runtime/SpaceRuntime.js";
 import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
 import { BrowserCanvas, type BrowserCanvasHandle, type BrowserCanvasInput } from "./BrowserCanvas.js";
+import { browserKeyboardInputs } from "../osk-keyboard/pane-keyboard-input.js";
+import type { BrowserPaneKeyboardInput } from "./events.js";
 import { useBrowserAudio } from "./useBrowserAudio.js";
+import { useBrowserPaneAudible } from "./browser-audio-gate.js";
 import { loadSharedBrowserStatus } from "./browser-status.js";
 import {
   BROWSER_PANE_ACTION_EVENT,
@@ -26,6 +29,7 @@ import {
   registerBrowserPaneEventTarget
 } from "./events.js";
 import type { UiTheme } from "../../ui-theme.js";
+import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 interface YouTubePaneProps {
   targetUrl?: string;
@@ -41,7 +45,6 @@ const YOUTUBE_URL = "https://www.youtube.com/";
 const YOUTUBE_VIEWPORT: BrowserSessionViewport = "wide";
 const YOUTUBE_VIEWPORT_SIZE = { width: 1280, height: 720 };
 const browserInputAckTimeoutMs = 2_000;
-const browserStreamReconnectMessage = "Live stream disconnected; reconnecting.";
 
 type YouTubeStreamState = "idle" | "connecting" | "open" | "ready" | "reconnecting" | "error" | "closed" | "silent";
 
@@ -69,6 +72,12 @@ function isBrowserFrameMessage(value: unknown): value is BrowserFrameMessage {
 }
 
 export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false, targetUrl = YOUTUBE_URL }: YouTubePaneProps) {
+  const language = useUiLanguage();
+  const languageRef = useRef(language);
+  languageRef.current = language;
+  // Callbacks outlive the render that made them, so `t` reads the language through a ref.
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(languageRef.current, text, vars);
+  const reconnectMessage = () => t("Live stream disconnected; reconnecting.");
   const [status, setStatus] = useState<BrowserStatusPayload | null>(null);
   const [response, setResponse] = useState<PaneBrowserSessionResponse | null>(null);
   const [receivedLiveFrame, setReceivedLiveFrame] = useState(false);
@@ -264,11 +273,11 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
           });
           return;
         }
-        setError(err instanceof Error ? err.message : "YouTube session failed to load");
+        setError(err instanceof Error ? err.message : t("YouTube session failed to load"));
         updateBrowserStreamTelemetry("error");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "YouTube session failed to load");
+      setError(err instanceof Error ? err.message : t("YouTube session failed to load"));
       updateBrowserStreamTelemetry("error");
     } finally {
       startingRef.current = false;
@@ -337,11 +346,15 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
     return () => { disposed = true; window.clearTimeout(timer); observer.disconnect(); document.removeEventListener("visibilitychange", schedule); };
   }, [pane.id, observerOnly, session?.sessionId]);
 
+  const keyboardInputRef = useRef(sendKeyboardInput);
+  keyboardInputRef.current = sendKeyboardInput;
+
   useEffect(() => {
     const unregister = registerBrowserPaneEventTarget(pane.id);
     const handleBrowserPaneAction = (event: Event) => {
       const detail = parseBrowserPaneActionDetail((event as CustomEvent<unknown>).detail);
       if (!detail || detail.paneId !== pane.id) return;
+      if (detail.action === "keyboard_input" && detail.keyboardInput) void keyboardInputRef.current(detail.keyboardInput);
       if (detail.action === "reload") reloadRef.current();
     };
     window.addEventListener(BROWSER_PANE_ACTION_EVENT, handleBrowserPaneAction);
@@ -352,9 +365,11 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.id]);
 
+  // Live only while the operator has this pane in front of them (operator 2/11), no frames otherwise.
+  const facing = useBrowserPaneAudible(paneRef, true);
   useEffect(() => {
     const updatePaused = () => {
-      const paused = pane.isMinimized || document.hidden;
+      const paused = pane.isMinimized || document.hidden || (!facing && !observerOnly);
       transportPausedRef.current = paused;
       setTransportPaused(paused);
     };
@@ -362,7 +377,7 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
     document.addEventListener("visibilitychange", updatePaused);
     return () => document.removeEventListener("visibilitychange", updatePaused);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.id, pane.isMinimized]);
+  }, [pane.id, pane.isMinimized, facing, observerOnly]);
 
   useEffect(() => {
     recordLifecycleDebugEvent({
@@ -403,7 +418,7 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
       const delayMs = browserReconnectDelayMs(reconnectAttempt, 250);
       reconnectAttempt += 1;
       updateBrowserStreamTelemetry("reconnecting");
-      setError((current) => current ?? browserStreamReconnectMessage);
+      setError((current) => current ?? reconnectMessage());
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
         void connect();
@@ -427,7 +442,7 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
       }
       if (disposed) return;
       if (ticket.paneId !== pane.id || ticket.sessionId !== sessionId) {
-        setError("Live stream returned a ticket for a different session.");
+        setError(t("Live stream returned a ticket for a different session."));
         scheduleReconnect();
         return;
       }
@@ -463,14 +478,14 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
             const message = realtimeMessage.data;
             if (message.type === "ready") {
               if (message.paneId !== pane.id || message.sessionId !== sessionId) {
-                setError("Live stream connected to a different session.");
+                setError(t("Live stream connected to a different session."));
                 socket.close(1008, "Live stream identity mismatch");
                 return;
               }
               if (realtime) browserStreamSocketRef.current = socket;
               reconnectAttempt = 0;
               updateBrowserStreamTelemetry("ready", { fps: message.framesPerSecond });
-              setError((current) => current === browserStreamReconnectMessage ? null : current);
+              setError((current) => current === reconnectMessage() ? null : current);
               return;
             }
             if (message.type === "viewport") {
@@ -508,7 +523,7 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
             setError(decoded.message);
           }
         } catch {
-          setError("Live stream returned invalid data.");
+          setError(t("Live stream returned invalid data."));
         }
       });
       socket.addEventListener("error", () => {
@@ -605,13 +620,22 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
         return null;
       }
       legacyControlRef.current = false;
-      setError(err instanceof Error ? err.message : "Live control could not be acquired");
+      setError(err instanceof Error ? err.message : t("Live control could not be acquired"));
       return null;
     }).finally(() => {
       controlAcquirePromiseRef.current = null;
     });
     controlAcquirePromiseRef.current = acquisition;
     return acquisition;
+  }
+
+  async function sendKeyboardInput(input: BrowserPaneKeyboardInput) {
+    for (const key of browserKeyboardInputs(input)) {
+      const lease = controlLeaseRef.current;
+      if (observerOnly || pending || !session || session.status === "CLOSED" || lease?.holderType !== "OPERATOR" ||
+        lease.status !== "ACTIVE" || lease.sessionId !== session.sessionId || Date.parse(lease.expiresAt) <= Date.now()) return;
+      await sendCanvasInput(key);
+    }
   }
 
   async function sendCanvasInput(input: BrowserCanvasInput) {
@@ -626,7 +650,7 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
         return;
       } catch (err) {
         if (!isUnavailableV2Feature(err)) {
-          setError(err instanceof Error ? err.message : "Live input failed");
+          setError(err instanceof Error ? err.message : t("Live input failed"));
           return;
         }
         legacyControlRef.current = true;
@@ -687,7 +711,7 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
         return;
       } catch (err) {
         if (!isUnavailableV2Feature(err)) {
-          setError(err instanceof Error ? err.message : "YouTube reload failed");
+          setError(err instanceof Error ? err.message : t("YouTube reload failed"));
           return;
         }
         legacyControlRef.current = true;
@@ -702,17 +726,17 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
       ref={paneRef}
       data-browser-audio-state={audioState}
       className="youtube-pane"
-      aria-label={`${pane.title} YouTube session`}
+      aria-label={t("{title} YouTube session", { title: pane.title })}
       data-browser-agent={agentNumber}
     >
       <div ref={frameShellRef} className="youtube-frame-shell">
-        {audioState === "blocked" ? <button type="button" className="youtube-pane-reconnect" onClick={resumeAudio}>Resume audio</button> : null}
+        {audioState === "blocked" ? <button type="button" className="youtube-pane-reconnect" onClick={resumeAudio}>{t("Resume audio")}</button> : null}
         <BrowserCanvas
           ref={canvasRef}
           onPresented={() => {
             if (paneRef.current) paneRef.current.dataset.browserPresentedFrames = String(Number(paneRef.current.dataset.browserPresentedFrames ?? 0) + 1);
           }}
-          ariaLabel={`${pane.title} browser frame`}
+          ariaLabel={t("{title} browser frame", { title: pane.title })}
           viewportSize={streamDimensions ?? response?.viewportDimensions ?? YOUTUBE_VIEWPORT_SIZE}
           interactive={Boolean(session)}
           source={activeFrame?.screenshotDataUrl}
@@ -729,11 +753,11 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
       {error ? (
         <div className="youtube-pane-error" role="alert">
           <span>{error}</span>
-          <button type="button" className="youtube-pane-reconnect" aria-label={`Reconnect live stream ${pane.title}`} onClick={() => retry()}>
+          <button type="button" className="youtube-pane-reconnect" aria-label={t("Reconnect live stream {title}", { title: pane.title })} onClick={() => retry()}>
             <RefreshCw aria-hidden="true" />
-            Reconnect
+            {t("Reconnect")}
           </button>
-          <button type="button" className="youtube-pane-notice-close" aria-label="Dismiss message" onClick={() => setError(null)}>
+          <button type="button" className="youtube-pane-notice-close" aria-label={t("Dismiss message")} onClick={() => setError(null)}>
             <X aria-hidden="true" />
           </button>
         </div>

@@ -1,4 +1,4 @@
-import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 
 /**
  * A deliberately tiny in-process metrics registry with Prometheus text
@@ -256,7 +256,7 @@ export interface ProcessMetricsCollector {
  * since the previous scrape (the same approach as common Prometheus clients).
  */
 export function createProcessMetricsCollector(options: { eventLoopResolutionMs?: number } = {}): ProcessMetricsCollector {
-  let eventLoop: IntervalHistogram | null = null;
+  let eventLoop: ReturnType<typeof monitorEventLoopDelay> | null = null;
   try {
     eventLoop = monitorEventLoopDelay({ resolution: Math.max(10, options.eventLoopResolutionMs ?? 20) });
     eventLoop.enable();
