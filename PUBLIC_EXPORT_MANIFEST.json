@@ -25136,8 +25136,8 @@
     {
       "path": "apps/web/tests/responsive-shell.test.tsx",
       "sourceObjectId": "27a1b385a24b02d695a7977e9f79887b1303992e",
-      "sha256": "1dc2d8a3eb45bf53a1217e0b178bb1440dedfd32be6039e361d6a71819eb07e2",
-      "size": 281256
+      "sha256": "da4a5b9de31594d83935ef2e629fead847b8e542f0f93cc369f3b7b469828bf1",
+      "size": 281530
     },
     {
       "path": "apps/web/tests/room-agent-attention.test.tsx",
