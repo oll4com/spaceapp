@@ -187,6 +187,7 @@ it("reports which files were saved when a later file of the upload cannot be pub
   expect(payload.error.code).toBe("UPLOAD_PARTIALLY_SAVED");
   expect(payload.error.message).toContain("1 of 2 files were saved (saved.txt); blocked");
   expect(await readFile(join(destination, "saved.txt"), "utf8")).toBe("first");
-  expect((await readdir(destination)).filter(name => name.startsWith(".space-upload-"))).toEqual([]);
+  // The route removes the staged files in its finally, after the reply has gone out.
+  await vi.waitFor(async () => { expect((await readdir(destination)).filter(name => name.startsWith(".space-upload-"))).toEqual([]); });
   expect(store.listAuditEvents().some(event => event.action === "files.upload" && event.targetId?.endsWith("saved.txt"))).toBe(true);
 });

@@ -33,3 +33,12 @@ e5a2a1dc6e63af7d9eecc8b5809c6d566dcb3b9c:packages/gateway/src/providers/claude/o
 686788e5ef9540356afb4e9d7b203af1ac84d4fa:agent-skills/space-hyperframes/media-use/scripts/lib/telemetry.mjs:generic-api-key:12
 # Fake MCP token of the claude-agent test (feat/public-nous-1.2); later commits mark the line gitleaks:allow (CORE-002).
 90e4b5a2c4dbf4b5840800e02065bb851594cb17:scripts/tests/claude-agent.test.mjs:generic-api-key:11
+# 1.2.0 Security (run 42879854034, commit 1a2d8e72), reviewed 10/11/2026: Vault key handles (vault_key:<id>), opaque ids, not credentials.
+1a2d8e7270eb8ae454563ca7b54378f9a8e49f79:apps/api/tests/gateway-vault-key.test.ts:generic-api-key:25
+1a2d8e7270eb8ae454563ca7b54378f9a8e49f79:apps/api/tests/gateway-vault-key.test.ts:generic-api-key:28
+1a2d8e7270eb8ae454563ca7b54378f9a8e49f79:apps/api/tests/gateway-vault-key.test.ts:generic-api-key:31
+1a2d8e7270eb8ae454563ca7b54378f9a8e49f79:apps/api/tests/gateway-vault-key.test.ts:generic-api-key:36
+1a2d8e7270eb8ae454563ca7b54378f9a8e49f79:apps/api/tests/gateway-vault-key.test.ts:generic-api-key:41
+1a2d8e7270eb8ae454563ca7b54378f9a8e49f79:packages/gateway/src/providers/make/make-relay.ts:generic-api-key:30
+1a2d8e7270eb8ae454563ca7b54378f9a8e49f79:scripts/space-app-studio-build.mjs:generic-api-key:43
+1a2d8e7270eb8ae454563ca7b54378f9a8e49f79:scripts/space-app-studio-build.mjs:generic-api-key:48
