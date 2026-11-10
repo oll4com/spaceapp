@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "ca071c957d22b3b2308cddbfab6b8d87d887d167aefaef1b7f763e2bc4c48cf1",
+  "candidateDigest": "03eec14ce306ff5412985efc5c4f1aa308cc30c25c07a23a526336ec9f6081d8",
   "sourceCommit": "64c3e719a2d0f3a4f62d678e0ee27d6e58c91765",
   "labSourceCommit": "64c3e719a2d0f3a4f62d678e0ee27d6e58c91765",
   "launcherVersion": "1.2.0",
@@ -526,6 +526,7 @@
     }
   ],
   "limitations": [
+    "Candidate c16: public 1a2d8e72 (the c15 tree 64c3e71 squashed for publication, candidateDigest ca071c95) + three CI fixes and nothing else: .github/workflows/release.yml installs the packages before the readiness checks, packages/run-spaceapp/tests/runtime.test.mjs reads compose.yml with LF line endings on Windows checkouts, and PUBLIC_EXPORT_MANIFEST.json records the size and SHA-256 of the package-lock.json this tree carries. No launcher, image or app code changed, so every check and supplementary proof stays c15's (c14's own run, or what c14 carried from c13) with its createdAt.",
     "Candidate c15: public lab tree 64c3e71 (stamp 1.2.0) = c14 1e365cf + the 1.2.0 Zen first-answer exception and the 1.2.0 stamp, nothing else. Every check and supplementary proof is c14's own run (or what c14 carried from c13) and names c14 in carriedFrom with the c14..c15 diff stat. The tested launcher and images carry the lab stamp 1.2.0-nous.c14 (testedArtifacts); the release workflow rebuilds the images from this source, and the published package must pass scripts/shipped-image-evidence.mjs before latest.",
     "Candidate c14: public lab tree 1e365cf (lab stamp 1.2.0-nous.c14, not a release version) = c13 cf4d247 + the export of Space dev 6f572c31d2, which holds 31944be0df (a busy CLI credential agent is asked again for up to 20 s instead of read as signed out) and 06146070da (self-hosted skips the gateway-priority-panes push).",
     "c14's own runs on 1e365cf: fresh install, the real 1.1.9 -> 1.2.0-nous.c14 update and the first agent (Codex) on Linux vm218, Windows vm219 and macOS vm221, and telemetry No on Linux. Repair, Docker stopped and the medium and large profile transitions are carried from c13 cf4d247, each marked carriedFrom with its reason.",

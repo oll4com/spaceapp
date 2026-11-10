@@ -200,7 +200,7 @@ test("the CLI settings export skips tar when no settings file exists yet (1.1.8:
 });
 
 test("only the core gets the pane bridge secret; no other container mounts the secrets folder (1.2.0 review secevt:TGmxc9yQu9y_)", () => {
-  const compose = readFileSync(new URL("../templates/compose.yml", import.meta.url), "utf8");
+  const compose = readFileSync(new URL("../templates/compose.yml", import.meta.url), "utf8").replace(/\r\n/g, "\n"); // Windows checkouts carry CRLF
   const services = compose.slice(compose.indexOf("services:\n"), compose.search(/^secrets:$/m)).split(/^  (?=[a-z][\w-]*:$)/m).slice(1);
   const holders = services.filter((block) => block.includes("agent-token-secret")).map((block) => block.split(":")[0]);
   assert.deepEqual(holders, ["spaceapp-core"]);

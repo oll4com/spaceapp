@@ -66,6 +66,10 @@ jobs:
       - name: Require exact-candidate cross-platform installation evidence
         run: node scripts/release-evidence.mjs
 
+      # The readiness checks run the shared-memory seed check, whose contracts import zod.
+      - name: Install dependencies for the readiness checks
+        run: npm ci --ignore-scripts
+
       - name: Enforce legal, version, and npm channel readiness
         env:
           RELEASE_VERSION: ${{ inputs.version }}
