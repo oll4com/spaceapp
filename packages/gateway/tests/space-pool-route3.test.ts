@@ -1,6 +1,6 @@
 import { createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import type { GatewayApiBudgetPace } from "@space/contracts";
+import { gatewayProviderOrderOf, type GatewayApiBudgetPace } from "@space/contracts";
 import { InMemoryGatewayRepository } from "@space/db";
 import { AccountPool, type StoredCredentials } from "../src/accounts/account-pool.js";
 import { generateGatewayApiKey } from "../src/api-keys.js";
@@ -64,7 +64,8 @@ async function stableGateway(options: { claudeApiKeyFallback: boolean; budget: G
     { planType: "plus", source: "OAUTH" });
   // Codex at 0% of its week (Nous 5/11).
   await repository.saveUsageWindows(codexA, [{ window: "SECONDARY", usedPercent: 100, resetAt: new Date(Date.now() + 2 * 86_400_000).toISOString(), windowMinutes: 10_080 }]);
-  await repository.updateSettings({ subscriptionRouting: "FILL_FIRST", claudeApiKeyFallback: options.claudeApiKeyFallback, providerOrder: STABLE_ORDER.map((entry) => ({ ...entry })) });
+  // The Postgres store reads stable's row through gatewayProviderOrderOf (retired routes dropped, new ones appended); the memory store does not.
+  await repository.updateSettings({ subscriptionRouting: "FILL_FIRST", claudeApiKeyFallback: options.claudeApiKeyFallback, providerOrder: gatewayProviderOrderOf(STABLE_ORDER) });
   // A test key like any client's: no account scope, no model narrowing.
   const { plainKey, keyHash, keyPrefix } = generateGatewayApiKey();
   await repository.createApiKey({ keyId: testKeyId, name: "route3-test", keyHash, keyPrefix, trafficClass: "INTERACTIVE", allowedModels: [], enforcedModel: null,

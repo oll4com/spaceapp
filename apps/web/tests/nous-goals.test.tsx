@@ -171,7 +171,7 @@ describe("Nous goals in the dock", () => {
       fireEvent.click(await within(screen.getByRole("group", { name: "Nous views" })).findByRole("button", { name: /^Goals\s*2$/ }));
       const card = expand(await screen.findByRole("article", { name: "Sell 100 SpaceApp licences by December" }));
       // Nothing is read until the history is opened.
-      expect(calls.some((call) => call.url.includes("/history"))).toBe(false);
+      expect(calls.some((call) => call.url.startsWith("/api/nous/goals/") && call.url.includes("/history"))).toBe(false);
       fireEvent.click(within(card).getByText("Work history"));
       expect(await within(card).findByText("3 goal turns, no new work")).toBeTruthy();
       expect(within(card).getByText("Build the pricing page with the three plans, then show me the previews.")).toBeTruthy();

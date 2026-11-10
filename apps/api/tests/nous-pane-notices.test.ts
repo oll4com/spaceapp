@@ -317,7 +317,8 @@ describe("Nous's cards to the operator", () => {
     const backblaze = (checked: string[]) => card("Backblaze: add the card on backblaze.com billing so the backup starts", checked);
     expect(await backblaze(["the Vault has no card"])).toMatchObject({ ok: false, refused: true,
       result: expect.stringContaining("only the operator does this part, on a page an agent already signed in to") });
-    expect((await backblaze(["Cody signed in to backblaze.com, the billing page is open at the card field"])).ok).toBe(true);
+    // R83-1 (b094f6c3eb, 8/11): a card form ask also names the amount verified on the open page.
+    expect((await backblaze(["Cody signed in to backblaze.com, the billing page is open at the card field", "Total verified on the open page: $6/month"])).ok).toBe(true);
     expect(notify).toHaveBeenCalledTimes(1);
 
     // 1/11 X Premium: "Failed" recommended; 1/11 Twitch 2FA: Greek options got "Failed" and "Need links/steps".

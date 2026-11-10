@@ -14,6 +14,7 @@
   "apps/api/tests/google-browser-proof.test.mjs": "reads a private deploy file or script",
   "apps/api/tests/instance-releases-queue.test.ts": "its fake queue imports scripts/space-queue-operator-grant.mjs, a host operations script the public tree does not ship (2026-10-30)",
   "apps/api/tests/native-tunnel-origin.test.ts": "reads deploy/nginx/space-oll4.conf and deploy/space-dev/nginx-space-dev.conf, host configuration the public tree does not ship (1.1.7)",
+  "apps/api/tests/nous-account-hold.test.ts": "matches the operator's mail domain, which the export rewrites to example.invalid, so the domain check cannot hold in the public tree (2026-11-10)",
   "apps/api/tests/oauth-credential-identity.test.ts": "reads a private deploy file or script",
   "apps/api/tests/opencode-space-config.test.ts": "reads a private deploy file or script",
   "apps/api/tests/plan-execution-proof.test.ts": "imports scripts/managed-plan-execution-proof.mjs, which the public tree does not ship (2026-10-30)",
@@ -37,6 +38,7 @@
   "packages/contracts/tests/marketing-claims-parity.test.ts": "imports scripts/check-public-claims.mjs, which the public tree does not ship (2026-10-30)",
   "packages/contracts/tests/space-inventory-helper.test.ts": "reads a private deploy file or script",
   "packages/db/tests/cli-host-output-postgres.integration.test.ts": "runs only against a PostgreSQL socket a maintainer provides and checks that it lies in the maintainers' reports folder, a private path the export would have to rewrite in code; without the socket it skips (2026-10-31)",
+  "packages/db/tests/cli-maintenance-orphans-postgres.test.ts": "needs scripts/cli-maintenance-runner.mjs, which the export does not ship (2026-11-10)",
   "packages/db/tests/codex-native-ref-postgres.integration.test.ts": "runs only against a PostgreSQL socket a maintainer provides and checks that it lies in the maintainers' reports folder, a private path the export would have to rewrite in code; without the socket it skips (2026-10-31)",
   "packages/db/tests/configuration-import-postgres.test.ts": "PostgreSQL test whose fixtures use the install root and a private network address, which the export would have to rewrite in a code file (it refuses that); it joins the public suite once its fixtures are neutral (2026-10-31)",
   "packages/db/tests/copilot-memory-search-postgres.test.ts": "PostgreSQL test whose fixtures use the operator's business mail domain, which the export would have to rewrite in a code file (it refuses that); it joins the public suite once its fixtures are neutral (2026-10-31)",
@@ -54,5 +56,6 @@
   "packages/db/tests/session-revocation-postgres.integration.test.ts": "runs only against a PostgreSQL socket a maintainer provides and checks that it lies in the maintainers' reports folder, a private path the export would have to rewrite in code; without the socket it skips (2026-10-31)",
   "packages/db/tests/site-signins-seed-migration-postgres.test.ts": "PostgreSQL test whose fixtures use the operator's handle, which the export would have to rewrite in a code file (it refuses that); it joins the public suite once its fixtures are neutral (2026-10-31)",
   "packages/db/tests/space-control-repository-postgres.integration.test.ts": "runs only against a PostgreSQL socket a maintainer provides and checks that it lies in the maintainers' reports folder, a private path the export would have to rewrite in code; without the socket it skips (2026-10-31)",
-  "packages/db/tests/task-titles-postgres.integration.test.ts": "runs only against a PostgreSQL socket a maintainer provides and checks that it lies in the maintainers' reports folder, a private path the export would have to rewrite in code; without the socket it skips (2026-10-31)"
+  "packages/db/tests/task-titles-postgres.integration.test.ts": "runs only against a PostgreSQL socket a maintainer provides and checks that it lies in the maintainers' reports folder, a private path the export would have to rewrite in code; without the socket it skips (2026-10-31)",
+  "packages/gateway/tests/key-pools.test.ts": "reads scripts/space-admin-action.mjs, which the export does not ship (2026-11-10)"
 }

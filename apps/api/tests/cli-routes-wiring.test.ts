@@ -16,6 +16,7 @@ vi.mock("../src/cli-egress-routes.js", async (orig) => ({ ...await orig<object>(
 vi.mock("../src/agent-tool-routing-routes.js", async (orig) => ({ ...await orig<object>(), registerAgentToolRoutingRoutes: capture("toolRouting") }));
 vi.mock("../src/agent-tools-launch-routes.js", async (orig) => ({ ...await orig<object>(), registerAgentToolsLaunchRoutes: capture("toolsLaunch") }));
 vi.mock("../src/instance-release-routes.js", async (orig) => ({ ...await orig<object>(), registerInstanceReleaseRoutes: capture("releases") }));
+vi.mock("../src/server-ops-routes.js", async (orig) => ({ ...await orig<object>(), registerServerOpsRoutes: capture("serverOps") }));
 vi.mock("../src/cli-runtimes.js", async (orig) => ({ ...await orig<object>(), registerCliRuntimeCacheInvalidation: (_app: unknown, invalidate: () => void) => { captured.routes.invalidate = { invalidate }; } }));
 vi.mock("../src/cli-egress-status.js", async (orig) => ({ ...await orig<object>(), createCliEgressStatus: (deps: unknown) => {
   captured.egress = deps;
@@ -96,7 +97,7 @@ describe("CLI routes wiring", () => {
     await expect(result.readDeepSeekHarnessMaintenanceStatus()).resolves.toBe("harness");
     await expect(result.readCliVpnApplications({} as never)).resolves.toBe("apps");
     await expect(result.openCliLogin({} as never)).resolves.toBe("login");
-    expect(Object.keys(captured.routes).sort()).toEqual(["accounts", "egress", "invalidate", "paneCli", "releases", "runtimeSettings", "runtimes", "toolRouting", "toolsLaunch"]);
+    expect(Object.keys(captured.routes).sort()).toEqual(["accounts", "egress", "invalidate", "paneCli", "releases", "runtimeSettings", "runtimes", "serverOps", "toolRouting", "toolsLaunch"]);
     expect(captured.routes.runtimes).toMatchObject({ userRegistry: "registry", readCliVpnApplications: expect.any(Function) });
     expect(captured.routes.paneCli).toMatchObject({ observeOnly: "observe" });
     expect(captured.routes.accounts).toMatchObject({ openCliLogin: result.openCliLogin });

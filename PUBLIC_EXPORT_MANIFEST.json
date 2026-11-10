@@ -2,8 +2,8 @@
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
   "sourceCommit": "6f572c31d2168343fb0597b632262ab9e54c96fd",
-  "fileCount": 5838,
-  "transformations": 404,
+  "fileCount": 5835,
+  "transformations": 410,
   "files": [
     {
       "path": ".github/funding.json",
@@ -12302,8 +12302,8 @@
     {
       "path": "apps/api/src/server-ops-routes.ts",
       "sourceObjectId": "744d1ffad4df39d91a8787a28ee1c9615bae8e5d",
-      "sha256": "e3e93da8d1806ce2b6938d6e137fda5dac34be97f83e0714c8e141dd2d09da36",
-      "size": 9007
+      "sha256": "4fda37f12f7a1d3ab6125d4cb9f71948a31cb3e09eabb5b72097362ae7f4fe8f",
+      "size": 9012
     },
     {
       "path": "apps/api/src/server.ts",
@@ -13628,8 +13628,8 @@
     {
       "path": "apps/api/tests/browser-routes-wiring.test.ts",
       "sourceObjectId": "6c122097ab5d52c56422410f6d933bd1ae185cac",
-      "sha256": "a99059466c93b903c0012e1c57e90c037686d773f6383d9c5087ed6404d5bd2b",
-      "size": 11087
+      "sha256": "ebafb9ae19324545891b83b80f7abb29409c662cc60f782cabb24a99c3ad5d6c",
+      "size": 11106
     },
     {
       "path": "apps/api/tests/browser-runtime-lifecycle.test.ts",
@@ -13778,8 +13778,8 @@
     {
       "path": "apps/api/tests/cli-browser-accounts.test.ts",
       "sourceObjectId": "7584d02ced01c30ba32c15c4b94aaa3c91b2cae8",
-      "sha256": "79bd6b3b70e30c4d1de226da4dcc6e47a21be0c9c8ee3c30baa957724eb5fb32",
-      "size": 12194
+      "sha256": "ace16f5dfaf075c7e788ee947646ae007c3afcfd784621f29203c170993abcb3",
+      "size": 12474
     },
     {
       "path": "apps/api/tests/cli-browser-cdp.test.ts",
@@ -13946,8 +13946,8 @@
     {
       "path": "apps/api/tests/cli-routes-wiring.test.ts",
       "sourceObjectId": "e66110312c9ea75a78ec2bfe1312494bbddc0e23",
-      "sha256": "24b9a94fe14b1aa20b869a5576aa2e2b16c8a457092aad5ee8dcd30227d94b72",
-      "size": 14716
+      "sha256": "eb6ee1643a21341d6186e73cdf767b68f0c5ef03021e93865476024a381fc254",
+      "size": 14863
     },
     {
       "path": "apps/api/tests/cli-runtime-cache.test.ts",
@@ -15318,12 +15318,6 @@
       "size": 44297
     },
     {
-      "path": "apps/api/tests/nous-account-hold.test.ts",
-      "sourceObjectId": "93540734202afc1be847594cdabefb9d69383865",
-      "sha256": "262f9acdc9d1bb2e42b33477e12ac7ac858a0dd4f264b4f05eb5526c74c0affe",
-      "size": 12446
-    },
-    {
       "path": "apps/api/tests/nous-allowances.test.ts",
       "sourceObjectId": "e9d192cf9187f6c2e1d9b4d0664830ddebf215b3",
       "sha256": "699496187ed53a62024c9aa3d35abc14c88fd57f983163ab8ca98fc0772c7919",
@@ -15548,8 +15542,8 @@
     {
       "path": "apps/api/tests/nous-pane-notices.test.ts",
       "sourceObjectId": "d1292536e9aaf613dc52e1d131762d61136ae25d",
-      "sha256": "e08704f3b03773310f70f41f68074cc2c52b4f6a3097ee3a5cbc987668c074a4",
-      "size": 68619
+      "sha256": "07b350c52344a8a20426e532382147cdd995ad8e2e3ec10f2eb38ca943f9a9c6",
+      "size": 68762
     },
     {
       "path": "apps/api/tests/nous-pane-watch.test.ts",
@@ -15740,8 +15734,8 @@
     {
       "path": "apps/api/tests/nous-tokens.test.ts",
       "sourceObjectId": "24d018e303672012404daa057c3af4a66b518229",
-      "sha256": "7c2baedf3f0783df0edcc3adbb28964f7fba5f8b0f7936d51e1d14fd2cfb7699",
-      "size": 44501
+      "sha256": "55a551f2d7aff92ce77cab55a8c7f4c673aa5cf46de2fe49a54305a552e5ea4a",
+      "size": 44426
     },
     {
       "path": "apps/api/tests/nous-wait-lines.test.ts",
@@ -23816,8 +23810,8 @@
     {
       "path": "apps/web/tests/checkbox-switch-inventory.test.ts",
       "sourceObjectId": "b1c1f8700d0c75b91d113f98b9c06f71e8309d7e",
-      "sha256": "7775901818a8ad1d024af02d8072335c0bd86c531db32d4b41c901b41ea33fc0",
-      "size": 3149
+      "sha256": "ddaaee302a3f1dc2c9d88b7356a232c7d1e92d367242caf9f9c90927721ed542",
+      "size": 3290
     },
     {
       "path": "apps/web/tests/chess-benchmark.test.tsx",
@@ -24776,8 +24770,8 @@
     {
       "path": "apps/web/tests/nous-goals.test.tsx",
       "sourceObjectId": "ea7299f3260a97c661db3a17391f417b2bab03a7",
-      "sha256": "747eae39c853ffb7a75b6d7a3f9dc3f06e3ebcfee784b58140399e732a9cb53b",
-      "size": 23149
+      "sha256": "575cafe751612336ea0f120391032bd2b8833cf37ac0f69c0931e8f43d3afb16",
+      "size": 23192
     },
     {
       "path": "apps/web/tests/nous-load.test.tsx",
@@ -31140,12 +31134,6 @@
       "size": 4727
     },
     {
-      "path": "packages/db/tests/cli-maintenance-orphans-postgres.test.ts",
-      "sourceObjectId": "4b169ce64b6df1801b86206ac8f50e169c59616d",
-      "sha256": "b202ecbb2827c1103bd0a386cd0aa5598ea4fcaf91989acdfac7809349f57ba8",
-      "size": 4030
-    },
-    {
       "path": "packages/db/tests/cli-terminal-control-lease-migration.test.ts",
       "sourceObjectId": "e3efd2676b70230d7536d9d8b0a5369148593b51",
       "sha256": "b3c3b7f3ff0525973e7d269804072e0202e9a810e6d3195ef111164993545616",
@@ -33720,12 +33708,6 @@
       "size": 19073
     },
     {
-      "path": "packages/gateway/tests/key-pools.test.ts",
-      "sourceObjectId": "09e7b37409295d3db3e86e5d56d54fec6d956f45",
-      "sha256": "e09949ac3e904b8129e57c8e6fa8d8e8db9c4d399ba40d5885a1d64ecc49ae19",
-      "size": 43055
-    },
-    {
       "path": "packages/gateway/tests/lan-access.test.ts",
       "sourceObjectId": "a1051dabc5406f13d505a350cb577a9976e91eca",
       "sha256": "8415d930830e9f5a917f60f303941144d353d58a52a7373dfb61d70cb996938c",
@@ -33830,8 +33812,8 @@
     {
       "path": "packages/gateway/tests/space-pool-route3.test.ts",
       "sourceObjectId": "eafe926a800a4a0a1c1253410ca34537bd1a6f1b",
-      "sha256": "6671b8d162d7c89a5247ffe09a3446b8d3aeed845c288cca6090a353681292e8",
-      "size": 15339
+      "sha256": "1045aa7a5952f143b9119c26c64d02318dd95fd9f06b054e9bdad657e7663bdd",
+      "size": 15502
     },
     {
       "path": "packages/gateway/tests/space-pool.test.ts",

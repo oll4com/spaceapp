@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "cac6fb23fa0fb03e8dce46ebabbf28099787295018084b0db8f15ea8ce3bb652",
+  "candidateDigest": "cbfcd0a78a3745d30cd41f23757bab96b21364cb4bbccf15099c7640a262e784",
   "sourceCommit": "64c3e719a2d0f3a4f62d678e0ee27d6e58c91765",
   "labSourceCommit": "64c3e719a2d0f3a4f62d678e0ee27d6e58c91765",
   "launcherVersion": "1.2.0",
@@ -345,6 +345,43 @@
       "artifactSha256": "f23740416e6db267a8d8353600016ee5a33533b027a4f1276f4f4655d940d0c1",
       "carriedFrom": "c14 1e365cf",
       "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+    },
+    {
+      "platform": "windows",
+      "scenario": "first-agent-zen-azure",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "uiOpened": true,
+      "freeModel": true,
+      "responseObserved": true,
+      "permissionPromptSeen": false,
+      "cli": "opencode",
+      "modelId": "opencode/big-pickle",
+      "nativeTaskId": "ses_e395d4c09ffe5RIAZTlss2VyzP",
+      "observedAt": "2026-11-10T18:04:01.439Z",
+      "egress": "158.158.34.206",
+      "artifact": "windows-first-agent-zen-azure.json",
+      "artifactSha256": "0333258c2ca763f8826260958e34d8369cce1288d7464db41ab6cb08f83c3cf7",
+      "zenRecordSha256": "006cf1ef71a53c65d0b25be86b09d8e0ad0ff0d6c024fb5cb6a08a24f7d90e15",
+      "host": "native Azure Windows 11 Pro 25H2 VM (Standard_D4s_v5, Windows L1, WSL2 L2), WSL 3.0.5.0, Docker Desktop 4.99.0, Node v22.23.4",
+      "testedArtifacts": {
+        "launcherTgzSha256": "d1b089746f9557fd2c2b94b08e022f83d0e33950f12cb4bc69a6703307d29ca1",
+        "imagesArchiveSha256": "702f4558c1e24449f4546f38a6eb78d2d98e224e0dd71e8d163dd79a71696e96",
+        "sourceCommit": "64c3e719a2d0f3a4f62d678e0ee27d6e58c91765"
+      },
+      "carriedFrom": "c15 64c3e71",
+      "carriedReason": "Gate 2 (Cody, 2026-11-10 17:56-18:10Z) ran the c15 first-agent case on c15 bits; c16 and c17 change CI, tests, the export manifest, the image budget and apps/api/src/server-ops-routes.ts, whose routes an installed SpaceApp never registers (SPACE_PUBLIC_DISTRIBUTION)",
+      "notRun": [
+        "starter workspace",
+        "telemetry",
+        "badge",
+        "two panes",
+        "rc3",
+        "WSL start time"
+      ],
+      "caveat": "Windows client marketplace image: hosting rights (E3/E5 or Dev/Test) not verified, licenseType not set. The lab VM219 cannot run WSL2 (third nesting level), so the required windows/first-agent check stays the c14 run under the Zen exception"
     }
   ],
   "carriedProofs": [
@@ -526,6 +563,7 @@
     }
   ],
   "limitations": [
+    "Candidate c17: public c16 7769d8f6 + the fixes for the public test suite and the image budget, nothing else. The core image budget is 1200 MiB (Nous decision 2026-11-10; Node 26 measured core linux/arm64 at 1158.1 MiB in Container matrix 42858766035). Nine test files that were stale in SpaceApp's source carry the Space fix bcbe773ee7: browser-routes-wiring, cli-browser-accounts, cli-routes-wiring, nous-pane-notices, nous-tokens, checkbox-switch-inventory, nous-goals and space-pool-route3 as test fixes, and safe-child-process through apps/api/src/server-ops-routes.ts, which now spawns through safe-child-process.ts. The server-ops routes are registered only when SPACE_PUBLIC_DISTRIBUTION is not true (cli-routes-wiring.ts), and every launcher install sets it to true, so no code path of an installed SpaceApp changed. Three tests that need private scripts or the operator's mail domain left the public tree through scripts/public-test-exclusions.json (nous-account-hold, cli-maintenance-orphans-postgres, key-pools). One public web test stays red and unchanged (Warm-protected): responsive-shell, \"keeps a persisted selected room active when it is beyond the default room page\" (after a reload the app opens the first room instead of the stored one). It is a pre-existing failure, not a 1.2.0 regression: Cody's Warm proof (c15-warm.md) shows it failing the same at 2aa0ad6705^, before the seven App.tsx commits Nous approved on 2026-11-10 under the operator's May approve Warm changes allowance, at 0747cd544e (2026-10-24) and at 520b8ba95c; its fix goes through Space. Gate 2 on Windows (Cody, 2026-11-10 17:56-18:10Z, supplementary windows/first-agent-zen-azure): the c15 first-agent case passed on Zen (opencode/big-pickle, exit 0, no refusal) on a native Azure Windows 11 Pro VM, with the c15 launcher and images (built from 64c3e71), not rebuilt for c17; the lab VM219 cannot run WSL2, so the required windows/first-agent check stays c14's under the Zen exception. macOS (VM221) has not re-run on Zen. Every check and supplementary proof stays c15's (c14's own run, or what c14 carried from c13) with its createdAt.",
     "Candidate c16: public 1a2d8e72 (the c15 tree 64c3e71 squashed for publication, candidateDigest ca071c95) + four CI fixes and nothing else: .github/workflows/release.yml installs the packages before the readiness checks, packages/run-spaceapp/tests/runtime.test.mjs reads compose.yml with LF line endings on Windows checkouts, packages/run-spaceapp/package.json runs its tests with a bare node --test (Node 20 on Windows expands no tests/*.test.mjs glob), and PUBLIC_EXPORT_MANIFEST.json records the size and SHA-256 of the package-lock.json this tree carries. No launcher, image or app code changed, so every check and supplementary proof stays c15's (c14's own run, or what c14 carried from c13) with its createdAt.",
     "Candidate c15: public lab tree 64c3e71 (stamp 1.2.0) = c14 1e365cf + the 1.2.0 Zen first-answer exception and the 1.2.0 stamp, nothing else. Every check and supplementary proof is c14's own run (or what c14 carried from c13) and names c14 in carriedFrom with the c14..c15 diff stat. The tested launcher and images carry the lab stamp 1.2.0-nous.c14 (testedArtifacts); the release workflow rebuilds the images from this source, and the published package must pass scripts/shipped-image-evidence.mjs before latest.",
     "Candidate c14: public lab tree 1e365cf (lab stamp 1.2.0-nous.c14, not a release version) = c13 cf4d247 + the export of Space dev 6f572c31d2, which holds 31944be0df (a busy CLI credential agent is asked again for up to 20 s instead of read as signed out) and 06146070da (self-hosted skips the gateway-priority-panes push).",

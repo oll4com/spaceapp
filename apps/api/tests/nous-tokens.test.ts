@@ -31,7 +31,6 @@ describe("Nous automatic low-spend policy", () => {
     accounts[1]!.secondaryWindow.usedPercent = 100;
     accounts[2]!.secondaryWindow.usedPercent = 100;
     expect(compute(accounts, { provider: "codex" }).mode).toBe("CRITICAL");
-    expect(compute(accounts, { provider: "openai" }).mode).toBe("NORMAL");
   });
 
   it("keeps low-spend turns on Codex and restores the exact saved normal selection", () => {

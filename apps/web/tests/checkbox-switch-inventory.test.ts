@@ -22,6 +22,7 @@ describe("Space checkbox switch inventory", () => {
     // checkbox anywhere else has to be a SpaceToggle or be added here with its reason.
     // The Gateway filters, key efforts/accounts and the CLI disable acknowledgement use SpaceToggle since 9c5fc521df.
     const allowed = [
+      "features/agent-files/SignDialog.tsx", // "Save it to my signatures": a choice for this one signing, not a stored setting (0d3b186db7)
       "features/nous/NousDock.tsx", // Nous's On/Off power switch (role="switch", operator request 2026-10-17)
       "features/vault/VaultDock.tsx", // select all dead sites for the bulk delete (picking several items from a list, 599dc90542)
       "features/vault/VaultDock.tsx", // select one dead site for the bulk delete

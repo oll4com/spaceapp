@@ -74,7 +74,10 @@ describe("CLI browser bridge Google account selection", () => {
     const listed = await freelance.command({ type: "LIST_ACCOUNTS" });
     expect(listed.statusCode, listed.body).toBe(200);
     expect(listed.json().profiles).toEqual(expect.arrayContaining([expect.objectContaining({ profileId: account.id })]));
-    expect((await fixture(admin.id, undefined, "MARKETING_COPILOT").command({ type: "LIST_ACCOUNTS" })).statusCode).toBe(409);
+    // Since 17444a9206 (6/11) a Marketing Copilot reads which accounts exist, but only Browser and Freelance Copilot panes choose one.
+    const marketing = fixture(admin.id, undefined, "MARKETING_COPILOT");
+    expect((await marketing.command({ type: "LIST_ACCOUNTS" })).statusCode).toBe(200);
+    expect((await marketing.command({ type: "SELECT_ACCOUNT", profileId: account.id })).statusCode).toBe(409);
   });
 
   it("keeps a pane's network route and restarts its running browser on it (operator 31/10, plan clipboard:iLvBs5eOMZjF)", async () => {
