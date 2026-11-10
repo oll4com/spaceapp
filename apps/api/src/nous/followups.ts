@@ -71,7 +71,7 @@ export function createNousFollowups(deps: NousFollowupsDeps) {
   }
   // 9/11 REVIEW: a note names the room its pane was in when it was set; the line says where its panes are now, so no call names a deleted room.
   async function whereNow(item: NousFollowup): Promise<string> {
-    const ids = new Set([...(item.trigger.kind === "PANE" ? [item.trigger.paneId] : []), ...(item.note.match(/\bpane:[A-Za-z0-9_-]{4,80}\b/g) ?? [])]);
+    const ids = new Set([...(item.trigger.kind === "PANE" ? [item.trigger.paneId] : []), ...(item.note.match(/\bpane:[A-Za-z0-9_-]{4,80}(?![A-Za-z0-9_-])/g) ?? [])]);
     const now = deps.paneWhere ? (await Promise.all([...ids].map((id) => deps.paneWhere!(id).catch(() => null)))).filter(Boolean) : [];
     return now.length ? ` (now: ${now.join("; ")})` : "";
   }

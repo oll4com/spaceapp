@@ -21,7 +21,7 @@ import { createNousService, nousHistory, NOUS_OVERVIEW_REUSE_MS, NOUS_PERSONA, N
 import { NOUS_MODE_HOLD_MS } from "../src/nous/tokens.js";
 import { itemActed, NOUS_ITEM_HOLDS, type NousTurnAct, type NousTurnItem } from "../src/nous/turn-items.js";
 import { heldReviewItem } from "../src/nous/copilot-questions.js";
-import { createNousTools, nousControlRisk, nousToolDefinitions, pendingNousBriefOf, type CopilotBriefEvent, type NousToolDeps, type NousToolOutcome } from "../src/nous/tools.js";
+import { createNousTools, nousControlRisk, nousToolDefinitions, paneIdIn, pendingNousBriefOf, type CopilotBriefEvent, type NousToolDeps, type NousToolOutcome } from "../src/nous/tools.js";
 import { NOUS_SAVE_RETRY_TEXT } from "../src/nous/save-request.js";
 import { SpaceRouteError } from "../src/nous/space-provider.js";
 import { NOUS_SUBAGENT_EXCLUDED } from "../src/nous/subagents.js";
@@ -1189,6 +1189,11 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
     } finally {
       await f.app.close();
     }
+  });
+
+  it("reads a pane id that ends in a dash whole", () => {
+    expect(paneIdIn("Bob (pane:mKVw4mfJ0JK-)")).toBe("pane:mKVw4mfJ0JK-");
+    expect(paneIdIn("pane:-abc-d-")).toBe("pane:-abc-d-");
   });
 
   it("reads, links and refuses a closed pane by its id through the real store (R10-7: stable answered \"Could not find pane:quBCJUzYLfQu\")", async () => {

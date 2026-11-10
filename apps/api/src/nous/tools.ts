@@ -1483,7 +1483,8 @@ const strings = (value: unknown): string[] => typeof value === "string" ? [value
  * or REFUSE it (deploys go through the merge queue only).
  */
 /** The pane id a pane ref holds ("pane:abc", "Andy (pane:abc)"), or null for a plain name. */
-const paneIdIn = (ref: string): string | null => /\bpane:[A-Za-z0-9_-]{4,80}\b/.exec(ref)?.[0] ?? null;
+// A pane id may end in "-": a trailing \b would cut it off (CI 42885561245 read pane:mKVw4mfJ0JK- as pane:mKVw4mfJ0JK).
+export const paneIdIn = (ref: string): string | null => /\bpane:[A-Za-z0-9_-]{4,80}(?![A-Za-z0-9_-])/.exec(ref)?.[0] ?? null;
 
 /** CORE-016: how long work sent to one pane holds the same work for another pane, while the first has not reported done or failed. */
 export const NOUS_DUPLICATE_SEND_MS = 30 * 60_000;
@@ -2345,7 +2346,7 @@ export function createNousTools(deps: NousToolDeps) {
   /** Every pane ref of a call (pane, panes, space_execute's target ids and names) that holds a cli_session id, as that session's pane id. */
   async function withSessionPanes(raw: Record<string, unknown>): Promise<Record<string, unknown>> {
     const swap = async (ref: unknown) => {
-      const id = typeof ref === "string" ? /\bcli_session:[A-Za-z0-9_-]{4,80}\b/.exec(ref)?.[0] : undefined;
+      const id = typeof ref === "string" ? /\bcli_session:[A-Za-z0-9_-]{4,80}(?![A-Za-z0-9_-])/.exec(ref)?.[0] : undefined;
       return id ? await deps.cliSessionPane!(id).catch(() => null) ?? ref : ref;
     };
     const list = async (value: unknown) => Array.isArray(value) ? Promise.all(value.map(swap)) : value;
