@@ -9248,8 +9248,8 @@
     {
       "path": "apps/api/src/browser-sessions.ts",
       "sourceObjectId": "3d84909bdc49997e09849c3cc00bbf00678c5439",
-      "sha256": "e71d8c82c2c40e1a4459efafb9ebfe7610e31bb02ec6fed92b3c9d4e965b35dd",
-      "size": 213274
+      "sha256": "1a7ca147a3aba40b778b2104246d860e7d108d7964c589cef244195fa8f8b79a",
+      "size": 213521
     },
     {
       "path": "apps/api/src/browser-stream-host-watch.ts",

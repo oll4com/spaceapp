@@ -2540,7 +2540,9 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     );
     let client: CdpClient | undefined;
     try {
-      const wsUrl = await waitForChromeWebSocket(chrome, 10_000);
+      // A cold first launch (Chrome and its libraries read from disk) took ~3.5-6.5 s of the old 10 s on CI runners and once
+      // more (Security 42911060446); 20 s still fits the Browser Host's 30 s request with Xvfb, CDP and the first page.
+      const wsUrl = await waitForChromeWebSocket(chrome, 20_000);
       client = await CdpClient.connect(wsUrl, 10_000);
       const profile: BrowserProfileRuntime = {
         egressKey: egress?.key ?? null, process: chrome, client, ...(xvfb ? { xvfb } : {}), ...(display !== null ? { display } : {}),
