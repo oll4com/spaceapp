@@ -3,7 +3,7 @@
   "schemaVersion": 2,
   "sourceCommit": "6f572c31d2168343fb0597b632262ab9e54c96fd",
   "fileCount": 5835,
-  "transformations": 416,
+  "transformations": 417,
   "files": [
     {
       "path": ".github/funding.json",
@@ -9248,8 +9248,8 @@
     {
       "path": "apps/api/src/browser-sessions.ts",
       "sourceObjectId": "3d84909bdc49997e09849c3cc00bbf00678c5439",
-      "sha256": "1a7ca147a3aba40b778b2104246d860e7d108d7964c589cef244195fa8f8b79a",
-      "size": 213521
+      "sha256": "2c12fbf74ae3abe695d4984b055d13753f2547491996b5be5197d7826b0d937d",
+      "size": 213747
     },
     {
       "path": "apps/api/src/browser-stream-host-watch.ts",
@@ -13526,8 +13526,8 @@
     {
       "path": "apps/api/tests/browser-account-profile-chrome.test.ts",
       "sourceObjectId": "557577e4ea63d09453a3428568a45aef0e204c57",
-      "sha256": "e4c4ad9ecddd44160361fc6c8abf7c86e64dd28a4fb5a6a22c45f3ee0bf4e73b",
-      "size": 19473
+      "sha256": "4886193bcdcd57bdcbba969881116fb8198d18e5a2a4edfbba5c291066ac5a60",
+      "size": 19603
     },
     {
       "path": "apps/api/tests/browser-account-profiles.test.ts",

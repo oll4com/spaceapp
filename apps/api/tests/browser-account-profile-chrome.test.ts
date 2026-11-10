@@ -139,7 +139,9 @@ describe.skipIf(missingBrowser)('tabs in another Google account inside one pane,
 
     // A restart of the host reopens the account tab in its account, never in the pane's.
     await toSecond(list.activePageId!);
-    await expect.poll(async () => (await pages()).pages.filter(page => page.account).length).toBe(1);
+    // The list saved for the restart: the moved tab once, never also its closing copy in the pane's Chrome.
+    list = await pages();
+    expect([list.pages.length, list.pages.filter(page => page.account).length]).toEqual([2, 1]);
     await manager.closeAll();
     manager = createBrowserSessionManager({ store, config: config() });
     await manager.getActive(pane);

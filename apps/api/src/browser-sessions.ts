@@ -2811,6 +2811,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       // The new tab takes the view first, so the old one never closes while the pane shows it.
       if (runtime.targetId === accountTab.pageId) await activateRuntimePage(session, runtime, pageId);
       await from.client.send("Target.closeTarget", { targetId: accountTab.pageId }).catch(() => undefined);
+      // Chrome still lists a closing tab until it detaches; the saved tab list must not reopen it after a restart (CI 42921793242).
+      runtime.ownedPages.delete(accountTab.pageId);
       if (!home) await saveAccountTabIdentity(pane.id, accountTab.profileId!, identity);
     });
     await refreshPages(session, runtime);
@@ -4052,6 +4054,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         if (replacement) await activateRuntimePage(session, runtime, replacement.pageId);
       }
       await pageProfile(runtime, pageId).client.send("Target.closeTarget", { targetId: pageId });
+      runtime.ownedPages.delete(pageId);
       return refreshPages(session, runtime);
     },
     async acquireControl(pane, input, _traceId, context) {
