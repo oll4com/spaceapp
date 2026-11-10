@@ -3,7 +3,7 @@
   "schemaVersion": 2,
   "sourceCommit": "6f572c31d2168343fb0597b632262ab9e54c96fd",
   "fileCount": 5835,
-  "transformations": 412,
+  "transformations": 415,
   "files": [
     {
       "path": ".github/funding.json",
@@ -10250,8 +10250,8 @@
     {
       "path": "apps/api/src/event-loop-report.ts",
       "sourceObjectId": "aafeae45ec65676508748c3b2d6c2a1cf6556b00",
-      "sha256": "92874367f00fa392fdeb12b838fd35151243b98fb39a0086d16d08c7d86154d3",
-      "size": 8040
+      "sha256": "360c15409d69488a19c589f11f517149ccb94126c01dbbe1dd42c2058ae06758",
+      "size": 8321
     },
     {
       "path": "apps/api/src/event-routes.ts",
@@ -15032,8 +15032,8 @@
     {
       "path": "apps/api/tests/mail-copilot-sync.test.ts",
       "sourceObjectId": "e53513444ce184fa4db059bf627fe59c288456f1",
-      "sha256": "21b3dcfa69c09582272d3346a1b9fcaee312e43513e00ad6e98c3760c65fb969",
-      "size": 48253
+      "sha256": "70c2873f345d31dd763c01d7369f5cfc4bd390b5238d166652aae9719f64b3e3",
+      "size": 48470
     },
     {
       "path": "apps/api/tests/mail-copilot.test.ts",
@@ -15272,8 +15272,8 @@
     {
       "path": "apps/api/tests/needs-you-answer.test.ts",
       "sourceObjectId": "c0b874923dc4282a63da48018b4f91df60bb1639",
-      "sha256": "7d15b4bc82b76b7d893405ed5136a0e30f26e52cb2dc3e9307e66b74ea9d1917",
-      "size": 28959
+      "sha256": "fc04849679c8b46645cad7ac1de6b3e5f87c4b4113502199f99b45feadf02782",
+      "size": 29109
     },
     {
       "path": "apps/api/tests/needs-you-ask.test.ts",
@@ -16856,8 +16856,8 @@
     {
       "path": "apps/api/tests/space-control-capture.test.ts",
       "sourceObjectId": "0a4d484fe916ce5e1f52c01b7b7d0b52dd8c1bad",
-      "sha256": "1ad41c00482e3da01f254ffd00c2187ddff512ece83cbff3fac284fc07afd834",
-      "size": 17706
+      "sha256": "427f9fec5108ee389f5d6a19fcbf87912c6ab5e6ded92974d5df056fe67f9297",
+      "size": 17844
     },
     {
       "path": "apps/api/tests/space-control-dot-goals-wiring.test.ts",

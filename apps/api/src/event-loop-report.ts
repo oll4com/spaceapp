@@ -149,7 +149,10 @@ export function reportEventLoopLoad(
   };
 
   void startProfile();
-  const timer = setInterval(() => {
+  // After a block, the histogram's own overdue timer records it only after this tick's timer, and reset() drops a delay not
+  // yet recorded: setImmediate reads after every due timer ran (CI 42895647306 lost a 300 ms block this way).
+  const timer = setInterval(() => setImmediate(() => {
+    if (stopped) return;
     const current = performance.eventLoopUtilization();
     const { utilization } = performance.eventLoopUtilization(current, last);
     last = current;
@@ -164,7 +167,7 @@ export function reportEventLoopLoad(
     }, "Event loop load");
     delay.reset();
     void finishProfile().then(() => blocked ? startProfile() : undefined);
-  }, intervalMs);
+  }), intervalMs);
   timer.unref();
   return () => {
     stopped = true;

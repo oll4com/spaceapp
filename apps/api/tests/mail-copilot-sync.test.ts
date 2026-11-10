@@ -333,9 +333,11 @@ describe("mail copilot new-mail sync", () => {
       gmail.expireHistory();
       expect(await sync.tick()).toEqual({ accounts: 1, created: 1 });
       const events = await app.inject({ method: "GET", url: `/api/mail-copilot/events?paneId=${encodeURIComponent(pane.id)}&limit=3`, headers });
-      expect(events.json().events[0]).toMatchObject({ type: "SYNC_RESET", accountEmail: "me@gmail.com" });
-      expect(events.json().events[0].message).toContain("1 message");
-      expect(events.json().events[1]).toMatchObject({ type: "MAIL_RECEIVED", messageId: "m3b", status: "PENDING" });
+      // The note and the gap's mail can share a millisecond, and a tie orders by random id (CI 42895663412).
+      const [reset, gap] = ["SYNC_RESET", "MAIL_RECEIVED"].map((type) => events.json().events.slice(0, 2).find((event: { type: string }) => event.type === type));
+      expect(reset).toMatchObject({ type: "SYNC_RESET", accountEmail: "me@gmail.com" });
+      expect(reset.message).toContain("1 message");
+      expect(gap).toMatchObject({ type: "MAIL_RECEIVED", messageId: "m3b", status: "PENDING" });
       expect(await sync.tick()).toEqual({ accounts: 1, created: 0 });
       gmail.receive({ id: "m4", threadId: "t4", from: "Anna <anna@acme.com>", subject: "Again", labelIds: ["INBOX"], plain: "Hi" });
       expect(await sync.tick()).toEqual({ accounts: 1, created: 1 });

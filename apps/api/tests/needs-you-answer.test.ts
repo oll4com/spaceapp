@@ -97,7 +97,8 @@ describe("answering a needs-you record from its card", () => {
     expect(f.deps.sendToPane).toHaveBeenCalledWith(owner, room, pane, "Operator's one-time code for your needs-you (The 6-digit Upwork code from your SMS): 481 516");
     const record = await f.notifications.get(owner, id);
     expect(record).toMatchObject({ status: "ACKED", payload: { answer: { text: "(a one-time code, typed into the pane; not kept)", routed: "PANE" } } });
-    expect(JSON.stringify(record)).not.toContain("481");
+    // The whole code, either way it was typed: "481" alone is in about 1 random id in 200 (CI 42895663412).
+    for (const code of ["481516", "481 516"]) expect(JSON.stringify(record)).not.toContain(code);
     expect(f.deps.ledger).not.toHaveBeenCalled();
     expect(f.deps.send).not.toHaveBeenCalled();
     // A pane that does not take it: 409 without the code, the card stays open, Nous hears why without the code.
