@@ -63,6 +63,10 @@ describe("event loop profiling after the first interval", () => {
     await vi.waitFor(() => expect(profiles()).toHaveLength(1), { timeout: 3_000 });
     await new Promise((resolve) => setTimeout(resolve, 700));
     expect(profiles()).toHaveLength(1);
+    // Block 100 ms after a report, inside an interval: a block that straddles a report is dropped by reset() (CI 42905475477).
+    await new Promise<void>((resolve) => log.info.mockImplementation((_fields: object, message: string) => {
+      if (message === "Event loop load") { log.info.mockImplementation(() => undefined); setTimeout(resolve, 100); }
+    }));
     blockTheLoopFor300ms();
     await vi.waitFor(() => expect(profiles()).toHaveLength(2), { timeout: 3_000 });
     stop();

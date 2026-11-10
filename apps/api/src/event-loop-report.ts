@@ -151,6 +151,7 @@ export function reportEventLoopLoad(
   void startProfile();
   // After a block, the histogram's own overdue timer records it only after this tick's timer, and reset() drops a delay not
   // yet recorded: setImmediate reads after every due timer ran (CI 42895647306 lost a 300 ms block this way).
+  // shortcut: reset() also forgets the histogram's last tick, so a block that straddles the read is still lost (the next one profiles); a never-reset second histogram if that matters.
   const timer = setInterval(() => setImmediate(() => {
     if (stopped) return;
     const current = performance.eventLoopUtilization();
