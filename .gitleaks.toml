@@ -5,6 +5,15 @@
 useDefault = true
 
 [allowlist]
-description = "Documentation placeholders, not credentials"
+description = "Documentation placeholders, public OAuth/telemetry client constants, and test fixtures"
 regexTarget = "match"
-regexes = ['''^your_[a-z_]+>''']
+regexes = [
+  '''^your_[a-z_]+>''',
+  '''phc_zjjbX0PnWxERXrMHhkEJWj9A9BhGVLRReICgsfTMmpx''',
+  '''9d1c250a-e61b-44d9-88ed-5944d1962f5e'''
+]
+paths = [
+  '''apps/[^/]+/tests/.*''',
+  '''packages/[^/]+/tests/.*''',
+  '''docs/quality/.*'''
+]
