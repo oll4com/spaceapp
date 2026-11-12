@@ -1867,6 +1867,51 @@ test("purge after a rolled-back first install without config.json removes the pr
   assert.match(stdout.value(), /Docker volumes removed/);
 });
 
+// Lab 2026-11-12 (run1-race): purge right after a failed first install; the init container appears after the first `down`, holding 2 volumes.
+async function purgeRace({ settlesAfterDowns }) {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-uninstall-purge-race-"));
+  const stdout = capture();
+  const stderr = capture();
+  let downs = 0;
+  const sleeps = [];
+  const options = {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    prepareDockerPath: async () => null,
+    sleep: async (ms) => { sleeps.push(ms); },
+    execute: async (spec, io) => {
+      const args = spec.args ?? [];
+      if (args.includes("--volumes")) downs += 1;
+      const settled = downs >= settlesAfterDowns;
+      if (args[0] === "ps" && !settled) io.stdout.write("spaceapp-x-codex-sessions-init-1\n");
+      if (args[0] === "volume" && !settled) io.stdout.write("spaceapp-x_spaceapp-codex-sessions\nspaceapp-x_spaceapp-cli-state\n");
+      return 0;
+    }
+  };
+  await run(["init"], { ...options, stdin: ttyStdin("y") });
+  await rm(join(root, "config.json"));
+  const code = await run(["uninstall", "--purge-data"], { ...options, stdin: Readable.from(["DELETE\n"]) });
+  return { code, downs, sleeps, stdout: stdout.value(), stderr: stderr.value() };
+}
+
+test("purge right after a failed first install purges again until the late init container and its volumes are gone", async () => {
+  const result = await purgeRace({ settlesAfterDowns: 2 });
+  assert.equal(result.code, 0);
+  assert.equal(result.downs, 2);
+  assert.deepEqual(result.sleeps, [5000]);
+  assert.match(result.stdout, /Docker volumes removed successfully/);
+});
+
+test("purge exits non-zero and names what stays when the project's containers or volumes never go", async () => {
+  const result = await purgeRace({ settlesAfterDowns: Infinity });
+  assert.equal(result.code, 1);
+  assert.equal(result.downs, 12);
+  assert.doesNotMatch(result.stdout, /removed successfully/);
+  assert.match(result.stderr, /purge left: container spaceapp-x-codex-sessions-init-1, volume spaceapp-x_spaceapp-codex-sessions, volume spaceapp-x_spaceapp-cli-state/);
+});
+
 test("owner password reset passes the password only over container stdin", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-owner-reset-"));
   const stdout = capture();

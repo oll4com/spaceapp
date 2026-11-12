@@ -50,7 +50,7 @@ import {
   writeRuntimeFiles,
   writeSetupToken
 } from "./index.mjs";
-import { inspectStoragePlan, storageChecks } from "./storage.mjs";
+import { captureProbe, inspectStoragePlan, storageChecks } from "./storage.mjs";
 import {
   ensureDockerAvailable,
   prepareDockerCliPath,
@@ -627,13 +627,24 @@ export async function run(argv, {
         throw new Error("Purge cancelled.");
       }
       stdout.write("Removing SpaceApp containers, network, and Docker volumes...\n");
-      const code = await runtimeExecute(
-        config
-          ? composeCommand("purge", root, { profile: config.profile, companionsEnabled: config.companionsEnabled })
-          // No compose files to read: Compose finds the project's containers, network and volumes by its project label.
-          : { command: "docker", args: ["compose", "--project-name", composeProjectName(root), "--project-directory", root, "down", "--volumes", "--remove-orphans"] },
-        { stdin, stdout, stderr }
-      );
+      const purgeSpec = config
+        ? composeCommand("purge", root, { profile: config.profile, companionsEnabled: config.companionsEnabled })
+        // No compose files to read: Compose finds the project's containers, network and volumes by its project label.
+        : { command: "docker", args: ["compose", "--project-name", composeProjectName(root), "--project-directory", root, "down", "--volumes", "--remove-orphans"] };
+      // A failed first `compose up` returns while Docker still creates a container (~10 s, 1.2.1 lab); `down` then skips the volumes it
+      // holds and still exits 0. Purge again until nothing of the project is left, for at most 12 x 5 s, then name what stays.
+      let code, left = [];
+      for (let attempt = 1; ; attempt += 1) {
+        code = await runtimeExecute(purgeSpec, { stdin, stdout, stderr });
+        left = code === 0 ? await projectLeftovers(execute, root) : [];
+        if (code !== 0 || left.length === 0 || attempt === 12) break;
+        await sleep(5000);
+      }
+      if (code === 0 && left.length > 0) {
+        stderr.write(`SpaceApp Docker volume purge left: ${left.join(", ")}. Run "${UNIVERSAL_COMMAND} uninstall --purge-data" again.\n`);
+        stdout.write(`Host files and the global SpaceApp CLI remain at ${root}.\n`);
+        return 1;
+      }
       if (code === 0) {
         stdout.write("SpaceApp runtime and Docker volumes removed successfully.\n");
         stdout.write(`Host configuration and backups remain at ${root} for manual review.\n`);
@@ -2587,6 +2598,19 @@ async function requestSetupStatus({ url, request }) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/** The project's containers and volumes still in Docker; a list Docker refused counts as left, so purge never claims success unseen. */
+async function projectLeftovers(execute, root) {
+  const filter = `label=com.docker.compose.project=${composeProjectName(root)}`;
+  const [containers, volumes] = await Promise.all([
+    captureProbe(execute, { command: "docker", args: ["ps", "-a", "--filter", filter, "--format", "{{.Names}}"] }),
+    captureProbe(execute, { command: "docker", args: ["volume", "ls", "-q", "--filter", filter] })
+  ]);
+  return [
+    ...(containers === null ? ["(containers could not be listed)"] : containers.split("\n").filter(Boolean).map((name) => `container ${name}`)),
+    ...(volumes === null ? ["(volumes could not be listed)"] : volumes.split("\n").filter(Boolean).map((name) => `volume ${name}`))
+  ];
 }
 
 async function executeWithDockerDiagnostics(execute, spec, io, { platform, stderr }) {
