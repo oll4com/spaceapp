@@ -6,7 +6,7 @@ import { InMemoryMailCampaignsRepository } from "@space/db";
 import { checkContactHealth, createDomainCheck } from "../src/mail-campaigns/health.js";
 import { createMailCampaignsService } from "../src/mail-campaigns/service.js";
 import { parseCampaignSignal } from "../src/mail-campaigns/signals.js";
-import type { MailTransports } from "../src/mail-campaigns/transports.js";
+import { createMailTransports, type MailTransports } from "../src/mail-campaigns/transports.js";
 import { passingDns, stubMailSite } from "./fixtures/mail-campaigns-dns.js";
 
 stubMailSite();
@@ -113,6 +113,52 @@ describe("signals applied to a sent campaign", () => {
     await expect(service.contact(owner, "stranger@else.example")).rejects.toThrow(/not found/);
   });
 
+  it("matches a bounce and a reply to the Message-ID Gmail sent instead of ours, and a forward target's DSN to the address we mailed (info@example.invalid 12/11)", async () => {
+    // A fake Gmail API that, like Gmail, sends every message under a Message-ID of its own.
+    const gmailIds: string[] = [];
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+    const fetchImpl = (async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/settings/sendAs")) return json({ sendAs: [{ sendAsEmail: "info@example.invalid", isPrimary: true }] });
+      if (path.endsWith("/messages/send")) return json({ id: `g${gmailIds.push(`<CA+g${gmailIds.length}@mail.gmail.com>`) - 1}`, threadId: "t" });
+      const sent = /\/messages\/g(\d+)$/.exec(path);
+      return sent ? json({ id: `g${sent[1]}`, payload: { headers: [{ name: "Message-Id", value: gmailIds[Number(sent[1])] }] } }) : new Response("{}", { status: 404 });
+    }) as unknown as typeof fetch;
+    const transports = createMailTransports({ google: () => ({ googleConfigured: true, googleAccessToken: async () => "tok" }) as never, keptKey: async () => null, heloName: "h", fetchImpl });
+    const now = () => "2026-11-12T08:00:00.000Z";
+    const gmailDns = { ...passingDns, mx: async () => ["aspmx.l.google.com"], txt: async (name: string) => ({ "example.invalid": ["v=spf1 include:_spf.google.com ~all"],
+      "google._domainkey.example.invalid": ["v=DKIM1; k=rsa; p=MIIBIjAN"], "_dmarc.example.invalid": ["v=DMARC1; p=quarantine; rua=mailto:dmarc@example.invalid"] } as Record<string, string[]>)[name] ?? [] };
+    const service = createMailCampaignsService({ repository: new InMemoryMailCampaignsRepository(now), transports, now,
+      campaigns: { unsubscribeKey: Buffer.alloc(32), unsubscribeBase: null, dns: gmailDns, ownMailboxes: async () => [] } });
+    const owner = "user:o";
+    const sender = await service.createSender(owner, mailSenderCreateSchema.parse({ address: "info@example.invalid", displayName: "example.invalid", footerAddress: "example.invalid",
+      config: { route: "GMAIL_CONNECTOR", account: "info@example.invalid" }, caps: { perMinute: 5, perDay: 500 } }), "t");
+    await service.checkSender(owner, sender.id);
+    const { template } = await service.createTemplate(owner, mailTemplateCreateSchema.parse({ name: "T", language: "en", subject: "Stock lot", preheader: "p", html: `<p>${"text ".repeat(60)}</p>`, text: "text ".repeat(60) }), { by: "OPERATOR" }, null);
+    const list = await service.createList(owner, { name: "Buyers", description: "", source: "MANUAL", consentBasis: "CUSTOMER" });
+    await service.importContacts(owner, list.id, { text: "alice@shop.gr bob@shop.gr carol@shop.gr" }, "t");
+    const campaign = await service.createCampaign(owner, mailCampaignCreateSchema.parse({ name: "EN lot", templateId: template.id, senderId: sender.id, listIds: [list.id], pacing: { perMinute: 5, perDay: 300 } }), "t", null);
+    await service.submit(owner, campaign.id);
+    await service.decide(owner, campaign.id, "approve", { who: owner, via: "RAIL", decisionId: null, fingerprint: (await service.campaign(owner, campaign.id)).fingerprint! });
+    await service.tick();
+    const sends = (await service.results(owner, campaign.id)).recent;
+    expect(sends.map((send) => send.messageId).sort()).toEqual([...gmailIds].sort());
+    const idOf = (address: string) => sends.find((send) => send.address === address)!.messageId!;
+    // Outlook's DSN for a mailbox the address forwards to: Final-Recipient is the full forward target, the returned original carries Gmail's id.
+    const outlook = (to: string, messageId: string) => `From: postmaster@outlook.com\r\nTo: info@example.invalid\r\nSubject: Undeliverable: Stock lot\r\n`
+      + `Content-Type: multipart/report; report-type=delivery-status; boundary="o"\r\n\r\n--o\r\nContent-Type: text/plain\r\n\r\nDelivery has failed.\r\n`
+      + `--o\r\nContent-Type: message/delivery-status\r\n\r\nReporting-MTA: dns;outlook.com\r\n\r\nFinal-Recipient: rfc822;salesupdated@hotmail.com\r\nAction: failed\r\nStatus: 5.2.2\r\n\r\n`
+      + `--o\r\nContent-Type: message/rfc822\r\n\r\nFrom: example.invalid <info@example.invalid>\r\nTo: ${to}\r\nMessage-ID: ${messageId}\r\nSubject: Stock lot\r\n\r\nHi\r\n--o--\r\n`;
+    const answer = `From: Carol <carol@shop.gr>\r\nTo: info@example.invalid\r\nSubject: Re: Stock lot\r\nIn-Reply-To: ${idOf("carol@shop.gr")}\r\nReferences: ${idOf("carol@shop.gr")}\r\n\r\nThanks, this is not for us.\r\n`;
+    expect(await service.signals(owner, [outlook("bob@shop.gr", idOf("bob@shop.gr")), answer].map((raw) => Buffer.from(raw)), "mailbox info@example.invalid")).toMatchObject({ applied: 2 });
+    expect(await service.contact(owner, "bob@shop.gr")).toMatchObject({ suppressed: true, contact: { health: "BOUNCED" } });
+    expect((await service.results(owner, campaign.id)).stats).toMatchObject({ bounced: { hard: 1, soft: 0 }, replied: 1 });
+    // A send logged before the fix (our id kept, Gmail's quoted): the forward target's DSN still reaches the address we mailed.
+    expect(await service.signals(owner, [Buffer.from(outlook("alice@shop.gr", "<CA+before@mail.gmail.com>"))], "mailbox info@example.invalid")).toMatchObject({ applied: 1 });
+    expect(await service.contact(owner, "alice@shop.gr")).toMatchObject({ suppressed: true, contact: { health: "BOUNCED" } });
+    expect(await service.contact(owner, "salesupdated@hotmail.com").catch(() => null)).toBeNull();
+  });
+
   it("counts a delay once by the notice's own id, also after a restart, and a second distinct delay makes the contact INVALID", async () => {
     const repository = new InMemoryMailCampaignsRepository();
     const start = () => createMailCampaignsService({ repository, campaigns: { unsubscribeKey: Buffer.alloc(32), unsubscribeBase: null } });
@@ -143,20 +189,47 @@ describe("mailbox correspondents", () => {
 });
 
 describe("the health job's mailbox pass", () => {
-  it("reads every bounce the mailbox ever got on its first pass, then only the 3-day window", async () => {
-    const queries: string[] = [];
-    const gmail = { listThreads: async ({ q }: { q: string }) => { queries.push(q); return { ids: q.includes("mailer-daemon") ? ["t1"] : [], nextPageToken: null }; },
-      thread: async () => ({ messages: [{ id: "m1" }] }), message: async () => ({ raw: Buffer.from(gmailDsn("old@shop.gr", "failed", "5.1.1")).toString("base64url") }) };
+  const owner = "user:o";
+  async function serviceReading(gmail: object) {
     const transports = { for: () => ({ check: async () => "ok", send: async () => ({ providerId: "p" }) }), gmailFor: async () => gmail } as unknown as MailTransports;
     const service = createMailCampaignsService({ repository: new InMemoryMailCampaignsRepository(), transports, campaigns: { unsubscribeKey: Buffer.alloc(32), unsubscribeBase: null, dns: passingDns } });
-    const owner = "user:o";
     await service.createSender(owner, mailSenderCreateSchema.parse({ address: "offers@brand.example", displayName: "oll4", footerAddress: "brand.example",
       config: { route: "SMTP", host: "smtp.brand.example", port: 465, username: "offers@brand.example", vaultKeyId: "vault_key:abcdef12" }, caps: { perMinute: 5, perDay: 500 } }), "t");
     const list = await service.createList(owner, { name: "L", description: "", source: "MANUAL", consentBasis: "CONSENT" });
     await service.importContacts(owner, list.id, { text: "old@shop.gr" }, "t");
+    return service;
+  }
+  it("reads every bounce the mailbox ever got on its first pass, then only the 3-day window", async () => {
+    const queries: string[] = [];
+    const gmail = { listThreads: async ({ q }: { q: string }) => { queries.push(q); return { ids: q.includes("mailer-daemon") ? ["t1"] : [], nextPageToken: null }; },
+      thread: async () => ({ messages: [{ id: "m1" }] }), message: async () => ({ raw: Buffer.from(gmailDsn("old@shop.gr", "failed", "5.1.1")).toString("base64url") }) };
+    const service = await serviceReading(gmail);
     await service.healthTick();
     await service.healthTick();
     expect(queries).toEqual(["in:anywhere (from:mailer-daemon OR from:postmaster)", "newer_than:3d -in:sent -in:drafts", "newer_than:3d -in:sent -in:drafts"]);
     expect(await service.contact(owner, "old@shop.gr")).toMatchObject({ suppressed: true, contact: { health: "BOUNCED" } });
+  });
+  it("reads a 3-day thread again only when Gmail lists it with another historyId, each message raw once (CPU plan 4.4)", async () => {
+    let historyId = "h1";
+    let messages = ["m1"];
+    const threadReads: string[] = [];
+    const rawReads: string[] = [];
+    const gmail = {
+      listThreads: async ({ q }: { q: string }) => q.includes("mailer-daemon") ? { ids: [], nextPageToken: null }
+        : { ids: ["t1"], historyIds: new Map([["t1", historyId]]), nextPageToken: null },
+      thread: async (id: string) => { threadReads.push(id); return { messages: messages.map((message) => ({ id: message })) }; },
+      message: async (id: string) => { rawReads.push(id); return { raw: Buffer.from("From: someone@x.example\r\nSubject: hello\r\n\r\nHi\r\n").toString("base64url") }; },
+    };
+    const service = await serviceReading(gmail);
+    await service.healthTick();
+    await service.healthTick();
+    expect(threadReads).toEqual(["t1"]);
+    historyId = "h2";
+    messages = ["m1", "m2"];
+    await service.healthTick();
+    await service.healthTick();
+    expect(threadReads).toEqual(["t1", "t1"]);
+    // m1 stays known through the passes that skipped its thread, so it is never read again.
+    expect(rawReads).toEqual(["m1", "m2"]);
   });
 });

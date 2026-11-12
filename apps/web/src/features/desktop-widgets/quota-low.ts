@@ -1,7 +1,8 @@
-import type {
-  AntigravityUsageAccountList,
-  ClaudeUsageAccountList,
-  CodexUsageAccountList,
+import {
+  claudeSubscriptionAccounts,
+  type AntigravityUsageAccountList,
+  type ClaudeUsageAccountList,
+  type CodexUsageAccountList,
 } from "@space/contracts";
 
 /** Under this share left in a subscription window, the quota icons turn red (operator 2026-10-31, plan clipboard:mjpENip0ilmC). */
@@ -46,28 +47,10 @@ export function lowQuotaText(sources: QuotaLowSources | null | undefined, clock:
     windows("Antigravity Gemini", account.gemini);
     windows("Antigravity Claude · GPT", account.claude);
   }
-  for (const account of claudeSubscriptionAccounts(sources?.claude)) windows("Claude", account);
+  for (const account of claudeSubscriptionAccounts(sources?.claude?.data ?? [])) windows("Claude", account);
   const low = [...byWindow.values()].sort((left, right) => left.percent - right.percent);
   const first = low[0];
   if (!first) return null;
   const more = low.length > 1 ? ` · ${low.length - 1} more under ${QUOTA_LOW_PERCENT}%` : "";
   return `${first.label}: ${Math.floor(first.percent)}% left (${first.window})${more}`;
-}
-
-/** The Claude subscription accounts with their windows, each once: the gateway's pool lists the CONNECTED profiles' accounts again, by alias or email's local part. */
-export function claudeSubscriptionAccounts(list: ClaudeUsageAccountList | null | undefined): Array<Window & { label: string }> {
-  const claude = list?.data ?? [];
-  const seen = new Set<string>();
-  const accounts: Array<Window & { label: string }> = [];
-  for (const account of claude) {
-    if (account.status !== "CONNECTED") continue;
-    accounts.push(account);
-    for (const key of [account.label, account.email, account.email?.split("@")[0]]) if (key) seen.add(key.toLowerCase());
-  }
-  for (const member of claude.flatMap((account) => account.pool ?? [])) {
-    if (member.signInRequired || seen.has(member.label.toLowerCase())) continue;
-    seen.add(member.label.toLowerCase());
-    accounts.push(member);
-  }
-  return accounts;
 }

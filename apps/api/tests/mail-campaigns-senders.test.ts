@@ -122,4 +122,17 @@ describe("senders", () => {
     expect((await service.updateSender("user:o", sender.id, { status: "PAUSED" }))!.status).toBe("PAUSED");
     expect(sent).toEqual([]);
   });
+  it("sends one transactional plain-text mail only through the owner's ACTIVE sender (Forgot password)", async () => {
+    const { service, sent } = setup(async () => "Signed in.");
+    const sender = await service.createSender("user:o", mailSenderCreateSchema.parse({ ...base, address: "news@brand.example", config: { route: "SMTP", host: "smtp.brand.example", port: 465, username: "news@brand.example", vaultKeyId: "vault_key:abcdef12" } }), "test");
+    const mail = { to: "owner@brand.example", subject: "Reset your SpaceApp password", text: "Open https://space.example/#password-reset=abc\nonce." };
+    await expect(service.sendTransactional("user:o", sender.id, mail)).rejects.toThrow(/cannot send/);
+    await service.checkSender("user:o", sender.id);
+    await expect(service.sendTransactional("user:other", sender.id, mail)).rejects.toThrow(/cannot send/);
+    await expect(service.sendTransactional("user:o", sender.id, { ...mail, to: "a@b.example\r\nBcc: x@y.example" })).rejects.toThrow(/plain ASCII/);
+    await service.sendTransactional("user:o", sender.id, mail);
+    const [raw, envelope] = sent[0] as [Buffer, { from: string; to: string }];
+    expect(envelope).toEqual({ from: "news@brand.example", to: "owner@brand.example" });
+    expect(raw.toString("ascii")).toMatch(/Content-Transfer-Encoding: 7bit\r\n\r\nOpen https:\/\/space\.example\/#password-reset=abc\r\nonce\.$/);
+  });
 });

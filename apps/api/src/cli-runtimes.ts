@@ -241,6 +241,20 @@ async function readCredentialStatus(commandPath: string): Promise<CliCredentialS
   }
 }
 
+/**
+ * authMode NONE runtimes manage no credentials, but the CLI behind the wrapper can still be missing (public-host F1: Qoder showed
+ * ready and every pane went to ERROR). READY when it answers --version; null only on the wrapper's own refusal (exit 64,
+ * "... is unavailable"), so a probe that cannot run (no sudo in the dev API, a timeout) leaves the runtime as before.
+ */
+async function readInstalledStatus(commandPath: string): Promise<CliCredentialStatus | null> {
+  try {
+    await execFileAsync(commandPath, ["--version"], { encoding: "utf8", timeout: credentialStatusTimeoutMs, maxBuffer: 1_024 });
+    return "READY";
+  } catch (error) {
+    return (error as { code?: unknown }).code === 64 ? null : "READY";
+  }
+}
+
 /** A wrapper's `credential-status` answer. */
 export function parseCredentialStatus(stdout: string): CliCredentialStatus | null {
   if (stdout === "READY\n" || stdout === "READY\r\n") return "READY";
@@ -326,7 +340,8 @@ async function cliRuntime(
   config: SpaceApiConfig,
   definition: CliRuntimeDescriptor,
   checkedAt: string,
-  readStatus: CliCredentialStatusReader
+  readStatus: CliCredentialStatusReader,
+  readInstalled: CliCredentialStatusReader
 ): Promise<AgentRuntime> {
   const commandName = config.cliRuntimeCommands[definition.key];
   const commandRoot = config.cliCommandPath;
@@ -347,7 +362,11 @@ async function cliRuntime(
     : null;
   const dynamicCredentialStatus = observedCredentialStatus;
   const noPlan = dynamicCredentialStatus === "NO_PLAN";
-  const credentialVerified = credentialsNotManagedBySpace || staticallyVerified || (dynamicCredentialStatus !== null && !noPlan);
+  // The public distribution runs its CLIs in the CLI container, where the API cannot run the wrapper.
+  const cliMissing = adapterEnabled && credentialsNotManagedBySpace && !staticallyVerified && !config.publicDistribution &&
+    await readInstalled(detectedCommandPath as string) === null;
+  const credentialVerified = (credentialsNotManagedBySpace && !cliMissing) || staticallyVerified ||
+    (dynamicCredentialStatus !== null && !noPlan);
   const adapterReason = !config.cliEnabled
     ? "SPACE_CLI_ENABLED=true is required before CLI runtimes can start."
     : !commandRoot
@@ -412,12 +431,13 @@ async function cliRuntime(
 
 export async function discoverAgentRuntimes(
   config: SpaceApiConfig,
-  options: { readCredentialStatus?: CliCredentialStatusReader } = {}
+  options: { readCredentialStatus?: CliCredentialStatusReader; readInstalledStatus?: CliCredentialStatusReader } = {}
 ): Promise<AgentRuntimeRegistry> {
   const checkedAt = nowIso();
   const readStatus = options.readCredentialStatus ?? readCredentialStatus;
+  const readInstalled = options.readInstalledStatus ?? readInstalledStatus;
   const cliRuntimes = await Promise.all(cliRuntimeDescriptors.map((definition) =>
-    cliRuntime(config, definition, checkedAt, readStatus)
+    cliRuntime(config, definition, checkedAt, readStatus, readInstalled)
   ));
   return agentRuntimeRegistrySchema.parse({
     data: [webChatRuntime(config, checkedAt), ...cliRuntimes, rootRuntime(config, checkedAt)],
@@ -482,7 +502,7 @@ export function createAgentRuntimeRegistryCache(
 }
 
 export function createCliCredentialStatusCache(
-  options: { probe?: CliCredentialStatusReader; now?: () => number } = {}
+  options: { probe?: CliCredentialStatusReader; now?: () => number; generation?: () => string } = {}
 ): { read: CliCredentialStatusReader; invalidate: () => void } {
   const probe = options.probe ?? readCredentialStatus;
   const cache = createStaleWhileRevalidateCache<CliCredentialStatus | null>({
@@ -492,7 +512,8 @@ export function createCliCredentialStatusCache(
     now: options.now
   });
   return {
-    read: (commandPath) => cache.get(commandPath, () => probe(commandPath)),
+    // A new credential agent generation (its CLI container was recreated) misses the old entries, so a key just set reads at once.
+    read: (commandPath) => cache.get(`${options.generation?.() ?? ""}\0${commandPath}`, () => probe(commandPath)),
     invalidate: () => cache.invalidate()
   };
 }
@@ -500,12 +521,14 @@ export function createCliCredentialStatusCache(
 /** Runtime registry whose invalidation also drops cached credential probes. */
 export function createCliRuntimeRegistryCache(
   config: SpaceApiConfig,
-  options: { ttlMs?: number; now?: () => number; probeCredentialStatus?: CliCredentialStatusReader } = {}
+  options: { ttlMs?: number; now?: () => number; probeCredentialStatus?: CliCredentialStatusReader; credentialGeneration?: () => string } = {}
 ): ReturnType<typeof createAgentRuntimeRegistryCache> {
-  const credentials = createCliCredentialStatusCache({ probe: options.probeCredentialStatus, now: options.now });
+  const credentials = createCliCredentialStatusCache({ probe: options.probeCredentialStatus, now: options.now, generation: options.credentialGeneration });
+  // Same re-probe policy as credentials; a CLI installed through CLI maintenance invalidates it at once.
+  const installed = createCliCredentialStatusCache({ probe: readInstalledStatus, now: options.now });
   return createAgentRuntimeRegistryCache(
-    () => discoverAgentRuntimes(config, { readCredentialStatus: credentials.read }),
-    { ttlMs: options.ttlMs, now: options.now, onInvalidate: credentials.invalidate }
+    () => discoverAgentRuntimes(config, { readCredentialStatus: credentials.read, readInstalledStatus: installed.read }),
+    { ttlMs: options.ttlMs, now: options.now, onInvalidate: () => { credentials.invalidate(); installed.invalidate(); } }
   );
 }
 

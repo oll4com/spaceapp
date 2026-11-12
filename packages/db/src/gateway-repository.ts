@@ -812,10 +812,15 @@ export class PostgresGatewayRepository implements GatewayRepository {
   constructor(private pool: PgPoolLike) {}
   static fromConnectionString(url: string, max = 4) { return new PostgresGatewayRepository(createSpacePgPool(url, { max })); }
 
+  // Reads never write: the old upsert-on-read rewrote row 1 per gateway request, queueing every request on its lock through a WAL flush.
+  private async settingsRow(columns: string) {
+    return (await this.pool.query<Record<string, unknown>>(`SELECT ${columns} FROM space_gateway_settings WHERE settings_id=1`)).rows[0]
+      ?? (await this.pool.query<Record<string, unknown>>(
+        `INSERT INTO space_gateway_settings(settings_id) VALUES (1) ON CONFLICT (settings_id) DO UPDATE SET settings_id=1 RETURNING ${columns}`)).rows[0]!;
+  }
+
   async getSettings() {
-    const row = (await this.pool.query<Record<string, unknown>>(
-      `INSERT INTO space_gateway_settings(settings_id) VALUES (1) ON CONFLICT (settings_id) DO UPDATE SET settings_id=1 RETURNING *`)).rows[0]!;
-    return settingsRecord(row);
+    return settingsRecord(await this.settingsRow("*"));
   }
 
   async updateSettings(patch: GatewaySettingsUpdateRequest) {
@@ -1479,10 +1484,7 @@ export class PostgresGatewayRepository implements GatewayRepository {
   }
 
   async speedDefaults() {
-    const row = (await this.pool.query<Record<string, unknown>>(
-      `INSERT INTO space_gateway_settings(settings_id) VALUES (1) ON CONFLICT (settings_id) DO UPDATE SET settings_id=1
-       RETURNING speed_defaults, speed_defaults_updated_at`)).rows[0]!;
-    return speedDefaultsRecord(row);
+    return speedDefaultsRecord(await this.settingsRow("speed_defaults, speed_defaults_updated_at"));
   }
 
   async setSpeedDefault(modelId: string, tier: GatewaySpeedTier) {

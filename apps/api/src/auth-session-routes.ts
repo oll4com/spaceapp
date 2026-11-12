@@ -70,6 +70,14 @@ export function registerAuthSessionRoutes(app: FastifyInstance, options: {
     };
   });
 
+  // The user owner-scoped records (clipboard, Nous, Agent Files) land on for this session, resolved the way those routes do (upsertUser,
+  // e-mail first; it writes nothing for an unchanged row). /api/auth/me cannot show it: it names the session id. `space-admin-action whoami`
+  // reads it so the access check fails when a stable broker session lands on another row again (12/11: user:dev-operator).
+  app.get("/api/auth/owner", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user) return sendApiError(reply, 401, "UNAUTHENTICATED", "Authentication is required.");
+    return { ownerId: (await store.upsertUser(request.user)).id };
+  });
+
   app.get("/api/auth/csrf", defaultRouteRateLimitOptions, async (request, reply) => {
     const csrfToken = createCsrfToken(request.cookies[cookieName], auth.sessionSecret);
     if (!csrfToken) {

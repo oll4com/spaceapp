@@ -14,12 +14,20 @@ export async function storeClaudeUsage(repository: GatewayRepository, account: G
   ]);
 }
 
+/** Whether the usage shows neither the 5-hour nor the weekly window used up. */
+export function claudeUsageClear(usage: ClaudeUsage): boolean {
+  const used = [usage.fiveHourUsedPercent, usage.weeklyUsedPercent].filter((value): value is number => value !== null);
+  return used.length > 0 && used.every((value) => value < 100);
+}
+
 export async function refreshClaudeAccountUsage(input: {
   repository: GatewayRepository; pool: AccountPool; account: GatewayAccountRecord; fetchImpl?: typeof fetch;
 }): Promise<ClaudeUsage> {
   const credentials = await input.pool.credentials(input.account);
   const usage = await fetchClaudeUsage(credentials.accessToken, input.fetchImpl);
   await storeClaudeUsage(input.repository, input.account, usage);
+  // A limit reset early (the operator's reset on Anthropic's page) brings the account back now, not at the time the 429 named.
+  await input.pool.liftExpiredBlock(input.account, claudeUsageClear(usage));
   input.pool.invalidate();
   return usage;
 }

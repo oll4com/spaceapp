@@ -168,6 +168,9 @@
 .nous-message.is-draft .nous-queue { margin-top: 0.25rem; font-size: 0.85em; color: var(--dock-accent); }
 .nous-message.is-decision { padding: 0.4rem 0.6rem; border-left: 2px solid var(--dock-accent); color: var(--dock-muted); }
 .nous-message.is-error { padding: 0.4rem 0.6rem; border-radius: var(--dock-radius-sm); background: var(--dock-danger-soft); color: var(--dock-danger); }
+/* Desktop perf 12/11: the list was 6,370 of the page's 12,641 elements; rows far from view skip style, layout and paint. The newest 40
+   always render, so sticking to the latest message measures real heights; the clip margin keeps focus rings visible. */
+.nous-messages > :nth-last-child(n + 40) { content-visibility: auto; contain-intrinsic-block-size: auto 5rem; overflow-clip-margin: 0.4rem; }
 
 .nous-tool { font-size: 0.72rem; color: var(--dock-muted); padding-left: 0.6rem; border-left: 2px solid var(--dock-border); }
 .nous-tool.is-running { color: var(--dock-accent); }
@@ -216,8 +219,15 @@
 .nous-composer > .dock-kit-icon-button { --dock-control: 2.75rem; --dock-icon: 1.3rem; }
 .nous-composer-tools { grid-column: 1 / -1; display: flex; align-items: center; gap: 0.25rem; }
 .nous-composer-jump { display: flex; gap: 0.25rem; margin-left: auto; }
+/* Find in the conversation (operator nous_msg:a44eacc4): a row above the composer, its matches painted with ::highlight. */
+.nous-search { display: flex; align-items: center; gap: 0.25rem; padding: 0.35rem 0.5rem 0; }
+.nous-search input { flex: 1; min-width: 0; }
+.nous-search-count { font-size: 0.75rem; color: var(--dock-muted); white-space: nowrap; }
+::highlight(nous-search) { background-color: color-mix(in srgb, var(--dock-accent) 30%, transparent); }
+::highlight(nous-search-current) { background-color: var(--dock-accent); color: var(--dock-on-accent); }
 
 .nous-composer textarea,
+.nous-search input,
 .nous-decision-answer input {
   width: 100%;
   box-sizing: border-box;
@@ -231,8 +241,10 @@
   font-size: max(16px, var(--dock-font, 0.8rem));
   line-height: 1.45;
 }
+.nous-search input { padding-block: 0.3rem; }
 .nous-composer textarea { resize: none; field-sizing: content; min-height: 2.75rem; max-height: 12rem; }
 .nous-composer textarea:focus-visible,
+.nous-search input:focus-visible,
 .nous-decision-answer input:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 1px; }
 
 .nous-decision {
@@ -551,6 +563,10 @@
 }
 .nous-rail .nous-status.is-thinking::before { animation: nous-blink 1.2s ease-in-out infinite; }
 @keyframes nous-blink { 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) {
+  .nous-workspace.is-thinking .nous-rail-brain::before,
+  .nous-rail .nous-status.is-thinking::before { animation: none; }
+}
 .nous-running { margin: 0.2rem 0 0; font-size: 0.74rem; color: var(--dock-muted); font-variant-numeric: tabular-nums; }
 .nous-rail .nous-running { margin: 0; padding-left: 1rem; }
 .nous-rail .nous-last-error { margin: 0; font-size: 0.74rem; }

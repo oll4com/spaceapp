@@ -94,13 +94,9 @@ describe("release trains", () => {
     await expect(changeReleaseTrain(repo, op({ op: "approve", sourceSha: "e3759a78b0" }), { ...agent(null), operatorApproved: true })).rejects.toThrow("candidate changed");
     await changeReleaseTrain(repo, op({ op: "approve", sourceSha: "d2648a67c9" }), { ...agent(null), operatorApproved: true });
     expect(await changeReleaseTrain(repo, op({ op: "publishing" }), self(jack))).toMatchObject({ status: "PUBLISHING", approvedSha: "d2648a67c9" });
-    await expect(changeReleaseTrain(repo, op({ op: "candidate", sourceSha: "e3759a78b0" }), self(jack))).rejects.toThrow("already publishing");
-
-    // A train marked publishing before approvals existed (stable 1.1.6) reopens with a new candidate, so the operator can approve it.
-    const record = (await repo.get("release_train", "space", "run-spaceapp"))!;
-    const { approvedSha: _approved, ...legacy } = record.value as Record<string, unknown>;
-    await repo.write({ kind: "release_train", actorId: "space", key: "run-spaceapp", roomId: "room:release1", version: record.version, value: legacy }, record.version);
-    expect(await changeReleaseTrain(repo, op({ op: "candidate", sourceSha: "e3759a78b0" }), self(jack))).toMatchObject({ status: "OPEN", sourceSha: "e3759a78b0" });
+    // A failed release run (1.2.0, 10/11): the publishing train reopens with the fixed candidate and publishes only once approved again.
+    expect(await changeReleaseTrain(repo, op({ op: "candidate", sourceSha: "e3759a78b0" }), self(jack))).toMatchObject({ status: "OPEN", sourceSha: "e3759a78b0", approvedSha: "d2648a67c9" });
+    await expect(changeReleaseTrain(repo, op({ op: "publishing" }), self(jack))).rejects.toThrow("has not approved");
   });
 
   it("takes the lab proof only from the captain's own pane, only for the current candidate, and approves only the checked candidate", async () => {
@@ -118,6 +114,20 @@ describe("release trains", () => {
     await changeReleaseTrain(repo, op({ op: "candidate", sourceSha: "c6f3e2d1bb" }), self(jack));
     await expect(changeReleaseTrain(repo, op({ op: "approve", sourceSha: "b5e2d1c0aa" }), { ...agent(null), operatorApproved: true })).rejects.toThrow("The candidate changed to c6f3e2d1bb");
     expect((await releaseTrainLines(await listReleaseTrains(repo), async () => true)).join("\n")).toContain("(an older candidate: does not count)");
+  });
+
+  // 1.2.0 (10/11): the captain pane closed, so no one could record the lab proof or publish.
+  it("lets Nous or the Room Agent, never a pane for itself, name a new captain and keeps contributors, candidate and approval", async () => {
+    const repo = new InMemoryControlRepository();
+    await changeReleaseTrain(repo, op({ op: "open", version: "1.2.0" }), agent(jack));
+    await changeReleaseTrain(repo, op({ op: "join", commit: "3707cca9af" }), self(finn));
+    await changeReleaseTrain(repo, op({ op: "candidate", sourceSha: "1e365cf236" }), self(jack));
+    await changeReleaseTrain(repo, op({ op: "approve" }), { ...agent(null), operatorApproved: true });
+    await expect(changeReleaseTrain(repo, op({ op: "captain" }), self(finn))).rejects.toThrow("Only Nous or the Room Agent names a new captain");
+    await expect(changeReleaseTrain(repo, op({ op: "captain" }), self(jack))).rejects.toThrow("Only Nous or the Room Agent");
+    const train = await changeReleaseTrain(repo, op({ op: "captain" }), { roomId: "room:release2", pane: finn, paneSelf: false });
+    expect(train).toMatchObject({ captain: finn, roomId: "room:release2", status: "OPEN", sourceSha: "1e365cf236", approvedSha: "1e365cf236",
+      contributors: [{ ...finn, commit: "3707cca9af" }] });
   });
 
   it("serves panes of their own room through the ADMIN route, as the pane itself", async () => {

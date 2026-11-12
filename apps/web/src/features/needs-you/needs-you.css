@@ -51,6 +51,10 @@
 .ny-actions, .ny-answers, .ny-sent, .ny-error, .ny-details { grid-column: 2 / -1; }
 .ny-actions, .ny-answers { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .ny-answers:empty { display: none; }
+/* A review's Approve and Decline never look alike (operator 12/11 21:38 BKK, both read «Απόρριψη» and looked the same): green and filled, red and outlined. */
+.ny-card .dock-kit-button.ny-approve, .ny-card .dock-kit-button.ny-approve:hover:not(:disabled) { border-color: transparent; background: var(--needs-ok); color: var(--modern-bg, #101010); }
+.ny-card .dock-kit-button.ny-decline { border-color: color-mix(in srgb, var(--needs-urgent) 60%, transparent); background: transparent; color: var(--needs-urgent); }
+.ny-card .dock-kit-button.ny-decline:hover:not(:disabled) { border-color: var(--needs-urgent); background: color-mix(in srgb, var(--needs-urgent) 12%, transparent); color: var(--needs-urgent); }
 .ny-card .dock-kit-button { min-height: 34px; padding: 0 14px; border-radius: 999px; font-size: 13px; }
 .ny-card .dock-kit-button svg { width: 15px; height: 15px; }
 .ny-details { display: grid; gap: 14px; min-width: 0; }
@@ -64,6 +68,12 @@
 .ny-facts dt { color: var(--modern-muted, #aaaaaa); }
 .ny-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .ny-facts a, .ny-text a { color: var(--modern-accent, #82aaff); }
+/* The mail a card is about, read in the card (operator 12/11 23:19 BKK). */
+.ny-mail { gap: 8px; }
+.ny-mail-body { max-width: 72ch; margin: 0; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--modern-text, #f5f5f5) 5%, transparent);
+  font-size: 13px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ny-mail-body.is-folded { max-height: 15em; overflow: hidden; mask-image: linear-gradient(to bottom, #000 75%, transparent); }
+.ny-mail .ny-link { justify-self: start; }
 .ny-previews { display: grid; grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr)); gap: 8px; }
 .ny-previews figure { margin: 0; display: grid; gap: 4px; font-size: 12px; }
 .ny-previews img, .ny-previews video { width: 100%; max-height: 12rem; object-fit: contain; border-radius: 6px; }
@@ -73,7 +83,8 @@
 .ny-field .dock-kit-button { flex: 0 0 auto; }
 .ny-details .ny-field { grid-column: auto; }
 .ny-actions > .ny-field { flex: 1 1 100%; }
-.ny-field input, .ny-field textarea { flex: 1 1 auto; min-width: 0; min-height: 34px; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--modern-border, #303030);
+/* width 0: a field's built-in 20-character width no longer widens the open card's grid past a narrow dock and clips its text (12/11). */
+.ny-field input, .ny-field textarea { flex: 1 1 auto; width: 0; min-width: 0; min-height: 34px; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--modern-border, #303030);
   border-radius: 10px; background: var(--modern-bg, #090909); color: inherit; font: inherit; font-size: 14px; resize: vertical; }
 .ny-field input:focus-visible, .ny-field textarea:focus-visible { outline: 2px solid var(--modern-accent, #82aaff); outline-offset: 1px; }
 .ny-footer { display: flex; flex-wrap: wrap; gap: 4px 16px; padding-top: 8px; border-top: 1px solid var(--modern-border, #303030); }

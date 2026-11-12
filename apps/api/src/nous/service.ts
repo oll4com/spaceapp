@@ -3,7 +3,7 @@ import { NOUS_MEMORY_AUTHORITY_RULE } from "./memory-authority.js";
 import { randomUUID } from "node:crypto";
 import {
   NOUS_ATTACHMENTS_MARKER, mailLineForOperator, NOUS_GATEWAY_UNREACHABLE, NOUS_PROMPT_MAX_CHARS, NOUS_QUOTA_EXHAUSTED, NOUS_MESSAGE_MAX_CHARS, needsYouAnswerKind, nousAnswerIntent, nousDecisionKind, nousDecisionRunsWhen, nousDecisionStatusSchema, nousModelFor, nousModelLabel, NOUS_SPACE_ROUTES, parseNousGoalCommand,
-  type NousExecution, type NousDecision, type NousDecisionAnswerInput, type NousGoal, type NousGoalEditInput, type NousGoalsView, type NousMessage, type NousOverview, type NousSettings, mergeNousSettings, type NousSettingsInput, type NousSpendMode, type NousStandingApproval, type SpaceNotification, type NousState, type NousTurnFacts, type NousTurnReason,
+  type NousExecution, type NousDecision, type NousDecisionAction, type NousDecisionAnswerInput, type NousGoal, type NousGoalEditInput, type NousGoalsView, type NousMessage, type NousOverview, type NousSettings, mergeNousSettings, type NousSettingsInput, type NousSpendMode, type NousStandingApproval, type SpaceNotification, type NousState, type NousTurnFacts, type NousTurnReason,
   nousGoalsSettingsSchema, type NousTurnOutcome, describeNousClient, nousClientContextSchema, type NousClientContext,
   withoutNothingNew, type UiLanguage
 } from "@space/contracts";
@@ -27,7 +27,7 @@ import { dispatchedAnswerOnly, outcomeMessageIds } from "./request-done.js";
 import { NOUS_ITEM_HOLDS, QUESTION_ACT_LINE, REVIEW_ACT_LINE, renderItemsHold, renderItemsLeft, unhandledItems, type NousTurnAct, type NousTurnItem } from "./turn-items.js";
 import { heldCardLine, heldQuestionItem, renderHeldQuestions, type HeldCopilotQuestion } from "./copilot-questions.js";
 import { MAY_DELETE_OWN_ANSWER, MAY_PUBLISH_ANSWER, MAY_RESTART_HOLD_LINE, MAY_RESTART_HOSTS_ANSWER, mayRestartHostsCovers, restartHostOf, type RestartFacts, type RestartHost, MAY_SEND_ANSWER, MAY_SEND_HOLD_LINE, deleteOwnTargets, mayDeleteOwnCovers, mayDeleteTestCovers, testDeleteTargets, type TestResourceRecord, mayPublishCovers, mayPublishProduct,
-  maySendKind, neutralizePricesLine, priceTokens, pricesLine, sendActionText, type OwnArtifact, type PublishFacts } from "./allowances.js";
+  MAY_SEND_NOT_COVERED, maySendKind, neutralizePricesLine, priceTokens, pricesLine, sendActionText, type OwnArtifact, type PublishFacts } from "./allowances.js";
 
 /**
  * Nous's turns, one at a time per owner. A turn starts from the operator's message, from what the room monitor and the
@@ -70,7 +70,9 @@ export function operatorRefusal(text: string): string | null {
  * C (operator 2/11 10:37 BKK: "Στο WIM έχουμε ήδη απαντήσει" while the reply sat as a Gmail draft; the Anthropic letter "sent, 250 OK" had bounced):
  * the first sentence saying a mail went out (sent, replied, delivered), or null. Negated, future and pane sentences ("Alex/Bob", "pane") say none.
  */
-const SENT_VERB = /σταλθηκ|σταλει|εσταλη|εφυγ[εα]|παραδοθηκ|\b(?:was|were|been|got|is|are) (?:already )?(?:sent|delivered)\b|\bsent (?:it|them|the|our|your)\b/gu;
+const SENT_VERB = /σταλθηκ|σταλει|εσταλη|\b(?:was|were|been|got|is|are) (?:already )?(?:sent|delivered)\b|\bsent (?:it|them|the|our|your)\b/gu;
+/** "Left" and "delivered" also say networks, parcels or people moved (10/11 «Τα δίκτυα έφυγαν»): a mail claim only with the mail named in the same sentence. */
+const SENT_ANY = /εφυγ[εα]|παραδοθηκ/gu;
 const REPLIED = /απαντησαμε|εχουμε (?:ηδη )?(?:απαντησει|στειλει)|στειλαμε|\bwe(?:'ve| have)? (?:already )?(?:sent|replied|answered|emailed|mailed)\b|\bi(?:'ve| have)? (?:already )?(?:replied|emailed|mailed)\b/gu;
 const MAIL_THING = /mail|μειλ|\b(?:repl(?:y|ies)|letters?|applications?|messages?)\b|απαντηση|αιτηση|μηνυμα|επιστολ|@/u;
 /** A negation or future right before the verb ("δεν είχε σταλεί", "has not been sent", "θα σταλεί"). */
@@ -84,7 +86,7 @@ export function mailSentClaim(text: string): string | null {
   return text.split(/(?<=[.!?;…])\s+|\n+/).map((sentence) => sentence.trim()).find((sentence) => {
     const plain = fold(sentence);
     if (NOT_A_CLAIM.test(plain) || /\p{Lu}\p{L}*\/\p{Lu}/u.test(sentence)) return false;
-    return says(plain, REPLIED) || (says(plain, SENT_VERB) && (mailContext || MAIL_THING.test(plain)));
+    return says(plain, REPLIED) || (says(plain, SENT_VERB) && (mailContext || MAIL_THING.test(plain))) || (says(plain, SENT_ANY) && MAIL_THING.test(plain));
   }) ?? null;
 }
 /** The tools whose answer shows Nous the mail itself (the thread's SENT message and any bounce). */
@@ -284,6 +286,8 @@ export interface NousServiceDeps {
   fileHashes?(owner: string, refs: string[]): Promise<Array<{ ref: string; sha256: string | null; size: number | null }>>;
   /** R10-17, R13-12: per recipient domain (and named site) of an EXTERNAL decision the mail of the last 30 days, per account (mail-context.ts). */
   mailContext?(owner: string, refs: NousDecision["refs"], named?: string[]): Promise<string[]>;
+  /** Nous 13/11: the copilot's rule memory that requires this review (so the operator reads it before it goes out), or null. */
+  reviewRequiredBy?(owner: string, action: Extract<NousDecisionAction, { type: "COPILOT" }>): Promise<{ id: string; text: string } | null>;
   /** The texts a decision sends (refs.files), each whole or null when unreadable: their prices go on the card. */
   sendTexts?(owner: string, files: string[]): Promise<Array<string | null>>;
   /** The operator's working time zone, for the times of their messages to answer (default UTC). */
@@ -673,7 +677,7 @@ export function createNousService(deps: NousServiceDeps) {
     else void runTurn(owner, "DECISION");
   }
   async function answerWaiting(owner: string, entry: OwnerRuntime) {
-    if (!unansweredFor(entry, await deps.repository.listMessages(owner, limits.historyMessages)).length) return;
+    if (!unansweredFor(entry, await deps.repository.listMessages(owner, limits.historyMessages, 0)).length) return;
     // 4/11: beside a running operator turn if one runs; it answers only what no live turn holds.
     void runTurn(owner, "OPERATOR");
   }
@@ -790,7 +794,8 @@ export function createNousService(deps: NousServiceDeps) {
     if (briefing) entry.briefing = null;
     if (extra.goal && deps.goals) await deps.goals.startTurn(owner, extra.goal.id).catch((error) => warn({ err: error, owner }, "Nous goal turn start failed."));
     try {
-      const messages = await deps.repository.listMessages(owner, limits.historyMessages);
+      // Only an operator turn reads tool rows (renderDone): the others leave them unloaded (CPU plan 3.2).
+      const messages = await deps.repository.listMessages(owner, limits.historyMessages, reason === "OPERATOR" ? undefined : 0);
       const history = nousHistory(messages);
       const operator = reason === "OPERATOR" ? messages.filter((message) => message.kind === "OPERATOR").at(-1) : undefined;
       if (operator) turn.operatorMessage = { id: operator.id, content: operator.content, person: operator.meta.person === true, mobile: Boolean(operator.meta.mobile) };
@@ -897,7 +902,7 @@ export function createNousService(deps: NousServiceDeps) {
       // A goal turn's answer goes to its goal's log (finishTurn below), never to the chat: one every minute would bury the dialogue.
       // Operator 9/11 12:56 BKK («μην μου επαναλαμβάνεις»): paragraphs Nous posted in the last hour (this turn's replies now too) are not posted again;
       // a turn the operator did not start then posts nothing, an answer to them keeps its first paragraph as the final.
-      const fresh = quiet || reason === "GOAL" || nothingNew(reason, said) ? "" : withoutSaid(said, (await deps.repository.listMessages(owner, limits.historyMessages))
+      const fresh = quiet || reason === "GOAL" || nothingNew(reason, said) ? "" : withoutSaid(said, (await deps.repository.listMessages(owner, limits.historyMessages, 0))
         .filter((message) => message.kind === "ANSWER" && now() - Date.parse(message.createdAt) < SAID_MS).map((message) => message.content));
       const answer = fresh || (reason === "OPERATOR" || reason === "DECISION" ? said.split(/\n\s*\n/)[0]!.trim() || "Done." : "");
       if (!quiet && reason !== "GOAL" && !nothingNew(reason, said) && answer) await addMessage(owner, turnId, "ANSWER", "DONE", answer, { reason, startedAt, ...replyTo(replyIds), ...(beside ? { beside: true } : {}) });
@@ -985,7 +990,7 @@ export function createNousService(deps: NousServiceDeps) {
         entry.lastError = clip(message, 1_000);
       } else {
         warn({ err: error, owner }, "Nous turn failed.");
-        await addMessage(owner, turnId, "ERROR", "FAILED", error instanceof NousUnavailableError ? message : `The turn failed: ${clip(message, 500)}`, routeMeta(error));
+        await addMessage(owner, turnId, "ERROR", "FAILED", error instanceof NousUnavailableError ? message : `The turn failed: ${clip(primary, 500)}`, routeMeta(error));
         // R17-2, without a token monitor to hold on: the operator's first quota failure retries in a minute unpaused (Space Gateway may pick another account).
         // 4/11: with the quota hold on, a background turn's quota refusal is that hold (WAITING_QUOTA), never a "model is not available" pause.
         if (!(error instanceof NousUnavailableError) && NOUS_PROVIDER_FAILURE.test(primary) && !(error instanceof SpaceRouteError && /already acted/.test(primary))
@@ -1566,10 +1571,11 @@ export function createNousService(deps: NousServiceDeps) {
       return { decisions: page.slice(0, 50), hasMore: page.length > 50 };
     },
 
-    /** From the space_ask_operator tool: an open decision with the same title is reused, never asked twice. */
-    async ask(input: NewNousDecision, options: { urgent?: boolean; checked?: string[]; sites?: string[]; phone?: boolean } = {}): Promise<NousDecision> {
+    /** From the space_ask_operator tool: an open decision with the same title is reused, never asked twice, except the one it replaces. */
+    async ask(input: NewNousDecision, options: { urgent?: boolean; checked?: string[]; sites?: string[]; phone?: boolean; replaces?: string } = {}): Promise<NousDecision> {
       const open = await deps.repository.listDecisions(input.ownerUserId, { statuses: ["OPEN"] });
-      const same = open.find((decision) => decision.title.trim().toLowerCase() === input.title.trim().toLowerCase());
+      // Nous 13/11: a corrected ask with the replaced one's title got its id and then cancelled itself; it is a new card with the new text and action.
+      const same = open.find((decision) => decision.id !== options.replaces && decision.title.trim().toLowerCase() === input.title.trim().toLowerCase());
       if (same) return served(same);
       const kind = standingKind(input);
       const stored = await deps.settings(input.ownerUserId);
@@ -1587,7 +1593,13 @@ export function createNousService(deps: NousServiceDeps) {
       // A card carries the prices the send names, so the operator's yes approves exactly those.
       const texts = maySendKind(input) ? await sendTextsOf(input.ownerUserId, input).catch(() => null) : null;
       const prices = texts ? pricesLine(priceTokens(texts)) : null;
-      const sendKind = !standing && settings.maySend ? maySendKind(input) : null;
+      const coveredKind = !standing && settings.maySend ? maySendKind(input) : null;
+      // Nous 13/11 (mailrev:oLB398mFW7pu went out at 18:56Z on an inferred kind): a review approve or edit a rule memory requires the operator
+      // to read never runs under maySend, with or without refs.sendKind; it stays his card.
+      const review = coveredKind && input.action?.type === "COPILOT" && input.action.item === "REVIEW" && /^(?:approve|edit)$/i.test(input.action.decision) ? input.action : null;
+      const heldFor = review && deps.reviewRequiredBy ? await deps.reviewRequiredBy(input.ownerUserId, review).then((memory) => memory
+        && `copilot memory ${memory.id} requires that you read this review ("${clip(memory.text.replace(/\s+/g, " "), 300)}")`, () => "the copilot's rule memories could not be read to check this review") : null;
+      const sendKind = heldFor ? null : coveredKind;
       // "May delete what Nous created" (2026-10-28): Nous's own Agent Files go at once, a copy kept first; anything else stays a card.
       // R27-1: and test VMs/CTs and their snapshots an agent pane recorded creating, named in refs.testDeletes (the record is the "copy kept").
       const own = standing || !settings.mayDeleteOwn || !deps.deleteOwn ? null : deleteOwnTargets(input) ? await deleteOwnCheck(input.ownerUserId, input)
@@ -1603,7 +1615,7 @@ export function createNousService(deps: NousServiceDeps) {
       const restartHost = !standing && settings.mayRestartHosts && deps.mayRestartHosts ? restartHostOf(input) : null;
       const restart = restartHost ? mayRestartHostsCovers({ decision: input, facts: await deps.mayRestartHosts!.facts(input.ownerUserId, restartHost)
         .catch(() => ({ stableQueueIdle: null, browsersHeld: null, panesMidTurn: null })) }) : null;
-      const allowanceLine = own ? own.covered ? testDeleteTargets(input) ? `${MAY_DELETE_OWN_ANSWER}: test VMs, CTs or snapshots agent panes recorded creating (${own.keptIn}).`
+      const allowanceLine = heldFor ? `${MAY_SEND_NOT_COVERED}: ${heldFor}.` : own ? own.covered ? testDeleteTargets(input) ? `${MAY_DELETE_OWN_ANSWER}: test VMs, CTs or snapshots agent panes recorded creating (${own.keptIn}).`
           : `${MAY_DELETE_OWN_ANSWER}: files Nous made itself; a copy of each is kept in ${own.keptIn}.` : `Not covered by "May delete what Nous created": ${own.reason}.`
         : releaseOk ? releaseOkAnswer(releaseOk)
         : publish ? publish.covered ? `${MAY_PUBLISH_ANSWER}: the captain's lab proof for ${publish.sourceSha.slice(0, 10)} is green.` : `Not covered by "May publish after a green lab proof": ${publish.reason}.`
@@ -1690,7 +1702,7 @@ export function createNousService(deps: NousServiceDeps) {
       }
       // A restart the allowance covers but whose preconditions wait gets no card: recheckRestarts runs it once they clear.
       if (restart && !restart.covered && restart.waits) return served(decision);
-      await raiseDecision(decision, changed ? `Not covered by "May send to third parties": ${changed}\n\n${body}` : body, { ...options, ...(checked ? { checked } : {}) });
+      await raiseDecision(decision, changed ? `${MAY_SEND_NOT_COVERED}: ${changed}\n\n${body}` : body, { ...options, ...(checked ? { checked } : {}) });
       return decision;
     },
 
@@ -1755,7 +1767,7 @@ export function createNousService(deps: NousServiceDeps) {
       // R19-3 (7 days to 30/10: 9 of the 18 "stale" decisions were ones the operator answered in the chat or a pane, not on the card): an
       // answer in the chat is not a stale ask. Space checks the operator wrote after it was asked; otherwise it is an ordinary withdrawal.
       const asked = answeredInChat ? await deps.repository.getDecision(owner, id) : null;
-      const reply = asked ? (await deps.repository.listMessages(owner, 150)).find((message) => message.kind === "OPERATOR" && message.createdAt > asked.createdAt) : undefined;
+      const reply = asked ? (await deps.repository.listMessages(owner, 150, 0)).find((message) => message.kind === "OPERATOR" && message.createdAt > asked.createdAt) : undefined;
       // R37: an ask Nous corrected with a new one (space_ask_operator replaces) is replaced, not a stale ask: the new card carries it on.
       const answer = replacedBy ? `Replaced by ${replacedBy} (Nous): ${reason}`
         : reply ? `Answered in the chat (${reply.createdAt.slice(11, 16)} UTC), withdrawn by Nous: ${reason}` : `Withdrawn by Nous: ${reason}`;
@@ -1902,7 +1914,7 @@ export function createNousService(deps: NousServiceDeps) {
         await api.notice(owner, `decision-failed:${cut.id}`, `Approved decision ${cut.id} "${clip(cut.title, 120)}" was NOT RUN: the API restarted before its action finished; `
           + "ask the operator again on the same item (one re-ask is allowed after a yes that did not run), or act another way.");
       }
-      if (runtime(owner).runningOperator || !operatorMessagesToAnswer(await deps.repository.listMessages(owner, limits.historyMessages)).length) return false;
+      if (runtime(owner).runningOperator || !operatorMessagesToAnswer(await deps.repository.listMessages(owner, limits.historyMessages, 0)).length) return false;
       void runTurn(owner, "OPERATOR");
       return true;
     },

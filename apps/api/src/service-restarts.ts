@@ -1,6 +1,8 @@
 import { execFile } from "./safe-child-process.js";
 import { createHash } from "node:crypto";
 import { VAULT_BROKER_BUNDLE_PATH } from "./vault/broker-report.js";
+import { createStaleWhileRevalidateCache } from "./stale-while-revalidate.js";
+import { nativeProcessIdentity } from "./task-title-native.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
@@ -81,36 +83,49 @@ export const DEEPSEEK_HARNESS_MAIN_PID_COMMAND = {
 } as const;
 
 export interface DeepSeekHarnessServiceController {
-  mainPid(): Promise<number | null>;
+  /** `fresh` asks systemd now (action gates); otherwise the last answer while it holds (status displays). */
+  mainPid(options?: { fresh?: boolean }): Promise<number | null>;
   restart(): Promise<void>;
   setEnabled(enabled: boolean): Promise<void>;
 }
 
 export function createDeepSeekHarnessServiceController(): DeepSeekHarnessServiceController {
-  return {
-    async mainPid() {
-      const { stdout } = await execFileAsync(
-        DEEPSEEK_HARNESS_MAIN_PID_COMMAND.command,
-        DEEPSEEK_HARNESS_MAIN_PID_COMMAND.args,
-        { timeout: 5000, windowsHide: true }
-      );
-      const pid = Number.parseInt(stdout.trim(), 10);
-      return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
-    },
-    async restart() {
-      await execFileAsync(
-        DEEPSEEK_HARNESS_RESTART_COMMAND.command,
-        DEEPSEEK_HARNESS_RESTART_COMMAND.args,
-        { timeout: 30_000, windowsHide: true }
-      );
-    },
-    async setEnabled(enabled) {
-      const command = enabled ? DEEPSEEK_HARNESS_ENABLE_COMMAND : DEEPSEEK_HARNESS_DISABLE_COMMAND;
-      await execFileAsync(command.command, command.args, {
-        timeout: 30_000,
-        windowsHide: true
-      });
+  // Settings polls this every 30 s (CPU plan 4.3): a pid holds while its process runs, no pid or a failure for a minute.
+  // shortcut: a start outside Space (a manual systemctl start, or Restart=on-failure after a crash) shows within a minute,
+  // Space's own restart and enable/disable drop the answer at once; ask systemd over D-Bus if that ever matters.
+  const answers = createStaleWhileRevalidateCache<{ pid: number | null; identity: string | null }>({
+    freshMs: ({ pid, identity }) => pid === null ? 60_000 : identity === null ? 0 : Number.POSITIVE_INFINITY,
+    maxAgeMs: 0,
+    errorTtlMs: 60_000
+  });
+  const ask = async () => {
+    const { stdout } = await execFileAsync(
+      DEEPSEEK_HARNESS_MAIN_PID_COMMAND.command,
+      DEEPSEEK_HARNESS_MAIN_PID_COMMAND.args,
+      { timeout: 5000, windowsHide: true }
+    );
+    const parsed = Number.parseInt(stdout.trim(), 10);
+    const pid = Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+    return { pid, identity: pid === null ? null : await nativeProcessIdentity(pid).catch(() => null) };
+  };
+  const runAndForget = async (command: { command: string; args: readonly string[] }) => {
+    try {
+      await execFileAsync(command.command, command.args, { timeout: 30_000, windowsHide: true });
+    } finally {
+      answers.invalidate();
     }
+  };
+  return {
+    async mainPid(options) {
+      let answer = await answers.get("main", ask, { force: options?.fresh });
+      if (answer.pid !== null && answer.identity !== null
+        && await nativeProcessIdentity(answer.pid).catch(() => null) !== answer.identity) {
+        answer = await answers.get("main", ask, { force: true });
+      }
+      return answer.pid;
+    },
+    restart: () => runAndForget(DEEPSEEK_HARNESS_RESTART_COMMAND),
+    setEnabled: (enabled) => runAndForget(enabled ? DEEPSEEK_HARNESS_ENABLE_COMMAND : DEEPSEEK_HARNESS_DISABLE_COMMAND)
   };
 }
 

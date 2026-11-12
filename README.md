@@ -158,6 +158,12 @@ Installed versions and your credentials decide what can run; see the [compatibil
 [Security disclosures](https://github.com/oll4com/spaceapp/blob/main/SECURITY.md) ·
 [Discord](https://discord.gg/dUszP7HpmS)
 
+## 💛 Sponsors
+
+SpaceApp is hosted by Open Source Europe on Open Collective. Your support pays for the server SpaceApp is built and tested on, the install test machines and the spaceapp.dev domain, and every expense is shown publicly on the collective's page.
+
+<a href="https://opencollective.com/spaceapp"><img src="https://img.shields.io/badge/Sponsor-Open%20Collective-ffe900?style=for-the-badge&logo=opencollective&logoColor=white&labelColor=0a0e13" alt="Sponsor SpaceApp on Open Collective" height="36"></a>
+
 ## 📄 License
 
 SpaceApp is licensed under the [MIT License](LICENSE). The copyright holder is INTRATRADE SINGLE MEMBER P.C. (Greek: INTRATRADE ΜΟΝΟΠΡΟΣΩΠΗ Ι.Κ.Ε.), the company that develops SpaceApp. Contributions are accepted under the MIT License with a Developer Certificate of Origin 1.1 sign-off.

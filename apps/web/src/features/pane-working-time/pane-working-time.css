@@ -281,3 +281,7 @@
     display: none;
   }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .pane-working-time-pulse { animation: none; }
+}

@@ -5291,9 +5291,7 @@ describe("Space responsive shell", () => {
     )).toEqual([]);
   });
 
-  // shortcut: skipped in the 1.2.0 public tree (Nous Warm approval, 2026-11-10): App.tsx deletes the per-user stored room after
-  // setAuth(me) and before it reads it (older than 1.2.0); remove the skip when the Space fix (read it before setAuth) reaches the export.
-  it.skip("keeps a persisted selected room active when it is beyond the default room page", async () => {
+  it("keeps a persisted selected room active when it is beyond the default room page", async () => {
     // The persisted room selection is stored per user since 4399759d7d.
     window.sessionStorage.setItem("space.selectedRoomId.user:operator", "room:catalog-126");
     setViewport(768, 900);

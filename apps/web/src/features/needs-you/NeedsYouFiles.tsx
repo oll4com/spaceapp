@@ -8,7 +8,7 @@ import "./needs-you.css";
 
 interface Chip { href: string; name: string | null; folder: string | null; label: string }
 
-/** A decision's refs.files entry: `artifact:<id>` opens its Agent File (a Media item downloads), a path is filed in Agent Files on the click. */
+/** A decision's refs.files entry: `artifact:<id>` opens its Agent File (a Media item opens its /file in a new tab), a path is filed in Agent Files on the click. */
 const refHref = (ref: string) => ref.startsWith("artifact:") ? `/api/artifacts/${encodeURIComponent(ref)}/download`
   // refs.files paths are relative to the agent workspace (decisionFiles reads them there), not to Nous's own folder.
   : `${WORKSPACE_FILE_HREF}${encodeURIComponent(/^[~/]/.test(ref) ? ref : `~/agent-workspace/${ref}`)}`;

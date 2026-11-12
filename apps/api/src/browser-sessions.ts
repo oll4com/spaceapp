@@ -521,10 +521,37 @@ interface BrowserFrameTreeNode { frame: { id: string }; childFrames?: BrowserFra
 // including a password field a "show password" toggle turned into text. Applied for one shot, then removed.
 const VAULT_MASK_CSS = "input,textarea,select,[contenteditable]:not([contenteditable=false]),[contenteditable]:not([contenteditable=false]) *"
   + "{-webkit-text-security:disc!important}";
-export const VAULT_MASK_APPLY = `(() => { let s = document.getElementById("__space_vault_mask"); if (!s) { s = document.createElement("style");
-  s.id = "__space_vault_mask"; (document.head || document.documentElement).appendChild(s); } s.textContent = ${JSON.stringify(VAULT_MASK_CSS)};
+// The phone pairing QR (Settings > Account > Mobile app) is blurred in every picture an agent gets of a page; 12/11: the
+// operator's own Hide sensitive data no longer blurs it, he has to scan it.
+const PAIRING_MASK_CSS = "[data-sensitive-masked=pairing]{filter:blur(0.4rem)!important}";
+const maskApply = (id: string, css: string) => `(() => { let s = document.getElementById("${id}"); if (!s) { s = document.createElement("style");
+  s.id = "${id}"; (document.head || document.documentElement).appendChild(s); } s.textContent = ${JSON.stringify(css)};
   return getComputedStyle(document.documentElement) !== null; })()`;
+export const VAULT_MASK_APPLY = maskApply("__space_vault_mask", VAULT_MASK_CSS + PAIRING_MASK_CSS);
 export const VAULT_MASK_REMOVE = `(() => { document.getElementById("__space_vault_mask")?.remove(); return true; })()`;
+export const PAIRING_MASK_APPLY = maskApply("__space_pairing_mask", PAIRING_MASK_CSS);
+const PAIRING_MASK_REMOVE = `(() => { document.getElementById("__space_pairing_mask")?.remove(); return true; })()`;
+
+/**
+ * Page.captureScreenshot with the pairing QR blurred, for capture jobs and recordings (screenshots agents ask for). The mask goes
+ * into the page's main world (an isolated world per frame of a 30 fps recording would pile up) and comes off after the shot; no
+ * mask, no picture. Tried three times, since the main world is briefly gone while a navigation commits.
+ * shortcut: a raw CDP client (Playwright through the CLI browser bridge) can still read the page's DOM; close it there if needed.
+ */
+export async function capturePairingMasked(send: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>,
+  params: Record<string, unknown>): Promise<string> {
+  try {
+    for (let attempt = 1; ; attempt += 1) {
+      const applied = await send<{ result?: { value?: unknown } }>("Runtime.evaluate", { returnByValue: true, expression: PAIRING_MASK_APPLY }).catch(() => null);
+      if (applied?.result?.value === true) break;
+      if (attempt === 3) throw new SpaceConflictError("The screenshot could not blur the phone pairing code on the page.");
+      await sleep(100);
+    }
+    return (await send<{ data: string }>("Page.captureScreenshot", params)).data;
+  } finally {
+    await send("Runtime.evaluate", { expression: PAIRING_MASK_REMOVE }).catch(() => undefined);
+  }
+}
 
 /**
  * A PNG (base64) of the page with every form field, text area and editable area drawn as dots (Vault fence, 2026-10-19):
@@ -1470,6 +1497,17 @@ export class BrowserRequestGuard {
   }
 }
 
+/**
+ * Google's sign-in return when it is on the pane browser's own Space host (12/11: stable's http://127.0.0.1:4911/api/auth/google/callback
+ * resolves to the VM's private address and was blocked, so a Google sign-in in a pane never came back; nginx sends it on to :4911).
+ */
+export function googleReturnOrigins(evidenceOrigin: string, redirectUri: string | undefined): string[] {
+  try {
+    const google = new URL(redirectUri ?? "");
+    return google.hostname === new URL(evidenceOrigin).hostname ? [google.origin] : [];
+  } catch { return []; }
+}
+
 export async function assertSafeBrowserTargetUrl(raw: string, allowedLocalOrigin: string): Promise<string> {
   return new BrowserRequestGuard([allowedLocalOrigin, DEEPSEEK_HARNESS_BROWSER_ORIGIN]).assertAllowed(raw);
 }
@@ -1847,7 +1885,8 @@ export async function readPageMetadata(client: BrowserCdpClientLike, cdpSessionI
     cdpSessionId
   )) as { result?: { value?: { href?: string; title?: string; videoTime?: number; scrollX?: number; scrollY?: number; videoPaused?: boolean } } };
   const value = readRuntimeValue(result);
-  const href = value?.href ?? null;
+  // A fragment can carry a page's own state or tokens; what is stored (session, audit) never keeps it.
+  const href = value?.href?.replace(/#[\s\S]*$/, "") || null;
   let currentUrl = href;
   if (href && value?.videoTime) {
     const t = value.videoTime;
@@ -2288,7 +2327,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
   const captureCommands = new Map<string, "STOP" | "CANCEL">();
   const requestGuard = new BrowserRequestGuard([
     config.browserEvidenceTargetOrigin,
-    DEEPSEEK_HARNESS_BROWSER_ORIGIN
+    DEEPSEEK_HARNESS_BROWSER_ORIGIN,
+    ...googleReturnOrigins(config.browserEvidenceTargetOrigin, process.env.SPACE_GOOGLE_REDIRECT_URI || process.env.GOOGLE_REDIRECT_URI)
   ]);
   let capturePumpRunning = false;
 
@@ -3322,6 +3362,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
 
   async function navigateSession(session: PaneBrowserSession, rawUrl: string): Promise<PaneBrowserSession> {
     const targetUrl = await assertSafeBrowserTargetUrl(rawUrl, config.browserEvidenceTargetOrigin);
+    // The guard keeps the fragment out of everything stored; only Chrome gets it (single-page routes such as portal.azure.com/#view/...).
+    const fragment = targetUrl === "about:blank" ? "" : new URL(rawUrl).hash;
     let current = await store.updatePaneBrowserSession(session.sessionId, {
       targetUrl,
       status: "NAVIGATING",
@@ -3331,7 +3373,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     try {
       const runtime = await ensureRuntime(current);
       const load = runtime.client.waitFor("Page.loadEventFired", runtime.cdpSessionId, 15_000).catch(() => null);
-      await runtime.client.send("Page.navigate", { url: targetUrl }, runtime.cdpSessionId);
+      await runtime.client.send("Page.navigate", { url: targetUrl + fragment }, runtime.cdpSessionId);
       await load;
       await sleep(350);
       const meta = await readPageMetadata(runtime.client, runtime.cdpSessionId);
@@ -3510,22 +3552,18 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       }
       clip = resolved;
     }
-    const screenshot = await runtime.client.send<{ data: string }>(
-      "Page.captureScreenshot",
-      {
-        format,
-        ...(format !== "png" && job.options.quality ? { quality: job.options.quality } : {}),
-        captureBeyondViewport: job.options.target !== "VIEWPORT",
-        ...(clip ? { clip } : {})
-      },
-      runtime.cdpSessionId
-    );
+    const screenshot = await capturePairingMasked((method, params) => runtime.client.send(method, params, runtime.cdpSessionId), {
+      format,
+      ...(format !== "png" && job.options.quality ? { quality: job.options.quality } : {}),
+      captureBeyondViewport: job.options.target !== "VIEWPORT",
+      ...(clip ? { clip } : {})
+    });
     const segment = sanitizeSegment(job.jobId);
     const directory = join(config.browserEvidenceArtifactRoot, "browser-evidence", segment);
     const filename = `screenshot.${format === "jpeg" ? "jpg" : format}`;
     const filePath = join(directory, filename);
     await mkdir(directory, { recursive: true, mode: 0o750 });
-    await writeFile(filePath, Buffer.from(screenshot.data, "base64"), { mode: 0o640 });
+    await writeFile(filePath, Buffer.from(screenshot, "base64"), { mode: 0o640 });
     return [
       await registerCaptureArtifact({
         session,
@@ -3569,14 +3607,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
           job,
           session,
           artifactRoot: config.browserEvidenceArtifactRoot,
-          capturePng: async () => {
-            const screenshot = await runtime.client.send<{ data: string }>(
-              "Page.captureScreenshot",
-              { format: "png", captureBeyondViewport: false },
-              runtime.cdpSessionId
-            );
-            return Buffer.from(screenshot.data, "base64");
-          },
+          capturePng: async () => Buffer.from(await capturePairingMasked((method, params) => runtime.client.send(method, params, runtime.cdpSessionId),
+            { format: "png", captureBeyondViewport: false }), "base64"),
           registerSegmentArtifact: async ({ filePath, filename }) => registerCaptureArtifact({
             session,
             jobId: job.jobId,

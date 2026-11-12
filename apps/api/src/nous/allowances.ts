@@ -8,6 +8,8 @@ import type { ReleaseTrain } from "../release-trains.js";
  * the refs.files hashes (R10-18: what goes out is exactly the text the card names) are checked by the caller.
  */
 export const MAY_SEND_ANSWER = "Approved by allowance maySend";
+/** The first line of an ask the allowance does not cover (files changed, a review a rule memory holds for the operator). */
+export const MAY_SEND_NOT_COVERED = 'Not covered by "May send to third parties"';
 /** The body line of a send held before 31/10 (the 10-minute hold); the minute tick releases these, and Nous cannot write it itself. */
 export const MAY_SEND_HOLD_LINE = NOUS_SEND_HOLD_LINE;
 

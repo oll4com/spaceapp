@@ -645,6 +645,7 @@ describe("TerminalPane uploads and paste", () => {
       "ResizeObserver",
       class {
         observe() {}
+        unobserve() {}
         disconnect() {}
       }
     );
@@ -2854,6 +2855,7 @@ describe("TerminalPane uploads and paste", () => {
       targets = new Set<Element>();
       constructor(public callback: ResizeObserverCallback) { observers.push(this); }
       observe(target: Element) { this.targets.add(target); }
+      unobserve(target: Element) { this.targets.delete(target); }
       disconnect() { this.targets.clear(); }
     });
     const view = render(<TerminalPane pane={cliPane()} terminalFontSize={12} />);

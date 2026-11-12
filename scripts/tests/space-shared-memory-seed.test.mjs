@@ -7,10 +7,11 @@ const script = new URL("../space-shared-memory-seed.mjs", import.meta.url);
 const seed = JSON.parse(readFileSync(new URL("packages/contracts/src/nous-shared-memory-seed.json", root), "utf8"));
 const run = (code) => JSON.parse(execFileSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `import { validateSeed, exportSeed } from ${JSON.stringify(script.href)}; ${code}`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
 
-test("the staged 1.2.0 seed has the identity, unique keys, privacy checks and exact release validation", () => {
-  assert.equal(run(`console.log(JSON.stringify(validateSeed(${JSON.stringify(seed)}, '1.2.0')))`), true);
-  assert.throws(() => run(`validateSeed(${JSON.stringify(seed)}, '1.2.1')`));
-  assert.throws(() => run(`validateSeed({...${JSON.stringify(seed)}, entries: [...${JSON.stringify(seed.entries)}, ${JSON.stringify(seed.entries[0])}]}, '1.2.0')`));
+test("the committed seed has the identity, unique keys, privacy checks and exact release validation", () => {
+  const version = seed.releaseVersion;
+  assert.equal(run(`console.log(JSON.stringify(validateSeed(${JSON.stringify(seed)}, '${version}')))`), true);
+  assert.throws(() => run(`validateSeed(${JSON.stringify(seed)}, '9.9.9')`));
+  assert.throws(() => run(`validateSeed({...${JSON.stringify(seed)}, entries: [...${JSON.stringify(seed.entries)}, ${JSON.stringify(seed.entries[0])}]}, '${version}')`));
 });
 test("exports only ACTIVE content and applies the same screen without echoing private text", () => {
   const entries = [{ id: "nous_shared:example", ...seed.entries[0], status: "ACTIVE", seedKey: "identity" }, { id: "proposal", title: "Working rules", body: "Verify the result.", tags: [], status: "PROPOSED" }];

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import type { NousMarketingNumbers, NousMarketingPostRow, NousMarketingReport } from "@space/contracts";
+import type { NousMarketingNumbers, NousMarketingPostRow, NousMarketingReport, NousSiteFunnel, NousSiteRow } from "@space/contracts";
 import { api } from "../../api.js";
 import { formatAppDateTime } from "../date-time-settings/date-time-settings.js";
 import { DockButton, DockChips, DockSearch, DockState } from "../dock-kit/DockKit.js";
@@ -87,6 +87,7 @@ export function NousMarketing({ active }: { active: boolean }) {
             {" "}{source.detail}{Object.keys(source.values).length ? <> <small>{Object.entries(source.values).map(([key, value]) => `${key} ${value.toLocaleString()}`).join(" · ")}{source.day ? ` (${source.day})` : ""}</small></> : null}</li>
         ))}</ul>
       </details>
+      {report.site ? <SiteFunnel site={report.site} t={t} /> : null}
       <DockChips label={t("Show posts")} value={channel} onChange={setChannel} options={[
         { id: "all", label: t("All"), count: report.posts.length },
         ...report.platforms.map((platform) => ({ id: platform.channel, label: channelLabel(platform.channel), count: platform.posts }))
@@ -96,6 +97,40 @@ export function NousMarketing({ active }: { active: boolean }) {
         {shown.map((row) => <PostRow key={row.id} row={row} expanded={open.has(row.id)} onToggle={() => toggle(row.id)} t={t} />)}
       </ul> : <p className="nous-programs-none">{t("No post matches.")}</p>}
     </div>
+  );
+}
+
+/** spaceapp.dev's own cookie-free page views (plan clipboard:hGoTZ_XwCuXn): the homepage's sections in the order met, then every page, origin and next step. */
+function SiteFunnel({ site, t }: { site: NousSiteFunnel; t: T }) {
+  const homeViews = site.pages.find((page) => page.key === "/")?.views ?? 0;
+  const kinds = (groups: Array<[string, NousSiteRow[]]>) => groups.flatMap(([kind, rows]) => rows.map((row) => (
+    <tr key={`${kind}:${row.key}`}><th scope="row">{t(kind)}</th><td>{row.key}</td><td>{count(row.views)}</td></tr>)));
+  const table = (summary: string, total: number, head: string[], body: ReactNode) => (
+    <details className="nous-report-section">
+      <summary>{t(summary)} <span>{total}</span></summary>
+      <div className="nous-report-table"><table>
+        <thead><tr>{head.map((label) => <th key={label} scope="col">{t(label)}</th>)}</tr></thead>
+        <tbody>{body}</tbody>
+      </table></div>
+    </details>
+  );
+  return (
+    <>
+      <section className="nous-report-funnel" aria-label={t("Site funnel (spaceapp.dev)")}>
+        <h3>{t("Site funnel (spaceapp.dev)")}</h3>
+        <p className="nous-programs-total">{t("{views} views since {since} · {internal} of our own left out · updated {date}", { views: site.views, since: formatAppDateTime(site.since),
+          internal: site.internal, date: site.updatedAt ? formatAppDateTime(site.updatedAt) : "–" })}</p>
+        {site.sections.map((section) => (
+          <Bar key={section.id} label={section.id} value={section.reached} base={homeViews}
+            note={t("{seconds}s median · {exits} left here · {clicks} clicks", { seconds: section.medianSeconds ?? "–", exits: section.exits, clicks: section.clicks })} />
+        ))}
+      </section>
+      {table("Site pages", site.pages.length, ["Page", "Views", "Median seconds", "Median depth %", "Left the site"], site.pages.map((page) => (
+        <tr key={page.key}><th scope="row">{page.key}</th>{[page.views, page.medianSeconds, page.medianDepth, page.leftSite].map((value, index) => <td key={index}>{count(value)}</td>)}</tr>)))}
+      {table("Where visitors came from", site.referrers.length + site.sources.length + site.countries.length + site.screens.length, ["Kind", "Name", "Views"],
+        kinds([["Site", site.referrers], ["Source", site.sources], ["Country", site.countries], ["Screen", site.screens]]))}
+      {table("What visitors did next", site.next.length + site.actions.length, ["Kind", "Name", "Views"], kinds([["Next page", site.next], ["Action", site.actions]]))}
+    </>
   );
 }
 

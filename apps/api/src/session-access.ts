@@ -46,6 +46,14 @@ export function createSessionAccess(options: { store: Pick<SpaceStore, "getContr
       }
       return disabledCache.get(sessionUser.id)?.disabled ? null : sessionUser;
     },
+    /**
+     * A broker session acts as user:operator. With no SPACE_OPERATOR_EMAIL (public-host) the broker signs its fallback space@space.local, the dev
+     * login's row, and upsertUser owns by e-mail: pane plans went to user:dev-operator (12/11). The operator's own row names the e-mail then.
+     */
+    async actAsOperator(sessionUser: AuthUser, operatorEmail: string | undefined): Promise<void> {
+      sessionUser.id = "user:operator";
+      if (!operatorEmail) sessionUser.email = (await store.getControlActor?.("user:operator"))?.email ?? sessionUser.email;
+    },
     /** Drops what is cached for a user whose access changed. */
     forget(userId: string): void {
       roleCache.delete(userId);

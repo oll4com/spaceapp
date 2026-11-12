@@ -33,7 +33,7 @@ export const NOUS_SUBAGENT_EXCLUDED: ReadonlySet<string> = new Set([
   "space_nous_mute_room", "space_nous_unmute_room", "space_release",
   // Nous's own folder and what reaches the operator's Agent Files: one writer, so two helpers never overwrite each other's file
   // (plan clipboard:GZNzxm7FNwjM). Helpers keep the workbench's reads: web, network checks, git, queues, decisions, costs.
-  "space_files_write", "space_agent_files_add", "space_nous_share_file", "space_operator_update", "space_cli_update", "space_codex_reset_redeem",
+  "space_files_write", "space_agent_files_add", "space_nous_share_file", "space_operator_update", "space_cli_update", "space_transfer", "space_codex_reset_redeem",
   // Structure and spending: rooms, opening, stopping or restarting panes, Space Control, models, copilot runs, Council runs, design work.
   "space_create_room", "space_rename_room", "space_open_panes", "space_stop_pane", "space_restart_pane", "space_close_pane", "space_execute",
   "space_set_pane_model", "space_copilot_control", "space_council_start", "space_council_clipboard_plan", "space_design_request", "space_video_request", "space_mail_campaign_draft", "space_mail_campaign_lab", "space_mail_campaign_submit", "space_mail_sender", "space_mail_campaign_approve", "space_mail_campaign_resume",

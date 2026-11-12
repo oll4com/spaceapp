@@ -21,7 +21,7 @@ export function createCliEgressStatus(options: {
   }
 
   async function runningDeepSeekHarnessPid(): Promise<number> {
-    const pid = await deepSeekHarnessServiceController.mainPid();
+    const pid = await deepSeekHarnessServiceController.mainPid({ fresh: true });
     if (!pid) {
       throw new CliVpnError("HARNESS_UNAVAILABLE", "DeepSeek Harness is not running.", 503);
     }

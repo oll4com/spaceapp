@@ -358,10 +358,11 @@ class FakePgClient implements PgClientLike {
       });
       return { rows: rows as T[], rowCount: rows.length };
     }
-    if (sql.includes("WITH updated_email")) {
+    if (sql.includes("updated_email AS")) {
       const [id, email, role, updatedAt] = values as [string, string, "OPERATOR" | "ADMIN", unknown];
       const existingByEmail = this.userRows.find((row) => row.email.toLowerCase() === email.toLowerCase());
       if (existingByEmail) {
+        if (existingByEmail.role === role) return { rows: [{ id: existingByEmail.id, email: existingByEmail.email, role } as T], rowCount: 1 };
         existingByEmail.role = role;
         existingByEmail.updatedAt = updatedAt;
         return { rows: [{ id: existingByEmail.id, email: existingByEmail.email, role } as T], rowCount: 1 };
@@ -2944,9 +2945,9 @@ describe("PostgresSpaceStore", () => {
 
     expect(devUser).toEqual({ id: "user:dev-operator", email: "space@space.local", role: "ADMIN" });
     expect(operatorUser).toEqual({ id: "user:dev-operator", email: "space@space.local", role: "ADMIN" });
-    const userUpserts = pool.calls.filter((call) => call.sql.includes("WITH updated_email"));
+    const userUpserts = pool.calls.filter((call) => call.sql.includes("updated_email AS"));
     expect(userUpserts).toHaveLength(2);
-    expect(userUpserts[1]?.sql).toContain("WHERE lower(email) = lower($2)");
+    expect(userUpserts[1]?.sql).toContain("WHERE lower(email) = lower($2) AND role IS DISTINCT FROM $3");
   });
 
   it("creates rooms and initial panes inside one transaction with parameterized SQL", async () => {
@@ -5046,6 +5047,12 @@ describe("PostgresSpaceStore", () => {
     });
     expect(pool.txClient.calls.at(-1)?.sql).toContain("space-artifact://cli-uploads/%");
     expect(pool.txClient.calls.at(-1)?.sql).not.toContain("space-artifact://agent-files/%");
+    // GET /api/artifacts pages in SQL (API overload 10/11): a count, then only the asked page of the caller's rooms.
+    await store.listArtifactsPage({ page: 3, pageSize: 100, sortOrder: "desc", collection: "AGENT_FILES" }, ["room:test-1"]);
+    const [countCall, pageCall] = pool.txClient.calls.slice(-2);
+    expect(countCall?.sql).toContain("SELECT COUNT(*) AS total FROM artifacts WHERE deleted_at IS NULL AND room_id = ANY($1::text[])");
+    expect(pageCall?.sql).toContain("ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3");
+    expect(pageCall?.values).toEqual([["room:test-1"], 100, 200]);
 
     await expect(store.getArtifact(record.artifact.id)).resolves.toEqual(record.artifact);
     const deleted = await store.deleteArtifact(record.artifact.id);

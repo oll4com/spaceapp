@@ -168,4 +168,40 @@ describe("NeedsYouCard", () => {
       window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
     }
   });
+
+  it("operator 12/11 23:19 BKK: a card naming a Mail review shows that mail (the review's reply) and its Go opens the review, though Nous set no target", async () => {
+    const reviewId = "mailrev:5vC-c2wzYPUf";
+    const body = Array.from({ length: 20 }, (_, line) => `Line ${line + 1} of the reply.`).join("\n");
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      asked.push(url);
+      if (url.startsWith("/api/mail-copilot/events?")) return Response.json({ events: [{ id: "mailevt:1", type: "REVIEW_REQUESTED", accountEmail: "spaceappdv@gmail.com", threadId: "1a1d07d30f3b989e",
+        payload: { reviewId, draft: { account: "spaceappdv@gmail.com", to: ["support@turso.tech"], cc: [], bcc: [], subject: "Re: Your Turso database", text: body, threadId: "1a1d07d30f3b989e" },
+          attachments: [{ filename: "invoice.pdf", mimeType: "application/pdf", size: 10 }], reasoning: "They asked for the invoice." } }] });
+      return Response.json({ notifications: [] });
+    }));
+    const seen: Array<{ notification?: SpaceNotification }> = [];
+    const onFocus = (event: Event) => seen.push((event as CustomEvent).detail);
+    window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
+    try {
+      render(<NeedsYouCard variant="row" open item={card({ source: "NOUS", kind: "NEEDS_HANDS", title: "Dino needs you", body: `• Send the reply to Turso? (Mail Copilot review ${reviewId})`,
+        payload: { ask: { question: "Send the reply to Turso?", options: ["Go now", "Failed", "Need links/steps"], recommended: "Go now", answer: { kind: "NOUS" } } } })} />);
+      const mail = await screen.findByRole("region", { name: "Mail" });
+      expect(asked).toContain(`/api/mail-copilot/events?reviewId=${encodeURIComponent(reviewId)}`);
+      expect(within(mail).getByText("From").nextElementSibling?.textContent).toBe("spaceappdv@gmail.com");
+      expect(within(mail).getByText("To").nextElementSibling?.textContent).toBe("support@turso.tech");
+      expect(within(mail).getByText("Subject").nextElementSibling?.textContent).toBe("Re: Your Turso database");
+      expect(within(mail).getByText("Attachments").nextElementSibling?.textContent).toBe("invoice.pdf");
+      // A long body folds; Show more opens all of it.
+      expect(mail.querySelector(".ny-mail-body.is-folded")?.textContent).toContain("Line 20 of the reply.");
+      fireEvent.click(within(mail).getByRole("button", { name: "Show more" }));
+      expect(mail.querySelector(".ny-mail-body.is-folded")).toBeNull();
+      expect(within(mail).getByRole("button", { name: "Show less" }).getAttribute("aria-expanded")).toBe("true");
+      fireEvent.click(screen.getAllByRole("button", { name: /^Go (now|to pane)$/ })[0]!);
+      expect(seen.at(-1)?.notification?.link?.target).toBe(`review:${reviewId}`);
+    } finally {
+      window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
+    }
+  });
 });

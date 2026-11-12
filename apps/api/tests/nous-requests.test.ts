@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { NousDecision, NousMessage, SpaceNotification } from "@space/contracts";
 import { InMemoryNousRepository } from "@space/db";
 import { createNousRequests, deriveNousRequests, type NousRequestLinks, type NousRequestPlans } from "../src/nous/requests.js";
@@ -46,10 +46,10 @@ describe("Nous Requests", () => {
         { key: requestDoneReceiptKey(plan), text: "notification:x", updatedAt: "2026-10-31T09:30:00.000Z" }]
     });
     const open = status([c, d], value, new Map([[plan, { progressPercentage: 78, isCompleted: false, executionStatus: "IN_PROGRESS" }]]));
-    expect(open[c.id]).toMatchObject({ status: "IN_PROGRESS", planId: plan });
-    expect(open[d.id]).toMatchObject({ status: "IN_PROGRESS", planId: plan });
+    expect(open[c.id]).toMatchObject({ status: "ANSWERED", planId: plan });
+    expect(open[d.id]).toMatchObject({ status: "ANSWERED", planId: plan });
     // The receipt alone (record pruned) holds nothing either while the plan is open.
-    expect(status([c], links({ ...value, done: [] }), new Map([[plan, { progressPercentage: 78, isCompleted: false, executionStatus: "IN_PROGRESS" }]]))[c.id]!.status).toBe("IN_PROGRESS");
+    expect(status([c], links({ ...value, done: [] }), new Map([[plan, { progressPercentage: 78, isCompleted: false, executionStatus: "IN_PROGRESS" }]]))[c.id]!.status).toBe("ANSWERED");
     const completed = status([c, d], value, new Map([[plan, { progressPercentage: 100, isCompleted: true, executionStatus: "COMPLETED" }]]));
     expect(completed[c.id]).toMatchObject({ status: "DONE", doneSummary: "Plan done." });
     expect(completed[d.id]).toMatchObject({ status: "DONE" });
@@ -90,7 +90,7 @@ describe("Nous Requests", () => {
     expect(status([g], value, plans, "2026-10-31T00:00:00.000Z")[g.id]!.status).toBe("WAITS_FOR_YOU");
     // The newest turn's outcome counts: the earlier OPERATOR became PENDING, which no open request tracks: not done.
     expect(result[b.id]!.status).toBe("NOT_DONE");
-    expect(result[c.id]).toMatchObject({ status: "IN_PROGRESS", planId: "clipboard:plan00open", planPercent: 40 });
+    expect(result[c.id]).toMatchObject({ status: "ANSWERED", planId: "clipboard:plan00open", planPercent: 40 });
     expect(result[d.id]).toMatchObject({ status: "ANSWERED", answeredAt: "2026-10-31T05:30:00.000Z" });
     expect(result[e.id]).toMatchObject({ status: "WAITS_FOR_YOU", planId: "clipboard:plan0dec1" });
     expect(result[f.id]!.status).toBe("NOT_ANSWERED");
@@ -143,7 +143,7 @@ describe("Nous Requests", () => {
   });
 
   // Operator 31/10 13:03 BKK: requests Nous closed (space_open_requests close) kept reading In progress from the PENDING that opened them.
-  it("ends In progress once the message's open request is closed, unless an open request or an open plan holds it; HELPER is not In progress", () => {
+  it("ends In progress once the message's open request is closed, also on an open plan, unless an open request holds it; HELPER is not In progress", () => {
     const [a, b, c, d, e] = [message(1, "Κλειστό"), message(2, "Ξανά σε εξέλιξη"), message(3, "Plan ανοιχτό"), message(4, "Από pane"), message(5, "Δύο αιτήματα")];
     const closed = (n: number, messageId: string, closedAt: string, extra: Record<string, unknown> = {}) => ({ key: `request-done:open:closed${n}`,
       text: JSON.stringify({ messageId, summary: "x", turnId: "turn:1", openedAt: "2026-10-31T06:00:00.000Z", reportedAt: "2026-10-31T06:00:00.000Z", closedAt, closedReason: "DROPPED: no", ...extra }),
@@ -160,11 +160,26 @@ describe("Nous Requests", () => {
     expect(result[a.id]!.status).toBe("ANSWERED");
     // A later PENDING that opened no request holds nothing.
     expect(result[b.id]!.status).toBe("ANSWERED");
-    expect(result[c.id]).toMatchObject({ status: "IN_PROGRESS", planId: "clipboard:planOpen0001" });
+    // Its open plan no longer holds a dropped message (operator 11/11 nous_msg:81e47d83).
+    expect(result[c.id]).toMatchObject({ status: "ANSWERED", planId: "clipboard:planOpen0001" });
     expect(result[d.id]!.status).toBe("NOT_DONE");
     expect(result[e.id]!.status).toBe("IN_PROGRESS");
     // done: true on the close wrote a Done record named by the message: Done.
     expect(status([a], links({ ...value, done: [done(`nous:done:${a.id}`, { summary: "Closed and done." })] }))[a.id]).toMatchObject({ status: "DONE", doneSummary: "Closed and done." });
+  });
+
+  // Operator 11/11 09:10 BKK (nous_msg:bd13f6b2): Requests cover only what waits in the chat; the Plans tab tracks plans.
+  it("reads a message held only by its open plan Answered, also a PENDING one", () => {
+    const [a, b, c] = [message(1, "Ολοκληρώθηκε;"), message(2, "Άσ' το"), message(3, "Τρέξε το βήμα")];
+    const plan = "clipboard:planOpen0003";
+    const value = links({
+      turns: [{ turnId: "turn:1", endedAt: "2026-10-31T06:00:00.000Z", outcomes: [{ summary: "At 40%", outcome: "SELF", answerOnly: true, messageIds: [a.id], plan },
+        { summary: "Running", outcome: "PENDING", messageIds: [b.id, c.id], plan }] }],
+      notes: [{ key: "request-done:open:dropped3", text: JSON.stringify({ messageId: b.id, summary: "x", turnId: "turn:1", openedAt: "2026-10-31T06:00:00.000Z",
+        reportedAt: "2026-10-31T06:00:00.000Z", closedAt: "2026-10-31T07:00:00.000Z", closedReason: "DROPPED: no" }), updatedAt: "2026-10-31T07:00:00.000Z" }] });
+    const result = status([c, b, a], value, new Map([[plan, { progressPercentage: 40, isCompleted: false, executionStatus: "IN_PROGRESS" }]]));
+    expect([a, b, c].map((entry) => result[entry.id]!.status)).toEqual(["ANSWERED", "ANSWERED", "ANSWERED"]);
+    expect(result[c.id]).toMatchObject({ planId: plan, planPercent: 40 });
   });
 
   // Operator 31/10 16:12 BKK: 99 messages read In progress from PENDING outcomes no open request ever tracked (11 open requests existed); 6/11: they read Not done.
@@ -225,6 +240,35 @@ describe("Nous Requests", () => {
     expect(await requests.page(owner, { limit: 1, q: "azure" })).toMatchObject({ requests: [{ text: "Μετέφερε το site" }], hasMore: true });
     expect(await texts({ limit: 1, q: "azure", before: added[3]!.id })).toEqual(["Azure VM"]);
     expect(await texts({ q: "τιποτα" })).toEqual([]);
+  });
+
+  // CPU report 12/11: the operator messages stay between derives (only the newest are read again), calls that meet share one derive.
+  it("reads as a fresh instance after a new message, answer, outcome and Done record, and shares one derive between calls that meet", async () => {
+    const repository = new InMemoryNousRepository();
+    const records: SpaceNotification[] = [];
+    const deps = { repository, notifications: { list: async () => records }, plan: async () => null };
+    const requests = createNousRequests(deps);
+    const fresh = () => createNousRequests(deps).page(owner, { limit: 10 });
+    const add = (content: string) => repository.addMessage({ ownerUserId: owner, turnId: null, kind: "OPERATOR", status: "DONE", content });
+    const first = await add("Φτιάξε το bug");
+    expect(await requests.page(owner, { limit: 10 })).toEqual(await fresh());
+    const second = await add("Ανέβασε το site");
+    await repository.addMessage({ ownerUserId: owner, turnId: "nous_turn:fx000001", kind: "ANSWER", status: "DONE", content: "Ok", meta: { reason: "OPERATOR", startedAt: second.createdAt, replyTo: [second.id] } });
+    const at = new Date(Date.now() + 1_000).toISOString();
+    await repository.addTurnFacts({ turnId: "nous_turn:fx000001", ownerUserId: owner, reason: "OPERATOR", status: "DONE", tools: {}, planPoints: 0, startedAt: at, endedAt: at,
+      outcomes: [{ summary: "Uploaded", outcome: "SELF", messageIds: [second.id] }], model: null, effort: null, costUsd: null, tokens: null, goalId: null, error: null });
+    records.push(done(`nous:done:${first.id}`, { summary: "Fixed." }, at));
+    const read = vi.spyOn(repository, "listOperatorMessages");
+    const after = await requests.page(owner, { limit: 10 });
+    expect(after).toEqual(await fresh());
+    expect(after.requests.map((request) => [request.messageId, request.status])).toEqual([[second.id, "NOT_DONE"], [first.id, "DONE"]]);
+    expect(read.mock.calls[0]![1]).toMatchObject({ since: expect.any(String) });
+    read.mockClear();
+    const [all, doneOnly] = await Promise.all([requests.page(owner, { limit: 10 }), requests.page(owner, { limit: 10, status: "DONE" })]);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(doneOnly).toEqual({ ...all, requests: [all.requests[1]] });
+    expect(await requests.since(owner, second.createdAt)).toEqual(all.requests.filter((request) => request.createdAt >= second.createdAt));
+    expect(await requests.since(owner, "2999-01-01T00:00:00.000Z")).toEqual([]);
   });
 
   it("strips the files block from a message's text", () => {

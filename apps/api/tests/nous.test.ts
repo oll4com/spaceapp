@@ -782,7 +782,8 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
 
   it("decides a copilot review from a Needs you card, whose decision carries no refs (29/10: every Approve failed reading refs.mailThread)", async () => {
     const decideReview = vi.fn(async () => ({}));
-    const f = await wired({ copilots: { mail: { decideReview } } as never });
+    const marketingReview = vi.fn(async () => ({}));
+    const f = await wired({ copilots: { mail: { decideReview }, marketing: { decideReview: marketingReview } } as never });
     try {
       const mail = await f.store.createPane({ roomId: f.room.id, title: "Mail", paneName: "Mail", mode: "MAIL_COPILOT" } as never);
       const card = { id: "notification:mailreview01", ownerUserId: owner, roomId: f.room.id, paneId: mail.id, source: "MAIL_COPILOT", kind: "REVIEW_REQUESTED",
@@ -792,7 +793,17 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
       // Its kind under "Always answer like this": Space answers it on the card's own path (answerNeedsYou → decideCopilot → executeAction).
       await f.store.updateUserSettings(owner, { nous: nousSettingsSchema.parse({ alwaysApprove: [{ ...needsYouAnswerKind(card)!, at: new Date().toISOString() }] }) });
       await f.wiring.autoAnswer(card);
-      expect(decideReview).toHaveBeenCalledWith(owner, expect.objectContaining({ id: mail.id }), { reviewId: "mailrev:review01", decision: "approve" });
+      expect(decideReview).toHaveBeenCalledWith(owner, expect.objectContaining({ id: mail.id }), { reviewId: "mailrev:review01", decision: "approve" }, "card");
+      // 12/11 (goal 7365014c): a Nous decision's reject is marked Nous's, so the ledger never scores its reason as the operator's rail answer.
+      const nousReject = await f.wiring.service.ask({ ownerUserId: owner, category: "EXTERNAL", title: "Reject the duplicate reply", body: "Already sent.", options: [], recommendation: "Yes.", refs: {},
+        action: { type: "COPILOT", copilot: "MAIL", item: "REVIEW", itemId: "mailrev:review02", paneId: mail.id, decision: "reject", note: "Duplicate: mailrev:review01 was sent" } });
+      await f.wiring.service.answer(owner, nousReject.id, { answer: "APPROVE" });
+      expect(decideReview).toHaveBeenLastCalledWith(owner, expect.objectContaining({ id: mail.id }), { reviewId: "mailrev:review02", decision: "reject", note: "Duplicate: mailrev:review01 was sent" }, "nous");
+      // USQ6 step 4: every copilot's Nous-run decision is marked the same way.
+      const nousPost = await f.wiring.service.ask({ ownerUserId: owner, category: "EXTERNAL", title: "Approve the post", body: "On brand.", options: [], recommendation: "Yes.", refs: {},
+        action: { type: "COPILOT", copilot: "MARKETING", item: "REVIEW", itemId: "mktpost:post0001", paneId: mail.id, decision: "approve" } });
+      await f.wiring.service.answer(owner, nousPost.id, { answer: "APPROVE" });
+      expect(marketingReview).toHaveBeenLastCalledWith(owner, expect.objectContaining({ id: mail.id }), "mktpost:post0001", { decision: "approve" }, "nous");
     } finally {
       await f.app.close();
     }
@@ -1177,10 +1188,13 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
       const [renamed, created2, wrongType] = await f.run(["space_plan_update", { plan: id, title: words(40), text: words(20_001), addSteps: [{ title: "Three", instructions: words(3_300) }] }],
         ["space_plan_create", { title: words(40), text: "Mail.", minimumModel: "claude-opus-5-5", steps: [{ title: words(50), instructions: words(3_300) }] }],
         ["space_plan_update", { plan: id, progressPercentage: "half" }]);
-      expect(renamed).toMatchObject({ ok: true, result: expect.stringContaining("(Clipped to fit: title 160 of 199 characters, text 100000 of 100004 characters, addSteps.0.instructions 16000 of 16499 characters; the rest was cut.)") });
+      // Step instructions are whole since 12/11 (were clipped at 16,000).
+      expect(renamed).toMatchObject({ ok: true, result: expect.stringContaining("(Clipped to fit: title 160 of 199 characters, text 100000 of 100004 characters; the rest was cut.)") });
       const plan = (await f.store.getClipboardItem(owner, id))!;
       expect(plan.title).toBe(`${words(32)}…`);
-      expect(created2).toMatchObject({ ok: true, result: expect.stringContaining("(Clipped to fit: title 160 of 199 characters, steps.0.title 200 of 249 characters, steps.0.instructions 16000 of 16499 characters;") });
+      expect(plan.steps.at(-1)!.instructions).toBe(words(3_300));
+      expect(created2).toMatchObject({ ok: true, result: expect.stringContaining("(Clipped to fit: title 160 of 199 characters, steps.0.title 200 of 249 characters;") });
+      expect(created2!.result).not.toContain("instructions");
       expect(wrongType).toMatchObject({ ok: false, display: expect.stringMatching(/: invalid progressPercentage \(Invalid input: expected number, received string\)$/) });
       // R13-2, then operator 31/10 «Βγάλε όλα τα όρια»: a long note is kept whole (until then cut at 8,000 characters).
       const [note, read] = await f.run(["space_note", { key: "lessons-r13", text: words(1_700) }], ["space_notes", { key: "lessons-r13" }]);
@@ -1877,6 +1891,9 @@ describe("Nous's turns", () => {
     // Negated, future, unverified, pane sends: no claim.
     for (const text of ["Η απάντηση στη McArthur για τη θέση WIM **δεν είχε σταλεί**.", "Από τις 30/10 δεν έχει φύγει τίποτα δικό μας μέιλ.", "Η απάντηση θα σταλεί αύριο.",
       "The reply has not been sent.", "The reply was sent (not yet verified).", "Το brief στάλθηκε στην Emma.", "Η απάντηση στάλθηκε στον Alex/Bob.", "Ο agent έφυγε από το pane."]) expect(mailSentClaim(text)).toBeNull();
+    // task:voJAchKq3qth (10/11): «έφυγαν» about networks while another line names mail is no mail claim; the same verb with the mail named is.
+    expect(mailSentClaim("Μεταφέρθηκαν sites, mail, DNS.\nΤα δίκτυα έφυγαν από τον γερμανικό server απόψε.")).toBeNull();
+    expect(mailSentClaim("Το μέιλ στην Anthropic έφυγε στις 10:08.")).not.toBeNull();
     const f = serviceFixture([async (input, service) => {
       expect(await service.callTool(owner, input.turnId, "space_reply_now", { text: "Η απάντηση στη McArthur στάλθηκε." }, "c1")).toMatchObject({ ok: false, refused: true, display: expect.stringContaining("no mail read") });
       return { text: "Στο WIM έχουμε ήδη απαντήσει: Τετάρτη 4/11 στις 12:00.", isError: false };

@@ -1,4 +1,5 @@
 import { execFile } from "./safe-child-process.js";
+import { statSync } from "node:fs";
 import { createConnection } from "node:net";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -44,6 +45,8 @@ export interface CredentialHost {
   run(commandPath: string, action: CredentialAction, input?: string, options?: CredentialRequestOptions): Promise<CredentialActionResult>;
   /** The badge probe: the wrapper's `credential-status`, read in the CLI container. */
   status: CliCredentialStatusReader;
+  /** Changes when the CLI container's agent starts again (`spaceapp credentials set` recreates it): cached badges are re-read. */
+  generation(): string;
   /** The wrapper's `credential-smoke` or `credential-observation` in the CLI container, shaped like the local executor. */
   execute: CliCredentialCommandExecutor;
   /** `runOpenCodeText` in the CLI container (throwaway home, never the panes' store). */
@@ -142,6 +145,11 @@ export function createPublicCredentialHost(config: Pick<SpaceApiConfig, "publicD
       ...(options?.argument === undefined ? {} : { argument: options.argument }) }, options);
   return {
     run,
+    // The agent unlinks and listens on its socket at every start, so a new inode and ctime name a new agent.
+    generation: () => {
+      const socket = statSync(socketPath, { throwIfNoEntry: false });
+      return socket ? `${socket.ino}:${socket.ctimeMs}` : "";
+    },
     status: async (commandPath) => {
       // A discovery probes every CLI at once and the agent runs 4 actions, answering the rest 'busy' (exit 75). Read as signed
       // out, that kept a signed-in Codex on "sign-in is required" for 10 minutes (c13 lab 9/11), so a busy answer is asked again.

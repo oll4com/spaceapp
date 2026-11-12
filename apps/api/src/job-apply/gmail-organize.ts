@@ -1,6 +1,7 @@
 import { JOB_APPLY_MAIL_LABELS, JOB_APPLY_MAIL_LEGACY_OTHER_LABEL, JOB_APPLY_MAIL_ROOT_LABEL, type JobApplyMailCategory } from "@space/contracts";
 import { messageText } from "../dot-connectors.js";
 import { GmailMailboxError } from "./gmail-mailbox.js";
+import { maskPasswordResetJson } from "../password-reset-mask.js";
 
 // Job Copilot files application emails under Gmail labels with the gmail.modify grant (MAIL_ORGANIZE): it
 // creates the "Job Applications" labels, files a whole thread under one and, for confirmations and rejections, takes
@@ -61,7 +62,7 @@ export function jobGmailCall(accessToken: string, fetchImpl: typeof fetch = fetc
       });
       const text = await response.text();
       let body: Record<string, unknown> = {};
-      try { body = (text ? JSON.parse(text) : {}) as Record<string, unknown>; } catch { body = {}; }
+      try { body = maskPasswordResetJson((text ? JSON.parse(text) : {}) as Record<string, unknown>); } catch { body = {}; }
       if (response.ok) return body;
       // One retry for a per-user rate limit: these clear within seconds (a triage pass just before can trip them).
       if (attempt === 0 && gmailRefusal(response.status, body) === "RATE_LIMIT") {

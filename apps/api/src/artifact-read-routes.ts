@@ -35,28 +35,20 @@ const METADATA_READ_MAX_BYTES = 25 * 1024 * 1024;
 /** Read-only artifact domain. Authentication and request/error policies remain
  * owned by the composition root; registration does not create service timers. */
 export function registerArtifactReadRoutes(app: FastifyInstance, options: {
-  store: Pick<SpaceStore, "listArtifacts" | "getArtifact" | "listRooms">;
+  store: Pick<SpaceStore, "listArtifactsPage" | "getArtifact" | "listRooms">;
   artifactRoot: string;
   routeOptions: Pick<RouteShorthandOptions, "config">;
 }) {
   const { store, artifactRoot, routeOptions } = options;
   app.get("/api/artifacts", routeOptions, async (request) => {
     const page = listArtifactsQuerySchema.parse(request.query);
-    let artifacts = await store.listArtifacts(page);
     // A USER lists only artifacts of their own rooms (a roomId or paneId in the query is checked centrally).
-    if (request.user?.role === "USER") {
-      const owned = new Set((await store.listRooms(request.user.id)).map((room) => room.id));
-      artifacts = artifacts.filter((artifact) => artifact.roomId !== null && owned.has(artifact.roomId));
-    }
-    const start = (page.page - 1) * page.pageSize;
+    const owned = request.user?.role === "USER" ? (await store.listRooms(request.user.id)).map((room) => room.id) : undefined;
+    // Paged in the database: every page used to load (and map) every matching row (API overload 10/11).
+    const { data, totalItems } = await store.listArtifactsPage(page, owned);
     return {
-      data: artifacts.slice(start, start + page.pageSize),
-      pagination: {
-        page: page.page,
-        pageSize: page.pageSize,
-        totalItems: artifacts.length,
-        totalPages: Math.ceil(artifacts.length / page.pageSize)
-      }
+      data,
+      pagination: { page: page.page, pageSize: page.pageSize, totalItems, totalPages: Math.ceil(totalItems / page.pageSize) }
     };
   });
   app.get("/api/artifacts/:id/file", routeOptions, async (request, reply) => {

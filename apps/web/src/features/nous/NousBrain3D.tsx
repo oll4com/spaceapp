@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { frameLoop } from "../../window-idle.js";
 import { projectMemoryPoint, type MemoryPoint3D } from "../memory-workspace/memory-3d.js";
 
 /**
@@ -58,7 +59,6 @@ export function NousBrain3D({ size = 88, animate, thinking = false, firing = fal
     const color = getComputedStyle(canvas).color || "rgb(125, 211, 252)";
     const scale = size / 150;
     let yaw = 0.6;
-    let frame = 0;
     let last = 0;
     // Firing nodes and how much light each has left (1 → 0).
     const sparks = new Map<number, number>();
@@ -126,10 +126,8 @@ export function NousBrain3D({ size = 88, animate, thinking = false, firing = fal
         if (firing) fire();
         draw();
       }
-      frame = window.requestAnimationFrame(tick);
     };
-    frame = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(frame);
+    return frameLoop(tick);
   }, [animate, size, firing]);
 
   return <canvas ref={canvasRef} className="nous-brain" style={{ width: size, height: size }} role="img" aria-label="Nous, the mind of SpaceApp" />;

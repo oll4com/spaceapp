@@ -16,6 +16,7 @@ import {
 import { redactMemoryText } from "@space/runtime";
 import type { ConnectorAccountRecord, ConnectorAccountsRepository } from "@space/db";
 import { htmlToText } from "./mail-html-text.js";
+import { maskPasswordResetJson } from "./password-reset-mask.js";
 
 /**
  * Space Dots Stage 5: email and calendar connectors.
@@ -95,6 +96,9 @@ export function createConnectorCrypto(options: { key: string | null; legacySecre
 export interface OAuthTokens { accessToken: string; refreshToken: string | null; expiresAt: string; scopes: string[]; email: string | null }
 export interface MailMessage { to: string[]; subject: string; body: string }
 export interface CalendarEventInput { title: string; start: string; end: string; timeZone?: string; location?: string; description?: string; attendees?: string[] }
+/** An answer to an invitation: the event by its provider id or by the invite's iCalendar UID. */
+export interface CalendarResponseInput { eventId?: string; iCalUID?: string; response: "accepted" | "declined" | "tentative"; comment?: string }
+export interface CalendarResponse { eventId: string; title: string | null; start: string | null }
 export interface ConnectorProviderClient {
   provider: ConnectorProvider;
   authorizeUrl(input: { redirectUri: string; state: string; codeChallenge: string; capabilities: ConnectorCapability[]; loginHint?: string }): string;
@@ -107,11 +111,13 @@ export interface ConnectorProviderClient {
   sendMail(token: string, from: string, message: MailMessage): Promise<{ id: string }>;
   listEvents(token: string, from: string, to: string, limit: number): Promise<unknown[]>;
   createEvent(token: string, event: CalendarEventInput): Promise<{ id: string; link: string | null }>;
+  respondEvent(token: string, input: CalendarResponseInput): Promise<CalendarResponse>;
 }
+const invitationMissing = () => new ConnectorError(404, "CONNECTOR_EVENT_NOT_FOUND", "The invitation is not in this account's calendar.");
 
 const bounded = (value: string | null | undefined, max: number) => value ? redactMemoryText(value).slice(0, max) : null;
 async function json(response: Response, what: string): Promise<Record<string, unknown>> {
-  const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+  const body = maskPasswordResetJson(await response.json().catch(() => ({})) as Record<string, unknown>);
   if (!response.ok) {
     // An expired or revoked grant (Google ends test-mode grants after seven days) means the user must reconnect.
     const revokedGrant = response.status === 400 && body.error === "invalid_grant";
@@ -272,6 +278,21 @@ export function createGoogleConnector(input: { clientId: string; clientSecret?: 
           end: { dateTime: event.end, ...(event.timeZone ? { timeZone: event.timeZone } : {}) },
           attendees: (event.attendees ?? []).map((email) => ({ email })) }) })), "Google Calendar create");
       return { id: String(created.id ?? ""), link: typeof created.htmlLink === "string" ? created.htmlLink : null };
+    },
+    async respondEvent(token, answer) {
+      const event = answer.eventId
+        ? await json(await fetchImpl(`${calendar}/events/${encodeURIComponent(answer.eventId)}`, authed(token)), "Google Calendar read")
+        : ((await json(await fetchImpl(`${calendar}/events?${new URLSearchParams({ iCalUID: answer.iCalUID ?? "" })}`, authed(token)), "Google Calendar find")).items as
+          Array<Record<string, unknown>> | undefined)?.[0];
+      if (!event?.id) throw invitationMissing();
+      const attendees = (event.attendees as Array<Record<string, unknown>> | undefined) ?? [];
+      if (!attendees.some((attendee) => attendee.self === true)) throw new ConnectorError(409, "CONNECTOR_NOT_INVITED", "This account is not a guest of that event.");
+      // Only the self attendee changes; sendUpdates=all tells the organizer like Google Calendar's own Yes/No/Maybe.
+      await json(await fetchImpl(`${calendar}/events/${encodeURIComponent(String(event.id))}?sendUpdates=all`, authed(token, { method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ attendees: attendees.map((attendee) => attendee.self === true
+          ? { ...attendee, responseStatus: answer.response, ...(answer.comment ? { comment: answer.comment } : {}) } : attendee) }) })), "Google Calendar answer");
+      return { eventId: String(event.id), title: bounded(event.summary as string, 300),
+        start: (event.start as { dateTime?: string; date?: string } | undefined)?.dateTime ?? (event.start as { date?: string } | undefined)?.date ?? null };
     }
   };
 }
@@ -371,6 +392,18 @@ export function createMicrosoftConnector(input: { clientId: string; clientSecret
           start: { dateTime: event.start, timeZone: zone }, end: { dateTime: event.end, timeZone: zone },
           attendees: (event.attendees ?? []).map((address) => ({ emailAddress: { address }, type: "required" })) }) })), "Outlook calendar create");
       return { id: String(created.id ?? ""), link: typeof created.webLink === "string" ? created.webLink : null };
+    },
+    async respondEvent(token, answer) {
+      const event = answer.eventId
+        ? await json(await fetchImpl(`${graph}/events/${encodeURIComponent(answer.eventId)}?$select=id,subject,start`, authed(token)), "Outlook calendar read")
+        : (await graphPages(`${graph}/events?$filter=${encodeURIComponent(`iCalUId eq '${(answer.iCalUID ?? "").replace(/'/g, "''")}'`)}&$select=id,subject,start`,
+          token, 1, "Outlook calendar find"))[0];
+      if (!event?.id) throw invitationMissing();
+      const action = { accepted: "accept", declined: "decline", tentative: "tentativelyAccept" }[answer.response];
+      const sent = await fetchImpl(`${graph}/events/${encodeURIComponent(String(event.id))}/${action}`, authed(token, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sendResponse: true, ...(answer.comment ? { comment: answer.comment } : {}) }) }));
+      if (!sent.ok) await json(sent, "Outlook calendar answer"); // Graph answers 202 with no body.
+      return { eventId: String(event.id), title: bounded(event.subject as string, 300), start: (event.start as { dateTime?: string } | undefined)?.dateTime ?? null };
     }
   };
 }
@@ -461,8 +494,8 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
   const emails = z.array(z.string().trim().email().max(320)).min(1).max(20);
   const isoTime = z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), "Use an ISO 8601 time.");
   const capabilityFor: Record<string, ConnectorCapability> = { "mail.search": "MAIL_READ", "mail.read": "MAIL_READ", "mail.draft": "MAIL_COMPOSE", "mail.send": "MAIL_COMPOSE",
-    "calendar.list": "CALENDAR", "calendar.create": "CALENDAR" };
-  /** Connector gateway tools. `mail.send` and `calendar.create` reach this only after the owner approved them. */
+    "calendar.list": "CALENDAR", "calendar.create": "CALENDAR", "calendar.respond": "CALENDAR" };
+  /** Connector gateway tools. `mail.send`, `calendar.create` and `calendar.respond` reach this only after the owner approved them. */
   async function tool(owner: string, toolId: string, args: Record<string, unknown>): Promise<ToolOutcome> {
     const capability = capabilityFor[toolId];
     if (!capability) return { status: "BLOCKED", statusReason: "Unknown connector tool." };
@@ -501,6 +534,14 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
           const created = await api.createEvent(token, input);
           await deps.audit(null, "connector.calendar.create", { accountId: account.accountId, attendees: input.attendees?.length ?? 0 });
           return { status: "COMPLETED", result: { ...base, eventId: created.id, link: created.link } };
+        }
+        case "calendar.respond": {
+          const input = z.object({ eventId: z.string().trim().min(1).max(1024).optional(), iCalUID: z.string().trim().min(1).max(1024).optional(),
+            response: z.enum(["accepted", "declined", "tentative"]), comment: z.string().trim().max(2000).optional(), account: z.string().optional() }).strict()
+            .refine((value) => value.eventId || value.iCalUID, "Give the invitation's eventId or iCalUID.").parse(args);
+          const answered = await api.respondEvent(token, input);
+          await deps.audit(null, "connector.calendar.respond", { accountId: account.accountId, response: input.response });
+          return { status: "COMPLETED", result: { ...base, ...answered, response: input.response } };
         }
       }
       return { status: "BLOCKED", statusReason: "Unknown connector tool." };

@@ -18,7 +18,7 @@ it.skipIf(postgresUnavailable)("deletes interior rooms without immediate unique-
   const pool = createSpacePgPool(`postgresql://postgres@localhost/postgres?host=${encodeURIComponent(socket)}`,{max:4});
   try {
     docker(["image","inspect",disposablePostgresImage]);
-    docker(["run","--detach","--rm","--pull=never","--name",name,"--network","none","--mount",`type=bind,source=${socket},target=/var/run/postgresql`,"--env","POSTGRES_HOST_AUTH_METHOD=trust",disposablePostgresImage,"-c","listen_addresses="]); created=true;
+    docker(["run","--tmpfs","/var/lib/postgresql/data","--detach","--rm","--pull=never","--name",name,"--network","none","--mount",`type=bind,source=${socket},target=/var/run/postgresql`,"--env","POSTGRES_HOST_AUTH_METHOD=trust",disposablePostgresImage,"-c","listen_addresses="]); created=true;
     let ready=false;
     for(let i=0;i<60;i++) {try {if(docker(["exec",name,"cat","/proc/1/comm"])!=="postgres")throw Error("Initializing");await pool.query("SELECT 1");ready=true;break;}catch {await new Promise(r=>setTimeout(r,250));}}
     if(!ready)throw Error("Owned PostgreSQL unavailable");

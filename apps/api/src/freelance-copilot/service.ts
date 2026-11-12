@@ -7,6 +7,7 @@ import {
   type FreelanceMessageReviewDecision, type FreelanceMessageUpdate, type FreelancePendingItem, type FreelanceRule, type FreelanceRuleProposal, type FreelanceRun, type FreelanceRunView, type Pane
 } from "@space/contracts";
 import type { FreelanceCopilotRepository } from "@space/db";
+import type { RailAnswerBy } from "@space/db";
 import { forbiddenByMemoryText, forbiddingMemory, MEMORY_HITS_NOTE, questionMemoryHits } from "@space/db";
 import type { PinnedMemoryHit } from "../nous/operator-facts.js";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
@@ -213,7 +214,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
       return lead;
     },
     /** The operator closes a lead (won with its value, lost) or gives it back to the copilot (reopen). */
-    async decideLead(owner: string, pane: Pane | null, id: string, input: FreelanceLeadDecision) {
+    async decideLead(owner: string, pane: Pane | null, id: string, input: FreelanceLeadDecision, by?: RailAnswerBy) {
       const current = await leadOf(owner, id);
       const status = ({ won: "WON", lost: "LOST", reopen: "TALKING" } as const)[input.decision];
       const lead = (await repository.updateLead(owner, id, { status, nextActionAt: null, ...(input.decision === "won" ? { contractValue: input.contractValue ?? current.contractValue } : {}),
@@ -223,7 +224,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
           text: `${input.decision === "won" ? "Won" : "Lost"} on ${FREELANCE_CHANNEL_LABELS[lead.channel]}: "${lead.title}"${lead.budget ? ` (${lead.budget})` : ""}${input.contractValue ? `, contract $${input.contractValue}` : ""}${input.note ? `. Operator: ${input.note}` : ""}`.slice(0, 4000) });
       }
       await record(owner, { paneId: pane?.id ?? null, leadId: id, type: "LEAD_DECIDED", message: `You marked "${lead.title}" ${input.decision === "reopen" ? "back to the copilot" : input.decision}${input.contractValue ? ` ($${input.contractValue})` : ""}`,
-        payload: { decision: input.decision, contractValue: input.contractValue ?? null } });
+        payload: { decision: input.decision, contractValue: input.contractValue ?? null, ...(by ? { by } : {}) } });
       return lead;
     },
     // ---- messages -----------------------------------------------------------------------------
@@ -273,7 +274,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
       return { message, wordingIssues, ...(overrides ? { overrides } : {}) };
     },
     /** The operator decides a message: approve, edit (their version is approved and learned), revise (back to the agent) or reject. */
-    async decideReview(owner: string, pane: Pane | null, messageId: string, input: FreelanceMessageReviewDecision) {
+    async decideReview(owner: string, pane: Pane | null, messageId: string, input: FreelanceMessageReviewDecision, by?: RailAnswerBy) {
       const current = await messageOf(owner, messageId);
       const patch = input.decision === "approve" || input.decision === "edit"
         ? { status: "APPROVED" as const, reviewNote: input.note ?? null, ...(input.decision === "edit" && input.body !== undefined ? { body: input.body } : {}) }
@@ -292,7 +293,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
       if (input.decision === "revise") await service.createBrief(owner, pane, { text: `Revise the ${describe(message)} ${message.id}: ${input.note}`, leadId: message.leadId, channels: [message.channel] });
       const verb = { approve: "approved", edit: "edited and approved", revise: "sent back for changes", reject: "rejected" }[input.decision];
       await record(owner, { paneId: pane?.id ?? message.paneId, leadId: message.leadId, messageId: message.id, type: "REVIEW_DECIDED", message: `You ${verb} the ${describe(message)}${input.note ? `: ${input.note}` : ""}`,
-        payload: { decision: input.decision, note: input.note ?? null } });
+        payload: { decision: input.decision, note: input.note ?? null, ...(by ? { by } : {}) } });
       return message;
     },
     /**
@@ -524,11 +525,11 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
       await record(owner, { paneId: pane?.id ?? null, type: by === "USER" ? "RULE_DECIDED" : "RULE_PROPOSED", message: by === "USER" ? `You added the rule: ${rule.name}` : `Rule proposed: ${rule.name}`, payload: { ruleId: rule.id } });
       return rule;
     },
-    async decideRule(owner: string, pane: Pane | null, id: string, decision: "approve" | "reject" | "retire") {
+    async decideRule(owner: string, pane: Pane | null, id: string, decision: "approve" | "reject" | "retire", by?: RailAnswerBy) {
       const rule = await repository.getRule(owner, id);
       if (!rule) throw new SpaceNotFoundError("The rule was not found.");
       const updated = (await repository.updateRule(owner, id, { status: ({ approve: "APPROVED", reject: "REJECTED", retire: "RETIRED" } as const)[decision], decidedAt: now() }))!;
-      await record(owner, { paneId: pane?.id ?? null, type: "RULE_DECIDED", message: `You ${decision === "approve" ? "approved" : decision === "reject" ? "rejected" : "retired"} the rule: ${rule.name}`, payload: { ruleId: id, decision } });
+      await record(owner, { paneId: pane?.id ?? null, type: "RULE_DECIDED", message: `You ${decision === "approve" ? "approved" : decision === "reject" ? "rejected" : "retired"} the rule: ${rule.name}`, payload: { ruleId: id, decision, ...(by ? { by } : {}) } });
       return updated;
     },
     // ---- activity, pending items and runs ------------------------------------------------------

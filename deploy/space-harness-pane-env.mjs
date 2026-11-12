@@ -8,7 +8,7 @@ import { join } from "node:path";
 // the harness gives every shell command its session id as DSH_SESSION_ID and its Space plugin adds it to each
 // dispatcher call. Returns the pane's CLI-style environment, or null.
 export const HARNESS_AGENT_TOKEN_DIR = "/opt/spaceapp/var/harness-agent-tokens";
-export function harnessPaneEnvironment(sessionId, { dir = process.env.SPACE_HARNESS_AGENT_TOKEN_DIR || HARNESS_AGENT_TOKEN_DIR, now = Date.now() } = {}) {
+export function harnessPaneEnvironment(sessionId, { dir = process.env.SPACE_HARNESS_AGENT_TOKEN_DIR || HARNESS_AGENT_TOKEN_DIR, now = Date.now(), prefix = "harness" } = {}) {
   // A plain file name in the token directory: no path separators, dots or empty names.
   if (typeof sessionId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(sessionId)) return null;
   let value;
@@ -21,5 +21,16 @@ export function harnessPaneEnvironment(sessionId, { dir = process.env.SPACE_HARN
   // Each pane and token gets its own capability worker and backend processes.
   const key = createHash("sha256").update(JSON.stringify([env.SPACE_BROWSER_ACTION_TOKEN ?? null, env.SPACE_AGENT_FILES_TOKEN ?? null,
     env.SPACE_CONTROL_TOKEN ?? null])).digest("hex").slice(0, 12);
-  return { ...env, CODEX_MCP_SESSION_ID: `harness:${env.SPACE_PANE_ID}:${key}` };
+  return { ...env, CODEX_MCP_SESSION_ID: `${prefix}:${env.SPACE_PANE_ID}:${key}` };
+}
+
+// An OpenCode pane's agent runs its shell commands inside the one shared OpenCode server (deploy/space-opencode-shared.service),
+// whose environment names no pane: OpenCode gives each command its session as OPENCODE_SESSION_ID, and the pane's wrapper
+// (deploy/opencode-space-full-tui.mjs) publishes the pane's Space variables under that session, in the same file format.
+export const OPENCODE_PANE_ENV_DIR = "/var/lib/spaceapp-user/.codex/space-opencode/state/opencode/space-cli-pane-env";
+
+/** The pane environment of an agent whose process serves many panes (Harness, shared OpenCode server), or null. */
+export function sharedServerPaneEnvironment(env) {
+  return harnessPaneEnvironment(env.DSH_SESSION_ID) ?? harnessPaneEnvironment(env.OPENCODE_SESSION_ID,
+    { dir: process.env.SPACE_OPENCODE_PANE_ENV_DIR || OPENCODE_PANE_ENV_DIR, prefix: "opencode" });
 }

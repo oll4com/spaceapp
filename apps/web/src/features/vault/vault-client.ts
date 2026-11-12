@@ -109,6 +109,25 @@ async function unlockWith(client: VaultApi, ownerUserId: string, challenge: Awai
   return { ownerUserId, vaultId: challenge.vaultId, epoch: answer.epoch, vrk, passwordShare: secrets.passwordShare, signingKey: secrets.unlockPrivateKey };
 }
 
+/**
+ * Moving to another server (scripts/space-transfer.mjs reseal): the broker seals the server share to the target broker's
+ * transport key instead of a reply key here, so neither this tab nor the API nor the file can read it; only that broker can.
+ */
+export async function createTransferReseal(client: VaultApi, unlocked: UnlockedVault, targetTransportKey: string) {
+  const key = targetTransportKey.trim();
+  let length = 0;
+  try { length = b64.decode(key).length; } catch { /* not base64url: refused below */ }
+  if (length !== 32) throw new Error("That is not a Vault key: paste vaultTransportKey from the new server's card.json.");
+  const challenge = await client.vaultUnlockChallenge();
+  const signature = await signVaultMessage(unlocked.signingKey, vaultUnlockChallengeMessage({ ownerUserId: unlocked.ownerUserId, vaultId: challenge.vaultId,
+    epoch: challenge.epoch, challenge: challenge.challenge, replyPublicKey: key }));
+  const answer = await client.vaultUnlock({ challenge: challenge.challenge, replyPublicKey: key, signature });
+  // sourceTransportKey (public): the target's reseal records both brokers' key fingerprints in the Vault audit chain.
+  const source = await client.vaultBroker();
+  return { format: "space-vault-reseal", version: 1, ownerUserId: unlocked.ownerUserId, vaultId: challenge.vaultId, sourceTransportKey: source.publicKey,
+    targetTransportKey: key, sealedServerShare: answer.sealedServerShare };
+}
+
 export function lockVaultKeys(unlocked: UnlockedVault | null): void {
   if (unlocked) wipeVaultBytes(unlocked.vrk, unlocked.passwordShare, unlocked.signingKey);
 }
@@ -228,6 +247,11 @@ export async function vaultInboxKey(client: Pick<VaultInboxApi, "vaultInbox" | "
   const pair = await generateVaultTransportKey();
   await client.vaultSetInbox(await signVaultOperatorRequest(unlocked, "inbox", { publicKey: b64.encode(pair.publicKey), privateKeyEnvelope: await sealVaultEnvelope(unlocked.vrk, pair.privateKey, context), epoch: unlocked.epoch }));
   return pair;
+}
+
+/** A kept password or key's value for the dock, with the unlocked dock's signature (operator request 2026-11-12). */
+export function revealHandoffKey(client: Pick<typeof liveApi, "vaultRevealHandoffKey">, unlocked: UnlockedVault, id: string): Promise<string> {
+  return signVaultOperatorRequest(unlocked, "key-reveal", { id, epoch: unlocked.epoch }).then((body) => client.vaultRevealHandoffKey(body)).then((answer) => answer.value);
 }
 
 /** Deletes logins (one, or the dead-site list) with the unlocked dock's signature. */

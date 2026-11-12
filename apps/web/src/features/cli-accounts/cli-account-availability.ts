@@ -1,5 +1,6 @@
 import {
   antigravityAccountGroup,
+  claudeSubscriptionAccounts,
   quotaLeftAtReset,
   quotaResetCreditsText,
   type QuotaResetCredits,
@@ -108,6 +109,8 @@ export interface CliAccountAvailability {
   detail?: string;
   // Recent successful API traffic while the gateway's subscription pool is unavailable.
   gatewayInUse?: boolean;
+  // Signed out on this profile while Space Gateway holds the account: picking it runs the pane through the Gateway on that account.
+  heldByGateway?: boolean;
   windows: CliAccountQuotaWindow[];
 }
 
@@ -266,6 +269,13 @@ function claudeAvailability(account: ClaudeUsageAccount, clock: number, fallback
     return { tone: "ready", percent: null, color: cliAccountAvailabilityColor(100), label: "Ready", description: "Available now · Space Gateway picks a pooled Claude account",
       detail: "Picks a pooled Claude account", windows: [] };
   }
+  const held = account.status === "NOT_CONNECTED" ? subscriptionWindows(account).filter((window) => window.percent != null) : [];
+  if (held.length) {
+    // Operator 12/11: picking it works; the launcher sends the pane through Space Gateway pinned to this account (x-space-gateway-account).
+    const usage = fromQuota(claudeAccountEntries([account], clock)[0]!, held, clock);
+    return { ...usage, heldByGateway: true, detail: "Signed out here · runs through Space Gateway",
+      description: `Signed out here · runs through Space Gateway · ${windowsSummary(held, clock)}` };
+  }
   if (account.status !== "CONNECTED") {
     const label = claudeStatusLabel(account);
     return blocked(label, `Not available now · ${label}`);
@@ -422,14 +432,13 @@ export function cliAccountAvailability(input: {
   balance?: CliAccountBalance | null;
 }): CliAccountAvailability {
   const { runtimeId, profileId, quota, identity, clock } = input;
-  if (identity?.authStatus === "NOT_CONNECTED") return identityAvailability(identity);
+  const claudeAccount = runtimeId === "cli:claude" ? quota?.claude?.data.find((candidate) => candidate.id === profileId) : undefined;
+  // An API key, the gateway or a held account has no login of its own; the quota sample says more than the sign-in check.
+  if (identity?.authStatus === "NOT_CONNECTED" && (!claudeAccount || claudeAccount.status === "CONNECTED")) return identityAvailability(identity);
   // Claude, Antigravity and Codex report quota; until the first sample arrives the account is still being checked.
   if (!quota && (runtimeId === "cli:claude" || runtimeId === "cli:gemini" || runtimeId === "cli:codex")) return identityAvailability(null);
   if (runtimeId === "cli:codex") return codexGatewayAvailability(quota?.codex ?? null, clock);
-  if (runtimeId === "cli:claude") {
-    const account = quota?.claude?.data.find((candidate) => candidate.id === profileId);
-    if (account) return claudeAvailability(account, clock, claudeApiFallback(quota, clock));
-  }
+  if (claudeAccount) return claudeAvailability(claudeAccount, clock, claudeApiFallback(quota, clock));
   if (runtimeId === "cli:gemini") {
     if (profileId === GATEWAY_PROFILE_ID && quota?.agy) return antigravityGatewayAvailability(quota.agy.data, clock, input.modelGroup ?? null);
     const account = quota?.agy?.data.find((candidate) => candidate.id === profileId)
@@ -553,8 +562,8 @@ export function cliAccountForecasts(
   if (runtimeId === "cli:claude") {
     if (!quota) return [checkingForecast()];
     if (!quota.claude) return [unknownForecast(noSample)];
-    const connected = quota.claude.data.filter((account) => account.status === "CONNECTED").length;
-    return weekly(subscriptionQuotaAtReset("claude", quota.claude.data, clock), `None of the ${accountsText(connected)} reported a current weekly limit`);
+    const counted = claudeSubscriptionAccounts(quota.claude.data).length;
+    return weekly(subscriptionQuotaAtReset("claude", quota.claude.data, clock), `None of the ${counted} subscription ${counted === 1 ? "account" : "accounts"} reported a current weekly limit`);
   }
   if (runtimeId === "cli:codex") {
     if (!quota) return [checkingForecast()];

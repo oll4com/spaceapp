@@ -35,7 +35,10 @@ export const NOUS_DB_TABLE_USE: Record<string, string> = {
   tasks: "task_items",
   // 9/11 REVIEW (42P01 auth_sessions, pg_stat_statements): sign-ins are signed cookies, not rows; the extension is not installed.
   auth_sessions: "sessions are signed cookies, not rows: sign-ins and logouts are audit_events with action LIKE 'auth.%', the app's paired devices app_device_sessions",
-  pg_stat_statements: "the extension is not installed: pg_stat_activity and pg_stat_user_tables are readable"
+  pg_stat_statements: "the extension is not installed: pg_stat_activity and pg_stat_user_tables are readable",
+  // R84 12/11 (42P01 7 d: nous_memories ×3, space_memories, space_memory, space_appointments, settings).
+  nous_memories: "Space Memory is files: space_memory_recall", space_memories: "Space Memory is files: space_memory_recall",
+  space_memory: "Space Memory is files: space_memory_recall", space_appointments: "appointments", settings: "user_settings"
 };
 const guessed = Object.entries(NOUS_DB_TABLE_USE).map(([table, use]) => `no ${table} (${use})`);
 /** The description's sentence: "no cli_sessions (pane_cli_sessions), … and no pane_prompt_queue (…)". */
@@ -89,10 +92,13 @@ const partsMatch = (a: string, b: string) => a.startsWith(b) || b.startsWith(a);
 /** Tables named closest to a missing one: most shared name parts ("turns" meets "turn"), then the nearest length. */
 export function nousDbNearestTables(missing: string, tables: string[], count = 8, topOnly = false): string[] {
   const wanted = nameParts(missing);
+  // R84 12/11 (space_appointments listed 8 space_* tables, not appointments): among equal counts a rarer shared part ranks first.
+  const rarity = new Map(wanted.map((want) => [want, Math.log((tables.length + 1) / Math.max(1, tables.filter((table) => nameParts(table).some((part) => partsMatch(part, want))).length))]));
   const ranked = tables
-    .map((table) => ({ table, score: nameParts(table).filter((part) => wanted.some((want) => partsMatch(part, want))).length }))
+    .map((table) => { const parts = nameParts(table); return { table, score: parts.filter((part) => wanted.some((want) => partsMatch(part, want))).length,
+      rare: wanted.filter((want) => parts.some((part) => partsMatch(part, want))).reduce((sum, want) => sum + rarity.get(want)!, 0) }; })
     .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score || Math.abs(a.table.length - missing.length) - Math.abs(b.table.length - missing.length) || a.table.localeCompare(b.table));
+    .sort((a, b) => b.score - a.score || b.rare - a.rare || Math.abs(a.table.length - missing.length) - Math.abs(b.table.length - missing.length) || a.table.localeCompare(b.table));
   // topOnly (R13-1): only the tables sharing the best score, so one name means one table fits better than all others.
   const best = ranked.filter((entry) => entry.score === ranked[0]!.score);
   // R50 (42P01 7 d to 3/11: vault_audit_events tied audit_events and vault_audit, job_copilot_events tied job_apply_events and
@@ -145,7 +151,7 @@ async function nousDbErrorText(client: pg.PoolClient, error: unknown, sql: strin
       const cast = nousDbCastQuery(inner, pgError.message ?? "") ?? (Number.isFinite(at) ? nousDbTextCastQuery(inner, pgError.message ?? "", at) : null);
       if (cast) {
         corrected = { code: pgError.code, sql: cast };
-        lines.push(`Corrected query (cast to text where the types differ): ${cast}`);
+        lines.push(`Corrected query (cast where the types differ): ${cast}`);
       }
     }
     if (pgError.code === "42703" || pgError.code === "42P01" || pgError.code === "42702") await client.query("ROLLBACK");
@@ -229,7 +235,7 @@ export const NOUS_DB_COLUMN_SYNONYMS: Record<string, string[]> = {
   // R25-1 (1/11: space_control_records.payload ×3, nous_pane_closeouts c.status): a record's JSON is value, a close-out's status its state.
   payload: ["value", "metadata", "parts"],
   // R40-1 (48 h to 2/11: audit_events.payload, marketing_copilot_posts.text, still failing after R25-1): a post's text is its body, an event's its message.
-  text: ["body", "message", "content"],
+  text: ["body", "message", "content", "note"],
   // R46 (2026-11-03 REVIEW, 42703 on platform): the Freelance and Marketing copilots keep a platform as channel.
   platform: ["channel"],
   // R50 (7 d to 3/11: nous_pane_checks c.created_at is checked_at above; space_gateway_api_keys k.api_key_id).
@@ -242,14 +248,18 @@ export const NOUS_DB_COLUMN_SYNONYMS: Record<string, string[]> = {
   schedule: ["recurrence", "next_run_at"],
   // Score 5/11 (db_query the most failed tool, 130 in 7 d; 4/11: space_notifications.metadata ×2, audit_events.detail, nous_score_snapshots
   // .details and .total, job_applications.stage, cli_tasks.id): what those tables call them.
-  metadata: ["payload"], detail: ["metadata", "payload", "parts"], details: ["metadata", "payload", "parts"], stage: ["status"], total: ["score"],
+  metadata: ["payload", "event"], detail: ["metadata", "payload", "parts", "event"], details: ["metadata", "payload", "parts", "event"], stage: ["status"], total: ["score"],
   // R78 (5/11, Nous's transcripts: task_items.schedule_json, nous_score_snapshots.taken_at and .payload, nous_turn_facts.kind).
   schedule_json: ["recurrence"], taken_at: ["at", "created_at"],
   // R83 (7 d to 8/11, 42703 after R78): nous_notes.content, space_gateway_request_logs.status_code, request_logs.key_id,
   // security_copilot_findings.severity (with nous_pane_summaries.updated_at, space_gateway_accounts.name, user_settings.value above).
   content: ["text", "body", "message"], status_code: ["status"], key_id: ["api_key_id"], severity: ["priority"],
   // 9/11 REVIEW (42703 p.type): a pane's type is its mode.
-  type: ["mode", "kind"]
+  type: ["mode", "kind"],
+  // R84 12/11 (42703 in 7 d still uncorrected: nous_messages.body, marketing_copilot_posts.message ×2, space_gateway_request_logs.error,
+  // space_gateway_accounts.account_name and .refresh_token_expires_at, space_gateway_api_keys.models; text, metadata, detail above).
+  body: ["content", "text", "message"], message: ["body", "content", "text"], error: ["error_message"], account_name: ["label", "account_label"],
+  refresh_token_expires_at: ["credentials_expires_at"], models: ["allowed_models"]
 };
 /**
  * R66 (7 d to 4/11: 6 reads asked a marketing post for its account or metadata, 2 a job application for its payload, 2 a gateway account
@@ -273,6 +283,12 @@ export function nousDbFlagNote(table: string, guessed: string, columns: string[]
 }
 const USER_SETTINGS_NOTE = "user_settings is one row per user with every setting inside its settings JSON (no key or value columns): jsonb_object_keys(settings) "
   + "lists the sections, settings->'nous' is one section, settings::text ILIKE '%word%' finds the row holding a word.";
+const HANDOFF_URL_NOTE = "browser_handoff_requests has no URL or site: the page a handoff is about is its browser session's, JOIN pane_browser_sessions s USING "
+  + "(session_id) and read s.current_url (s.target_url is the page it opened on).";
+const API_KEY_NOTE = "space_gateway_api_keys has no provider or status: a key is not tied to a provider (the models it may call are allowed_models, empty for any, "
+  + "or enforced_model when set; the provider each request went to is space_gateway_request_logs.provider WHERE api_key_id = key_id); a key works while is_active is true and "
+  + "expires_at is NULL or later than now().";
+const GATEWAY_SETTINGS_NOTE = "space_gateway_settings is one row whose columns are the settings (no key or value columns): SELECT * FROM space_gateway_settings.";
 export const NOUS_DB_COLUMN_NOTES: Record<string, Record<string, string>> = {
   // Tool error samples 8/11 (7/11 15:08 and 15:30 UTC: user_settings.setting_key, .key, .value).
   user_settings: { key: USER_SETTINGS_NOTE, setting_key: USER_SETTINGS_NOTE, value: USER_SETTINGS_NOTE, setting: USER_SETTINGS_NOTE, name: USER_SETTINGS_NOTE },
@@ -282,12 +298,25 @@ export const NOUS_DB_COLUMN_NOTES: Record<string, Record<string, string>> = {
   // Score 5/11 (4/11 09:27 UTC: nous_turn_facts.corrections).
   nous_turn_facts: { corrections: TURN_CORRECTIONS_NOTE, correction: TURN_CORRECTIONS_NOTE },
   // R78 (5/11 09:52 UTC: metadata->'waitsOn' on a plan).
-  clipboard_items: { metadata: PLAN_JSON_NOTE, meta: PLAN_JSON_NOTE }
+  clipboard_items: { metadata: PLAN_JSON_NOTE, meta: PLAN_JSON_NOTE },
+  // R84 12/11 (42703 in 7 d with no column that fits: handoff site/url/target_url ×4, api key provider/provider_id/status, gateway settings
+  // value, goal event progress, CLI session command, audit and design request room_id).
+  browser_handoff_requests: { site: HANDOFF_URL_NOTE, url: HANDOFF_URL_NOTE, target_url: HANDOFF_URL_NOTE, current_url: HANDOFF_URL_NOTE },
+  space_gateway_api_keys: { provider: API_KEY_NOTE, provider_id: API_KEY_NOTE, status: API_KEY_NOTE },
+  space_gateway_settings: { key: GATEWAY_SETTINGS_NOTE, value: GATEWAY_SETTINGS_NOTE },
+  nous_goal_events: { progress: "nous_goal_events has no progress: a goal's progress (0-100) is nous_goals.progress; an event that moved it has kind = 'PROGRESS' and says how in text." },
+  pane_cli_sessions: { command: "pane_cli_sessions has no command: the CLI a session runs is runtime_id (cli:claude, cli:codex, …), with provider_id and model_id." },
+  audit_events: { room_id: "audit_events has no room_id: an event names what it is about in target_type and target_id (a room's own events: target_type = 'room' AND "
+    + "target_id = '<room id>'); a pane's events keep its room in metadata->>'roomId'." },
+  design_requests: { room_id: "design_requests has no room_id: the pane and room that asked are requester->>'paneId' and requester->>'roomId' (when a pane asked); "
+    + "the Design pane that takes it is design_pane_id (its room is panes.room_id)." }
 };
 /** R21-1 (artifacts.title, .name and .collection ×9 in 24 h to 1/11): a guessed column a table keeps inside its JSON metadata. */
 export const NOUS_DB_COLUMN_PATHS: Record<string, Record<string, [string, string]>> = {
   artifacts: { title: ["metadata", "originalFilename"], name: ["metadata", "originalFilename"], filename: ["metadata", "originalFilename"],
-    folder: ["metadata", "folder"], collection: ["metadata", "folder"] },
+    original_filename: ["metadata", "originalFilename"], folder: ["metadata", "folder"], collection: ["metadata", "folder"] },
+  // R84 12/11 (9/11 16:34 UTC: site_sign_ins.method): a sign-in's method is in its record.
+  site_sign_ins: { method: ["record", "method"] },
   // R40-1 (space_control_records.status ×2 in 48 h to 2/11): a record's status is in its JSON value.
   space_control_records: { status: ["value", "status"] },
   // R50 (status on job_apply_events ×5 in 7 d to 3/11): an event has a type; a status change keeps its status in the payload.
@@ -412,6 +441,8 @@ export function nousDbTextCastQuery(sql: string, message: string, at: number): s
     const right = op ? new RegExp(`^\\s*(${OPERAND})`).exec(sql.slice(at + op[0].length)) : null;
     if (!left || !op || !right) return null;
     const leftAt = at - left[0].length;
+    // R84 12/11 (text ->> text ×2 in 7 d): a JSON operator on text reads the text as JSON; casting both sides to text failed again.
+    if (/operator does not exist: (?:text|character varying|unknown) (?:->>?|#>>?) /i.test(message)) return `${sql.slice(0, leftAt)}(${left[1]})::jsonb ${op[0]} ${right[1]}${sql.slice(at + op[0].length + right[0].length)}`;
     return `${sql.slice(0, leftAt)}(${left[1]})::text ${op[0]} (${right[1]})::text${sql.slice(at + op[0].length + right[0].length)}`;
   }
   if (!/UNION types .* cannot be matched/i.test(message)) return null;

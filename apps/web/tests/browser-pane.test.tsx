@@ -22,6 +22,7 @@ const apiMock = vi.hoisted(() => ({
   browserPages: vi.fn(),
   browserAccounts: vi.fn(),
   browserRoute: vi.fn(),
+  cliGlobalEgress: vi.fn(),
   setBrowserRoute: vi.fn(),
   selectBrowserAccount: vi.fn(),
   createPane: vi.fn(),
@@ -275,6 +276,27 @@ describe("BrowserPane", () => {
     expect(apiMock.setBrowserRoute).toHaveBeenCalledWith("pane:browser-proof", "greece");
     expect(document.querySelector('input[type="checkbox"]')).toBeNull();
   });
+  it("shows each route's exit IP and follows the VPNs added or removed in Settings each time it opens (operator 11/11)", async () => {
+    const vpn = (egressIpv4: string | null, profileConfigured = true) => ({ profileConfigured, status: profileConfigured ? "CONNECTED" : "NOT_CONFIGURED", egressIpv4 });
+    const egress = (removed: string[]) => ({ supported: true, directEgressIpv4: "20.240.192.253", removedProfiles: removed,
+      profiles: { greece: vpn("145.224.119.228"), thailand: vpn("186.247.190.76"), mullvad: vpn(null, !removed.includes("mullvad")), nord: vpn("45.150.175.247") } });
+    apiMock.browserRoute.mockResolvedValue({ route: "direct" });
+    apiMock.cliGlobalEgress.mockResolvedValue(egress(["mullvad"]));
+    render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+    const openGroup = async () => {
+      await chooseBrowserAction("Network route Research Browser");
+      return within(await screen.findByRole("dialog", { name: "Network route Research Browser" })).findByRole("radiogroup", { name: "Network route" });
+    };
+    let group = await openGroup();
+    await waitFor(() => expect(within(group).getAllByRole("radio").map((radio) => radio.getAttribute("aria-label"))).toEqual(["This server", "Greece WireGuard", "Thailand", "NordVPN"]));
+    expect(within(group).getByRole("radio", { name: "Greece WireGuard" }).textContent).toContain("145.224.119.228");
+    expect(within(group).getByRole("radio", { name: "This server" }).textContent).toContain("20.240.192.253");
+    await chooseBrowserAction("Network route Research Browser");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Network route Research Browser" })).toBeNull());
+    apiMock.cliGlobalEgress.mockResolvedValue(egress([]));
+    group = await openGroup();
+    await waitFor(() => expect(within(group).getByRole("radio", { name: "Mullvad" }).textContent).toContain("connected"));
+  });
   it("offers only this server's route on a self-hosted install, which has no VPN routes", async () => {
     apiMock.browserRoute.mockResolvedValue({ route: "direct", routes: ["direct"] });
     render(<BrowserPane pane={browserPane()} agentNumber={4} />);
@@ -298,6 +320,7 @@ describe("BrowserPane", () => {
       if (typeof mock === "function" && "mockReset" in mock) mock.mockReset();
     }
     apiMock.marketingBookmarks.mockResolvedValue({ bookmarks: [] });
+    apiMock.cliGlobalEgress.mockRejectedValue(new Error("CLI egress is disabled."));
     apiMock.artifactFileUrl.mockImplementation((artifactId: string) => `/api/artifacts/${encodeURIComponent(artifactId)}/file`);
     apiMock.artifacts.mockResolvedValue({ data: [], pagination: { page: 1, pageSize: 100, totalItems: 0, totalPages: 0 } });
     apiMock.browserFrameWebSocketUrl.mockReturnValue(null);
@@ -1801,6 +1824,8 @@ describe("BrowserPane", () => {
 
   it("keeps the URL usable and moves viewport controls into overflow in narrow panes", async () => {
     apiMock.browserSession.mockResolvedValue(sessionResponse());
+    apiMock.browserAccounts.mockResolvedValue({ selectedProfileId: null, effectiveProfileId: "google_account:primary", profiles: [
+      { profileId: "google_account:primary", displayName: "Primary", label: "Konstantinos", email: "primary@example.test", browserStatus: "CONNECTED" }] });
     const measure = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ x:0,y:0,left:0,top:0,right:320,bottom:600,width:320,height:600,toJSON:()=>({}) });
     const callbacks: Array<() => void> = [];
     vi.stubGlobal("ResizeObserver", class { constructor(callback: () => void) { callbacks.push(callback); } observe() {} disconnect() {} unobserve() {} });
@@ -1810,10 +1835,23 @@ describe("BrowserPane", () => {
       expect(container.querySelector(".browser-toolbar-compact")).toBeTruthy();
       // At 320px the Live badge would leave the address field under 160px: it stays out until the toolbar is wider.
       expect(container.querySelector(".browser-live-status")).toBeNull();
+      // ...and so would the account name, the globe and Paste (public-host F6: the address was 37px); Go stays for the proofs' click.
+      expect(container.querySelector(".browser-toolbar-narrow")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Paste into browser Research Browser" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Navigate browser Research Browser" })).toBeTruthy();
+      // The tab's account stays on screen as a short chip (operator rule); the CSS keeps the address usable beside it.
+      await waitFor(() => expect(container.querySelector(".browser-toolbar-narrow .browser-account-email")?.textContent).toBeTruthy());
+      const css = readFileSync(resolve(__dirname, "../src/styles.css"), "utf8");
+      expect(css).toMatch(/\.browser-toolbar-narrow \.browser-account-email \{ max-width: 3\.5rem; \}/);
+      expect(css).toMatch(/\.browser-toolbar-narrow \.browser-account-trigger:has\(\.browser-account-email\) > svg \{ display: none; \}/);
+      expect(css).toMatch(/\.browser-toolbar-narrow \.browser-url-form > svg \{ display: none; \}/);
+      expect(css).toMatch(/\.browser-toolbar-narrow \.browser-url-form \{ min-width: 13rem; grid-template-columns: minmax\(0, 1fr\) auto; \}/);
+      expect(container.querySelector(".browser-url-form input")).toBeTruthy();
       expect(screen.queryByRole("button", { name: "DevTools Research Browser" })).toBeNull();
       expect(screen.queryByRole("button", { name: "PC view Research Browser" })).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: "More browser actions Research Browser" }));
       expect(screen.getByRole("menuitem", { name: "DevTools Research Browser" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Paste into browser Research Browser" })).toBeTruthy();
       expect(screen.getByRole("combobox", { name: "Stream mode Research Browser" })).toBeTruthy();
       expect(screen.getByRole("menuitem", { name: "PC view Research Browser" })).toBeTruthy();
       expect(screen.getByRole("menuitem", { name: "Fit browser to pane Research Browser" })).toBeTruthy();
@@ -1822,6 +1860,10 @@ describe("BrowserPane", () => {
       measure.mockReturnValue({ x:0,y:0,left:0,top:0,right:1200,bottom:600,width:1200,height:600,toJSON:()=>({}) });
       act(() => callbacks.forEach((callback) => callback()));
       expect(container.querySelector(".browser-toolbar-stacked")).toBeNull();
+      expect(container.querySelector(".browser-toolbar-narrow")).toBeNull();
+      // From 1000px to LABELLED_TOOLBAR_WIDTH the inline controls are icons only, so the address keeps 160px.
+      expect(container.querySelector(".browser-toolbar-tight")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Paste into browser Research Browser" })).toBeTruthy();
       expect(container.querySelector(".browser-live-status")).toBeTruthy();
       expect(screen.getByRole("button", { name: "PC view Research Browser" })).toBeTruthy();
     } finally { measure.mockRestore(); vi.unstubAllGlobals(); }

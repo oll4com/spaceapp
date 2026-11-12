@@ -76,7 +76,7 @@ describe("needs-you cards in the operator's language", () => {
     expect(needsYouTranslation(raised, "el")?.title).toBe("Monitoring Copilot σε χρειάζεται");
     await service.list("user:1", { status: "NEEDS_YOU", limit: 50 });
     await service.list("user:1", { status: "NEEDS_YOU", limit: 50 });
-    await vi.waitFor(async () => expect(needsYouTranslation((await service.get("user:1", raised.id))!, "el")).toMatchObject({ version: 2, title: "Το Monitoring Copilot σε χρειάζεται" }));
+    await vi.waitFor(async () => expect(needsYouTranslation((await service.get("user:1", raised.id))!, "el")).toMatchObject({ version: 3, title: "Το Monitoring Copilot σε χρειάζεται" }));
     await service.list("user:1", { status: "NEEDS_YOU", limit: 50 });
     expect(translate).toHaveBeenCalledTimes(1);
   });
@@ -134,9 +134,10 @@ describe("needs-you cards in the operator's language", () => {
     const keyFile = join(await mkdtemp(join(tmpdir(), "space-card-translate-")), "gateway.key");
     await writeFile(keyFile, "sk-test\n", "utf8");
     const translate = createCardTranslator({ baseUrl: "http://127.0.0.1:4920/v1", keyFile, fetchImpl: fetchImpl as never });
-    // A card with no "Checked first" (a Mail campaign review, e12d2047 on 1/11) sends no empty string the model could drop.
-    expect(await translate(["Approve the campaign", "Read every mail", "", "Decline"], "el")).toEqual(["EL Approve the campaign", "EL Read every mail", "", "EL Decline"]);
-    expect(JSON.parse(JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body)).messages[1].content)).toEqual({ 0: "Approve the campaign", 1: "Read every mail", 3: "Decline" });
+    // A card with no "Checked first" (a Mail campaign review, e12d2047 on 1/11) sends no empty string the model could drop, and its keys run without
+    // a gap the model could close (12/11 public-host reboot card: given 0,1,3,4,5 it renumbered them; the question read «Έγκριση», both options «Απόρριψη»).
+    expect(await translate(["Approve the campaign", "Read every mail", "", "Approve", "Decline"], "el")).toEqual(["EL Approve the campaign", "EL Read every mail", "", "EL Approve", "EL Decline"]);
+    expect(JSON.parse(JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body)).messages[1].content)).toEqual({ 0: "Approve the campaign", 1: "Read every mail", 2: "Approve", 3: "Decline" });
     expect(String(fetchImpl.mock.calls[0]![0])).toBe("http://127.0.0.1:4920/v1/chat/completions");
     expect((fetchImpl.mock.calls[0]![1]!.headers as Record<string, string>)["x-request-id"]).toBeUndefined();
     await translate(["Approve"], "el", "notification:0123456789abcdef01234567");

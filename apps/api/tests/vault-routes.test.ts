@@ -274,6 +274,36 @@ describe("Vault API key handoff", () => {
       await app.close();
     }
   });
+  it("shows a kept value to its owner only with the unlocked dock's signature, and edits label, value and kept (operator request 2026-11-12)", async () => {
+    const { app, brokerKey, session } = await fixture();
+    try {
+      const alice = await session({ id: "user:alice", email: "alice@space.local", role: "OPERATOR" });
+      const bob = await session({ id: "user:bob", email: "bob@space.local", role: "USER" });
+      const { body, signing } = await enrollment(brokerKey.publicKey, "user:alice");
+      await app.inject({ method: "POST", url: "/api/space-vault/enroll", headers: alice.headers, payload: body });
+      const key = (await app.inject({ method: "POST", url: "/api/space-vault/keys", headers: alice.headers, payload: { label: "lab admin", value: SENTINEL, expiresInHours: null, kept: true } })).json().key;
+      const sign = async (request: Record<string, unknown>, signer = signing.privateKey) =>
+        ({ ...request, operatorSignature: await signVaultMessage(signer, vaultOperatorRequestMessage("key-reveal", { ownerUserId: "user:alice", vaultId: body.vaultId, ...request })) });
+      const reveal = (payload: unknown, headers = alice.headers) => app.inject({ method: "POST", url: "/api/space-vault/keys/reveal", headers, payload: payload as never });
+      // A session alone, another key's signature or an old epoch shows nothing.
+      expect((await reveal({ id: key.id, epoch: 1 })).statusCode).toBe(422);
+      expect((await reveal(await sign({ id: key.id, epoch: 1 }, (await generateVaultSigningKey()).privateKey))).json().error.code).toBe("VAULT_SIGNATURE_REFUSED");
+      expect((await reveal(await sign({ id: key.id, epoch: 2 }))).json().error.code).toBe("VAULT_EPOCH_STALE");
+      expect((await reveal(await sign({ id: key.id, epoch: 1 }), bob.headers)).statusCode).toBe(404);
+      expect((await reveal(await sign({ id: key.id, epoch: 1 }))).json()).toEqual({ value: SENTINEL });
+      // The owner's edit: another user's is refused, the new value is what shows next, the receipt keeps its id.
+      const url = `/api/space-vault/keys/${encodeURIComponent(key.id)}`;
+      expect((await app.inject({ method: "PUT", url, headers: bob.headers, payload: { label: "x", value: "y", kept: true } })).statusCode).toBe(404);
+      expect((await app.inject({ method: "PUT", url, headers: alice.headers, payload: { label: "lab root", value: "SYNTHETIC-new", kept: false } })).json()).toEqual({ updated: true });
+      expect((await reveal(await sign({ id: key.id, epoch: 1 }))).json()).toEqual({ value: "SYNTHETIC-new" });
+      expect((await app.inject({ url: "/api/space-vault/keys", headers: alice.headers })).json().keys[0]).toMatchObject({ id: key.id, label: "lab root", kept: false, hasValue: true });
+      const audit = (await app.inject({ url: "/api/space-vault/audit?limit=20", headers: alice.headers })).json();
+      expect(audit.entries.map((entry: { event: { reason: string | null } }) => entry.event.reason)).toEqual(expect.arrayContaining(["SHOWN", "EDITED", "SIGNATURE_REFUSED"]));
+      expect(JSON.stringify(audit)).not.toContain(SENTINEL);
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 describe("Vault keys and Space Gateway", () => {

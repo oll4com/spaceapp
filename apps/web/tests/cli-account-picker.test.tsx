@@ -118,6 +118,16 @@ describe("CLI account availability colours", () => {
     expect(weekDone.description).toMatch(/^Not available now · Week exhausted · back \w{3} \d{1,2} \w{3} /);
     expect(cliAccountAvailability({ runtimeId: "cli:claude", profileId: "signedout", quota, identity: null, clock }))
       .toMatchObject({ tone: "blocked", color: CLI_ACCOUNT_BLOCKED_COLOR, label: "Not signed in" });
+    // Operator 11/11: a profile signed out here whose account Space Gateway holds shows its usage as Resources does, in the
+    // quota's colour; operator 12/11: and it is available, run through the Gateway on that account.
+    const signedOut = (profileId: string) => ({ runtimeId: "cli:claude" as const, profileId, displayName: profileId, email: null, authStatus: "NOT_CONNECTED" as const });
+    const heldQuota = quotaSample([claudeAccount("held", 65, 24, "NOT_CONNECTED"), claudeAccount("heldout", 0, 40, "NOT_CONNECTED")]);
+    const held = cliAccountAvailability({ runtimeId: "cli:claude", profileId: "held", quota: heldQuota, identity: signedOut("held"), clock });
+    expect(held).toMatchObject({ tone: "ready", heldByGateway: true, label: "24%", percent: 24, color: cliAccountAvailabilityColor(24),
+      detail: "Signed out here · runs through Space Gateway" });
+    expect(held.description).toMatch(/^Signed out here · runs through Space Gateway · 5h 65% .* · Week 24% /);
+    const heldOut = cliAccountAvailability({ runtimeId: "cli:claude", profileId: "heldout", quota: heldQuota, identity: signedOut("heldout"), clock });
+    expect(heldOut).toMatchObject({ tone: "blocked", heldByGateway: true, label: expect.stringMatching(/^Back in /) });
     // Before the first quota sample a signed-in Claude account is still being checked.
     expect(cliAccountAvailability({
       runtimeId: "cli:claude",
@@ -164,7 +174,7 @@ describe("quota forecast at reset", () => {
     expect(cliAccountForecasts("cli:claude", { ...quota, claude: null }, clock)).toMatchObject([{ percent: null, reason: expect.stringMatching(/no quota sample/) }]);
     expect(cliAccountForecasts("cli:claude", { ...quota, claude: null }, clock)[0]!.checking).toBeUndefined();
     expect(cliAccountForecasts("cli:claude", quotaSample([claudeAccount("new", 100, null)]), clock))
-      .toMatchObject([{ percent: null, reason: "None of the 1 signed-in account reported a current weekly limit" }]);
+      .toMatchObject([{ percent: null, reason: "None of the 1 subscription account reported a current weekly limit" }]);
   });
 
   // 7/11 (nous_msg:e768734b): the header read «43% free at Fri 06:00» while 3 of the 5 accounts were spent and 1% of the pool was free.
@@ -637,9 +647,34 @@ describe("CliAccountPicker", () => {
     expect(onSelect).toHaveBeenCalledWith("api");
   });
 
+  it("shows a held profile's usage, counts it and picks it to run through Space Gateway (operator 12/11)", async () => {
+    mocks.claude.mockResolvedValue(page([claudeAccount("ops", 90, 80), claudeAccount("crew", 89, 70, "NOT_CONNECTED")], "space-claude-profiles"));
+    mocks.identities.mockResolvedValue({
+      accounts: [
+        { runtimeId: "cli:claude", profileId: "ops", displayName: "ops", email: "ops@example.test", authStatus: "CONNECTED" },
+        { runtimeId: "cli:claude", profileId: "crew", displayName: "crew", email: "crew@example.test", authStatus: "NOT_CONNECTED" },
+      ],
+      checkedAt: sampledAt,
+    });
+    const onSelect = vi.fn();
+    render(<CliAccountPicker runtimeId="cli:claude" providerLabel="Claude" icon={<span />} paneTitle="Claude pane"
+      profiles={[profile("ops"), profile("crew")]} selectedProfileId="ops" onSelect={onSelect} />);
+    fireEvent.click(screen.getByRole("button", { name: "Claude account for Claude pane" }));
+    const menu = await screen.findByRole("menu", { name: "Claude account for Claude pane" });
+    const [, crew] = within(menu).getAllByRole("menuitemradio");
+    await waitFor(() => expect(within(crew!).getByText("70%")).toBeTruthy());
+    expect(within(crew!).getByText("Signed out here · runs through Space Gateway")).toBeTruthy();
+    expect(crew!.getAttribute("aria-disabled")).toBeNull();
+    expect(within(menu).getByText("2 of 2 available now")).toBeTruthy();
+    fireEvent.click(crew!);
+    expect(onSelect).toHaveBeenCalledWith("crew");
+  });
+
   it("shows the API key's share of the monthly budget left after this month's Anthropic bill", () => {
     const api = (apiKeyMonth: { spentUsd: number | null; budgetUsd: number | null }) => cliAccountAvailability({
-      runtimeId: "cli:claude", profileId: "api", identity: null, clock: Date.now(),
+      // The API key has no login of its own; its sign-in check must not hide the budget (operator 11/11: it read "Not signed in").
+      runtimeId: "cli:claude", profileId: "api", clock: Date.now(),
+      identity: { runtimeId: "cli:claude", profileId: "api", displayName: "api", email: null, authStatus: "NOT_CONNECTED" },
       quota: { codex: null, agy: null, api: null, fetchedAt: Date.now(), claude: page([
         { ...claudeAccount("api", null, null), email: null, plan: null, status: "API_KEY" as never, apiKeyVerified: true, apiKeyMonth },
       ], "space-claude-profiles") as never },

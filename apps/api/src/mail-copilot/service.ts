@@ -2,11 +2,12 @@ import { randomBytes } from "node:crypto";
 import {
   MAIL_SYSTEM_LABELS, mailRuleMatches, mailSubjectKey, mailSubjectKeyPattern, mailThreadActionLabels, resolveMailCopilotPaneMetadata, type ConnectorCapability, type MailActionRecord, type MailOperatorAction, type MailRule, type MailRuleDecision, type MailRuleProposal, type MailRuleSubject, type MailAccountSummary, type MailComposeInput, type MailCopilotEvent,
   type MailCopilotEventInput, type MailCopilotEventType, type MailCopilotMemory, type MailCopilotMemoryCreate, type MailCopilotMemoryQuery, type MailCopilotMemoryUpdate,
-  type MailActionLogEntry, type MailCopilotFixRequest, type MailFixRequestView, type MailCopilotPaneMetadata, type MailCopilotPendingItem, type MailHabitLevel, type MailHabits, type MailHabitSender, type MailCopilotReviewDecision, type MailCopilotRun, type MailCopilotRunView, type MailLabel,
+  type MailActionLogEntry, type MailCopilotFixRequest, type MailFixRequestView, type MailCopilotPaneMetadata, type MailCopilotPendingItem, type MailHabitLevel, type MailHabits, type MailHabitSender, type MailCopilotReviewDecision, type MailCopilotRsvpRequest, type MailCopilotRun, type MailCopilotRunView, type MailLabel,
   type MailMessage, type MailThread, type MailThreadAction, type MailThreadLabel, type MailThreadLabels, type MailThreadSummary, type MailThreadsPage, type MailThreadsQuery, type Pane
 } from "@space/contracts";
 import type { MailCopilotRepository } from "@space/db";
-import { forbiddenByMemoryText, forbiddingMemory, MEMORY_HITS_NOTE, questionMemoryHits } from "@space/db";
+import type { RailAnswerBy } from "@space/db";
+import { forbiddenByMemoryText, forbiddingMemory, MEMORY_HITS_NOTE, questionMemoryHits, reviewRequiringMemories } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
 import { GmailMailboxError } from "../job-apply/gmail-mailbox.js";
 import { asksAboutAssessment, asksForAction, asksToSchedule } from "../job-apply/mail-triage.js";
@@ -27,7 +28,11 @@ export interface MailCopilotGoogleAccess {
   googleConfigured: boolean;
   googleAccounts(owner: string): Promise<Array<{ email: string; capabilities: ConnectorCapability[] }>>;
   googleAccessToken(owner: string, email: string, capability: ConnectorCapability): Promise<string>;
+  /** The connector gateway's tools; the copilot calls only `calendar.respond`, after the operator approved the answer. */
+  tool?(owner: string, toolId: string, args: Record<string, unknown>): Promise<{ status: "COMPLETED"; result: unknown } | { status: "BLOCKED"; statusReason: string }>;
 }
+type MailCopilotRsvp = { response: "accepted" | "declined" | "tentative"; eventId?: string; iCalUID?: string; comment?: string };
+const RSVP_LABEL = { accepted: "Yes", declined: "No", tentative: "Maybe" } as const;
 
 export interface MailCopilotServiceOptions {
   google(): MailCopilotGoogleAccess | null;
@@ -320,6 +325,16 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     });
     return createGmailClient({ accessToken: token, fetchImpl: options.gmailFetch });
   }
+  /** The connector that answers invitations for `email`; names the re-consent when the account never allowed Google Calendar (12/11). */
+  async function calendarAccess(owner: string, email: string) {
+    const google = options.google();
+    if (!google?.googleConfigured || !google.tool) throw new SpaceConflictError("Google Calendar is unavailable on this server.");
+    const account = (await allowedAccounts(owner, null)).find((entry) => entry.email === email);
+    if (!account?.capabilities.includes("CALENDAR")) {
+      throw new SpaceConflictError(`${email} has not allowed Google Calendar for Space, so the copilot cannot answer invitations. Allow Gmail & Calendar again for it in Job Copilot Setup → Google account.`);
+    }
+    return google as MailCopilotGoogleAccess & Required<Pick<MailCopilotGoogleAccess, "tool">>;
+  }
   /** The pane's accounts with Gmail read access, or the one named; refuses an account outside the pane. */
   /** The file parts of one of the account's messages (a Gmail draft holding a CV, say), as parsePayload lists them. */
   async function attachmentsOf(client: GmailClient, account: string, messageId: string) {
@@ -327,11 +342,11 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     return parsePayload(message.payload as Record<string, unknown> | undefined).attachments;
   }
   /** R12-5: a review or question the copilot's own memory forbids (scoped to the correspondent, or about the same words) is never raised. */
-  async function refuseForbidden(owner: string, item: string, counterpart?: string, account?: string, scheduling = false, order?: string): Promise<string | undefined> {
+  async function refuseForbidden(owner: string, item: string, counterpart?: string, account?: string, scheduling = false, order?: string, review = false): Promise<string | undefined> {
     const address = counterpart ? senderAddress(counterpart).toLowerCase() : undefined;
     const memory = await forbiddingMemory(async (query) => (await repository.listMemory(owner, { query, kinds: ["FACT", "LESSON", "PREFERENCE"], contactEmail: address,
       domain: address ? senderDomain(address) : undefined })).filter((found) => !scheduling || !REJECTION_RULE.test(`${found.key ?? ""} ${found.text}`)), item, (found) => Boolean(address && (found.contactEmail || found.domain)),
-      [address, account].filter((value): value is string => Boolean(value)));
+      [address, account].filter((value): value is string => Boolean(value)), review);
     if (memory && !order) throw new SpaceConflictError(forbiddenByMemoryText("Mail Copilot", memory));
     return memory && order ? operatorOrderOverride(order, memory.id) : undefined;
   }
@@ -1220,7 +1235,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const { asks: scheduling, ownOnly } = await this.threadAsks(owner, pane, input.draft.account, input.draft.threadId);
       let overrides: string | undefined;
       try {
-        overrides = await refuseForbidden(owner, `${input.draft.subject} ${input.summary}`, input.draft.to[0], input.draft.account, scheduling || ownOnly, order);
+        overrides = await refuseForbidden(owner, `${input.draft.subject} ${input.summary}`, input.draft.to[0], input.draft.account, scheduling || ownOnly, order, true);
         await refuseCommitment(owner, input.draft, scheduling);
         await refuseWorkingSigninSupport(owner, input.draft, order);
       } catch (error) { await tellBlocked(owner, input.draft, error); throw error; }
@@ -1236,24 +1251,64 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
           ...(order ? { operatorOrder: order } : {}), ...(vouched ? { vouched } : {}) } });
       return { reviewId, ...(overrides ? { overrides } : {}) };
     },
+    /** An answer to a calendar invitation waits for the operator like a reply (Nous 12/11): the server answers only once it is approved. */
+    async requestRsvp(owner: string, pane: Pane, input: MailCopilotRsvpRequest) {
+      const { account, summary, threadId, ...rsvp } = input;
+      await mailAccounts(owner, pane, account);
+      await calendarAccess(owner, account);
+      const reviewId = `mailrev:${randomBytes(9).toString("base64url")}`;
+      await record(owner, { paneId: pane.id, type: "REVIEW_REQUESTED", accountEmail: account, threadId: threadId ?? null,
+        message: `Review: answer "${RSVP_LABEL[rsvp.response]}" to the invitation: ${summary}`, payload: { reviewId, rsvp, reasoning: null } });
+      return { reviewId };
+    },
+    /**
+     * Nous 13/11 (mailrev:oLB398mFW7pu went out under maySend): the rule memory that requires this review (funding mail: "the operator reads
+     * it before it goes out"), read with the words and addresses it was raised with; null when none does or the review is unknown.
+     */
+    async reviewRequiredBy(owner: string, reviewId: string) {
+      const review = (await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] })).find((event) => event.payload.reviewId === reviewId);
+      if (!review) return null;
+      const draft = review.payload.draft as MailComposeInput | undefined;
+      const address = draft?.to[0] ? senderAddress(draft.to[0]).toLowerCase() : undefined;
+      const [memory] = await reviewRequiringMemories((query) => repository.listMemory(owner, { query, kinds: ["FACT", "LESSON", "PREFERENCE"], contactEmail: address,
+        domain: address ? senderDomain(address) : undefined }), `${draft?.subject ?? ""} ${review.message.replace(/^Review: /, "")}`,
+      [address, review.accountEmail].filter((value): value is string => Boolean(value)));
+      return memory ?? null;
+    },
     /**
      * One decision and one Gmail send per review (stable 2026-10-17: one approval went to Hetzner twice, 9 s apart): a decided
      * review answers its recorded decision, and a decision already running is shared by the calls that arrive meanwhile.
      * shortcut: the in-flight guard is per process; the API runs one, a second process would need a database claim.
      */
-    async decideReview(owner: string, pane: Pane, input: MailCopilotReviewDecision) {
+    async decideReview(owner: string, pane: Pane, input: MailCopilotReviewDecision, by?: RailAnswerBy) {
       const key = `${owner}\u0000${input.reviewId}`;
       const running = deciding.get(key);
       if (running) return running;
-      const decision = this.decideReviewOnce(owner, pane, input).finally(() => deciding.delete(key));
+      const decision = this.decideReviewOnce(owner, pane, input, by).finally(() => deciding.delete(key));
       deciding.set(key, decision);
       return decision;
     },
-    async decideReviewOnce(owner: string, pane: Pane, input: MailCopilotReviewDecision) {
+    /** `by`: who ran it when not the rail itself (RailAnswerBy), so the decision ledger never scores it as the operator's rail answer (goal 7365014c). */
+    async decideReviewOnce(owner: string, pane: Pane, input: MailCopilotReviewDecision, by?: RailAnswerBy) {
       const decided = (await repository.listEvents(owner, { types: ["REVIEW_DECIDED"] })).find((event) => event.payload.reviewId === input.reviewId);
       if (decided) return { decision: decided.payload.decision as MailCopilotReviewDecision["decision"], sent: (decided.payload.sent ?? null) as { messageId: string; threadId: string } | null };
       const review = (await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] })).find((event) => event.payload.reviewId === input.reviewId);
       if (!review) throw new SpaceNotFoundError("The review was not found.");
+      const rsvp = review.payload.rsvp as MailCopilotRsvp | undefined;
+      if (rsvp && review.accountEmail) {
+        let answered: unknown = null;
+        if (input.decision !== "reject") {
+          const comment = input.decision === "edit" && input.text?.trim() ? input.text.trim() : rsvp.comment;
+          const outcome = await (await calendarAccess(owner, review.accountEmail)).tool(owner, "calendar.respond", { ...rsvp, ...(comment ? { comment } : {}), account: review.accountEmail });
+          if (outcome.status === "BLOCKED") throw new SpaceConflictError(outcome.statusReason);
+          answered = outcome.result;
+        }
+        await record(owner, { paneId: pane.id, type: "REVIEW_DECIDED", accountEmail: review.accountEmail, threadId: review.threadId,
+          message: answered ? `You approved the calendar answer; "${RSVP_LABEL[rsvp.response]}" was sent` : `You rejected the calendar answer${input.note ? `: ${input.note}` : ""}`,
+          payload: { reviewId: input.reviewId, decision: input.decision, note: input.note ?? null, sent: null, answered, ...(by ? { by } : {}) } });
+        if (answered && review.threadId) await closeHandledItems(owner, review.accountEmail, review.threadId).catch(() => undefined);
+        return { decision: input.decision, sent: null };
+      }
       const draft = review.payload.draft as MailComposeInput;
       let sent: { messageId: string; threadId: string } | null = null;
       if (input.decision !== "reject") {
@@ -1268,7 +1323,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       }
       await record(owner, { paneId: pane.id, type: "REVIEW_DECIDED", accountEmail: review.accountEmail, threadId: review.threadId, messageId: sent?.messageId ?? null,
         message: input.decision === "approve" ? "You approved the reply; it was sent" : input.decision === "edit" ? "You edited the reply; your version was sent" : `You rejected the reply${input.note ? `: ${input.note}` : ""}`,
-        payload: { reviewId: input.reviewId, decision: input.decision, note: input.note ?? null, sent } });
+        payload: { reviewId: input.reviewId, decision: input.decision, note: input.note ?? null, sent, ...(by ? { by } : {}) } });
       // 2/11 (ArcFusion: a NEEDS_USER card stayed in Needs you after its review was sent): a sent review settles its thread's waiting items and cards.
       if (sent && review.accountEmail && review.threadId) await closeHandledItems(owner, review.accountEmail, review.threadId).catch(() => undefined);
       return { decision: input.decision, sent };
@@ -1290,14 +1345,14 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       await record(owner, { paneId: pane?.id ?? null, type: "RULE_DECIDED", accountEmail: rule.accountEmail, message: `You added the rule: ${rule.name}`, payload: { ruleId: rule.id, decision: "approve" } });
       return rule;
     },
-    async decideRule(owner: string, pane: Pane | null, id: string, input: MailRuleDecision): Promise<MailRule> {
+    async decideRule(owner: string, pane: Pane | null, id: string, input: MailRuleDecision, by?: RailAnswerBy): Promise<MailRule> {
       const rule = await repository.getRule(owner, id);
       if (!rule) throw new SpaceNotFoundError("The rule was not found.");
       const status = ({ approve: "APPROVED", reject: "REJECTED", retire: "RETIRED" } as const)[input.decision];
       const updated = (await repository.updateRule(owner, id, { status, decidedAt: now() }))!;
       // The decision lands in the pane that proposed the rule (that is where the notification and the Activity live).
       const proposal = (await repository.listEvents(owner, { types: ["RULE_PROPOSED"] })).find((event) => event.payload.ruleId === id);
-      await record(owner, { paneId: pane?.id ?? proposal?.paneId ?? null, type: "RULE_DECIDED", accountEmail: rule.accountEmail, message: `You ${input.decision === "approve" ? "approved" : input.decision === "reject" ? "rejected" : "retired"} the rule: ${rule.name}`, payload: { ruleId: rule.id, decision: input.decision } });
+      await record(owner, { paneId: pane?.id ?? proposal?.paneId ?? null, type: "RULE_DECIDED", accountEmail: rule.accountEmail, message: `You ${input.decision === "approve" ? "approved" : input.decision === "reject" ? "rejected" : "retired"} the rule: ${rule.name}`, payload: { ruleId: rule.id, decision: input.decision, ...(by ? { by } : {}) } });
       return updated;
     },
     // ---- new-mail sync ------------------------------------------------------------------------
@@ -1616,7 +1671,8 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const deadline = Date.now() + Math.min(input.waitMs, NEXT_MAX_WAIT_MS);
       for (;;) {
         const decided = (await repository.listEvents(owner, { types: ["REVIEW_DECIDED"] })).find((event) => event.payload.reviewId === input.reviewId);
-        if (decided) return { decided: true as const, decision: String(decided.payload.decision), note: decided.payload.note ?? null, sent: decided.payload.sent ?? null };
+        if (decided) return { decided: true as const, decision: String(decided.payload.decision), note: decided.payload.note ?? null, sent: decided.payload.sent ?? null,
+          ...(decided.payload.answered ? { answered: decided.payload.answered } : {}) };
         if (Date.now() >= deadline) return { decided: false as const, decision: null };
         await sleep(Math.min(NEXT_POLL_MS, Math.max(0, deadline - Date.now())));
       }

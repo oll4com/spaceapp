@@ -1,10 +1,10 @@
 # The Video pane's worker with Chatterbox too (scripts/space-video-tools-setup.mjs --install --with-chatterbox): the whole
-# closure of requirements.txt plus chatterbox-tts and its dependencies as pip resolved them together on 2026-10-21, with
-# torch and torchaudio 2.6.0+cpu from the PyTorch CPU index (so the main set's tokenizers and huggingface_hub move to the
-# versions Chatterbox accepts). Used instead of requirements.txt, never together with it. Linux x86_64, CPython 3.13.
+# closure of requirements.txt plus chatterbox-tts and its dependencies, resolved on 2026-11-12 with uv pip compile, torch and
+# torchaudio from the PyTorch CPU index, and these overrides past chatterbox-tts 0.1.7's own pins (it installs --no-deps, so
+# pip never reads them) to their first patched versions or later: torch>=2.13 torchaudio>=2.10 transformers>=5.10.0 diffusers>=0.38.0 gradio>=6.16.0 pillow>=13.0.0 starlette>=1.3.1 brotli>=1.2.1 virtualenv>=21.14.13 numpy>=2.0.0 safetensors>=0.8.0;
+# opencv-python dropped (the headless wheel serves cv2). Used instead of requirements.txt, never together with it.
+# Linux x86_64, CPython 3.13.
 --extra-index-url https://download.pytorch.org/whl/cpu
-aiofiles==24.1.0 \
-    --hash=sha256:b4ec55f4195e3eb5d7abd1bf7e061763e864dd4954231fb8539a0ef8bb8260e5
 annotated-doc==0.0.5 \
     --hash=sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101
 annotated-types==0.8.0 \
@@ -20,8 +20,8 @@ audioread==3.1.0 \
 # av stays below 19: faster-whisper 1.2.1 opens files with metadata_errors=, which PyAV 19 removed.
 av==18.1.0 \
     --hash=sha256:8a032e8d8ebc73dec079364b9b4a6837638a2d106e8472314e685ffbf163e700
-brotli==1.2.0 \
-    --hash=sha256:67a91c5187e1eec76a61625c77a6c8c785650f5b576ca732bd33ef58b0dff49c
+brotli==1.2.1 \
+    --hash=sha256:264fd5b200f6f6170cb551a4b9fcaabf8aa846ddaefe72db4d5f49f9d3743df9
 catalogue==2.0.10 \
     --hash=sha256:58c2de0020aa90f4a2da7dfad161bf7b3b054c86a5f09fcedc0b2b740c109a9f
 certifi==2026.10.19 \
@@ -46,8 +46,8 @@ decorator==5.3.1 \
     --hash=sha256:f47fe6fdbd2edd623ecfe36875d37aba411624e2670dd395dddae1358689bb3c
 deprecated==3.0.0 \
     --hash=sha256:58204cf4a7f6270d547af5c278ee7a6bb56045a4b3d8441a1cd11660f41b7939
-diffusers==0.29.0 \
-    --hash=sha256:4c194d2379644a0f7ef9b4ff12c8cf5de4c6324e811265754f08e2f839b8cedb
+diffusers==0.43.0 \
+    --hash=sha256:8afb8ff1b09d693854de0412d8bdc94fc9e6e6e4efefb2386c616f64a4dc9ac6
 distlib==0.4.4 \
     --hash=sha256:cf09d55b1e85a89576b036aeb71550bfd68320f3f21761ca329eadadad918638
 dlinfo==2.0.0 \
@@ -60,22 +60,22 @@ fastapi==0.156.8 \
     --hash=sha256:d5f2e052a5f985fb0bbe1114527938c25fedbe198a8197faae71c3d38851b7c3
 faster-whisper==1.2.1 \
     --hash=sha256:79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7
-ffmpy==1.0.0 \
-    --hash=sha256:5640e5f0fd03fb6236d0e119b16ccf6522db1c826fdf35dcb87087b60fd7504f
 filelock==4.2.4 \
     --hash=sha256:301241438c57936ef93f4243a94f2559022268bfcf9b375a9a72eb0f8db8358e
 flatbuffers==25.12.19 \
     --hash=sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4
 fsspec==2026.9.0 \
     --hash=sha256:8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f
-gradio==6.8.0 \
-    --hash=sha256:1ece9f3d075bec3da5a6e69c77fa03ddcf3b14af56a9ca843a499406c2b3afd6
-gradio-client==2.2.0 \
-    --hash=sha256:090f72106b41ba17dcf1b437db54a7bba4c406244f8b01210d5bf24b2af6a85d
+gradio==6.31.0 \
+    --hash=sha256:7b50b9b6a2d23cd02851ad4c8b1c8312c88d8b911d1f29c93f9761c98348a64a
+gradio-client==2.7.2 \
+    --hash=sha256:12c9d2d940df28eb8dce58eef61f5e808265ad87bbbca53704d1330aa701e5e2
 groovy==0.1.2 \
     --hash=sha256:7f7975bab18c729a257a8b1ae9dcd70b7cafb1720481beae47719af57c35fa64
 h11==0.16.0 \
     --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
+hf-gradio==0.4.1 \
+    --hash=sha256:76b8cb8be6abe62d74c1ad2d35b42f0629db89aa9e1a8d033cecfe7c856eeab3
 hf-xet==1.7.0 \
     --hash=sha256:2814a6e999d13464c4d679b788cc5d784eb5a4edfc638a31f10e9a11ab531ef8
 httpcore==1.0.9 \
@@ -144,8 +144,8 @@ pandas==3.0.6 \
     --hash=sha256:1e92d9fa834c7d877130027cddc0cad8dcff97c1f6cca26bd6310f847228b658
 phonemizer==3.4.0 \
     --hash=sha256:5ff1215d0efa3606dd1b92449f6d71b5c1741efcc84c6d40c17bfaf64f6ded5f
-pillow==12.3.0 \
-    --hash=sha256:0847a763afefb695bc912d7c131e7e0632d4edc1d8698f58ddabec8e46b8b6d3
+pillow==13.0.0 \
+    --hash=sha256:5f56499c1a74d2b862beb0c33b8016f99d095858455df9d21583bbbc1c15b582
 platformdirs==4.13.5 \
     --hash=sha256:53d3ec4280b815c1e0b02edad7f9ee8fda1ba9c0865dd9c2e6e63849ce82fc1e
 pooch==1.9.0 \
@@ -190,8 +190,8 @@ s3tokenizer==0.3.0 \
     --hash=sha256:c9e93b1892a124a2c4d958ab53610a1b4433fcb4172056e2f2bd3c09cfe249a6
 safehttpx==0.1.7 \
     --hash=sha256:c4f4a162db6993464d7ca3d7cc4af0ffc6515a606dfd220b9f82c6945d869cde
-safetensors==0.5.3 \
-    --hash=sha256:cead1fa41fc54b1e61089fa57452e8834f798cb1dc7a09ba3524f1eb08e0317a
+safetensors==0.8.0 \
+    --hash=sha256:fd6f3f93c9a0a7cc2788ee63fb763353d4bd2e89b0751bc78fcf7dda00bea774
 scenedetect==0.7.2 \
     --hash=sha256:953b89fe7e6b82a497c263e26245ad599b004aa7afa74814312980479a040641
 scikit-learn==1.9.1 \
@@ -220,28 +220,26 @@ standard-chunk==3.13.0 \
     --hash=sha256:17880a26c285189c644bd5bd8f8ed2bdb795d216e3293e6dbe55bbd848e2982c
 standard-sunau==3.13.0 \
     --hash=sha256:53af624a9529c41062f4c2fd33837f297f3baa196b0cfceffea6555654602622
-starlette==0.52.1 \
-    --hash=sha256:0029d43eb3d273bc4f83a08720b4912ea4b071087a3b48db01b7c839f7954d74
-sympy==1.13.1 \
-    --hash=sha256:db36cdc64bf61b9b24578b6f7bab1ecdd2452cf008f34faa33776680c26d66f8
+starlette==1.10.0 \
+    --hash=sha256:478c0ab3b4ced6e82719849c118fa406f0278a3499c1a898cd15cd31bdc38ce4
+sympy==1.14.0 \
+    --hash=sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5
 threadpoolctl==3.7.0 \
     --hash=sha256:cd8b60b5641b45c67bbf73c64c843235fc2d8a480c87389f52f5dbee893b86be
-tokenizers==0.22.2 \
-    --hash=sha256:369cc9fc8cc10cb24143873a0d95438bb8ee257bb80c71989e3ee290e8d72c67
+tokenizers==0.23.3 \
+    --hash=sha256:376851d22bcf9d650a5c3090bb83e6cf9e895fbf0595369fa4cd43c1f69b5f87
 tomlkit==0.13.3 \
     --hash=sha256:c89c649d79ee40629a9fda55f8ace8c6a1b42deb912b2a8fd8d942ddadb606b0
-torch==2.6.0+cpu \
-    --hash=sha256:e70ee2e37ad27a90201d101a41c2e10df7cf15a9ebd17c084f54cf2518c57bdf
-torchaudio==2.6.0+cpu \
-    --hash=sha256:6fae44f4d5b401a048f997d2fedf43566634b45e44950224b2b99ea1db18c68a
+torch==2.15.0+cpu \
+    --hash=sha256:0f6f69701b2d38ddc412364dfb92e2e13e74960d33fa3573b4930ced626e81c7
+torchaudio==2.11.1+cpu \
+    --hash=sha256:fc050a1aeb556f8a7f5ee01531e6ae9f130aed81452da6d9052d3429e3a68d9e
 tqdm==4.70.1 \
     --hash=sha256:c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73
-transformers==5.2.0 \
-    --hash=sha256:9ecaf243dc45bee11a7d93f8caf03746accc0cb069181bbf4ad8566c53e854b4
+transformers==5.22.2 \
+    --hash=sha256:829c2820aff91730b8ec45a4b8ff4be07f586a140b68a9073998b36fa35297dc
 typer==0.27.3 \
     --hash=sha256:e50022f28b82a86313e54501317a1db64bf8f8d036ff8cfe5ca7e47675454aff
-typer-slim==0.24.0 \
-    --hash=sha256:d5d7ee1ee2834d5020c7c616ed5e0d0f29b9a4b1dd283bdebae198ec09778d0e
 typing-extensions==4.16.0 \
     --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
 typing-inspection==0.4.4 \
@@ -250,8 +248,8 @@ urllib3==2.8.0 \
     --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3
 uvicorn==0.54.0 \
     --hash=sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf
-virtualenv==21.14.12 \
-    --hash=sha256:7820aeaef23f1f59a96458edfc7f9d3deac937155718de15f1c9a64471e15551
+virtualenv==21.15.6 \
+    --hash=sha256:4b99ab9b95ff11043939bb4cad2fa0449175fa5a478372864f62160cb6c1a7ed
 wrapt==2.5.1 \
     --hash=sha256:f1630201b0e2a96bb26304b7adfbd91a4ef486abb5a4c48377444a0bed749f37
 zipp==4.1.1 \

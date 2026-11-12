@@ -115,6 +115,22 @@ describe("pane reports", () => {
     expect(raise.mock.calls[1]![0]).toMatchObject({ link: { target: "browser" }, payload: { ask: { options: ["A", "B"], recommended: "B" } } });
   });
 
+  it("a blocked report whose --needs asks for the operator's hands raises the same Needs you card; a blocked one without needs or with needs none does not (nous_msg:e68eed59)", async () => {
+    const raised = async (needs?: string) => {
+      const raise = vi.fn(async (input: unknown) => input as never);
+      const reports = createPaneReports({ repository: new InMemoryPaneReportsRepository(), now: () => now, store: { getRoom: async () => bruno, getPane: async () => andy } as never,
+        lastAnswer: async () => null, screen: async () => null, notifications: { raise, resolve: vi.fn(async () => 1) } });
+      await reports.report(bruno, andy, { status: "blocked", summary: "npm publish waits for the login", ...(needs === undefined ? {} : { needs }) });
+      return raise.mock.calls.map((call) => call[0]);
+    };
+    // 11/11 03:01Z: Jack's blocked report needed the operator to approve an npm login link and no card came.
+    expect(await raised("Open and approve https://www.npmjs.com/login?next=/login/cli/x")).toMatchObject([{ kind: "NEEDS_YOU", title: "Andy needs you",
+      link: { target: "url:https://www.npmjs.com/login?next=/login/cli/x" }, dedupeKey: `agent:needs-you:${andy.id}`,
+      payload: { ask: { options: [NEEDS_YOU_GO_NOW, "Failed", "Need links/steps"], recommended: NEEDS_YOU_GO_NOW } } }]);
+    expect(await raised()).toEqual([]);
+    expect(await raised("none")).toEqual([]);
+  });
+
   it("needs-you raises one AGENT notification per pane (titled after the pane, a new ask alerts again); only a report that ends that ask resolves it", async () => {
     const repository = new InMemoryPaneReportsRepository();
     const raise = vi.fn(async (input: unknown) => input as never);

@@ -1,5 +1,6 @@
 import { GmailMailboxError } from "../job-apply/gmail-mailbox.js";
 import { gmailErrorMessage, gmailRefusal } from "../job-apply/gmail-organize.js";
+import { maskPasswordResetJson } from "../password-reset-mask.js";
 
 // The Gmail REST calls the mailbox needs, one client per (owner, account) access token. Every call is one
 // HTTPS request with a 20 s timeout; rate limits (429, or 403 with a rate-limit reason) and 5xx answers are retried a few times with backoff.
@@ -12,7 +13,8 @@ export interface GmailClient {
   profile(): Promise<{ emailAddress: string; historyId: string }>;
   labels(): Promise<Array<{ id: string; name: string; type: string }>>;
   labelUnread(id: string): Promise<number | null>;
-  listThreads(input: { labelIds?: string[]; q?: string; pageToken?: string; maxResults: number }): Promise<{ ids: string[]; nextPageToken: string | null }>;
+  /** `historyIds`: each listed thread's historyId, which changes with any change to the thread. */
+  listThreads(input: { labelIds?: string[]; q?: string; pageToken?: string; maxResults: number }): Promise<{ ids: string[]; nextPageToken: string | null; historyIds?: Map<string, string> }>;
   thread(id: string, format: "metadata" | "full"): Promise<GmailJson>;
   message(id: string, format: "metadata" | "full" | "raw"): Promise<GmailJson>;
   /** The account's verified "Send mail as" addresses (the primary one included), lower-case. */
@@ -56,7 +58,7 @@ export function createGmailClient(input: { accessToken: string; fetchImpl?: type
         signal: AbortSignal.timeout(20_000)
       });
       const text = await response.text();
-      const body = (text ? JSON.parse(text) : {}) as GmailJson;
+      const body = maskPasswordResetJson((text ? JSON.parse(text) : {}) as GmailJson);
       if (response.ok) return body;
       const refusal = gmailRefusal(response.status, body);
       if ((refusal === "RATE_LIMIT" || response.status >= 500) && attempt < RETRIES) { await sleep(retryDelay * 2 ** attempt); continue; }
@@ -86,7 +88,10 @@ export function createGmailClient(input: { accessToken: string; fetchImpl?: type
       if (q) params.set("q", q);
       if (pageToken) params.set("pageToken", pageToken);
       const body = await call(`/threads?${params}`);
-      return { ids: ((body.threads as Array<{ id?: unknown }> | undefined) ?? []).map((thread) => thread.id).filter((id): id is string => typeof id === "string"),
+      const threads = (body.threads as Array<{ id?: unknown; historyId?: unknown }> | undefined) ?? [];
+      const historyIds = new Map<string, string>();
+      for (const thread of threads) if (typeof thread.id === "string" && typeof thread.historyId === "string") historyIds.set(thread.id, thread.historyId);
+      return { ids: threads.map((thread) => thread.id).filter((id): id is string => typeof id === "string"), historyIds,
         nextPageToken: typeof body.nextPageToken === "string" ? body.nextPageToken : null };
     },
     thread: (id, format) => call(`/threads/${encodeURIComponent(id)}?format=${format}${format === "metadata" ? "&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date" : ""}`),

@@ -126,7 +126,7 @@ describe("Nous Quotas view (operator 2026-10-29, plan clipboard:4pyungpPsrfD)", 
       fiveHourResetAt: null, weeklyRemainingPercent: 40, weeklyResetAt, weeklyScope: null, sampledAt }], "claude") as never;
     const reason = (list: unknown) => providerQuotaAtReset("claude", { codex: null, agy: null, claude: list as never }, clock).unknown;
     expect(reason(null)).toBe("not read yet");
-    expect(reason(claude("EXPIRED", at(600)))).toBe("no connected account");
+    expect(reason(claude("EXPIRED", at(600)))).toBe("no subscription account");
     expect(reason(claude("CONNECTED", null))).toBe("no weekly reset time reported");
     // Dev's copied gateway rows (31/10): weeks that reset days ago.
     expect(reason(claude("CONNECTED", at(-3 * 24 * 60)))).toBe("weekly sample out of date");

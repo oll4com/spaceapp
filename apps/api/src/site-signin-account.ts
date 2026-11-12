@@ -73,8 +73,11 @@ export function wantedAccount(recipe: Pick<SiteSignin, "googleAccountEmail" | "b
   const signedIn = (choice: AccountChoice) => SIGNED_IN.has(choice.browserStatus ?? "");
   if (email) {
     const matches = choices.filter((choice) => choice.email?.trim().toLowerCase() === email);
-    // The profile signed in to that account first; between two signed-in ones, the linked Google account.
-    const ranked = [...matches].sort((left, right) => Number(signedIn(right)) - Number(signedIn(left))
+    // The recipe's own profile first (12/11: github.com's recipe pins the profile holding its session, not the email's first match),
+    // then the profile signed in to that account; between two signed-in ones, the linked Google account.
+    const pinned = !hintEmail && recipe?.browserProfileId ? storedProfileId(recipe.browserProfileId) : null;
+    const ranked = [...matches].sort((left, right) => Number(right.profileId === pinned) - Number(left.profileId === pinned)
+      || Number(signedIn(right)) - Number(signedIn(left))
       || Number(right.profileId.startsWith("google_account:")) - Number(left.profileId.startsWith("google_account:")));
     const best = ranked[0];
     return { email, profileId: best?.profileId ?? null, signedIn: best ? signedIn(best) : false, source };

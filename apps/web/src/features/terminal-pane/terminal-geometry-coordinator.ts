@@ -9,6 +9,7 @@ export interface TerminalGeometryTerminal extends ResizePresentationTerminal {
   clearTextureAtlas?: () => void;
   refresh: (start: number, end: number) => void;
   resize?: (cols: number, rows: number) => void;
+  onRender?: (listener: () => void) => { dispose(): void };
 }
 
 export interface TerminalGeometryFitAddon {
@@ -229,6 +230,64 @@ function stableSamples(left: LayoutSample, right: LayoutSample): boolean {
   );
 }
 
+// One frame serves every terminal of a window: each queued pane reads its host layout before any pane writes, so N panes
+// share one forced layout instead of N, and writes stop at FRAME_WRITE_BUDGET_MS; the rest wait a frame (staggers mount/resize).
+const FRAME_WRITE_BUDGET_MS = 8;
+// xterm ends a synchronized-output frame itself within 1 s; this covers a paused renderer that never armed that timeout.
+const SYNC_OUTPUT_FALLBACK_MS = 1100;
+
+interface TerminalFrameJob {
+  read(): (() => void) | void;
+  queue(): void;
+  cancel(): void;
+}
+const terminalFrameJobs = new WeakMap<Window, Map<object, TerminalFrameJob>>();
+
+function queuedTerminalFrameJobs(ownerWindow: Window): Map<object, TerminalFrameJob> {
+  let jobs = terminalFrameJobs.get(ownerWindow);
+  if (!jobs) terminalFrameJobs.set(ownerWindow, (jobs = new Map()));
+  return jobs;
+}
+
+function runTerminalFrameBatch(ownerWindow: Window) {
+  const queued = queuedTerminalFrameJobs(ownerWindow);
+  const jobs = [...queued.values()];
+  queued.clear();
+  for (const job of jobs) job.cancel();
+  const writes = jobs.map((job) => [job, job.read()] as const);
+  const started = performance.now();
+  let wrote = false;
+  for (const [job, write] of writes) {
+    if (!write) continue;
+    if (wrote && performance.now() - started > FRAME_WRITE_BUDGET_MS) {
+      job.queue();
+      continue;
+    }
+    wrote = true;
+    write();
+  }
+}
+
+// One ResizeObserver for every terminal host: the browser hands all changed hosts to one callback after layout.
+const terminalHostCallbacks = new Map<Element, (entry: ResizeObserverEntry) => void>();
+let terminalHostObserver: ResizeObserver | null = null;
+
+export function observeTerminalHost(host: Element, callback: (entry: ResizeObserverEntry) => void): () => void {
+  terminalHostObserver ??= new ResizeObserver((entries) => {
+    for (const entry of entries) terminalHostCallbacks.get(entry.target)?.(entry);
+  });
+  terminalHostCallbacks.set(host, callback);
+  terminalHostObserver.observe(host);
+  return () => {
+    if (terminalHostCallbacks.get(host) !== callback) return;
+    terminalHostCallbacks.delete(host);
+    terminalHostObserver?.unobserve(host);
+    if (terminalHostCallbacks.size > 0) return;
+    terminalHostObserver?.disconnect();
+    terminalHostObserver = null;
+  };
+}
+
 function nextAnimationFrame(ownerWindow: Window): Promise<void> {
   return new Promise((resolve) => ownerWindow.requestAnimationFrame(() => resolve()));
 }
@@ -336,7 +395,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
   let fontTicket = 0;
   let frame: number | null = null;
   let pendingRefit = false;
-  let waitingForSynchronizedOutput = false;
+  let synchronizedOutputWait: { dispose(): void } | null = null;
   let repairRequested = false;
   let restoreSample: LayoutSample | null = null;
   let stabilizingRestore = false;
@@ -359,13 +418,22 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
 
   const resizePresentation = createTerminalResizePresentation(options.host, options.getTerminal, isEligible, options.onTrace);
 
+  const frameOwner = {};
+  const cancelOwnFrame = () => {
+    if (frame === null) return;
+    ownerWindow.cancelAnimationFrame(frame);
+    frame = null;
+  };
+  const endSynchronizedOutputWait = () => {
+    synchronizedOutputWait?.dispose();
+    synchronizedOutputWait = null;
+  };
+
   const cancelScheduledWork = () => {
     resizePresentation.cancel();
-    waitingForSynchronizedOutput = false;
-    if (frame !== null) {
-      ownerWindow.cancelAnimationFrame(frame);
-      frame = null;
-    }
+    endSynchronizedOutputWait();
+    queuedTerminalFrameJobs(ownerWindow).delete(frameOwner);
+    cancelOwnFrame();
     if (timer !== null) {
       ownerWindow.clearTimeout(timer);
       timer = null;
@@ -629,24 +697,8 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     return true;
   };
 
-  const runFrame = () => {
-    frame = null;
-    if (!isEligible()) {
-      pendingRefit = true;
-      return;
-    }
-    const sample = hostLayoutSample(options.host);
-    if (!sample) {
-      pendingRefit = true;
-      restoreSample = null;
-      return;
-    }
+  const writeFrame = (sample: LayoutSample) => {
     if (stabilizingRestore) {
-      if (!restoreSample || !stableSamples(restoreSample, sample)) {
-        restoreSample = sample;
-        frame = ownerWindow.requestAnimationFrame(runFrame);
-        return;
-      }
       stabilizingRestore = false;
       restoreSample = null;
       if (reuseStableGeometry(sample)) {
@@ -661,18 +713,63 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     const terminal = options.getTerminal();
     if (terminal?.modes?.synchronizedOutputMode) {
       pendingRefit = true;
-      if (!waitingForSynchronizedOutput) {
-        waitingForSynchronizedOutput = true;
-        options.onTrace?.("SYNC_WAIT");
-        // This buffers a refresh, arming xterm's own bounded protocol timeout
-        // even if the CLI sent begin-sync without any subsequent output.
-        terminal.refresh(0, terminal.rows - 1);
-      }
-      frame = ownerWindow.requestAnimationFrame(runFrame);
+      if (synchronizedOutputWait) return;
+      options.onTrace?.("SYNC_WAIT");
+      // xterm renders (onRender) once the CLI ends the frame or its own timeout does; the timer covers a renderer that
+      // never renders and re-checks, so no frame loop polls the mode meanwhile.
+      const resume = () => {
+        endSynchronizedOutputWait();
+        scheduleFrame();
+      };
+      const rendered = terminal.onRender?.(() => {
+        if (!terminal.modes?.synchronizedOutputMode) resume();
+      });
+      const fallback = ownerWindow.setTimeout(resume, SYNC_OUTPUT_FALLBACK_MS);
+      synchronizedOutputWait = {
+        dispose() {
+          rendered?.dispose();
+          ownerWindow.clearTimeout(fallback);
+        }
+      };
+      // This buffers a refresh, arming xterm's own bounded protocol timeout
+      // even if the CLI sent begin-sync without any subsequent output.
+      terminal.refresh(0, terminal.rows - 1);
       return;
     }
-    waitingForSynchronizedOutput = false;
     applyGeometry(sample);
+  };
+
+  // The read half of a frame: layout only, no writes. A deferred write reads again next frame.
+  const readFrame = (): (() => void) | void => {
+    if (!isEligible()) {
+      pendingRefit = true;
+      return;
+    }
+    const sample = hostLayoutSample(options.host);
+    if (!sample) {
+      pendingRefit = true;
+      restoreSample = null;
+      return;
+    }
+    if (stabilizingRestore && (!restoreSample || !stableSamples(restoreSample, sample))) {
+      restoreSample = sample;
+      queueFrame();
+      return;
+    }
+    return () => writeFrame(sample);
+  };
+
+  const frameJob: TerminalFrameJob = { read: readFrame, queue: () => queueFrame(), cancel: cancelOwnFrame };
+  const queueFrame = () => {
+    queuedTerminalFrameJobs(ownerWindow).set(frameOwner, frameJob);
+    if (frame !== null) return;
+    // Every queued pane's frame runs the whole batch; the batch cancels the others, and a stale id returns.
+    const id = ownerWindow.requestAnimationFrame(() => {
+      if (frame !== id) return;
+      frame = null;
+      runTerminalFrameBatch(ownerWindow);
+    });
+    frame = id;
   };
 
   const scheduleFrame = () => {
@@ -681,8 +778,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       pendingRefit = true;
       return;
     }
-    if (frame !== null) ownerWindow.cancelAnimationFrame(frame);
-    frame = ownerWindow.requestAnimationFrame(runFrame);
+    queueFrame();
   };
 
   const requestRefit = (request: TerminalRefitOptions = {}) => {

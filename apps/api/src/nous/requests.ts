@@ -3,7 +3,7 @@ import { NOUS_ATTACHMENTS_MARKER, nousRequestStatusSchema, type ClipboardItem, t
 import type { NousAnswerLink, NousNote, NousRepository, NousTurnOutcomes } from "@space/db";
 import type { NotificationService } from "../notifications/service.js";
 import { titleWords } from "./pane-notices.js";
-import { closedRequestsOf, OPEN_REQUEST_PREFIX, openRequestsOf, overlap, reopenedAtOf, REQUEST_DONE_NOTE_PREFIX, requestDoneReceiptKey } from "./request-done.js";
+import { closedRequestsOf, OPEN_REQUEST_PREFIX, openRequestsOf, reopenedAtOf, REQUEST_DONE_NOTE_PREFIX, requestDoneReceiptKey } from "./request-done.js";
 
 /**
  * The Requests tab (operator 31/10 09:55 BKK, plan clipboard:2NOOFNJDUIMO): every message the operator sent Nous, newest first, with how
@@ -25,15 +25,22 @@ export type NousRequestPlans = Map<string, PlanInfo>;
 
 const DONE_KEY = "nous:done:";
 const payloadOf = (record: SpaceNotification) => record.payload as Partial<RequestDonePayload>;
-const push = <T>(map: Map<string, T[]>, key: string, value: T) => { map.set(key, [...(map.get(key) ?? []), value]); };
+const push = <T>(map: Map<string, T[]>, key: string, value: T) => { const list = map.get(key); if (list) list.push(value); else map.set(key, [value]); };
 const textOf = (content: string) => { const at = content.indexOf(NOUS_ATTACHMENTS_MARKER); return (at < 0 ? content : content.slice(0, at)).trim(); };
 // Search (operator 6/11 13:02 BKK): case and accents folded, so «αιτηματα» finds «αιτήματα».
 const fold = (text: string) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 const open = (plan: PlanInfo | undefined) => Boolean(plan && !plan.isCompleted && plan.executionStatus !== "COMPLETED" && plan.progressPercentage < 100);
 const completed = (plan: PlanInfo | undefined) => Boolean(plan && !open(plan));
 
-/** Which turns answered which messages, the outcomes reported for each message and the plans linked to it. */
+// Built once per links object (requestPlanIds and deriveNousRequests read the same derive's links, never changed once built).
+const indexes = new WeakMap<NousRequestLinks, ReturnType<typeof buildIndex>>();
 function index(links: NousRequestLinks) {
+  let built = indexes.get(links);
+  if (!built) { built = buildIndex(links); indexes.set(links, built); }
+  return built;
+}
+/** Which turns answered which messages, the outcomes reported for each message and the plans linked to it. */
+function buildIndex(links: NousRequestLinks) {
   const turnMessages = new Map<string, string[]>();
   for (const answer of links.answers) if (answer.turnId && !answer.interim) for (const id of answer.replyTo) push(turnMessages, answer.turnId, id);
   const outcomes = new Map<string, Array<{ endedAt: string; items: NousTurnOutcome[] }>>();
@@ -93,6 +100,27 @@ function firstAnswers(answers: NousAnswerLink[]) {
   };
 }
 
+/**
+ * request-done.ts's 60 % rule through the records' words (CPU report 12/11: comparing every unclaimed record with every old message was the
+ * derive's largest cost): the first record, in list order, written at or after `from` whose words (at least two) are 60 % in `text`.
+ */
+function wordMatcher(records: SpaceNotification[], skip: (record: SpaceNotification) => boolean) {
+  const sizes: number[] = [];
+  const postings = new Map<string, number[]>();
+  records.forEach((record, at) => {
+    const words = skip(record) ? new Set<string>() : titleWords(String(payloadOf(record).request ?? ""));
+    sizes.push(words.size);
+    if (words.size >= 2) for (const word of words) push(postings, word, at);
+  });
+  return (text: Set<string>, from: string): SpaceNotification | undefined => {
+    const shared = new Map<number, number>();
+    for (const word of text) for (const at of postings.get(word) ?? []) shared.set(at, (shared.get(at) ?? 0) + 1);
+    let first = Infinity;
+    for (const [at, count] of shared) if (at < first && count / sizes[at]! >= 0.6 && records[at]!.createdAt >= from) first = at;
+    return records[first];
+  };
+}
+
 /** The plans the page's messages are linked to, so their progress is read once. */
 export function requestPlanIds(messages: NousMessage[], links: NousRequestLinks): string[] {
   const { plans } = index(links);
@@ -124,7 +152,7 @@ export function deriveNousRequests(messages: NousMessage[], links: NousRequestLi
       if (!doneByMessage.has(base)) doneByMessage.set(base, at);
     }
   });
-  let doneWords: Array<Set<string> | null> | undefined;
+  let byWords: ReturnType<typeof wordMatcher> | undefined;
   const answerOf = firstAnswers(links.answers);
   return messages.map((message) => {
     const id = message.id;
@@ -140,9 +168,8 @@ export function deriveNousRequests(messages: NousMessage[], links: NousRequestLi
     let done: SpaceNotification | undefined = since && links.done[exact] && links.done[exact]!.createdAt <= since ? undefined : links.done[exact];
     const reported = outcomes.get(id) ?? [];
     if (!done && !since && !reported.length && !linkedPlans.length) {
-      const text = titleWords(textOf(message.content));
-      doneWords ??= links.done.map((record) => claimed(record) ? null : titleWords(String(payloadOf(record).request ?? "")));
-      done = links.done.find((record, at) => doneWords![at] && record.createdAt >= message.createdAt && overlap(doneWords![at]!, text) >= 0.6);
+      byWords ??= wordMatcher(links.done, claimed);
+      done = byWords(titleWords(textOf(message.content)), message.createdAt);
     }
     const receipted = !done && [id, ...turns, ...donePlans].some((value) => { const at = receipts.get(requestDoneReceiptKey(value)); return at !== undefined && (!since || at > since); });
     const last = reported.at(-1);
@@ -159,11 +186,14 @@ export function deriveNousRequests(messages: NousMessage[], links: NousRequestLi
     const covered = answerOf(id, message.createdAt, true)?.createdAt ?? reported[0]?.endedAt;
     // The Score's first answer: an operator turn's space_reply_now reaches the chat before its final answer (operator 20/10 «answer me at once, then continue»).
     const replied = answerOf(id, message.createdAt, false)?.createdAt;
+    // Answered only for a pure question: its latest outcome items are all answerOnly (operator 6/11 nous_msg:2c610048: an answer is not completion).
+    // A message with a plan reads Answered: the Plans tab follows it, Requests only what still waits here in the chat (operator 11/11 09:10 BKK
+    // nous_msg:bd13f6b2, after 144 In progress, ~131 held by open plans).
+    const answered = Boolean(last?.items.every((item) => item.answerOnly)) || dropped.has(id) || Boolean(plan);
     const status: NousRequestStatus = done || receipted ? "DONE"
       : asked || waits ? "WAITS_FOR_YOU"
-      : pending || openMessages.has(id) || (plan && open(planInfo.get(plan))) ? "IN_PROGRESS"
-      // Answered only for a pure question: its latest outcome items are all answerOnly (operator 6/11 nous_msg:2c610048: an answer is not completion).
-      : last?.items.every((item) => item.answerOnly) || dropped.has(id) ? "ANSWERED"
+      : pending || openMessages.has(id) ? "IN_PROGRESS"
+      : answered ? "ANSWERED"
       : covered || closed || last ? "NOT_DONE" : "NOT_ANSWERED";
     const payload = done ? payloadOf(done) : null;
     return {
@@ -191,16 +221,38 @@ export function createNousRequests(deps: {
     }
     return records;
   }
-  /** Every operator message, newest first; `withOpen` false judges them without their open requests. */
-  /** `from`: only the messages written then or later (the Score's week), so older pages are not read. */
-  async function derive(owner: string, withOpen = true, from?: string): Promise<NousOperatorRequest[]> {
+  // CPU report 12/11: every derive read all ~1,900 operator messages again. They never change once written (inserted DONE, never updated or
+  // deleted), so each owner's stay here, newest first, and a derive reads only those written since the newest kept one.
+  const kept = new Map<string, NousMessage[]>();
+  async function operatorMessages(owner: string): Promise<NousMessage[]> {
+    const old = kept.get(owner) ?? [];
+    // created_at is the insert's transaction start, so a row that commits late can sort behind one already read: the last 10 minutes are read again.
+    const from = old[0] && new Date(Date.parse(old[0].createdAt) - 600_000).toISOString();
     const messages: NousMessage[] = [];
     for (let before: string | undefined; ;) {
-      const rows = await deps.repository.listOperatorMessages(owner, { ...(before ? { before } : {}), limit: 500 });
-      messages.push(...rows.filter((row) => !from || row.createdAt >= from));
-      if (rows.length < 500 || (from && rows.at(-1)!.createdAt < from)) break;
+      const rows = await deps.repository.listOperatorMessages(owner, { ...(before ? { before } : {}), ...(from ? { since: from } : {}), limit: 500 });
+      messages.push(...rows);
+      if (rows.length < 500) break;
       before = rows.at(-1)!.id;
     }
+    if (from) messages.push(...old.filter((message) => message.createdAt < from));
+    kept.set(owner, messages);
+    return messages;
+  }
+  // The dock's badge and tab poll every 20 s and Nous reads the counts each turn: calls that meet share one derive.
+  const running = new Map<string, Promise<NousOperatorRequest[]>>();
+  /** Every operator message, newest first; `withOpen` false judges them without their open requests. */
+  function derive(owner: string, withOpen = true): Promise<NousOperatorRequest[]> {
+    const key = `${owner}|${withOpen}`;
+    let pending = running.get(key);
+    if (!pending) {
+      pending = deriveNow(owner, withOpen).finally(() => running.delete(key));
+      running.set(key, pending);
+    }
+    return pending;
+  }
+  async function deriveNow(owner: string, withOpen: boolean): Promise<NousOperatorRequest[]> {
+    const messages = await operatorMessages(owner);
     if (!messages.length) return [];
     const since = messages.at(-1)!.createdAt;
     const [answers, turns, done, notes, openDecisions] = await Promise.all([deps.repository.listAnswerLinks(owner, since), deps.repository.listTurnOutcomes(owner, since),
@@ -230,7 +282,7 @@ export function createNousRequests(deps: {
     },
 
     /** The operator's messages written since `since`, as the tab reads them (the Score's response times). */
-    since: (owner: string, since: string) => derive(owner, true, since),
+    since: async (owner: string, since: string) => (await derive(owner)).filter((request) => request.createdAt >= since),
 
     /** These messages' status as the tab reads it, without their own open requests (request-done.ts's one-time cleanup, 31/10). */
     async statuses(owner: string, ids: string[]): Promise<Map<string, NousRequestStatus>> {

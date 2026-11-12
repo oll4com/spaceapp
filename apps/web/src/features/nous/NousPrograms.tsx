@@ -17,9 +17,11 @@ const POLL_MS = 60_000;
 type Filter = "all" | "approved" | "progress" | "waiting" | "rejected" | "reapply" | "other";
 const STATUS_LABELS: Record<NousProgramStatus, string> = { APPROVED: "Approved", REJECTED: "Rejected", IN_PROGRESS: "In progress", APPLIED: "Waiting for a reply",
   DRAFT: "Draft", NOT_APPLIED: "Not applied", EXPIRED: "Expired", CANCELLED: "Cancelled" };
+// Operator 11/11 (nous_msg:a5e13d01): an approval whose completion still waits on the provider is listed under Approved and Waiting.
+export const awaitingCompletion = (p: NousProgram) => p.status === "APPROVED" && p.awaitingCompletion === true;
 const FILTERS: Array<[Filter, string, (program: NousProgram) => boolean]> = [
   ["all", "All", () => true], ["approved", "Approved", (p) => p.status === "APPROVED"], ["progress", "In progress", (p) => p.status === "IN_PROGRESS"],
-  ["waiting", "Waiting", (p) => p.status === "APPLIED"], ["rejected", "Rejected", (p) => p.status === "REJECTED"],
+  ["waiting", "Waiting", (p) => p.status === "APPLIED" || awaitingCompletion(p)], ["rejected", "Rejected", (p) => p.status === "REJECTED"],
   ["reapply", "To re-apply", (p) => Boolean(p.reapply?.needed)],
   ["other", "Other", (p) => ["DRAFT", "NOT_APPLIED", "EXPIRED", "CANCELLED"].includes(p.status)]
 ];
@@ -205,7 +207,7 @@ function ProgramRow({ program, other, pool, expanded, onToggle, t }: { program: 
         <span className="nous-program-chevron" aria-hidden="true">{expanded ? <ChevronDown /> : <ChevronRight />}</span>
         <span className="nous-program-name">{program.program}{other ? <small>{other}</small> : null}</span>
         {programTags(program).map((id) => <span key={id} className={`nous-program-tag is-${id}`}>{TAG_LABELS[id as NousProgramTag] ? t(TAG_LABELS[id as NousProgramTag]) : id}</span>)}
-        <span className={`nous-program-status is-${program.status.toLowerCase()}`}>{t(STATUS_LABELS[program.status])}</span>
+        <span className={`nous-program-status is-${program.status.toLowerCase()}`}>{t(awaitingCompletion(program) ? "Approved · waiting for completion" : STATUS_LABELS[program.status])}</span>
         {program.amount ? <span className="nous-program-amount">{program.amount.text}</span> : null}
         {value ? <span className="nous-program-worth" title={t("Indicative value of the whole grant")}>≈ {value}</span> : null}
         {next ? <span className={`nous-program-next${next.overdue ? " is-overdue" : ""}`}>{t(next.label)} {day(next.at)}</span> : null}

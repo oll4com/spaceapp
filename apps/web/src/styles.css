@@ -7200,7 +7200,11 @@ svg.space-aurora-icon {
 /* The tab's Google account is always in view (operator nous_msg:05e5af9f81ec45caa1f50f1b). */
 .browser-account-trigger:has(.browser-account-email) { width: auto; padding: 0 0.5rem 0 0.4rem; display: flex; gap: 0.3rem; }
 .browser-account-email { max-width: 13rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
-.browser-toolbar-compact .browser-account-email { max-width: 6.5rem; }
+:is(.browser-toolbar-compact, .browser-toolbar-tight) .browser-account-email { max-width: 6.5rem; }
+/* Narrow panes keep the name on screen as a short chip; the chip stands for the Users icon so the address keeps 160px at 320px (public-host F6). */
+.browser-toolbar-narrow .browser-account-trigger:has(.browser-account-email) { padding: 0 0.4rem; }
+.browser-toolbar-narrow .browser-account-trigger:has(.browser-account-email) > svg { display: none; }
+.browser-toolbar-narrow .browser-account-email { max-width: 3.5rem; }
 .browser-account-menu { position: absolute; inset: calc(100% + 6px) auto auto 0; z-index: 25; box-sizing: border-box; width: min(300px, calc(var(--browser-pane-width, 100vw) - 8px)); max-height: min(28rem, var(--browser-menu-height, 65vh)); overflow: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--border, #35404b); border-radius: 10px; background: var(--surface, #17212b); box-shadow: 0 12px 32px #0007; }
 
 /* Google account menu rows, shared by Browser (.browser-account-menu) and YouTube (.youtube-account-menu) panes and Job Copilot Setup (.jc-account-list). */
@@ -7252,6 +7256,10 @@ svg.space-aurora-icon {
   height: 0.95rem;
   color: #89aaa3;
 }
+
+/* Narrow panes (NARROW_TOOLBAR_WIDTH in BrowserPane.tsx) give the address the globe's room and keep Go; the form keeps 160px for the input. */
+.browser-toolbar-narrow .browser-url-form { min-width: 13rem; grid-template-columns: minmax(0, 1fr) auto; }
+.browser-toolbar-narrow .browser-url-form > svg { display: none; }
 
 .browser-url-form input {
   min-width: 0;
@@ -7382,7 +7390,8 @@ svg.space-aurora-icon {
   right: 0;
   z-index: 8;
   display: block;
-  width: min(26rem, calc(100vw - 1.5rem));
+  /* cqw: the pane (.pane-card/.pane-body are inline-size containers), so a narrow pane keeps the whole menu inside it. */
+  width: min(26rem, calc(100cqw - 1.5rem));
   height: auto;
   max-height: min(30rem, 70vh);
   overflow: auto;
@@ -7390,6 +7399,39 @@ svg.space-aurora-icon {
   border: 1px solid #30383a;
   border-radius: 10px;
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
+}
+
+/* Network route: one full-width row per route with its exit IP or state; the toolbar's 2rem buttons crushed the names. */
+.browser-route-popover.jc-pane {
+  padding: 0.75rem;
+}
+
+.browser-route-popover p {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.browser-route-options {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.65rem 0;
+}
+
+.browser-pane-actions .browser-route-options button {
+  width: 100%;
+  height: auto;
+  min-height: 2.25rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0 0.75rem;
+  padding: 0.3rem 0.7rem;
+}
+
+.browser-route-options small {
+  color: var(--jc-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .browser-text-popover {
@@ -17744,6 +17786,11 @@ svg.space-aurora-icon {
   max-height: none;
 }
 
+/* Fullscreen: an expanded clip or plan spans the whole window width instead of its column. */
+.clipboard-dock-shell.is-fullscreen .clipboard-card.is-expanded {
+  grid-column: 1 / -1;
+}
+
 /* A long clip fades out where it is cut instead of ending mid-line. */
 .clipboard-card-text.is-clipped {
   -webkit-mask-image: linear-gradient(to bottom, #000 62%, transparent);
@@ -20888,8 +20935,8 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
   background: transparent;
 }
 
-:root[data-sensitive-mode="hidden"] [data-sensitive-masked="block"],
-:root[data-sensitive-mode="hidden"] [data-sensitive-masked="pairing"] {
+/* The pairing QR (data-sensitive-masked="pairing") stays sharp for the operator, who must scan it; agents' pictures blur it (PAIRING_MASK). */
+:root[data-sensitive-mode="hidden"] [data-sensitive-masked="block"] {
   filter: blur(0.4rem);
   user-select: none;
 }
@@ -21667,11 +21714,12 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
 }
 
 /* Narrow panes retain one address row; secondary tools stay in the menu. */
-.browser-toolbar-compact .browser-devtools-toggle span,
-.browser-toolbar-compact .browser-fit-toggle span { display: none; }
-.browser-toolbar-compact .browser-devtools-toggle,
-.browser-toolbar-compact .browser-fit-toggle { width: 2rem; height: 2rem; padding: 0; display: grid; place-items: center; flex: 0 0 auto; }
-.browser-toolbar-compact .browser-fit-toggle svg { width: var(--toolbar-icon-size); height: var(--toolbar-icon-size); }
+:is(.browser-toolbar-compact, .browser-toolbar-tight) :is(.browser-devtools-toggle, .browser-fit-toggle) span { display: none; }
+:is(.browser-toolbar-compact, .browser-toolbar-tight) :is(.browser-devtools-toggle, .browser-fit-toggle) { width: 2rem; height: 2rem; padding: 0; display: grid; place-items: center; flex: 0 0 auto; }
+:is(.browser-toolbar-compact, .browser-toolbar-tight) .browser-fit-toggle svg { width: var(--toolbar-icon-size); height: var(--toolbar-icon-size); }
+/* Panes under LABELLED_TOOLBAR_WIDTH show the viewport buttons as icons too, so the address keeps 160px (public-host F6). */
+.browser-toolbar-tight .browser-viewport-control button span { display: none; }
+.browser-toolbar-tight .browser-viewport-control button { padding: 0; justify-content: center; }
 .browser-pane .browser-tools-menu { max-width: min(20rem, calc(var(--browser-pane-width, 100vw) - 8px)); max-height: min(32rem, var(--browser-menu-height, 65vh)); overflow-y: auto; }
 .browser-menu-stream { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.25rem; font-size: 0.75rem; }
 .browser-menu-stream select { min-width: 0; width: auto; }
@@ -23950,3 +23998,9 @@ input[type="checkbox"]:not(.space-toggle input):not(.sr-only):not([aria-hidden="
 .space-app-update button { border: 0; border-radius: 8px; font: inherit; cursor: pointer; }
 .space-app-update-reload { padding: 5px 12px; background: #6db7aa; color: #0f1514; font-weight: 650; }
 .space-app-update-dismiss { padding: 4px 8px; background: transparent; color: #9aa3a0; }
+
+/* A window the operator is not looking at (hidden or unfocused, `main.tsx`) runs no CSS animation: each one repainted the desktop app
+   at ~40 fps while it sat behind other windows (desktop lag brief 11/11). */
+:root[data-window-idle] *,
+:root[data-window-idle] *::before,
+:root[data-window-idle] *::after { animation-play-state: paused !important; }

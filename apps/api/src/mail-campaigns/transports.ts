@@ -10,8 +10,8 @@ import { smtpCheck, smtpSubmit } from "./smtp.js";
 // How a sender's mail leaves (plan clipboard:IJ2ovfLg1Lbw step 4). Secrets come from the owner's kept Vault keys, read by the API
 // only at the moment of use and never returned: the Workspace service-account JSON (GMAIL_DELEGATED) or the SMTP password.
 export interface MailTransport {
-  /** One message to one recipient; `raw` is the complete RFC 5322 message. */
-  send(raw: Buffer, envelope: { from: string; to: string }): Promise<{ providerId: string }>;
+  /** One message to one recipient; `raw` is the complete RFC 5322 message. `messageId`: the Message-ID the provider sent instead of ours. */
+  send(raw: Buffer, envelope: { from: string; to: string }): Promise<{ providerId: string; messageId?: string }>;
   /** Proves the route works without sending anything; the answer says what was checked. */
   check(): Promise<string>;
 }
@@ -100,8 +100,13 @@ export function createMailTransports(deps: MailTransportDeps) {
       }
       return {
         async send(raw) {
-          const sent = await (await gmail(owner, sender)).send(raw.toString("base64url"));
-          return { providerId: sent.id };
+          const client = await gmail(owner, sender);
+          const sent = await client.send(raw.toString("base64url"));
+          // Gmail replaces our Message-ID with its own (info@example.invalid 12/11): DSNs and replies quote the one it sent, so the send log keeps that.
+          const message = await client.message(sent.id, "metadata").catch(() => null);
+          const headers = (message?.payload as { headers?: Array<{ name: string; value: string }> } | undefined)?.headers ?? [];
+          const messageId = headers.find((entry) => entry.name.toLowerCase() === "message-id")?.value.trim();
+          return { providerId: sent.id, ...(messageId ? { messageId } : {}) };
         },
         async check() {
           const aliases = await (await gmail(owner, sender)).sendAs();

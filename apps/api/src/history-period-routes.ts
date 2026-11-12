@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { historyPeriodDays, historySince } from "@space/contracts";
+import { installPollEtag } from "./poll-etag.js";
 
 /**
  * Every history follows the owner's History period (operator 1/11 03:37 BKK «Χρονικό διάστημα ιστορικών … μέγιστο 3 μήνες --- θα ισχύει
@@ -83,6 +84,7 @@ export function withinHistory(payload: Row, lists: HistoryList[], since: string)
 }
 
 export function registerHistoryPeriod(app: FastifyInstance, settings: (request: FastifyRequest) => Promise<{ history?: unknown }>): void {
+  installPollEtag(app); // The ETag is of the body this filter leaves.
   app.addHook("preHandler", async (request) => {
     const floor = HISTORY_FLOORS[request.routeOptions.url ?? ""];
     if (!floor || !request.user) return;

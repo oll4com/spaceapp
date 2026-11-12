@@ -20,7 +20,7 @@ async function setup(allowedModels: string[] = []) {
   const pool = new AccountPool({ provider: "CODEX", repository, cipher: () => cipher, refresher: { needsRefresh: () => false, refresh: vi.fn() } });
   const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ models: [{ slug: "gpt-5.5", display_name: "GPT-5.5" }, { slug: "gpt-5.6-sol" }] })));
   const server = createGatewayServer({ repository, version: "t", credentialKeyPresent: () => true,
-    routes: (app, helpers) => registerCodexModelRoutes(app, helpers, { pool, fetchImpl: fetchImpl as unknown as typeof fetch }) });
+    routes: (app, helpers) => registerCodexModelRoutes(app, helpers, { pool, fetchImpl: fetchImpl as unknown as typeof fetch, defaultClientVersion: "0.150.1" }) });
   const get = (url: string) => server.app.inject({ url, headers: { authorization: `Bearer ${plainKey}`, "user-agent": "codex_cli_rs/0.150.1" } });
   return { get, fetchImpl };
 }
@@ -36,6 +36,13 @@ describe("model catalog", () => {
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://chatgpt.com/backend-api/codex/models?client_version=0.150.1");
     expect((init.headers as Record<string, string>)).toMatchObject({ authorization: "Bearer at", "chatgpt-account-id": "acct-1", "user-agent": "codex_cli_rs/0.150.1" });
+  });
+
+  it("lists the newest client version's catalog to clients without one; older or malformed versions never replace it", async () => {
+    const { get, fetchImpl } = await setup();
+    fetchImpl.mockImplementation(async (...args: unknown[]) => new Response(JSON.stringify({ models: [{ slug: `for-${String(args[0]).split("client_version=")[1]}` }] })));
+    for (const version of ["0.99.0", "0.167.2", "0.150.1", "abc"]) await get(`/backend-api/codex/models?client_version=${version}`);
+    expect((await get("/v1/models")).json().data.map((model: { id: string }) => model.id)).toEqual(["for-0.167.2"]);
   });
 
   it("shows keys only their allowed models", async () => {

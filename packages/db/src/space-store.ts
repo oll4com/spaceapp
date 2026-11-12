@@ -627,7 +627,16 @@ export function prefersSpaceSocket(connectionString: string): boolean {
 /** Default cap of the one pool a process keeps per connection string (stable hit max_connections=100 on 2026-10-18). */
 export const SHARED_SPACE_PG_POOL_MAX = 20;
 const SHARED_SPACE_PG_POOL_IDLE_MS = 10_000;
-const sharedSpacePgPools = new Map<string, { pool: pg.Pool; requested: number; handles: number }>();
+/** Connections of each shared pool kept for plain reads, so writes stuck on a slow disk (WalSync, 12/11) never starve them; Postgres's max_connections bounds it. */
+export const SHARED_SPACE_PG_READ_POOL_MAX = 4;
+const sharedSpacePgPools = new Map<string, { pool: pg.Pool; readPool: pg.Pool; requested: number; handles: number }>();
+
+/** A statement that only reads: SELECT or WITH naming no write. Anything else (and every transaction's client) takes the write pool. */
+export function isPlainReadSql(sql: unknown): boolean {
+  const text = typeof sql === "string" ? sql : (sql as { text?: unknown } | null)?.text;
+  return typeof text === "string" && /^\s*(select|with)\b/i.test(text)
+    && !/\b(insert|update|delete|merge|for\s+(no\s+key\s+)?(update|share|key\s+share)|nextval|setval|pg_advisory\w*|set_config)\b/i.test(text);
+}
 
 /** A positive integer from the environment, bounded like the API config (apps/api/src/config.ts), else the fallback. */
 function envPoolSetting(name: string, fallback: number, ceiling: number): number {
@@ -645,7 +654,8 @@ function sharedPoolCap(): number {
  * when unset), so a process with one small repository keeps a small pool; idle connections close after
  * SPACE_DATABASE_POOL_IDLE_TIMEOUT_MS (10 s when unset) and the caller's other pool options are not used.
  * Ending a handle ends the pool only when it is the last one. A client held across other queries (a session
- * advisory lock around work) takes createDedicatedSpacePgPool so it cannot starve the shared pool.
+ * advisory lock around work) takes createDedicatedSpacePgPool so it cannot starve the shared pool. A plain read
+ * (isPlainReadSql) runs on the pool's read connections (SHARED_SPACE_PG_READ_POOL_MAX), never queued behind writes.
  */
 export function createSpacePgPool(
   connectionString: string,
@@ -657,12 +667,10 @@ export function createSpacePgPool(
   const want = poolOptions.max ?? defaultMax;
   let entry = sharedSpacePgPools.get(key);
   if (!entry) {
+    const idleTimeoutMillis = envPoolSetting("SPACE_DATABASE_POOL_IDLE_TIMEOUT_MS", SHARED_SPACE_PG_POOL_IDLE_MS, 300_000);
     entry = {
-      pool: createDedicatedSpacePgPool(connectionString, {
-        socketPath,
-        max: want,
-        idleTimeoutMillis: envPoolSetting("SPACE_DATABASE_POOL_IDLE_TIMEOUT_MS", SHARED_SPACE_PG_POOL_IDLE_MS, 300_000)
-      }),
+      pool: createDedicatedSpacePgPool(connectionString, { socketPath, max: want, idleTimeoutMillis }),
+      readPool: createDedicatedSpacePgPool(connectionString, { socketPath, max: SHARED_SPACE_PG_READ_POOL_MAX, idleTimeoutMillis }),
       requested: 0,
       handles: 0
     };
@@ -687,8 +695,13 @@ export function createSpacePgPool(
             return;
           }
           if (sharedSpacePgPools.get(key) === shared) sharedSpacePgPools.delete(key);
+          if (!shared.readPool.ending && !shared.readPool.ended) await shared.readPool.end();
           if (!target.ending && !target.ended) await target.end();
         };
+      }
+      if (prop === "query") {
+        return (...args: unknown[]) =>
+          (isPlainReadSql(args[0]) ? shared.readPool : target).query(...(args as Parameters<pg.Pool["query"]>));
       }
       const val = Reflect.get(target, prop, target);
       return typeof val === "function" ? val.bind(target) : val;
@@ -2712,6 +2725,32 @@ const artifactSelect = `
   FROM artifacts
 `;
 
+/** The WHERE clause listArtifacts and listArtifactsPage share. */
+function artifactListWhere(query: ListArtifactsQuery, roomIds?: readonly string[]): { where: string; values: unknown[] } {
+  const where: string[] = ["deleted_at IS NULL"];
+  const values: unknown[] = [];
+  for (const [column, value] of [["room_id", query.roomId], ["pane_id", query.paneId], ["workflow_id", query.workflowId], ["kind", query.kind]] as const) {
+    if (!value) continue;
+    values.push(value);
+    where.push(`${column} = $${values.length}`);
+  }
+  if (roomIds) {
+    values.push([...roomIds]);
+    where.push(`room_id = ANY($${values.length}::text[])`);
+  }
+  if (query.collection === "AGENT_FILES") {
+    where.push("storage_uri LIKE 'space-artifact://agent-files/%'");
+  }
+  if (query.collection === "ROOM_MEDIA") {
+    where.push(
+      "(storage_uri LIKE 'space-artifact://user-uploads/%' OR " +
+      "storage_uri LIKE 'space-artifact://cli-uploads/%' OR " +
+      "(storage_uri LIKE 'space-artifact://browser-evidence/%' AND kind IN ('IMAGE', 'SCREENSHOT', 'VIDEO')))"
+    );
+  }
+  return { where: where.join(" AND "), values };
+}
+
 const reviewDecisionSelect = `
   SELECT
     id,
@@ -2960,8 +2999,8 @@ function normalizePlanSteps(stepsJson: unknown): PlanStep[] {
         status,
         progress,
         agent: typeof stepObj.agent === "string" && stepObj.agent.trim() ? stepObj.agent.trim() : null,
-        notes: typeof stepObj.notes === "string" ? stepObj.notes.slice(0, 1000) : null,
-        proof: typeof stepObj.proof === "string" ? stepObj.proof.slice(0, 1000) : null,
+        notes: typeof stepObj.notes === "string" ? stepObj.notes : null,
+        proof: typeof stepObj.proof === "string" ? stepObj.proof : null,
         startedAt: stepObj.startedAt ? toIso(stepObj.startedAt as string | Date) : null,
         completedAt: stepObj.completedAt ? toIso(stepObj.completedAt as string | Date) : null
       });
@@ -4232,20 +4271,26 @@ export class PostgresSpaceStore implements SpaceStore {
   }
 
   async upsertUser(user: AuthUser): Promise<AuthUser> {
+    // An unchanged user writes nothing: ~60 routes and every audit call this for the one operator row, and on a slow disk
+    // (12/11 03:21-03:29 UTC, IO full-stall 44-68%) each no-op UPDATE held that row through a WAL flush while the next
+    // requests queued on it, holding the API's 20 pooled connections until every other read timed out.
     const result = await this.pool.query<AuthUser>(
       `
-        WITH updated_email AS (
+        WITH unchanged AS (
+          SELECT id, email, role FROM users WHERE lower(email) = lower($2) AND role = $3 LIMIT 1
+        ),
+        updated_email AS (
           UPDATE users
           SET
             role = $3,
             updated_at = $4
-          WHERE lower(email) = lower($2)
+          WHERE lower(email) = lower($2) AND role IS DISTINCT FROM $3
           RETURNING id, email, role
         ),
         inserted AS (
           INSERT INTO users (id, email, role, updated_at)
           SELECT $1, $2, $3, $4
-          WHERE NOT EXISTS (SELECT 1 FROM updated_email)
+          WHERE NOT EXISTS (SELECT 1 FROM unchanged) AND NOT EXISTS (SELECT 1 FROM updated_email)
           ON CONFLICT (id)
           DO UPDATE SET
             email = EXCLUDED.email,
@@ -4253,6 +4298,8 @@ export class PostgresSpaceStore implements SpaceStore {
             updated_at = EXCLUDED.updated_at
           RETURNING id, email, role
         )
+        SELECT id, email, role FROM unchanged
+        UNION ALL
         SELECT id, email, role FROM updated_email
         UNION ALL
         SELECT id, email, role FROM inserted
@@ -4263,12 +4310,24 @@ export class PostgresSpaceStore implements SpaceStore {
     return result.rows[0] ?? user;
   }
 
+  // CPU report 12/11 (plan clipboard:Yx4YemupYuwQ 1.4): each user's parsed settings kept with their row's version, so the row's JSON comes
+  // back and is parsed again only after a write, from any process. xmin with updated_at: every write gives the row a new xmin, while
+  // migrations and manual SQL leave updated_at as it was. Callers only read the settings they get.
+  private readonly userSettingsRead = new Map<string, { version: string; settings: UserSettings }>();
+
   async getUserSettings(userId: string): Promise<UserSettings> {
-    const result = await this.pool.query<{ settings: unknown }>(
-      'SELECT settings FROM user_settings WHERE user_id = $1 LIMIT 1',
-      [userId]
+    const known = this.userSettingsRead.get(userId);
+    const result = await this.pool.query<{ version: string; settings: unknown }>(
+      `SELECT version, CASE WHEN version = $2 THEN NULL ELSE settings END AS settings
+       FROM (SELECT xmin::text || ' ' || updated_at::text AS version, settings FROM user_settings WHERE user_id = $1) AS stored`,
+      [userId, known?.version ?? null]
     );
-    return parseStoredUserSettings(result.rows[0]?.settings);
+    const row = result.rows[0];
+    if (known && row?.version === known.version) return known.settings;
+    const settings = parseStoredUserSettings(row?.settings);
+    if (row) this.userSettingsRead.set(userId, { version: row.version, settings });
+    else this.userSettingsRead.delete(userId);
+    return settings;
   }
 
   async updateUserSettings(userId: string, input: UpdateUserSettingsInput): Promise<UserSettings> {
@@ -4940,13 +4999,15 @@ export class PostgresSpaceStore implements SpaceStore {
       email: string;
       role: AuthUser["role"];
       passwordHash: string;
+      envPasswordSha256: string | null;
     }>(
       `
         SELECT
           users.id,
           users.email,
           users.role,
-          users.password_hash AS "passwordHash"
+          users.password_hash AS "passwordHash",
+          space_owner_setup.env_password_sha256 AS "envPasswordSha256"
         FROM space_owner_setup
         INNER JOIN users ON users.id = space_owner_setup.owner_user_id
         WHERE space_owner_setup.singleton = true
@@ -4957,8 +5018,25 @@ export class PostgresSpaceStore implements SpaceStore {
     if (!row) return null;
     return {
       user: authUserSchema.parse({ id: row.id, email: row.email, role: row.role }),
-      passwordHash: row.passwordHash
+      passwordHash: row.passwordHash,
+      envPasswordSha256: row.envPasswordSha256
     };
+  }
+
+  async adoptOwnerPassword(userId: string, passwordHash: string, envPasswordSha256: string): Promise<boolean> {
+    return this.withTransaction(async (client) => {
+      // A .env-only operator's install has no row, or 0065's row naming that operator; another owner, a pending setup or a disabled user changes nothing.
+      const owner = await client.query(
+        `INSERT INTO space_owner_setup (singleton, owner_user_id, claimed_at, onboarding_completed_at, env_password_sha256)
+         SELECT true, id, now(), now(), $2 FROM users WHERE id = $1 AND disabled_at IS NULL
+         ON CONFLICT (singleton) DO UPDATE SET env_password_sha256 = $2, updated_at = now() WHERE space_owner_setup.owner_user_id = $1
+         RETURNING owner_user_id`,
+        [userId, envPasswordSha256]
+      );
+      if (!owner.rowCount) return false;
+      await client.query("UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1", [userId, passwordHash]);
+      return true;
+    });
   }
 
   async updateOwnerPassword(passwordHash: string): Promise<AuthUser> {
@@ -5310,7 +5388,8 @@ export class PostgresSpaceStore implements SpaceStore {
     let calculatedPercentage = input.progressPercentage;
     if (calculatedPercentage === undefined && steps.length > 0) {
       const sum = steps.reduce((acc, step) => acc + (step.status === "COMPLETED" ? 100 : step.progress), 0);
-      calculatedPercentage = Math.round(sum / steps.length);
+      // task:jtb3OpgyqU99: rounding (199 of 200 steps) or an open step at 100% must not derive 100%, which closes the plan.
+      calculatedPercentage = Math.min(steps.every((step) => step.status === "COMPLETED") ? 100 : 99, Math.round(sum / steps.length));
     }
     const finalPercentage = Math.max(0, Math.min(100, calculatedPercentage ?? existing.progressPercentage));
 
@@ -5863,6 +5942,14 @@ export class PostgresSpaceStore implements SpaceStore {
     if (!row) return null;
     const { passwordHash, ...user } = row;
     return { user: authUserSchema.parse(user), passwordHash };
+  }
+
+  async updateUserPassword(userId: string, passwordHash: string): Promise<boolean> {
+    const result = await this.pool.query(
+      "UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1 AND password_hash IS NOT NULL AND disabled_at IS NULL",
+      [userId, passwordHash]
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   async setUserDisabled(userId: string, disabled: boolean, at: string): Promise<boolean> {
@@ -11045,7 +11132,7 @@ export class PostgresSpaceStore implements SpaceStore {
 
   private async updateCliTaskRevisionTranscript(
     client: PgClientLike,
-    session: PaneCliSession,
+    session: Pick<PaneCliSession, "cliTaskId" | "cliTaskRevisionId">,
     stream: PaneCliTranscriptChunk["stream"],
     content: string,
     timestamp: string
@@ -11160,89 +11247,102 @@ export class PostgresSpaceStore implements SpaceStore {
     }, { deadlockRetries: 1 });
   }
 
-  async appendPaneCliHostOutputChunk(
-    input: CreatePaneCliHostOutputInput,
+  /** Writes a session's queued host-output batches in one transaction (CPU report 12/11, plan 2.1/2.2) with the rows, order and replay
+   * cursor of one write per batch: a batch already stored (another transport's replay) or repeated in the list keeps its first copy, and
+   * the sequence comes from the table under the session lock. `preview` is the batch whose text becomes the CLI task's preview and
+   * recency; the caller throttles it. Returns the highest sequence of the batches' final rows, or -1 when there are none. */
+  async appendPaneCliHostOutputChunks(
+    inputs: CreatePaneCliHostOutputInput[],
+    preview: CreatePaneCliHostOutputInput | null = null,
     _traceId = makeSpaceId("trace")
-  ): Promise<PaneCliTranscriptChunk> {
-    const parsed = createPaneCliHostOutputInputSchema.parse(input);
+  ): Promise<number> {
+    const batches = inputs.map((input) => createPaneCliHostOutputInputSchema.parse(input));
+    const touched = preview ? createPaneCliHostOutputInputSchema.parse(preview) : null;
+    const owner = batches[0] ?? touched;
+    if (!owner) return -1;
+    if ([...batches, touched].some((batch) => batch && (batch.sessionId !== owner.sessionId || batch.paneId !== owner.paneId || batch.roomId !== owner.roomId))) {
+      throw new SpaceConflictError("CLI host output batches must belong to one CLI session.");
+    }
     return this.withTransaction(async (client) => {
-      const sessionResult = await client.query<PaneCliSessionRow>(
-        `${paneCliSessionSelect} WHERE session_id = $1 FOR UPDATE`,
-        [parsed.sessionId]
-      );
-      const session = mapPaneCliSession(firstOrNotFound(sessionResult.rows, `CLI session ${parsed.sessionId} was not found.`));
-      if (session.paneId !== parsed.paneId || session.roomId !== parsed.roomId) {
-        throw new SpaceNotFoundError(`CLI session ${parsed.sessionId} was not found.`);
+      const session = firstOrNotFound((await client.query<{ paneId: string; roomId: string; cliTaskId: string | null; cliTaskRevisionId: string | null }>(
+        `SELECT pane_id AS "paneId", room_id AS "roomId", cli_task_id AS "cliTaskId", cli_task_revision_id AS "cliTaskRevisionId"
+         FROM pane_cli_sessions WHERE session_id = $1 FOR UPDATE`,
+        [owner.sessionId]
+      )).rows, `CLI session ${owner.sessionId} was not found.`);
+      if (session.paneId !== owner.paneId || session.roomId !== owner.roomId) {
+        throw new SpaceNotFoundError(`CLI session ${owner.sessionId} was not found.`);
       }
-      const existing = await client.query<PaneCliTranscriptChunkRow>(
-        `${paneCliTranscriptChunkSelect} WHERE session_id = $1 AND host_generation_id = $2 AND host_output_sequence = $3 LIMIT 1`,
-        [parsed.sessionId, parsed.generationId, parsed.outputSequence]
-      );
-      if (existing.rows[0]) return mapPaneCliTranscriptChunk(existing.rows[0]);
-      const sequenceResult = await client.query<{ nextSequence: number | string }>(
-        `SELECT coalesce(max(sequence), -1) + 1 AS "nextSequence" FROM pane_cli_transcript_chunks WHERE session_id = $1`,
-        [parsed.sessionId]
-      );
-      const sequence = Number(sequenceResult.rows[0]?.nextSequence ?? 0);
-      const timestamp = nowIso();
-      const contents = splitCliHostTranscriptContent(parsed.content);
-      let last!: PaneCliTranscriptChunk;
-      for (const [index, content] of contents.entries()) {
-        const final = index === contents.length - 1;
-        const chunkId = makeSpaceId("cli_chunk");
-        const byteLength = Buffer.byteLength(content, "utf8");
-        const result = await client.query<PaneCliTranscriptChunkRow>(
-          `
-            INSERT INTO pane_cli_transcript_chunks (
-              chunk_id, session_id, pane_id, room_id, sequence, stream, content, byte_length,
-              created_at, host_generation_id, host_output_sequence
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            RETURNING
-              chunk_id AS "chunkId",
-              session_id AS "sessionId",
-              pane_id AS "paneId",
-              room_id AS "roomId",
-              sequence,
-              stream,
-              content,
-              byte_length AS "byteLength",
-              host_generation_id AS "hostGenerationId",
-              host_output_sequence AS "hostOutputSequence",
-              created_at AS "createdAt"
-          `,
-          [
-            chunkId,
-            parsed.sessionId,
-            parsed.paneId,
-            session.roomId,
-            sequence + index,
-            parsed.stream,
-            content,
-            byteLength,
-            timestamp,
-            final ? parsed.generationId : null,
-            final ? parsed.outputSequence : null
-          ]
+      let last = -1;
+      const stored = new Set<string>();
+      if (batches.length) {
+        const found = await client.query<{ generationId: string; outputSequence: number | string; sequence: number }>(
+          `SELECT host_generation_id AS "generationId", host_output_sequence AS "outputSequence", sequence
+           FROM pane_cli_transcript_chunks
+           WHERE session_id = $1 AND host_generation_id IS NOT NULL
+             AND (host_generation_id, host_output_sequence) IN (SELECT * FROM unnest($2::uuid[], $3::bigint[]))`,
+          [owner.sessionId, batches.map((batch) => batch.generationId), batches.map((batch) => batch.outputSequence)]
         );
-        last = mapPaneCliTranscriptChunk(firstOrNotFound(result.rows, `CLI transcript chunk ${chunkId} was not stored.`));
+        for (const row of found.rows) {
+          stored.add(`${row.generationId}:${row.outputSequence}`);
+          last = Math.max(last, Number(row.sequence));
+        }
       }
-      await this.updateCliTaskRevisionTranscript(client, session, parsed.stream, parsed.content, timestamp);
-      // A missing excess row yields NULL, so a session below the cap is untouched.
-      await client.query(
-        `
-          DELETE FROM pane_cli_transcript_chunks
-          WHERE session_id = $1
-            AND sequence <= (
-              SELECT sequence FROM pane_cli_transcript_chunks
-              WHERE session_id = $1
-              ORDER BY sequence DESC
-              OFFSET $2 LIMIT 1
-            )
-        `,
-        [parsed.sessionId, PANE_CLI_TRANSCRIPT_CHUNK_CAP]
-      );
-      return last;
+      const rows = { chunkId: [] as string[], stream: [] as string[], content: [] as string[], byteLength: [] as number[], generationId: [] as Array<string | null>, outputSequence: [] as Array<number | null> };
+      for (const batch of batches) {
+        const key = `${batch.generationId.toLowerCase()}:${batch.outputSequence}`;
+        if (stored.has(key)) continue;
+        stored.add(key);
+        const contents = splitCliHostTranscriptContent(batch.content);
+        for (const [index, content] of contents.entries()) {
+          const final = index === contents.length - 1;
+          rows.chunkId.push(makeSpaceId("cli_chunk"));
+          rows.stream.push(batch.stream);
+          rows.content.push(content);
+          rows.byteLength.push(Buffer.byteLength(content, "utf8"));
+          rows.generationId.push(final ? batch.generationId : null);
+          rows.outputSequence.push(final ? batch.outputSequence : null);
+        }
+      }
+      const timestamp = nowIso();
+      let inserted = -1;
+      if (rows.chunkId.length) {
+        const result = await client.query<{ last: number | null }>(
+          `WITH inserted AS (
+             INSERT INTO pane_cli_transcript_chunks (
+               chunk_id, session_id, pane_id, room_id, sequence, stream, content, byte_length,
+               created_at, host_generation_id, host_output_sequence
+             )
+             SELECT piece.chunk_id, $1, $2, $3, base.next + piece.ordinal - 1, piece.stream, piece.content, piece.byte_length,
+                    $4::timestamptz, piece.generation_id, piece.output_sequence
+             FROM unnest($5::text[], $6::text[], $7::text[], $8::integer[], $9::uuid[], $10::bigint[])
+                    WITH ORDINALITY AS piece(chunk_id, stream, content, byte_length, generation_id, output_sequence, ordinal)
+             CROSS JOIN (SELECT coalesce(max(sequence), -1) + 1 AS next FROM pane_cli_transcript_chunks WHERE session_id = $1) base
+             RETURNING sequence
+           )
+           SELECT max(sequence) AS last FROM inserted`,
+          [owner.sessionId, owner.paneId, owner.roomId, timestamp, rows.chunkId, rows.stream, rows.content, rows.byteLength, rows.generationId, rows.outputSequence]
+        );
+        inserted = Number(result.rows[0]?.last ?? -1);
+      }
+      if (touched) await this.updateCliTaskRevisionTranscript(client, session, touched.stream, touched.content, timestamp);
+      // Rows have distinct sequences from 0, so a session holds more than the cap only once a sequence reaches it.
+      if (inserted >= PANE_CLI_TRANSCRIPT_CHUNK_CAP) {
+        // A missing excess row yields NULL, so a session below the cap is untouched.
+        await client.query(
+          `
+            DELETE FROM pane_cli_transcript_chunks
+            WHERE session_id = $1
+              AND sequence <= (
+                SELECT sequence FROM pane_cli_transcript_chunks
+                WHERE session_id = $1
+                ORDER BY sequence DESC
+                OFFSET $2 LIMIT 1
+              )
+          `,
+          [owner.sessionId, PANE_CLI_TRANSCRIPT_CHUNK_CAP]
+        );
+      }
+      return Math.max(last, inserted);
     }, { deadlockRetries: 1 });
   }
 
@@ -12987,12 +13087,21 @@ export class PostgresSpaceStore implements SpaceStore {
     return result.rows.map(mapAuditEvent);
   }
 
+  // CPU report 12/11 (plan clipboard:Yx4YemupYuwQ 3.2): count(*) read all ~255k audit rows on every page, so the total is counted again
+  // once a minute and may miss that minute's newest events. The page's rows are always read fresh.
+  private auditEventsTotal: { countedAt: number; total: number } | null = null;
+
   async listAuditEventsPage(input: { offset: number; limit: number }): Promise<{ items: AuditEvent[]; total: number }> {
-    const [rows, count] = await Promise.all([
+    const known = this.auditEventsTotal && Date.now() - this.auditEventsTotal.countedAt < 60_000 ? this.auditEventsTotal.total : null;
+    const [rows, total] = await Promise.all([
       this.pool.query<AuditEventRow>(`${auditEventSelect} ORDER BY created_at DESC, id DESC OFFSET $1 LIMIT $2`, [input.offset, input.limit]),
-      this.pool.query<{ count: string }>("SELECT count(*) AS count FROM audit_events")
+      known ?? this.pool.query<{ count: string }>("SELECT count(*) AS count FROM audit_events").then((count) => {
+        const counted = Number.parseInt(count.rows[0]?.count ?? "0", 10);
+        this.auditEventsTotal = { countedAt: Date.now(), total: counted };
+        return counted;
+      })
     ]);
-    return { items: rows.rows.map(mapAuditEvent), total: Number.parseInt(count.rows[0]?.count ?? "0", 10) };
+    return { items: rows.rows.map(mapAuditEvent), total };
   }
 
   async listAuditEventsSince(input: { actions: string[]; since: string; limit?: number }): Promise<AuditEvent[]> {
@@ -15339,40 +15448,24 @@ export class PostgresSpaceStore implements SpaceStore {
   }
 
   async listArtifacts(query: ListArtifactsQuery = { page: 1, pageSize: 25, sortOrder: "desc" }): Promise<Artifact[]> {
-    const where: string[] = ["deleted_at IS NULL"];
-    const values: unknown[] = [];
-    if (query.roomId) {
-      values.push(query.roomId);
-      where.push(`room_id = $${values.length}`);
-    }
-    if (query.paneId) {
-      values.push(query.paneId);
-      where.push(`pane_id = $${values.length}`);
-    }
-    if (query.workflowId) {
-      values.push(query.workflowId);
-      where.push(`workflow_id = $${values.length}`);
-    }
-    if (query.kind) {
-      values.push(query.kind);
-      where.push(`kind = $${values.length}`);
-    }
-    if (query.collection === "AGENT_FILES") {
-      where.push("storage_uri LIKE 'space-artifact://agent-files/%'");
-    }
-    if (query.collection === "ROOM_MEDIA") {
-      where.push(
-        "(storage_uri LIKE 'space-artifact://user-uploads/%' OR " +
-        "storage_uri LIKE 'space-artifact://cli-uploads/%' OR " +
-        "(storage_uri LIKE 'space-artifact://browser-evidence/%' AND kind IN ('IMAGE', 'SCREENSHOT', 'VIDEO')))"
-      );
-    }
-    const orderDirection = query.sortOrder === "asc" ? "ASC" : "DESC";
+    const { where, values } = artifactListWhere(query);
     const result = await this.pool.query<ArtifactRow>(
-      `${artifactSelect}${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at ${orderDirection}`,
+      `${artifactSelect} WHERE ${where} ORDER BY created_at ${query.sortOrder === "asc" ? "ASC" : "DESC"}`,
       values
     );
     return result.rows.map(mapArtifact);
+  }
+
+  /** One page of listArtifacts, paged in SQL and optionally only of `roomIds`; listArtifacts itself still returns every row. */
+  async listArtifactsPage(query: ListArtifactsQuery, roomIds?: readonly string[]): Promise<{ data: Artifact[]; totalItems: number }> {
+    const { where, values } = artifactListWhere(query, roomIds);
+    const direction = query.sortOrder === "asc" ? "ASC" : "DESC";
+    const count = await this.pool.query<{ total: string }>(`SELECT COUNT(*) AS total FROM artifacts WHERE ${where}`, values);
+    const result = await this.pool.query<ArtifactRow>(
+      `${artifactSelect} WHERE ${where} ORDER BY created_at ${direction}, id ${direction} LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+      [...values, query.pageSize, (query.page - 1) * query.pageSize]
+    );
+    return { data: result.rows.map(mapArtifact), totalItems: Number(count.rows[0]?.total ?? 0) };
   }
 
   async getArtifact(artifactId: string): Promise<Artifact> {
@@ -16416,10 +16509,11 @@ export class PostgresSpaceStore implements SpaceStore {
           is_closed,
           split,
           vnc_target,
+          category_color,
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, 'IDLE', $6, $7, $8, CASE WHEN $8 = 'cli:gemini' THEN 'high' ELSE 'medium' END, $9, $10, 1, false, false, false, $11, $12, $13, $13)
+        VALUES ($1, $2, $3, $4, $5, 'IDLE', $6, $7, $8, CASE WHEN $8 = 'cli:gemini' THEN 'high' ELSE 'medium' END, $9, $10, 1, false, false, false, $11, $12, $14, $13, $13)
         RETURNING
           id,
           room_id AS "roomId",
@@ -16456,7 +16550,8 @@ export class PostgresSpaceStore implements SpaceStore {
         order,
         JSON.stringify(split),
         input.vncTarget ? JSON.stringify(input.vncTarget) : null,
-        timestamp
+        timestamp,
+        input.categoryColor ?? null
       ]
     );
     return mapPane(firstOrNotFound(result.rows, `Pane ${paneId} was not created.`));

@@ -1,6 +1,6 @@
 import { requestDoneView, requestUpdatesView } from "../nous/nous-done-events.js";
 import { useSyncExternalStore } from "react";
-import { needsYou, type NotificationLink, type NotificationsPending, type NotificationStreamPayload, type SpaceNotification } from "@space/contracts";
+import { needsYou, needsYouMail, type NotificationLink, type NotificationsPending, type NotificationStreamPayload, type SpaceNotification } from "@space/contracts";
 import { api } from "../../api.js";
 import { requestNousFocus } from "../nous-focus/nous-focus-events.js";
 import { requestNeedsYouView } from "../needs-you/needs-you-view.js";
@@ -32,6 +32,8 @@ let navigator: NotificationNavigator | null = null;
 let onNew: ((notifications: SpaceNotification[]) => void) | null = null;
 let refreshTimer: number | undefined;
 let refreshing: Promise<void> | null = null;
+/** A refresh with a reason (the stream, the operator's own action) tells the panes even when the answer looks the same. */
+let forceEmit = false;
 
 function emit(next: NotificationStoreState) {
   state = next;
@@ -76,15 +78,23 @@ function deliveryKey(notification: SpaceNotification): string {
   return typeof alertAt === "string" ? `${notification.id}@${alertAt}` : notification.id;
 }
 
-/** Reloads what waits and the newest records; new open records (after the first load) go to delivery. */
-export async function refreshNotifications(): Promise<void> {
+/**
+ * Reloads what waits and the newest records; new open records (after the first load) go to delivery. `ifChanged` (the timed poll, a tab
+ * coming back): an answer equal to the last one notifies no one, so the Nous tabs that page on every store change stay still (desktop lag brief 11/11).
+ */
+export async function refreshNotifications({ ifChanged = false }: { ifChanged?: boolean } = {}): Promise<void> {
+  if (!ifChanged) forceEmit = true;
   if (refreshing) return refreshing;
   refreshing = (async () => {
     try {
       const [pending, list] = await Promise.all([api.notificationsPending(), api.notifications({ status: "ALL", limit: 100 })]);
       const fresh = state.loaded ? pending.latest.filter((item) => !seen.has(deliveryKey(item))) : [];
       for (const item of [...pending.latest, ...list.notifications]) seen.add(deliveryKey(item));
-      emit({ ...state, loaded: true, pending, items: list.notifications, hasEarlier: state.earlier?.length ? state.hasEarlier : list.notifications.length >= 100 });
+      const next = { ...state, loaded: true, pending, items: list.notifications, hasEarlier: state.earlier?.length ? state.hasEarlier : list.notifications.length >= 100 };
+      const same = state.loaded && JSON.stringify([state.pending, state.items, state.hasEarlier]) === JSON.stringify([next.pending, next.items, next.hasEarlier]);
+      const force = forceEmit;
+      forceEmit = false;
+      if (force || !same) emit(next);
       if (fresh.length) onNew?.(fresh);
     } catch {
       // Offline or signed out: the last known state stays.
@@ -150,7 +160,10 @@ export function goToNeedsYouPane(notification: SpaceNotification): void {
     window.dispatchEvent(new CustomEvent("space:surface-target", { detail: { target: notification.link.target } }));
     return;
   }
-  if (notification.roomId && notification.paneId) requestNousFocus({ roomId: notification.roomId, paneId: notification.paneId, immediate: true, notification });
+  // A card about a mail opens that mail's review or thread (operator 12/11 23:19 BKK), also one raised without a target; a page target stays.
+  const mail = !notification.link.target || /^(?:thread|review):/.test(notification.link.target) ? needsYouMail(notification)?.target : undefined;
+  const opened = mail ? { ...notification, link: { ...notification.link, target: mail } } : notification;
+  if (notification.roomId && notification.paneId) requestNousFocus({ roomId: notification.roomId, paneId: notification.paneId, immediate: true, notification: opened });
 }
 /** A click on a needs-you toast, pop-up, Center row or native notification opens the card in Nous's Needs you tab: no room or pane changes. */
 export function openNeedsYouCard(notification: SpaceNotification): void {

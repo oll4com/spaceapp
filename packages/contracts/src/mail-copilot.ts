@@ -598,6 +598,8 @@ export const mailActionListQuerySchema = z.object({
 export const mailCopilotEventListQuerySchema = z.object({
   paneId: paneIdSchema.optional(),
   threadId: z.string().min(1).max(200).optional(),
+  /** One review's request (a Needs you card shows the reply it approves). */
+  reviewId: z.string().regex(/^mailrev:[A-Za-z0-9_-]{6,80}$/).optional(),
   since: isoDateTime.optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100)
 }).strict();
@@ -685,6 +687,18 @@ export const mailCopilotReviewRequestSchema = z.object({
   /** The Gmail message (of the same account) whose attachments go out with the reply, such as the thread's draft holding a CV. */
   attachmentsFrom: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/).optional()
 }).strict();
+/** An answer to a calendar invitation (12/11): reviewed like a reply, sent by the server only after the operator approves it. */
+export const mailCopilotRsvpRequestSchema = z.object({
+  account: z.string().trim().toLowerCase().email().max(320),
+  /** The provider's event id (a Google invite link's eid is base64 of "<eventId> <email>") or the invite's iCalendar UID. */
+  eventId: z.string().trim().min(1).max(1024).optional(),
+  iCalUID: z.string().trim().min(1).max(1024).optional(),
+  response: z.enum(["accepted", "declined", "tentative"]),
+  comment: z.string().trim().max(2000).optional(),
+  summary: z.string().trim().min(1).max(1000),
+  threadId: z.string().trim().min(1).max(200).optional()
+}).strict().refine((value) => value.eventId || value.iCalUID, "Give the invitation's eventId or iCalUID.");
+export type MailCopilotRsvpRequest = z.infer<typeof mailCopilotRsvpRequestSchema>;
 export const mailCopilotReviewWaitSchema = z.object({ reviewId: z.string().regex(/^mailrev:[A-Za-z0-9_-]{6,80}$/), waitMs: z.number().int().min(0).max(120_000).default(60_000) }).strict();
 export const MAIL_COPILOT_REVIEW_DECISIONS = ["approve", "edit", "reject"] as const;
 export const mailCopilotReviewDecideSchema = z.object({

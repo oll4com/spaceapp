@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
   deployQueueReportSchema, deployQueueTicketStatusSchema,
@@ -134,6 +134,22 @@ async function nameSubmitters(tickets: DeployQueueTicket[], names: DeployQueueNa
   }));
 }
 
+// Every report read and parsed every ticket file (1,000+; 2.5% of a saturated API on 10/11). Finished tickets never change,
+// so a parse is reused while the file's mtime and size match; callers get a copy (nameSubmitters sets fields on it).
+const ticketCache = new Map<string, { key: string; ticket: DeployQueueTicket | null }>();
+async function readTicketFile(path: string): Promise<DeployQueueTicket | null> {
+  const info = await stat(path).catch(() => null);
+  if (!info) return null;
+  const key = `${info.mtimeMs}:${info.size}`;
+  let hit = ticketCache.get(path);
+  if (hit?.key !== key) {
+    const raw = await readJson(path);
+    hit = { key, ticket: raw ? toTicket(raw) : null };
+    ticketCache.set(path, hit);
+  }
+  return hit.ticket && { ...hit.ticket };
+}
+
 export async function readDeployQueue(root = defaultDeployQueueRoot, now = Date.now(), names?: DeployQueueNameLookup): Promise<DeployQueueReport> {
   const state = await readJson(join(root, "state.json"));
   let fileNames: string[];
@@ -144,8 +160,7 @@ export async function readDeployQueue(root = defaultDeployQueueRoot, now = Date.
       available: false, daemonRunning: false, heartbeatAt: null, paused: null, current: null, next: null, active: [], recent: []
     });
   }
-  const tickets = (await Promise.all(fileNames.map((name) => readJson(join(root, "tickets", name)))))
-    .map((raw) => (raw ? toTicket(raw) : null))
+  const tickets = (await Promise.all(fileNames.map((name) => readTicketFile(join(root, "tickets", name)))))
     .filter((ticket): ticket is DeployQueueTicket => ticket !== null);
   const heartbeatAt = text(state?.heartbeatAt, 40) || null;
   const heartbeatMs = heartbeatAt ? Date.parse(heartbeatAt) : Number.NaN;

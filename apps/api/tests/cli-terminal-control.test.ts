@@ -399,8 +399,8 @@ describe("CLI terminal protocol-v2 control", () => {
         tabLineageId: firstTabLineageId, pageClientId: firstPageClientId
       });
       const ready = await waitForFrame(controller.frames, (frame) => frame.type === "ready");
-      const append = harness.store.appendPaneCliHostOutputChunk.bind(harness.store);
-      vi.spyOn(harness.store, "appendPaneCliHostOutputChunk")
+      const append = harness.store.appendPaneCliHostOutputChunks.bind(harness.store);
+      vi.spyOn(harness.store, "appendPaneCliHostOutputChunks")
         .mockImplementation((...args) => gate.promise.then(() => append(...args)) as never);
       harness.host.emitOutput("before-input");
       controller.socket.send(JSON.stringify({ type: "input", data: "a", leaseId: ready.leaseId }));

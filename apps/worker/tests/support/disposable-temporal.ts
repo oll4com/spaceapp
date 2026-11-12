@@ -100,7 +100,7 @@ export async function startDisposableTemporal(label: string, namespace: string):
     docker(["network", "create", "--label", "space.disposable-test=1", network]);
     networkCreated = true;
     docker([
-      "run", "--detach", "--pull=never", "--name", pgName, "--label", "space.disposable-test=1", "--network", network,
+      "run", "--tmpfs", "/var/lib/postgresql/data", "--detach", "--pull=never", "--name", pgName, "--label", "space.disposable-test=1", "--network", network,
       "--mount", `type=bind,source=${socketDir},target=/var/run/postgresql`,
       "--env", "POSTGRES_HOST_AUTH_METHOD=trust", disposablePostgresImage,
       "-c", "fsync=off", "-c", "max_connections=200"

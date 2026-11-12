@@ -1,4 +1,7 @@
+import { readlinkSync } from "node:fs";
+import { basename } from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 import type { AccountPool } from "../../accounts/account-pool.js";
 import { gatewayError } from "../../errors.js";
 import { selectAccount } from "../../router/balancer.js";
@@ -15,6 +18,25 @@ const CACHE_MS = 5 * 60_000;
 
 type CodexModel = Record<string, unknown> & { slug?: unknown };
 
+// Upstream lists newer models only to newer clients, and clients without a version (Oh My Pi, Hermes) read the newest one
+// seen; after a gateway start that is the installed Codex CLI's version, not an old constant (12/11: OMP's default gpt-6-sol was missing).
+function installedCodexVersion(): string {
+  try {
+    const version = basename(readlinkSync(`${SPACE_INSTALL_ROOT}/var/cli-versions/codex/current`));
+    if (/^\d+\.\d+\.\d+$/.test(version)) return version;
+  } catch { /* no installed Codex link: the fallback below */ }
+  return "0.150.1";
+}
+
+/** True when `candidate` is a newer major.minor.patch than `current`; anything else never replaces it. */
+function isNewerClientVersion(candidate: string, current: string): boolean {
+  const next = /^(\d+)\.(\d+)\.(\d+)/.exec(candidate), now = /^(\d+)\.(\d+)\.(\d+)/.exec(current);
+  if (!next) return false;
+  if (!now) return true;
+  for (let i = 1; i <= 3; i++) if (Number(next[i]) !== Number(now[i])) return Number(next[i]) > Number(now[i]);
+  return false;
+}
+
 export function registerCodexModelRoutes(app: FastifyInstance, helpers: GatewayRouteHelpers, options: {
   pool: AccountPool; fetchImpl?: typeof fetch; now?: () => number; defaultClientVersion?: string; upstreamBaseUrl?: string;
   /** Answers `/v1/models` for Anthropic clients (they send `anthropic-version`). */
@@ -23,7 +45,7 @@ export function registerCodexModelRoutes(app: FastifyInstance, helpers: GatewayR
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? Date.now;
   const cache = new Map<string, { at: number; models: CodexModel[] }>();
-  let lastClientVersion = options.defaultClientVersion ?? "0.150.1";
+  let lastClientVersion = options.defaultClientVersion ?? installedCodexVersion();
 
   async function catalog(request: FastifyRequest, clientVersion: string): Promise<CodexModel[] | { error: string; status: number }> {
     const cached = cache.get(clientVersion);
@@ -61,7 +83,7 @@ export function registerCodexModelRoutes(app: FastifyInstance, helpers: GatewayR
     if (!(await helpers.authenticate(request, reply))) return reply;
     const requested = (request.query as { client_version?: unknown }).client_version;
     const clientVersion = typeof requested === "string" && /^[0-9A-Za-z.+-]{1,40}$/.test(requested) ? requested : lastClientVersion;
-    if (clientVersion !== lastClientVersion && typeof requested === "string") lastClientVersion = clientVersion;
+    if (typeof requested === "string" && isNewerClientVersion(clientVersion, lastClientVersion)) lastClientVersion = clientVersion;
     const result = await catalog(request, clientVersion);
     if (!Array.isArray(result)) return reply.code(result.status).send(gatewayError("models_unavailable", result.error));
     return { models: visible(request, result) };

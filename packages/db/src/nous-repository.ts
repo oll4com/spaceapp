@@ -34,7 +34,8 @@ export interface NousRepository {
   /** `person`: a person wrote it (meta.person), not a proof or automation session; a copilot's operatorOrder needs it. */
   listOperatorMessageRefs(owner: string): Promise<Array<{ id: string; createdAt: string; person: boolean }>>;
   /** The Requests tab (plan clipboard:2NOOFNJDUIMO): OPERATOR messages newest first, older than the `before` message; Clear never hides them. */
-  listOperatorMessages(owner: string, options: { before?: string; limit: number }): Promise<NousMessage[]>;
+  /** `since`: only the messages written then or later. */
+  listOperatorMessages(owner: string, options: { before?: string; since?: string; limit: number }): Promise<NousMessage[]>;
   /** The final answers of operator turns (and the /goal reply) written at or after `since`, oldest first: only their links. */
   listAnswerLinks(owner: string, since: string): Promise<NousAnswerLink[]>;
   /** The turns that ended at or after `since` and reported outcomes (space_nous_outcome), oldest first. */
@@ -171,8 +172,8 @@ export class InMemoryNousRepository implements NousRepository {
   async listOperatorMessageRefs(owner: string) {
     return this.messages.filter((message) => message.ownerUserId === owner && message.kind === "OPERATOR").map(({ id, createdAt, meta }) => ({ id, createdAt, person: meta.person === true }));
   }
-  async listOperatorMessages(owner: string, options: { before?: string; limit: number }) {
-    const mine = this.messages.filter((message) => message.ownerUserId === owner && message.kind === "OPERATOR");
+  async listOperatorMessages(owner: string, options: { before?: string; since?: string; limit: number }) {
+    const mine = this.messages.filter((message) => message.ownerUserId === owner && message.kind === "OPERATOR" && (options.since === undefined || message.createdAt >= options.since));
     const cut = options.before === undefined ? mine.length : mine.findIndex((message) => message.id === options.before);
     return structuredClone(mine.slice(0, Math.max(cut, 0)).reverse().slice(0, options.limit));
   }
@@ -330,7 +331,9 @@ interface FileShareRow extends Omit<NousFileShare, "sharedAt" | "expiresAt"> { s
 const fileShareColumns = `id, owner_user_id AS "ownerUserId", artifact_id AS "artifactId", note, shared_by AS "sharedBy", shared_at AS "sharedAt", expires_at AS "expiresAt"`;
 const fileShareOf = (row: FileShareRow): NousFileShare => ({ ...row, sharedAt: iso(row.sharedAt), expiresAt: iso(row.expiresAt) });
 const rowCount = (result: unknown) => (result as { rowCount?: number | null }).rowCount ?? 0;
-const outcomesOf = (value: unknown) => nousTurnOutcomeSchema.array().safeParse(value).data ?? [];
+// One array schema for every row (CPU report 12/11: building it per row tripled the Requests derive's 2,765 outcome parses).
+const turnOutcomesSchema = nousTurnOutcomeSchema.array();
+const outcomesOf = (value: unknown) => turnOutcomesSchema.safeParse(value).data ?? [];
 
 export class PostgresNousRepository implements NousRepository {
   constructor(private readonly pool: PgPoolLike) {}
@@ -376,10 +379,10 @@ export class PostgresNousRepository implements NousRepository {
       COALESCE(meta->>'person', 'false') = 'true' AS person FROM nous_messages WHERE owner_user_id = $1 AND kind = 'OPERATOR' ORDER BY created_at, id`, [owner]);
     return result.rows.map((row) => ({ id: row.id, createdAt: iso(row.createdAt), person: row.person }));
   }
-  async listOperatorMessages(owner: string, options: { before?: string; limit: number }) {
+  async listOperatorMessages(owner: string, options: { before?: string; since?: string; limit: number }) {
     const result = await this.pool.query<MessageRow>(`SELECT ${messageColumns} FROM nous_messages WHERE owner_user_id = $1 AND kind = 'OPERATOR'
       AND ($2::text IS NULL OR (created_at, id) < (SELECT created_at, id FROM nous_messages WHERE owner_user_id = $1 AND id = $2))
-      ORDER BY created_at DESC, id DESC LIMIT $3`, [owner, options.before ?? null, options.limit]);
+      AND ($4::timestamptz IS NULL OR created_at >= $4) ORDER BY created_at DESC, id DESC LIMIT $3`, [owner, options.before ?? null, options.limit, options.since ?? null]);
     return result.rows.map(messageOf);
   }
   async listAnswerLinks(owner: string, since: string) {
@@ -392,7 +395,7 @@ export class PostgresNousRepository implements NousRepository {
   }
   async listTurnOutcomes(owner: string, since: string) {
     const result = await this.pool.query<{ turnId: string; endedAt: Date | string; outcomes: unknown }>(`SELECT turn_id AS "turnId", ended_at AS "endedAt", outcomes
-      FROM nous_turn_facts WHERE owner_user_id = $1 AND ended_at >= $2 AND jsonb_array_length(outcomes) > 0 ORDER BY ended_at, turn_id`, [owner, since]);
+      FROM nous_turn_facts WHERE owner_user_id = $1 AND ended_at >= $2 AND outcomes <> '[]'::jsonb ORDER BY ended_at, turn_id`, [owner, since]);
     return result.rows.map((row) => ({ turnId: row.turnId, endedAt: iso(row.endedAt), outcomes: outcomesOf(row.outcomes) }));
   }
   async listTurnTools(owner: string, turnIds: string[], names: string[], since: string) {

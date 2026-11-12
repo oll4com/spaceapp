@@ -24,6 +24,13 @@ export const vaultHandoffKeyCreateRequestSchema = z.object({
   kept: z.boolean().default(false)
 }).strict();
 
+/** The operator's edit of a key that still holds a value (operator request 2026-11-12): its label, value and whether agents keep it. */
+export const vaultHandoffKeyUpdateRequestSchema = z.object({ label: keyLabel, value: keyValue, kept: z.boolean() }).strict();
+/** Showing a key's value in the dock: signed by the unlocked dock at the current epoch (vaultOperatorRequestMessage "key-reveal"). */
+export const vaultHandoffKeyRevealRequestSchema = z.object({
+  id: vaultHandoffKeyIdSchema, epoch: z.number().int().min(1), operatorSignature: z.string().length(86).regex(/^[A-Za-z0-9_-]+$/)
+}).strict();
+
 /** A key as the dock lists it: never its value. */
 export const vaultHandoffKeySchema = z.object({
   id: vaultHandoffKeyIdSchema, label: z.string().max(VAULT_HANDOFF_KEY_LIMITS.labelMax), createdAt: z.string().datetime(), expiresAt: z.string().datetime().nullable(),

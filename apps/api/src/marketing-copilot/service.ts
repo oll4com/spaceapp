@@ -6,6 +6,7 @@ import {
   type MarketingRunView, type Pane
 } from "@space/contracts";
 import type { MarketingCopilotRepository, MarketingPostFilter } from "@space/db";
+import type { RailAnswerBy } from "@space/db";
 import { forbiddenByMemoryText, forbiddingMemory, MEMORY_HITS_NOTE, questionMemoryHits } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
 import { operatorOrder, operatorOrderOverride, type OperatorMessageRefs } from "../copilot-operator-order.js";
@@ -168,13 +169,13 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       if ((await repository.listCampaigns(owner)).some((campaign) => campaign.payload.version === version)) return null;
       return service.createCampaign(owner, pane, { templateId: "release", name: `SpaceApp ${version} release`, channels: [] }, "RELEASE", { version });
     },
-    async decideCampaign(owner: string, pane: Pane | null, id: string, decision: "approve" | "complete" | "cancel") {
+    async decideCampaign(owner: string, pane: Pane | null, id: string, decision: "approve" | "complete" | "cancel", by?: RailAnswerBy) {
       const campaign = await repository.getCampaign(owner, id);
       if (!campaign) throw new SpaceNotFoundError("The campaign was not found.");
       if (decision === "approve" && campaign.status !== "PROPOSED") throw new SpaceConflictError("Only a proposed campaign can be approved.");
       const status = ({ approve: "ACTIVE", complete: "DONE", cancel: "CANCELLED" } as const)[decision];
       const updated = (await repository.updateCampaign(owner, id, { status }))!;
-      await record(owner, { paneId: pane?.id ?? null, campaignId: id, type: "CAMPAIGN_DECIDED", message: `You ${decision === "approve" ? "approved" : decision === "complete" ? "completed" : "cancelled"} the campaign: ${campaign.name}`, payload: { decision } });
+      await record(owner, { paneId: pane?.id ?? null, campaignId: id, type: "CAMPAIGN_DECIDED", message: `You ${decision === "approve" ? "approved" : decision === "complete" ? "completed" : "cancelled"} the campaign: ${campaign.name}`, payload: { decision, ...(by ? { by } : {}) } });
       if (decision === "approve") await service.createBrief(owner, pane, { text: campaignBrief(campaign), campaignId: id, channels: campaign.channels });
       return updated;
     },
@@ -249,7 +250,7 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       return { post, wordingIssues, ...(overrides ? { overrides } : {}) };
     },
     /** The operator decides a post: approve, edit (their version is approved and learned), revise (back to the agent) or reject. */
-    async decideReview(owner: string, pane: Pane | null, postId: string, input: MarketingPostReviewDecision) {
+    async decideReview(owner: string, pane: Pane | null, postId: string, input: MarketingPostReviewDecision, by?: RailAnswerBy) {
       const current = await postOf(owner, postId);
       const patch = input.decision === "approve" || input.decision === "edit"
         ? { status: "APPROVED" as const, reviewNote: input.note ?? null, ...(input.decision === "edit" ? { ...(input.body !== undefined ? { body: input.body } : {}), ...(input.title !== undefined ? { title: input.title } : {}) } : {}),
@@ -271,7 +272,7 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       if (input.decision === "revise") await service.createBrief(owner, pane, { text: `Revise the ${label} post ${post.id}: ${input.note}`, campaignId: post.campaignId, channels: [post.channel], postId: post.id });
       const verb = { approve: "approved", edit: "edited and approved", revise: "sent back for changes", reject: "rejected" }[input.decision];
       await record(owner, { paneId: pane?.id ?? post.paneId, postId: post.id, campaignId: post.campaignId, type: "REVIEW_DECIDED", message: `You ${verb} the ${label} post${input.note ? `: ${input.note}` : ""}`,
-        payload: { decision: input.decision, note: input.note ?? null } });
+        payload: { decision: input.decision, note: input.note ?? null, ...(by ? { by } : {}) } });
       return post;
     },
     /**
@@ -397,11 +398,11 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       await record(owner, { paneId: pane?.id ?? null, type: by === "USER" ? "RULE_DECIDED" : "RULE_PROPOSED", message: by === "USER" ? `You added the rule: ${rule.name}` : `Rule proposed: ${rule.name}`, payload: { ruleId: rule.id } });
       return rule;
     },
-    async decideRule(owner: string, pane: Pane | null, id: string, decision: "approve" | "reject" | "retire") {
+    async decideRule(owner: string, pane: Pane | null, id: string, decision: "approve" | "reject" | "retire", by?: RailAnswerBy) {
       const rule = await repository.getRule(owner, id);
       if (!rule) throw new SpaceNotFoundError("The rule was not found.");
       const updated = (await repository.updateRule(owner, id, { status: ({ approve: "APPROVED", reject: "REJECTED", retire: "RETIRED" } as const)[decision], decidedAt: now() }))!;
-      await record(owner, { paneId: pane?.id ?? null, type: "RULE_DECIDED", message: `You ${decision === "approve" ? "approved" : decision === "reject" ? "rejected" : "retired"} the rule: ${rule.name}`, payload: { ruleId: id, decision } });
+      await record(owner, { paneId: pane?.id ?? null, type: "RULE_DECIDED", message: `You ${decision === "approve" ? "approved" : decision === "reject" ? "rejected" : "retired"} the rule: ${rule.name}`, payload: { ruleId: id, decision, ...(by ? { by } : {}) } });
       return updated;
     },
     // ---- activity, pending items and runs ------------------------------------------------------

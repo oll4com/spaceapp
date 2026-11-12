@@ -7,6 +7,8 @@
   flex-direction: column;
   gap: var(--dock-gap, 0.6rem);
   overflow: auto;
+  /* Long ids, labels and addresses wrap instead of widening the dock (operator 12/11: a bottom scrollbar). */
+  overflow-wrap: anywhere;
 }
 
 .vault-card {
@@ -41,7 +43,13 @@
 .vault-items-bar > .dock-kit-button { white-space: nowrap; }
 .vault-check { display: inline-flex; align-items: center; gap: 0.35rem; font-size: var(--dock-font-sm); color: var(--dock-muted); }
 .vault-password-row { display: flex; gap: 0.4rem; align-items: flex-end; }
-.vault-password-row label { flex: 1 1 auto; }
+.vault-password-row label { flex: 1 1 auto; min-width: 0; }
+.vault-password-row input { width: 100%; box-sizing: border-box; }
+/* Editor: title with Back at the top right, roomier fields, one full-width Save at the end (operator 12/11). */
+.vault-editor { gap: 0.75rem; }
+.vault-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.vault-editor input:not([type="checkbox"]) { min-height: var(--dock-control); box-sizing: border-box; }
+.vault-editor > .dock-kit-button[type="submit"] { margin-top: 0.25rem; }
 .vault-generator { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem 1rem; }
 
 .vault-hint { margin: 0; font-size: var(--dock-font-sm); color: var(--dock-muted); }

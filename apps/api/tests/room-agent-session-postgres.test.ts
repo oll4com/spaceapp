@@ -37,10 +37,10 @@ describe.skipIf(postgresUnavailable)("Hidden Room Agent PostgreSQL session lifec
     directory = await mkdtemp(`${tmpdir()}/space-pg-`);
     const socket = `${directory}/pg-socket`;
     await mkdir(socket, { mode: 0o777 });
-    docker(["run", "--detach", "--rm", "--pull=never", "--name", name,
+    docker(["run", "--env", "POSTGRES_INITDB_ARGS=--no-sync", "--detach", "--rm", "--pull=never", "--name", name,
       "--label", "space.agent.task=ai-live-history-proof", "--network", "none",
       "--mount", `type=bind,source=${socket},target=/var/run/postgresql`,
-      "--env", "POSTGRES_HOST_AUTH_METHOD=trust", "pgvector/pgvector:0.8.7-pg17-trixie", "-c", "listen_addresses="]);
+      "--env", "POSTGRES_HOST_AUTH_METHOD=trust", "pgvector/pgvector:0.8.7-pg17-trixie", "-c", "listen_addresses=", "-c", "fsync=off"]);
     created = true;
     url = `postgresql://postgres@localhost/postgres?host=${encodeURIComponent(socket)}`;
     await connect();

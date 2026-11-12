@@ -413,6 +413,26 @@ export const DEFAULT_PLUGIN_CATALOG: PluginCatalogItem[] = [
     hasUpdate: false,
     mcpCommand: null,
     mcpArgs: []
+  },
+  {
+    id: "agent-reach",
+    displayName: "Agent Reach",
+    description: "Read and search 15 platforms (Twitter/X, Reddit, YouTube, Bilibili, Xiaohongshu, LinkedIn, GitHub, RSS and the web) from the agent-reach CLI.",
+    overview: "The agent-reach skill from Panniantong/agent-reach: routes internet research and URL reading to per-platform CLIs and APIs, read-only. Its agent-reach CLI and the bili, rdt, twitter and yt-dlp CLIs come from the operator install, pinned by hash to the vendored commit; never update it from upstream or PyPI.",
+    category: "productivity",
+    icon: "Globe",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://github.com/Panniantong/agent-reach",
+    docsUrl: "https://github.com/Panniantong/agent-reach#readme",
+    githubUrl: "https://github.com/Panniantong/agent-reach",
+    installedVersion: "1221ecd",
+    latestVersion: "1221ecd",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
   }
 ];
 
@@ -496,6 +516,10 @@ export const BUILTIN_SKILLS_MAP: Record<string, { folder: string; aliases: strin
   "stripe-best-practices": {
     folder: "space-stripe-best-practices",
     aliases: ["space-stripe-best-practices"]
+  },
+  "agent-reach": {
+    folder: "space-agent-reach",
+    aliases: ["space-agent-reach"]
   }
 };
 
@@ -628,7 +652,8 @@ export class PluginsService {
     hyperframes: 21,
     "claude-security": 1,
     openseo: 12,
-    "stripe-best-practices": 1
+    "stripe-best-practices": 1,
+    "agent-reach": 1
   };
 
   async syncSkillSymlinks(): Promise<void> {

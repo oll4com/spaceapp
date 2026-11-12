@@ -1,6 +1,7 @@
 import { cpus, loadavg } from "node:os";
 import type { Event, NotificationRaiseInput } from "@space/contracts";
 import { makeSpaceId, type SpaceEventBus } from "@space/runtime";
+import { reportLateDelivery, type LateControlOutcome } from "./nous/delivery-truth.js";
 
 /**
  * Room watchdog alerts (2/11 10:02 BKK, operator «τι ειναι ολα αυτα τα λαθη!!!!»: six red banners stacked over one pane while the server ran at
@@ -14,8 +15,9 @@ export const ROOM_ALERT_GAP_MS = 2 * 60_000;
 
 export interface RoomWatchdogNoticeDeps {
   room(roomId: string): Promise<{ name: string; ownerUserId?: string | null } | null>;
-  /** Nous's inbox line; one per key, a newer line replaces the older. */
-  notice(owner: string, key: string, line: string): Promise<void>;
+  pane?(paneId: string): Promise<{ id: string; title: string; paneName?: string | null } | null>;
+  /** Nous's inbox line; one per key, a newer line replaces the older. soonMs: an urgent line (not the inbox batch). */
+  notice(owner: string, key: string, line: string, soonMs?: number): Promise<void>;
   /** The live event stream (banner and URGENT card). */
   publish(event: Event): void;
   warn(meta: Record<string, unknown>, message: string): void;
@@ -61,6 +63,10 @@ export function createRoomWatchdogNotices(deps: RoomWatchdogNoticeDeps) {
   }
 
   return {
+    /** Delivery truth (nous/delivery-truth.ts): Space Control's settledLate, a Nous send that ended FAILED or BLOCKED after its answer. */
+    lateDelivery(outcome: LateControlOutcome): Promise<void> {
+      return reportLateDelivery(deps, outcome).catch((error: unknown) => deps.warn({ err: error, roomId: outcome.roomId }, "Late delivery notice failed."));
+    },
     /** The URGENT card for every live ROOM_WATCHDOG_ALERT (a stuck room, the test alert route); returns the unsubscribe. */
     bridge(eventBus: Pick<SpaceEventBus, "subscribe">, raise: (input: NotificationRaiseInput) => Promise<unknown>): () => void {
       return eventBus.subscribe((event) => {

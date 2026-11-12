@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { artifactIdsIn, heldUnderAllowance, NEEDS_YOU_GO_NOW, needsYouTargetSchema, needsYouTimingNow, NOTIFICATION_SOURCE_LABELS, type NeedsYouAsk, type NotificationListQuery, type NotificationRaiseInput, type Pane, type Room, type SpaceNotification } from "@space/contracts";
+import { artifactIdsIn, heldUnderAllowance, NEEDS_YOU_GO_NOW, needsYouMail, needsYouTargetSchema, needsYouTimingNow, NOTIFICATION_SOURCE_LABELS, type NeedsYouAsk, type NotificationListQuery, type NotificationRaiseInput, type Pane, type Room, type SpaceNotification } from "@space/contracts";
 import { isBrowserPane } from "../pane-guards.js";
 import { heldForNousNote } from "./copilot-questions.js";
 
@@ -426,6 +426,8 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
         const found = held.get(ref) ?? await deps.notifications.get?.(owner, ref).catch(() => null);
         if (found?.link.target && found.paneId === (pane?.id ?? null)) { target = found.link.target; break; }
       }
+      // Operator 12/11 23:19 BKK: an item naming a Mail review (its ref or words, mailrev:…) opens that review and its mail, without Nous naming it.
+      target ??= needsYouMail({ body: "", payload: { items: args.items } })?.target;
       // R27-2: a hands card on a browser pane opens the exact page the operator acts on.
       if (pane && isBrowserPane(pane) && !/^(?:url|tab):/.test(target ?? "") && args.items.some((item) => !item.code && HANDS_WORK.test(`${item.text} ${item.question ?? ""}`))) {
         return { ok: false, refused: true, display: "A hands card on a browser pane needs its page", result: `${where} is a browser pane: give the hands item \`target\` `

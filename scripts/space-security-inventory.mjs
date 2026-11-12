@@ -10,8 +10,8 @@
 // The alias `public-installer` is the public installer oll4com/spaceapp: npm's latest run-spaceapp, its lockfile and its GHCR images.
 import { execFile, spawn } from "node:child_process";
 import { createWriteStream, existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, readdir, readlink, rm, statfs, writeFile } from "node:fs/promises";
+import { homedir, hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
@@ -178,7 +178,7 @@ export function failureMessage(file, error) {
 }
 function run(file, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = execFile(file, args, { timeout: options.timeoutMs ?? 150_000, maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
+    const child = execFile(file, args, { timeout: options.timeoutMs ?? 150_000, maxBuffer: 64 * 1024 * 1024, env: options.env }, (error, stdout) => {
       if (!error || stdout) resolve(stdout); else reject(new Error(failureMessage(file, error)));
     });
     if (options.input !== undefined) { child.stdin.end(options.input); }
@@ -259,6 +259,11 @@ async function exportImage(alias, id, file) {
   if (code !== 0) throw new Error(`docker save ${signal ? `signal ${signal}` : code === null ? "could not start" : `exit ${code}${alias !== "local" && code === 255 ? " (connection or login refused)" : ""}`}`);
 }
 
+/** A disk's use as df shows it (used of used + available to unprivileged users), rounded up. */
+export function diskUsePercent({ blocks, bfree, bavail }) {
+  return Math.ceil((100 * (blocks - bfree)) / (blocks - bfree + bavail));
+}
+
 /** Exports each image and scans it with the pinned Trivy: fixable vulnerabilities only, the scan's own text never kept. */
 export async function scanImages(alias, ids, paths = trivyPaths()) {
   if (alias !== "local" && !/^[A-Za-z][A-Za-z0-9_.-]{0,62}$/.test(alias)) throw new Error("Image scans reach LOCAL and SSH hosts only.");
@@ -267,6 +272,9 @@ export async function scanImages(alias, ids, paths = trivyPaths()) {
   if (!existsSync(paths.binary)) throw new Error("Trivy is not installed: node /opt/spaceapp/scripts/space-security-scanner-setup.mjs --install");
   // Under /opt/spaceapp/var, not /tmp: an exported image can be gigabytes.
   await mkdir(join(scannerDir(), "work"), { recursive: true });
+  // Disk-full guard (brief 20261112-vm208-hostfull 3d): an export plus Trivy's unpacked layers take gigabytes of the app data disk.
+  const use = diskUsePercent(await statfs(scannerDir()));
+  if (use >= 90) throw new Error(`The disk holding ${scannerDir()} is ${use}% full: image scans wait until it is below 90%.`);
   const dir = await mkdtemp(join(scannerDir(), "work", "scan-"));
   const images = [], failed = [];
   try {
@@ -279,7 +287,7 @@ export async function scanImages(alias, ids, paths = trivyPaths()) {
         if (!published) await exportImage(alias, id, file);
         const source = published ? ["--image-src", "remote", "--platform", "linux/amd64", `${ref.split(":").slice(0, -1).join(":")}@${id}`] : ["--input", file];
         const report = JSON.parse(await run(paths.binary, ["image", ...source, "--scanners", "vuln", "--ignore-unfixed", "--format", "json", "--quiet",
-          "--cache-dir", paths.cache, "--cache-backend", "memory", "--skip-java-db-update", "--timeout", "15m"], { timeoutMs: 20 * 60_000 }));
+          "--cache-dir", paths.cache, "--cache-backend", "memory", "--skip-java-db-update", "--timeout", "15m"], { timeoutMs: 20 * 60_000, env: { ...process.env, TMPDIR: dir } }));
         images.push({ id, vulns: parseTrivyReport(report) });
       } catch (error) {
         failed.push({ id, reason: error instanceof SyntaxError ? "trivy answered no report" : error.message });
@@ -439,7 +447,7 @@ export async function collectPublicInstaller(fetchImpl = fetch) {
 }
 
 /** Hosts from ~/.ssh/config (aliases with a vmNNN/ctNNN name map to their guest) and the Proxmox guest lists. */
-export function discoverHosts(sshConfig, qmList, pctList) {
+export function discoverHosts(sshConfig, qmList, pctList, localName = hostname()) {
   const aliases = new Map();
   let current = null;
   for (const line of sshConfig.split("\n")) {
@@ -471,7 +479,8 @@ export function discoverHosts(sshConfig, qmList, pctList) {
     const alias = guestAlias.get(guest.id);
     const windows = alias && /^(Administrator|spaceadmin)$/.test(alias.user ?? "");
     const label = `${guest.kind === "qm" ? "VM" : "CT"}${guest.id} ${guest.name}`.replace(/[^A-Za-z0-9 ._()-]/g, "-").slice(0, 80);
-    const local = guest.id === "207";
+    // The guest this runs in: its hostname is the guest's name (codex-dev on public-host) or vm<id>/ct<id> (vm208 on public-host).
+    const local = [guest.name, `${guest.kind === "qm" ? "vm" : "ct"}${guest.id}`].includes(localName);
     hosts.push({
       alias: local ? "local" : alias ? alias.alias : `${guest.kind}:${guest.id}`,
       label, reach: local ? "LOCAL" : alias ? "SSH" : guest.kind === "qm" ? "QM_GUEST_EXEC" : "PCT_EXEC",

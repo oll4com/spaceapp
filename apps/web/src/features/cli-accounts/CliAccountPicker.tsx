@@ -357,7 +357,7 @@ function AccountPickerMenu({
                       {inUse ? <span className="cli-account-active-pill">In use</span> : null}
                     </span>
                     <small className="cli-account-menu-item-detail" data-sensitive-masked={row.email || row.login ? "manual" : undefined}>
-                      {row.email ?? (row.login ? `@${row.login}` : row.availability.detail ?? row.availability.description)}
+                      {(row.availability.heldByGateway ? row.availability.detail : null) ?? row.email ?? (row.login ? `@${row.login}` : row.availability.detail ?? row.availability.description)}
                     </small>
                     <CliAccountMeter availability={row.availability} />
                   </span>

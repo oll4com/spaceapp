@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { consumerMailDomain, mailAddressDomain, mailTemplateContentSchema, mailTemplateFingerprintInput, mailTemplateVariablesUsed, renderMailTemplate,
   type MailCampaignEvent, type MailCampaignEventType, type MailListCreate, type MailMadeBy, type MailSenderCreate, type MailSenderUpdate, type MailSuppressionInput,
   type MailTemplateContent, type MailTemplateCreate } from "@space/contracts";
@@ -53,25 +53,44 @@ export function createMailCampaignsService(options: MailCampaignsServiceOptions)
   const receives = createDomainCheck(options.campaigns?.dns ?? systemDns());
   /** Gmail message ids already read per sender (bounded), so a pass reads each message once. */
   const seenGmail = new Map<string, Set<string>>();
+  /** Per sender, each thread of its last pass with the historyId it was read at and its message ids (CPU plan 4.4). */
+  const threadsGmail = new Map<string, Map<string, { historyId: string; ids: string[] }>>();
   const bouncesRead = new Set<string>();
-  /** Every thread a Gmail search finds (every page), each message not in `seen` read once; returns the message ids it saw. */
-  async function readMailbox(owner: string, address: string, gmail: NonNullable<Awaited<ReturnType<MailTransports["gmailFor"]>>>, q: string, seen: Set<string>) {
+  /**
+   * Every thread a Gmail search finds (every page), each message not in `seen` read once; returns the message ids it saw. A thread in
+   * `known` whose historyId has not changed since is not read again (its messages are the same); `known` keeps only this pass's threads.
+   */
+  async function readMailbox(owner: string, address: string, gmail: NonNullable<Awaited<ReturnType<MailTransports["gmailFor"]>>>, q: string, seen: Set<string>,
+    known = new Map<string, { historyId: string; ids: string[] }>()) {
     const window = new Set<string>();
     const ids: string[] = [];
+    const historyIds = new Map<string, string>();
     for (let pageToken: string | null = null, first = true; first || pageToken; first = false) {
-      const page: { ids: string[]; nextPageToken: string | null } = await gmail.listThreads({ q, maxResults: 100, ...(pageToken ? { pageToken } : {}) })
+      const page: { ids: string[]; nextPageToken: string | null; historyIds?: Map<string, string> } = await gmail.listThreads({ q, maxResults: 100, ...(pageToken ? { pageToken } : {}) })
         .catch(() => ({ ids: [] as string[], nextPageToken: null }));
       ids.push(...page.ids);
+      for (const [threadId, historyId] of page.historyIds ?? []) historyIds.set(threadId, historyId);
       pageToken = page.nextPageToken;
     }
+    const listed = new Set(ids);
+    for (const threadId of known.keys()) if (!listed.has(threadId)) known.delete(threadId);
     for (const threadId of ids) {
+      const historyId = historyIds.get(threadId);
+      const cached = known.get(threadId);
+      if (historyId && cached?.historyId === historyId) {
+        for (const id of cached.ids) window.add(id);
+        continue;
+      }
       const thread = await gmail.thread(threadId, "metadata").catch(() => null);
-      for (const message of (thread?.messages as Array<{ id?: string }> | undefined) ?? []) {
-        if (!message.id) continue;
-        window.add(message.id);
-        if (seen.has(message.id)) continue;
-        seen.add(message.id);
-        const raw = await gmail.message(message.id, "raw").catch(() => null);
+      const messageIds = ((thread?.messages as Array<{ id?: string }> | undefined) ?? []).flatMap((message) => message.id ? [message.id] : []);
+      // The historyId listed before this read: a change after it gives the next pass another historyId, so the thread is read again.
+      if (thread && historyId) known.set(threadId, { historyId, ids: messageIds });
+      else known.delete(threadId);
+      for (const messageId of messageIds) {
+        window.add(messageId);
+        if (seen.has(messageId)) continue;
+        seen.add(messageId);
+        const raw = await gmail.message(messageId, "raw").catch(() => null);
         if (typeof raw?.raw === "string") await signals(owner, [Buffer.from(raw.raw, "base64url")], `mailbox ${address}`);
       }
     }
@@ -87,7 +106,7 @@ export function createMailCampaignsService(options: MailCampaignsServiceOptions)
       await event(owner, "HEALTH", `${contact.address} unsubscribed by mail (${source}).`, { contactId: contact.id });
       return 1;
     }
-    if ((signal.kind === "HARD_BOUNCE" || signal.kind === "SOFT_BOUNCE") && signal.recipient
+    if ((signal.kind === "HARD_BOUNCE" || signal.kind === "SOFT_BOUNCE") && (signal.recipient || signal.originalRecipient)
       && !(await Promise.all(signal.messageIds.map((id) => repository.findSendByMessageId(owner, id)))).some(Boolean)) return bounceByRecipient(owner, signal, source);
     for (const messageId of signal.messageIds) {
       const send = await repository.findSendByMessageId(owner, messageId);
@@ -132,14 +151,16 @@ export function createMailCampaignsService(options: MailCampaignsServiceOptions)
    * again): the first RISKY, the second distinct one INVALID (Nous 6/11, eco-led). Idempotent.
    */
   async function bounceByRecipient(owner: string, signal: Extract<CampaignSignal, { kind: "HARD_BOUNCE" | "SOFT_BOUNCE" }>, source: string) {
-    const contact = signal.recipient ? await repository.getContact(owner, signal.recipient) : null;
+    const contact = (signal.recipient ? await repository.getContact(owner, signal.recipient) : null)
+      ?? (signal.originalRecipient ? await repository.getContact(owner, signal.originalRecipient) : null);
     if (!contact) return 0;
+    const via = signal.recipient && signal.recipient !== contact.address ? `forwarded to ${signal.recipient}` : "by recipient";
     // 5.7.x is a policy or integrity rejection of that message (public-host's DSNs of 6/11: 5.7.7), not a mailbox that does not exist: RISKY.
     const policy = /^5\.7\./.test(signal.status);
     if (signal.kind === "HARD_BOUNCE" && !policy) {
       if (contact.health === "BOUNCED") return 0;
       await repository.updateContactHealth(owner, contact.id, { health: "BOUNCED", reasons: [`hard bounce ${signal.status}`] });
-      await repository.addSuppressions(owner, [{ pattern: contact.address, reason: "HARD_BOUNCE", source, note: `${signal.status} by recipient` }]);
+      await repository.addSuppressions(owner, [{ pattern: contact.address, reason: "HARD_BOUNCE", source, note: `${signal.status} ${via}` }]);
     } else if (policy) {
       if (contact.health !== "VALID" && contact.health !== "UNKNOWN") return 0;
       await repository.updateContactHealth(owner, contact.id, { health: "RISKY", reasons: [`rejected by policy ${signal.status}`] });
@@ -234,7 +255,9 @@ export function createMailCampaignsService(options: MailCampaignsServiceOptions)
             await readMailbox(owner, sender.address, gmail, "in:anywhere (from:mailer-daemon OR from:postmaster)", new Set());
             bouncesRead.add(sender.id);
           }
-          seenGmail.set(sender.id, await readMailbox(owner, sender.address, gmail, "newer_than:3d -in:sent -in:drafts", seenGmail.get(sender.id) ?? new Set()));
+          const known = threadsGmail.get(sender.id) ?? new Map<string, { historyId: string; ids: string[] }>();
+          threadsGmail.set(sender.id, known);
+          seenGmail.set(sender.id, await readMailbox(owner, sender.address, gmail, "newer_than:3d -in:sent -in:drafts", seenGmail.get(sender.id) ?? new Set(), known));
         }
       }
     },
@@ -403,6 +426,17 @@ export function createMailCampaignsService(options: MailCampaignsServiceOptions)
       const updated = sender.status === "SETUP" ? await repository.updateSender(owner, id, { status: "ACTIVE" }) : sender;
       await event(owner, "SENDER", `Check of ${sender.address} passed: ${detail}`, { senderId: id, ok: true });
       return { sender: updated!, detail };
+    },
+    /** One transactional mail the server itself writes (a sign-in password reset), outside campaigns and their review: only through an
+     *  ACTIVE sender of `owner`, 7-bit plain text so the mail readers' masking sees the text as written. */
+    async sendTransactional(owner: string, senderId: string, input: { to: string; subject: string; text: string }) {
+      const sender = await repository.getSender(owner, senderId);
+      if (sender?.status !== "ACTIVE" || !options.transports) throw new SpaceConflictError(`Sender ${senderId} cannot send on this server.`);
+      if (/[^\x20-\x7e\n]/.test(input.text + input.subject) || /[\r\n]/.test(input.to + input.subject)) throw new SpaceConflictError("A transactional mail is plain ASCII text.");
+      const raw = Buffer.from([`From: SpaceApp <${sender.address}>`, `To: <${input.to}>`, `Subject: ${input.subject}`, `Date: ${new Date().toUTCString()}`,
+        `Message-ID: <${randomUUID()}@${mailAddressDomain(sender.address)}>`, "MIME-Version: 1.0", "Content-Type: text/plain; charset=us-ascii",
+        "Content-Transfer-Encoding: 7bit", "", ...input.text.split("\n")].join("\r\n"), "ascii");
+      await options.transports.for(owner, sender).send(raw, { from: sender.address, to: input.to });
     },
     /** Name, reply-to, footer, caps, pause or disable; ACTIVE again only through a passing check. */
     async updateSender(owner: string, id: string, patch: MailSenderUpdate) {

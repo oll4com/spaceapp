@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MailActionLogEntry, MailCopilotEvent, MailCopilotPendingItem, MailComposeInput, MailFixRequestView, MailOperatorAction } from "@space/contracts";
 import { api } from "../../api.js";
 import { AlertTriangle, Archive, Bot, Check, CheckCircle2, CircleHelp, FileText, Flame, Folder, ListFilter, Mail, Pause, Pencil, Play, RefreshCw, Send, ShieldCheck, Square, Star, Trash2, X } from "../ui-theme/app-icons.js";
@@ -64,14 +64,20 @@ export function actionLine(row: MailActionLogEntry, t: (text: string, vars?: Rec
   return row.fromAddress ? t("{actor} {what} from {address}", { actor, what, address: row.fromAddress }) : t("{actor} {what}", { actor, what });
 }
 
-function ReviewCard({ item, paneId, onDone, onShowThread, nousReviewing = false }: { item: MailCopilotPendingItem; paneId: string; onDone(): void; onShowThread(account: string, threadId: string): void; nousReviewing?: boolean }) {
+const RSVP_TEXT = { accepted: "Answer Yes", declined: "Answer No", tentative: "Answer Maybe" } as const;
+
+function ReviewCard({ item, paneId, onDone, onShowThread, nousReviewing = false, focusAt }: { item: MailCopilotPendingItem; paneId: string; onDone(): void; onShowThread(account: string, threadId: string): void; nousReviewing?: boolean; focusAt?: number }) {
   const language = useUiLanguage();
+  // A Needs you card's Go lands here (review:<id>): the review comes into view, marked.
+  const ref = useRef<HTMLElement | null>(null);
+  useEffect(() => { if (focusAt) ref.current?.scrollIntoView?.({ block: "center", behavior: "smooth" }); }, [focusAt]);
+  const landing = { ref, className: `jc-pending${focusAt ? " is-target" : ""}`, "data-copilot-pending-id": `review:${item.id}` };
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const draft = item.payload.draft as MailComposeInput | undefined;
   const [text, setText] = useState(draft?.text ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  if (!draft) return null;
+  const rsvp = item.payload.rsvp as { response: keyof typeof RSVP_TEXT; comment?: string } | undefined;
   async function decide(decision: "approve" | "edit" | "reject") {
     if (busy) return;
     setBusy(true);
@@ -84,9 +90,28 @@ function ReviewCard({ item, paneId, onDone, onShowThread, nousReviewing = false 
       setBusy(false);
     }
   }
+  const showThread = (account: string | null | undefined, threadId: string | null | undefined) => account && threadId
+    ? <button type="button" className="jc-button ghost" title={t("Show only this conversation in the mailbox and open it")} onClick={() => onShowThread(account, threadId)}><ListFilter aria-hidden="true" /> {t("Show this mail")}</button> : null;
+  // An answer to a calendar invitation (12/11): approved or rejected like a reply, nothing to edit but its words above.
+  if (!draft) return !rsvp ? null : (
+    <section {...landing} aria-label={t(nousReviewing ? "Nous reviewing" : "Review a calendar answer")}>
+      <header><CircleHelp aria-hidden="true" /> <strong>{t(nousReviewing ? "Nous reviewing" : "Review a calendar answer")}</strong><span className="jc-muted">{item.accountEmail}</span></header>
+      <p className="mc-review-subject"><strong>{t(RSVP_TEXT[rsvp.response])}</strong></p>
+      <p className="jc-muted">{item.message}</p>
+      {rsvp.comment ? <p className="mc-review-text">{rsvp.comment}</p> : null}
+      <div className="jc-actions">
+        {nousReviewing ? null : <>
+          <button type="button" className="jc-button primary" disabled={busy} onClick={() => void decide("approve")}><Check aria-hidden="true" /> {t("Approve and answer")}</button>
+          <button type="button" className="jc-button ghost danger" disabled={busy} onClick={() => void decide("reject")}><X aria-hidden="true" /> {t("Reject")}</button>
+        </>}
+        {showThread(item.accountEmail, item.threadId)}
+      </div>
+      {error ? <p className="jc-message" role="alert">{error}</p> : null}
+    </section>
+  );
   const edited = text !== draft.text;
   return (
-    <section className="jc-pending" aria-label={t(nousReviewing ? "Nous reviewing" : "Review a reply")}>
+    <section {...landing} aria-label={t(nousReviewing ? "Nous reviewing" : "Review a reply")}>
       <header><CircleHelp aria-hidden="true" /> <strong>{t(nousReviewing ? "Nous reviewing" : "Review a reply")}</strong><span className="jc-muted">{draft.account} → {draft.to.join(", ")}</span></header>
       <p className="mc-review-subject"><strong>{draft.subject || t("(no subject)")}</strong></p>
       {typeof item.payload.reasoning === "string" && item.payload.reasoning ? <p className="jc-muted">{item.payload.reasoning}</p> : null}
@@ -98,7 +123,7 @@ function ReviewCard({ item, paneId, onDone, onShowThread, nousReviewing = false 
           <button type="button" className="jc-button primary" disabled={busy} onClick={() => void decide(edited ? "edit" : "approve")}><Check aria-hidden="true" /> {edited ? t("Send my version") : t("Approve and send")}</button>
           <button type="button" className="jc-button ghost danger" disabled={busy} onClick={() => void decide("reject")}><X aria-hidden="true" /> {t("Reject")}</button>
         </>}
-        {draft.threadId ? <button type="button" className="jc-button ghost" title={t("Show only this conversation in the mailbox and open it")} onClick={() => onShowThread(draft.account, draft.threadId!)}><ListFilter aria-hidden="true" /> {t("Show this mail")}</button> : null}
+        {showThread(draft.account, draft.threadId)}
       </div>
       {error ? <p className="jc-message" role="alert">{error}</p> : null}
     </section>
@@ -140,9 +165,10 @@ function QuestionCard({ item, paneId, onDone }: { item: MailCopilotPendingItem; 
 }
 
 /** The Activity rail tab: what waits for the operator (reviews, questions), then the timeline. */
-export function ActivityTab({ paneId, events, pending, onChanged, onOpenThread, onShowThread, nousReviewing = false }: {
+export function ActivityTab({ paneId, events, pending, onChanged, onOpenThread, onShowThread, nousReviewing = false, focusReview = null }: {
   paneId: string;
   nousReviewing?: boolean;
+  focusReview?: { id: string; at: number } | null;
   events: MailCopilotEvent[];
   pending: MailCopilotPendingItem[];
   onChanged(): void;
@@ -223,7 +249,7 @@ export function ActivityTab({ paneId, events, pending, onChanged, onOpenThread, 
             </ol>
           )
       ) : null}
-      {view === "activity" ? pending.map((item) => item.kind === "REVIEW" ? <ReviewCard key={item.id} item={item} paneId={paneId} onDone={onChanged} onShowThread={onShowThread} nousReviewing={nousReviewing} /> : <QuestionCard key={item.id} item={item} paneId={paneId} onDone={onChanged} />) : null}
+      {view === "activity" ? pending.map((item) => item.kind === "REVIEW" ? <ReviewCard key={item.id} item={item} paneId={paneId} onDone={onChanged} onShowThread={onShowThread} nousReviewing={nousReviewing} focusAt={focusReview?.id === item.id ? focusReview.at : undefined} /> : <QuestionCard key={item.id} item={item} paneId={paneId} onDone={onChanged} />) : null}
       {view !== "activity" ? null : events.length === 0 ? (
         <div className="jc-empty"><strong>{t("No activity yet")}</strong><span>{t("Press Start. Every triage, draft, reply, question and lesson lands here as the copilot works.")}</span></div>
       ) : (

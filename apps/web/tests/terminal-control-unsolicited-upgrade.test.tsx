@@ -168,7 +168,7 @@ beforeEach(() => {
   pageHasFocus = true;
   vi.spyOn(document, "hasFocus").mockImplementation(() => pageHasFocus);
   vi.stubGlobal("WebSocket", Socket);
-  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   apiMock.cliRuntimes.mockResolvedValue({ data: [runtime], checkedAt: runtime.checkedAt });
   apiMock.activeCliSession.mockResolvedValue(sessionResponse);
   apiMock.listCliAccountProfiles.mockResolvedValue({ profiles: [] });

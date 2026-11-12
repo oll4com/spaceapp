@@ -3,6 +3,7 @@ import type { AuthMe } from "@space/contracts";
 import { api, SpaceApiError } from "../../api.js";
 import type { ModernColorMode } from "../../ui-theme.js";
 import { Lock } from "../ui-theme/app-icons.js";
+import { rememberPasswordStepUp } from "../settings/LoginPasswordSettingsCard.js";
 
 export function LoginScreen({
   auth,
@@ -18,8 +19,17 @@ export function LoginScreen({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [resetToken, setResetToken] = useState<string | null>(null);
+  const [newPassword, setNewPassword] = useState("");
 
   useEffect(() => {
+    // The mailed link carries the token in the fragment: take it and drop it from the address bar at once.
+    const token = /^#password-reset=([A-Za-z0-9_-]+)$/.exec(window.location.hash)?.[1];
+    if (token) {
+      setResetToken(token);
+      window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+    }
     try {
       const params = new URLSearchParams(window.location.search);
       const authErr = params.get("authError");
@@ -38,6 +48,60 @@ export function LoginScreen({
       return "Login rejected. Use the configured operator credentials, or run 'npx --yes run-spaceapp@latest owner reset-password' in your host terminal to set a new password.";
     }
     return err instanceof Error ? err.message : "Login failed";
+  }
+
+  const linkButton = { background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: "0.78rem", textAlign: "center", color: "var(--room-accent, #67e8f9)" } as const;
+  const plainError = (err: unknown, fallback: string) => (err instanceof Error ? err.message.replace(/^[A-Z_]+: /, "") : fallback);
+
+  if (resetToken) {
+    return (
+      <main
+        className={modern ? "login-shell modern-theme-page" : "login-shell"}
+        data-ui-theme={modern ? "modern" : undefined}
+        data-color-mode={modern ? colorMode ?? undefined : undefined}
+      >
+        <form
+          className="login-panel"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setError(null);
+            api
+              .completePasswordReset(resetToken, newPassword)
+              .then(() => {
+                setResetToken(null);
+                setNewPassword("");
+                setNotice("Your password is reset and every other session is signed out. Sign in with your new password.");
+              })
+              .catch((err: unknown) => setError(plainError(err, "The password was not reset")));
+          }}
+        >
+          <div className="brand login-brand">
+            <Lock aria-hidden="true" />
+            <div>
+              <h1>Space</h1>
+              <span>Set a new password</span>
+            </div>
+          </div>
+          <label htmlFor="reset-new-password">
+            New password
+            <input
+              id="reset-new-password"
+              name="new-password"
+              value={newPassword}
+              onChange={(event) => setNewPassword(event.target.value)}
+              type="password"
+              autoComplete="new-password"
+              required
+            />
+          </label>
+          {error ? <p className="form-error">{error}</p> : null}
+          <button type="submit">Set new password</button>
+          <button type="button" style={linkButton} onClick={() => { setResetToken(null); setError(null); }}>
+            Back to sign in
+          </button>
+        </form>
+      </main>
+    );
   }
 
   return (
@@ -144,7 +208,37 @@ export function LoginScreen({
           />
         </label>
         {error ? <p className="form-error">{error}</p> : null}
+        {notice ? <p role="status" style={{ fontSize: "0.8rem" }}>{notice}</p> : null}
         <button type="submit">Enter</button>
+        {/* The link must open in this same browser (a cookie binds it), so the desktop app, whose links open elsewhere, leaves it out. */}
+        {!("spaceDesktop" in window) ? (
+          <button
+            type="button"
+            className="login-reset-mail"
+            style={linkButton}
+            onClick={() => {
+              setError(null);
+              if (!email.trim()) {
+                setNotice(null);
+                setError("Type the owner's email above first.");
+                return;
+              }
+              api
+                .requestPasswordReset(email.trim())
+                .then(() => setNotice("If that is the owner's address, a reset link is on its way. Open it in this browser within 30 minutes."))
+                .catch((err: unknown) => setError(plainError(err, "The reset link was not sent")));
+            }}
+          >
+            Forgot password? Email me a reset link
+          </button>
+        ) : null}
+        {/* The second route: a fresh sign-in of the linked Google account opens Settings › Login password. The desktop app drops the reset from Google's start. */}
+        {auth.googleAuthEnabled && !("spaceDesktop" in window) ? (
+          <a className="login-forgot-password" href="/api/auth/google/start?reset=password" onClick={rememberPasswordStepUp}
+            style={{ fontSize: "0.78rem", textAlign: "center", color: "var(--room-accent, #67e8f9)" }}>
+            Forgot password? Reset it with Google
+          </a>
+        ) : null}
 
         <div
           className="login-self-hosted-hint"
@@ -180,6 +274,7 @@ export function LoginScreen({
             >
               npx --yes run-spaceapp@latest owner reset-password
             </code>
+            <div style={{ marginTop: "0.25rem" }}>Or from Settings → Login password, if you are still signed in somewhere.</div>
           </div>
           <div>
             Need a clean install from scratch? Run:

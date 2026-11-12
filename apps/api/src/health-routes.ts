@@ -34,6 +34,14 @@ async function readGitVersionMetadata(cwd = process.env.SPACE_GIT_ROOT ?? proces
   }
 }
 
+// Three git processes per read (status walks the whole checkout) cost 2.5% of a saturated API (10/11); /readyz and /version share one read a minute.
+const GIT_VERSION_CACHE_MS = 60_000;
+let gitVersionCache: { at: number; value: ReturnType<typeof readGitVersionMetadata> } | null = null;
+function cachedGitVersionMetadata() {
+  if (!gitVersionCache || Date.now() - gitVersionCache.at >= GIT_VERSION_CACHE_MS) gitVersionCache = { at: Date.now(), value: readGitVersionMetadata() };
+  return gitVersionCache.value;
+}
+
 /** Liveness, readiness and version endpoints; the parent retains authentication, CSRF, errors and rate limits. */
 export function registerHealthRoutes(app: FastifyInstance, options: {
   apiStartedAt: string;
@@ -92,7 +100,7 @@ export function registerHealthRoutes(app: FastifyInstance, options: {
             ? browserSessionManager.browserHostHealth()
             : Promise.reject(new Error("Browser Host health checker is not configured.")),
             { buildCommit: null, captureMetrics: null } as never),
-          readGitVersionMetadata()
+          cachedGitVersionMetadata()
         ]))()
       : null;
     browserHostCheck?.catch(() => {}); // awaited in the try below; an early rejection must not count as unhandled
@@ -174,7 +182,7 @@ export function registerHealthRoutes(app: FastifyInstance, options: {
     instance: config.instance,
     version: config.version,
     node: process.version,
-    git: await readGitVersionMetadata()
+    git: await cachedGitVersionMetadata()
   }));
   app.get("/api/app/version", defaultRouteRateLimitOptions, async () => appVersionReader.status());
 }

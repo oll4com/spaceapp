@@ -15,9 +15,18 @@ export function publicSiteHost(host: string): string | null {
   const parsed = parse(host.toLowerCase(), { allowPrivateDomains: true });
   return parsed.domain && !parsed.isIp && (parsed.isIcann || parsed.isPrivate) ? parsed.hostname!.replace(/^www\./, "") : null;
 }
+/**
+ * The key of a site's sign-in record: its registrable domain, or host:port for a service on its own port. 12/11: Space
+ * (spaceapp.example:4911) and the Hestia panel (example.invalid) shared one "oll4.com" recipe and each overwrote the other's.
+ */
+export function siteSigninKey(value: string): string {
+  const domain = siteSigninDomain(value);
+  const url = new URL(value.includes("://") ? value : `https://${value}`);
+  return url.port ? `${url.hostname.toLowerCase().replace(/^www\./, "")}:${url.port}` : domain;
+}
 export const siteSigninKeySchema = z.object({
   site: z.string().trim().min(1).max(2000).transform((value, ctx) => {
-    try { return siteSigninDomain(value); } catch { ctx.addIssue({ code: "custom", message: "Use a public site domain or http(s) URL without credentials" }); return z.NEVER; }
+    try { return siteSigninKey(value); } catch { ctx.addIssue({ code: "custom", message: "Use a public site domain or http(s) URL without credentials" }); return z.NEVER; }
   }), accountLabel: z.string().trim().min(1).max(100).default("main")
 }).strict();
 const text = (max: number) => z.string().trim().max(max).nullable().optional();

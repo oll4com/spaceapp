@@ -50,7 +50,9 @@ const decisionParams = z.object({ id: nousDecisionIdSchema }).strict();
 const goalParams = z.object({ id: nousGoalIdSchema }).strict();
 // No question is ever lost (operator 31/10): the dock pages back past the newest 200 rows, Clear conversation included.
 const messagesQuery = z.object({ before: nousMessageIdSchema.optional(), limit: z.coerce.number().int().min(1).max(500).default(200),
-  cleared: z.enum(["1", "true"]).optional() }).strict();
+  cleared: z.enum(["1", "true"]).optional(), since: z.string().datetime({ offset: true }).optional() }).strict();
+// shortcut: a row written while a read runs can carry an updated_at just before that read's cursor (commit lag, clock skew); 10 s covers it, widen if a row goes missing.
+const SINCE_OVERLAP_MS = 10_000;
 const requestsQuery = z.object({ before: nousMessageIdSchema.optional(), limit: z.coerce.number().int().min(1).max(200).default(50), status: nousRequestStatusSchema.optional(),
   since: z.string().datetime({ offset: true }).optional(), q: z.string().max(200).optional() }).strict();
 // Audit 6/11: done needs its proof (a URL, a message id, a booking), void its reason, as space_settle_decision.
@@ -80,14 +82,20 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
 
   app.get("/api/nous/messages", routeOptions, async (request) => {
     const owner = await deps.owner(request);
-    const { before, limit, cleared } = parseQuery(messagesQuery, request.query);
+    const { before, limit, cleared, since } = parseQuery(messagesQuery, request.query);
     const latest = before === undefined && cleared === undefined;
+    const cursor = new Date().toISOString();
     // The latest page starts at the last Clear conversation; `cleared` and `before` read past it (the rows are never deleted).
     const { messages, hasMore, clearedAt } = await service.messagePage(owner, limit, before ? { before } : { sinceClear: latest });
-    const operatorIds = messages.filter((message) => message.kind === "OPERATOR").map((message) => message.id);
+    const page = deps.stepTranslations ? await deps.stepTranslations(owner, messages, request.requestIdForSpace) : messages;
+    // `since` (latest page, the dock's last `cursor`): only the rows written or translated since then; the dock holds the rest (2 MB a poll before, 10/11).
+    const cut = latest && since ? Date.parse(since) - SINCE_OVERLAP_MS : null;
+    const sent = cut === null ? page : page.filter((message) => Date.parse(message.updatedAt) >= cut
+      || Date.parse(String((message.meta.translation as { at?: unknown } | undefined)?.at)) >= cut);
+    const operatorIds = sent.filter((message) => message.kind === "OPERATOR").map((message) => message.id);
     // `waiting`: the operator's messages still in Nous's queue (no answer yet); the dock marks them queued or being answered. Only the latest page knows.
     // `clearedAt` (latest page only): the dock leaves the decisions asked before the last Clear out of the conversation (operator 2/11).
-    return { messages: deps.stepTranslations ? await deps.stepTranslations(owner, messages, request.requestIdForSpace) : messages, hasMore, ...(latest ? { clearedAt: clearedAt ?? null } : {}),
+    return { messages: sent, hasMore, ...(latest ? { clearedAt: clearedAt ?? null, cursor } : {}),
       waiting: latest ? operatorMessagesToAnswer(messages).map((message) => message.id) : [],
       attachments: deps.attachments ? await deps.attachments.forMessages(owner, operatorIds) : {} };
   });

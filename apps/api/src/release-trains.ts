@@ -17,7 +17,8 @@ const sha = z.string().trim().regex(/^[0-9a-f]{7,40}$/i, "a git commit hash");
 
 // approve: the operator's yes to the candidate, only through a Nous RELEASE decision (operator decision 2026-10-17).
 // lab: the captain records its lab run's proof for the exact candidate ("May publish after a green lab proof", 2026-10-28).
-export const releaseTrainOps = ["status", "open", "join", "leave", "candidate", "lab", "approve", "publishing", "published", "cancel"] as const;
+// captain: Nous or the Room Agent names a new captain pane when the old one closed (1.2.0, 2026-11-10), never a pane for itself.
+export const releaseTrainOps = ["status", "open", "join", "leave", "candidate", "lab", "approve", "publishing", "published", "cancel", "captain"] as const;
 const version = z.string().trim().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/, "a version like 1.1.5");
 export const releaseLabProofSchema = z.object({
   acceptanceSha256: z.string().trim().regex(/^[0-9a-f]{64}$/i).describe("SHA-256 of the release/acceptance.json the lab run wrote for this candidate."),
@@ -101,11 +102,16 @@ export async function changeReleaseTrain(repo: ControlRepository, input: Release
         if (!by.pane) throw new SpaceConflictError("Name the pane that leaves the release.");
         next.contributors = next.contributors.filter((item) => item.paneId !== by.pane!.paneId || (input.commit && item.commit !== input.commit.toLowerCase()));
       } else if (op === "candidate") {
-        // A train marked publishing before the operator's approval existed (stable 2026-10-17) reopens with its new candidate.
-        if (live.status !== "OPEN" && live.approvedSha === live.sourceSha) throw new SpaceConflictError(`${product} ${live.version} is already publishing.`);
+        // A publishing train whose release run failed (1.2.0, 10/11) reopens with its new candidate; approvedSha keeps the earlier
+        // approval, so op publishing waits until the operator's approval binds to the new candidate (R13-15b).
         if (!input.sourceSha) throw new SpaceConflictError("Give the sourceSha the candidate is built from.");
         next.sourceSha = input.sourceSha.toLowerCase();
         next.status = "OPEN";
+      } else if (op === "captain") {
+        if (by.paneSelf) throw new SpaceConflictError(`Only Nous or the Room Agent names a new captain for ${product} ${live.version}.`);
+        if (!by.pane) throw new SpaceConflictError("Name the new captain pane.");
+        next.captain = by.pane;
+        next.roomId = by.roomId;
       } else if (op === "lab") {
         // Only the captain's own pane records it: neither Nous nor the Room Agent can attest a lab run they approve on.
         if (!by.paneSelf || by.pane?.paneId !== live.captain.paneId) throw new SpaceConflictError(`Only the captain pane (${live.captain.name}) records the lab proof, from its own lab run.`);

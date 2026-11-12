@@ -1,12 +1,11 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ClipboardItem } from "@space/contracts";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT, type ClipboardItem } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
 
 // Outbound events SpaceApp → Make (plan clipboard:F1nJVLcoWdd- step 3). Off unless SPACE_MAKE_WEBHOOKS_ENABLED=true on this instance AND the
-// scenario's URL file and the signing secret were installed from the Vault with space_vault_key_install; a missing file sends nothing.
+// scenario's URL file and the signing secret are in the secrets folder (installed from the Vault, see nous-programs.md); a missing file sends nothing.
 // Each of the plan's three first scenarios has its own Make webhook: the job-applications sheet, the programs registry, the phone push.
 export type MakeEvent = "done" | "plan.completed" | "program.approved" | "job_application.status" | "appointment";
 export const makeEventTarget: Record<MakeEvent, "jobs" | "programs" | "push"> = {
@@ -20,6 +19,7 @@ export type MakeWebhookDeps = {
   instance: string;
   /** Only the operator's (ADMIN) events leave the server; another account's never do. */
   allow: (owner: string) => Promise<boolean>;
+  /** Tests only; by default `${SPACE_INSTALL_ROOT}/secrets/space-<name>`, then `${SPACE_AGENT_HOME}/.config/space/<name>` (as the Make relay). */
   dir?: string;
   fetch?: typeof globalThis.fetch;
   sleep?: (ms: number) => Promise<void>;
@@ -29,12 +29,19 @@ export type MakeWebhookDeps = {
 };
 
 export function createMakeWebhooks(deps: MakeWebhookDeps) {
-  const { dir = join(homedir(), ".config/space"), fetch = globalThis.fetch, retryDelays = [2_000, 10_000, 60_000, 300_000], log = () => undefined } = deps;
+  const { dir, fetch = globalThis.fetch, retryDelays = [2_000, 10_000, 60_000, 300_000], log = () => undefined } = deps;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref()));
   // shortcut: dedupe and retries live in memory (several writers report the same plan, status or appointment; a restart drops pending retries),
   // move them to a durable outbox if Make must never miss an event. 24 h is the dedupe window.
   const sent = new Map<string, number>();
-  const read = (name: string) => readFile(join(dir, name), "utf8").then((text) => text.trim(), () => "");
+  // The API runs as `space`, whose home is the install root and who cannot read the agent's ~/.config: the secrets folder is the one it reads.
+  const read = async (name: string) => {
+    for (const file of dir ? [join(dir, name)] : [join(SPACE_INSTALL_ROOT, "secrets", `space-${name}`), join(SPACE_AGENT_HOME, ".config/space", name)]) {
+      const text = (await readFile(file, "utf8").catch(() => "")).trim();
+      if (text) return text;
+    }
+    return "";
+  };
 
   /** Sends one event once per key; never throws. Resolves when delivered, refused or given up. */
   return async function emit(owner: string, event: MakeEvent, key: string, data: Record<string, unknown>): Promise<void> {

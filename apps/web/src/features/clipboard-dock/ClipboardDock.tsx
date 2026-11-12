@@ -413,7 +413,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
             const canExpand = isPlan ? hiddenSteps > 0 || prose !== item.text.trim() : isLong;
             return (
               <article
-                className={`clipboard-card dock-kit-card${isPlan ? " is-plan is-accent" : ""}${item.isCompleted ? " is-completed is-muted" : ""}`}
+                className={`clipboard-card dock-kit-card${isPlan ? " is-plan is-accent" : ""}${item.isCompleted ? " is-completed is-muted" : ""}${expanded ? " is-expanded" : ""}`}
                 role="listitem"
                 key={item.id}
                 onDoubleClick={(event) => {

@@ -7,6 +7,7 @@ import { AnimatedNumber } from "../ui-controls/AnimatedNumber.js";
 import { ChartSpline } from "../ui-theme/app-icons.js";
 import { rangeFits, useHistoryPeriodDays } from "../history-period/use-history-period.js";
 import { useNousUiState } from "./nous-ui-state.js";
+import { frameLoop } from "../../window-idle.js";
 import "./nous-load.css";
 
 /**
@@ -146,7 +147,6 @@ export function LoadWave({ values, target, animate, label, bounds = [0, 100] }: 
     const canvas = canvasRef.current;
     const context = canvas?.getContext?.("2d");
     if (!canvas || !context) return;
-    let frame = 0;
     let last = 0;
     const draw = (time: number) => {
       const ratio = window.devicePixelRatio || 1;
@@ -197,9 +197,8 @@ export function LoadWave({ values, target, animate, label, bounds = [0, 100] }: 
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     const tick = (time: number) => {
       if (time - last >= 33) { last = time; draw(time); }
-      frame = window.requestAnimationFrame(tick);
     };
-    if (animate && !reduced) frame = window.requestAnimationFrame(tick);
+    if (animate && !reduced) return frameLoop(tick);
     else {
       // Still: draw once, again when the series' morph ends, and on resize.
       draw(performance.now() + 800);
@@ -207,7 +206,6 @@ export function LoadWave({ values, target, animate, label, bounds = [0, 100] }: 
       resize?.observe(canvas);
       return () => resize?.disconnect();
     }
-    return () => window.cancelAnimationFrame(frame);
   }, [animate, target, values, low, high]);
   return <canvas ref={canvasRef} className="nous-load-canvas" role="img" aria-label={label} />;
 }

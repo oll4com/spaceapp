@@ -141,6 +141,8 @@ async function expectRequestReads(store: NousRepository, user: string) {
   expect((await store.listOperatorMessages(user, { limit: 5 })).map((row) => row.id)).toEqual([second.id, first.id]);
   expect((await store.listOperatorMessages(user, { limit: 1 })).map((row) => row.id)).toEqual([second.id]);
   expect((await store.listOperatorMessages(user, { before: second.id, limit: 5 })).map((row) => row.id)).toEqual([first.id]);
+  expect((await store.listOperatorMessages(user, { since: first.createdAt, limit: 5 })).map((row) => row.id)).toEqual([second.id, first.id]);
+  expect(await store.listOperatorMessages(user, { since: "2999-01-01T00:00:00.000Z", limit: 5 })).toEqual([]);
   expect(await store.listAnswerLinks(user, first.createdAt)).toEqual([{ turnId: "nous_turn:r1", createdAt: expect.any(String), startedAt: first.createdAt, replyTo: [first.id] },
     { turnId: "nous_turn:r1", createdAt: expect.any(String), startedAt: expect.any(String), replyTo: [first.id], interim: true },
     { turnId: null, createdAt: expect.any(String), startedAt: first.createdAt, replyTo: [first.id] }]);

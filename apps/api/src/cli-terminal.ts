@@ -51,6 +51,7 @@ import {
   type CliTerminalTelemetryOutcome,
   type CliTerminalTelemetryReason,
   type CodexCliModeDefaultPair,
+  type CreatePaneCliHostOutputInput,
   type Pane,
   type PaneCliClientMode,
   type PaneCliSession,
@@ -84,9 +85,11 @@ import {
   codexDirectParityHome,
   isDirectOperatorParityRuntime,
   isCodexDirectParityRuntime,
+  pathInside,
   publicPaneCwd,
   resolveDirectOperatorParityCwd
 } from "./cli-parity.js";
+import { buildSpaceAgentBootstrapPrompt } from "./agent-bootstrap.js";
 import { findCliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
 import { findCliRunLifecycleAdapter } from "./cli-run-lifecycle-adapters.js";
 import { isCliRenderProofSession } from "./cli-render-proof-fixture.js";
@@ -139,6 +142,11 @@ const codexModelNavigationRepaintSettleMs = 25;
 const qwenAuthBootstrapSettleMs = 250;
 const cliHostOutputBatchDelayMs = 20;
 const cliHostOutputBatchMaxBytes = 32 * 1024;
+// A CLI task's preview and recency follow its output at most this often (CPU report 12/11, plan 2.2); a session's last one always lands.
+const cliTaskPreviewIntervalMs = 2_000;
+// Technical bound: one transaction's array parameters stay far below V8's string and Postgres's 1 GB field limits after a database
+// outage; the rest of the same flush goes in the next transaction, so nothing is left out.
+const cliHostOutputTransactionMaxBytes = 8 * 1024 * 1024;
 const cliInputPersistenceMaxFrames = 64;
 const cliInputPersistenceMaxBytes = 64 * 1024;
 const cliTerminalControlLeaseTtlSeconds = 30;
@@ -416,6 +424,13 @@ interface ManagedCliSession {
   pendingHostOutput: CliHostOutputBatch | null;
   hostOutputQueue: CliHostOutputBatch[];
   hostOutputFlushTimer: ReturnType<typeof setTimeout> | null;
+  /** The host-output write still waiting at the end of persistQueue: a newer flush moves its end there instead of queueing another
+   * transaction (CPU report 12/11, plan 2.1). Only the chain's last op may grow, so no output passes an op queued after it. */
+  waitingHostOutputWrite?: { through: CliHostOutputBatch | undefined; tail: Promise<void>; result: Promise<void> } | null;
+  /** The newest non-blank output the CLI task's preview has not shown yet, when it last did, and the timer of its trailing write. */
+  owedTaskPreview?: CreatePaneCliHostOutputInput | null;
+  taskPreviewAtMs?: number;
+  taskPreviewTimer?: ReturnType<typeof setTimeout> | null;
   pendingHiddenTail: string;
   pendingHiddenTailEvent: Extract<CliHostEvent, { type: "output" }> | null;
   pendingHiddenTailTimer: ReturnType<typeof setTimeout> | null;
@@ -1068,6 +1083,13 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
     env[runtimeDescriptor.accountProfileEnv] = context.accountProfileId;
   }
   if (context.runtimeId === "cli:claude") {
+    // A pane in the operator's own folder gets no session AGENTS.md (only managed session folders do); the wrapper appends this instead.
+    if (context.purpose !== "LOGIN" && !(context.cwd && pathInside(config.cliWorkspaceRoot, context.cwd))) {
+      env.SPACE_AGENT_BOOTSTRAP = buildSpaceAgentBootstrapPrompt({
+        channel: "CLI", roomId: context.roomId, paneId: context.paneId, cliSessionId: context.cliSessionId, runtimeId: context.runtimeId,
+        publicMemoryFiles: config.publicDistribution ? { indexPath: config.spaceMemoryIndexPath, monthlyPath: config.spaceMemoryMonthlyPath } : null
+      });
+    }
     // Only a pane's own pick pins its model; the runtime's generic default id never does.
     const family = context.modelId?.startsWith(CLAUDE_PANE_MODEL_PREFIX) ? context.modelId.slice(CLAUDE_PANE_MODEL_PREFIX.length) : null;
     if (family && /^(?:opus|fable|sonnet|haiku)$/.test(family)) {
@@ -4481,42 +4503,67 @@ export class CliTerminalManager {
       hostOutputQueue.push(pending);
     }
     const flushThrough = hostOutputQueue.at(-1);
-    if (!flushThrough) return Promise.resolve();
-    return this.enqueuePersistence(
-      managed,
-      () => this.persistHostOutputThrough(managed, flushThrough),
-      managed.persistQueue,
-      false
-    );
+    if (!flushThrough && !managed.owedTaskPreview) return Promise.resolve();
+    const waiting = managed.waitingHostOutputWrite;
+    if (waiting && waiting.tail === managed.persistQueue) {
+      waiting.through = flushThrough ?? waiting.through;
+      return waiting.result;
+    }
+    const write = { through: flushThrough, tail: managed.persistQueue, result: Promise.resolve() };
+    write.result = this.enqueuePersistence(managed, () => {
+      if (managed.waitingHostOutputWrite === write) managed.waitingHostOutputWrite = null;
+      return this.persistHostOutputThrough(managed, write.through);
+    }, managed.persistQueue, false);
+    write.tail = managed.persistQueue;
+    managed.waitingHostOutputWrite = write;
+    return write.result;
   }
 
+  /** Writes the queue's batches through `flushThrough` (none when it is gone or absent) and the task preview when due. */
   private async persistHostOutputThrough(
     managed: ManagedCliSession,
-    flushThrough: CliHostOutputBatch
+    flushThrough: CliHostOutputBatch | undefined
   ): Promise<void> {
     const hostOutputQueue = managed.hostOutputQueue ?? (managed.hostOutputQueue = []);
-    if (!hostOutputQueue.includes(flushThrough)) return;
-    while (hostOutputQueue.length > 0) {
-      const queued = hostOutputQueue[0];
-      if (!queued) return;
-      const content = redactMemoryText(queued.content);
-      const chunk = await this.options.store.appendPaneCliHostOutputChunk(
-        {
-          sessionId: managed.sessionId,
-          paneId: managed.paneId,
-          roomId: managed.roomId,
-          generationId: queued.generationId,
-          outputSequence: queued.outputSequence,
-          stream: queued.stream,
-          content,
-          byteLength: Buffer.byteLength(content, "utf8")
-        },
-        "req:cli-host-output"
-      );
-      managed.nextTranscriptSequence = Math.max(managed.nextTranscriptSequence, chunk.sequence + 1);
-      hostOutputQueue.shift();
-      if (queued === flushThrough) return;
-    }
+    let end = flushThrough ? hostOutputQueue.indexOf(flushThrough) + 1 : 0;
+    do {
+      let count = 0;
+      for (let bytes = 0; count < end; count += 1) {
+        bytes += hostOutputQueue[count]!.byteLength;
+        if (count > 0 && bytes > cliHostOutputTransactionMaxBytes) break;
+      }
+      const inputs = hostOutputQueue.slice(0, count).map((queued) => {
+        const content = redactMemoryText(queued.content);
+        return { sessionId: managed.sessionId, paneId: managed.paneId, roomId: managed.roomId, generationId: queued.generationId,
+          outputSequence: queued.outputSequence, stream: queued.stream, content, byteLength: Buffer.byteLength(content, "utf8") };
+      });
+      managed.owedTaskPreview = inputs.findLast((input) => /\S/.test(input.content)) ?? managed.owedTaskPreview;
+      const preview = this.dueTaskPreview(managed);
+      if (!count && !preview) return;
+      const sequence = await this.options.store.appendPaneCliHostOutputChunks(inputs, preview, "req:cli-host-output");
+      if (preview) {
+        managed.taskPreviewAtMs = Date.now();
+        if (managed.owedTaskPreview === preview) managed.owedTaskPreview = null;
+      }
+      managed.nextTranscriptSequence = Math.max(managed.nextTranscriptSequence, sequence + 1);
+      hostOutputQueue.splice(0, count);
+      end -= count;
+    } while (end > 0);
+  }
+
+  /** The owed preview once its 2 s have passed or the session ends; otherwise a timer writes it then. */
+  private dueTaskPreview(managed: ManagedCliSession): CreatePaneCliHostOutputInput | null {
+    const owed = managed.owedTaskPreview;
+    if (!owed) return null;
+    const wait = (managed.taskPreviewAtMs ?? 0) + cliTaskPreviewIntervalMs - Date.now();
+    if (wait <= 0 || managed.closed || managed.detached) return owed;
+    managed.taskPreviewTimer ??= setTimeout(() => {
+      managed.taskPreviewTimer = null;
+      // A newer attachment of the session owns its preview now: this one's older text must not replace the newer's.
+      if ((this.sessions.get(managed.sessionId) ?? managed) !== managed) managed.owedTaskPreview = null;
+      void this.flushHostOutput(managed).catch(() => undefined);
+    }, wait);
+    return null;
   }
 
   private enqueuePersistence(

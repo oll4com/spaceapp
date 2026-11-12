@@ -512,7 +512,7 @@ export interface CreateAppOptions extends FirstSetupAppOptions, CliAccountProfil
   jobApplyKickoff?: (pane: Pane, run: JobApplyRun, discover: boolean) => Promise<void>;
   /** Tests replace the Google connector behind Mail Copilot's mailboxes, and the Gmail API. */
   mailCopilotGoogle?: MailCopilotGoogleAccess;
-  mailCopilotGmailFetch?: typeof fetch;
+  mailCopilotGmailFetch?: typeof fetch; passwordResetMail?: Parameters<typeof registerSignInRoutes>[1]["passwordResetMail"];
   mailCopilotRepository?: MailCopilotRepository;
   vault?: VaultOverrides; marketingCopilotRepository?: MarketingCopilotWiring["repository"]; marketingCopilotKickoff?: MarketingCopilotWiring["kickoff"]; marketingCopilotScheduler?: boolean; marketingCopilotMetrics?: boolean; freelanceCopilotRepository?: FreelanceCopilotWiring["repository"]; freelanceCopilotKickoff?: FreelanceCopilotWiring["kickoff"]; freelanceCopilotScheduler?: boolean; freelanceCopilotMailboxes?: FreelanceCopilotWiring["mailboxes"];
   /** Tests replace the Design pane's repository, gateway client, template renderer and CLI kickoff. */
@@ -1124,7 +1124,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }
       );
     });
-  cliRuntimeRegistryCache = createCliRuntimeRegistryCache(config, { probeCredentialStatus: publicCredentialHost?.status });
+  cliRuntimeRegistryCache = createCliRuntimeRegistryCache(config, { probeCredentialStatus: publicCredentialHost?.status, credentialGeneration: publicCredentialHost?.generation });
   // 4/11: after each restart every pane's GET cli/session waited ~4 s on the first discovery (its slowest credential probe);
   // it starts now and onReady waits for it, so no request meets a cold registry.
   const registryWarm = cliRuntimeRegistryCache.read().catch(() => undefined);
@@ -1350,8 +1350,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     assertRoomAccess: (roomId, user) => assertRoomAccess(roomId, user) });
 
   // Room watchdog alerts: the room-hour line for Nous; the banner and URGENT card only for a room stuck 10 minutes (room-watchdog-notices.ts).
-  const roomWatchdog = createRoomWatchdogNotices({ room: async (roomId) => Promise.resolve(store.getRoom(roomId)).catch(() => null), publish: (event) => eventBus.publish(event),
-    notice: async (owner, key, line) => { await nousRef.current?.service.notice(owner, key, line); }, warn: (meta, message) => app.log.warn(meta, message) });
+  const roomWatchdog = createRoomWatchdogNotices({ room: async (roomId) => Promise.resolve(store.getRoom(roomId)).catch(() => null), pane: async (paneId) => store.getPane(paneId), publish: (event) => eventBus.publish(event),
+    notice: async (owner, key, line, soonMs) => { await nousRef.current?.service.notice(owner, key, line, undefined, soonMs ? { soonMs } : {}); }, warn: (meta, message) => app.log.warn(meta, message) });
   const { roomCliSession, roomCliObservationCache, inspectRoomCli, commandRoomCli } = createRoomCliControl({ store, reportWatchdog: (event) => roomWatchdog.report(event), cliTerminalManager, cliRuntimeRegistryCache,
     assertPaneCliRuntimeEnabled, readPaneCliModelSettings, readPaneOpenCodeModelSettings, resolveOpenCodeServerControl, readPaneNativeModelSettings, loadNativeCliModels,
     antigravityUsageProvider, recordClaudeNativeRef });
@@ -1512,7 +1512,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         fitPaneTerminal: (paneId, cols, rows) => cliTerminalManager.fitPaneTerminal(paneId, cols, rows), recordAuditEvent: async (input) => store.recordAuditEvent(input) }) }),
     publish:async roomId=>{const event=await getLatestRoomEvent(store,roomId);if(event)eventBus.publish(event);},
     publishEvent: (event) => eventBus.publish(event),
-    reportWatchdog: (event) => roomWatchdog.report(event),
+    reportWatchdog: (event) => roomWatchdog.report(event), settledLate: (outcome) => void roomWatchdog.lateDelivery(outcome),
     resolveActor: controlUser,
     checkQuota:controlQuota,
     requireClientAcknowledgement:true,
@@ -1877,7 +1877,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (sessionUser.id === "user:operator-proof") {
         // It acts in the operator's rooms; the audit log still names the agent session (request-audit.ts).
         request.sessionPrincipal = sessionUser.id;
-        sessionUser.id = "user:operator";
+        await sessionAccess.actAsOperator(sessionUser, auth.operatorEmail);
       }
       const resolved = await sessionAccess.resolve(sessionUser, request.log);
       if (resolved) request.user = resolved;
@@ -2113,7 +2113,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   // Sign-in support, auth and admin user routes; then the user's own tool routes, the shared gateway repository's close between them (user-routes-wiring.ts).
   const { googleAccountBrowserStatuses, dotsAuthenticatedOwner, connectorStateTools, connectorServiceRef } = registerSignInRoutes(app, { store, config, auth,
-    browserSessionManager, persistRevocation, userRoleCache, nousRef, connectorCrypto, eventBus, notificationService, sessionAccess, defaultRouteRateLimitOptions, mailCopilotGoogle: options.mailCopilotGoogle, mailCopilotGmailFetch: options.mailCopilotGmailFetch });
+    browserSessionManager, persistRevocation, userRoleCache, nousRef, connectorCrypto, eventBus, notificationService, sessionAccess, defaultRouteRateLimitOptions, mailCopilotGoogle: options.mailCopilotGoogle, mailCopilotGmailFetch: options.mailCopilotGmailFetch, passwordResetMail: options.passwordResetMail, mailCampaigns: () => mailCampaignsService });
 
   app.addHook("onClose", async () => { await sharedGatewayRepository?.dispose(); });
   const { gatewayAdminService, reopenClosedPane, taskBrief } = registerUserToolRoutes(app, { store, config, options, auth, nousRef, cliTerminalManager, cliRuntimeVisibility,

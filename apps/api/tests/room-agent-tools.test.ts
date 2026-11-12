@@ -48,6 +48,18 @@ describe("Room Agent tools", () => {
     for (const tool of roomAgentToolDefinitions) expect(tool.function.parameters).toMatchObject({ type: "object" });
   });
 
+  it("names a failed tool's cause and when to retry: database, room lock, runtime not ready (12/11)", async () => {
+    const c = fixture();
+    const fails = async (message: string) => {
+      c.deps.inspectPane.mockRejectedValueOnce(new Error(message));
+      return (await c.tools.execute("read_pane", { pane: "Bob" }, c.ctx)).result;
+    };
+    expect(await fails("timeout exceeded when trying to connect")).toContain("Cause: database unavailable");
+    expect(await fails("ROOM_LOCK_TIMEOUT: Lock acquisition timed out")).toContain("Cause: room lock held");
+    expect(await fails("Pane controller is unavailable.")).toMatch(/Cause: runtime not ready.*Retry in 30 seconds/);
+    expect(await fails("Something else")).toBe("Something else");
+  });
+
   it("answers a safe prompt bound to the inspected question and settles the monitor event", async () => {
     const c = fixture();
     const outcome = await c.tools.execute("answer_pane_prompt", { pane: "bob", answer: "1" }, c.ctx);
@@ -161,6 +173,8 @@ describe("Room Agent tools", () => {
     expect(await c.tools.execute("open_panes", { panes: [{ type: "codex", count: 2 }, { type: "browser", count: 1 }] }, c.ctx))
       .toMatchObject({ ok: true, display: "Opened 2 Codex panes, 1 Browser pane", result: "Opened 3 panes: Andy, Cody, Emma. They connect in a few seconds." });
     expect(c.deps.openPanes).toHaveBeenCalledWith({ roomId: c.room.id, actorId: "user:operator", requestId: "room-agent:request-0001", traceId: "trace:tools", counts: { codex: 2, browser: 1 } });
+    c.deps.openPanes.mockResolvedValueOnce(["Bob"]);
+    expect((await c.tools.execute("open_panes", { panes: [{ type: "codex", count: 1 }] }, c.ctx)).result).toBe(`Opened 1 pane: Bob (${c.bob.id}). They connect in a few seconds.`);
     expect((await c.tools.execute("open_panes", { panes: [{ type: "codex", count: 16 }, { type: "claude", count: 1 }] }, c.ctx)).ok).toBe(false);
     expect(await c.tools.execute("arrange_panes", { operation: "grid", columns: 3 }, c.ctx)).toMatchObject({ ok: true, display: "Arranged the panes in 3 columns" });
     expect(await c.tools.execute("arrange_panes", { operation: "maximize", panes: ["Dana"] }, c.ctx)).toMatchObject({ ok: true, display: "Maximized Dana" });

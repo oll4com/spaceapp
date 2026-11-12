@@ -206,6 +206,24 @@ it("counts the type chips among the selected status, dims the empty ones and kee
   expect(within(counts).getByRole("button", { name: /^Approved/ }).textContent).toBe("Approved1");
 });
 
+it("lists an approval still awaiting completion under Approved and Waiting, badged approved, counted once (operator 11/11, nous_msg:a5e13d01)", async () => {
+  serve([...programs, { ...base, id: "nvidia-partner-aws-10k", program: "AWS Activate $10,000", status: "APPROVED", awaitingCompletion: true,
+    amount: { text: "$10,000 AWS credits", value: 10000, currency: "USD" } }]);
+  render(<NousPrograms page="startup" active />);
+  const counts = await screen.findByRole("group", { name: "Show programs" });
+  expect([...counts.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["All5", "Approved2", "In progress1", "Waiting2", "Rejected1", "To re-apply1", "Other0"]);
+  expect(document.querySelector(".nous-programs-total")!.textContent).toContain("$20,000");
+  const shown = () => [...document.querySelectorAll(".nous-program-name")].map((name) => name.firstChild!.textContent);
+  fireEvent.click(within(counts).getByRole("button", { name: /^Waiting/ }));
+  expect(shown()).toEqual(["Founders Hub", "AWS Activate $10,000"]);
+  const aws = screen.getByRole("button", { name: /AWS Activate/ });
+  expect(aws.textContent).toContain("Approved · waiting for completion");
+  expect(aws.textContent).not.toContain("Waiting for a reply");
+  fireEvent.click(within(counts).getByRole("button", { name: /^Approved/ }));
+  expect(shown()).toEqual(["NVIDIA Inception", "AWS Activate $10,000"]);
+  expect(screen.getByRole("button", { name: /NVIDIA Inception/ }).textContent).not.toContain("waiting for completion");
+});
+
 it("filters by a grouped tag with the status chips, and badges each line (operator 6/11 21:42 BKK, nous_msg:f0287998)", async () => {
   const openai = { ...base, id: "openai-credits", parent: "OpenAI", program: "Startup credits", status: "APPROVED" as const, givesMoney: true, tags: ["ai-tokens", "cash-grants"],
     amount: { text: "$2,500 API credits", value: 2500, currency: "USD" } };

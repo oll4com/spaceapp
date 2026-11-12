@@ -595,7 +595,8 @@ export const createPaneInputSchema = z
     terminalRuntimeId: z.string().trim().min(1).max(160).nullable().optional(),
     cwd: z.string().trim().max(500).nullable().optional(),
     vncTarget: vncTargetSchema.nullable().optional(),
-    split: paneSplitSchema.optional()
+    split: paneSplitSchema.optional(),
+    categoryColor: paneCategoryColorSchema.optional()
   })
   .superRefine((input, context) => {
     // Copilot panes (Job, Mail, Marketing, Freelance), Design, App Studio and Video panes run their agent in a CLI session, so they carry a runtime too.
@@ -9357,12 +9358,12 @@ export const planStepSchema = z.preprocess(
       status: planStepStatusSchema.default("PENDING"),
       progress: z.number().int().min(0).max(100).default(0),
       agent: z.string().trim().nullable().default(null),
-      // A step's notes and proof are whole since 31/10 (were 1,000): the steps are JSON, with no column bound.
+      // A step's notes, proof and instructions are whole (notes/proof since 31/10, were 1,000; instructions since 12/11, were 16,000): the steps are JSON, with no column bound.
       notes: z.string().nullable().default(null),
       proof: z.string().nullable().default(null),
       modelId: z.string().trim().min(1).max(160).optional(),
       reasoningEffort: z.string().trim().min(1).max(80).optional(),
-      instructions: z.string().trim().min(1).max(16000).optional(),
+      instructions: z.string().trim().min(1).optional(),
       completionCriteria: z.array(z.string().trim().min(1).max(2000)).max(30).optional(),
       startedAt: isoDateTimeSchema.nullable().default(null),
       completedAt: isoDateTimeSchema.nullable().default(null)

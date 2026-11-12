@@ -251,7 +251,12 @@ describe("terminal geometry coordinator", () => {
   it("waits for a synchronized frame without fitting or forcing resize, then resumes", async () => {
     const current = fixture();
     const modes = { synchronizedOutputMode: false };
-    Object.assign(current.terminal, { modes });
+    const renderListeners = new Set<() => void>();
+    const onRender = (listener: () => void) => {
+      renderListeners.add(listener);
+      return { dispose: () => renderListeners.delete(listener) };
+    };
+    Object.assign(current.terminal, { modes, onRender });
     current.coordinator.syncVisibility();
     await flushAnimationFrame(); await flushAnimationFrame();
     current.fitAddon.fit.mockClear(); current.sendResize.mockClear();
@@ -263,11 +268,62 @@ describe("terminal geometry coordinator", () => {
     expect(current.fitAddon.fit).not.toHaveBeenCalled();
     expect(current.sendResize).not.toHaveBeenCalled();
     expect(current.terminal.refresh).toHaveBeenCalledExactlyOnceWith(0, 23);
+    // The wait polls nothing: no frame runs until xterm renders.
+    expect(animationFrames.size).toBe(0);
+    for (const listener of [...renderListeners]) listener();
+    expect(animationFrames.size).toBe(0);
     modes.synchronizedOutputMode = false;
     current.setHostSize(640, 400, 640);
+    for (const listener of [...renderListeners]) listener();
+    expect(renderListeners.size).toBe(0);
     await flushAnimationFrame();
     expect(current.fitAddon.fit).toHaveBeenCalledOnce();
     current.coordinator.dispose();
+  });
+
+  it("re-checks a synchronized frame after the fallback when xterm never renders", async () => {
+    const current = fixture();
+    const modes = { synchronizedOutputMode: false };
+    Object.assign(current.terminal, { modes });
+    current.coordinator.syncVisibility();
+    await flushAnimationFrame(); await flushAnimationFrame();
+    current.fitAddon.fit.mockClear(); current.terminal.refresh.mockClear();
+    modes.synchronizedOutputMode = true;
+    current.setHostSize(640, 400, 800);
+    current.coordinator.requestRefit({ delayedPass: false });
+    await flushAnimationFrame();
+    await vi.advanceTimersByTimeAsync(1100);
+    await flushAnimationFrame();
+    // Still synchronized: the wait re-arms xterm's own timeout with one more refresh.
+    expect(current.fitAddon.fit).not.toHaveBeenCalled();
+    expect(current.terminal.refresh).toHaveBeenCalledTimes(2);
+    modes.synchronizedOutputMode = false;
+    current.setHostSize(640, 400, 640);
+    await vi.advanceTimersByTimeAsync(1100);
+    await flushAnimationFrame();
+    expect(current.fitAddon.fit).toHaveBeenCalledOnce();
+    current.coordinator.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reads every queued host before any terminal fits, in one frame", async () => {
+    const first = fixture();
+    const second = fixture();
+    first.coordinator.syncVisibility(); second.coordinator.syncVisibility();
+    await flushAnimationFrame(); await flushAnimationFrame();
+    first.fitAddon.fit.mockClear(); second.fitAddon.fit.mockClear();
+    const order: string[] = [];
+    vi.spyOn(first.host, "getBoundingClientRect").mockImplementation(() => (order.push("read:first"), new DOMRect(0, 0, 640, 400)));
+    vi.spyOn(second.host, "getBoundingClientRect").mockImplementation(() => (order.push("read:second"), new DOMRect(0, 0, 640, 400)));
+    first.fitAddon.fit.mockImplementation(() => { order.push("fit:first"); });
+    second.fitAddon.fit.mockImplementation(() => { order.push("fit:second"); });
+    first.setHostSize(640, 400); second.setHostSize(640, 400);
+    first.coordinator.requestRefit({ delayedPass: false });
+    second.coordinator.requestRefit({ delayedPass: false });
+    await flushAnimationFrame();
+    expect(order.slice(0, 3)).toEqual(["read:first", "read:second", "fit:first"]);
+    expect(order).toContain("fit:second");
+    first.coordinator.dispose(); second.coordinator.dispose();
   });
 
   it("cancels a synchronized-frame wait when hidden and reuses stable warm geometry", async () => {
@@ -291,6 +347,26 @@ describe("terminal geometry coordinator", () => {
     expect(current.fitAddon.fit).not.toHaveBeenCalled();
     current.coordinator.dispose();
     expect(animationFrames.size).toBe(0);
+  });
+
+  it("leaves the next terminal's fit to the following frame once a frame's write budget is spent", async () => {
+    const first = fixture();
+    const second = fixture();
+    first.coordinator.syncVisibility(); second.coordinator.syncVisibility();
+    await flushAnimationFrame(); await flushAnimationFrame();
+    first.fitAddon.fit.mockClear(); second.fitAddon.fit.mockClear();
+    let now = 1000;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    first.fitAddon.fit.mockImplementation(() => { now += 20; });
+    first.setHostSize(640, 400); second.setHostSize(640, 400);
+    first.coordinator.requestRefit({ delayedPass: false });
+    second.coordinator.requestRefit({ delayedPass: false });
+    await flushAnimationFrame();
+    expect(first.fitAddon.fit).toHaveBeenCalled();
+    expect(second.fitAddon.fit).not.toHaveBeenCalled();
+    await flushAnimationFrame();
+    expect(second.fitAddon.fit).toHaveBeenCalled();
+    first.coordinator.dispose(); second.coordinator.dispose();
   });
 
   it("fits fresh terminal geometry only after two stable frames and waits for repaint", async () => {

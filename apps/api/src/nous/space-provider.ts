@@ -194,7 +194,9 @@ export function createSpaceRouter(deps: { routes(): Promise<SpaceRoute[]>; now?:
         const what = failure?.kind === "quota" || failure?.kind === "skipped" ? "quota exhausted or unavailable" : failure?.kind === "auth" ? "credential refused" : "failed";
         throw new SpaceRouteError(`Space provider, explicit model — ${what}: ${list || "no such route"}. An explicit model is never switched; choose an Auto model in Settings → Nous to fail over.`, failures, true);
       }
-      const earlier = failures.length > 1 ? ` (earlier: ${failures.slice(0, -1).map(describe).join("; ")})` : "";
+      // Only routes that ran and failed: a route skipped (off for Nous, no model, cooling down) is no failure of this turn.
+      const tried = failures.slice(0, -1).filter((failure) => failure.kind !== "skipped");
+      const earlier = tried.length ? ` (earlier: ${tried.map(describe).join("; ")})` : "";
       if (last && (last.kind === "auth" || last.kind === "other")) throw new SpaceRouteError(`${describe(last)}${earlier}`, failures, false);
       if (last && hooks.mayFailOver?.() === false) throw new SpaceRouteError(`${describe(last)} — not retried on another route: this run had already acted.${earlier}`, failures, false);
       if (last && !failures.every((failure) => failure.kind === "quota" || failure.kind === "skipped")) throw new SpaceRouteError(`${describe(last)}${earlier}`, failures, false);

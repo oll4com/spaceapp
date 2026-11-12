@@ -11,7 +11,8 @@ const action = { type: "PANE_TEXT" as const, roomId: "room:main0001", paneId: "p
 const ask = (refs: Partial<NousDecision["refs"]> = {}, title = "Send the pilot offer to Ann?"): NewNousDecision => ({ ownerUserId: owner, category: "EXTERNAL", title, body: "The offer is in offer.md.",
   options: [], recommendation: "Yes. Πρόβλεψη: ναι (90%)", action, refs: { files: ["active/pilots/offer.md"], sendKind: "pilot-offer", recipients: ["ann@acme.io"], ...refs } });
 
-function fixture(maySend = true, hashes: Array<{ ref: string; sha256: string | null; size: number | null }> | null = null) {
+function fixture(maySend = true, hashes: Array<{ ref: string; sha256: string | null; size: number | null }> | null = null,
+  reviewRequiredBy?: (owner: string, action: unknown) => Promise<{ id: string; text: string } | null>) {
   const repository = new InMemoryNousRepository();
   const raise = vi.fn(async () => ({}) as never);
   const resolve = vi.fn(async () => {});
@@ -21,7 +22,7 @@ function fixture(maySend = true, hashes: Array<{ ref: string; sha256: string | n
   const service = createNousService({ repository, runner: async () => ({ text: "", isError: false }), tools: { execute: vi.fn() } as never,
     world: async () => ({ text: "", overview: { plans: [], needsHands: [], trains: "", planMap: null } }), settings: async () => settings as never,
     saveSettings: async (_owner, value) => { settings = value as never; return value; }, notifications: { raise, resolve } as never, executeAction,
-    sendTexts: texts, ...(hashes ? { fileHashes: async () => hashes } : {}), timeZone: async () => "Asia/Bangkok" });
+    sendTexts: texts, ...(hashes ? { fileHashes: async () => hashes } : {}), ...(reviewRequiredBy ? { reviewRequiredBy } : {}), timeZone: async () => "Asia/Bangkok" });
   return { repository, raise, resolve, executeAction, service, texts, setSettings: (value: object) => { settings = { ...settings, ...value }; } };
 }
 
@@ -102,6 +103,43 @@ describe("May send in the decision flow", () => {
     expect(f.raise).not.toHaveBeenCalled();
     const off = fixture(false);
     expect((await off.service.ask({ ...ask({}, "Send back the stale X reply?"), refs, action: reject })).status).toBe("OPEN");
+  });
+
+  it("Nous 13/11 (mailrev:oLB398mFW7pu went out at 18:56Z on an inferred kind): a Mail review a rule memory holds for the operator is his card, with or without sendKind", async () => {
+    const memory = { id: "mailmem:SLvZ9IZgCRc4", text: "Funding mail always gets a DRAFT + space_mail_review_request:\nthe operator reads it before it goes out." };
+    const held = vi.fn(async () => memory);
+    const f = fixture(true, null, held);
+    const review = { type: "COPILOT" as const, copilot: "MAIL" as const, item: "REVIEW" as const, itemId: "mailrev:oLB398mFW7pu", paneId: null, decision: "approve" };
+    const refs = { files: [], recipients: ["ann@acme.io"] };
+    const inferred = await f.service.ask({ ...ask({}, "Approve the Arize reply?"), refs, action: review });
+    const given = await f.service.ask({ ...ask({ sendKind: "mail-reply", files: [] }, "Approve the edited Arize reply?"), action: { ...review, decision: "edit", text: "Hi Arize team," } });
+    for (const decision of [inferred, given]) {
+      expect(decision.status).toBe("OPEN");
+      expect(decision.body).toMatch(/^Not covered by "May send to third parties": copilot memory mailmem:SLvZ9IZgCRc4 requires that you read this review \("Funding mail always gets a DRAFT \+ space_mail_review_request: the operator reads it/);
+    }
+    expect(held).toHaveBeenCalledWith(owner, review);
+    expect(f.executeAction).not.toHaveBeenCalled();
+    expect(f.raise).toHaveBeenCalledTimes(2);
+    // Sending it back sends nothing: maySend still runs it, and no memory is read.
+    held.mockClear();
+    expect((await f.service.ask({ ...ask({}, "Send back the Arize reply?"), refs, action: { ...review, decision: "reject" } })).status).toBe("APPROVED");
+    expect(held).not.toHaveBeenCalled();
+    // Memories that cannot be read hold it too; with no such memory the allowance runs it as before.
+    const unread = fixture(true, null, async () => { throw new Error("db down"); });
+    expect(await unread.service.ask({ ...ask({}, "Approve the Arize reply?"), refs, action: review })).toMatchObject({ status: "OPEN",
+      body: expect.stringMatching(/^Not covered by "May send to third parties": the copilot's rule memories could not be read/) });
+    const free = fixture(true, null, async () => null);
+    expect(await free.service.ask({ ...ask({}, "Approve the Arize reply?"), refs, action: review })).toMatchObject({ status: "APPROVED", answer: "Approved by allowance maySend (send kind mail-review)" });
+  });
+
+  it("Nous 13/11: an ask that replaces an open decision of the same title is a new card with the new text and action, never that decision", async () => {
+    const f = fixture(false);
+    const first = await f.service.ask(ask());
+    const fixed = { ...ask(), body: "The offer is in offer-v2.md.", action: { ...action, text: "Send offer-v2.md to the address in refs." } };
+    expect((await f.service.ask(fixed)).id).toBe(first.id);
+    const replacing = await f.service.ask(fixed, { replaces: first.id });
+    expect(replacing.id).not.toBe(first.id);
+    expect(replacing).toMatchObject({ status: "OPEN", action: fixed.action, body: expect.stringContaining("offer-v2.md") });
   });
 
   it("sends at once with the allowance on: a first kind, a new recipient, prices, payment and contract words, past the old caps; ledger ALLOWANCE, no card", async () => {

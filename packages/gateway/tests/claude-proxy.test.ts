@@ -41,7 +41,7 @@ async function setup(upstream: (token: string, body: Record<string, unknown>, ur
   const repository = new InMemoryGatewayRepository();
   for (const [accountId, name, used] of [[accountA, "claude-a", 10], [accountB, "claude-b", 50]] as const) {
     const credentials: StoredCredentials = { accessToken: `token-${name}`, refreshToken: "rt", idToken: null, upstreamAccountId: name, accessExpiresAtMs: null };
-    await repository.upsertAccount({ accountId, provider: "CLAUDE", label: name, email: null, externalAccountId: name, planType: "max5x",
+    await repository.upsertAccount({ accountId, provider: "CLAUDE", label: name, email: `${name}@example.test`, externalAccountId: name, planType: "max5x",
       credentialsEncrypted: cipher.encrypt(JSON.stringify(credentials), accountId), credentialsExpiresAt: null, source: "OAUTH", sourceRef: null,
       lastRefreshAt: new Date(nowMs).toISOString() });
     await repository.saveUsageWindows(accountId, [{ window: "PRIMARY", usedPercent: used, resetAt: null, windowMinutes: 300 }]);
@@ -374,6 +374,18 @@ describe("Claude proxy", () => {
     await post({ model: "claude-sonnet-4-5", stream: true, max_tokens: 10, messages: [{ role: "user", content: "one" }] }, session);
     await post({ model: "claude-sonnet-4-5", stream: true, max_tokens: 10, messages: [{ role: "user", content: "two" }] }, session);
     expect(new Set(calls.map((call) => call.token)).size).toBe(1);
+  });
+
+  it("keeps a held profile's Claude Code on its own account by e-mail, and refuses rather than use another", async () => {
+    const { post, calls } = await setup((_token, _body, url) => url.includes("count_tokens")
+      ? new Response(JSON.stringify({ input_tokens: 3 }), { headers: { "content-type": "application/json" } }) : streamResponse(messageStream("msg")));
+    const pinned = { "x-space-gateway-account": "Claude-B@example.test" };
+    expect((await post({ model: "claude-sonnet-4-5", stream: true, max_tokens: 10, messages: [{ role: "user", content: "hi" }] }, pinned)).statusCode).toBe(200);
+    expect((await post({ model: "claude-sonnet-4-5", messages: [{ role: "user", content: "hi" }] }, pinned, "/v1/messages/count_tokens?beta=true")).statusCode).toBe(200);
+    expect(calls.map((call) => [call.token, call.headers["x-space-gateway-account"]])).toEqual([["token-claude-b", undefined], ["token-claude-b", undefined]]);
+    const unknown = await post({ model: "claude-sonnet-4-5", max_tokens: 10, messages: [{ role: "user", content: "hi" }] }, { "x-space-gateway-account": "gone@example.test" });
+    expect(unknown.statusCode).toBe(503);
+    expect(calls).toHaveLength(2);
   });
 
   it("passes non-streamed replies through and answers token counts", async () => {

@@ -134,6 +134,12 @@ export function createCanonicalMemoryReader(paths: CanonicalSpaceMemoryPaths, op
   let pending: Promise<MemoryGraphRecord[]> | null = null;
   let aggregate: { fingerprint: string; records: MemoryGraphRecord[] } | null = null;
   let projection: { records: MemoryGraphRecord[]; entries: MemoryEntry[] } | null = null;
+  // CPU report 12/11: a save re-parses the month's file, and the projection redacted all ~6,500 records again (~200 ms in one
+  // block on stable), then search normalized them again (its cache is per entry object, ~100 ms). An entry is built again only
+  // when the fields it reads changed.
+  let built = new Map<string, { record: MemoryGraphRecord; entry: MemoryEntry }>();
+  // The `supersedes=` ids each body names: scanning every body took another ~20 ms per save.
+  let mentions = new Map<string, { body: string; ids: string[] }>();
   async function records(): Promise<MemoryGraphRecord[]> {
     const directory = dirname(paths.indexPath);
     let names: string[] = [];
@@ -202,23 +208,39 @@ export function createCanonicalMemoryReader(paths: CanonicalSpaceMemoryPaths, op
     const all = await pending;
     if (projection?.records !== all) {
     const byId = new Map(all.map(record => [record.id, record]));
-    const superseded = new Set(all.filter(r => r.lifecycleStatus === "ACTIVE").flatMap(r =>
-      [...r.body.matchAll(/\bsupersedes=([A-Za-z0-9:_-]{3,200})\b/g)].flatMap(m => {
-        const target = byId.get(m[1]!);
+    const nextMentions: typeof mentions = new Map();
+    const superseded = new Set(all.filter(r => r.lifecycleStatus === "ACTIVE").flatMap(r => {
+      let kept = mentions.get(r.id);
+      if (kept?.body !== r.body) kept = { body: r.body, ids: [...r.body.matchAll(/\bsupersedes=([A-Za-z0-9:_-]{3,200})\b/g)].map(m => m[1]!) };
+      nextMentions.set(r.id, kept);
+      return kept.ids.flatMap(id => {
+        const target = byId.get(id);
         return target && target.scope === r.scope && target.roomId === r.roomId ? [target.id] : [];
-      })));
+      });
+    }));
+    mentions = nextMentions;
+    const next: typeof built = new Map();
     const entries = all.filter(r => r.lifecycleStatus === "ACTIVE" && !superseded.has(r.id))
       .map(r => {
+        const kept = built.get(r.id);
+        if (kept && kept.record.title === r.title && kept.record.body === r.body && kept.record.sourcePath === r.sourcePath &&
+          kept.record.scope === r.scope && kept.record.roomId === r.roomId && kept.record.createdAt === r.createdAt) {
+          next.set(r.id, { record: r, entry: kept.entry });
+          return kept.entry;
+        }
         const title = redactMemoryText(r.title).slice(0, 160), body = redactMemoryText(r.body);
         const text = searchTexts.get(r);
-        return {
+        const entry = {
           id: r.id, scope: r.scope, roomId: r.roomId, title, body,
           provenance: redactMemoryText(r.sourcePath).slice(0, 500),
           createdAt: /\bcreated_at=(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/.exec(r.body)?.[1] ?? r.createdAt,
           ...(text && title === r.title.slice(0, 160) && body === r.body
             ? { searchText: { source: [title, body] as [string, string], title: text[0], body: text[1] } } : {})
         };
+        next.set(r.id, { record: r, entry });
+        return entry;
       });
+    built = next;
     projection = { records: all, entries };
     }
     const entries = projection.entries.filter(r => !query.scope || r.scope === query.scope).filter(r => !query.roomId || r.roomId === query.roomId);

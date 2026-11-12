@@ -326,11 +326,21 @@ describe.skipIf(unavailable !== null)(`vault repository on PostgreSQL${unavailab
     expect(await repository.takeHandoffKey(alice, expired, "pane:keys-a")).toBeNull();
     expect((await repository.listHandoffKeys(alice)).find((key) => key.id === expired)).toMatchObject({ hasValue: false });
     expect((await pool.query(`SELECT value_sealed FROM vault_handoff_keys WHERE id = $1`, [expired])).rows[0]).toEqual({ value_sealed: null });
+    // Show and edit (operator request 2026-11-12): the owner's own key while it holds a value; a used or expired one has none.
+    expect(await repository.handoffKeySeal(alice, id)).toBeNull();
+    expect(await repository.handoffKeySeal(alice, expired)).toBeNull();
+    expect(await repository.updateHandoffKey(alice, id, { label: "x", valueSealed: "sealed:new", kept: true })).toBe(false);
     expect(await repository.deleteHandoffKey(bob, id)).toBe(false);
     expect(await repository.deleteHandoffKey(alice, id)).toBe(true);
     // A kept key (migration 0256, operator request 2026-10-26): never expires, every pane of the owner takes it again and again, its value stays.
     const kept = newVaultHandle("vault_key");
     expect(await repository.addHandoffKey(alice, { id: kept, label: "vm221 password", valueSealed: `sealed:${SENTINEL}`, expiresAt: null, kept: true, savedBy: "pane:keys-a" })).toBe(true);
+    expect(await repository.handoffKeySeal(alice, kept)).toBe(`sealed:${SENTINEL}`);
+    expect(await repository.handoffKeySeal(bob, kept)).toBeNull();
+    expect(await repository.updateHandoffKey(bob, kept, { label: "x", valueSealed: "sealed:bob", kept: false })).toBe(false);
+    expect(await repository.updateHandoffKey(alice, kept, { label: "vm221 root password", valueSealed: "sealed:new", kept: true })).toBe(true);
+    expect(await repository.handoffKeySeal(alice, kept)).toBe("sealed:new");
+    expect((await repository.listHandoffKeys(alice)).find((key) => key.id === kept)).toMatchObject({ label: "vm221 root password", kept: true, savedBy: "pane:keys-a" });
     for (const pane of ["pane:keys-a", "pane:keys-b", "pane:keys-a"]) {
       expect(await repository.takeHandoffKey(alice, kept, pane)).not.toBeNull();
       expect(await repository.useHandoffKey(alice, kept, pane)).toBe(true);

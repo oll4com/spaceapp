@@ -11,6 +11,24 @@ import type { ControlActor } from "./space-control-settings.js";
 import type { ResourceAction } from "./space-control-resources.js";
 import { youtubeBrowserPlayback, type YouTubePlaybackStore } from "./youtube-playback-state.js";
 
+// R84 12/11 (5 panes.open failures in 7 d on "job-copilot", "jobcopilot", "job", "mail_copilot"): a key is read as a type's id, label or
+// alias, or the one type whose names it starts; a key that fits none names the types.
+export function paneCountsByName(counts: unknown) {
+  if (!counts || typeof counts !== "object" || Array.isArray(counts)) return counts;
+  const compact = (text: string) => text.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const names = PANE_TYPES.flatMap(type => [type.typeId, type.label, ...type.aliases].map(name => [compact(name), type.typeId] as const));
+  const resolved: Record<string, unknown> = {};
+  for (const [key, count] of Object.entries(counts)) {
+    const want = compact(key);
+    const exact = PANE_TYPES.find(type => type.typeId === key)?.typeId ?? names.find(([name]) => name === want)?.[1];
+    const started = want.length >= 3 ? [...new Set(names.filter(([name]) => name.startsWith(want)).map(([, typeId]) => typeId))] : [];
+    const typeId = exact ?? (started.length === 1 ? started[0] : undefined);
+    if (!typeId) throw new SpaceConflictError(`Unknown pane type '${key}'. Use one of: ${PANE_TYPES.map(type => type.typeId).join(", ")}`);
+    resolved[typeId] = typeof resolved[typeId] === "number" && typeof count === "number" ? (resolved[typeId] as number) + count : count;
+  }
+  return resolved;
+}
+
 type SpaceControlPanesOpenDeps = {
   store: SpaceStore;
   cliTerminalManager: CliTerminalManager;
@@ -43,7 +61,7 @@ export function createSpaceControlPanesOpen(deps: SpaceControlPanesOpenDeps) {
     };
 
     const isDebug = Boolean((action.input as any)?.debug);
-    const originalCounts = paneCountsSchema.parse(action.input.counts);
+    const originalCounts = paneCountsSchema.parse(paneCountsByName(action.input.counts));
     const supportedTypeIds = new Set(PANE_TYPES.map(t => t.typeId));
     for(const [id,count] of Object.entries(originalCounts)) {
       if(count>0&&!supportedTypeIds.has(id as any)) {

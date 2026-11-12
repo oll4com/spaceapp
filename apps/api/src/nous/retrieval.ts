@@ -25,7 +25,45 @@ export function rankByWords<T>(docs: readonly T[], textOf: (doc: T) => string, q
 export type WordIndex<T> = Array<{ doc: T; set: Set<string>; size: number }>;
 /** The docs' folded words, for a caller that ranks the same docs many times (rankIndexed). */
 export const indexWords = <T>(docs: readonly T[], textOf: (doc: T) => string): WordIndex<T> =>
-  docs.map((doc) => { const list = foldWords(textOf(doc)); return { doc, set: new Set(list), size: list.length }; });
+  docs.map((doc) => ({ doc, ...foldedOf(textOf(doc)) }));
+
+/**
+ * A text's folded words, kept by the text (CPU report 12/11): every call folded every doc again, ~350 ms of main thread for the first recall
+ * after a memory save on stable's 3,900 entries and ~300 ms for each space_notes call. Technical bound (heap): once the texts kept since the
+ * last turnover pass FOLDED_CHARS the older generation goes, and a text only it held is folded again when next used; results never change.
+ */
+const FOLDED_CHARS = 32 * 1024 * 1024;
+type Folded = { set: Set<string>; size: number };
+let folded = new Map<string, Folded>();
+let olderFolded = new Map<string, Folded>();
+let foldedChars = 0;
+function foldedOf(text: string): Folded {
+  const kept = folded.get(text);
+  if (kept) return kept;
+  const own = ownCopy(text);
+  const older = olderFolded.get(text);
+  // Moved, not copied, into the current generation: a text in use is never kept twice.
+  if (older) olderFolded.delete(text);
+  const words = older ?? (() => { const list = foldWords(own); return { set: new Set(list), size: list.length }; })();
+  folded.set(own, words);
+  foldedChars += own.length;
+  if (foldedChars > FOLDED_CHARS) { olderFolded = folded; folded = new Map(); foldedChars = 0; }
+  return words;
+}
+
+/** A string that keeps no parent alive: a V8 slice of a file or transcript would keep all of it for as long as a cache keeps the slice. */
+export const ownCopy = (text: string): string => ` ${text}`.slice(1);
+
+/** Runs `each` over the items 10 ms of main thread at a time (setImmediate between slices), for a startup build. */
+export async function inSlices<T>(items: Iterable<T>, each: (item: T) => unknown): Promise<void> {
+  let since = performance.now();
+  for (const item of items) {
+    each(item);
+    if (performance.now() - since > 10) { await new Promise((resolve) => setImmediate(resolve)); since = performance.now(); }
+  }
+}
+/** Folds the texts not kept yet in slices, so a later rank over them finds them kept (the first recall held the main thread 946 ms). */
+export const warmFolds = (texts: Iterable<string>) => inSlices(texts, foldedOf);
 
 /** rankByWords over an index built once (`index` is called only when the query has words). */
 export function rankIndexed<T>(index: WordIndex<T> | (() => WordIndex<T>), query: string): Array<{ doc: T; score: number }> {

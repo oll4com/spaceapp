@@ -2036,6 +2036,19 @@ describe("Space API", () => {
   });
 
 
+  it("names the user a broker session's owner-scoped records land on (12/11: stable's broker sessions filed plans under user:dev-operator)", async () => {
+    const sessionSecret = "test-secret-with-enough-length";
+    const store = new InMemorySpaceStore();
+    store.upsertUser({ id: "user:operator", email: "operator@example.com", role: "ADMIN" });
+    store.upsertUser({ id: "user:dev-operator", email: "space@space.local", role: "ADMIN" });
+    const app = await createApp({ store, auth: { sessionSecret, devLogin: false, secureCookies: false } });
+    // The broker's fallback e-mail when SPACE_OPERATOR_EMAIL is empty.
+    const token = signSessionWithTtl({ id: "user:operator-proof", email: "space@space.local", role: "ADMIN" }, sessionSecret, 600);
+    const owner = await app.inject({ method: "GET", url: "/api/auth/owner", headers: { cookie: `space_session=${token}` } });
+    expect(owner.json()).toEqual({ ownerId: "user:operator" });
+    expect((await app.inject({ method: "GET", url: "/api/auth/owner" })).statusCode).toBe(401);
+  });
+
   it("leaves test rooms out of the room limit and takes the limit from the user's settings (operator 2026-10-21)", async () => {
     const store = new InMemorySpaceStore();
     const { app, cookie, csrfToken } = await authedApp({ store });
@@ -6947,6 +6960,25 @@ describe("Space API", () => {
       headers: { cookie: otherCookie }
     });
     expect(otherList.json().pagination.totalItems).toBe(1);
+  });
+
+  it("files a broker-signed plan under user:operator when .env names no operator e-mail, not under the dev login's row", async () => {
+    const sessionSecret = "test-secret-with-enough-length";
+    const store = new InMemorySpaceStore();
+    store.upsertUser({ id: "user:operator", email: "operator@example.com", role: "ADMIN" });
+    store.upsertUser({ id: "user:dev-operator", email: "space@space.local", role: "ADMIN" });
+    const app = await createApp({ store, auth: { sessionSecret, devLogin: false, secureCookies: false } });
+    // The broker's fallback e-mail when SPACE_OPERATOR_EMAIL is empty (deploy/space-auth-broker).
+    const token = signSessionWithTtl({ id: "user:operator-proof", email: "space@space.local", role: "ADMIN" }, sessionSecret, 600);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/clipboard-items",
+      headers: { cookie: `space_session=${token}`, [csrfHeaderName]: createCsrfToken(token, sessionSecret)! },
+      payload: { text: "plan body", source: "PLAN", title: "Plan", minimumModel: "gpt-5.5" }
+    });
+    expect(created.statusCode).toBe(201);
+    expect(store.listClipboardItems("user:operator").items.map((item) => item.id)).toEqual([created.json().id]);
+    expect(store.listClipboardItems("user:dev-operator").total).toBe(0);
   });
 
   it("canonicalizes broker-signed Clipboard owners for create, list, delete, and clear", async () => {

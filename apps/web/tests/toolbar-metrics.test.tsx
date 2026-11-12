@@ -889,16 +889,15 @@ describe("model stats MDL badge", () => {
     const header = (provider: string) => section(provider).querySelector(".resources-provider-summary .quota-at-reset") as HTMLElement;
     await waitFor(() => expect(within(section("claude")).getAllByText(/free at /).length).toBeGreaterThan(0));
 
-    // The section header is the pane account menu's own figure over the same sample (CONNECTED accounts only).
+    // The section header is the pane account menu's own figure over the same sample: each subscription account once, the pool's
+    // crew and lab included (operator 11/11: the header said "0% now" while the gateway still served two accounts).
     const [claudeForecast] = cliAccountForecasts("cli:claude", { codex: null, agy: null, claude: claudeList, api: null, fetchedAt: now }, now);
     const pickerPercent = Math.round(claudeForecast!.percent ?? -1);
     expect(lines(header("claude"))).toEqual([`At reset${pickerPercent}% free · ahead of pace`]);
-    // The pool's 4 + 25 points a day (7/11: dev's pace moves to ntheo) leave ntheo 1 by dev's fresh week a day before ntheo's reset,
-    // which then takes 28 of it: 72 / 2.
-    expect(pickerPercent).toBe(36);
+    expect(pickerPercent).toBe(68);
     const probe = document.createElement("b");
     probe.style.color = claudeForecast!.color;
-    expect(within(header("claude")).getByText("36%").style.color).toBe(probe.style.color);
+    expect(within(header("claude")).getByText("68%").style.color).toBe(probe.style.color);
 
     // Each account: the share left now, and its share free at its own reset with its pace.
     expect(within(card("claude", "ntheo")).getByTitle("Week: Healthy (88% left)")).toBeTruthy();

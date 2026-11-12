@@ -43,7 +43,9 @@
     "proxy-addr": "2.0.8",
     "http-cache-semantics": "4.3.0",
     "source-map-js": "1.2.2",
-    "@napi-rs/canvas": "1.0.9"
+    "@napi-rs/canvas": "1.0.9",
+    "minimatch@^9": "11.0.8",
+    "minimatch@^10": "11.0.8"
   },
   "scripts": {
     "dev:api": "npm run dev -w @space/api",

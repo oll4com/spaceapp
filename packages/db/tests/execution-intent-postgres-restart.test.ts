@@ -105,7 +105,7 @@ describe.skipIf(unavailable !== null)(`execution intent across a PostgreSQL rest
   let store: PostgresSpaceStore;
 
   beforeAll(async () => {
-    server = await startDisposablePostgres("intent-restart");
+    server = await startDisposablePostgres("intent-restart", { restartable: true });
     await server.createDatabase(database);
     pool = server.pool(database, 4);
     observer = server.pool(database, 2);

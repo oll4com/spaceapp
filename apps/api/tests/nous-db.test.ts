@@ -69,6 +69,35 @@ describe("space_db_query statements", () => {
     }
   });
 
+  it("R84 12/11 (42703 in 7 d still failing after R83): corrects each guess one column fits, names where the data is for the rest", () => {
+    // The real columns the failed reads' answers listed.
+    const columns = new Map([["nous_messages", ["id", "kind", "content", "meta"]], ["marketing_copilot_posts", ["id", "channel", "title", "body"]],
+      ["space_gateway_request_logs", ["id", "status", "error_code", "error_message"]], ["space_gateway_accounts", ["account_id", "label", "email", "credentials_expires_at", "last_refresh_at"]],
+      ["space_gateway_api_keys", ["key_id", "name", "is_active", "allowed_models", "enforced_model", "expires_at"]], ["vault_audit", ["id", "seq", "event", "created_at"]],
+      ["nous_followups", ["id", "note", "due_at"]], ["artifacts", ["id", "kind", "metadata"]], ["site_sign_ins", ["owner_user_id", "site", "account_label", "record"]]]);
+    for (const [sql, message, fixed] of [["SELECT body FROM nous_messages", 'column "body" does not exist', "SELECT content FROM nous_messages"],
+      ["SELECT p.message FROM marketing_copilot_posts p", "column p.message does not exist", "SELECT p.body FROM marketing_copilot_posts p"],
+      ["SELECT error FROM space_gateway_request_logs", 'column "error" does not exist', "SELECT error_message FROM space_gateway_request_logs"],
+      ["SELECT account_name FROM space_gateway_accounts", 'column "account_name" does not exist', "SELECT label FROM space_gateway_accounts"],
+      ["SELECT refresh_token_expires_at FROM space_gateway_accounts", 'column "refresh_token_expires_at" does not exist', "SELECT credentials_expires_at FROM space_gateway_accounts"],
+      ["SELECT models FROM space_gateway_api_keys", 'column "models" does not exist', "SELECT allowed_models FROM space_gateway_api_keys"],
+      ["SELECT v.detail FROM vault_audit v", "column v.detail does not exist", "SELECT v.event FROM vault_audit v"],
+      ["SELECT metadata FROM vault_audit", 'column "metadata" does not exist', "SELECT event FROM vault_audit"],
+      ["SELECT text FROM nous_followups", 'column "text" does not exist', "SELECT note FROM nous_followups"],
+      ["SELECT original_filename FROM artifacts", 'column "original_filename" does not exist', "SELECT (metadata->>'originalFilename') FROM artifacts"],
+      ["SELECT s.method FROM site_sign_ins s", "column s.method does not exist", "SELECT (s.record->>'method') FROM site_sign_ins s"]]) {
+      expect(nousDbCorrectedQuery(sql!, message!, undefined, columns)?.sql).toBe(fixed);
+    }
+    // No column fits: no corrected run, a note naming where it is.
+    expect(nousDbCorrectedQuery("SELECT url FROM browser_handoff_requests", 'column "url" does not exist', undefined,
+      new Map([["browser_handoff_requests", ["handoff_request_id", "session_id", "status"]]]))).toBeNull();
+    expect(NOUS_DB_COLUMN_NOTES.browser_handoff_requests!.target_url).toContain("JOIN pane_browser_sessions s USING (session_id)");
+    expect(NOUS_DB_COLUMN_NOTES.space_gateway_api_keys!.provider).toContain("space_gateway_request_logs.provider WHERE api_key_id = key_id");
+    expect(NOUS_DB_COLUMN_NOTES.audit_events!.room_id).toContain("metadata->>'roomId'");
+    expect(NOUS_DB_COLUMN_NOTES.design_requests!.room_id).toContain("requester->>'roomId'");
+    expect(NOUS_DB_COLUMN_NOTES.nous_goal_events!.progress).toContain("nous_goals.progress");
+  });
+
   it("9/11 REVIEW: a pane's type is its mode, and auth_sessions and pg_stat_statements say where their data is", () => {
     expect(nousDbCorrectedQuery("SELECT p.type FROM panes p", 'column p.type does not exist', undefined, new Map([["panes", ["id", "mode", "is_closed"]]]))?.sql)
       .toBe("SELECT p.mode FROM panes p");
@@ -84,6 +113,10 @@ describe("space_db_query statements", () => {
   it("ranks the nearest table names by shared name parts", () => {
     expect(nousDbNearestTables("nous_turns", ["panes", "nous_turn_facts", "nous_messages", "turn_log"])).toEqual(["nous_turn_facts", "turn_log", "nous_messages"]);
     expect(nousDbNearestTables("xyz", ["panes"])).toEqual([]);
+    // R84 12/11: a shared generic prefix (space_) ranks below a shared rare part.
+    expect(nousDbNearestTables("space_appointments", ["space_dots", "space_push_devices", "appointments", "space_agent_runs"])[0]).toBe("appointments");
+    expect(NOUS_DB_TABLE_USE.space_appointments).toBe("appointments");
+    expect(NOUS_DB_GUESSED_TABLES).toContain("no nous_memories (Space Memory is files: space_memory_recall)");
     expect(nousDbNearestTables("cli_sessions", ["panes", "pane_agent_sessions", "pane_cli_sessions", "session_revocations"])[0]).toBe("pane_cli_sessions");
   });
 
@@ -140,6 +173,11 @@ describe("space_db_query statements", () => {
     expect(nousDbCorrectedQuery("SELECT created_at FROM pane_reports r JOIN nous_turn_facts f ON true", 'column "created_at" does not exist', undefined, columns)).toBeNull();
     const sql = "SELECT * FROM t WHERE t.meta->>'n' = 5";
     expect(nousDbTextCastQuery(sql, "operator does not exist: text = integer", sql.indexOf("="))).toBe("SELECT * FROM t WHERE (t.meta->>'n')::text = (5)::text");
+    // R84 12/11: a JSON operator on text casts the text to jsonb, never both sides to text (that failed again).
+    const chain = "SELECT value->>'a'->>'b' FROM t";
+    expect(nousDbTextCastQuery(chain, "operator does not exist: text ->> unknown", chain.lastIndexOf("->>"))).toBe("SELECT (value->>'a')::jsonb ->> 'b' FROM t");
+    const column = "SELECT content ->> 'kind' FROM nous_notes WHERE id = 1";
+    expect(nousDbTextCastQuery(column, "operator does not exist: text ->> text", column.indexOf("->>"))).toBe("SELECT (content)::jsonb ->> 'kind' FROM nous_notes WHERE id = 1");
     const union = "SELECT a, b FROM x UNION SELECT c, d FROM y";
     expect(nousDbTextCastQuery(union, "UNION types text and jsonb cannot be matched", union.indexOf("d FROM"))).toBe("SELECT a, (b)::text FROM x UNION SELECT c, (d)::text FROM y");
     expect(nousDbTextCastQuery(union, "something else", 3)).toBeNull();

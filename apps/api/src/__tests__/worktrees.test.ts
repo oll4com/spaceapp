@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execGit, WorktreeService } from "../worktrees/worktree-service.js";
+import { checkoutRepoPath, execGit, WorktreeService } from "../worktrees/worktree-service.js";
 
 describe("WorktreeService", () => {
   let tempRepo: string;
@@ -300,6 +300,9 @@ describe("WorktreeService", () => {
     const clean = await service.getWorktree(wt.worktreePath);
     expect(clean).toMatchObject({ branch: "feat/badge-read", baseCommit: head, isDirty: false, status: "ACTIVE", aheadCount: 0 });
     expect(clean?.repoPath).toBe(await realpath(tempRepo));
+    expect(await checkoutRepoPath(await realpath(tempRepo))).toBe(await realpath(tempRepo));
+    await mkdir(join(wt.worktreePath, "nested"));
+    expect(await checkoutRepoPath(join(wt.worktreePath, "nested"))).toBeNull();
     await writeFile(join(wt.worktreePath, "untracked.txt"), "new\n");
     expect(await service.getWorktree(wt.worktreePath)).toMatchObject({ isDirty: true, status: "DIRTY" });
     await execGit(wt.worktreePath, ["checkout", "-q", "--detach"]);

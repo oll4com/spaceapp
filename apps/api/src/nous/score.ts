@@ -194,12 +194,14 @@ export interface NousScoreInput {
  * ':' outside space_note's key pattern so Nous cannot write it; only POST /api/nous/score/reset (admin action nous-score-reset) does.
  */
 export const NOUS_SCORE_RESET_NOTE = "score:reset";
-export interface NousScoreReset { at: string; offset: number }
+/** `tiles` (operator 11/11): each tile's points at the reset, taken off that tile so every tile reads 0 then; a reset without it has the one offset tile. */
+export interface NousScoreReset { at: string; offset: number; tiles?: Record<string, number> }
 export function parseScoreReset(text: string | null | undefined): NousScoreReset | null {
   try {
     const value = JSON.parse(text ?? "null") as Partial<NousScoreReset> | null;
-    return value && typeof value.at === "string" && Number.isFinite(Date.parse(value.at)) && typeof value.offset === "number" && Number.isFinite(value.offset)
-      ? { at: value.at, offset: value.offset } : null;
+    if (!(value && typeof value.at === "string" && Number.isFinite(Date.parse(value.at)) && typeof value.offset === "number" && Number.isFinite(value.offset))) return null;
+    const tiles = value.tiles && typeof value.tiles === "object" ? Object.entries(value.tiles).filter(([, points]) => typeof points === "number" && Number.isFinite(points)) : null;
+    return { at: value.at, offset: value.offset, ...(tiles ? { tiles: Object.fromEntries(tiles) } : {}) };
   } catch { return null; }
 }
 
@@ -395,6 +397,8 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
   // The scorecard folded in: each dimension's weighted change against its baseline (their sum is the overall's change).
   const scorecard = card ? (Object.entries(card.dimensions) as Array<[NousDimension, NousDimensionScore]>).map(([key, value]): NousScoreItem =>
     ({ id: null, label: `${key} ${value.score} (baseline ${value.baseline})`, points: round(NOUS_WEIGHTS[key] * value.change * w.scorecardPerPoint), detail: value.note })) : [];
+  const baseline = input.reset?.tiles;
+  const resetLabel = input.reset ? `At the reset ${input.reset.at.slice(0, 16).replace("T", " ")} UTC` : "";
   const tiles = [
     tile("plans", "Open plans", plans, `${plans.length} open`),
     tile("panes", "Open panes", [...panes, ...paneDays], `${panes.length} open · ${panes.filter((pane) => pane.points < w.openPane).length} idle past 1 h`
@@ -417,9 +421,10 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
     tile("scorecard", "Scorecard", scorecard, card ? `${card.overall} vs ${card.baselineOverall} on ${card.baselineDate}` : "not read"),
     ...(input.marketing ? [tile("marketing", "Marketing", marketingItems(input.marketing, input.now, resetAt), input.marketing.score === null
       ? "no post measured yet" : `${input.marketing.score}/100 · target ${input.marketing.target} · ${input.marketing.daysBelowTarget} d below it`)] : []),
-    ...(input.reset ? [tile("reset", "Score reset", [{ id: null, label: `Set to 0 on ${input.reset.at.slice(0, 16).replace("T", " ")} UTC`, points: -input.reset.offset,
+    ...(input.reset && !baseline ? [tile("reset", "Score reset", [{ id: null, label: `Set to 0 on ${input.reset.at.slice(0, 16).replace("T", " ")} UTC`, points: -input.reset.offset,
       detail: `the score then (${signed(input.reset.offset)}) taken off; only what happens after it moves the score` }], "only what happens after it counts")] : [])
-  ];
+  ].map((entry) => baseline?.[entry.key] ? { ...entry, points: round(entry.points - baseline[entry.key]!),
+    items: [...entry.items, { id: null, label: resetLabel, points: -baseline[entry.key]!, detail: "what this counted then, taken off; only what happens after it moves it" }] } : entry);
   // What makes up the negative (operator 4/11 nous_msg:5e5d7526): every costing tile, each big project on its own, biggest first.
   const costs = [...tiles.filter((entry) => entry.key !== "projects" && entry.key !== "reset" && entry.points < 0).map((entry) => ({ label: entry.label, points: entry.points, detail: entry.detail })),
     ...projectRows.filter((row) => row.points < 0).map((row) => ({ label: row.name, points: row.points, detail: row.detail }))];
@@ -603,14 +608,15 @@ export function createNousScore(deps: { repository: Repository; input(owner: str
     leversText: (owner: string) => { const kept = latest.get(owner); return kept ? nousScoreLeversText(leversOf.get(owner) ?? [], kept) : null; },
     /**
      * Score reset (admin action nous-score-reset, operator 9/11 nous_msg:8d5af119): the score with every window starting now is stored as the
-     * offset, so the score reads 0 now and only what happens after moves it. Deletes nothing: older snapshots stay, the chart starts here.
+     * offset and each tile's points as its baseline (operator 11/11: every tile 0, no ±), so all read 0 now and only what happens after moves
+     * them. Deletes nothing: older snapshots stay, the chart starts here.
      */
     async reset(owner: string): Promise<NousScore> {
       if (!deps.saveReset) throw new Error("The score reset is not wired here.");
       const at = new Date(now()).toISOString();
       // Errors and pane days are events, so none fall after a reset made this instant.
-      const { score } = nousScore({ ...(await deps.input(owner, Date.parse(at))), reset: { at, offset: 0 }, dailyErrors: [], paneDays: [] });
-      await deps.saveReset(owner, { at, offset: score });
+      const { score, tiles } = nousScore({ ...(await deps.input(owner, Date.parse(at))), reset: { at, offset: 0 }, dailyErrors: [], paneDays: [] });
+      await deps.saveReset(owner, { at, offset: score, tiles: Object.fromEntries(tiles.filter((entry) => entry.points !== 0).map((entry) => [entry.key, entry.points])) });
       await running.get(owner)?.catch(() => null); // a compute started before the reset would show the old score
       return refresh(owner);
     },

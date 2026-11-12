@@ -7,7 +7,7 @@ import {
   vaultDelegationCertificateSchema, vaultDigest, verifyVaultCertificate, verifyVaultMessage, vaultOperatorRequestMessage,
   vaultSignupGrantCertificateSchema, vaultSignupGrantIdSchema, vaultSignupGrantRequestSchema, VAULT_SIGNUP_GRANT_LIMITS, VAULT_BROKER_API_MAX_BYTES,
   vaultItemBatchRequestSchema, vaultItemDeleteRequestSchema, vaultSiteCheckRequestSchema, type VaultAuditEvent, type VaultOperatorSignedKind,
-  newVaultHandle, vaultHandoffKeyCreateRequestSchema, vaultHandoffKeyIdSchema
+  newVaultHandle, vaultHandoffKeyCreateRequestSchema, vaultHandoffKeyIdSchema, vaultHandoffKeyRevealRequestSchema, vaultHandoffKeyUpdateRequestSchema
 } from "@space/contracts";
 import { VaultConflictError, type PostgresVaultRepository, type VaultState } from "@space/db";
 import { connectorSealContext, type ConnectorCrypto } from "../dot-connectors.js";
@@ -26,7 +26,7 @@ export type VaultStore = Pick<PostgresVaultRepository,
   "getVault" | "enroll" | "rotateUnlock" | "setRecovery" | "bumpEpoch" | "saveItem" | "saveItems" | "deleteItems" | "getItem" | "listItems" | "listItemRecords" | "itemsByLoginKey" | "itemStats"
   | "enableAgentAccess" | "revokeAgentAccess" | "issueNonce" | "consumeNonce" | "appendAudit" | "listAudit" | "verifyAudit" | "createDelegation" | "getActiveDelegation" | "extendDelegation"
   | "setInbox" | "getInbox" | "addPending" | "listPending" | "deletePending" | "setLoginPage" | "addSignupGrant" | "listSignupGrants" | "revokeSignupGrant"
-  | "addHandoffKey" | "listHandoffKeys" | "takeHandoffKey" | "useHandoffKey" | "deleteHandoffKey">;
+  | "addHandoffKey" | "listHandoffKeys" | "takeHandoffKey" | "useHandoffKey" | "deleteHandoffKey" | "handoffKeySeal" | "updateHandoffKey">;
 
 const notEnrolled = (): never => { throw new GitControlError("VAULT_NOT_ENROLLED", "Set up the Vault first.", 404); };
 const itemNotFound = (): never => { throw new GitControlError("VAULT_ITEM_NOT_FOUND", "This Vault item was not found.", 404); };
@@ -359,7 +359,7 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
 
   // API keys for agents (operator request 2026-10-22, plan clipboard:-qvpC_Q0rAVg): the value goes in sealed with the API's key
   // and comes out once, to the owner's pane whose space_vault_key_install writes it (agent.ts key-take, key-used); the dock
-  // lists ids and states, never a value.
+  // lists ids and states; a value only on the signed show below.
   app.post(route("/keys"), strictRouteOptions, async (request, reply) => {
     const owner = await deps.owner(request);
     const body = parseBody(vaultHandoffKeyCreateRequestSchema, request.body);
@@ -378,6 +378,25 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
     const { id } = parseQuery(z.object({ id: vaultHandoffKeyIdSchema }).strict(), request.params);
     if (!await repository().deleteHandoffKey(owner, id)) throw new GitControlError("VAULT_KEY_NOT_FOUND", "This key was not found.", 404);
     return { deleted: true };
+  });
+  // Show and edit (operator request 2026-11-12): the owner sees a kept value only with the unlocked dock's signature, audited.
+  const keyGone = (): never => { throw new GitControlError("VAULT_KEY_NOT_FOUND", "This key was not found or holds no value any more.", 404); };
+  app.post(route("/keys/reveal"), strictRouteOptions, async (request) => {
+    const owner = await deps.owner(request);
+    const { id } = await signedByOperator(owner, await vaultOf(owner), "key-reveal", parseBody(vaultHandoffKeyRevealRequestSchema, request.body), "KEY_HANDOFF");
+    const sealed = (await repository().handoffKeySeal(owner, id)) ?? keyGone();
+    await repository().appendAudit(owner, { actor: "OPERATOR", action: "KEY_HANDOFF", result: "OK", reason: "SHOWN" });
+    return { value: deps.crypto.open(sealed, connectorSealContext("vault-handoff-key", owner, id)) };
+  });
+  app.put(route("/keys/:id"), strictRouteOptions, async (request) => {
+    const owner = await deps.owner(request);
+    const { id } = parseQuery(z.object({ id: vaultHandoffKeyIdSchema }).strict(), request.params);
+    const body = parseBody(vaultHandoffKeyUpdateRequestSchema, request.body);
+    const valueSealed = deps.crypto.seal(body.value, connectorSealContext("vault-handoff-key", owner, id));
+    if (!await repository().updateHandoffKey(owner, id, { label: body.label, valueSealed, kept: body.kept })) keyGone();
+    await repository().appendAudit(owner, { actor: "OPERATOR", action: "KEY_HANDOFF", result: "OK", reason: "EDITED" });
+    deps.keySaved?.(owner, { label: body.label, value: body.value });
+    return { updated: true };
   });
 
   app.get(route("/audit/verify"), routeOptions, async (request) => repository().verifyAudit(await deps.owner(request)));

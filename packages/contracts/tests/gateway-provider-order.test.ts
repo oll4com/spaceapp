@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GATEWAY_DEFAULT_PROVIDER_ORDER, gatewayProviderOrderOf, gatewayProviderOrderSchema, nousModelMatchesProvider, nousSpaceModel, gatewayFreeKeyProviderOf } from "../src/index.js";
+import { GATEWAY_DEFAULT_PROVIDER_ORDER, gatewayProviderOrderOf, gatewayProviderOrderSchema, gatewayProviderSchema, gatewayStatusSchema, nousModelMatchesProvider, nousSpaceModel, gatewayFreeKeyProviderOf } from "../src/index.js";
 
 const on = (route: string, enabled = true) => ({ route, enabled });
 
@@ -12,6 +12,12 @@ describe("Space Gateway provider order", () => {
   it("gives a stored order and keeps the operator's choices", () => {
     const stored = [on("CODEX"), on("OPENROUTER"), on("CLAUDE"), on("CLAUDE_OPENCODE", false), on("ANTIGRAVITY"), on("OPENAI_API", false), on("DEEPSEEK", false)];
     expect(gatewayProviderOrderOf(stored)).toEqual([on("CODEX"), on("CLAUDE"), on("CLAUDE_OPENCODE", false), on("ANTIGRAVITY"), on("ANTIGRAVITY_FLASH"), on("ANTIGRAVITY_CLAUDE"), on("BEDROCK", false), on("VERTEX", false)]);
+  });
+
+  it("takes a status row for every provider (12/11: a fixed 20 answered 422 once the providers passed 20)", () => {
+    const rows = gatewayProviderSchema.options.map((provider) => ({ provider, total: 1, active: 1 }));
+    expect(rows.length).toBeGreaterThan(20);
+    expect(gatewayStatusSchema.shape.accounts.shape.byProvider.safeParse(rows).success).toBe(true);
   });
 
   it("parses Space route models and matches native Antigravity argon vs flash", () => {

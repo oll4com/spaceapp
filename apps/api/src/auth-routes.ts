@@ -7,7 +7,7 @@ import { acceptUserInviteInputSchema, appWebViewIdSchema, appWebViewOf, appWebVi
 import { type GoogleAccount, nowIso, SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import {
   type AuthConfig, authenticateLogin, buildGoogleAuthUrl, cookieName, defaultSessionRevocationStore,
-  exchangeGoogleCode, generatePkcePair, googleStepUpRefusal, hashPassword, operatorSessionTtlSeconds, signOAuthState, signSession, signSessionWithTtl,
+  exchangeGoogleCode, generatePkcePair, googleRedirectUriFor, googleStepUpRefusal, hashPassword, operatorSessionTtlSeconds, requestOrigin, signOAuthState, signSession, signSessionWithTtl,
   verifyGoogleIdToken, verifyOAuthState, verifyPassword, verifySession
 } from "./auth.js";
 import { operatorBrowserActor } from "./browser-actors.js";
@@ -40,6 +40,8 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
   persistRevocation: (pending: Promise<void>) => Promise<void>;
   /** Space's own mobile apps (app-signin.ts): absent, an app start link is refused. */
   appSignIn?: AppSignIn;
+  /** Sends the owner one transactional mail (Forgot password); filled once Mail Campaigns exists, null: no reset by mail. */
+  passwordResetMail?: { current: ((owner: string, to: string, subject: string, text: string) => Promise<void>) | null };
 }) {
   const { config, auth, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions,
     googleAccountBrowserStatuses, dotsAuthenticatedOwner, connectorStateTools, connectorServiceRef,
@@ -47,6 +49,8 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
   // Hashes a throwaway password once, so a sign-in for an email without an account costs the same scrypt time and the
   // answer time does not reveal which emails exist (security review 2026-10-17).
   let decoyHash: Promise<string> | null = null;
+  // Fingerprint of the .env operator hash, stored when Settings replaces it (adoptOwnerPassword).
+  const envPasswordSha256 = auth.operatorPasswordHash ? createHash("sha256").update(auth.operatorPasswordHash).digest("hex") : null;
   app.post("/api/auth/login", {
     config: {
       rateLimit: {
@@ -268,6 +272,17 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     const session = verifySession(request.cookies[cookieName], auth.sessionSecret);
     return Boolean(session && (session.id.startsWith("user:operator-proof") || session.id.startsWith("user:proof") || session.proofScope || session.automationScope));
   }
+  // Host-side recovery: a SPACE_OPERATOR_PASSWORD_HASH other than the one Settings replaced (fingerprint) becomes the owner's password at start.
+  app.addHook("onReady", async () => {
+    try {
+      const owner = await store.getOwnerCredentials();
+      if (!owner?.envPasswordSha256 || !envPasswordSha256 || owner.envPasswordSha256 === envPasswordSha256) return;
+      const restored = await store.adoptOwnerPassword(owner.user.id, auth.operatorPasswordHash!, envPasswordSha256);
+      app.log.warn({ restored }, "A new SPACE_OPERATOR_PASSWORD_HASH replaced the owner's password set in Settings.");
+    } catch (error) {
+      app.log.error({ err: error }, "Could not apply a new SPACE_OPERATOR_PASSWORD_HASH to the owner's password.");
+    }
+  });
   async function hasAlternativeGoogleLogin(userId: string): Promise<boolean> {
     const owner = await store.getOwnerCredentials();
     if (owner) return owner.user.id === userId;
@@ -350,6 +365,12 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
         return sendApiError(reply, 403, "FORBIDDEN", "Confirm it is you from SpaceApp in a browser on your computer.");
       }
     }
+    // Login screen › Forgot password? (operator 13/11, nous_msg 01:50 BKK): no mail channel for sign-in mail exists here, so the reset is a
+    // fresh sign-in of the linked Google account (checked like a step-up); the callback marks the new session, which may then set a password.
+    const reset = query?.reset === "password";
+    if (reset && (!options.appSignIn || stepUp || linking || query?.app !== undefined || query?.desktopHandoff !== undefined || query?.mobile !== undefined || query?.handoff !== undefined)) {
+      return sendApiError(reply, 400, "RESET_UNAVAILABLE", "Reset your password from the SpaceApp sign-in page in a browser.");
+    }
     // A desktop sign-in must name the desktop app's loopback port and PKCE challenge; a bare handoff id would hand the
     // session to whoever chose it (run-spaceapp 1.1.7 review, Codex finding 1).
     const desktopBinding = query?.desktopHandoff === undefined ? null
@@ -371,17 +392,14 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
       codeChallenge: pkce.codeChallenge,
       // A step-up sends its nonce to Google too: an ID token without auth_time passes only with this nonce and an iat after startedAt.
       ...(stepUp ? { stepUp: true, startedAt: Date.now() } : {}),
+      ...(reset ? { reset: true, startedAt: Date.now() } : {}),
       ...(ticket ? { appState: ticket.state } : {}),
       // SpaceApp Android's Web tab: linking finishes in the phone's browser and comes back to the WebView (APP_WEBVIEW_RETURN_URIS).
       ...(linking && !stepUp && appWebViewOf(request.headers["user-agent"]) ? { webView: appWebViewOf(request.headers["user-agent"]) } : {})
     })).toString("base64url");
     const state = signOAuthState(rawState, auth.sessionSecret);
     const signedPkce = signOAuthState(pkce.codeVerifier, auth.sessionSecret);
-    const forwardedProto = request.headers["x-forwarded-proto"];
-    const forwardedHost = request.headers["x-forwarded-host"];
-    const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers["host"] ?? `127.0.0.1:${config.port}`;
-    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (auth.secureCookies === true ? "https" : "http");
-    const redirectUri = auth.googleRedirectUri || `${String(proto).split(",")[0]!.trim()}://${String(host).split(",")[0]!.trim()}/api/auth/google/callback`;
+    const redirectUri = googleRedirectUriFor(request, auth, config.port);
 
     reply.setCookie("space_oauth_state", state, {
       httpOnly: true,
@@ -404,7 +422,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
       redirectUri,
       state,
       codeChallenge: pkce.codeChallenge,
-      ...(stepUp ? { reauth: { loginHint: ticket?.email ?? request.user!.email, nonce } } : {})
+      ...(stepUp ? { reauth: { loginHint: ticket?.email ?? request.user!.email, nonce } } : reset ? { reauth: { nonce } } : {})
     });
 
     if (desktopBinding) {
@@ -531,6 +549,140 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     await recordAudit(store, request, { actorUserId: user.id, action: "auth.step_up", targetType: "user", targetId: user.id, metadata: { purpose: "mobile", via: "password" } });
     return { steppedUp: true, until: new Date(Date.now() + 5 * 60_000).toISOString() };
   });
+  // Settings → Login password (operator 12/11, nous_msg:ab7d29cfda7e438b8bbb1e9a): the owner or an invited user changes their own password,
+  // proven by the current one or by this session's fresh step-up (Google or password, 5 minutes). Same hash column as `owner reset-password`.
+  app.post("/api/auth/password", { config: { ...defaultRouteRateLimitOptions.config, rateLimit: { max: 5, timeWindow: "15 minutes" } } }, async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Sign in to SpaceApp first.");
+    options.appSignIn?.assertPerson(request);
+    if (request.appSession || isGoogleProofSession(request)) return sendApiError(reply, 403, "FORBIDDEN", "Change your password from SpaceApp on a computer.");
+    const input = z.object({ currentPassword: z.string().min(1).max(1024).optional(), newPassword: acceptUserInviteInputSchema.shape.password }).strict()
+      .safeParse(request.body ?? {});
+    if (!input.success) return sendApiError(reply, 400, "INVALID_INPUT", "The new password needs 12 to 500 characters.");
+    const user = request.user;
+    const owner = await store.getOwnerCredentials();
+    const isOwner = owner?.user.id === user.id;
+    // The operator defined only in .env signs in as the users row holding SPACE_OPERATOR_EMAIL (upsertUser): its new password becomes the
+    // owner's stored one, which wins over the .env hash from then on (task 12/11). The .env hash stays the host's recovery (the onReady hook).
+    const envRow = !owner && envPasswordSha256 && auth.operatorEmail ? await store.getControlActor(user.id, auth.operatorEmail) : null;
+    const envOperator = envRow?.id === user.id && envRow.email.toLowerCase() === auth.operatorEmail?.toLowerCase();
+    const account = isOwner ? owner : envOperator ? { user, passwordHash: auth.operatorPasswordHash! } : await store.getPasswordUser?.(user.email) ?? null;
+    if (account?.user.id !== user.id || (!isOwner && !envOperator && !store.updateUserPassword)) {
+      // A Google-only account has no password to replace.
+      return sendApiError(reply, 409, "PASSWORD_NOT_STORED", "This account has no SpaceApp password to change: it signs in with Google.");
+    }
+    if (input.data.currentPassword !== undefined) {
+      if (!await verifyPassword(input.data.currentPassword, account.passwordHash)) {
+        await recordAudit(store, request, { actorUserId: user.id, action: "auth.password_change_failed", targetType: "user", targetId: user.id, metadata: { reason: "wrong_current" } });
+        return sendApiError(reply, 401, "INVALID_CREDENTIALS", "Your current password is not right.");
+      }
+    } else if (!options.appSignIn?.stepUp.fresh(request)) {
+      return sendApiError(reply, 403, "STEP_UP_REQUIRED", "Type your current password, or confirm it is you with Google first.", { stepUpUrl: "/api/auth/google/start?stepUp=mobile" });
+    }
+    const passwordHash = await hashPassword(input.data.newPassword);
+    if (isOwner) await store.updateOwnerPassword(passwordHash);
+    else if (!await (envOperator ? store.adoptOwnerPassword(user.id, passwordHash, envPasswordSha256!) : store.updateUserPassword!(user.id, passwordHash))) {
+      return sendApiError(reply, 409, "PASSWORD_NOT_STORED", "This account has no stored password to replace.");
+    }
+    // Every other session ends (as logout-all), even one issued this second (iat is whole seconds); this one gets a cookie issued at the epoch.
+    const epochMs = (Math.floor(Date.now() / 1000) + 1) * 1000;
+    const currentToken = request.cookies[cookieName];
+    const saved = await revocationsSaved(defaultSessionRevocationStore.revokeUser(user.id, epochMs),
+      ...(currentToken ? [defaultSessionRevocationStore.revokeToken(currentToken)] : []));
+    reply.setCookie(cookieName, signSession(user, auth.sessionSecret, epochMs), { httpOnly: true, secure: auth.secureCookies, sameSite: "lax", path: "/", maxAge: operatorSessionTtlSeconds });
+    await recordAudit(store, request, { actorUserId: user.id, action: "auth.password_changed", targetType: "user", targetId: user.id,
+      metadata: { role: user.role, via: input.data.currentPassword !== undefined ? "current_password" : "step_up", otherSessionsEnded: saved, ...(envOperator ? { replacedEnvPassword: true } : {}) } });
+    if (!saved) return sendApiError(reply, 503, "LOGOUT_NOT_SAVED", "Your password changed and your other sessions ended, but that could not be saved yet; Space keeps retrying. Until it is saved, an API restart would accept them again.");
+    return { ok: true };
+  });
+
+  // Forgot password by mail (operator 13/11, Nous option A): a single-use link to the owner's stored address, sent through the
+  // owner's Mail Campaigns sender as one transactional mail. Only the owner (or the .env operator) has one; invited users ask the owner.
+  // shortcut: pending links live in memory, so an API restart voids them (fail closed); move them to the store if that bites.
+  const passwordResets = new Map<string, { tokenHash: string; bindHash: string; passwordSha: string; expiresAt: number }>();
+  const resetRequestTimes = new Map<string, number[]>();
+  const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+  const RESET_COOKIE = "space_pwreset", RESET_PATH = "/api/auth/password-reset", RESET_TTL_MS = 30 * 60_000;
+  async function resetAccount(): Promise<{ userId: string; email: string; passwordHash: string; env: boolean } | null> {
+    const owner = await store.getOwnerCredentials();
+    if (owner) return { userId: owner.user.id, email: owner.user.email, passwordHash: owner.passwordHash, env: false };
+    if (!auth.operatorEmail || !auth.operatorPasswordHash) return null;
+    const row = await store.getControlActor("user:operator", auth.operatorEmail);
+    return row?.email.toLowerCase() === auth.operatorEmail.toLowerCase() ? { userId: row.id, email: auth.operatorEmail, passwordHash: auth.operatorPasswordHash, env: true } : null;
+  }
+  // The link's origin is the configured Google redirect's, never the request's Host (a forged Host would mail a poisoned link); a request
+  // on another host (a clone with a copied .env, or dev without one) mails nothing.
+  function resetLinkOrigin(request: FastifyRequest): string | null {
+    try {
+      const configured = new URL(auth.googleRedirectUri ?? "");
+      return configured.protocol === "https:" && new URL(requestOrigin(request, auth.secureCookies, config.port)).hostname === configured.hostname ? configured.origin : null;
+    } catch { return null; }
+  }
+  const signedInRefusal = (reply: FastifyReply) => sendApiError(reply, 403, "SIGNED_IN", "You are signed in: change your password in Settings, Login password.");
+  app.post(`${RESET_PATH}/request`, { config: { ...defaultRouteRateLimitOptions.config, rateLimit: { max: 5, timeWindow: "15 minutes" } } }, async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    if (request.user) return signedInRefusal(reply);
+    const input = z.object({ email: z.string().trim().min(3).max(320) }).strict().safeParse(request.body ?? {});
+    if (!input.success) return sendApiError(reply, 400, "INVALID_INPUT", "Type the email you sign in with.");
+    // Binds the link to this browser: whoever reads the mail elsewhere (an agent reading the mailbox) cannot use it.
+    const bind = randomBytes(32).toString("base64url");
+    reply.setCookie(RESET_COOKIE, bind, { httpOnly: true, secure: auth.secureCookies, sameSite: "strict", path: RESET_PATH, maxAge: RESET_TTL_MS / 1000 });
+    // The answer never waits for the lookup or the mail, so neither its words nor its time say whether the account exists.
+    void mailPasswordReset(request, input.data.email, sha256(bind)).catch((error) => request.log.error({ err: error }, "The password reset mail could not be sent."));
+    return { ok: true };
+  });
+  async function mailPasswordReset(request: FastifyRequest, email: string, bindHash: string) {
+    const account = await resetAccount();
+    if (!account || email.toLowerCase() !== account.email.toLowerCase()) return;
+    const now = Date.now();
+    const recent = (resetRequestTimes.get(account.userId) ?? []).filter((at) => at > now - 60 * 60_000);
+    const origin = resetLinkOrigin(request), send = options.passwordResetMail?.current;
+    const refused = recent.length >= 3 ? "account_rate_limit" : !origin ? "untrusted_origin" : !send ? "no_sender" : null;
+    if (!refused) resetRequestTimes.set(account.userId, [...recent, now]);
+    await recordAudit(store, request, { actorUserId: account.userId, action: "auth.password_reset_requested", targetType: "user", targetId: account.userId,
+      metadata: { mailed: !refused, ...(refused ? { reason: refused } : {}) } });
+    if (refused) return;
+    const token = randomBytes(32).toString("base64url");
+    passwordResets.set(account.userId, { tokenHash: sha256(token), bindHash, passwordSha: sha256(account.passwordHash), expiresAt: now + RESET_TTL_MS });
+    await send!(account.userId, account.email, "Reset your SpaceApp password", [
+      `Someone asked to reset the password you use to sign in to SpaceApp at ${origin}.`, "",
+      "To choose a new one, open this link within 30 minutes, in the same browser where you asked for it:", `${origin}/#password-reset=${token}`, "",
+      "The link works once. If you did not ask for it, ignore this mail: your password stays as it is."].join("\n"));
+  }
+  app.post(`${RESET_PATH}/complete`, { config: { ...defaultRouteRateLimitOptions.config, rateLimit: { max: 10, timeWindow: "15 minutes" } } }, async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    // Like assertPerson: no session at all, so no agent, broker, proof or capture session (nor a signed-in person, who uses Settings).
+    if (request.user) return signedInRefusal(reply);
+    const input = z.object({ token: z.string().min(32).max(200), newPassword: acceptUserInviteInputSchema.shape.password }).strict().safeParse(request.body ?? {});
+    if (!input.success) return sendApiError(reply, 400, "INVALID_INPUT", "The new password needs 12 to 500 characters.");
+    const account = await resetAccount();
+    const pending = account ? passwordResets.get(account.userId) : undefined;
+    const bind = request.cookies[RESET_COOKIE];
+    if (!account || !pending || pending.tokenHash !== sha256(input.data.token)) {
+      return sendApiError(reply, 400, "RESET_LINK_INVALID", "This reset link does not work any more: it was used, it expired, or a newer one was sent. Ask for a new one.");
+    }
+    passwordResets.delete(account.userId);  // single use: a try with the right token spends it, whatever else fails
+    const reason = pending.expiresAt <= Date.now() ? "expired" : pending.passwordSha !== sha256(account.passwordHash) ? "password_changed" : !bind || sha256(bind) !== pending.bindHash ? "other_browser" : null;
+    if (reason) {
+      await recordAudit(store, request, { actorUserId: account.userId, action: "auth.password_reset_failed", targetType: "user", targetId: account.userId, metadata: { reason } });
+      return sendApiError(reply, 400, "RESET_LINK_INVALID", reason === "other_browser"
+        ? "Open the reset link in the same browser where you asked for it. Ask for a new one there." : "This reset link does not work any more. Ask for a new one.");
+    }
+    const passwordHash = await hashPassword(input.data.newPassword);
+    if (account.env ? !await store.adoptOwnerPassword(account.userId, passwordHash, envPasswordSha256!) : (await store.updateOwnerPassword(passwordHash), false)) {
+      return sendApiError(reply, 409, "PASSWORD_NOT_STORED", "This account has no stored password to replace.");
+    }
+    const saved = await revocationsSaved(defaultSessionRevocationStore.revokeUser(account.userId, (Math.floor(Date.now() / 1000) + 1) * 1000));
+    reply.clearCookie(RESET_COOKIE, { path: RESET_PATH });
+    await recordAudit(store, request, { actorUserId: account.userId, action: "auth.password_reset", targetType: "user", targetId: account.userId,
+      metadata: { via: "mail", otherSessionsEnded: saved, ...(account.env ? { replacedEnvPassword: true } : {}) } });
+    void options.passwordResetMail?.current?.(account.userId, account.email, "Your SpaceApp password was reset", [
+      `Your SpaceApp password was reset at ${new Date().toISOString()} through a reset link, and every session signed in with the old one ended.`, "",
+      "If this was not you, sign in with Google if you can, set a new password in Settings, and check Settings for devices and sessions."].join("\n"))
+      .catch((error) => request.log.error({ err: error }, "The password reset notice could not be sent."));
+    if (!saved) return sendApiError(reply, 503, "LOGOUT_NOT_SAVED", "Your password changed, but ending the old sessions could not be saved yet; Space keeps retrying. Sign in with the new password.");
+    return { ok: true };
+  });
   app.get("/api/auth/google/callback", defaultRouteRateLimitOptions, async (request, reply) => {
     if (!auth.googleClientId) {
       return sendApiError(reply, 400, "GOOGLE_AUTH_DISABLED", "Google authentication is not configured on this server.");
@@ -549,11 +701,11 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     const appHandoff = decodeAppSignInCookie(request.cookies[APP_SIGNIN_COOKIE]);
     for (const name of ["space_oauth_state", "space_oauth_pkce", "space_oauth_link_user", "space_oauth_desktop_handoff", "space_oauth_mobile", APP_SIGNIN_COOKIE]) reply.clearCookie(name, { path: "/" });
     const verifiedState = verifyOAuthState(state, auth.sessionSecret);
-    let transaction: { nonce?: string; userId: string | null; sessionHash: string | null; codeChallenge: string; expiresAt: number; stepUp?: boolean; startedAt?: number;
+    let transaction: { nonce?: string; userId: string | null; sessionHash: string | null; codeChallenge: string; expiresAt: number; stepUp?: boolean; reset?: boolean; startedAt?: number;
       appState?: string; webView?: AppWebViewId } | null = null;
     try {
       transaction = z.object({ nonce: z.string().min(16).optional(), userId: z.string().nullable(), sessionHash: z.string().nullable(), codeChallenge: z.string().min(43),
-        expiresAt: z.number(), stepUp: z.literal(true).optional(), startedAt: z.number().optional(), appState: z.string().optional(), webView: appWebViewIdSchema.optional() })
+        expiresAt: z.number(), stepUp: z.literal(true).optional(), reset: z.literal(true).optional(), startedAt: z.number().optional(), appState: z.string().optional(), webView: appWebViewIdSchema.optional() })
         .parse(JSON.parse(Buffer.from(verifiedState ?? "", "base64url").toString("utf8")));
     } catch { /* Reject malformed and legacy transactions; a fresh start is safe. */ }
     // SpaceApp Android: a link started in the Web tab ended in the phone's browser, without the WebView's cookies; the WebView finishes it.
@@ -603,11 +755,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
       return fail("Invalid account linking session. Please try again.", "LINK_COOKIE");
     }
 
-    const forwardedProto = request.headers["x-forwarded-proto"];
-    const forwardedHost = request.headers["x-forwarded-host"];
-    const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers["host"] ?? `127.0.0.1:${config.port}`;
-    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (auth.secureCookies === true ? "https" : "http");
-    const redirectUri = auth.googleRedirectUri || `${String(proto).split(",")[0]!.trim()}://${String(host).split(",")[0]!.trim()}/api/auth/google/callback`;
+    const redirectUri = googleRedirectUriFor(request, auth, config.port);
 
     try {
       const googleInfo = await exchangeGoogleCode({
@@ -649,6 +797,11 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
         return reply.redirect("/?googleLinked=true");
       }
 
+      if (transaction.reset) {
+        const refusal = googleStepUpRefusal(googleInfo, undefined, transaction.nonce && transaction.startedAt !== undefined
+          ? { nonce: transaction.nonce, startedAtS: Math.floor(transaction.startedAt / 1000) } : undefined);
+        if (refusal) return fail(refusal.message, refusal.reason);
+      }
       const user = await resolveOrRegisterGoogleUser(googleInfo, request.requestIdForSpace);
       await recordAudit(store, request, {
         actorUserId: user.id,
@@ -668,6 +821,12 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
         path: "/",
         maxAge: operatorSessionTtlSeconds
       });
+      if (transaction.reset) {
+        // The start refused app, desktop and phone hand-offs: this browser's new session may set a password without the old one for 5 minutes.
+        options.appSignIn!.stepUp.mark(createHash("sha256").update(token).digest("hex"));
+        await recordAudit(store, request, { actorUserId: user.id, action: "auth.step_up", targetType: "user", targetId: user.id, metadata: { purpose: "password_reset", via: "google_sign_in" } });
+        return reply.redirect("/?mobileStepUp=ok");
+      }
 
       if (desktopHandoff) {
         // The one-time code goes only to the desktop app's loopback listener on this machine; the app redeems it with

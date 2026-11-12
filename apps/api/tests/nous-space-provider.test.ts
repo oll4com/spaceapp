@@ -299,6 +299,12 @@ describe("Space provider router", () => {
     const state = await service.state(owner);
     expect(state.status).toBe("IDLE");
     expect(state.lastError).toMatch(/^gemini-4-argon-high · Gemini Argon \(Antigravity\): Gemini could not be reached.*\(earlier: /);
+    // The earlier list names the routes that ran and failed, never the ones skipped without a try (12/11).
+    expect(state.lastError).toMatch(/\(earlier: [^;]*no available tokens\/quota[^;]*\)$/);
+    expect(state.lastError).not.toMatch(/paused or out of quota|API budget/);
+    // The chat says the reason; the routes tried before it stay in lastError and the turn's facts.
+    expect((await repository.listMessages(owner, 10)).filter((message) => message.kind === "ERROR").map((message) => message.content))
+      .toEqual(["The turn failed: gemini-4-argon-high · Gemini Argon (Antigravity): Gemini could not be reached, or the turn was stopped."]);
     expect(raise).not.toHaveBeenCalled();
     const [facts] = await repository.listTurnFacts(owner, "2000-01-01T00:00:00.000Z");
     expect(facts?.model).toBe("gemini:gemini-4-argon-high");

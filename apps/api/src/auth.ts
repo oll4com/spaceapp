@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import type { FastifyRequest } from "fastify";
 import { createHash, createHmac, createPublicKey, randomBytes, scrypt as scryptCallback, timingSafeEqual, verify as verifySignature, type KeyObject, type ScryptOptions } from "node:crypto";
 import { authUserSchema, resolveSpaceInstance, sessionCookieNameFor, type AuthUser, type LoginInput } from "@space/contracts";
 import { persistentOperatorSessionTtlSeconds } from "@space/runtime";
@@ -34,6 +35,33 @@ export interface AuthConfig {
   googleClientId?: string;
   googleClientSecret?: string;
   googleRedirectUri?: string;
+}
+
+/** The origin the browser used: the trusted proxy's forwarded proto/host, else the request's own Host. */
+export function requestOrigin(request: Pick<FastifyRequest, "headers">, secureCookies: AuthConfig["secureCookies"], port: number): string {
+  const forwardedProto = request.headers["x-forwarded-proto"];
+  const forwardedHost = request.headers["x-forwarded-host"];
+  const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers["host"] ?? `127.0.0.1:${port}`;
+  const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (secureCookies === true ? "https" : "http");
+  return `${String(proto).split(",")[0]!.trim()}://${String(host).split(",")[0]!.trim()}`;
+}
+
+/**
+ * Google's callback on the host the browser is on. A configured URI for another host (a clone's copied .env) would send
+ * Google back there, where the state cookie does not exist; then the request's origin wins with the configured path.
+ * Ports are ignored: cookies are not port-scoped, and stable's registered http://127.0.0.1:4911/... reaches :4911 through nginx.
+ */
+export function googleRedirectUriFor(request: Pick<FastifyRequest, "headers" | "log">, auth: Pick<AuthConfig, "googleRedirectUri" | "secureCookies">, port: number): string {
+  const origin = requestOrigin(request, auth.secureCookies, port);
+  let configured: URL | null = null;
+  try { configured = auth.googleRedirectUri ? new URL(auth.googleRedirectUri) : null; } catch { /* unparsable: the request's origin */ }
+  if (!configured) return `${origin}/api/auth/google/callback`;
+  let requestHost: string | null = null;
+  try { requestHost = new URL(origin).hostname; } catch { /* an unparsable Host keeps the configured value, as before */ }
+  if (requestHost === null || requestHost === configured.hostname) return auth.googleRedirectUri!;
+  request.log.warn({ configuredOrigin: configured.origin, requestOrigin: origin },
+    "SPACE_GOOGLE_REDIRECT_URI names another host than this request; Google sign-in returns to the request's own origin");
+  return `${origin}${configured.pathname}`;
 }
 
 export interface GoogleAuthUserInfo {
@@ -98,7 +126,8 @@ export function getAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
     sessionSecret: env.SPACE_SESSION_SECRET ?? "",
     operatorEmail: env.SPACE_OPERATOR_EMAIL,
     operatorPasswordHash: env.SPACE_OPERATOR_PASSWORD_HASH,
-    devLogin: env.NODE_ENV !== "production" && env.SPACE_DEV_LOGIN === "true",
+    // Only an explicit development or test run: stable and dev leave NODE_ENV unset and are public (finding S1, 11/11).
+    devLogin: (env.NODE_ENV === "development" || env.NODE_ENV === "test") && env.SPACE_DEV_LOGIN === "true",
     // NODE_ENV is unset on stable and dev, so the cookies of the https instances had no Secure flag (hardening step 11).
     secureCookies: env.NODE_ENV === "production" ? true : "auto",
     googleClientId,

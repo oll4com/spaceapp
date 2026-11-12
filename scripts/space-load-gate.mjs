@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // space-load-gate: runs one heavy agent command (a full test suite, a typecheck, a build, a Playwright or browser proof)
-// only while the server is not OVERLOADED, and at most 3 heavy commands at once (plan clipboard:VZEewZRaodZR R3).
+// only while the server is not OVERLOADED, and at most 2 heavy commands at once (plan clipboard:VZEewZRaodZR R3; 3 until 12/11, nous_msg:57a8fc1e).
 // Light commands (scoped tests, reads, git) run directly, never through it.
 //
 //   node scripts/space-load-gate.mjs -- <command> [args...]        e.g.  -- npm test   |   -- sh -c "npm run build && npm test"
@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
-export const GATE_DEFAULTS = { slots: 3, maxWaitMs: 10 * 60_000, pollMs: 20_000, dir: process.env.SPACE_LOAD_GATE_DIR || "/tmp/space-load-gate" };
+export const GATE_DEFAULTS = { slots: 2, maxWaitMs: 10 * 60_000, pollMs: 20_000, dir: process.env.SPACE_LOAD_GATE_DIR || "/tmp/space-load-gate" };
 /** The stable API's installed unit (root-owned, world-readable): it holds the install's settings, which CLI panes' environments do not. */
 const API_UNIT = "/etc/systemd/system/space-api.service";
 const SWAP_TOTAL = "node_memory_SwapTotal_bytes", SWAP_FREE = "node_memory_SwapFree_bytes";

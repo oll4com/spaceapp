@@ -207,6 +207,20 @@ describe("System analytics API", () => {
     expect(isProcessSamplerRow({ ...sampler, parentPid: 1, commandLine: "ps -ef" })).toBe(false);
   });
 
+  it("reads each process's swap once a minute, a new pid at once (CPU plan 4.1)", async () => {
+    const { swapByPid } = await import("../src/system-analytics-service.js");
+    const reads: number[] = [];
+    let clock = 0;
+    const swaps = swapByPid(async (pid) => { reads.push(pid); return pid * 10; }, () => clock);
+    expect([...(await swaps([1, 2])).entries()]).toEqual([[1, 10], [2, 20]]);
+    clock = 10_000;
+    expect((await swaps([1, 2, 3])).get(3)).toBe(30);
+    expect(reads).toEqual([1, 2, 3]);
+    clock = 60_000;
+    expect([...(await swaps([2])).entries()]).toEqual([[2, 20]]);
+    expect(reads).toEqual([1, 2, 3, 2]);
+  });
+
   it("orders processes by state and thread count", async () => {
     const analytics = new SystemAnalyticsService({
       repository: new InMemorySystemAnalyticsRepository(),

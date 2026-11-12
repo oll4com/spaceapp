@@ -19,7 +19,8 @@ export function createCardTranslator(options: { baseUrl: string | null; keyFile:
   return async (texts, language, traceId) => {
     const key = options.keyFile ? (await readFile(options.keyFile, "utf8").catch(() => "")).trim() : "";
     if (!options.baseUrl || !key) return null;
-    // Keyed by place, empty strings left out: given an array, the model dropped the empty "Checked first" string about 1 call in 10 (1/11), and the whole card stayed English.
+    // Keyed, empty strings left out: given an array, the model dropped the empty "Checked first" string about 1 call in 10 (1/11), and the whole card stayed English.
+    // The keys run without gaps (12/11 public-host reboot card: given 0,1,3,4,5 the model renumbered them, the question read «Έγκριση» and both buttons «Απόρριψη»).
     const ask = async (asked: Record<string, string>): Promise<Record<string, unknown>> => {
       const root = codexServiceRoot(options.baseUrl!);
       const headers = { authorization: `Bearer ${key}`, "content-type": "application/json", ...gatewayRequestIdHeader(traceId) };
@@ -53,7 +54,8 @@ export function createCardTranslator(options: { baseUrl: string | null; keyFile:
       }
       throw new Error(`The card translator's answer was not a JSON object (${text.length} characters).`);
     };
-    const asked = Object.fromEntries(texts.flatMap((text, index) => text.trim() ? [[String(index), text]] : []));
+    const places = texts.flatMap((text, index) => text.trim() ? [index] : []);
+    const asked = Object.fromEntries(places.map((place, key) => [String(key), texts[place]!]));
     const answer = await ask(asked);
     // A number or yes/no kept as written is its text; a key the model left out is asked once more alone, so one value never throws the card away.
     const value = (key: string) => typeof answer[key] === "string" ? answer[key] : typeof answer[key] === "number" || typeof answer[key] === "boolean" ? String(answer[key]) : null;
@@ -61,15 +63,16 @@ export function createCardTranslator(options: { baseUrl: string | null; keyFile:
     if (missing.length) Object.assign(answer, await ask(Object.fromEntries(missing.map((key) => [key, asked[key]!]))));
     const still = missing.filter((key) => value(key) === null);
     if (still.length) throw new Error(`The card translator left out texts ${still.join(", ")} of ${Object.keys(asked).length}, twice.`);
-    return texts.map((text, index) => text.trim() ? value(String(index))! : text);
+    return texts.map((text, index) => text.trim() ? value(String(places.indexOf(index)))! : text);
   };
 }
 
 /**
  * The translator's version, kept on each translation. 2 (1/11): texts keyed by place, labels translated, subjects and list names kept; stable's
- * 19:47 UTC translation of campaign card ab76acad (version 1) left its labels English and read 40 % Greek. Raise it when the prompt or protocol changes.
+ * 19:47 UTC translation of campaign card ab76acad (version 1) left its labels English and read 40 % Greek. 3 (12/11): keys without gaps, so the cards
+ * a renumbered answer shifted are made again. Raise it when the prompt or protocol changes.
  */
-export const CARD_TRANSLATOR_VERSION = 2;
+export const CARD_TRANSLATOR_VERSION = 3;
 
 /** Nothing to translate into Greek when no string has a Latin word (Nous writes Greek already). */
 const needsTranslation = (texts: string[], language: UiLanguage) => language !== "en" && texts.some((text) => /[A-Za-z]{3,}/.test(text));

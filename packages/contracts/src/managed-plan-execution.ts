@@ -19,7 +19,7 @@ export const managedPlanStageSchema = stageModelSelectionSchema
     id: z.string().trim().min(1).max(160),
     order: z.number().int().min(1),
     title: z.string().trim().min(1).max(200),
-    instructions: z.string().trim().min(1).max(16000),
+    instructions: z.string().trim().min(1),
     completionCriteria: z
       .array(z.string().trim().min(1).max(2000))
       .min(1)

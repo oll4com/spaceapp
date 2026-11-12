@@ -43,6 +43,11 @@ describe('site sign-in account: which Google account a tab uses', () => {
       .toEqual({ email: 'ntheogr@gmail.com', profileId: 'google_account:ntheo', signedIn: false, source: 'recipe' });
     expect(wantedAccount({ googleAccountEmail: 'other@example.com', browserProfileId: null }, null, choices))
       .toEqual({ email: 'other@example.com', profileId: null, signedIn: false, source: 'recipe' });
+    // The recipe's pinned profile wins among the email's profiles; an address hint still ranks by sign-in.
+    expect(wantedAccount({ googleAccountEmail: 'ntheogr@gmail.com', browserProfileId: 'google-account:google_account:ntheo' }, null, choices))
+      .toMatchObject({ profileId: 'google_account:ntheo', signedIn: false, source: 'recipe' });
+    expect(wantedAccount({ googleAccountEmail: null, browserProfileId: 'google_account:ntheo' }, 'ntheogr@gmail.com', choices))
+      .toMatchObject({ profileId: 'nth', source: 'address' });
     expect(wantedAccount(null, null, choices)).toBeNull();
     expect(wantedAccount({ googleAccountEmail: null, browserProfileId: null }, null, choices)).toBeNull();
   });
@@ -159,7 +164,7 @@ describe('site sign-in account through the CLI bridge', () => {
     expect(listed.json()).toMatchObject({ selectedProfileId: null, effectiveProfileId: primary.id, effectiveEmail: 'operator7@example.test', byDefault: true,
       tabs: [{ pageId: 'page:one', profileId: primary.id, email: 'operator7@example.test' }] });
     expect(listed.json().note).toContain('operator7@example.test (the primary Google account) by default');
-    // Choosing stays the Browser and Freelance panes' (a Job Copilot's account is the operator's choice).
+    // Choosing stays the Browser, Freelance and Marketing panes' (a Job Copilot's account is the operator's choice).
     expect((await command({ type: 'SELECT_ACCOUNT', profileId: 'nth' })).statusCode).toBe(409);
   });
 

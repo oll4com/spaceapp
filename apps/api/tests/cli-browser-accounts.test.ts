@@ -26,7 +26,7 @@ describe("CLI browser bridge Google account selection", () => {
   let app: Awaited<ReturnType<typeof createApp>>;
   let root: string;
 
-  function fixture(owner: string | null, kind?: "AGENT_PROOF", mode: "BROWSER" | "FREELANCE_COPILOT" | "MARKETING_COPILOT" = "BROWSER") {
+  function fixture(owner: string | null, kind?: "AGENT_PROOF", mode: "BROWSER" | "FREELANCE_COPILOT" | "MARKETING_COPILOT" | "JOB_APPLY" = "BROWSER") {
     const room = store.createRoom({ name: "Bridge accounts", initialPaneCount: 0, ...(kind ? { kind } : {}) }, "trace", owner ?? undefined);
     const cliPane = store.createPane({ roomId: room.id, title: "Claude CLI", mode: "TERMINAL" });
     const browserPane = store.createPane({ roomId: room.id, title: "Browser", mode });
@@ -69,15 +69,28 @@ describe("CLI browser bridge Google account selection", () => {
     expect((await command({ type: "SELECT_ACCOUNT", profileId: foreign.id })).statusCode).toBe(404);
   });
 
-  it("lets a Freelance Copilot list and choose its accounts (operator 2026-10-18), and refuses other copilots", async () => {
+  it("lets a Freelance Copilot list and choose its accounts (operator 2026-10-18)", async () => {
     const freelance = fixture(admin.id, undefined, "FREELANCE_COPILOT");
     const listed = await freelance.command({ type: "LIST_ACCOUNTS" });
     expect(listed.statusCode, listed.body).toBe(200);
     expect(listed.json().profiles).toEqual(expect.arrayContaining([expect.objectContaining({ profileId: account.id })]));
-    // Since 17444a9206 (6/11) a Marketing Copilot reads which accounts exist, but only Browser and Freelance Copilot panes choose one.
-    const marketing = fixture(admin.id, undefined, "MARKETING_COPILOT");
-    expect((await marketing.command({ type: "LIST_ACCOUNTS" })).statusCode).toBe(200);
-    expect((await marketing.command({ type: "SELECT_ACCOUNT", profileId: account.id })).statusCode).toBe(409);
+  });
+
+  it("lets a Marketing Copilot choose its account (plan clipboard:NdUqdzgGp_BR), and leaves a Job Copilot's to its account menu", async () => {
+    const { browserPane, cli, command } = fixture(admin.id, undefined, "MARKETING_COPILOT");
+    const selected = await command({ type: "SELECT_ACCOUNT", profileId: account.id });
+    expect(selected.statusCode, selected.body).toBe(200);
+    expect(selected.json()).toMatchObject({ selectedProfileId: account.id, session: { paneId: browserPane.id, status: "READY" } });
+    const agent = { holderType: "AGENT", holderId: `cli:${cli.sessionId}` };
+    expect(stop).toHaveBeenLastCalledWith(browserPane.id, expect.any(String), agent);
+    expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ pane: expect.objectContaining({ id: browserPane.id }),
+      googleAccount: { ownerUserId: admin.id, accountId: account.id }, ownerAgentId: agent.holderId }), agent);
+    expect((await command({ type: "LIST_ACCOUNTS" })).json().selectedProfileId).toBe(account.id);
+    expect((await command({ type: "SELECT_ACCOUNT", profileId: foreign.id })).statusCode).toBe(404);
+    // A Job Copilot's pane account is also its mail and calendar account: agents read it, the operator's account menu changes it.
+    const job = fixture(admin.id, undefined, "JOB_APPLY");
+    expect((await job.command({ type: "LIST_ACCOUNTS" })).statusCode).toBe(200);
+    expect((await job.command({ type: "SELECT_ACCOUNT", profileId: account.id })).statusCode).toBe(409);
   });
 
   it("keeps a pane's network route and restarts its running browser on it (operator 31/10, plan clipboard:iLvBs5eOMZjF)", async () => {

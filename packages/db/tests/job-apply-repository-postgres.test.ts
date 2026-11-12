@@ -125,6 +125,8 @@ describe.skipIf(unavailable !== null)(`job apply repository on PostgreSQL${unava
     expect(await repository.updateField(owner, first[1]!.id, { value: "cv-2026.pdf" })).toMatchObject({ value: "cv-2026.pdf" });
 
     await repository.createEvent({ ownerUserId: owner, paneId: "pane:jobs0001", applicationId: application.id, runId: null, type: "STARTED", message: "Filling Acme", payload: {}, artifactId: null });
+    // `since` compares whole milliseconds; a fast runner can insert both events in the same one (GitHub #211).
+    await new Promise((resolve) => setTimeout(resolve, 5));
     await repository.createEvent({ ownerUserId: owner, paneId: "pane:jobs0001", applicationId: application.id, runId: null, type: "FIELD_FILLED", message: "Filled 2 fields", payload: { count: 2 }, artifactId: null });
     const events = await repository.listEvents(owner, { applicationId: application.id, limit: 10 });
     expect(events.map((event) => event.type)).toEqual(["FIELD_FILLED", "STARTED"]);

@@ -79,6 +79,7 @@ import {
 import {
   createTerminalGeometryCoordinator,
   fitTerminalForInitialAttach,
+  observeTerminalHost,
   type InitialTerminalGeometry,
   type TerminalRefitOptions
 } from "./terminal-geometry-coordinator.js";
@@ -398,7 +399,6 @@ const CLIPBOARD_FAILURE_REPORT_WINDOW_MS = 20_000;
 const CLIPBOARD_FAILURE_SUPPRESS_AFTER_UPLOAD_MS = 10_000;
 const CLIPBOARD_STALL_TIMEOUT_MS = 3_500;
 const TERMINAL_PASTE_RECENT_INTENT_MS = 15_000;
-const TERMINAL_OUTPUT_REFIT_INTERVAL_MS = 500;
 const TERMINAL_SOCKET_WATCHDOG_INTERVAL_MS = 15_000;
 const TERMINAL_SOCKET_PROBE_TIMEOUT_MS = 6_000;
 const TERMINAL_INPUT_TOKENIZER_FLUSH_MS = 12;
@@ -2420,8 +2420,6 @@ export const TerminalPane = memo(function TerminalPane({
   const fullscreenPresizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const lastSentResizeRef = useRef<{ socket: WebSocket; cols: number; rows: number } | null>(null);
   const syncTerminalOutputVisibilityRef = useRef<() => void>(() => undefined);
-  const scheduledTerminalRepaintFrameRef = useRef<number | null>(null);
-  const lastTerminalOutputRefitAtRef = useRef(0);
   const claudePlanModeActionPendingRef = useRef(false);
   // Mirrors the ref so the pane menu can disable Plan while a Claude mode change is in flight.
   const [claudePlanModeActionPending, setClaudePlanModeActionPending] = useState(false);
@@ -4229,6 +4227,8 @@ export const TerminalPane = memo(function TerminalPane({
           isWritingChunkRef.current = true;
           replayTerminal.write(chunk, () => {
             isWritingChunkRef.current = false;
+            // xterm runs write callbacks after dispose(); a closed pane has no renderer to scroll (PC TypeError 'dimensions').
+            if (disposed) { done(); return; }
             offset = end;
             if (wasAtBottom && wasAtBottomRef.current) {
               replayTerminal.scrollToBottom();
@@ -4852,7 +4852,8 @@ export const TerminalPane = memo(function TerminalPane({
         convertEol: false,
         // Agent Files links mark names with xterm decorations, a proposed API (operator-approved 2026-10-21).
         allowProposedApi: true,
-        cursorBlink: true,
+        // Solid cursor everywhere (Nous 10/11, Warm-approved): the focused terminal's CSS blink alone kept the renderer at a 60 fps style recalc.
+        cursorBlink: false,
         fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
         fontSize: terminalFontSizeRef.current,
         lineHeight: 1.35,
@@ -4875,13 +4876,11 @@ export const TerminalPane = memo(function TerminalPane({
       terminal.loadAddon(agentFileLinks.addon());
       terminalRef.current = terminal;
       resizeTrace.sync();
-      lastTerminalOutputRefitAtRef.current = 0;
       const replayTerminal = terminal;
       writeParsedDisposable = replayTerminal.onWriteParsed(() => {
         terminalHost.dataset.terminalOutputParsed = "true";
         syncTerminalViewportEvidence(terminalHost, replayTerminal);
         notifyTerminalPreviewChangedThrottled(pane.id);
-        if (terminalSurfaceOpened && isVisibleRef.current) scheduleTerminalRepaint(replayTerminal);
       });
       scrollDisposable = replayTerminal.onScroll(() => {
         const activeBuffer = replayTerminal.buffer.active;
@@ -5465,7 +5464,6 @@ export const TerminalPane = memo(function TerminalPane({
                     }
                   : null
               );
-              lastTerminalOutputRefitAtRef.current = Date.now();
               if (!recoverBrokenTerminalGeometry()) scheduleTerminalRefit({ delayedPass: false });
             } else {
               clearReconnectTimer();
@@ -5691,12 +5689,11 @@ export const TerminalPane = memo(function TerminalPane({
     let lastHostResizeDebug = "";
     let lastObservedHostWidth = 0;
     let lastObservedHostHeight = 0;
-    const resizeObserver = new ResizeObserver((entries) => {
-      const entry = entries.find((entry) => entry.target === terminalHost);
+    const unobserveTerminalHost = observeTerminalHost(terminalHost, (entry) => {
       // This host has no padding/border. Use the already-computed content box
       // rather than synchronously measuring again during observer delivery.
-      const hostWidth = entry ? entry.contentRect.width : terminalHost.clientWidth || terminalHost.getBoundingClientRect().width || 0;
-      const hostHeight = entry ? entry.contentRect.height : terminalHost.clientHeight || terminalHost.getBoundingClientRect().height || 0;
+      const hostWidth = entry.contentRect.width;
+      const hostHeight = entry.contentRect.height;
       const roundedWidth = Math.round(hostWidth);
       const roundedHeight = Math.round(hostHeight);
       if (roundedWidth === lastObservedHostWidth && roundedHeight === lastObservedHostHeight) {
@@ -5723,7 +5720,6 @@ export const TerminalPane = memo(function TerminalPane({
       // GPU texture atlases or forcing PTY nudges on every frame unless broken.
       geometryCoordinator.requestRefit({ delayedPass: false, reason: "OBSERVER" });
     });
-    resizeObserver.observe(terminalHost);
 
     return () => {
       disposed = true;
@@ -5756,13 +5752,12 @@ export const TerminalPane = memo(function TerminalPane({
         syncTerminalOutputVisibilityRef.current = () => undefined;
       }
       if (socketGeneration > 0) reconnectCoordinatorRef.current.invalidateSocketGeneration(socketGeneration);
-      clearScheduledTerminalRepaint();
       geometryCoordinator.dispose();
       resizeTrace.dispose();
       if (terminalGeometryCoordinatorRef.current === geometryCoordinator) {
         terminalGeometryCoordinatorRef.current = null;
       }
-      resizeObserver.disconnect();
+      unobserveTerminalHost();
       for (const target of nativePasteTargets) {
         target.removeEventListener("paste", nativePasteListener, { capture: true });
         target.removeEventListener("keydown", nativePasteShortcutListener, { capture: true });
@@ -6424,45 +6419,6 @@ export const TerminalPane = memo(function TerminalPane({
     }
   }
 
-  function clearScheduledTerminalRepaint() {
-    if (scheduledTerminalRepaintFrameRef.current === null) return;
-    window.cancelAnimationFrame(scheduledTerminalRepaintFrameRef.current);
-    scheduledTerminalRepaintFrameRef.current = null;
-  }
-
-  function scheduleTerminalRepaint(terminal = terminalRef.current) {
-    const geometryCoordinator = terminalGeometryCoordinatorRef.current;
-    if (!terminal || !geometryCoordinator || typeof window === "undefined") return;
-    if (
-      !isVisibleRef.current ||
-      paneMinimizedRef.current ||
-      document.visibilityState === "hidden" ||
-      !xtermHostRef.current?.isConnected
-    ) {
-      geometryCoordinator.syncVisibility();
-      return;
-    }
-    if (scheduledTerminalRepaintFrameRef.current !== null) return;
-    scheduledTerminalRepaintFrameRef.current = window.requestAnimationFrame(() => {
-      scheduledTerminalRepaintFrameRef.current = null;
-      if (
-        !isVisibleRef.current ||
-        paneMinimizedRef.current ||
-        document.visibilityState === "hidden" ||
-        terminalRef.current !== terminal ||
-        terminal.rows <= 0
-      ) {
-        geometryCoordinator.syncVisibility();
-        return;
-      }
-      const now = Date.now();
-      if (now - lastTerminalOutputRefitAtRef.current >= TERMINAL_OUTPUT_REFIT_INTERVAL_MS) {
-        lastTerminalOutputRefitAtRef.current = now;
-        geometryCoordinator.repairIfBroken();
-      }
-    });
-  }
-
   function recoverBrokenTerminalGeometry(): boolean {
     return terminalGeometryCoordinatorRef.current?.repairIfBroken() ?? false;
   }
@@ -6470,8 +6426,6 @@ export const TerminalPane = memo(function TerminalPane({
   function scheduleTerminalRefit(options: TerminalRefitOptions = {}) {
     terminalGeometryCoordinatorRef.current?.requestRefit(options);
   }
-
-  useEffect(() => clearScheduledTerminalRepaint, []);
 
   useEffect(() => {
     syncTerminalOutputVisibilityRef.current();
@@ -6640,7 +6594,6 @@ export const TerminalPane = memo(function TerminalPane({
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined" || !sessionResponse?.websocket) return;
     const repairTerminalAfterBrowserResume = () => {
-      lastTerminalOutputRefitAtRef.current = 0;
       syncTerminalOutputVisibilityRef.current();
     };
     window.addEventListener("focus", repairTerminalAfterBrowserResume);

@@ -116,9 +116,9 @@ export async function runNousTurn(input: NousTurnInput, signal: AbortSignal, onE
     });
     child.stderr.on("data", (chunk: string) => { if (stderr.length < 8_192) stderr += chunk.slice(0, 8_192 - stderr.length); });
     child.on("error", (error) => finish(error));
-    child.on("close", (code) => {
+    child.on("close", (code, killedBy) => {
       try {
-        finish(null, reader.finish(code, stderr));
+        finish(null, reader.finish(code, stderr, killedBy));
       } catch (error) {
         finish(error as Error);
       }

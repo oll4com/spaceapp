@@ -25,6 +25,7 @@ import { registerStreamingAdminRoutes } from "./streaming-admin-routes.js";
 import { registerStreamingBotRoutes } from "./streaming-bot-routes.js";
 import { registerSystemAnalyticsRoutes } from "./system-analytics-routes.js";
 import { registerTelegramRoutes } from "./telegram-routes.js";
+import { registerTransferRoutes } from "./transfer-routes.js";
 
 type Deps<F extends (app: FastifyInstance, deps: never) => unknown> = Parameters<F>[1];
 type AdminPlatformRoutesDeps = Pick<Deps<typeof registerStreamingBotRoutes>, "streamingService" | "streamingBotService" | "decisionsService">
@@ -116,6 +117,7 @@ export function registerAdminPlatformRoutes(app: FastifyInstance, deps: AdminPla
 
   registerConfigurationRoutes(app, { store, config, runtimes: cliRuntimeRegistryCache, credentialHost: publicCredentialHost,
     routeOptions: defaultRouteRateLimitOptions, recordAudit: (request, input) => recordAudit(store, request, input) });
+  registerTransferRoutes(app, { store, config, routeOptions: defaultRouteRateLimitOptions });
 
   registerProviderRoutes(app, {
     store, config, visibility: cliRuntimeVisibility, routeOptions: defaultRouteRateLimitOptions,

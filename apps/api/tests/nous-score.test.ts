@@ -5,7 +5,7 @@ import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemoryNousRepository } from "@space/db";
 import { NOUS_PERSONA, NOUS_SCORE_FIRST_RULE } from "../src/nous/service.js";
-import { createNousScore, nousScore, nousScoreErrors, nousScoreLeversText, paneDaysOf, NOUS_SCORE_EVENT_DELAY_MS, NOUS_SCORE_STARTUP_MS, NOUS_SCORE_SNAPSHOT_MS, nousScoreLine, NOUS_SCORE_WEIGHTS, registerNousScoreRoutes,
+import { createNousScore, nousScore, nousScoreErrors, nousScoreLeversText, paneDaysOf, NOUS_SCORE_EVENT_DELAY_MS, NOUS_SCORE_STARTUP_MS, NOUS_SCORE_SNAPSHOT_MS, nousScoreLine, NOUS_SCORE_WEIGHTS, registerNousScoreRoutes, parseScoreReset,
   type NousScoreInput, type NousScoreReset } from "../src/nous/score.js";
 
 const owner = "user:operator";
@@ -403,18 +403,24 @@ describe("the Score service", () => {
     expect(view).toMatchObject({ score: 0, resetAt: new Date(NOW + 1_000).toISOString(), change24h: null });
     expect(view.tiles.find((tile) => tile.key === "completed")!.items).toEqual([]);
     expect(view.breakdown.some((entry) => entry.label === "Score reset")).toBe(false);
+    // Operator 11/11: every tile reads 0 at the reset, no offset tile.
+    expect(view.tiles.filter((tile) => tile.points !== 0 || tile.key === "reset")).toEqual([]);
+    expect(view.tiles.find((tile) => tile.key === "plans")!.items.at(-1)).toMatchObject({ label: `At the reset ${new Date(NOW + 1_000).toISOString().slice(0, 16).replace("T", " ")} UTC` });
     expect((await service.history(owner, "24h")).points.map((point) => point.value)).toEqual([0]);
     // Half an hour later: what was open counts from the reset (no growth yet), the error before it never, the new one does.
     clock = NOW + HOUR / 2;
     facts.push(fact(new Date(NOW + 60_000).toISOString()));
-    expect(reset).toEqual({ at: new Date(NOW + 1_000).toISOString(), offset: expect.any(Number) });
+    expect(reset).toEqual({ at: new Date(NOW + 1_000).toISOString(), offset: expect.any(Number), tiles: expect.objectContaining({ plans: expect.any(Number) }) });
+    expect(parseScoreReset(JSON.stringify(reset))).toEqual(reset);
     await service.snapshot();
     expect(service.cached(owner)!.score).toBe(NOUS_SCORE_WEIGHTS.toolFailure);
     // Eight days on, the old work leaving the window gives nothing back: only its growth since the reset and the new error count.
     clock = NOW + 8 * 24 * HOUR;
     const later = nousScore(input({ now: clock, reset, plans: [{ id: "clipboard:old", title: "Old", createdAt: at(3 * 24 * HOUR), working: false, stalled: null }] }));
     const fresh = nousScore(input({ now: clock, plans: [{ id: "clipboard:old", title: "Old", createdAt: new Date(NOW + 1_000).toISOString(), working: false, stalled: null }] }));
-    expect(later.tiles.find((tile) => tile.key === "plans")!.points).toBe(fresh.tiles.find((tile) => tile.key === "plans")!.points);
+    expect(later.tiles.find((tile) => tile.key === "plans")!.points).toBe(fresh.tiles.find((tile) => tile.key === "plans")!.points - reset!.tiles!.plans!);
+    // A reset stored before 11/11 (one offset, no tiles) keeps its offset tile.
+    expect(nousScore(input({ now: clock, reset: { at: reset!.at, offset: 7 } })).tiles.find((tile) => tile.key === "reset")!.points).toBe(-7);
   });
 
   it("warms every owner and history range seconds after boot, and again at the snapshot interval", async () => {

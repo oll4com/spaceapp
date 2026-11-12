@@ -22,7 +22,7 @@ it.skipIf(postgresUnavailable)("atomically accepts Chat submissions across Postg
   try {
     const image = "pgvector/pgvector:0.8.7-pg17-trixie";
     docker(["image", "inspect", image]);
-    docker(["run", "--detach", "--rm", "--pull=never", "--name", name, "--network", "none",
+    docker(["run", "--tmpfs", "/var/lib/postgresql/data", "--detach", "--rm", "--pull=never", "--name", name, "--network", "none",
       "--mount", `type=bind,source=${socket},target=/var/run/postgresql`, "--env", "POSTGRES_HOST_AUTH_METHOD=trust",
       image, "-c", "listen_addresses="]);
     created = true;

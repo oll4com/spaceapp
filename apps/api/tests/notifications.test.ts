@@ -88,6 +88,22 @@ describe("Space notifications", () => {
     await app.close();
   });
 
+  it("answers an unchanged poll with 304 and no body", async () => {
+    const { app, headers } = await fixture();
+    await app.inject({ method: "POST", url: "/api/notifications/test", headers });
+    const url = "/api/notifications?status=ALL&limit=100";
+    const first = await app.inject({ method: "GET", url, headers: { ...headers, "accept-encoding": "gzip" } });
+    expect(first.headers).toMatchObject({ "cache-control": "private, no-cache", etag: expect.stringMatching(/^W\/"/) });
+    const again = await app.inject({ method: "GET", url, headers: { ...headers, "accept-encoding": "gzip", "if-none-match": first.headers.etag as string } });
+    expect(again.statusCode).toBe(304);
+    expect(again.rawPayload.length).toBe(0);
+    await app.inject({ method: "POST", url: "/api/notifications/test", headers });
+    expect((await app.inject({ method: "GET", url, headers: { ...headers, "if-none-match": first.headers.etag as string } })).statusCode).toBe(200);
+    // A route nobody polls keeps no tag.
+    expect((await app.inject({ method: "GET", url: "/api/user-settings", headers })).headers.etag).toBeUndefined();
+    await app.close();
+  });
+
   it("sends a test notification and queues Telegram only for what needs the user, per the user's channels, never while notifications are suppressed", async () => {
     atBangkokMidday();
     const { app, headers, notificationsRepository } = await fixture({ telegram: true });

@@ -25,7 +25,9 @@ export default [
     ignores: [
       "**/node_modules/**", "**/dist/**", "**/dist-*/**", "**/build/**", "**/coverage/**",
       "var/**", "backups/**", "bin/**", "secrets/**", "deploy/**",
-      "apps/mobile/**", "apps/desktop/release/**", "**/*.min.js", "apps/web/public/**"
+      "apps/mobile/**", "apps/desktop/release/**", "**/*.min.js", "apps/web/public/**",
+      // the public 1.2.0 restore, kept byte for byte as the round-trip test's target
+      "scripts/tests/fixtures/spaceapp-1.2/**"
     ]
   },
   ...warnOnly([

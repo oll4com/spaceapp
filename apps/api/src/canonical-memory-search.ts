@@ -4,8 +4,16 @@ import type { ListMemoryQuery, MemoryEntry } from "@space/contracts";
 import type { CanonicalMemoryEmbeddings } from "@space/db";
 
 const allQuery: ListMemoryQuery = { page: 1, pageSize: 100, sortOrder: "desc", searchMode: "keyword" };
+// CPU report 12/11: every minute's sync hashed all ~6,500 entries again (~60 ms in one block on stable). An entry carries the
+// reader's own strings, so checking a kept hash is a pointer compare; a changed field hashes again. Sync drops removed ids.
+const hashes = new Map<string, { fields: unknown[]; hash: string }>();
 export function canonicalEmbeddingHash(entry: MemoryEntry): string {
-  return createHash("sha256").update(JSON.stringify([entry.title, entry.body, entry.provenance, entry.scope, entry.roomId])).digest("hex");
+  const fields = [entry.title, entry.body, entry.provenance, entry.scope, entry.roomId];
+  const kept = hashes.get(entry.id);
+  if (kept?.fields.every((value, n) => value === fields[n])) return kept.hash;
+  const hash = createHash("sha256").update(JSON.stringify(fields)).digest("hex");
+  hashes.set(entry.id, { fields, hash });
+  return hash;
 }
 
 // Cosine below which a hit is noise. bge-m3 puts unrelated memories near 0.43 (90% under 0.51) and a memory's own title at
@@ -46,6 +54,7 @@ export class CanonicalMemorySearch {
     try {
       // Vectors of removed, archived and superseded entries were only filtered at search (DATA-004); an empty read never prunes.
       const current = new Set(entries.map(e => e.id));
+      for (const id of hashes.keys()) if (!current.has(id)) hashes.delete(id);
       const dead = [...indexed.keys()].filter(id => !current.has(id));
       if (entries.length && dead.length) await this.options.repository.remove(dead);
       for (let start = 0; start < missing.length && Date.now() < deadline && !this.stopped; start += 16) {

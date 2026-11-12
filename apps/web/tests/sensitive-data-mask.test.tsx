@@ -122,6 +122,19 @@ describe("sensitive data mask helpers", () => {
     });
   });
 
+  it("masks an empty field whose placeholder is sensitive (Space Gateway's Alias field shows the account e-mail)", async () => {
+    const { container } = render(<SensitiveDataMask enabled={true} />);
+    const alias = document.createElement("input");
+    alias.placeholder = "someone@example.com";
+    const plain = document.createElement("input");
+    plain.placeholder = "Alias";
+    container.append(alias, plain);
+    await waitFor(() => {
+      expect(alias.dataset.sensitiveMasked).toBe("text");
+    });
+    expect(plain.hasAttribute("data-sensitive-masked")).toBe(false);
+  });
+
   it("sets and clears the root sensitive-mode attribute", async () => {
     const { rerender } = render(<SensitiveDataMask enabled={true} />);
     await waitFor(() => {
@@ -149,6 +162,8 @@ describe("sensitive data mask helpers", () => {
     expect(masks).toMatch(/filter:\s*blur\(/);
     expect(masks).toContain("user-select: none");
     expect(masks).not.toContain("!important");
+    // 12/11: the operator scans the pairing QR himself; only agents' pictures blur it (browser-sessions.ts PAIRING_MASK).
+    expect(masks).not.toContain('[data-sensitive-masked="pairing"]');
   });
 
   it("keeps a component's manual marker when masking is switched off and on again", async () => {

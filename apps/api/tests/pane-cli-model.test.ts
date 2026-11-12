@@ -19,18 +19,19 @@ afterAll(async () => { await rm(dir, { recursive: true, force: true }); });
 
 function fixture(screen: string, runtimes: Array<{ id: string; detectedCommandPath?: string }>, codexModels: unknown[] = [], socket = true) {
   const sent: string[] = [];
+  const sendInput = vi.fn(async (_id: string, data: string) => { sent.push(data); });
   const model = createPaneCliModel({
     store: { getPaneCliSession: async () => codex, getActivePaneCliSession: async () => droid } as never,
     cliTerminalManager: {
       observeRoomScreen: async () => ({ text: screen, revision: 1 }),
-      sendInput: async (_id: string, data: string) => { sent.push(data); }
+      sendInput
     } as never,
-    cliRuntimeRegistryCache: { read: async () => ({ data: runtimes }) } as never,
+    cliRuntimeRegistryCache: { readStaleWhileRefreshing: async () => ({ data: runtimes }) } as never,
     codexSessionSocketProbe: async () => socket,
     codexSocketControlFactory: () => ({ listModels: async () => codexModels }) as never,
     findCodexThreadRuntimeSettings: vi.fn()
   });
-  return { model, sent };
+  return { model, sent, sendInput };
 }
 
 describe("pane CLI model", () => {
@@ -49,6 +50,15 @@ describe("pane CLI model", () => {
     const busy = fixture("✻ Working… (esc to interrupt)", [{ id: "cli:droid", detectedCommandPath: join(dir, "droid-vscode-parity") }]);
     await expect(busy.model.applyNativePaneModel({ ...input, modelId: "claude-fable-5.1" })).rejects.toThrow("Wait for this CLI turn to finish before changing models.");
     expect([...idle.sent, ...busy.sent]).toEqual([]);
+  });
+
+  it("types the model command only once a fresh pane's composer has settled", async () => {
+    // A still-mounting Claude Code kept "/model" as early input and dropped its Enter (12/11): picker keys wait like a prompt.
+    const fresh = fixture("> ", [{ id: "cli:droid", detectedCommandPath: join(dir, "droid-vscode-parity") }]);
+    fresh.sendInput.mockRejectedValueOnce(new Error("stop"));
+    await expect(fresh.model.applyNativePaneModel({ pane, active: droid as never, modelId: "claude-fable-5.1", reasoningEffort: "high",
+      traceId: "trace:one", assertControl: async () => undefined })).rejects.toThrow("stop");
+    expect(fresh.sendInput.mock.calls[0]?.slice(1)).toEqual(["/model claude-fable-5.1", "trace:one", null, "model-picker:trace:one:0", true]);
   });
 
   it("gives live model settings only for a Codex pane whose app-server answers with a catalog", async () => {

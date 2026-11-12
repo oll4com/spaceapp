@@ -220,7 +220,7 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
       campaignId: row.id, contactId: contact.id, senderDomain: sender.domain, footerAddress: sender.footerAddress, unsubscribeUrl });
     try {
       const sent = await deps.transports!.for(owner, sender).send(raw, { from: sender.address, to: contact.address });
-      await repository.updateSend(owner, row.id, contact.id, { status: "SENT", messageId, providerId: sent.providerId, sentAt: deps.now(), attempts: send.attempts + 1, error: null }, ["SENDING"]);
+      await repository.updateSend(owner, row.id, contact.id, { status: "SENT", messageId: sent.messageId ?? messageId, providerId: sent.providerId, sentAt: deps.now(), attempts: send.attempts + 1, error: null }, ["SENDING"]);
       return "SENT";
     } catch (error) {
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 500);
@@ -530,7 +530,7 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
         const { raw, messageId } = buildCampaignMime({ from: sender.address, fromName: sender.displayName, to: seed, replyTo: sender.replyTo, ...rendered, language: template.language,
           campaignId: row.id, contactId: "mcontact:test-seed", senderDomain: sender.domain, footerAddress: sender.footerAddress, unsubscribeUrl: null, test: true });
         const sent = await deps.transports.for(owner, sender).send(raw, { from: sender.address, to: seed });
-        results.push({ seed, messageId, providerId: sent.providerId, asRecipient: first?.address ?? null });
+        results.push({ seed, messageId: sent.messageId ?? messageId, providerId: sent.providerId, asRecipient: first?.address ?? null });
       }
       if (row.status === "DRAFT") await repository.updateCampaign(owner, id, { status: "TESTING" }, ["DRAFT"]);
       await deps.event(owner, "TEST_SENT", `Test copies of "${row.name}" sent to ${targets.length} seed mailbox${targets.length === 1 ? "" : "es"}.`, { results }, id);

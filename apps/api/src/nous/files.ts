@@ -55,7 +55,8 @@ export const deniedPath = (relativePath: string) => relativePath.split(/[\\/]+/)
 const inside = (root: string, candidate: string) => candidate === root || candidate.startsWith(`${root}${sep}`);
 const code = (error: unknown) => (error as NodeJS.ErrnoException | null)?.code;
 // Daily review 2026-10-21: raw EACCES came back as the answer; files agents keep private (mode 600) are not the API's to read.
-const privateFile = (label: string, hint = "") => new Error(`${label} is private to the agent that wrote it (its file mode lets only that agent read it), so Space cannot read it: ask that pane for the part you need.${hint ? ` ${hint}` : ""}`);
+// 12/11 (operator «Internal error» on a click): the caller's 403 with this reason, never the logged 500.
+const privateFile = (label: string, hint = "") => Object.assign(new Error(`${label} is private to the agent that wrote it (its file mode lets only that agent read it), so Space cannot read it: ask that pane for the part you need.${hint ? ` ${hint}` : ""}`), { statusCode: 403 });
 
 export function createNousFiles(deps: NousFilesDeps) {
   const root = resolve(deps.root ?? NOUS_FILES_ROOT);
@@ -118,17 +119,19 @@ export function createNousFiles(deps: NousFilesDeps) {
     const near = await readableNear(shown);
     // Tool error samples 8/11 (45 of 52 failed reads, 6/11 07:00-08:00 UTC: 45 files of 3 folders made with mode 700, read one by one).
     if (!near.blocked || near.blocked === shown) return privateFile(shown, near.text);
-    return new Error(`${shown} is inside ${near.blocked}, a folder the agent that made it keeps private (mode 700): Space can read nothing in it, so every other `
-      + `file there fails the same way; do not read them one by one. Ask that pane for the part you need. ${near.text}`);
+    return Object.assign(new Error(`${shown} is inside ${near.blocked}, a folder the agent that made it keeps private (mode 700): Space can read nothing in it, so every other `
+      + `file there fails the same way; do not read them one by one. Ask that pane for the part you need. ${near.text}`), { statusCode: 403 });
   }
 
   /** Queue item 45c: the nearest folder Space can read above a private path, and up to 5 readable names beside it. */
   async function readableNear(shown: string): Promise<{ blocked: string; text: string }> {
     const parts = shown.split(/[\\/]+/).filter(Boolean);
     const realRoot = await realpath(root);
+    const realOwn = await ownReal();
     for (let depth = parts.length - 1; depth >= 0; depth -= 1) {
       const real = await realpath(join(root, ...parts.slice(0, depth))).catch(() => null);
-      if (!real || !inside(realRoot, real)) continue;
+      // R84 12/11 (8 failed reads of nous/mail, nous/programs, ...): the own folder's levels count, or the whole "nous" was named private.
+      if (!real || (!inside(realRoot, real) && !(realOwn && inside(realOwn, real)))) continue;
       const names = await readdir(real).catch(() => null);
       if (!names) continue;
       const readable: string[] = [];
@@ -361,10 +364,12 @@ export function createNousFiles(deps: NousFilesDeps) {
      * and that copy is published, so the pane's file is never the one served. `copiedFrom` names the original for the audit.
      */
     async publishable(path: string, at = new Date()): Promise<{ sourceRoot: string; sourcePath: string; shown: string; copiedFrom: string | null }> {
-      try {
-        const { absolute, shown } = ownPath(path);
-        if (await stat(absolute).then(() => true, () => false)) return { sourceRoot: deps.ownRoot!, sourcePath: absolute, shown, copiedFrom: null };
-      } catch { /* not the own folder: a workspace file below */ }
+      const own = (() => { try { return ownPath(path); } catch { return null; } })(); // null: not the own folder, a workspace file below
+      if (own && await stat(own.absolute).then(() => true, () => false)) {
+        // 12/11: a 600 file of the own folder passed stat and failed the filing's read with a 500.
+        await access(own.absolute, constants.R_OK).catch((error: unknown) => { throw code(error) === "EACCES" ? privateFile(own.shown) : error; });
+        return { sourceRoot: deps.ownRoot!, sourcePath: own.absolute, shown: own.shown, copiedFrom: null };
+      }
       if (!deps.ownRoot) throw new Error("Your own folder is not available here.");
       const { absolute, shown } = await workspacePath(path);
       const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => { throw code(error) === "EACCES" ? privateFile(shown) : error; });

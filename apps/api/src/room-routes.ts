@@ -16,6 +16,7 @@ import { nowIso, SpaceConflictError, type SpaceStore } from "@space/runtime";
 import type { ActivityLogService } from "./activity-log.js";
 import type { DashboardActivityDetail, DashboardStatus } from "./agents-dashboard.js";
 import { operatorBrowserActor } from "./browser-actors.js";
+import { isBrowserHostUnavailable } from "./browser-host-errors.js";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
 import {
   cleanupCliRenderAiRepository, cliRenderAiDescription, type createCliRenderAiController
@@ -191,7 +192,13 @@ export async function deleteRoomWithTeardown(deps: RoomDeleteDeps, roomId: strin
   // The Unix host resolves stopPane against the stored active session. Stop
   // browsers before cascading room deletion removes that identity; otherwise
   // their Chrome processes keep consuming capacity until the host restarts.
-  await Promise.all(browserSessions.map((session) => browserSessionManager.stopPane(session.paneId, ctx.traceId, ctx.actor)));
+  // A Browser Host that is down cannot stop them; the room still goes (operator 10/11 23:46 BKK) and the host's restart ends their Chrome.
+  let browserStopSkippedHostDown = 0;
+  await Promise.all(browserSessions.map((session) => browserSessionManager.stopPane(session.paneId, ctx.traceId, ctx.actor).catch((error: unknown) => {
+    if (!isBrowserHostUnavailable(error)) throw error;
+    browserStopSkippedHostDown += 1;
+    ctx.log.warn({ err: error, roomId, paneId: session.paneId }, "browser session stop skipped during room delete: the Browser Host is unavailable");
+  })));
   const room = await store.deleteRoom(roomId);
   if(room.description===cliRenderAiDescription)cliRenderAi.dispose(room.id);
   if (room.kind === "AGENT_PROOF") {
@@ -207,7 +214,8 @@ export async function deleteRoomWithTeardown(deps: RoomDeleteDeps, roomId: strin
       name: room.name,
       paneCap: room.paneCap,
       interruptedCliSessions: cliSessions.length,
-      closedBrowserSessions: browserSessions.length,
+      closedBrowserSessions: browserSessions.length - browserStopSkippedHostDown,
+      browserStopSkippedHostDown,
       deferredTeardown: cliSessions.length,
       ...(ctx.reason ? { reason: ctx.reason } : {})
     }

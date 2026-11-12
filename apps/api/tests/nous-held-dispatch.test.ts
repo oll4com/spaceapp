@@ -80,6 +80,17 @@ describe("Nous's held dispatch", () => {
     expect(f.notices.at(-1)).toMatchObject({ key: expect.stringMatching(/^held-failed:/), line: expect.stringContaining("has not confirmed the model change") });
   });
 
+  it("R84 12/11: keeps a configure while its CLI has no session, then runs it once (13 configures in 7 d failed after the 30 s wait)", async () => {
+    const f = fixture("CALM");
+    const configure = { kind: "configure", accountProfileId: "space-gateway", when: "AFTER_TURN" };
+    await f.held.hold(owner, andy, "Configure", "light", undefined, configure);
+    f.deliver.mockResolvedValueOnce({ ok: false, result: '{"results":[{"status":"FAILED","detail":"Pane has no active session."}]}' });
+    expect(await f.held.tick()).toEqual({ delivered: 0, failed: 0 });
+    expect(await f.held.tick()).toEqual({ delivered: 1, failed: 0 });
+    expect(f.sent.at(-1)).toMatchObject({ paneId: "pane:andy0001", configure });
+    expect(await f.held.summary(owner)).toBeNull();
+  });
+
   it("drops nothing silently: after three failed tries the text goes back to Nous's inbox", async () => {
     const f = fixture("CALM");
     f.deliver.mockImplementation(async () => ({ ok: false, result: "The pane is closed." }));

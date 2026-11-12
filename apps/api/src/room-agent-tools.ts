@@ -112,7 +112,7 @@ const schemas = {
   }),
   confirm_action: z.object({ token: z.string().trim().min(1).max(80) }),
   space_room_release: releaseTrainInputSchema.extend({
-    pane: paneRef.optional().describe("The captain for open; the pane that joins or leaves for join and leave.")
+    pane: paneRef.optional().describe("The captain for open and captain; the pane that joins or leaves for join and leave.")
   })
 } as const;
 
@@ -135,7 +135,7 @@ const descriptions: Record<RoomAgentToolName, string> = {
   confirm_action: "Run an action the operator has just confirmed, with the token its tool returned. Only after the operator's explicit yes.",
   space_room_release: "The joint release of a product (default run-spaceapp): one live release every pane joins instead of cutting its own version. "
     + "status lists the trains and where each joined commit already is (dev, main, candidate); open (version, pane = captain); join or leave (pane, commit, note); "
-    + "candidate (sourceSha the captain builds from); publishing (no more joins); published; cancel. You never publish, push, promote or bump versions yourself."
+    + "candidate (sourceSha the captain builds from); publishing (no more joins); published; cancel; captain (pane = the new captain of a live train, e.g. when the captain pane closed). You never publish, push, promote or bump versions yourself."
 };
 
 export const roomAgentToolNames = Object.keys(schemas) as RoomAgentToolName[];
@@ -168,7 +168,22 @@ function names(panes: Pane[]): string {
 }
 
 function errorText(error: unknown): string {
-  return error instanceof Error ? error.message.slice(0, 1_000) : "The action failed.";
+  return error instanceof Error ? `${error.message.slice(0, 1_000)}${errorCause(error.message)}` : "The action failed.";
+}
+
+/** 12/11 (8 min after a boot every Nous pane tool failed with a bare pool timeout): a tool error's cause, and when to retry it. */
+export function errorCause(message: string): string {
+  if (/timeout exceeded when trying to connect|Connection terminated|ECONNREFUSED|database system is (?:starting up|shutting down|in recovery)|too many clients|statement timeout|\b(?:57P0[13]|53300)\b/i.test(message)) {
+    return " (Cause: database unavailable: PostgreSQL is not answering or the connection pool is full, as just after a boot. Space reconnects by itself: retry in 1 minute; "
+      + "read the pane first if this was a send.)";
+  }
+  if (/ROOM_LOCK_TIMEOUT|Lock acquisition timed out|timed out holding lock/i.test(message)) {
+    return " (Cause: room lock held: another operation in this room had not finished. Retry in 1 minute; read the pane first, that operation may have done it.)";
+  }
+  if (/Pane controller is unavailable|Space control is unavailable|has no active CLI session|not ready/i.test(message)) {
+    return " (Cause: runtime not ready: the pane's CLI is starting, stopped or not attached yet. Retry in 30 seconds, once space_read_pane shows its prompt; reopen it if it is closed.)";
+  }
+  return "";
 }
 
 /** Running label of a tool call, before it has a result. */
@@ -397,7 +412,11 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
       for (const entry of args.panes) counts[entry.type] = (counts[entry.type] ?? 0) + entry.count;
       const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
       if (total > 16) return fail("Too many panes", "Open at most 16 panes at once.");
-      const opened = await deps.openPanes({ roomId: ctx.roomId, actorId: ctx.actorId!, requestId: ctx.requestId, traceId: ctx.traceId, counts });
+      const names = await deps.openPanes({ roomId: ctx.roomId, actorId: ctx.actorId!, requestId: ctx.requestId, traceId: ctx.traceId, counts });
+      // 12/11 Cleo: a closed pane's name went to the next pane opened 0.8 s later, so a caller holding only the name reached that pane.
+      // Names are unique among a room's open panes (panes_room_id_pane_name_open_idx), so each one names one pane id.
+      const open = await deps.listPanes(ctx.roomId).catch(() => [] as Pane[]);
+      const opened = names.map((name) => { const pane = open.find((entry) => !entry.isClosed && (entry.paneName ?? entry.title) === name); return pane ? `${name} (${pane.id})` : name; });
       return { ok: true, display: `Opened ${countsLabel(args.panes)}`,
         result: `Opened ${opened.length} pane${opened.length === 1 ? "" : "s"}${opened.length ? `: ${opened.join(", ")}` : ""}. They connect in a few seconds.` };
     },

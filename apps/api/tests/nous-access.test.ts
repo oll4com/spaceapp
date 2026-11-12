@@ -117,9 +117,51 @@ describe("Nous files (space_files_list, space_files_read)", () => {
     expect(out.result).not.toContain("outside.txt");
   });
 
+  it("names the private subfolder of the own folder, not the whole own folder (R84 12/11: 10 reads said 'inside nous')", async () => {
+    const ownBase = mkdtempSync(join(tmpdir(), "nous-own-"));
+    const ownRoot = join(ownBase, "nous-workspace");
+    const workspace = join(ownBase, "agent-workspace");
+    mkdirSync(join(ownRoot, "mail"), { recursive: true });
+    mkdirSync(join(ownRoot, "programs"), { recursive: true });
+    mkdirSync(workspace);
+    symlinkSync(ownRoot, join(workspace, "nous"));
+    writeFileSync(join(ownRoot, "mail", "reply.md"), "x");
+    chmodSync(join(ownRoot, "mail"), 0o000);
+    const own = createNousTools({ rooms: async () => [room], listPanes: async () => [],
+      files: createNousFiles({ root: workspace, artifactRoot, ownRoot, rooms: async () => [room], listArtifacts: async () => [], getArtifact: async () => artifacts[0]! }) } as unknown as NousToolDeps);
+    try {
+      const read = await own.execute("space_files_read", { path: `${workspace}/nous/mail/reply.md` }, ctx);
+      expect(read).toMatchObject({ ok: false, refused: true });
+      expect(read.result).toContain("nous/mail/reply.md is inside nous/mail, a folder the agent that made it keeps private (mode 700)");
+      expect(read.result).toMatch(/Nearest readable folder: nous; readable there: programs\./);
+      expect(read.result).toContain(`chmod -R g+rX ${workspace}/nous/mail`);
+    } finally {
+      chmodSync(join(ownRoot, "mail"), 0o755);
+      rmSync(ownBase, { recursive: true, force: true });
+    }
+  });
+
   it("answers a missing workspace path as not found, never a 500 (API audit 5/11: clicked paths in Nous texts logged errors)", async () => {
     const withOwn = createNousFiles({ root, artifactRoot, ownRoot: join(base, "own"), rooms: async () => [room], listArtifacts: async () => [], getArtifact: async () => artifacts[0]! });
     await expect(withOwn.publishable("active/nothing-here.md")).rejects.toBeInstanceOf(SpaceNotFoundError);
+  });
+
+  it("answers a private file or folder as the caller's 403 with its reason, never a 500 (12/11: a clicked Nous file showed Internal error)", async () => {
+    const own = join(base, "own-private");
+    mkdirSync(join(own, "drafts"), { recursive: true });
+    writeFileSync(join(own, "drafts", "reply.md"), "draft");
+    chmodSync(join(own, "drafts", "reply.md"), 0o000);
+    mkdirSync(join(root, "active", "sealed"), { recursive: true });
+    writeFileSync(join(root, "active", "sealed", "x.md"), "x");
+    chmodSync(join(root, "active", "sealed"), 0o000);
+    const files = createNousFiles({ root, artifactRoot, ownRoot: own, rooms: async () => [room], listArtifacts: async () => [], getArtifact: async () => artifacts[0]! });
+    try {
+      await expect(files.publishable("nous/drafts/reply.md")).rejects.toMatchObject({ statusCode: 403, message: expect.stringContaining("nous/drafts/reply.md is private to the agent that wrote it") });
+      await expect(files.publishable("active/sealed/x.md")).rejects.toMatchObject({ statusCode: 403, message: expect.stringContaining("a folder the agent that made it keeps private (mode 700)") });
+    } finally {
+      chmodSync(join(root, "active", "sealed"), 0o755);
+      chmodSync(join(own, "drafts", "reply.md"), 0o644);
+    }
   });
 
   it("finds names by their words instead of guessing paths (stable 2026-10-22: 43 guessed paths failed in 24 h)", async () => {

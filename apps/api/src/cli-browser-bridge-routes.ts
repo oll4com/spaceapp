@@ -674,11 +674,13 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       const owner = ownerUserId ? await store.getControlActor(ownerUserId) : null;
       if (owner?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires a room owned by an ADMIN.");
       // Freelance Copilot (operator 2026-10-18): the copilot saves each platform's bookmark with the account its sign-in lives in.
-      // Reading which account a pane and its tabs use is open to every pane with Google accounts (Job and Marketing Copilot too).
+      // Marketing Copilot (Nous 12/11, plan clipboard:NdUqdzgGp_BR): it posts from the account its channels are signed in to.
+      // Reading which account a pane and its tabs use is open to every pane with Google accounts (Job Copilot too); a Job Copilot's
+      // pane account is also the copilot's mail and calendar account (pane-browser-routes.ts), so only its account menu changes it.
       const listable = ["BROWSER", "FREELANCE_COPILOT", "JOB_APPLY", "MARKETING_COPILOT"].includes(pane.mode);
-      if (input.command.type === "LIST_ACCOUNTS" ? !listable : pane.mode !== "BROWSER" && pane.mode !== "FREELANCE_COPILOT") {
+      if (input.command.type === "LIST_ACCOUNTS" ? !listable : !listable || pane.mode === "JOB_APPLY") {
         throw new SpaceConflictError(input.command.type === "LIST_ACCOUNTS" ? "Google accounts are listed for Browser and copilot panes."
-          : "Google account selection requires a Browser or Freelance Copilot pane.");
+          : "Google account selection requires a Browser, Freelance Copilot or Marketing Copilot pane (a Job Copilot's account is chosen in its account menu).");
       }
       const accounts = paneBrowserAccounts.current;
       if (!accounts) throw new SpaceFeatureDisabledError("BROWSER_ACCOUNTS_UNAVAILABLE", "Google account selection is unavailable on this runtime.");

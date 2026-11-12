@@ -1461,12 +1461,14 @@ describe("Space API CLI runtimes", () => {
     expect(frames.map((message) => (message.type === "output" ? message.data : "")).join("")).toBe(output);
   });
 
-  it("coalesces CLI host output for 20 ms or 32 KiB before persistence", async () => {
+  it("coalesces CLI host output for 20 ms or 32 KiB before persistence and writes the task preview at most every 2 s", async () => {
     vi.useFakeTimers();
     try {
-      const appendPaneCliHostOutputChunk = vi.fn(async () => ({ sequence: appendPaneCliHostOutputChunk.mock.calls.length }));
+      type HostOutput = { outputSequence: number; content: string };
+      const appendPaneCliHostOutputChunks = vi.fn<(inputs: HostOutput[], preview: HostOutput | null, traceId: string) => Promise<number>>(async () =>
+        appendPaneCliHostOutputChunks.mock.calls.length);
       const manager = new CliTerminalManager({
-        store: { appendPaneCliHostOutputChunk } as never,
+        store: { appendPaneCliHostOutputChunks } as never,
         config: {} as never,
         discoverRuntimes: async () => agentRuntimeRegistrySchema.parse({ data: [] })
       });
@@ -1498,28 +1500,22 @@ describe("Space API CLI runtimes", () => {
           stream: "stdout" | "stderr";
           data: string;
         }): void;
+        flushHostOutput(session: unknown): Promise<void>;
       };
       const generationId = "77b236da-622e-4f0a-9f36-66850c94b553";
 
       internals.handleHostEvent(managed, { type: "output", generationId, sequence: 0, stream: "stdout", data: "first-" });
       internals.handleHostEvent(managed, { type: "output", generationId, sequence: 1, stream: "stdout", data: "second" });
       await vi.advanceTimersByTimeAsync(19);
-      expect(appendPaneCliHostOutputChunk).not.toHaveBeenCalled();
+      expect(appendPaneCliHostOutputChunks).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       await managed.persistQueue;
 
-      expect(appendPaneCliHostOutputChunk).toHaveBeenCalledTimes(1);
-      expect(appendPaneCliHostOutputChunk).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          generationId,
-          outputSequence: 1,
-          stream: "stdout",
-          content: "first-second"
-        }),
-        "req:cli-host-output"
-      );
+      expect(appendPaneCliHostOutputChunks).toHaveBeenCalledTimes(1);
+      const firstBatch = expect.objectContaining({ generationId, outputSequence: 1, stream: "stdout", content: "first-second" });
+      // A session's first preview is due at once.
+      expect(appendPaneCliHostOutputChunks).toHaveBeenLastCalledWith([firstBatch], firstBatch, "req:cli-host-output");
 
-      appendPaneCliHostOutputChunk.mockClear();
       for (let sequence = 2; sequence < 6; sequence += 1) {
         internals.handleHostEvent(managed, {
           type: "output",
@@ -1531,12 +1527,46 @@ describe("Space API CLI runtimes", () => {
       }
       await managed.persistQueue;
 
-      expect(appendPaneCliHostOutputChunk).toHaveBeenCalledTimes(1);
-      expect(appendPaneCliHostOutputChunk.mock.calls[0]?.[0]).toMatchObject({
+      expect(appendPaneCliHostOutputChunks).toHaveBeenCalledTimes(2);
+      expect(appendPaneCliHostOutputChunks.mock.calls[1]?.[0]).toMatchObject([{
         outputSequence: 5,
         stream: "stdout",
         content: "x".repeat(32 * 1024)
-      });
+      }]);
+
+      // Blank output never becomes the preview; the owed one lands 2 s after the last, then a closing session's at once.
+      internals.handleHostEvent(managed, { type: "output", generationId, sequence: 6, stream: "stdout", data: " \r\n" });
+      await vi.advanceTimersByTimeAsync(20);
+      await managed.persistQueue;
+      await vi.advanceTimersByTimeAsync(2_000);
+      await managed.persistQueue;
+      internals.handleHostEvent(managed, { type: "output", generationId, sequence: 7, stream: "stdout", data: "last" });
+      managed.closed = true;
+      await internals.flushHostOutput(managed);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(appendPaneCliHostOutputChunks.mock.calls.map(([inputs, preview, traceId]) => [
+        inputs.map((input) => input.outputSequence), preview?.outputSequence ?? null, traceId
+      ])).toEqual([
+        [[1], 1, "req:cli-host-output"],
+        [[5], null, "req:cli-host-output"],
+        [[6], null, "req:cli-host-output"],
+        [[], 5, "req:cli-host-output"],
+        [[7], 7, "req:cli-host-output"]
+      ]);
+
+      // A session replaced by a newer attachment before its owed preview is due leaves the preview to the newer one.
+      const replaced = {
+        ...managed, closed: false, persistQueue: Promise.resolve(), hostOutputQueue: [], pendingHostOutput: null, hostOutputFlushTimer: null,
+        owedTaskPreview: null, taskPreviewAtMs: Date.now(), taskPreviewTimer: null, waitingHostOutputWrite: null
+      };
+      internals.handleHostEvent(replaced, { type: "output", generationId, sequence: 8, stream: "stdout", data: "older" });
+      await vi.advanceTimersByTimeAsync(20);
+      await replaced.persistQueue;
+      (manager as unknown as { sessions: Map<string, unknown> }).sessions.set(replaced.sessionId, { ...replaced });
+      await vi.advanceTimersByTimeAsync(2_000);
+      await replaced.persistQueue;
+      expect(appendPaneCliHostOutputChunks).toHaveBeenCalledTimes(6);
+      expect(appendPaneCliHostOutputChunks).toHaveBeenLastCalledWith([expect.objectContaining({ outputSequence: 8 })], null, "req:cli-host-output");
     } finally {
       vi.useRealTimers();
     }
@@ -1787,17 +1817,13 @@ describe("Space API CLI runtimes", () => {
 
   it("flushes pending CLI host output before replaying a reconnect transcript", async () => {
     const transcript = [{ stream: "stdout" as const, content: "persisted-before-reconnect\n" }];
-    const appendPaneCliHostOutputChunk = vi.fn(async (input: {
-      stream: "stdout" | "stderr";
-      content: string;
-    }) => {
-      const chunk = { ...input, sequence: transcript.length };
-      transcript.push({ stream: chunk.stream, content: chunk.content });
-      return chunk;
+    const appendPaneCliHostOutputChunks = vi.fn(async (inputs: Array<{ stream: "stdout" | "stderr"; content: string }>) => {
+      for (const input of inputs) transcript.push({ stream: input.stream as "stdout", content: input.content });
+      return transcript.length - 1;
     });
     const listPaneCliTranscriptChunks = vi.fn(async () => [...transcript]);
     const manager = new CliTerminalManager({
-      store: { appendPaneCliHostOutputChunk, listPaneCliTranscriptChunks } as never,
+      store: { appendPaneCliHostOutputChunks, listPaneCliTranscriptChunks } as never,
       config: {} as never,
       discoverRuntimes: async () => agentRuntimeRegistrySchema.parse({ data: [] })
     });
@@ -1830,7 +1856,7 @@ describe("Space API CLI runtimes", () => {
 
     await internals.replayTranscript(managed, socket);
 
-    expect(appendPaneCliHostOutputChunk).toHaveBeenCalledTimes(1);
+    expect(appendPaneCliHostOutputChunks).toHaveBeenCalledTimes(1);
     expect(listPaneCliTranscriptChunks).toHaveBeenCalledTimes(1);
     expect(
       sent
@@ -1850,21 +1876,17 @@ describe("Space API CLI runtimes", () => {
       markFirstAppendStarted = resolve;
     });
     const transcript = [{ stream: "stdout" as const, content: "persisted-before-reconnect\n" }];
-    const appendPaneCliHostOutputChunk = vi.fn(async (input: {
-      stream: "stdout" | "stderr";
-      content: string;
-    }) => {
-      if (appendPaneCliHostOutputChunk.mock.calls.length === 1) {
+    const appendPaneCliHostOutputChunks = vi.fn(async (inputs: Array<{ stream: "stdout" | "stderr"; content: string }>) => {
+      if (appendPaneCliHostOutputChunks.mock.calls.length === 1) {
         markFirstAppendStarted();
         await firstAppendGate;
       }
-      const chunk = { ...input, sequence: transcript.length };
-      transcript.push({ stream: chunk.stream as "stdout", content: chunk.content });
-      return chunk;
+      for (const input of inputs) transcript.push({ stream: input.stream as "stdout", content: input.content });
+      return transcript.length - 1;
     });
     const manager = new CliTerminalManager({
       store: {
-        appendPaneCliHostOutputChunk,
+        appendPaneCliHostOutputChunks,
         listPaneCliTranscriptChunks: vi.fn(async () => [...transcript])
       } as never,
       config: {} as never,
@@ -1938,14 +1960,14 @@ describe("Space API CLI runtimes", () => {
   });
 
   it("does not replay a reconnect transcript after the initial output flush fails", async () => {
-    const appendPaneCliHostOutputChunk = vi.fn(async () => {
+    const appendPaneCliHostOutputChunks = vi.fn(async () => {
       throw new Error("CLI transcript persistence is unavailable.");
     });
     const listPaneCliTranscriptChunks = vi.fn(async () => [
       { stream: "stdout" as const, content: "must-not-replay\n" }
     ]);
     const manager = new CliTerminalManager({
-      store: { appendPaneCliHostOutputChunk, listPaneCliTranscriptChunks } as never,
+      store: { appendPaneCliHostOutputChunks, listPaneCliTranscriptChunks } as never,
       config: {} as never,
       discoverRuntimes: async () => agentRuntimeRegistrySchema.parse({ data: [] })
     });
@@ -2034,15 +2056,15 @@ describe("Space API CLI runtimes", () => {
 
   it("retries a failed host-output batch before persisting later host sequences", async () => {
     const persisted: string[] = [];
-    const appendPaneCliHostOutputChunk = vi.fn(async (input: { content: string }) => {
-      if (appendPaneCliHostOutputChunk.mock.calls.length === 1) {
+    const appendPaneCliHostOutputChunks = vi.fn(async (inputs: Array<{ content: string }>) => {
+      if (appendPaneCliHostOutputChunks.mock.calls.length === 1) {
         throw new Error("CLI transcript persistence is temporarily unavailable.");
       }
-      persisted.push(input.content);
-      return { sequence: persisted.length - 1 };
+      persisted.push(...inputs.map((input) => input.content));
+      return persisted.length - 1;
     });
     const manager = new CliTerminalManager({
-      store: { appendPaneCliHostOutputChunk } as never,
+      store: { appendPaneCliHostOutputChunks } as never,
       config: {} as never,
       discoverRuntimes: async () => agentRuntimeRegistrySchema.parse({ data: [] })
     });
@@ -2079,12 +2101,12 @@ describe("Space API CLI runtimes", () => {
 
     await internals.flushHostOutput(managed);
 
-    expect(appendPaneCliHostOutputChunk.mock.calls.map(([input]) => input.content)).toEqual([
-      "first-batch\n",
-      "first-batch\n",
-      "second-batch\n"
+    expect(appendPaneCliHostOutputChunks.mock.calls.map(([inputs]) => inputs.map((input) => input.content))).toEqual([
+      ["first-batch\n"],
+      ["first-batch\n", "second-batch\n"]
     ]);
     expect(persisted).toEqual(["first-batch\n", "second-batch\n"]);
+    expect(managed.nextTranscriptSequence).toBe(2);
   });
 
   it("allocates interrupt and host-exit transcript sequences through one managed queue", async () => {
@@ -3140,6 +3162,15 @@ describe("Space API CLI runtimes", () => {
       }
       expect(buildCliEnvironment(getApiConfig({ SPACE_CLI_COMMAND_PATH: "/opt/spaceapp/bin" }),
         { runtimeId: "cli:gemini", modelId: "claude:fable", reasoningEffort: "high" }).SPACE_CLAUDE_MODEL).toBeUndefined();
+      // 12/11: a Claude pane in /opt/spaceapp got no session AGENTS.md, so it never read the bootstrap's space-capability browser route.
+      const bootstrapConfig = getApiConfig({ SPACE_CLI_COMMAND_PATH: "/opt/spaceapp/bin" });
+      const bootstrap = (cwd: string, runtimeId = "cli:claude", purpose: "LOGIN" | null = null) => buildCliEnvironment(bootstrapConfig,
+        { runtimeId, cwd, purpose, roomId: "room:r1", paneId: "pane:p1", cliSessionId: "cli_session:s1" }).SPACE_AGENT_BOOTSTRAP;
+      expect(bootstrap("/opt/spaceapp")).toContain("space-capability info space_browser lists its tools");
+      expect(bootstrap("/opt/spaceapp")).toContain("- Space CLI session id: cli_session:s1.");
+      expect(bootstrap(join(bootstrapConfig.cliWorkspaceRoot, "room_r1", "pane_p1", "cli_session_s1"))).toBeUndefined();
+      expect(bootstrap("/opt/spaceapp", "cli:codex")).toBeUndefined();
+      expect(bootstrap("/opt/spaceapp", "cli:claude", "LOGIN")).toBeUndefined();
       const opencodeEnvironment = buildCliEnvironment(
         getApiConfig({
           SPACE_CLI_COMMAND_PATH: "/opt/spaceapp/bin",
@@ -3906,7 +3937,8 @@ describe("Space API CLI runtimes", () => {
   it("does not probe Gemini credential markers before enabling the native CLI", async () => {
     const commandDir = await mkdtemp(join(tmpdir(), "space-gemini-credential-status-"));
     const commandPath = join(commandDir, "gemini-vscode-parity");
-    await writeFile(commandPath, "#!/bin/sh\n[ \"$#\" -eq 0 ] || exit 64\n", "utf8");
+    // --version only checks the CLI is installed; any credential action is refused.
+    await writeFile(commandPath, "#!/bin/sh\n[ \"$#\" -eq 0 ] || [ \"$*\" = \"--version\" ] || exit 64\n", "utf8");
     await chmod(commandPath, 0o755);
 
     const readyRegistry = await discoverAgentRuntimes(await enabledCliConfig(commandDir));
@@ -3916,6 +3948,36 @@ describe("Space API CLI runtimes", () => {
       canStartLogin: false
     });
 
+  });
+
+  it("shows a CLI without Space-managed credentials as unavailable only when its wrapper reports the CLI missing (public-host F1)", async () => {
+    const commandDir = await mkdtemp(join(tmpdir(), "space-none-auth-installed-"));
+    const wrappers: Array<[string, string]> = [
+      // The wrapper's own refusal when qodercli is not installed.
+      ["qoder-vscode-parity", "echo 'Qoder CLI is unavailable. Install qodercli from qoder.com.' >&2; exit 64"],
+      // The dev API has no sudo: the probe cannot run, so the runtime stays as it was.
+      ["gemini-vscode-parity", "echo 'sudo: The \"no new privileges\" flag is set' >&2; exit 1"],
+      ["droid-vscode-parity", "echo 'droid 0.40.0'"]
+    ];
+    for (const [name, body] of wrappers) {
+      await writeFile(join(commandDir, name), `#!/bin/sh\n[ "$*" = "--version" ] || exit 0\n${body}\n`, "utf8");
+      await chmod(join(commandDir, name), 0o755);
+    }
+
+    const registry = await discoverAgentRuntimes(await enabledCliConfig(commandDir));
+    expect(registry.data.find((runtime) => runtime.id === "cli:qoder")).toMatchObject({
+      adapterStatus: "ENABLED",
+      authMode: "NONE",
+      authState: "UNAVAILABLE",
+      canStartLogin: false,
+      status: "NOT_CONNECTED",
+      statusReason: "Qoder CLI is unavailable on this host."
+    });
+    expect(registry.data.find((runtime) => runtime.id === "cli:gemini")).toMatchObject({ authState: "READY", status: "ENABLED" });
+    expect(registry.data.find((runtime) => runtime.id === "cli:droid")).toMatchObject({ authState: "READY", status: "ENABLED" });
+    // The public distribution runs its CLIs in the CLI container: the API never runs the wrapper there.
+    const publicRegistry = await discoverAgentRuntimes({ ...await enabledCliConfig(commandDir), publicDistribution: true });
+    expect(publicRegistry.data.find((runtime) => runtime.id === "cli:qoder")).toMatchObject({ authState: "READY", status: "ENABLED" });
   });
 
   it("reports Qwen as setup-required and opens its fixed provider setup without credentials", async () => {
@@ -7232,8 +7294,8 @@ describe("Space API CLI runtimes", () => {
       "trace:cli-replay-gap"
     );
     const generationId = "00000000-0000-4000-8000-000000000001";
-    store.appendPaneCliHostOutputChunk(
-      {
+    store.appendPaneCliHostOutputChunks(
+      [{
         sessionId: session.sessionId,
         paneId: pane.id,
         roomId: room.id,
@@ -7241,7 +7303,8 @@ describe("Space API CLI runtimes", () => {
         outputSequence: 4,
         stream: "stdout",
         content: "persisted-before-gap\n"
-      },
+      }],
+      null,
       "trace:cli-replay-gap"
     );
     const hostSession = {

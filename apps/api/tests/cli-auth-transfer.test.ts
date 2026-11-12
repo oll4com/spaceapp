@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRuntime } from "@space/contracts";
 import { createCliAuthTransfer, createPublicCredentialHost, type CredentialHost } from "../src/cli-auth-transfer.js";
-import { observeCliRuntimeCredential } from "../src/cli-runtimes.js";
+import { createCliCredentialStatusCache, observeCliRuntimeCredential } from "../src/cli-runtimes.js";
 
 const login = JSON.stringify({ tokens: { refresh_token: "synthetic-refresh-token" } });
 const b64 = (text: string) => Buffer.from(text).toString("base64");
@@ -159,6 +159,34 @@ describe("CLI login transfer", () => {
       expect(asked).toBe(3);
     } finally {
       agent.close();
+    }
+  });
+
+  it("reads a badge again at once when the CLI container's agent starts again, not after the 10-minute missing cache", async () => {
+    // c14 lab 10/11: `spaceapp credentials set` recreates the CLI container and the API showed the CLI signed in 559-606 s later.
+    const root = await mkdtemp("/tmp/space-public-restart-");
+    const socketPath = join(root, "credentials.sock");
+    const startAgent = async (answer: { exitCode: number; stdout: string }) => {
+      const agent = createServer((socket) => {
+        socket.setEncoding("utf8").on("data", () => undefined).on("end", () => socket.end(JSON.stringify(answer)));
+      });
+      await new Promise<void>((resolve) => agent.listen(socketPath, resolve));
+      return agent;
+    };
+    const host = createPublicCredentialHost({ publicDistribution: true, cliEnabled: true, cliHostSocketPath: join(root, "host.sock") })!;
+    const probe = vi.fn(host.status);
+    const cache = createCliCredentialStatusCache({ probe, now: () => 0, generation: host.generation });
+    const signedOut = await startAgent({ exitCode: 1, stdout: "MISSING\n" });
+    expect(await cache.read("/usr/local/bin/codex-vscode-parity")).toBeNull();
+    expect(await cache.read("/usr/local/bin/codex-vscode-parity")).toBeNull();
+    expect(probe).toHaveBeenCalledOnce();
+    await new Promise<void>((resolve) => signedOut.close(() => resolve()));
+    const signedIn = await startAgent({ exitCode: 0, stdout: "READY\n" });
+    try {
+      expect(await cache.read("/usr/local/bin/codex-vscode-parity")).toBe("READY");
+      expect(probe).toHaveBeenCalledTimes(2);
+    } finally {
+      signedIn.close();
     }
   });
 });

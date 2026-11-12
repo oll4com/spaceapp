@@ -6,12 +6,12 @@ import {
 import { api } from "../../api.js";
 import type { GoogleAccountSummary, VaultItemStats, VaultStateResponse } from "../../live-api.js";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
-import { DockButton, DockChips, DockNotice, DockSearch, DockState, DockToolbar, useDockConfirm } from "../dock-kit/DockKit.js";
+import { DockButton, DockChips, DockIconButton, DockNotice, DockSearch, DockState, DockToolbar, useDockConfirm } from "../dock-kit/DockKit.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
-import { Eye, EyeOff, FileUp, Lock, Pencil, Plus, RefreshCw, ShieldOff, Trash2, Unlink, Unlock, Vault } from "../ui-theme/app-icons.js";
+import { ArrowLeft, Eye, EyeOff, FileUp, Lock, Pencil, Plus, RefreshCw, ShieldOff, Trash2, Unlink, Unlock, Vault } from "../ui-theme/app-icons.js";
 import {
-  VAULT_AGENT_POLICY, changeMasterPassword, confirmVaultItem, decryptVaultItem, deleteVaultItems, encryptVaultItem, planDuplicateRemoval, setUpVault,
-  recoverVault, unlockVault, type UnlockedVault, type VaultItemSecrets
+  VAULT_AGENT_POLICY, changeMasterPassword, confirmVaultItem, decryptVaultItem, deleteVaultItems, encryptVaultItem, planDuplicateRemoval, revealHandoffKey, setUpVault,
+  createTransferReseal, recoverVault, unlockVault, type UnlockedVault, type VaultItemSecrets
 } from "./vault-client.js";
 import { ChromeImportError, parseChromePasswords, planChromeImport, runChromeImport, type ChromeExport, type ChromeImportPlan } from "./chrome-import.js";
 import { handOverToAgents, holdVaultKeys, lockVaultSession, openVaultInbox, subscribeVaultSession, vaultInboxProblem, vaultInboxRowProblem, vaultSessionKeys } from "./vault-session.js";
@@ -57,8 +57,8 @@ export function VaultDock() {
   useEffect(() => { void load(); }, [load]);
   useEffect(() => subscribeVaultSession((event) => {
     if (event.kind === "unlocked") setUnlocked(true);
+    // Imported logins just join the list, with no notice (operator 12/11).
     if (event.kind === "imported") {
-      setInfo(`Added ${event.count} login${event.count === 1 ? "" : "s"} that agents saved or changed.`);
       setItemsVersion((version) => version + 1);
       void load();
     }
@@ -74,9 +74,9 @@ export function VaultDock() {
   }), [load]);
 
   // A background read (the item list) never sets busy: it would disable Unlock and Recover and drop the operator's click or Enter.
+  // Nor does it clear the notice: the list mounts after an unlock and would wipe the inbox problem that unlock reported.
   const run = async (work: () => Promise<void>, background = false) => {
-    if (!background) setBusy(true);
-    setNotice(null);
+    if (!background) { setBusy(true); setNotice(null); }
     try { await work(); } catch (cause) { setNotice(errorText(cause)); } finally { if (!background) setBusy(false); }
   };
   const holdKeys = (keys: UnlockedVault) => holdVaultKeys(keys);
@@ -112,16 +112,13 @@ export function VaultDock() {
           const created = await setUpVault(api, state.ownerUserId, password);
           holdKeys(created.unlocked); setRecoveryKey(created.recoveryKey); await openInbox(created.unlocked); await load();
         })} />
-        : !unlocked ? <>
-          <UnlockForm busy={busy} brokerAvailable={state.brokerAvailable} hasRecovery={Boolean(state.vault?.hasRecovery)}
+        // Locked shows only the unlock card, no list (operator 12/11, replaces the locked list of 30/10).
+        : !unlocked ? <UnlockForm busy={busy} brokerAvailable={state.brokerAvailable} hasRecovery={Boolean(state.vault?.hasRecovery)}
             onSubmit={(password) => run(async () => { const keys = await unlockVault(api, state.ownerUserId, password); holdKeys(keys); await openInbox(keys); })}
             onRecover={(recoveryKey, password) => run(async () => {
               const keys = await recoverVault(api, state.ownerUserId, recoveryKey, password);
               holdKeys(keys); await openInbox(keys); setInfo("Your new master password is set. The old one no longer opens the Vault; your recovery key still does."); await load();
             })} />
-          {/* Saved logins show without an unlock (operator 30/10, standing request of 20/10); their values open only unlocked. */}
-          <ItemsView locked version={itemsVersion} keys={unlockedRef} run={run} confirm={confirm} defaults={defaults} vaultState={state} onVaultChanged={load} />
-        </>
         : (
           <>
             <DockChips label="Vault view" value={view} onChange={setView} options={[{ id: "items", label: "Items" }, { id: "keys", label: "Passwords & keys" }, { id: "audit", label: "Activity" }, { id: "settings", label: "Settings" }]} />
@@ -203,8 +200,8 @@ function UnlockForm({ busy, brokerAvailable, hasRecovery, onSubmit, onRecover }:
 type Runner = (work: () => Promise<void>, background?: boolean) => Promise<void>;
 type Confirm = ReturnType<typeof useDockConfirm>["confirm"];
 
-function ItemsView({ locked = false, version, keys, run, confirm, defaults, vaultState, onVaultChanged }: {
-  locked?: boolean; version: number; keys: { current: UnlockedVault | null }; run: Runner; confirm: Confirm; defaults: VaultDefaults; vaultState: VaultStateResponse; onVaultChanged: () => Promise<void>;
+function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultChanged }: {
+  version: number; keys: { current: UnlockedVault | null }; run: Runner; confirm: Confirm; defaults: VaultDefaults; vaultState: VaultStateResponse; onVaultChanged: () => Promise<void>;
 }) {
   const [items, setItems] = useState<VaultItemMetadata[] | null>(null);
   // Logins agents saved or changed that are no item yet (no values here): rows of the list until an unlocked tab imports them.
@@ -226,7 +223,7 @@ function ItemsView({ locked = false, version, keys, run, confirm, defaults, vaul
     setWaiting([...rows.pending].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
   }, []);
   useEffect(() => { void run(reload, true); }, [reload, version]); // eslint-disable-line react-hooks/exhaustive-deps
-  // A login an agent saves while the dock is open shows within 30 s, locked or not.
+  // A login an agent saves while the dock is open shows within 30 s.
   useEffect(() => { const timer = window.setInterval(() => void reload().catch(() => undefined), 30_000); return () => window.clearInterval(timer); }, [reload]);
   const matches = (text: string) => text.toLowerCase().includes(search.trim().toLowerCase());
   const itemIds = useMemo(() => new Set((items ?? []).map((item) => item.id)), [items]);
@@ -262,21 +259,19 @@ function ItemsView({ locked = false, version, keys, run, confirm, defaults, vaul
   if (checkingSites) return <SiteCheck items={items} keys={keys} run={run} confirm={confirm} onClose={() => setCheckingSites(false)} onDeleted={changed} />;
   return (
     <div className="vault-items">
-      {locked ? null : <AgentAccess vaultState={vaultState} run={run} delegable={items.filter((item) => item.policy.agentUse && item.status === "ACTIVE").length} onChange={async (enabled) => {
+      <AgentAccess vaultState={vaultState} run={run} delegable={items.filter((item) => item.policy.agentUse && item.status === "ACTIVE").length} onChange={async (enabled) => {
         const result = await api.vaultSetAgentAccess(enabled);
         // Off revokes, which starts a new epoch: the signed requests of this tab follow it.
         if (typeof result.epoch === "number" && keys.current) holdVaultKeys({ ...keys.current, epoch: result.epoch });
         if (enabled) await handOverToAgents(keys.current!);
         await onVaultChanged();
-      }} />}
+      }} />
       <div className="vault-items-bar">
         <DockSearch value={search} onChange={setSearch} label="Search the Vault" placeholder="Search by name or address" />
-        {locked ? null : <>
-          <DockButton icon={Plus} tone="primary" onClick={() => setDraft(emptyDraft())}>Add item</DockButton>
+        <DockButton icon={Plus} tone="primary" onClick={() => setDraft(emptyDraft())}>Add item</DockButton>
           <DockButton icon={FileUp} onClick={() => setImporting(true)}>Import from Chrome</DockButton>
           <DockButton icon={Unlink} disabled={!items.length} onClick={() => setCheckingSites(true)}>Check sites</DockButton>
           <DockButton icon={Trash2} disabled={items.length < 2} onClick={() => void removeDuplicates()}>Remove duplicates</DockButton>
-        </>}
       </div>
       {accounts.length ? <label className="vault-filter">Google account
         <select value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}>
@@ -317,7 +312,7 @@ function ItemsView({ locked = false, version, keys, run, confirm, defaults, vaul
                   {!item.policy.agentUse ? <span className="vault-tag">Hidden from agents</span> : null}
                 </span>
               </div>
-              {locked ? null : <div className="vault-row-actions">
+              <div className="vault-row-actions">
                 <DockButton icon={Pencil} aria-label={`Edit ${item.label}`} onClick={() => void run(async () => {
                   const full = (await api.vaultItem(item.id)).item;
                   const secrets = await decryptVaultItem(keys.current!, full);
@@ -326,9 +321,9 @@ function ItemsView({ locked = false, version, keys, run, confirm, defaults, vaul
                 <DockButton icon={Trash2} tone="danger" aria-label={`Delete ${item.label}`} onClick={() => void (async () => {
                   if (await confirm({ title: `Delete ${item.label}?`, message: "Its encrypted fields are deleted for good.", confirmLabel: "Delete" })) await remove(item.id);
                 })()} />
-              </div>}
+              </div>
               {/* Only items saved before imports became ACTIVE (2026-10-19) are PENDING; a changed password needs no confirmation (operator 2026-10-21). */}
-              {item.status === "PENDING" && !locked ? <div className="vault-row-review">
+              {item.status === "PENDING" ? <div className="vault-row-review">
                 <DockButton tone="primary" onClick={() => void run(async () => { await api.vaultSaveItem(confirmVaultItem((await api.vaultItem(item.id)).item)); await changed(); })}>Keep</DockButton>
                 <DockButton onClick={() => void (async () => {
                   if (await confirm({ title: `Discard ${item.label}?`, message: "The item and its generated password are deleted.", confirmLabel: "Discard" })) await remove(item.id);
@@ -370,11 +365,15 @@ function ItemEditor({ draft: initial, generator, onCancel, onSave }: { draft: Dr
   const submit = (event: FormEvent) => { event.preventDefault(); if (canSave) onSave(draft); };
   return (
     <form className="vault-card vault-form vault-editor" onSubmit={submit}>
-      <h3>{draft.id ? "Edit item" : "Add item"}</h3>
+      {/* Back at the top right instead of a Cancel under Save (operator 12/11). */}
+      <div className="vault-editor-head">
+        <h3>{draft.id ? "Edit item" : "Add item"}</h3>
+        <DockIconButton label="Back" icon={ArrowLeft} onClick={onCancel} />
+      </div>
       <label>Name<input value={draft.label} maxLength={80} onChange={(event) => set({ label: event.target.value })} /></label>
       <label>Website address<input value={draft.origins} placeholder="https://accounts.example.com" onChange={(event) => set({ origins: event.target.value })} /></label>
       {origins.map(({ raw, parsed }) => !parsed ? <p key={raw} className="vault-hint is-error">{raw} is not a web address (wildcards and passwords in addresses are not allowed).</p>
-        : parsed.warnings.length ? <SpaceToggle key={raw} checked={draft.acceptedRisks.includes(parsed.origin)} label={`Allow ${parsed.origin}`}
+        : parsed.warnings.length ? <SpaceToggle compact key={raw} checked={draft.acceptedRisks.includes(parsed.origin)} label={`Allow ${parsed.origin}`}
           detail={`This address is ${parsed.warnings.map((warning) => warningText[warning]).join(" and ")}.`}
           onChange={(checked) => set({ acceptedRisks: checked ? [...draft.acceptedRisks, parsed.origin] : draft.acceptedRisks.filter((origin) => origin !== parsed.origin) })} />
         : parsed.origin !== raw ? <p key={raw} className="vault-hint">Saved as {parsed.origin}{draft.loginPage ? "" : " (the full address can go in Login page)"}</p> : null)}
@@ -383,21 +382,18 @@ function ItemEditor({ draft: initial, generator, onCancel, onSave }: { draft: Dr
       <label>Username<input autoComplete="off" value={draft.secrets.USERNAME ?? ""} onChange={(event) => setSecret("USERNAME", event.target.value)} /></label>
       <div className="vault-password-row">
         <label>Password<input type={reveal ? "text" : "password"} autoComplete="new-password" value={draft.secrets.PASSWORD ?? ""} onChange={(event) => setSecret("PASSWORD", event.target.value)} /></label>
-        <DockButton icon={reveal ? EyeOff : Eye} aria-label={reveal ? "Hide password" : "Show password"} onClick={() => setReveal(!reveal)} />
-        <DockButton icon={RefreshCw} onClick={() => {
+        <DockIconButton icon={reveal ? EyeOff : Eye} label={reveal ? "Hide password" : "Show password"} onClick={() => setReveal(!reveal)} />
+        <DockIconButton icon={RefreshCw} label="Generate" onClick={() => {
           try { setSecret("PASSWORD", generateVaultPassword({}, generator)); setGenerateError(null); } catch { setGenerateError("The generator rules in Settings allow no password."); }
-        }}>Generate</DockButton>
+        }} />
       </div>
       {generateError ? <p className="vault-hint is-error">{generateError}</p> : null}
-      <SpaceToggle checked={draft.agentUse} label="Agents and Nous can use this login" detail="When agent access is on. They never see it; Space fills it only at this address." onChange={(agentUse) => set({ agentUse })} />
+      <SpaceToggle compact checked={draft.agentUse} label="Agents and Nous can use this login" detail="When agent access is on. They never see it; Space fills it only at this address." onChange={(agentUse) => set({ agentUse })} />
       <details className="vault-more">
         <summary>More options</summary>
         <label>Authenticator key<input type="password" autoComplete="off" value={draft.secrets.OTP ?? ""} onChange={(event) => setSecret("OTP", event.target.value.replace(/\s+/g, ""))} /></label>
       </details>
-      <div className="vault-form-actions">
-        <DockButton type="submit" tone="primary" disabled={!canSave}>Save</DockButton>
-        <DockButton onClick={onCancel}>Cancel</DockButton>
-      </div>
+      <DockButton type="submit" tone="primary" disabled={!canSave}>Save</DockButton>
     </form>
   );
 }
@@ -643,8 +639,31 @@ function SettingsView({ run, confirm, busy, defaults, onDefaultsChange, autoLock
         <p>Your items stay as they are; the recovery key keeps working.</p>
         <PasswordPair busy={busy} submitLabel="Change master password" onSubmit={onChangePassword} />
       </details>
+      <TransferReseal run={run} busy={busy} />
       <SignupGrants run={run} confirm={confirm} busy={busy} />
     </div>
+  );
+}
+
+/** Moving Space to another server (scripts/space-transfer.mjs): a file only the new server's Vault broker can open. */
+function TransferReseal({ run, busy }: { run: Runner; busy: boolean }) {
+  const [targetKey, setTargetKey] = useState("");
+  const create = () => run(async () => {
+    const reseal = await createTransferReseal(api, vaultSessionKeys()!, targetKey);
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([`${JSON.stringify(reseal, null, 2)}\n`], { type: "application/json" }));
+    link.download = "space-vault-reseal.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    setTargetKey("");
+  });
+  return (
+    <details className="vault-card vault-form">
+      <summary>Move the Vault to another server</summary>
+      <p>After the new server has the transfer, paste the Vault key from its card.json. The file you get opens only on that server; give it to <code>space-transfer reseal</code> there. Your master password stays the same.</p>
+      <label>New server's Vault key<input value={targetKey} onChange={(event) => setTargetKey(event.target.value)} autoComplete="off" spellCheck={false} /></label>
+      <DockButton tone="primary" busy={busy} disabled={busy || !targetKey.trim()} onClick={() => void create()}>Create the reseal file</DockButton>
+    </details>
   );
 }
 
@@ -662,7 +681,8 @@ const keyState = (key: VaultHandoffKey) => key.kept ? [`Kept for agents${key.sav
  * its space_vault_key_install writes the key into the file it belongs in without the key entering the agent's context, and a
  * one-time key is deleted here once that succeeded. Kept ones (operator request 2026-10-26: server, VM and admin passwords) stay,
  * and agents find them by label (space_vault_key_list) and save the ones that reach them (space_vault_key_save). Space can read
- * these (they are sealed with the API's key, not the Vault's); website logins stay in Items.
+ * these (they are sealed with the API's key, not the Vault's); website logins stay in Items. Search, show and edit (operator request
+ * 2026-11-12): a value is shown only with the unlocked dock's signature (revealHandoffKey), and only until the view closes.
  */
 function KeysView({ run, confirm, busy, agentAccess }: { run: Runner; confirm: Confirm; busy: boolean; agentAccess: boolean }) {
   const [keys, setKeys] = useState<VaultHandoffKey[]>([]);
@@ -672,8 +692,40 @@ function KeysView({ run, confirm, busy, agentAccess }: { run: Runner; confirm: C
   const [kept, setKept] = useState(true);
   const [issued, setIssued] = useState<VaultHandoffKey | null>(null);
   const [copied, setCopied] = useState(false);
+  const [search, setSearch] = useState("");
+  const [shown, setShown] = useState<Record<string, string>>({});
+  const [editing, setEditing] = useState<{ id: string; label: string; value: string; kept: boolean } | null>(null);
+  const [revealEdit, setRevealEdit] = useState(false);
   const reload = useCallback(async () => setKeys((await api.vaultHandoffKeys()).keys), []);
   useEffect(() => { void reload().catch(() => undefined); }, [reload]);
+  const reveal = (id: string) => revealHandoffKey(api, vaultSessionKeys()!, id);
+  const hide = (id: string) => setShown((current) => { const next = { ...current }; delete next[id]; return next; });
+  const listed = keys.filter((key) => `${key.label} ${key.id} ${key.savedBy ?? ""}`.toLowerCase().includes(search.trim().toLowerCase()));
+  const save = (event: FormEvent) => {
+    event.preventDefault();
+    const next = editing!;
+    void run(async () => {
+      await api.vaultUpdateHandoffKey(next.id, { label: next.label.trim(), value: next.value, kept: next.kept });
+      hide(next.id); setEditing(null); await reload();
+    });
+  };
+  if (editing) {
+    return (
+      <form className="vault-card vault-form vault-editor" aria-label="Edit key" onSubmit={save}>
+        <div className="vault-editor-head">
+          <h3>Edit key</h3>
+          <DockIconButton label="Back" icon={ArrowLeft} onClick={() => setEditing(null)} />
+        </div>
+        <label>Label<input value={editing.label} maxLength={80} required onChange={(event) => setEditing({ ...editing, label: event.target.value })} /></label>
+        <div className="vault-password-row">
+          <label>Key<input type={revealEdit ? "text" : "password"} value={editing.value} maxLength={4096} required autoComplete="off" spellCheck={false} onChange={(event) => setEditing({ ...editing, value: event.target.value })} /></label>
+          <DockIconButton icon={revealEdit ? EyeOff : Eye} label={revealEdit ? "Hide key" : "Show key"} onClick={() => setRevealEdit(!revealEdit)} />
+        </div>
+        <SpaceToggle compact checked={editing.kept} label="Keep it for every agent" onChange={(kept) => setEditing({ ...editing, kept })} />
+        <DockButton type="submit" tone="primary" disabled={busy || !editing.label.trim() || !editing.value}>Save</DockButton>
+      </form>
+    );
+  }
   const add = (event: FormEvent) => {
     event.preventDefault();
     void run(async () => {
@@ -703,20 +755,31 @@ function KeysView({ run, confirm, busy, agentAccess }: { run: Runner; confirm: C
           <DockButton onClick={() => { void navigator.clipboard?.writeText(issued.id).then(() => setCopied(true), () => undefined); }}>{copied ? "Copied" : "Copy id"}</DockButton>
         </div>
       ) : null}
-      {keys.length === 0 ? <DockState kind="empty" icon={Vault} title="No passwords or keys" detail="Kept ones stay for every agent; a one-time key is deleted as soon as an agent has written it where it belongs." /> : null}
+      {keys.length === 0 ? <DockState kind="empty" icon={Vault} title="No passwords or keys" detail="Kept ones stay for every agent; a one-time key is deleted as soon as an agent has written it where it belongs." />
+        : <DockSearch value={search} onChange={setSearch} label="Search passwords and keys" placeholder="Search by label" />}
+      {keys.length > 0 && listed.length === 0 ? <DockState kind="empty" icon={Vault} title="No password or key matches" /> : null}
       <ul className="vault-list">
-        {keys.map((key) => (
+        {listed.map((key) => (
           <li key={key.id} className="vault-row" data-status={!key.hasValue || (key.usedAt && !key.kept) ? "PENDING" : "ACTIVE"}>
             <div className="vault-row-main">
               <strong>{key.label}</strong>
               <span className="vault-meta"><code>{key.id}</code> · {keyState(key)}</span>
+              {shown[key.id] !== undefined ? <code className="vault-recovery" aria-label={`Value of ${key.label}`}>{shown[key.id]}</code> : null}
             </div>
             <div className="vault-row-actions">
-              <DockButton icon={Trash2} tone="danger" disabled={busy} aria-label={`Delete the key ${key.label}`} onClick={() => void (async () => {
+              {key.hasValue ? <>
+                <DockIconButton icon={shown[key.id] !== undefined ? EyeOff : Eye} disabled={busy} label={`${shown[key.id] !== undefined ? "Hide" : "Show"} ${key.label}`}
+                  onClick={() => shown[key.id] !== undefined ? hide(key.id) : void run(async () => { const value = await reveal(key.id); setShown((current) => ({ ...current, [key.id]: value })); })} />
+                <DockIconButton icon={Pencil} disabled={busy} label={`Edit ${key.label}`} onClick={() => void run(async () => {
+                  const value = shown[key.id] ?? await reveal(key.id);
+                  setRevealEdit(false); setEditing({ id: key.id, label: key.label, value, kept: key.kept });
+                })} />
+              </> : null}
+              <DockIconButton icon={Trash2} tone="danger" disabled={busy} label={`Delete the key ${key.label}`} onClick={() => void (async () => {
                 if (await confirm({ title: key.hasValue ? "Delete this key?" : "Remove this receipt?", message: key.hasValue ? "An agent can no longer take it; paste it again if it is still needed." : "Only the record of its hand-over goes; the key itself is already deleted.", confirmLabel: "Delete" })) {
-                  await run(async () => { await api.vaultDeleteHandoffKey(key.id); if (issued?.id === key.id) setIssued(null); await reload(); });
+                  await run(async () => { await api.vaultDeleteHandoffKey(key.id); hide(key.id); if (issued?.id === key.id) setIssued(null); await reload(); });
                 }
-              })()}>Delete</DockButton>
+              })()} />
             </div>
           </li>
         ))}

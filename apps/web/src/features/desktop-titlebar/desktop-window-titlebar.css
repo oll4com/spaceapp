@@ -511,7 +511,7 @@ body[data-desktop-titlebar="true"] {
   border-radius: 50%;
   background: #3fb950;
   box-shadow: 0 0 6px #3fb950;
-  animation: updateDotPulse 2s infinite ease-in-out;
+  /* Static: a pulse keeps the renderer redrawing every frame (Nous 10/11). */
 }
 
 @keyframes updateDotPulse {

@@ -405,6 +405,27 @@ async function readSwapBytes(pid: number): Promise<number> {
   }
 }
 
+/**
+ * Swap per pid for a sample every 10 s: one /proc/<pid>/status read per process, so every pid is read once a minute and a pid first
+ * seen in between reads its own (CPU plan 4.1). shortcut: a pid reused within the minute shows the previous process's swap until the
+ * next read; key by pid and start time if that matters.
+ */
+export function swapByPid(read: (pid: number) => Promise<number> = readSwapBytes, now: () => number = Date.now, refreshMs = 60_000) {
+  const known = new Map<number, number>();
+  let readAt = -Infinity;
+  return async (pids: number[]): Promise<Map<number, number>> => {
+    if (now() - readAt >= refreshMs) {
+      known.clear();
+      readAt = now();
+    }
+    const missing = pids.filter((pid) => !known.has(pid));
+    const swaps = await Promise.all(missing.map((pid) => read(pid)));
+    missing.forEach((pid, index) => known.set(pid, swaps[index] ?? 0));
+    return known;
+  };
+}
+const processSwap = swapByPid();
+
 const processTableArgs = ["-ww", "-eo", "pid=,ppid=,rss=,vsz=,etimes=,nlwp=,pcpu=,stat=,comm=,args="];
 
 /**
@@ -431,8 +452,8 @@ export async function readSystemAnalyticsProcessTable(): Promise<SystemAnalytics
   );
   const rows = String(stdout).split("\n").map(processLine).filter((row): row is SystemAnalyticsProcessRow => row !== null)
     .filter((row) => !isProcessSamplerRow(row));
-  const swaps = await Promise.all(rows.map((row) => readSwapBytes(row.pid)));
-  return rows.map((row, index) => ({ ...row, swapBytes: swaps[index] ?? 0 }));
+  const swaps = await processSwap(rows.map((row) => row.pid));
+  return rows.map((row) => ({ ...row, swapBytes: swaps.get(row.pid) ?? 0 }));
 }
 
 function descendantPids(rootPid: number, children: Map<number, number[]>): Set<number> {

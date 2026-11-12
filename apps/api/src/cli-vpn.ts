@@ -38,7 +38,7 @@ const brokerInspectionResultSchema = z
     connection: cliVpnConnectionSchema,
     selectedRoute: cliEgressRouteIdSchema,
     directEgressIpv4: z.string().regex(/^(?:\d{1,3}\.){3}\d{1,3}$/).nullable(),
-    removedProfiles: z.array(cliVpnProfileIdSchema).max(3),
+    removedProfiles: z.array(cliVpnProfileIdSchema).max(4),
     profiles: z.object({
       greece: cliVpnConnectionSchema,
       thailand: cliVpnConnectionSchema,
@@ -126,6 +126,8 @@ export interface CliVpnBroker {
   /** Short-lived shared inspection for status displays only (never for isolation gates). */
   inspectRuntimesCached?(runtimes: Array<{ runtimeId: CliVpnManagedRuntimeId; pids: number[] }>): Promise<CliVpnInspectionResult>;
   setRuntime(runtimeId: CliVpnManagedRuntimeId, enabled: boolean, pids: number[]): Promise<CliVpnRouteResult>;
+  /** Re-measures this server's and every configured VPN's exit IP and reconnects a VPN that stopped answering (app.ts schedules it). */
+  refreshEgress?(): Promise<void>;
 }
 
 export type CliVpnBrokerExecutor = (command: string, args: string[], stdin: string) => Promise<string>;
@@ -232,6 +234,10 @@ export class CliVpnBrokerClient {
 
   async verify(): Promise<CliVpnConnection> {
     return cliVpnConnectionSchema.parse(await this.run("verify"));
+  }
+
+  async refreshEgress(): Promise<void> {
+    await this.run("refresh-egress");
   }
 
   async remove(): Promise<CliVpnConnection> {

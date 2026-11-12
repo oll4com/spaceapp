@@ -116,11 +116,25 @@ export function MailCopilotPane({ pane, isVisible, terminal }: MailCopilotPanePr
   }, [layout, mailbox]);
   // A campaign's review card opens the campaign here (target campaign:<id>).
   const [campaignTarget, setCampaignTarget] = useState<{ id: string; at: number } | null>(null);
+  const [reviewTarget, setReviewTarget] = useState<{ id: string; at: number } | null>(null);
   useEffect(() => {
     // A pane that mounts after the click still gets it (onPaneTarget keeps it for it).
     return onPaneTarget(pane.id, (target) => {
       const campaign = /^campaign:(mcamp:[A-Za-z0-9_-]+)$/.exec(target);
       if (campaign) { setCampaignTarget({ id: campaign[1]!, at: Date.now() }); setRail((current) => ({ ...current, collapsed: false, tab: "campaigns" })); return; }
+      // A card about a review (review:mailrev:…, operator 12/11 23:19 BKK) lands on that review in Activity and opens the mail it answers.
+      const review = /^review:(mailrev:[A-Za-z0-9_-]+)$/.exec(target);
+      if (review) {
+        setReviewTarget({ id: review[1]!, at: Date.now() });
+        setRail((current) => ({ ...current, collapsed: false, tab: "activity" }));
+        void api.mailCopilotEvents({ reviewId: review[1]! }).then(({ events }) => {
+          const draft = events[0]?.payload.draft as { account?: string; threadId?: string } | undefined;
+          const account = draft?.account ?? events[0]?.accountEmail;
+          const threadId = draft?.threadId ?? events[0]?.threadId;
+          if (account && threadId) openThread(account, threadId);
+        }, () => undefined);
+        return;
+      }
       const match = /^thread:([^:]+):(.+)$/.exec(target);
       if (match) openThread(match[1]!, match[2]!);
     });
@@ -180,7 +194,7 @@ export function MailCopilotPane({ pane, isVisible, terminal }: MailCopilotPanePr
         <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label={t("Resize the copilot rail")} aria-hidden={rail.collapsed ? "true" : undefined}
           onPointerDown={onResizeStart} onPointerMove={onResizeMove} onPointerUp={onResizeEnd} onPointerCancel={onResizeEnd} onDoubleClick={() => setRail((current) => ({ ...current, width: RAIL_DEFAULT_WIDTH }))} />
         <CopilotRail firstRead={{ text: notice || data.error, loaded: Boolean(data.settings) }} tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
-          {railOpen && activeTab === "activity" ? <ActivityTab paneId={pane.id} nousReviewing={nousReviewing} events={data.events} pending={allPending} onChanged={() => void data.refresh()} onOpenThread={openThread} onShowThread={showOnlyThread} /> : null}
+          {railOpen && activeTab === "activity" ? <ActivityTab paneId={pane.id} nousReviewing={nousReviewing} events={data.events} pending={allPending} focusReview={reviewTarget} onChanged={() => void data.refresh()} onOpenThread={openThread} onShowThread={showOnlyThread} /> : null}
           {railOpen && activeTab === "campaigns" ? <CampaignsTab isVisible={isVisible} target={campaignTarget} /> : null}
           {railOpen && activeTab === "memory" ? <MemoryTab paneId={pane.id} /> : null}
           {railOpen && activeTab === "rules" ? <RulesTab paneId={pane.id} /> : null}

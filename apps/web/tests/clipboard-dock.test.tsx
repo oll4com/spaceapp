@@ -454,5 +454,7 @@ describe("ClipboardDock", () => {
     const card = screen.getByRole("listitem");
     fireEvent.doubleClick(card);
     expect(textButton.className).toContain("expanded");
+    // The card is marked so fullscreen spans it across the whole window width.
+    expect(card.className).toContain("is-expanded");
   });
 });

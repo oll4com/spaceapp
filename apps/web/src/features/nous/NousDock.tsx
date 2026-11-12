@@ -13,7 +13,8 @@ import { DockButton, DockChips, DockFullscreenButton, DockIconButton, DockNotice
 import { useIsDockActive } from "../docks/dock-active-context.js";
 import { requestNousFocus, useLeaveDuringNousFocus } from "../nous-focus/nous-focus-events.js";
 import { NousAppointments } from "./NousAppointments.js";
-import { Activity, ArrowDownToLine, ArrowLeft, CalendarCheck, ChartSpline, Check, CheckCheck, ChevronRight, ChevronsUp, CircleStop, ClipboardList, FileSymlink, Gauge, Gavel, Briefcase, TrendingUp, LayoutGrid, ListChecks, Maximize2, Megaphone, MessageSquare, Minimize2, Nous, Paperclip, Rocket, Send, Star, Target, Trash2, UserCheck, X } from "../ui-theme/app-icons.js";
+import { clearConversationMatches, findConversationText, paintConversationMatches } from "./nous-search.js";
+import { Activity, ArrowLeft, CalendarCheck, ChartSpline, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, ChevronsDown, ChevronsUp, CircleStop, ClipboardList, FileSymlink, Gauge, Gavel, Briefcase, TrendingUp, LayoutGrid, ListChecks, Maximize2, Megaphone, MessageSquare, Minimize2, Nous, Paperclip, Rocket, Search, Send, Star, Target, Trash2, UserCheck, X } from "../ui-theme/app-icons.js";
 import { NousBrain3D } from "./NousBrain3D.js";
 import { NousLiveStats } from "./NousLiveStats.js";
 import { NousDone, useDoneRequests, useDoneView } from "./NousDone.js";
@@ -134,6 +135,11 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
   const pendingJumpRef = useRef<string | null>(null);
   const anchorRef = useRef<{ row: Element; top: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  /** Find in the conversation (operator nous_msg:a44eacc4): the query (null while closed), how many matches back from the newest, how many there are. */
+  const [search, setSearch] = useState<string | null>(null);
+  const [searchBack, setSearchBack] = useState(0);
+  const [searchFound, setSearchFound] = useState(0);
+  const searchShownRef = useRef("");
   const pending = usePendingFiles(useCallback((message: string) => setError(message), []));
   // The snip tool's Ctrl+V hands held snips to the composer (SnipToolOverlay attachToNous).
   const addPending = pending.add;
@@ -330,6 +336,25 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
     void history.earlier().catch((err: unknown) => setError(messageOf(err, "Earlier messages could not be loaded.")));
   };
   const jumpToLatest = () => { stickRef.current = true; toLatest(); };
+  // shortcut: finds in the loaded messages only, "Load earlier messages" brings older ones in; a server search when the operator asks for one.
+  useEffect(() => {
+    const list = listRef.current;
+    const ranges = search !== null && list ? findConversationText(list, search) : [];
+    const current = Math.max(0, ranges.length - 1 - searchBack);
+    setSearchFound(ranges.length);
+    paintConversationMatches(ranges, current);
+    // A new query or step scrolls to its match; a message arriving while searching leaves the list where it is.
+    const range = ranges[current], key = `${search}|${searchBack}`;
+    if (!range || !list) searchShownRef.current = "";
+    else if (searchShownRef.current !== key) {
+      searchShownRef.current = key;
+      const box = typeof range.getBoundingClientRect === "function" ? range.getBoundingClientRect() : range.startContainer.parentElement!.getBoundingClientRect();
+      list.scrollTop += box.top - list.getBoundingClientRect().top - list.clientHeight / 3;
+    }
+    return clearConversationMatches;
+  }, [search, searchBack, messages, decisions, tab, planView, fullscreen]);
+  const stepSearch = (by: number) => setSearchBack((back) => searchFound ? (back + by + searchFound) % searchFound : 0);
+  const closeSearch = () => { setSearch(null); setSearchBack(0); };
   const showMessage = (id: string) => listRef.current?.querySelector<HTMLElement>(`[data-message-id="${id}"]`)?.scrollIntoView?.({ block: "center", behavior: "smooth" });
 
   const canSend = (Boolean(draft.trim()) || pending.readyIds.length > 0) && !pending.uploading && !sending;
@@ -535,6 +560,25 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
         {items}
         {trailing}
       </div>
+      {search !== null ? (
+        <div className="nous-search" role="search">
+          <input type="search" value={search} autoFocus aria-label={t("Search the conversation")} placeholder={t("Search the conversation")}
+            onChange={(event) => { setSearch(event.target.value); setSearchBack(0); }}
+            onKeyDown={(event) => {
+              // Escape closes the search only, not fullscreen or the plan behind it; Enter goes to the older match, Shift+Enter the newer.
+              if (event.key === "Escape") {
+                event.preventDefault(); event.stopPropagation(); closeSearch();
+                event.currentTarget.closest(".nous-conversation")?.querySelector<HTMLButtonElement>("[data-nous-search-toggle]")?.focus();
+              } else if (event.key === "Enter") { event.preventDefault(); stepSearch(event.shiftKey ? -1 : 1); }
+            }} />
+          <span className="nous-search-count" aria-live="polite">
+            {!search.trim() ? null : searchFound ? t("{at} of {count}", { at: searchFound - Math.min(searchBack, searchFound - 1), count: searchFound }) : t("No matches")}
+          </span>
+          <DockIconButton label={t("Older match")} icon={ChevronUp} disabled={searchFound < 2} onClick={() => stepSearch(1)} />
+          <DockIconButton label={t("Newer match")} icon={ChevronDown} disabled={searchFound < 2} onClick={() => stepSearch(-1)} />
+          <DockIconButton label={t("Close search")} icon={X} onClick={closeSearch} />
+        </div>
+      ) : null}
       <NousPendingFiles files={pending.files} onRemove={pending.remove} />
       <form className="nous-composer" onSubmit={(event) => void send(event)}>
         {/* Operator request 2026-10-21: the message field takes the whole width with Send beside it; the other controls sit above it. */}
@@ -551,7 +595,9 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
           ) : null}
           <span className="nous-composer-jump">
             <DockIconButton label={t("Go to my last message (press again for the one before)")} icon={ChevronsUp} disabled={!count} onClick={jumpToMine} />
-            <DockIconButton label={t("Go to the latest message")} icon={ArrowDownToLine} disabled={!count} onClick={jumpToLatest} />
+            <DockIconButton label={t("Go to the latest message")} icon={ChevronsDown} disabled={!count} onClick={jumpToLatest} />
+            <DockIconButton label={t("Search the conversation")} icon={Search} aria-pressed={search !== null} data-nous-search-toggle
+              onClick={() => search === null ? setSearch("") : closeSearch()} />
           </span>
         </div>
         <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} onPaste={onPaste} rows={2} maxLength={8_000} data-nous-composer

@@ -80,7 +80,8 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Δες το πρωτότυπο" }));
     expect(screen.getByRole("heading", { name: "Approve data delete on qm:105?" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Δες τη μετάφραση" }));
-    fireEvent.click(screen.getByRole("button", { name: "Ενέκρινε (Προτείνεται)" }));
+    // Space's own answer words read from its table, not the model's (12/11).
+    fireEvent.click(screen.getByRole("button", { name: "Έγκριση (Προτείνεται)" }));
     await waitFor(() => expect(calls.find((call) => call.url.endsWith("/answer"))?.body).toEqual({ option: "Approve" }));
     // A copilot's card asks its body's first line, clipped: the line shows once, as the heading, and the why is the rest (stable 1/11: Security Copilot card).
     cleanup();
@@ -103,6 +104,30 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
     render(<NousNeedsYou requests={[{ ...card, body: "Something new" } as SpaceNotification]} />);
     expect(await screen.findByRole("heading", { name: "Approve data delete on VM 105?" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Δες το πρωτότυπο" })).toBeNull();
+  });
+
+  it("Approve and Decline never read the same, in Greek or English, whatever the stored translation says (operator 12/11 21:38 BKK: public-host reboot card)", async () => {
+    // The stored translation the shifted keys made: the question «Έγκριση», both options «Απόρριψη».
+    const reboot = { ...review, id: "notification:reboot", source: "SECURITY_COPILOT", kind: "SECURITY_REVIEW", title: "Approve host reboot on public-host?", body: "Kernel 6.12.57 waits for a reboot.",
+      payload: { ask: { question: "Approve host reboot on public-host?", options: ["Approve", "Decline"], answer: { kind: "COPILOT_DECISION", copilot: "SECURITY", item: "REVIEW", itemId: "secrev:1" } } } } as unknown as SpaceNotification;
+    const shifted = { ...reboot, payload: { ...reboot.payload, translated: { language: "el", from: needsYouCardTexts(reboot).from, title: "Έγκριση επανεκκίνησης στο public-host;",
+      body: "Ο πυρήνας 6.12.57 περιμένει επανεκκίνηση.", question: "Έγκριση", options: ["Απόρριψη", "Απόρριψη"], version: 2 } } } as unknown as SpaceNotification;
+    for (const [language, approve, decline] of [["el", "Έγκριση", "Απόρριψη"], ["en", "Approve", "Decline"]] as const) {
+      cleanup();
+      calls = [];
+      saved = { uiLanguage: language, agentLanguage: language };
+      announceUiLanguage(language); announceAgentLanguage(language);
+      render(<NousNeedsYou requests={[shifted]} />);
+      fireEvent.click(await screen.findByRole("button", { name: uiText(language, "Review and approve") }));
+      const buttons = within(screen.getByRole("article")).getAllByRole("button").filter((button) => button.closest(".ny-answers"));
+      expect(buttons.map((button) => button.textContent)).toEqual([approve, decline]);
+      // …nor look the same: Approve filled with a tick, Decline outlined with a cross; the note field comes before them.
+      expect(buttons.map((button) => [button.classList.contains("ny-approve"), button.classList.contains("ny-decline"), button.classList.contains("is-primary"), Boolean(button.querySelector("svg"))]))
+        .toEqual([[true, false, true, true], [false, true, false, true]]);
+      expect(screen.getByRole("textbox", { name: uiText(language, "Your answer") }).compareDocumentPosition(buttons[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: approve }));
+      await waitFor(() => expect(calls.find((call) => call.url.endsWith("/answer"))?.body).toEqual({ option: "Approve" }));
+    }
   });
 
   it("an agent's card raised in the old layout (Needs:/Options:/Report:) says its ask and its why once, in Greek too (stable 1/11: 9e39e296, 232928ba)", async () => {

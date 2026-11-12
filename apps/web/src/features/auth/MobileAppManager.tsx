@@ -7,7 +7,8 @@ import { pairingQrPath } from "./pairing-qr.js";
  * Settings > Account > Mobile app (Nous Pro 1b, ADR-013): pair the Nous app straight to this SpaceApp, end to end encrypted. Setting up and
  * pairing take your SpaceApp password or a fresh Google sign-in (the server answers STEP_UP_REQUIRED with where to go; the password
  * also serves installs without Google sign-in). The QR carries a one-time code for 120 s and
- * shows only in this tab (capture sessions are read-only and cannot ask for one); Hide sensitive data blurs it (data-sensitive-masked="pairing").
+ * shows only in this tab (capture sessions are read-only and cannot ask for one); agents' pictures of the page blur it (data-sensitive-masked="pairing",
+ * PAIRING_MASK in browser-sessions.ts), the operator's own Hide sensitive data does not (12/11: it hid the code he had to scan).
  * A paired phone only reads until it is allowed under Devices. Pair a phone also sets the keys up when there are none (7/11: Set up was a
  * step of its own and a confirmed step-up still met 409 MOBILE_NOT_SET_UP), and a Google step-up comes back here and pairs (mobile-pair-resume).
  */
@@ -51,7 +52,7 @@ export function MobileAppManager() {
         // The desktop app turns /api/auth/google/start into a plain desktop sign-in that drops stepUp=mobile: only the password works there.
         // Say why the password field appeared (7/11: four Set up clicks answered 401 STEP_UP_REQUIRED and no password followed), as a
         // request, not an error (8/11: the operator read the red alert in the desktop app as a failed pairing and stopped there).
-        setStepUp({ reason: (failure as Error).message, retry: work, googleUrl: "spaceDesktop" in window ? undefined : details.stepUpUrl });
+        setStepUp({ reason: (failure as Error).message.replace(/^STEP_UP_REQUIRED: /, ""), retry: work, googleUrl: "spaceDesktop" in window ? undefined : details.stepUpUrl });
         return;
       }
       if (details?.stepUpUrl) { markPairAfterStepUp(); window.location.assign(details.stepUpUrl); return; }

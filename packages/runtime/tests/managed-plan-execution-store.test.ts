@@ -227,3 +227,14 @@ it('deduplicates durable managed events and relay sequences after lost publicati
  await store.planExecutions.acknowledgeEvent(execution.id,event.revision);
  expect(await store.planExecutions.listPendingEvents()).toEqual([]);
 });
+it("a step-notes update never closes a plan with an open step (task:jtb3OpgyqU99)", async () => {
+  const store = new InMemorySpaceStore();
+  // 100 steps, one BLOCKED at 50%: the average 99.5 rounds to 100.
+  const many = Array.from({ length: 100 }, (_, index) => ({ id: `s${index + 1}`, order: index + 1, title: `Step ${index + 1}`, status: index === 6 ? "BLOCKED" : "COMPLETED", progress: index === 6 ? 50 : 100 }));
+  const plan = store.upsertClipboardItem({ ownerUserId: "user:one", source: "PLAN", text: "Long plan", minimumModel: "gpt-6.1-sol", steps: many as never });
+  const updated = await store.updateClipboardItemProgress("user:one", plan.id, { stepUpdate: { stepIdOrOrder: 7, notes: "Still waiting." } });
+  expect(updated).toMatchObject({ executionStatus: "IN_PROGRESS", progressPercentage: 99, isCompleted: false });
+  expect(updated.steps[6]).toMatchObject({ status: "BLOCKED", notes: "Still waiting." });
+  const done = await store.updateClipboardItemProgress("user:one", plan.id, { stepUpdate: { stepIdOrOrder: 7, status: "COMPLETED" } });
+  expect(done).toMatchObject({ executionStatus: "COMPLETED", progressPercentage: 100, isCompleted: true });
+});

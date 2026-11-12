@@ -29,6 +29,8 @@ import {
   TabletSmartphone,
   Radar,
   ShieldHalf,
+  KeyRound,
+  Network,
   Search,
   ServerCog,
   Sparkles,
@@ -43,6 +45,9 @@ import { YouTubeSettingsCard } from "../browser-pane/YouTubeSummarySettingsCard.
 import { RoomLimitSettingsCard } from "../rooms-dock/RoomLimitSettingsCard.js";
 import { HistoryPeriodSettingsCard } from "../history-period/HistoryPeriodSettingsCard.js";
 import { UiLanguageSettingsCard } from "../ui-language/UiLanguageSettingsCard.js";
+import { WireGuardFileSettingsCard, desktopWireGuardBridge } from "./WireGuardFileSettingsCard.js";
+import { LoginPasswordSettingsCard } from "./LoginPasswordSettingsCard.js";
+import { TransferSettingsCard } from "./TransferSettingsCard.js";
 import { SignatureLibrary } from "../agent-files/SignatureLibrary.js";
 import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import type { ModernAppearance, ModernIconPack, UiBackground, UiTheme } from "../../ui-theme.js";
@@ -254,6 +259,7 @@ export function AgentSettingsDock({
   const isAdmin = auth?.user?.role === "ADMIN";
   const canManageInstallation = isAdmin || auth?.user?.role === "OPERATOR";
   const sectionRequest = useSettingsSectionRequest();
+  const wireGuardBridge = desktopWireGuardBridge();
   const dotsRequest = dotSettingsRequest ? { key: "dots", nonce: dotSettingsRequest.nonce } : null;
 
   return (
@@ -533,6 +539,18 @@ export function AgentSettingsDock({
           </RecoverableSurface>
         </SettingsDisclosure>
 
+        <SettingsDisclosure sectionKey="password" title="Login password" description="Change the password you sign in with." scope="Your account" icon={KeyRound}
+          help="Type your current password, or confirm it is you with Google if you forgot it, then the new one twice. Your other sessions are signed out; this one stays."
+          keywords="password reset change login sign in forgot credentials κωδικός">
+          <LoginPasswordSettingsCard />
+        </SettingsDisclosure>
+
+        {wireGuardBridge ? <SettingsDisclosure sectionKey="wireguard" title="WireGuard file" description="How this SpaceApp desktop app reaches your Space." scope="This browser" icon={Network}
+          help="Choose the WireGuard .conf file your Space's admin gave you. SpaceApp keeps its own copy, reconnects through it, and tries your Space directly first. Remove it to connect directly again."
+          keywords="wireguard vpn tunnel conf network desktop app connection">
+          <WireGuardFileSettingsCard bridge={wireGuardBridge} />
+        </SettingsDisclosure> : null}
+
         {canManageSourceControl ? <SettingsDisclosure hidden={!adminMode} title="GitHub & Gitea" description="Let Space publish its own code." scope="Installation" icon={GitBranch}
           help="Only needed if Space should publish its own updates to your GitHub or Gitea repository. Paste an access token; Space checks it and never shows it again."
           keywords="github gitea token repository publish git">
@@ -558,6 +576,12 @@ export function AgentSettingsDock({
             <LazyConfigurationMigrationCard canManageInstallation={canManageInstallation} />
           </RecoverableSurface>
         </SettingsDisclosure>
+
+        {isAdmin ? <SettingsDisclosure sectionKey="transfer" title="Transfer" description="Move this Space's data to a new host." scope="Installation" icon={ArrowUpDown}
+          help="Pair a fresh SpaceApp host by its code, keep it a warm copy with Sync, then cut over in seconds; Rollback brings the route back here. Only your data moves, encrypted and signed for the paired host."
+          keywords="transfer move migrate new host server vm pair sync cutover rollback standby">
+          <TransferSettingsCard />
+        </SettingsDisclosure> : null}
 
         {canManageDiagnostics ? <SettingsDisclosure title="Diagnostics" description="Record technical details to find a problem." scope="Installation" icon={Activity}
           help="Turn this on only while you track down a problem. Space then keeps technical details, and a video of this tab if you choose, for 24 hours."

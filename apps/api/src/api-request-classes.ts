@@ -22,6 +22,7 @@ export const publicPaths = new Set([
   "/api/setup/status",
   "/api/setup/claim",
   "/api/auth/invites/accept",
+  "/api/auth/password-reset/request", "/api/auth/password-reset/complete",
   "/api/public/waitlist",
   "/api/demo-projects/preview/:runId/:token",
   "/api/demo-projects/preview/:runId/:token/*",

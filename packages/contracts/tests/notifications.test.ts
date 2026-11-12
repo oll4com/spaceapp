@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   NOTIFICATION_BODY_MORE,
-  defaultNotificationSettings, needsOperatorHands, needsYou, needsYouAsk, needsYouAskRisk, needsYouAskSchema, notificationAnswerInputSchema, notificationChannelEnabled, notificationRaiseInputSchema, notificationSettingsSchema, notificationStreamPayloadSchema,
+  defaultNotificationSettings, needsOperatorHands, needsYou, needsYouAsk, needsYouMail, needsYouAskRisk, needsYouAskSchema, notificationAnswerInputSchema, notificationChannelEnabled, notificationRaiseInputSchema, notificationSettingsSchema, notificationStreamPayloadSchema,
   resolveNotificationSettings, spaceNotificationSchema, updateUserSettingsInputSchema, userSettingsSchema, type NotificationSource
 } from "../src/index.js";
 
@@ -89,5 +89,18 @@ describe("needsYouAskRisk (Nous Pro security review P1-2)", () => {
     expect(needsYouAskRisk(record("MAIL_COPILOT", ask("MAIL_FIX")))).toBe("EXTERNAL");
     expect(needsYouAskRisk(record("SECURITY_COPILOT", ask("COPILOT_DECISION")))).toBe("DESTRUCTIVE");
     expect(needsYouAskRisk(record("MONITORING_COPILOT", ask("COPILOT_DECISION")))).toBe("DESTRUCTIVE");
+  });
+
+  it("needsYouMail names the mail a card is about: its target, its Mail review decision, or a review its items or words name (operator 12/11 23:19 BKK)", () => {
+    const at = (target: string | null, payload: Record<string, unknown> = {}, body = "") => needsYouMail({ body, payload, link: target ? { target } : null });
+    expect(at("thread:me@x.com:1a1d07d30f3b989e")).toEqual({ reviewId: null, account: "me@x.com", threadId: "1a1d07d30f3b989e", target: "thread:me@x.com:1a1d07d30f3b989e" });
+    // A review card targets its thread; its review id comes from its decision, and Go opens the review.
+    expect(at("thread:me@x.com:abc", { ask: { answer: { kind: "COPILOT_DECISION", copilot: "MAIL", item: "REVIEW", itemId: "mailrev:5vC-c2wzYPUf" } } }))
+      .toEqual({ reviewId: "mailrev:5vC-c2wzYPUf", account: "me@x.com", threadId: "abc", target: "review:mailrev:5vC-c2wzYPUf" });
+    expect(at(null, { items: [{ ref: "mailrev:5vC-c2wzYPUf", text: "Send it?" }] })?.target).toBe("review:mailrev:5vC-c2wzYPUf");
+    expect(at(null, {}, "• Send the reply? (review mailrev:5vC-c2wzYPUf)")?.target).toBe("review:mailrev:5vC-c2wzYPUf");
+    expect(at("review:mailrev:5vC-c2wzYPUf")?.reviewId).toBe("mailrev:5vC-c2wzYPUf");
+    expect(at("tab:page-google", {}, "No mail here")).toBeNull();
+    expect(at(null, { ask: { answer: { kind: "COPILOT_DECISION", copilot: "SECURITY", item: "REVIEW", itemId: "x" } } })).toBeNull();
   });
 });

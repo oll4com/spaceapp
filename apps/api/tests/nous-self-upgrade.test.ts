@@ -6,7 +6,7 @@ import type { ClipboardItem, Pane, Room, SpaceNotification } from "@space/contra
 import { InMemoryControlRepository, InMemoryNousRepository } from "@space/db";
 import { renderNousWorld } from "../src/nous/digest.js";
 import { createNousService, NOUS_PERSONA, operatorMessagesToAnswer, type NousRunner } from "../src/nous/service.js";
-import { createNousTools, missingArgsShape, nightSlotNote, nousExecuteTarget, renamedArgs, unprovenNowHold, type NousToolDeps } from "../src/nous/tools.js";
+import { createNousTools, missingArgsShape, nightSlotNote, sendWorkKeys, nousExecuteTarget, renamedArgs, unprovenNowHold, type NousToolDeps } from "../src/nous/tools.js";
 import { z } from "zod";
 import { createHeldDispatch, type HeldDelivery } from "../src/nous/held-dispatch.js";
 import { FilesystemError } from "../src/filesystem-error.js";
@@ -139,6 +139,25 @@ describe("U2: the operator's facts and rules are pinned in the world", () => {
     // The index is kept per text: a changed memory text is read again.
     expect(recallEntries(text.replace(/Hetzner/g, "Contabo"), "Hetzner")).toEqual([]);
     expect(recallEntries(text, "Hetzner").map((entry) => entry.id)).toEqual(["space_memory:bbbbbbbb0000000000000002"]);
+  });
+
+  it("recalls from a changed or warmed memory exactly what a fresh read does (CPU report 12/11: entries and folded words are kept by their text)", async () => {
+    const text = ["# Space Memory 2026-11\n",
+      block("aaaaaaaa0000000000000001", "2026-11-10", "Hetzner server ordered", "infra", " The Greece server at Hetzner."),
+      block("bbbbbbbb0000000000000002", "2026-11-11", "INTRATRADE is SpaceApp's company", "company, operator-fact")].join("\n");
+    // Changed: one entry's body, a new entry, and an unchanged entry the new one supersedes.
+    const changed = `${text.replace("The Greece server at Hetzner.", "The Greece server at Hetzner, for the company.")}\n`
+      + block("cccccccc0000000000000003", "2026-11-12", "Hetzner backup server", "infra", " supersedes=space_memory:bbbbbbbb0000000000000002");
+    const query = "Hetzner server company";
+    expect(recallEntries(text, query).map((entry) => entry.id)).toEqual(["space_memory:aaaaaaaa0000000000000001", "space_memory:bbbbbbbb0000000000000002"]);
+    const kept = recallEntries(changed, query);
+    expect(kept.map((entry) => entry.id)).toEqual(["space_memory:aaaaaaaa0000000000000001", "space_memory:cccccccc0000000000000003"]);
+    expect(kept[0]!.body).toContain("for the company.");
+    vi.resetModules();
+    const fresh = await import("../src/nous/operator-facts.js");
+    expect(fresh.recallEntries(changed, query)).toEqual(kept);
+    await fresh.warmRecall(text);
+    expect(fresh.recallEntries(text, query)).toEqual(recallEntries(text, query));
   });
 });
 
@@ -1015,6 +1034,22 @@ describe("U4: the top tool failures of 19/10", () => {
       expect(wait).toHaveBeenCalledTimes(2);
     });
 
+    it("R84 12/11: a configure whose CLI is still starting after the 30 s wait is held until its session exists, not failed", async () => {
+      // 13 configures in 7 days still failed "Pane has no active session." (the last 12/11 09:20 UTC on Cleo); a model change was already held.
+      const none = { index: 0, paneId: "pane:andy0001", status: "FAILED", detail: "Pane has no active session.", error: "Pane has no active session." };
+      const hold = vi.fn(async () => ({ id: "nous_held:1", waiting: 1 }));
+      const wait = vi.fn(async () => undefined);
+      const f = tools({ wait, held: { level: async () => "CALM", hold } as never, inspectPane: async () => ({ text: "", state: "STARTING", sessionId: null, tasks: [] }) as never });
+      f.roomTool.mockResolvedValueOnce(receipt([none]));
+      const action = { kind: "configure", target: { paneIds: ["pane:andy0001"], state: "OPEN" }, accountProfileId: "space-gateway", when: "AFTER_TURN" };
+      const outcome = await f.tools.execute("space_execute", { room: "Main", actions: [action] }, ctx);
+      expect(outcome).toMatchObject({ ok: true, display: "Held the configure until the CLI starts", result: expect.stringContaining("Andy: the CLI session is still starting after 30 s") });
+      expect(wait).toHaveBeenCalledTimes(14);
+      expect(f.roomTool).toHaveBeenCalledTimes(1);
+      expect(hold).toHaveBeenCalledWith(owner, expect.objectContaining({ paneId: "pane:andy0001", paneName: "Andy" }), expect.stringMatching(/^Configure /), "light", undefined,
+        action);
+    });
+
     it("R39-1: takes force on a close by name or state, names where force goes, and names the draft fix on a configure", async () => {
       // 1/11 16:36 UTC: a forced close failed "actions.0: Unrecognized key: \"force\"" (its target was not {paneIds} alone).
       const f = tools();
@@ -1189,6 +1224,8 @@ describe("U4: the top tool failures of 19/10", () => {
       done.add("pane:andy0001");
       expect((await prompt()).ok).toBe(true);
       expect(f.roomTool).toHaveBeenCalledTimes(6);
+      expect(sendWorkKeys("Fix the gateway boot. Do not edit apps/api/src/storage-readiness.ts (Hugo's ticket). Then change apps/api/src/app.ts."))
+        .toEqual(["apps/api/src/app.ts"]);
     } finally {
       vi.useRealTimers();
     }
@@ -1600,6 +1637,13 @@ describe("Daily review 2026-10-24: pane ids and panes.open", () => {
     expect(inspected).toMatchObject({ ok: true, result: expect.stringContaining('(No pane "pane:jack0001" in Main: read Jack in Dino; name that room next time.)') });
     expect(f.roomTool).toHaveBeenCalledWith("space_control", { tool: "space_inspect", arguments: expect.objectContaining({ paneId: "pane:jack0001" }) },
       expect.objectContaining({ roomId: "room:dino0001" }));
+  });
+
+  it("2026-11-12 REVIEW: a limit over Space Control's page of 100 reads 100 and names the next offset", async () => {
+    const f = tools();
+    const inspected = await f.tools.execute("space_inspect", { room: "Main", arguments: { section: "AUDIT", limit: 250, offset: 20 } }, ctx);
+    expect(inspected).toMatchObject({ ok: true, result: expect.stringContaining("Read 100 of the 250 asked (Space Control's page); offset 120 reads the next.") });
+    expect(f.roomTool).toHaveBeenLastCalledWith("space_control", { tool: "space_inspect", arguments: { section: "AUDIT", limit: 100, offset: 20 } }, expect.anything());
   });
 
   it("tells Nous that panes.open set no model", async () => {

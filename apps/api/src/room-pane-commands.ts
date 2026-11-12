@@ -153,7 +153,8 @@ export function createRoomPaneCommands(options: {
         ? { mode: "TERMINAL", terminalRuntimeId: definition.runtimeId }
         : { mode: definition.mode }));
     const inputs = await resolve(roomId, items);
-    const panes = await options.store.createPanes(inputs, traceId, claim);
+    // Operator 12/11: a pane Nous opens (its request ids start with "nous:") is blue, so the operator tells it apart; 0320 colored the earlier ones.
+    const panes = await options.store.createPanes(command.requestId.startsWith("nous:") ? inputs.map((input) => ({ ...input, categoryColor: "blue" as const })) : inputs, traceId, claim);
     return { roomId, requestId: command.requestId, data: panes, skipped: [] as SkippedPaneType[] };
   }
   return { catalog, resolve, execute, version: PANE_CATALOG_VERSION };

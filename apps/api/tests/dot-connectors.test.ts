@@ -59,6 +59,7 @@ function provider(overrides: Partial<ConnectorProviderClient> = {}): ConnectorPr
     sendMail: vi.fn(async () => ({ id: "s1" })),
     listEvents: vi.fn(async () => [{ eventId: "e1", title: "Standup" }]),
     createEvent: vi.fn(async () => ({ id: "e2", link: "https://calendar.google.com/e2" })),
+    respondEvent: vi.fn(async () => ({ eventId: "e3", title: "Lexroom", start: "2026-11-13T10:00:00Z" })),
     ...overrides
   };
 }
@@ -156,6 +157,31 @@ describe("connector crypto and messages", () => {
     const microsoft = createMicrosoftConnector({ clientId: "c", clientSecret: "s", tenant: "common", fetchImpl });
     expect((await microsoft.searchMail("t", "", 5)).map((message) => (message as { messageId: string }).messageId)).toEqual(["o1", "o2", "o3"]);
   });
+  it("answers an invitation as the self guest on Google and through accept/decline/tentativelyAccept on Microsoft (12/11)", async () => {
+    const calls: Array<{ url: string; method: string; body: unknown }> = [];
+    const guests = [{ email: "org@lexroom.ai", organizer: true, responseStatus: "accepted" }, { email: "me@gmail.com", self: true, responseStatus: "needsAction" }];
+    let googleEvents: unknown[] = [{ id: "g1", summary: "Lexroom", start: { dateTime: "2026-11-13T10:00:00Z" }, attendees: guests }];
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const at = String(url); const method = init?.method ?? "GET";
+      calls.push({ url: at, method, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (at.includes("graph.microsoft.com")) return method === "POST" ? new Response(null, { status: 202 }) : Response.json({ value: [{ id: "o1", subject: "Lexroom", start: { dateTime: "2026-11-13T10:00:00" } }] });
+      return Response.json(method === "PATCH" ? {} : { items: googleEvents });
+    }) as unknown as typeof fetch;
+    const google = createGoogleConnector({ clientId: "c", fetchImpl });
+    expect(await google.respondEvent("t", { iCalUID: "abc@google.com", response: "accepted" })).toEqual({ eventId: "g1", title: "Lexroom", start: "2026-11-13T10:00:00Z" });
+    expect(calls[0]!.url).toContain("/calendars/primary/events?iCalUID=abc%40google.com");
+    expect(calls[1]).toMatchObject({ method: "PATCH", url: expect.stringMatching(/\/events\/g1\?sendUpdates=all$/),
+      body: { attendees: [guests[0], { email: "me@gmail.com", self: true, responseStatus: "accepted" }] } });
+    googleEvents = [{ id: "g2", attendees: [guests[0]] }];
+    await expect(google.respondEvent("t", { iCalUID: "x", response: "declined" })).rejects.toMatchObject({ status: 409, code: "CONNECTOR_NOT_INVITED" });
+    googleEvents = [];
+    await expect(google.respondEvent("t", { iCalUID: "x", response: "declined" })).rejects.toMatchObject({ status: 404, code: "CONNECTOR_EVENT_NOT_FOUND" });
+    calls.length = 0;
+    const microsoft = createMicrosoftConnector({ clientId: "c", clientSecret: "s", tenant: "common", fetchImpl });
+    expect(await microsoft.respondEvent("t", { iCalUID: "o'uid", response: "tentative", comment: "Maybe later" })).toMatchObject({ eventId: "o1", title: "Lexroom" });
+    expect(decodeURIComponent(calls[0]!.url)).toContain("/me/events?$filter=iCalUId eq 'o''uid'");
+    expect(calls[1]).toEqual({ method: "POST", url: "https://graph.microsoft.com/v1.0/me/events/o1/tentativelyAccept", body: { sendResponse: true, comment: "Maybe later" } });
+  });
   it("exchanges the code and reads the verified account email", async () => {
     const fetchImpl = vi.fn(async (url: string) => String(url).includes("/token")
       ? Response.json({ access_token: "a", refresh_token: "r", expires_in: 3600, scope: "openid https://www.googleapis.com/auth/gmail.readonly" })
@@ -207,9 +233,23 @@ describe("connector service", () => {
       .toMatchObject({ status: "BLOCKED", statusReason: "The event must end after it starts." });
     expect(await service.tool("user:1", "calendar.create", { title: "Review", start: "2026-10-12T10:00:00Z", end: "2026-10-12T11:00:00Z", attendees: ["b@example.com"] }))
       .toMatchObject({ status: "COMPLETED", result: { eventId: "e2" } });
+    expect(await service.tool("user:1", "calendar.respond", { iCalUID: "abc@google.com", response: "accepted" }))
+      .toMatchObject({ status: "COMPLETED", result: { account: "owner@example.com", eventId: "e3", response: "accepted" } });
+    expect(await service.tool("user:1", "calendar.respond", { response: "accepted" })).toMatchObject({ status: "BLOCKED", statusReason: expect.stringMatching(/eventId or iCalUID/) });
     expect(await service.tool("user:1", "mail.search", { query: "x", account: "other@example.com" })).toMatchObject({ status: "BLOCKED" });
     expect(await service.tool("user:2", "mail.search", { query: "x" })).toMatchObject({ status: "BLOCKED" });
     expect(await service.tool("user:1", "mail.search", { query: "x".repeat(301) })).toMatchObject({ status: "BLOCKED", statusReason: expect.stringMatching(/Invalid mail.search/) });
+  });
+
+  it("refuses an invitation answer for an account that never allowed Google Calendar", async () => {
+    const { accounts } = repository();
+    const google = provider({ exchange: vi.fn(async () => ({ accessToken: "a", refreshToken: "r", expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      scopes: ["openid", "https://www.googleapis.com/auth/gmail.readonly"], email: "mail-only@example.com" })) });
+    const service = createConnectorService({ accounts, crypto, google, audit: vi.fn(async () => undefined) });
+    await service.complete("user:1", "GOOGLE", { code: "c", codeVerifier: "v", redirectUri: "x" }, null);
+    expect(await service.tool("user:1", "calendar.respond", { iCalUID: "abc@google.com", response: "accepted", account: "mail-only@example.com" }))
+      .toMatchObject({ status: "BLOCKED", statusReason: "mail-only@example.com is not connected with this permission." });
+    expect(google.respondEvent).not.toHaveBeenCalled();
   });
 
   it("re-seals a refresh token stored as v1 with its record's context on the next refresh (hardening step 9)", async () => {

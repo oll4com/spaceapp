@@ -81,6 +81,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   publishEvent?: (event: Event) => void;
   /** A room-lock timeout (room-watchdog-notices.ts: journal and the room-hour line for Nous; a banner only for a room stuck 10 minutes). */
   reportWatchdog?: (event: Event) => void;
+  /** An operation or schedule that ends FAILED or BLOCKED after its caller was answered (12/11: Nous heard of its failed sends only by reading panes). */
+  settledLate?: (outcome: {kind:"operation"|"schedule";id:string;actorId:string;roomId:string;sourceRequestId:string|null;status:string;reason:string;paneIds:readonly string[]}) => void;
   send(pane:Pane,text:string,traceId:string,sourceRequestId?:string):Promise<unknown>;
   closePane?(actor:ControlActor,pane:Pane,traceId:string):Promise<unknown>;
   /** pane start on a rail-tab CLI pane (copilots, Design, App Studio, Video): opens its session as its terminal does and starts the CLI. */
@@ -163,8 +165,10 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   const key=paneId?`room:${roomId}:pane:${paneId}`:`room:${roomId}`;
   const context=roomContext.getStore();
   if(context?.some(scope=>scope.held&&scope.key===key))return work();
-  const waitingSince=Date.now();
   const holders=roomLockHolders.get(key)??[];
+  // Re-entrant by request too (one actor's request id is one operation): a nested call that lost the async context never waits on its own lock.
+  if(owner.requestId&&holders.some(h=>h.since>0&&h.until===null&&h.requestId===owner.requestId&&h.actorId===owner.actorId))return work();
+  const waitingSince=Date.now();
   roomLockHolders.set(key,holders);
   const entry:LockHolder={...owner,since:0,until:null};
   try {
@@ -211,7 +215,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         },
         createdAt: nowIso()
       };
-      console.warn(JSON.stringify({level:40,time:Date.now(),event:"space_control.room_lock_timeout",roomId,blocked,holder,retrying:Boolean(owner.retrying),error:msg}));
+      // An overrun names only its holder (12/11: journal lines naming one request as both blocked and holder read as a self-deadlock).
+      console.warn(JSON.stringify({level:40,time:Date.now(),event:"space_control.room_lock_timeout",roomId,overran,blocked:overran?null:blocked,holder,retrying:Boolean(owner.retrying),error:msg}));
       // 2/11: a timeout recovers by itself (the caller hears ROOM_LOCK_TIMEOUT, an overrun's lock is free again): the room-hour summary for
       // Nous, never a banner or a room event (50 in an hour stacked red banners and filled the room's 50-event replay).
       if (!owner.retrying) options.reportWatchdog?.(alertEvent);
@@ -1208,6 +1213,15 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   });
   active.set(key,work);
   void work.finally(()=>active.delete(key)).catch(()=>{});
+  // Set before the caller's receipt is read: a failure written after it reaches the caller through settledLate (at worst both).
+  let answered=false;
+  void work.then(async()=>{
+   if(!answered||!options.settledLate)return;
+   const value=await operation(actor,command.roomId,key);
+   if(value.status!=="FAILED")return;
+   options.settledLate({kind:"operation",id:value.id,actorId:actor.id,roomId:command.roomId,sourceRequestId,status:value.status,
+    reason:value.results.filter(r=>r.status==="FAILED").map(r=>r.detail).join("\n").slice(0,2000),paneIds:lockTarget(command).paneIds??[]});
+  }).catch(()=>{});
   // Nothing ran when the lock never came: the operation fails with ROOM_LOCK_TIMEOUT, so the tick does not re-drive it either.
   const failedBack=work.then(()=>false,async(error:unknown)=>{
    if(started||!(error instanceof RoomLockTimeoutError))return false;
@@ -1226,11 +1240,11 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    if(waitForCompletion){
     let timeout:ReturnType<typeof setTimeout>|undefined;
     try{await Promise.race([settled,new Promise(r=>{timeout=setTimeout(r,30000);})]);}finally{if(timeout)clearTimeout(timeout);}
-    return operation(actor,command.roomId,key);
+    answered=true;return operation(actor,command.roomId,key);
    }
    let timeout:ReturnType<typeof setTimeout>|undefined;
    try{await Promise.race([settled,new Promise(r=>{timeout=setTimeout(r,6000);})]);}finally{if(timeout)clearTimeout(timeout);}
-   return operation(actor,command.roomId,key);
+   answered=true;return operation(actor,command.roomId,key);
  }
  function outcome(value:ControlOperation):ControlOperation["status"]{
   return value.cancelRequested?"CANCELLED":value.results.some(r=>r.status==="CANCELLED")?(value.results.some(r=>r.status==="COMPLETED")?"PARTIAL":"CANCELLED"):value.results.some(r=>r.status==="PENDING")?"RUNNING":
@@ -1315,7 +1329,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   const input=controlExecuteSchema.parse(required(command,"Scheduled command is required."));
   if(input.actions.some(a=>a.kind!=="pane"||!["continue","resume"].includes(a.operation)))throw new SpaceConflictError("Explicit schedules accept native resume/continue actions only.");
   const time=required(dueAt,"Schedule time is required.");if(Date.parse(time)<=Date.now())throw new SpaceConflictError("Schedule must be in the future.");
-  return withRoomLock(roomId,()=>createSchedule(actor,roomId,input,time,"AT_TIME"));
+  return withRoomLock(roomId,()=>createSchedule(actor,roomId,input,time,"AT_TIME"),{source:"schedule create",...lockTarget(input),actorId:actor.id});
  }
  async function recover(){
   // Only a RUNNING receipt can change: locking and rewriting all of them (6,208, 2 RUNNING, 6/11) took 31 s per start and past
@@ -1384,9 +1398,11 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    if(error instanceof RoomLockTimeoutError)throw error;
    value.status="BLOCKED";value.reason=message(error);
   }
-  await withRoomLock(saved.roomId,()=>updateRecord("schedule",record.actorId,record.key,raw=>{
+  const stored=controlScheduleSchema.parse(await withRoomLock(saved.roomId,()=>updateRecord("schedule",record.actorId,record.key,raw=>{
    const latest=controlScheduleSchema.parse(raw);return latest.status==="CANCELLED"?latest:value;
-  }),lockOwner);
+  }),lockOwner));
+  if(stored.status==="BLOCKED")options.settledLate?.({kind:"schedule",id:stored.id,actorId:stored.actorId,roomId:stored.roomId,sourceRequestId:stored.sourceRequestId??null,
+   status:stored.status,reason:stored.reason??"",paneIds:Object.keys(stored.expectedTasks)});
  }
  
   async function watches(actor:ControlActor,roomId:string,op:string,params:{id?:string;paneId?:string;targetTaskRef?:string;timeoutMs?:number;maxRetries?:number;verificationPrompt?:string;remediationPrompt?:string}){

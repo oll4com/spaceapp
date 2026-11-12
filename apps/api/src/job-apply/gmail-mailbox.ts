@@ -1,4 +1,5 @@
 import { extractLinks, matches, sourceToText, type MailboxMessageSummary, type MailboxReader, type MailboxSearchFilter } from "./mailbox.js";
+import { maskPasswordResetJson } from "../password-reset-mask.js";
 
 // Job Copilot reads the Gmail of its Google account through the owner's Google connector: the API
 // holds the token, scans the newest messages and hands the agent codes, links and short snippets,
@@ -51,7 +52,7 @@ export function openGmailMailbox(input: { accessToken: string; fetchImpl?: typeo
     const response = await fetchImpl(`${gmailApi}${path}`, {
       headers: { authorization: `Bearer ${input.accessToken}`, accept: "application/json" }, signal: AbortSignal.timeout(20_000)
     });
-    const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+    const body = maskPasswordResetJson(await response.json().catch(() => ({})) as Record<string, unknown>);
     if (!response.ok) {
       throw new GmailMailboxError(response.status, response.status === 401 ? "Google access to Gmail expired."
         : response.status === 403 ? "Gmail refused the request: the Gmail API may be off for this server's Google project, or read access was not allowed."
@@ -156,7 +157,7 @@ export async function searchGmail(input: { accessToken: string; query: string; m
       const response = await fetchImpl(`${gmailApi}${path}`, {
         headers: { authorization: `Bearer ${input.accessToken}`, accept: "application/json" }, signal: AbortSignal.timeout(20_000)
       });
-      const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      const body = maskPasswordResetJson(await response.json().catch(() => ({})) as Record<string, unknown>);
       if (response.ok) return body;
       if (gmailRateLimited(response.status, body) && attempt < GMAIL_RETRIES) {
         const wait = retryAfterMs(response.headers.get("retry-after"), Date.now()) ?? 2000 * 2 ** attempt;

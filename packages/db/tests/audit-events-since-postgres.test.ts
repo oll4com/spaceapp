@@ -1,5 +1,5 @@
 import type pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { applyPendingMigrations } from "../src/migration-runner.js";
 import { loadMigrations } from "../src/migrations.js";
 import { PostgresSpaceStore } from "../src/space-store.js";
@@ -33,5 +33,22 @@ describe.skipIf(unavailable !== null)(`Audit events since a time on PostgreSQL${
     expect(moves.map((move) => move.targetId)).toEqual(["pane:cody", "pane:dana"]);
     expect(moves[1]!.metadata).toEqual({ sourceRoomId: "room:bruno", sourcePaneName: "Dana" });
     expect(await store.listAuditEventsSince({ actions: ["pane.move"], since: before, limit: 1 })).toHaveLength(1);
+  });
+
+  it("reads every audit page fresh and counts the total again once a minute (CPU plan 3.2)", async () => {
+    const store = new PostgresSpaceStore(pool);
+    const counted = Number((await pool.query<{ count: string }>("SELECT count(*) AS count FROM audit_events")).rows[0]!.count);
+    expect((await store.listAuditEventsPage({ offset: 0, limit: 2 })).total).toBe(counted);
+    await store.recordAuditEvent({ actorUserId: null, traceId: "trace:audit05", action: "pane.update", targetType: "pane", targetId: "pane:eve", metadata: {} });
+    const cached = await store.listAuditEventsPage({ offset: 0, limit: 2 });
+    expect(cached.items[0]!.targetId).toBe("pane:eve");
+    expect(cached.total).toBe(counted);
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + 60_000);
+    try {
+      expect((await store.listAuditEventsPage({ offset: 0, limit: 2 })).total).toBe(counted + 1);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });

@@ -115,26 +115,65 @@ export const questionWordMatch = (question: string, text: string): { matched: nu
 const RULE_MEMORY_KINDS: ReadonlySet<string> = new Set(["LESSON", "PREFERENCE", "CHANNEL_RULE"]);
 
 /**
+ * Arize 13/11 (thread 1a1a6d8a2e7817ff): mailmem:IaqhrZdR-y8H, a rule about Needs you cards, refused the review its own EXCEPTION (operator
+ * 12/11 23:06 BKK, mailmem:SLvZ9IZgCRc4) requires: "funding / startup program / ... mail ... always gets a DRAFT + space_mail_review_request".
+ * A sentence saying always/must/«πάντα» … review, read folded; the kinds of mail it names are the words before that verb.
+ */
+const REVIEW_REQUIRED = /(?<!(?:not|never|δεν|οχι)\s)(?<![\p{L}\p{N}])(?:always|must|παντα)(?![\p{L}\p{N}])[^,;:]*?(?:review|ελεγχ)/u;
+const REVIEW_QUERY = "always or must or πάντα or παντα";
+// Words every mail rule and summary uses, and the "including …" qualifier, never name the kind of mail a review is required for.
+const MAIL_WORDS = new Set("mail mails email emails message messages thread threads exception".split(" "));
+const stem = (word: string) => word.length > 4 ? word.replace(/s$/, "") : word;
+/** Whether a sentence of the memory requires a review for mail of a kind the item names (one shared word, plurals folded). */
+function requiresReview(text: string, words: Set<string>): boolean {
+  const item = new Set([...words].map(stem));
+  return fold(text).split(/[.;!?\n]+\s/).some((sentence) => {
+    const found = REVIEW_REQUIRED.exec(sentence);
+    if (!found) return false;
+    const kinds = sentence.slice(0, found.index).replace(/\([^)]*\)/g, " ").split(/(?<![\p{L}\p{N}])(?:including|even)(?![\p{L}\p{N}])/u)[0]!;
+    return [...contentWords(kinds)].some((word) => !MAIL_WORDS.has(word) && item.has(stem(word)));
+  });
+}
+
+type RuleMemory = { id: string; kind?: string; key?: string | null; text: string; updatedAt?: string };
+const memoryText = (memory: RuleMemory) => `${memory.key ?? ""} ${memory.text}`;
+/** R16-10: a rule memory that applies to the item; one naming item ids or addresses (Cleo/Kate 18:17, Cleo/Emma 19:33) speaks only of them. */
+function appliesTo(item: string, about: readonly string[]): (memory: RuleMemory) => boolean {
+  const own = namedScope(`${about.join(" ")} ${item}`);
+  const elsewhere = (named: Set<string>, mine: Set<string>) => named.size > 0 && ![...named].some((value) => mine.has(value));
+  return (memory) => {
+    if (memory.kind !== undefined && !RULE_MEMORY_KINDS.has(memory.kind)) return false;
+    const scope = namedScope(memoryText(memory));
+    return !elsewhere(scope.ids, own.ids) && !elsewhere(scope.addresses, own.addresses);
+  };
+}
+
+/** The rule memories that require a review of this item (`requiresReview`, Arize 13/11). Nous 13/11: such a review is the operator's to read. */
+export async function reviewRequiringMemories<T extends RuleMemory>(list: (query: string) => Promise<T[]>, item: string, about: readonly string[] = []): Promise<T[]> {
+  const words = withVariants(contentWords(item));
+  const applies = appliesTo(item, about);
+  return (await list(REVIEW_QUERY)).filter((memory) => applies(memory) && requiresReview(memoryText(memory), words));
+}
+
+/**
  * R12-5 (29/10 09:16 BKK: review mailrev:zTKfA_IVEmwC, a Telnyx thank-you, reached Needs you while mailmem:HkyoywEn0sDc said "no draft, no
  * review request, no question, never a notification"): the copilot's own memory that forbids raising this item, or null. A memory forbids
  * when it says never/no + reply, draft, review, question or notification and shares a word with the item (two words when it is not
  * scoped to the item's correspondent, channel or company). `list` is the copilot's memory search; `scoped` tells a scoped memory;
  * `about` holds the item's own ids and addresses (its id, the mail account and correspondent). Only a rule kind (`RULE_MEMORY_KINDS`) may
- * forbid: a FACT, CLIENT or other record says what happened, never what to do.
+ * forbid: a FACT, CLIENT or other record says what happened, never what to do. For a `review`, a memory never forbids what it itself, or a
+ * rule memory updated since, requires a review for (`requiresReview`, Arize 13/11); a question stays forbidden.
  */
-export async function forbiddingMemory<T extends { id: string; kind?: string; key?: string | null; text: string }>(list: (query: string) => Promise<T[]>, item: string,
-  scoped: (memory: T) => boolean = () => false, about: readonly string[] = []): Promise<T | null> {
+export async function forbiddingMemory<T extends RuleMemory>(list: (query: string) => Promise<T[]>,
+  item: string, scoped: (memory: T) => boolean = () => false, about: readonly string[] = [], review = false): Promise<T | null> {
   const words = withVariants(contentWords(item));
-  // R16-10: a memory naming item ids or addresses (Cleo/Kate 18:17: other posts' ids; Cleo/Emma 19:33: another account) speaks only of them.
-  const own = namedScope(`${about.join(" ")} ${item}`);
-  const elsewhere = (named: Set<string>, mine: Set<string>) => named.size > 0 && ![...named].some((value) => mine.has(value));
-  return (await list(COPILOT_NEVER_QUERY)).find((memory) => {
-    if (memory.kind !== undefined && !RULE_MEMORY_KINDS.has(memory.kind)) return false;
-    const text = `${memory.key ?? ""} ${memory.text}`;
-    const scope = namedScope(text);
-    return forbids(text) && !elsewhere(scope.ids, own.ids) && !elsewhere(scope.addresses, own.addresses)
-      && [...contentWords(text)].filter((word) => words.has(word)).length >= (scoped(memory) ? 1 : 2);
-  }) ?? null;
+  const applies = appliesTo(item, about);
+  const bans = (await list(COPILOT_NEVER_QUERY)).filter((memory) => applies(memory) && forbids(memoryText(memory))
+    && [...contentWords(memoryText(memory))].filter((word) => words.has(word)).length >= (scoped(memory) ? 1 : 2));
+  if (!review || !bans.length) return bans[0] ?? null;
+  const required = await reviewRequiringMemories(list, item, about);
+  return bans.find((memory) => !requiresReview(memoryText(memory), words)
+    && !required.some((rule) => rule.id !== memory.id && Boolean(rule.updatedAt && memory.updatedAt && rule.updatedAt >= memory.updatedAt))) ?? null;
 }
 
 /** The refusal an agent reads: the memory id and its text, which is the habit to apply instead. */

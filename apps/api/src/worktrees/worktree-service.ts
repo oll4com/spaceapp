@@ -24,6 +24,24 @@ export interface GitExecResult {
   code: number;
 }
 
+/**
+ * The repository of the checkout whose top is `path`, read from its .git the way git finds it (no git run, CPU plan 4.2), or null when
+ * `path` has no .git of its own (a folder inside another checkout, a removed worktree) or its worktree's entry in the repository is gone.
+ */
+export async function checkoutRepoPath(path: string): Promise<string | null> {
+  const dotGit = join(path, ".git");
+  const entry = await stat(dotGit).catch(() => null);
+  if (!entry) return null;
+  let commonDir = dotGit;
+  if (!entry.isDirectory()) {
+    const gitDir = /^gitdir:\s*(.+)$/m.exec(await readFile(dotGit, "utf8").catch(() => ""))?.[1]?.trim();
+    const common = gitDir ? await readFile(join(resolve(path, gitDir), "commondir"), "utf8").catch(() => null) : null;
+    if (!gitDir || common === null) return null;
+    commonDir = resolve(path, gitDir, common.trim());
+  }
+  return commonDir.endsWith("/.git") ? dirname(commonDir) : dirname(dirname(commonDir));
+}
+
 export function execGit(root: string, args: string[], timeoutMs = 25000): Promise<GitExecResult> {
   return new Promise((resolveResult, reject) => {
     const env: NodeJS.ProcessEnv = {
@@ -595,10 +613,10 @@ export class WorktreeService {
     }
 
     try {
-      // Badges load this every 20 s per worktree: 3 git runs instead of 6 (stable 2026-10-24: ~11,000 git an hour).
-      const location = await execGit(realPath, ["rev-parse", "--show-toplevel", "--git-common-dir"]);
-      const [toplevel, commonOut] = location.code === 0 ? location.stdout.trim().split("\n") : [];
-      if (toplevel === realPath) {
+      // Badges load this every 20 s per worktree: 2 git runs instead of 6 (stable 2026-10-24: ~11,000 git an hour); the checkout's
+      // own .git answers whether this is a checkout's top and its repository (CPU plan 4.2).
+      const repoPath = await checkoutRepoPath(realPath);
+      if (repoPath) {
         const statusResult = await execGit(realPath, ["status", "--porcelain=v2", "--branch", "--no-ahead-behind"]);
         const statusLines = statusResult.code === 0 ? statusResult.stdout.split("\n") : [];
         const header = (name: string) => statusLines.find((line) => line.startsWith(`# branch.${name} `))?.slice(`# branch.${name} `.length).trim();
@@ -611,13 +629,6 @@ export class WorktreeService {
           ? (await execGit(realPath, ["rev-parse", "HEAD"])).stdout.trim()
           : oidHeader === "(initial)" ? "" : oidHeader;
         const isDirty = statusLines.some((line) => line.length > 0 && !line.startsWith("#"));
-
-        let repoPath = "";
-        if (commonOut) {
-          const commonDir = resolve(realPath, commonOut.trim());
-          repoPath = commonDir.endsWith("/.git") ? dirname(commonDir) : dirname(dirname(commonDir));
-        }
-        if (!repoPath) repoPath = "/opt/spaceapp";
 
         let aheadCount = 0;
         let behindCount = 0;

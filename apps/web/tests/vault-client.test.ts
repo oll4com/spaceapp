@@ -3,11 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   VaultCryptoError, generateVaultTransportKey, openServerShare, openWithVaultPrivateKey, sealServerShare, sealToVaultPublicKey,
   vaultBase64url, vaultItemRecordSchema, vaultRandomBytes, vaultSignupGrantOperatorMessage, vaultDelegationOperatorMessage, vaultDigest, openVaultEnvelope, vaultDelegateRequestSchema, vaultSignupGrantRequestSchema, vaultUnlockChallengeMessage, verifyVaultMessage, type VaultKdfParams,
-  vaultOperatorRequestMessage, sealVaultEnvelope, type VaultSymmetricEnvelope
+  vaultOperatorRequestMessage, sealVaultEnvelope, joinVaultRootKey, type VaultSymmetricEnvelope
 } from "@space/contracts";
 import { VAULT_AUTO_LOCK_DEFAULTS, VAULT_AUTO_LOCK_KEY, readVaultAutoLock } from "../src/features/vault/vault-auto-lock.js";
 import {
-  VaultInboxError, argon2idKdf, changeMasterPassword, confirmVaultItem, recoverVault, decryptVaultItem, encryptVaultItem, importVaultPending, planDuplicateRemoval, setUpVault, signVaultSignupGrant, delegateVaultItems, unlockVault, vaultInboxKey,
+  VaultInboxError, argon2idKdf, changeMasterPassword, confirmVaultItem, createTransferReseal, recoverVault, decryptVaultItem, encryptVaultItem, importVaultPending, planDuplicateRemoval, setUpVault, signVaultSignupGrant, delegateVaultItems, unlockVault, vaultInboxKey,
   type VaultApi, type VaultInboxApi
 } from "../src/features/vault/vault-client.js";
 
@@ -79,6 +79,24 @@ describe("Vault dock client", () => {
       expect(sent).not.toContain(vaultBase64url.encode(unlocked.vrk));
       expect(sent).not.toContain(recoveryKey);
     }
+  });
+
+  it("seals the server share to another broker's transport key for space-transfer: only that key opens it", async () => {
+    const { client, server } = await harness();
+    const { unlocked } = await setUpVault(client, "user:alice", `${SENTINEL}-master`, fastKdf);
+    const sentBefore = server.sent.length;
+    await expect(createTransferReseal(client, unlocked, "not-a-key")).rejects.toThrow(/not a Vault key/);
+    expect(server.sent.length).toBe(sentBefore);
+    const target = await generateVaultTransportKey();
+    const reseal = await createTransferReseal(client, unlocked, ` ${vaultBase64url.encode(target.publicKey)}\n`);
+    expect(reseal).toMatchObject({ format: "space-vault-reseal", version: 1, ownerUserId: "user:alice", vaultId: unlocked.vaultId,
+      sourceTransportKey: (await client.vaultBroker()).publicKey, targetTransportKey: vaultBase64url.encode(target.publicKey) });
+    const scope = { ownerUserId: "user:alice", vaultId: unlocked.vaultId, keyVersion: 1 };
+    const share = await openWithVaultPrivateKey(target.privateKey, target.publicKey, reseal.sealedServerShare, scope);
+    expect(joinVaultRootKey(unlocked.passwordShare, share)).toEqual(unlocked.vrk);
+    const other = await generateVaultTransportKey();
+    await expect(openWithVaultPrivateKey(other.privateKey, other.publicKey, reseal.sealedServerShare, scope)).rejects.toThrow();
+    expect(JSON.stringify(reseal)).not.toContain(vaultBase64url.encode(unlocked.vrk));
   });
 
   it("recovers with the recovery key: a new master password, a new epoch, and the old password opens nothing (hardening step 14)", async () => {

@@ -240,4 +240,33 @@ describe("AgentSettingsDock", () => {
     openSection("Appearance");
     expect(scrollIntoView).not.toHaveBeenCalled();
   });
+
+  it("offers the WireGuard file only inside a SpaceApp desktop app whose bridge has it", async () => {
+    renderDock();
+    expect(screen.queryByRole("button", { name: "WireGuard file" })).toBeNull();
+    cleanup();
+
+    const unset = { set: false, active: false, lastError: null };
+    const wireGuard = {
+      status: vi.fn(async () => unset),
+      choose: vi.fn(async () => ({ set: true, active: false, lastError: "handshake timed out" })),
+      remove: vi.fn(async () => unset)
+    };
+    (window as unknown as { spaceDesktop?: unknown }).spaceDesktop = { isDesktop: true, wireGuard };
+    try {
+      renderDock();
+      openSection("WireGuard file");
+      expect(await screen.findByText("Not set: SpaceApp connects directly.")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Choose WireGuard file…" })); });
+      expect(wireGuard.choose).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Set.")).toBeTruthy();
+      expect(screen.getByRole("alert").textContent).toContain("handshake timed out");
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Remove" })); });
+      expect(wireGuard.remove).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Not set: SpaceApp connects directly.")).toBeTruthy();
+    } finally {
+      delete (window as unknown as { spaceDesktop?: unknown }).spaceDesktop;
+    }
+  });
 });

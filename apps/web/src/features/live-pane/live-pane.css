@@ -1899,3 +1899,8 @@
 .live-real-view strong { font-weight: 600; }
 .live-real-view-status { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; opacity: 0.85; }
 .live-real-view button[aria-pressed="true"] { font-weight: 600; border-color: var(--room-accent, currentColor); }
+
+@media (prefers-reduced-motion: reduce) {
+  .live-pane-orb-button::before,
+  .live-pane-mini-orb::before { animation: none; }
+}

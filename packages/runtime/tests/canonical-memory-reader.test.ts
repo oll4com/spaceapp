@@ -77,6 +77,23 @@ describe('canonical production retrieval',()=>{
   expect(await bridge.list({...query,q:'παλιος κανονας'})).toEqual([]);
   expect(await bridge.list({...query,q:'ArchivedOnly'})).toEqual([]);
  });
+ it('rebuilds only what a save changed: the same entries, in the same order, as a fresh reader (CPU report 12/11)',async()=>{
+  const {bridge,paths}=await fixture();
+  const file=(b:string,c:string)=>['a','b','c'].map((id,n)=>`<!-- space-memory:id=memory:${id} -->\n## 2026-09-0${n+1} - Rule ${id}\n\n- ${[`alpha body`,b,c][n]}\n`).join('\n');
+  const listed=async()=>{
+   const fresh=createCanonicalSpaceMemoryBridge(paths);
+   for(const q of [query,{...query,q:'rule body'}]) expect(await bridge.list(q)).toEqual(await fresh.list(q));
+   return bridge.list(query);
+  };
+  await writeFile(paths.monthlyPath,file('beta body','gamma body'));
+  expect((await listed()).map(e=>e.id)).toContain('memory:a');
+  await writeFile(paths.monthlyPath,file('beta body changed','gamma body supersedes=memory:a'));
+  const changed=await listed();
+  expect(changed.map(e=>e.id)).not.toContain('memory:a');
+  expect(changed.find(e=>e.id==='memory:b')?.body).toContain('beta body changed');
+  await writeFile(paths.monthlyPath,file('beta body changed','gamma body again'));
+  expect((await listed()).map(e=>e.id)).toContain('memory:a');
+ });
  it('indexes only the designated task-policy file and refreshes edits, deletion and replacement',async()=>{
   const {bridge,root}=await fixture();
   const policy=join(root,'agent_task_policies.md');

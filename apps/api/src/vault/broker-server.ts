@@ -18,7 +18,8 @@ import {
 // copy, behind the space-vault-client socket. Its keys derive from the ARK (no key files); a use capability lives only in
 // this process's memory, so a restart voids every outstanding one; the lowest valid delegation generation per vault and a
 // hash-chained audit of ids and results are its only state. It never returns a value except sealed to a key the request
-// proves: the operator browser's signed reply key, or the Browser Host's reply key behind a one-time capability it signed.
+// proves: the operator browser's signed reply key, the Browser Host's reply key behind a one-time capability it signed, or
+// the other broker of a server move that root pinned (VAULT_MOVE_PEER_PATH).
 
 const b64 = vaultBase64url;
 const owner = z.string().min(1).max(200);
@@ -26,6 +27,8 @@ const vaultId = z.string().regex(/^vault:[A-Za-z0-9_-]{16,64}$/);
 const key = z.string().regex(/^[A-Za-z0-9_-]{40,120}$/);
 const KEY_VERSION = 1;
 const USE_TTL_MS = 60_000;
+/** The other broker of a server move (docs/agents/space-transfer.md), named only by root: { transportKey, signingKey }. */
+export const VAULT_MOVE_PEER_PATH = "/etc/space-vault-broker/move-peer.json";
 
 export const VAULT_BROKER_SOCKET = "/run/space-vault-broker/broker.sock";
 export const VAULT_CLIENT_GROUP = "space-vault-client";
@@ -100,14 +103,20 @@ const schemas = {
     ownerUserId: owner, vaultId, certificate: vaultDelegationCertificateSchema, keyEnvelope: vaultSymmetricEnvelopeSchema, inboxKeyEnvelope: vaultSymmetricEnvelopeSchema,
     entry: z.object({ handle: z.string().regex(/^vault_item:[A-Za-z0-9_-]{16,64}$/), origin: z.string().max(300),
       sealedUsername: vaultTransportEnvelopeSchema.nullable(), sealedPassword: vaultTransportEnvelopeSchema.nullable() }).strict()
-  }).strict()
+  }).strict(),
+  movePeer: z.object({ transportKey: key, signingKey: key }).strict(),
+  moveOut: z.object({
+    ownerUserId: owner, vaultId, unlockPublicKey: key, serverShareEnvelope: vaultSymmetricEnvelopeSchema,
+    delegation: z.object({ certificate: vaultDelegationCertificateSchema, keyEnvelope: vaultSymmetricEnvelopeSchema, inboxKeyEnvelope: vaultSymmetricEnvelopeSchema.optional() }).strict().optional()
+  }).strict(),
+  moveIn: z.object({ ownerUserId: owner, vaultId, certificate: vaultDelegationCertificateSchema, sealedFillKey: vaultTransportEnvelopeSchema, sealedInboxKey: vaultTransportEnvelopeSchema.optional() }).strict()
 };
 /** Grants minted under the delegation: one site, one use, short-lived; no daily cap (operator request 2026-10-20). */
 export const VAULT_AUTO_GRANT = { ttlMs: 10 * 60_000 } as const;
 
 // The operator-signed delegation (and sign-up grant) is the whole authorization for a fill (operator decision 2026-10-18,
 // plan clipboard:Ml8zElMcc4Ac): no custody report is consulted any more.
-export async function createVaultBroker(options: { ark: Uint8Array; stateDir: string; now?: () => Date }) {
+export async function createVaultBroker(options: { ark: Uint8Array; stateDir: string; now?: () => Date; movePeerPath?: string; movePeerOwnerUid?: number }) {
   const { ark, stateDir } = options;
   const now = options.now ?? (() => new Date());
   if (ark.length !== 32) throw new Error("The ARK must be 32 bytes.");
@@ -155,6 +164,17 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
   };
   const verifyDelegation = async (certificate: unknown) => {
     try { return await verifyVaultCertificate(signing.publicKey, certificate, vaultDelegationCertificateSchema, now()); } catch { throw new VaultBrokerRefusal("CERTIFICATE_REFUSED"); }
+  };
+  // The other broker of a server move: a root-owned file (and folder) nobody else writes. Reaching the socket is never enough.
+  const movePeer = () => {
+    const path = options.movePeerPath ?? VAULT_MOVE_PEER_PATH;
+    const rootUid = options.movePeerOwnerUid ?? 0;
+    try {
+      const file = lstatSync(path);
+      const dir = statSync(dirname(path));
+      if (!file.isFile() || file.uid !== rootUid || (file.mode & 0o022) !== 0 || dir.uid !== rootUid || (dir.mode & 0o022) !== 0) throw new Error("posture");
+      return schemas.movePeer.parse(JSON.parse(readFileSync(path, "utf8")));
+    } catch { throw new VaultBrokerRefusal("MOVE_NOT_PINNED"); }
   };
   const verifyCapability = async (capability: unknown) => {
     try { return await verifyVaultCertificate(signing.publicKey, capability, vaultUseCapabilitySchema, now()); } catch { throw new VaultBrokerRefusal("CAPABILITY_REFUSED"); }
@@ -366,6 +386,58 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
       const input = schemas.signupRevoke.parse(raw);
       if (!signups.revoked.includes(input.grantId)) saveSignups({ ...signups, revoked: [...signups.revoked, input.grantId] });
       return { revoked: true };
+    },
+
+    // Moving to another server without the operator's unlock (operator 20/10, 31/10: an unlock is never needed): the server share
+    // and the active delegation's fill and inbox keys leave sealed only to the broker root pinned, which rewraps them under its
+    // own ARK (/v1/server-share, /v1/move-in). No value leaves in the clear; the delegation still carries the operator's signature.
+    async "POST /v1/move-out"(raw) {
+      const input = schemas.moveOut.parse(raw);
+      const peer = b64.decode(movePeer().transportKey);
+      const keys: Uint8Array[] = [await openShare(input)];
+      try {
+        const sealedServerShare = await sealToVaultPublicKey(peer, keys[0]!, scope(input));
+        if (!input.delegation) return { sealedServerShare };
+        const delegation = await verifyDelegation(input.delegation.certificate);
+        if (delegation.ownerUserId !== input.ownerUserId || delegation.vaultId !== input.vaultId) throw new VaultBrokerRefusal("CERTIFICATE_REFUSED");
+        if (delegation.generation < (floors[floorKey(input)] ?? 0) || delegation.issuedAt <= (signups.voidBefore[floorKey(input)] ?? "")) throw new VaultBrokerRefusal("REVOKED");
+        const generationKey = await deriveDelegationKey(ark, input, delegation.generation);
+        keys.push(generationKey);
+        const context = { ...scope(input), generation: delegation.generation };
+        const fillKey = await openVaultEnvelope(generationKey, input.delegation.keyEnvelope, { ...context, purpose: "FILL_KEY" }).catch(() => { throw new VaultBrokerRefusal("KEY_REFUSED"); });
+        keys.push(fillKey);
+        const inboxEnvelope = input.delegation.inboxKeyEnvelope;
+        const inboxKey = inboxEnvelope ? await openVaultEnvelope(generationKey, inboxEnvelope, { ...context, purpose: "INBOX_KEY" }).catch(() => { throw new VaultBrokerRefusal("KEY_REFUSED"); }) : null;
+        if (inboxKey) keys.push(inboxKey);
+        return { sealedServerShare, sealedFillKey: await sealToVaultPublicKey(peer, fillKey, scope(input)),
+          ...(inboxKey ? { sealedInboxKey: await sealToVaultPublicKey(peer, inboxKey, scope(input)) } : {}) };
+      } finally { wipeVaultBytes(...keys); }
+    },
+
+    // The target side: only a delegation the pinned source broker signed (it checked the operator's signature) is signed again
+    // here, with the same claims; its keys are rewrapped under this ARK, so agents keep filling without an unlock.
+    async "POST /v1/move-in"(raw) {
+      const input = schemas.moveIn.parse(raw);
+      const peer = b64.decode(movePeer().signingKey);
+      let claims;
+      try { claims = await verifyVaultCertificate(peer, input.certificate, vaultDelegationCertificateSchema, now()); } catch { throw new VaultBrokerRefusal("CERTIFICATE_REFUSED"); }
+      if (claims.ownerUserId !== input.ownerUserId || claims.vaultId !== input.vaultId) throw new VaultBrokerRefusal("CERTIFICATE_REFUSED");
+      if (claims.generation < (floors[floorKey(input)] ?? 0)) throw new VaultBrokerRefusal("GENERATION_RETIRED");
+      const keys: Uint8Array[] = [];
+      try {
+        const open = (sealed: unknown) => openWithVaultPrivateKey(transport.privateKey, transport.publicKey, sealed, scope(input)).catch(() => { throw new VaultBrokerRefusal("SEALED_KEY_REFUSED"); });
+        const fillKey = await open(input.sealedFillKey);
+        keys.push(fillKey);
+        const inboxKey = input.sealedInboxKey ? await open(input.sealedInboxKey) : null;
+        if (inboxKey) keys.push(inboxKey);
+        const generationKey = await deriveDelegationKey(ark, input, claims.generation);
+        keys.push(generationKey);
+        const context = { ...scope(input), generation: claims.generation };
+        const keyEnvelope = await sealVaultEnvelope(generationKey, fillKey, { ...context, purpose: "FILL_KEY" });
+        const inboxKeyEnvelope = inboxKey ? await sealVaultEnvelope(generationKey, inboxKey, { ...context, purpose: "INBOX_KEY" }) : undefined;
+        raiseFloor(input, claims.generation);
+        return { certificate: await signVaultCertificate(signing.privateKey, claims, KEY_VERSION), keyEnvelope, ...(inboxKeyEnvelope ? { inboxKeyEnvelope } : {}) };
+      } finally { wipeVaultBytes(...keys); }
     },
 
     async "POST /v1/revoke"(raw) {

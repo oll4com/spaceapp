@@ -83,6 +83,8 @@ export type PaneProgressInput = z.infer<typeof paneProgressSchema>;
 const RETENTION_MS = 14 * 86_400_000;
 /** A working pane gets a heartbeat when it has been silent this long (and is tried again no sooner). */
 export const PANE_HEARTBEAT_MS = 10 * 60_000;
+/** A blocked report's --needs that only the operator's hands do: a link to open or approve, a sign-in, a one-time code, a CAPTCHA. */
+const HANDS_NEEDS = /https?:\/\/\S+|\bsign[- ]?in\b|\blog[- ]?in\b|\b2fa\b|\bmfa\b|\botp\b|captcha|passkey|authenticator|σύνδεσ|συνδεθ/i;
 /** A pane whose run failed this long ago and stays so reports BLOCKED once. */
 export const PANE_RUN_FAILED_MINUTES = 30;
 /** A working pane with no report for this long is flagged in Nous's world. */
@@ -243,8 +245,11 @@ export function createPaneReports(deps: PaneReportsDeps) {
       const at = now();
       const owner = ownerOf(room);
       const text = (value: string | undefined, max: number) => value ? cleanText(value, max) || null : null;
+      // Operator nous_msg:e68eed59 (11/11 03:01Z: Jack's blocked report needed the operator to approve an npm login link, and no card came): a blocked
+      // report whose --needs asks for the operator's hands raises the same Needs you card, through the same checks, as a needs-you.
+      const asks = input.status === "needs-you" || (input.status === "blocked" && HANDS_NEEDS.test(input.needs ?? ""));
       // R23-3: Needs you shows every artifact an ask names, so one that does not open for the owner is refused before anything is stored.
-      if (input.status === "needs-you") {
+      if (asks) {
         for (const id of artifactIdsIn([input.summary, input.needs ?? "", ...(input.options ?? []), ...(input.files ?? [])].join("\n"))) {
           const artifact = await Promise.resolve().then(() => deps.store.getArtifact(id)).catch(() => null);
           const home = artifact && !artifact.deletedAt && artifact.roomId ? await Promise.resolve().then(() => deps.store.getRoom(artifact.roomId!)).catch(() => null) : null;
@@ -266,15 +271,15 @@ export function createPaneReports(deps: PaneReportsDeps) {
       // rule e2481906): it stays until the operator answers or acknowledges it, the pane closes, a needs-you says "none", or a done or
       // failed report names the ask; other work the pane reports meanwhile keeps it (28/10 an MIT Solve ask vanished on a `started`).
       const cleared = report.status === "NEEDS_YOU" && /^(?:none|nothing|-)$/i.test(input.needs?.trim() ?? "");
-      const answered = report.status === "NEEDS_YOU" && !cleared ? await deps.answeredQuestions?.(owner, pane.id).catch(() => []) ?? [] : [];
+      const answered = asks && !cleared ? await deps.answeredQuestions?.(owner, pane.id).catch(() => []) ?? [] : [];
       const needsLeft = report.needs ? withoutAnswered(report.needs, answered) : null;
       const summaryLeft = withoutAnswered(cleanText(input.summary.replace(/\s+/g, " "), NOTIFICATION_BODY_MAX), answered);
       const dropped = [...new Set([...needsLeft?.dropped ?? [], ...summaryLeft.dropped])];
-      const askedNothing = report.status === "NEEDS_YOU" && !cleared && !(needsLeft ?? summaryLeft).text;
+      const askedNothing = asks && !cleared && !(needsLeft ?? summaryLeft).text;
       if (askedNothing) {
         await deps.notifications?.resolve(owner, agentNeedsYouKey(pane.id), `every item it asked was answered since (${dropped.join(", ")})`)
           .catch((error: unknown) => deps.log?.warn(error, "The needs-you notification could not be resolved."));
-      } else if (report.status === "NEEDS_YOU" && !cleared) {
+      } else if (asks && !cleared) {
         const given = (input.options ?? []).map((option) => cleanText(option, 80)).filter(Boolean);
         // R37-2 (2/11: agent cards 81404235 and 9e39e296 asked with no options, so the operator's answer could not be scored): an ask without
         // options takes R27-2's, "Go now" recommended; Go now opens the pane (and the first page the ask links), the others go to the pane.

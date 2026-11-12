@@ -114,6 +114,15 @@ export function fakeRepository(): VaultStore & { delegations: unknown[] } {
       key.usedAt = new Date().toISOString(); key.usedByPaneId = paneId; if (!key.kept) key.valueSealed = null;
       return true;
     },
+    handoffKeySeal: async (owner: string, id: string) => {
+      const key = handoffs.find((entry) => entry.owner === owner && entry.id === id);
+      return key?.valueSealed && (key.expiresAt === null || Date.parse(key.expiresAt) > Date.now()) ? key.valueSealed as string : null;
+    },
+    updateHandoffKey: async (owner: string, id: string, input: { label: string; valueSealed: string; kept: boolean }) => {
+      const key = handoffs.find((entry) => entry.owner === owner && entry.id === id);
+      if (!key?.valueSealed || (key.expiresAt !== null && Date.parse(key.expiresAt) <= Date.now())) return false;
+      Object.assign(key, input); return true;
+    },
     deleteHandoffKey: async (owner: string, id: string) => { const index = handoffs.findIndex((entry) => entry.owner === owner && entry.id === id); if (index < 0) return false; handoffs.splice(index, 1); return true; },
     // The Postgres repository's own claim checks are covered by its tests; here the next generation is enough.
     createDelegation: async (owner, input: any) => {

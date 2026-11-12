@@ -6,17 +6,19 @@ import { parseStoredUserSettings } from "../src/space-store.js";
 
 class FakeUserSettingsPgClient implements PgClientLike {
   readonly calls: Array<{ sql: string; values: unknown[] }> = [];
-  private settingsMap = new Map<string, unknown>();
+  private settingsMap = new Map<string, { settings: unknown; version: string }>();
+  private writes = 0;
 
   async query<R = unknown>(sql: string, values: unknown[] = []): Promise<{ rows: R[]; rowCount: number }> {
     this.calls.push({ sql, values });
 
     if (sql.includes("FROM user_settings WHERE user_id = $1")) {
       const userId = values[0] as string;
-      const settings = this.settingsMap.get(userId);
+      const row = this.settingsMap.get(userId);
+      // Like Postgres: the row's version, and its JSON only when it is not the version the store already knows ($2).
       return {
-        rows: settings ? [{ settings } as R] : [],
-        rowCount: settings ? 1 : 0
+        rows: row ? [{ version: row.version, settings: row.version === values[1] ? null : row.settings } as R] : [],
+        rowCount: row ? 1 : 0
       };
     }
 
@@ -24,7 +26,7 @@ class FakeUserSettingsPgClient implements PgClientLike {
       const userId = values[0] as string;
       if (sql.includes("DO NOTHING") && this.settingsMap.has(userId)) return { rows: [], rowCount: 0 };
       const settingsJson = values[1] as string;
-      this.settingsMap.set(userId, JSON.parse(settingsJson));
+      this.settingsMap.set(userId, { settings: JSON.parse(settingsJson), version: String(++this.writes) });
       return {
         rows: [],
         rowCount: 1
@@ -36,7 +38,7 @@ class FakeUserSettingsPgClient implements PgClientLike {
 
   /** A row as an older build stored it. */
   seed(userId: string, settings: unknown): void {
-    this.settingsMap.set(userId, settings);
+    this.settingsMap.set(userId, { settings, version: String(++this.writes) });
   }
 
   // Writes run in a transaction on a pooled client.
@@ -150,6 +152,26 @@ describe("User settings store", () => {
     expect(updated.voice.terminalHiddenShortcuts).toEqual(["clear", "deploy"]);
     expect(updated.voice.terminalContextMenu).toBe(false);
     expect((await store.getUserSettings("user:operator")).keyboardAutocorrect.enabled).toBe(false);
+  });
+
+  // CPU report 12/11 (plan 1.4): a read of an unchanged row gets no JSON and parses nothing; a write from another process is read next time.
+  it("parses a user's settings again only after their row changed, whichever process wrote it", async () => {
+    const fakeClient = new FakeUserSettingsPgClient();
+    fakeClient.seed("user:operator", { ...defaultUserSettings, uiTheme: "codex" });
+    const store = new PostgresSpaceStore(fakeClient);
+    const other = new PostgresSpaceStore(fakeClient);
+
+    const first = await store.getUserSettings("user:operator");
+    expect(first.uiTheme).toBe("codex");
+    expect(await store.getUserSettings("user:operator")).toBe(first);
+    expect(fakeClient.calls.at(-1)?.values).toEqual(["user:operator", "1"]);
+
+    await other.updateUserSettings("user:operator", { uiZoom: 130 });
+    const changed = await store.getUserSettings("user:operator");
+    expect(changed).not.toBe(first);
+    expect(changed).toMatchObject({ uiTheme: "codex", uiZoom: 130 });
+    expect(await store.getUserSettings("user:operator")).toBe(changed);
+    expect(await store.getUserSettings("user:nobody")).toEqual(defaultUserSettings);
   });
 
   it("stores, retrieves and merges all per-user cloud sync fields", async () => {

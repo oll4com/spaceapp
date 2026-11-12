@@ -24,15 +24,15 @@ afterEach(() => {
 });
 
 describe("Space auth", () => {
-  it("allows the explicit dev login only outside production", () => {
-    expect(getAuthConfig({
-      NODE_ENV: "test",
-      SPACE_DEV_LOGIN: "true"
-    }).devLogin).toBe(true);
-    expect(getAuthConfig({
-      NODE_ENV: "production",
-      SPACE_DEV_LOGIN: "true"
-    }).devLogin).toBe(false);
+  it("allows the explicit dev login only in an explicit development or test run", () => {
+    for (const NODE_ENV of ["development", "test"]) {
+      expect(getAuthConfig({ NODE_ENV, SPACE_DEV_LOGIN: "true" }).devLogin).toBe(true);
+    }
+    // Stable and dev run with NODE_ENV unset (finding S1): the flag alone no longer opens the built-in login.
+    for (const NODE_ENV of [undefined, "", "production", "staging"]) {
+      expect(getAuthConfig({ NODE_ENV, SPACE_DEV_LOGIN: "true" }).devLogin).toBe(false);
+    }
+    expect(getAuthConfig({ NODE_ENV: "development", SPACE_DEV_LOGIN: "false" }).devLogin).toBe(false);
   });
 
   it("hashes and verifies production operator passwords with the configured scrypt cost", async () => {

@@ -23,9 +23,13 @@ const paneOf = (args: unknown[]): { id: string; roomId: string } | null => {
   return candidate && typeof candidate.id === "string" && typeof candidate.roomId === "string" ? { id: candidate.id, roomId: candidate.roomId } : null;
 };
 
+/** The Browser Host could not be reached or failed the request (browser-host-proxy's translateHostError). */
+export const isBrowserHostUnavailable = (error: unknown): error is SpaceFeatureDisabledError =>
+  error instanceof SpaceFeatureDisabledError && error.errorCode === "BROWSER_HOST_UNAVAILABLE";
+
 /** The "unavailable" answer of a host that failed the request itself, rewritten to say so (code, first issue, the likely cause). */
 export function browserHostErrorText(error: unknown, args: unknown[] = []): unknown {
-  if (!(error instanceof SpaceFeatureDisabledError) || error.errorCode !== "BROWSER_HOST_UNAVAILABLE") return error;
+  if (!isBrowserHostUnavailable(error)) return error;
   const details = (error.details ?? {}) as { hostCode?: unknown; hostIssue?: unknown };
   if (details.hostCode !== "BROWSER_HOST_INTERNAL_ERROR") return error;
   const issue = typeof details.hostIssue === "string" ? details.hostIssue : null;

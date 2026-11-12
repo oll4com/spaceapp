@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { VAULT_MASK_APPLY, VAULT_MASK_REMOVE, assertBrowserHostPressKey, captureMaskedScreenshot, pressBrowserKey } from "../src/browser-sessions.js";
+import { PAIRING_MASK_APPLY, VAULT_MASK_APPLY, VAULT_MASK_REMOVE, assertBrowserHostPressKey, captureMaskedScreenshot, capturePairingMasked, pressBrowserKey } from "../src/browser-sessions.js";
 
 // Vault fence 2026-10-19 (Nous decision on the Alstom report): the pane that filled a Vault page may press keys and take
 // masked screenshots of it; every field is drawn as dots for the shot, also a password a "show password" toggle revealed.
@@ -17,9 +17,10 @@ beforeEach(() => { elements = new Map(); globals.document = fakeDocument; global
 afterEach(() => { delete globals.document; delete globals.getComputedStyle; });
 const document = { getElementById: (id: string) => fakeDocument.getElementById(id) };
 
-function fakePage(options: { failFrame?: string } = {}) {
+function fakePage(options: { failFrame?: string; failEvaluate?: boolean } = {}) {
   const calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
   let maskedDuringShot: boolean | null = null;
+  let pairingBlurredDuringShot: boolean | null = null;
   let next = 1;
   const send = async <T,>(method: string, params?: Record<string, unknown>): Promise<T> => {
     calls.push({ method, ...(params ? { params } : {}) });
@@ -28,14 +29,17 @@ function fakePage(options: { failFrame?: string } = {}) {
       if (params?.frameId === options.failFrame) throw new Error("No frame for given id found");
       return { executionContextId: next++ } as T;
     }
+    if (method === "Runtime.evaluate" && options.failEvaluate) throw new Error("Cannot find default execution context");
     if (method === "Runtime.evaluate") return { result: { value: new Function("document", "getComputedStyle", `return ${String(params?.expression)}`)(fakeDocument, () => ({})) } } as T;
     if (method === "Page.captureScreenshot") {
       maskedDuringShot = Boolean(document.getElementById("__space_vault_mask")?.textContent?.includes("-webkit-text-security:disc"));
+      pairingBlurredDuringShot = ["__space_vault_mask", "__space_pairing_mask"]
+        .some((id) => document.getElementById(id)?.textContent?.includes("[data-sensitive-masked=pairing]{filter:blur("));
       return { data: "UE5H" } as T;
     }
     return {} as T;
   };
-  return { send, calls, maskedDuringShot: () => maskedDuringShot };
+  return { send, calls, maskedDuringShot: () => maskedDuringShot, pairingBlurredDuringShot: () => pairingBlurredDuringShot };
 }
 
 describe("Vault masked screenshot and key presses", () => {
@@ -43,6 +47,7 @@ describe("Vault masked screenshot and key presses", () => {
     const page = fakePage({ failFrame: "oopif" });
     expect(await captureMaskedScreenshot(page.send)).toBe("UE5H");
     expect(page.maskedDuringShot()).toBe(true);
+    expect(page.pairingBlurredDuringShot()).toBe(true);
     const style = /input,textarea,select,\[contenteditable\]/;
     expect(VAULT_MASK_APPLY).toMatch(style);
     expect(document.getElementById("__space_vault_mask")).toBeNull();
@@ -54,6 +59,23 @@ describe("Vault masked screenshot and key presses", () => {
   it("captures nothing when the page's own frame cannot be masked", async () => {
     const page = fakePage({ failFrame: "main" });
     await expect(captureMaskedScreenshot(page.send)).rejects.toThrow(/could not mask the page/);
+    expect(page.calls.some((call) => call.method === "Page.captureScreenshot")).toBe(false);
+  });
+
+  // 12/11: the operator's Hide sensitive data no longer blurs the phone pairing QR; every picture an agent gets still does.
+  it("blurs the phone pairing QR in capture jobs and recordings and removes the blur after the shot", async () => {
+    const page = fakePage();
+    expect(await capturePairingMasked(page.send, { format: "jpeg", quality: 80 })).toBe("UE5H");
+    expect(page.pairingBlurredDuringShot()).toBe(true);
+    expect(page.calls.find((call) => call.method === "Runtime.evaluate")?.params?.expression).toBe(PAIRING_MASK_APPLY);
+    expect(page.calls.find((call) => call.method === "Page.captureScreenshot")?.params).toEqual({ format: "jpeg", quality: 80 });
+    expect(document.getElementById("__space_pairing_mask")).toBeNull();
+  });
+
+  it("captures nothing when the pairing blur cannot be applied", async () => {
+    const page = fakePage({ failEvaluate: true });
+    await expect(capturePairingMasked(page.send, { format: "png" })).rejects.toThrow(/could not blur the phone pairing code/);
+    expect(page.calls.filter((call) => call.method === "Runtime.evaluate" && call.params?.expression === PAIRING_MASK_APPLY)).toHaveLength(3);
     expect(page.calls.some((call) => call.method === "Page.captureScreenshot")).toBe(false);
   });
 

@@ -21,7 +21,7 @@ it.skipIf(postgresUnavailable)("keeps every one of a user's overlapping settings
   const pool = createSpacePgPool(`postgresql://postgres@localhost/postgres?host=${encodeURIComponent(socket)}`, { max: 12 });
   let created = false;
   try {
-    docker(["run", "--detach", "--rm", "--pull=never", "--name", name, "--network", "none", "--mount", `type=bind,source=${socket},target=/var/run/postgresql`,
+    docker(["run", "--tmpfs", "/var/lib/postgresql/data", "--detach", "--rm", "--pull=never", "--name", name, "--network", "none", "--mount", `type=bind,source=${socket},target=/var/run/postgresql`,
       "--env", "POSTGRES_HOST_AUTH_METHOD=trust", "pgvector/pgvector:0.8.7-pg17-trixie", "-c", "listen_addresses="]);
     created = true;
     let ready = false;
@@ -55,6 +55,16 @@ it.skipIf(postgresUnavailable)("keeps every one of a user's overlapping settings
     }
     // Nested maps still merge across writes.
     expect(Object.keys((await store.getUserSettings("settings:a")).roomExtraEmptySlots ?? {})).toHaveLength(20);
+
+    // CPU report 12/11 (plan 1.4): a store keeps the parsed settings until the row changes, by another process (a second store here) or by
+    // plain SQL such as a migration's, which leaves updated_at as it was.
+    const other = new PostgresSpaceStore(pool);
+    const kept = await store.getUserSettings("settings:b");
+    expect(await store.getUserSettings("settings:b")).toBe(kept);
+    await other.updateUserSettings("settings:b", { uiZoom: 130 });
+    expect(await store.getUserSettings("settings:b")).toMatchObject({ uiZoom: 130, terminalFontSize: 15 });
+    await pool.query(`UPDATE user_settings SET settings = jsonb_set(settings, '{terminalFontSize}', '17') WHERE user_id = 'settings:b'`);
+    expect(await store.getUserSettings("settings:b")).toMatchObject({ uiZoom: 130, terminalFontSize: 17 });
   } finally {
     await pool.end();
     if (created) docker(["stop", "--time", "5", name]);

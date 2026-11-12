@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SpaceFeatureDisabledError } from "@space/runtime";
 import { idleProofRooms } from "../src/proof-room-sweep.js";
 import { deleteRoomWithTeardown } from "../src/room-routes.js";
 
@@ -48,5 +49,30 @@ describe("Agent Proof room autosweep (operator 2/11 10:04 BKK)", () => {
     expect(deleted.id).toBe("room:emptyOld");
     expect(removed).toEqual(Array(3).fill("user:operator:proof:room:emptyOld"));
     expect(audits).toEqual([expect.objectContaining({ action: "room.delete", targetId: "room:emptyOld", metadata: expect.objectContaining({ reason: "proof-room-autosweep" }) })]);
+  });
+});
+
+describe("Room delete while the Browser Host is down (operator 10/11 23:46 BKK, Hetzner clone)", () => {
+  it("deletes the room when stopPane answers BROWSER_HOST_UNAVAILABLE, counting it in the audit; any other stop error still refuses", async () => {
+    let stopError: Error = new SpaceFeatureDisabledError("BROWSER_HOST_UNAVAILABLE", "The Browser Host is unavailable.", { hostCode: "BROWSER_HOST_UNAVAILABLE" });
+    const audits: Array<Record<string, unknown>> = [];
+    const deletedIds: string[] = [];
+    const proofState = { removeProofState: async () => undefined };
+    const remove = () => deleteRoomWithTeardown({
+      config: { browserEvidenceArtifactRoot: "/tmp/none" }, cliRenderAi: { dispose: () => undefined },
+      store: { listPanes: async () => [{ id: "pane:b", roomId: "room:clone", mode: "BROWSER", isClosed: false }],
+        getActivePaneBrowserSession: async (paneId: string) => ({ paneId, sessionId: "browser:1" }),
+        deleteRoom: async (id: string) => { deletedIds.push(id); return { ...room(id, "WORKSPACE", 5), paneCap: 16, description: null }; } },
+      browserSessionManager: { stopPane: async () => { throw stopError; } }, cliTerminalManager: { detachSession: async () => undefined },
+      youtubePlaybackStore: proofState, youtubeAccountStore: proofState, browserAccountStore: proofState
+    } as never, "room:clone", {
+      traceId: "trace:delete", actor: { holderType: "OPERATOR", holderId: "user:operator" }, proofStateUserId: "user:operator",
+      log: { info: () => undefined, warn: () => undefined, error: () => undefined } as never, audit: async (input) => { audits.push(input); }
+    });
+    expect((await remove()).id).toBe("room:clone");
+    expect(audits[0]).toMatchObject({ action: "room.delete", metadata: { closedBrowserSessions: 0, browserStopSkippedHostDown: 1 } });
+    stopError = new SpaceFeatureDisabledError("BROWSER_SESSIONS_DISABLED", "Browser sessions are disabled.");
+    await expect(remove()).rejects.toBe(stopError);
+    expect(deletedIds).toEqual(["room:clone"]);
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { InMemorySpaceStore } from "@space/runtime";
@@ -187,6 +187,31 @@ it("reads only the Claude process that descends from the pane host and carries t
   expect(result).toMatchObject({ nativeSessionId, busy: true, status: "busy", waitingFor: null, statusUpdatedAt: null, modelId: "claude-opus-5-5", reasoningEffort: "xhigh" });
   expect(result!.tasks.map(task => [task.title, task.status])).toEqual([["deploy the fix", "RUNNING"]]);
   expect(claudeProjectDirName("/work/repo/worktrees/wt-mv219m70-6bed9c.1")).toBe("-work-repo-worktrees-wt-mv219m70-6bed9c-1");
+});
+
+it("parses a transcript again only when its size, mtime or busy flag changed, or after 10 minutes unread (CPU plan 4.5)", async () => {
+  const paths = await fixture();
+  const transcript = join(paths.configDir, "projects", claudeProjectDirName("/opt/spaceapp/var/worktrees/space/wt-mv219m70-6bed9c"), `${nativeSessionId}.jsonl`);
+  const sessionFile = join(paths.configDir, "sessions", "5000.json");
+  const read = async (minute: number) => (await readClaudeNativeTurns(identity, { ...paths, now: () => new Date(Date.parse(observedAt) + minute * 60_000) }))!;
+  // Other words in the same bytes and mtime: only a cached timeline still names the earlier prompt.
+  const mtime = new Date("2026-10-10T07:00:10.000Z");
+  const rewrite = async (from: string, to: string) => {
+    await writeFile(transcript, (await readFile(transcript, "utf8")).replace(from, to));
+    await utimes(transcript, mtime, mtime);
+  };
+  await utimes(transcript, mtime, mtime);
+  expect((await read(0)).tasks[0]!.title).toBe("deploy the fix");
+  await rewrite("deploy the fix", "deploy the gap");
+  expect((await read(1)).tasks.map((task) => [task.title, task.status, task.timing.observedAt]))
+    .toEqual([["deploy the fix", "RUNNING", "2026-10-10T07:31:00.000Z"]]);
+  await writeFile(sessionFile, JSON.stringify({ ...JSON.parse(await readFile(sessionFile, "utf8")), status: "idle" }));
+  expect((await read(2)).tasks.map((task) => [task.title, task.status])).toEqual([["deploy the gap", "INTERRUPTED"]]);
+  await rewrite("deploy the gap", "deploy the fix");
+  expect((await read(3)).tasks[0]!.title).toBe("deploy the gap");
+  expect((await read(14)).tasks[0]!.title).toBe("deploy the fix");
+  await appendFile(transcript, `${prompt("2026-10-10T07:40:00.000Z", "and the docs")}\n`);
+  expect((await read(15)).tasks.map((task) => task.title)).toEqual(["deploy the fix", "and the docs"]);
 });
 
 it("reports Claude's own live status: waiting with its reason, a finished turn with background shells as not busy, unknown values as null", async () => {

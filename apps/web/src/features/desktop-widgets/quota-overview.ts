@@ -1,9 +1,8 @@
-import { subscriptionQuotaAtReset, type QuotaLeftAtReset, type QuotaResetCredits } from "@space/contracts";
+import { claudeSubscriptionAccounts, subscriptionQuotaAtReset, type QuotaLeftAtReset, type QuotaResetCredits } from "@space/contracts";
 import type { AccountQuotaEntry, AvailabilityCounts } from "../toolbar-metrics/AccountQuotaCards.js";
 import { countAvailability } from "../toolbar-metrics/AccountQuotaCards.js";
 import { compareAvailability } from "../toolbar-metrics/account-availability.js";
 import { antigravityAccountEntries, claudeAccountEntries, codexAccountEntries } from "../toolbar-metrics/account-entries.js";
-import { claudeSubscriptionAccounts } from "./quota-low.js";
 import type { SharedQuotaCache } from "./shared-quota-cache.js";
 import type { QuotaWindows } from "../toolbar-metrics/account-availability.js";
 
@@ -94,10 +93,10 @@ export function providerQuotaAtReset(provider: QuotaProvider, cache: Pick<Shared
   if (entries.length) return { entries, unknown: null };
   if (!list) return { entries, unknown: "not read yet" };
   const counted: WeeklySample[] = provider === "codex" ? cache?.codex?.data ?? []
-    : provider === "claude" ? (cache?.claude?.data ?? []).filter((account) => account.status === "CONNECTED")
+    : provider === "claude" ? claudeSubscriptionAccounts(cache?.claude?.data ?? [])
       : (cache?.agy?.data ?? []).filter((account) => account.status === "CONNECTED").flatMap((account) => [account.gemini, account.claude]);
   const weeks = counted.filter((week) => week.weeklyRemainingPercent != null);
-  const unknown = !counted.length ? (provider === "codex" ? "no account reported" : "no connected account")
+  const unknown = !counted.length ? (provider === "codex" ? "no account reported" : provider === "claude" ? "no subscription account" : "no connected account")
     : !weeks.length ? "no weekly usage reported"
       : weeks.every((week) => !week.weeklyResetAt) ? "no weekly reset time reported" : "weekly sample out of date";
   return { entries, unknown };
@@ -110,7 +109,7 @@ function nextReset(windows: QuotaWindows[], percent: "fiveHourRemainingPercent" 
 
 function providerOverview(provider: QuotaProvider, entries: AccountQuotaEntry[], cache: SharedQuotaCache | null, clock: number): ProviderQuotaOverview {
   // Claude: each subscription account once, the Space Gateway pool's accounts included (the pool card alone has no rows).
-  const windows: QuotaWindows[] = provider === "claude" ? claudeSubscriptionAccounts(cache?.claude)
+  const windows: QuotaWindows[] = provider === "claude" ? claudeSubscriptionAccounts(cache?.claude?.data ?? [])
     : entries.filter((entry) => entry.availability.state !== "offline").flatMap((entry) => entry.rows.map((row) => row.quota));
   const label = quotaProviderLabels[provider];
   return {

@@ -63,6 +63,8 @@ it("lets the browser cache image files, whose bytes never change", async () => {
   expect(response.statusCode).toBe(200);
   expect(response.headers["cache-control"]).toBe("private, max-age=86400, stale-while-revalidate=604800");
   expect(response.headers["content-security-policy"]).toContain("sandbox");
+  // A file link that is not an Agent File (an App Studio preview) checks /file with HEAD before it opens it (AgentFileLinks.tsx).
+  expect((await app.inject({ method: "HEAD", url: `/api/artifacts/${encodeURIComponent(file.id)}/file` })).statusCode).toBe(200);
 });
 
 it("serves byte ranges of a video so a player can scrub it (Video pane, 2026-10-21)", async () => {

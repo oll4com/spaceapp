@@ -127,4 +127,19 @@ describe("deploy queue report", () => {
     expect((await app.inject({ method: "GET", url: "/api/admin/deploy-queue/tickets/q-20261011-030000-ffff", headers: authHeaders("ADMIN") })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: "/api/admin/deploy-queue/tickets/not-a-ticket", headers: authHeaders("ADMIN") })).statusCode).toBe(422);
   });
+
+  it("rereads a ticket file that changed and keeps one call's names out of the next", async () => {
+    const now = Date.parse("2026-10-11T03:10:00.000Z");
+    const root = queueFixture(now);
+    const first = await readDeployQueue(root, now, { paneTitle: async () => "Pane A", roomName: async () => "Room A" });
+    expect(first.active.map((ticket) => ticket.id)).toContain("q-20261011-030000-0005");
+    expect(first.active[0]?.submitter?.paneTitle).toBe("Pane A");
+    writeFileSync(join(root, "tickets", "q-20261011-030000-0005.json"), JSON.stringify({
+      id: "q-20261011-030000-0005", status: "DEPLOYED", sha: "a".repeat(40), submittedAt: "2026-10-11T03:00:00.000Z", updatedAt: "2026-10-11T03:09:00.000Z"
+    }));
+    const second = await readDeployQueue(root, now);
+    expect(second.active.map((ticket) => ticket.id)).not.toContain("q-20261011-030000-0005");
+    expect(second.recent[0]).toMatchObject({ id: "q-20261011-030000-0005", status: "DEPLOYED" });
+    expect(second.active[0]?.submitter?.paneTitle).toBeNull();
+  });
 });

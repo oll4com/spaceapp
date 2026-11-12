@@ -17,6 +17,7 @@ import {
   makeSpaceId, nowIso, SpaceConflictError, type SpaceEventBus, SpaceFeatureDisabledError, type SpaceStore
 } from "@space/runtime";
 import { operatorBrowserActor } from "./browser-actors.js";
+import { isBrowserHostUnavailable } from "./browser-host-errors.js";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
 import { isCliAccountProfileRuntimeId } from "./cli-account-profile-runtimes.js";
 import type { CliPaneReopener } from "./cli-pane-reopen.js";
@@ -504,7 +505,8 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
             }
           }
         } catch (error) {
-          if (current.mode === "YOUTUBE") throw error;
+          // A YouTube pane whose Chrome did not stop stays open; a Browser Host that is down has none to stop.
+          if (current.mode === "YOUTUBE" && !isBrowserHostUnavailable(error)) throw error;
           request.log.warn({ err: error, paneId: current.id }, "browser session stop failed during pane close; closing pane anyway");
         }
       }

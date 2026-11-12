@@ -36,7 +36,7 @@ export function createUserRuntimeRegistries(config: SpaceApiConfig, sockets: Rea
     let registry = registries.get(userId);
     if (!registry) {
       const credentials = createPublicCredentialHost({ ...config, cliHostSocketPath: socket });
-      registry = createCliRuntimeRegistryCache(config, { probeCredentialStatus: credentials?.status });
+      registry = createCliRuntimeRegistryCache(config, { probeCredentialStatus: credentials?.status, credentialGeneration: credentials?.generation });
       registries.set(userId, registry);
     }
     return registry;

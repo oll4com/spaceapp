@@ -53,10 +53,10 @@ describe("NeedsYouFiles refs (a decision's files)", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("a room's Media item (no Agent File) downloads in a new tab", async () => {
+  it("a room's Media item (no Agent File) opens by its /file route in a new tab (/download serves only Agent Files)", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     render(<NeedsYouFiles refs={["artifact:Media0000001"]} />);
     fireEvent.click(screen.getByRole("button", { name: /artifact:Media0000001/ }));
-    await waitFor(() => expect(open).toHaveBeenCalledWith("/api/artifacts/artifact%3AMedia0000001/download", "_blank", "noopener"));
+    await waitFor(() => expect(open).toHaveBeenCalledWith("/api/artifacts/artifact%3AMedia0000001/file", "_blank", "noopener"));
   });
 });

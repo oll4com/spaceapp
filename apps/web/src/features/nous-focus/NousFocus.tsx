@@ -308,7 +308,7 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
       if (missed) requestNousFocus({ roomId: missed.roomId!, paneId: missed.paneId!, immediate: false, notification: missed });
     };
-    const check = () => { if (document.visibilityState === "visible") void refreshNotifications().then(offerPending); };
+    const check = () => { if (document.visibilityState === "visible") void refreshNotifications({ ifChanged: true }).then(offerPending); };
     let offeredOnLoad = false;
     const onStore = () => { if (!offeredOnLoad && peekNotificationStore().loaded) { offeredOnLoad = true; offerPending(); } };
     document.addEventListener("visibilitychange", check);

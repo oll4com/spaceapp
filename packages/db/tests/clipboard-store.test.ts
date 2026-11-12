@@ -231,4 +231,30 @@ describe("PostgresSpaceStore plan map (operator request 2026-10-25)", () => {
     expect(update?.sql).not.toContain("last_progress_at = clock_timestamp()");
     await expect(store.updateClipboardItemProgress("user:one", clipboardRow.id, { dependsOn: ["clipboard:other001"] })).rejects.toThrow("would loop");
   });
+
+  // Alex/Kate 12/11: every read cut a step's notes/proof to 1,000 and every update wrote the cut steps back.
+  it("keeps a step's 5,000-character notes and proof whole on read and on an update of another step", async () => {
+    const long = (seed: string) => Array.from({ length: 5_000 }, (_, i) => seed[i % seed.length]).join("");
+    const notes = long("Σημείωση ✓ notes \n\t ");
+    const proof = long("proof — απόδειξη 42 ");
+    const stepsJson = [{ id: "step-1", order: 1, title: "One", status: "COMPLETED", notes, proof }, { id: "step-2", order: 2, title: "Two" }];
+    const pool = new (class extends ClipboardPgPool {
+      override async query<T = unknown>(sql: string, values: unknown[] = []) {
+        if (sql.includes("SELECT") && sql.includes("FROM clipboard_items")) {
+          this.calls.push({ sql, values });
+          return { rows: [{ ...clipboardRow, source: "PLAN", title: "Plan", stepsJson } as T], rowCount: 1 };
+        }
+        return super.query<T>(sql, values);
+      }
+    })();
+    const store = new PostgresSpaceStore(pool);
+    const read = (await store.getClipboardItem("user:one", clipboardRow.id))!.steps[0]!;
+    expect(read.notes).toBe(notes);
+    expect(read.proof).toBe(proof);
+    await store.updateClipboardItemProgress("user:one", clipboardRow.id, { stepUpdate: { stepIdOrOrder: 2, status: "IN_PROGRESS" } });
+    const written = JSON.parse(pool.calls.find((call) => call.sql.includes("UPDATE clipboard_items"))!.values[5] as string) as typeof stepsJson;
+    expect(written[1]).toMatchObject({ id: "step-2", status: "IN_PROGRESS" });
+    expect(written[0]!.notes).toBe(notes);
+    expect(written[0]!.proof).toBe(proof);
+  });
 });

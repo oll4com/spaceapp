@@ -374,14 +374,14 @@ export class SystemTopologyService {
         type: "infra",
         group: "infra",
         status: "healthy",
-        detail: "example.invalid (192.0.2.10) · public-host prod ⇄ public-host sync",
+        detail: "example.invalid (pve-az, Azure 20.240.192.253) · public-host prod ⇄ public-host sync",
         host: "example.invalid",
         metrics: [
           { label: "Cluster Host", value: "example.invalid" },
           { label: "Gateway", value: "192.0.2.1" },
         ],
         subcomponents: [
-          { id: "pve-host", name: "Proxmox Hypervisor Host", category: "Hypervisor", status: "active", description: "example.invalid (192.0.2.10), Gateway 192.0.2.1, hosting virtual machines and network", riskLevel: "Cluster Node", protocol: "PVE API / Port 8006" },
+          { id: "pve-host", name: "Proxmox Hypervisor Host", category: "Hypervisor", status: "active", description: "example.invalid (pve-az, Azure 20.240.192.253), Gateway 192.0.2.1, hosting virtual machines and network", riskLevel: "Cluster Node", protocol: "PVE API / Port 8006" },
           { id: "pve-vm207", name: "public-host (Production Node)", category: "Production VM", status: "active", description: "Primary production virtual machine (8 cores, 32GB RAM) executing Space stack", riskLevel: "Production", protocol: "KVM / QEMU" },
           { id: "pve-vm218", name: "public-host (Sync & Staging Node)", category: "Replication VM", status: "active", description: "Dedicated development and replication sync node mirroring production codebase", riskLevel: "Staging", protocol: "KVM / QEMU" },
           { id: "pve-qemu-agent", name: "QEMU Guest Agent Daemon", category: "Telemetry Bridge", status: "active", description: "Bridges VM memory stats, network interfaces, and host synchronization events", riskLevel: "R0 - Low", protocol: "VirtIO Serial" },

@@ -37,7 +37,7 @@ export const programsToolArgsSchema = z.object({
   id: z.string().trim().min(1).optional().describe("read, add_mail, delete: the program's id (its slug, e.g. nvidia-inception)."),
   entry: z.record(z.string(), z.unknown()).optional().describe("upsert: the program's fields as the data files write them: id (slug, required), page "
     + "(startup, the only page; an oll4.com project's program goes there with its project), parent (e.g. NVIDIA), program, project, url, status (APPROVED = the program said yes (approved, accepted, welcome, ready to move forward), even while activation, a code, card verification "
-    + "or the credit itself is still pending: put what remains in nextAction; APPLIED = no yes yet, waiting for a reply; IN_PROGRESS = no yes yet, "
+    + "or the credit itself is still pending: put what remains in nextAction and set awaitingCompletion true (the page lists it under Waiting too; false once the credit or access is in); APPLIED = no yes yet, waiting for a reply; IN_PROGRESS = no yes yet, "
     + "the process is moving (forms, calls, reviews); REJECTED, DRAFT, NOT_APPLIED, EXPIRED, CANCELLED), statusReason, appliedAt, decidedAt, expectedReplyBy, validUntil (ISO dates), amount {text, value, currency}, "
     + "commitments, account, contacts [addresses], mails [{date, direction SENT|RECEIVED, from, to [..], subject, gmailAccount, threadId}], nextAction, "
     + "reapply {needed, why, when}, sources [space_memory:…, clipboard:…, paths], notes, givesMoney (true: cash, investment or spendable credits "
@@ -336,7 +336,7 @@ export function programLine(program: NousProgram): string {
   const dates = [["applied", program.appliedAt], ["reply by", program.expectedReplyBy], ["decided", program.decidedAt], ["valid until", program.validUntil]]
     .filter(([, value]) => value).map(([label, value]) => `${label} ${day(value as string)}`);
   return `- [${program.id}] ${program.parent} › ${program.program}${program.project ? ` (${program.project})` : ""} · ${program.status}`
-    + `${program.amount ? ` · ${program.amount.text}` : ""}${program.givesMoney ? " · MONEY" : ""}${dates.length ? ` · ${dates.join(", ")}` : ""} · ${program.mails.length} mails`
+    + `${program.amount ? ` · ${program.amount.text}` : ""}${program.givesMoney ? " · MONEY" : ""}${program.awaitingCompletion ? " · AWAITING COMPLETION" : ""}${dates.length ? ` · ${dates.join(", ")}` : ""} · ${program.mails.length} mails`
     + `${program.reapply?.needed ? ` · RE-APPLY${program.reapply.why ? `: ${program.reapply.why}` : ""}` : ""}`;
 }
 

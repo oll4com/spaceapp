@@ -23,7 +23,7 @@ import {
   NOUS_PROMPT_MAX_CHARS, NOUS_SPACE_ROUTES, nousFreeRouteAllowed, nousSpaceModel, type NousRunProvider, type ApiProviderAccountList, type AuthUser, type ClaudeUsageAccountList, type ClipboardItem, type ManagedPlanExecution, type NousCopilot, type NousGlobalHold, type PaneCliSession, type NousDecision, type NousOverview, type NousSettings,
   historySince, nousTestTargetSchema, agentLanguageOf, type GatewayAccount, type DeployQueueReport, type DeployQueueTicket, type FreelanceEgressRoute, type NousTurnReason, type Pane, type TokenUsagePeriod, type RoomAgentEvent, type SpaceNotification, type NotificationListQuery, type Artifact, type MonitoringCollectorConfig, type NeedsYouBrowserPage, type NotificationRaiseInput
 } from "@space/contracts";
-import type { LiveHistoryRepository, NousNote } from "@space/db";
+import type { LiveHistoryRepository, NousNote, RailAnswerBy } from "@space/db";
 import { InMemoryNousGoalsRepository, PostgresNousGoalsRepository, InMemoryNousProgramsRepository, PostgresNousProgramsRepository, InMemoryNousPaneSummariesRepository, PostgresNousPaneSummariesRepository, InMemoryNousAwayRepository, InMemoryPaneReportsRepository, PostgresNousAwayRepository, PostgresPaneReportsRepository, InMemoryNousFollowupsRepository, InMemoryNousPaneChecksRepository, InMemoryNousPaneCloseoutsRepository, InMemoryNousPlanMarksRepository, InMemoryNousRepository, PostgresNousFollowupsRepository, PostgresNousPaneChecksRepository, PostgresNousPaneCloseoutsRepository, PostgresNousPlanMarksRepository, PostgresNousRepository, PostgresSpaceStore, type ControlRepository, type NousRepository, type PaneReport, type RoomAgentMonitorRepository } from "@space/db";
 import { createNousFollowups, readTicket } from "./followups.js";
 import type { NousDeferral } from "./daily-review.js";
@@ -115,6 +115,7 @@ import { NOUS_CRYPTO_DIR, readCryptoReport, registerNousReportRoutes, startedOf 
 import { createNousMarketing } from "./marketing.js";
 import { ga4ConfigFromEnv } from "../marketing-copilot/stats.js";
 import { createNousCliUpdate } from "./cli-update.js";
+import { createTransferService } from "../transfer-service.js";
 import type { CliUpdateAllRunner } from "../cli-maintenance.js";
 import { createNousWeb } from "./web.js";
 import { createNousGit, git as nousGitRead } from "./git.js";
@@ -127,7 +128,7 @@ import { defaultReleasesOptions } from "../instance-releases.js";
 import { searchWebThroughClaude, searchWebThroughGateway } from "../council/web-search.js";
 import { createCopilotControl, type CopilotInvoke, type PaneCliStartDeps } from "./copilot-control.js";
 import { createNousMutes } from "./mutes.js";
-import { memoryEntries, operatorRules, readMemoryMonthlies, readOperatorFacts, recallEntries, renderOperatorFacts, type OperatorFact } from "./operator-facts.js";
+import { memoryEntries, operatorRules, readMemoryMonthlies, readOperatorFacts, recallEntries, renderOperatorFacts, warmRecall, type OperatorFact } from "./operator-facts.js";
 import { createNousTelegram, type NousTelegramDeps } from "./telegram.js";
 import { createNotesArchive } from "./notes-archive.js";
 import { createNousAway } from "./away.js";
@@ -170,7 +171,7 @@ export const nousLessonEmbedder = (config: SpaceApiConfig) => config.memoryEmbed
 export interface NousWiringOptions {
   /** Space Memory's embeddings (bge-m3 through Space Gateway): Nous's lessons are recalled with them (31/10); absent, by keywords alone. */
   memoryEmbedding?: ((texts: string[], purpose: "document" | "query") => Promise<number[][]>) | undefined;
-  config: { databaseUrl?: string | null; instance: string; spaceMemoryIndexPath?: string; spaceMemoryMonthlyPath?: string; spaceMemoryLockPath?: string; browserEvidenceArtifactRoot?: string;
+  config: { databaseUrl?: string | null; installRoot?: string; instance: string; spaceMemoryIndexPath?: string; spaceMemoryMonthlyPath?: string; spaceMemoryLockPath?: string; browserEvidenceArtifactRoot?: string;
     /** A public install (plan clipboard:1NF6u6gcCwtj): turns run in its CLI container, whose MCP calls come back to cliApiBaseUrl. */
     publicDistribution?: boolean; multiUserEnabled?: boolean; cliEnabled?: boolean; cliHostSocketPath?: string; cliApiBaseUrl?: string | null; cliWorkspaceRoot?: string;
     /** R11-1: Space Gateway's address, whose /health the gateway hold's minute probe reads (stable and dev only). */
@@ -1120,6 +1121,8 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     if (!monthlyCache || monthlyCache.at < Date.now() - 60_000) monthlyCache = { at: Date.now(), text: await readMemoryMonthlies(memoryMonthly!).catch(() => monthlyCache?.text ?? "") };
     return monthlyCache.text;
   };
+  // CPU report 12/11: the memory parsed and folded in slices at startup, not inside the first turn's recall. Its own read leaves monthlyCache unset.
+  if (memoryMonthly) void readMemoryMonthlies(memoryMonthly).then(warmRecall).catch(() => {});
   // R65: the entries with their card stems, parsed again only when the memory text changed (a card's check reads every entry).
   let cardMemoryCache: { text: string; entries: Array<{ id: string; title: string; body: string; rule: boolean; stems: Set<string> }> } | null = null;
   const cardMemory = async () => {
@@ -1357,11 +1360,13 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     const pane = action.paneId ? await Promise.resolve().then(() => store.getPane(action.paneId!)).catch(() => null) : null;
     if (pane && ownerOf(await store.getRoom(pane.roomId)) !== owner) throw new Error("That pane is not in one of your rooms.");
     const note = action.note ? { note: action.note } : {};
+    // A Needs you click is the operator's answer, already its own NEEDS_YOU ledger row; a Nous decision's (approved or by allowance) is in the ledger as Nous's.
+    const by: RailAnswerBy = decision.id.startsWith("needs-you:") ? "card" : "nous";
     switch (`${action.copilot}:${action.item}`) {
       case "MAIL:REVIEW": {
         const mailPane = pane ?? (await ownerPanes(owner, "MAIL_COPILOT"))[0];
         if (!mail || !mailPane) throw new Error("No Mail Copilot pane is open.");
-        await mail.decideReview(owner, mailPane, mailCopilotReviewDecideSchema.parse({ reviewId: action.itemId, decision: action.decision, ...(action.text ? { text: action.text } : {}), ...note }));
+        await mail.decideReview(owner, mailPane, mailCopilotReviewDecideSchema.parse({ reviewId: action.itemId, decision: action.decision, ...(action.text ? { text: action.text } : {}), ...note }), by);
         break;
       }
       case "MAIL:CAMPAIGN": {
@@ -1373,37 +1378,37 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       }
       case "MAIL:RULE":
         if (!mail) throw new Error("Mail Copilot is not available.");
-        await mail.decideRule(owner, pane, action.itemId, mailRuleDecisionSchema.parse({ decision: action.decision }));
+        await mail.decideRule(owner, pane, action.itemId, mailRuleDecisionSchema.parse({ decision: action.decision }), by);
         break;
       case "MARKETING:REVIEW":
         if (!marketing) throw new Error("Marketing Copilot is not available.");
-        await marketing.decideReview(owner, pane, action.itemId, marketingPostReviewDecisionSchema.parse({ decision: action.decision, ...(action.text ? { body: action.text } : {}), ...note }));
+        await marketing.decideReview(owner, pane, action.itemId, marketingPostReviewDecisionSchema.parse({ decision: action.decision, ...(action.text ? { body: action.text } : {}), ...note }), by);
         break;
       case "MARKETING:CAMPAIGN":
         if (!marketing || !["approve", "complete", "cancel"].includes(action.decision)) throw new Error("Unknown campaign decision.");
-        await marketing.decideCampaign(owner, pane, action.itemId, action.decision as "approve" | "complete" | "cancel");
+        await marketing.decideCampaign(owner, pane, action.itemId, action.decision as "approve" | "complete" | "cancel", by);
         break;
       case "MARKETING:RULE":
       case "FREELANCE:RULE": {
         const service = action.copilot === "MARKETING" ? marketing : freelance;
         if (!service || !["approve", "reject", "retire"].includes(action.decision)) throw new Error("Unknown rule decision.");
-        await service.decideRule(owner, pane, action.itemId, action.decision as "approve" | "reject" | "retire");
+        await service.decideRule(owner, pane, action.itemId, action.decision as "approve" | "reject" | "retire", by);
         break;
       }
       case "FREELANCE:REVIEW":
         if (!freelance) throw new Error("Freelance Copilot is not available.");
-        await freelance.decideReview(owner, pane, action.itemId, freelanceMessageReviewDecisionSchema.parse({ decision: action.decision, ...(action.text ? { body: action.text } : {}), ...note }));
+        await freelance.decideReview(owner, pane, action.itemId, freelanceMessageReviewDecisionSchema.parse({ decision: action.decision, ...(action.text ? { body: action.text } : {}), ...note }), by);
         break;
       case "FREELANCE:LEAD":
         if (!freelance) throw new Error("Freelance Copilot is not available.");
-        await freelance.decideLead(owner, pane, action.itemId, freelanceLeadDecisionSchema.parse({ decision: action.decision, ...note }));
+        await freelance.decideLead(owner, pane, action.itemId, freelanceLeadDecisionSchema.parse({ decision: action.decision, ...note }), by);
         break;
       case "SECURITY:REVIEW": {
         // Runs only after a person's yes (the decision route): the held change starts when the copilot's agent takes it.
         let reviewPane = pane;
         if (!reviewPane) for (const candidate of await ownerPanes(owner, "SECURITY_COPILOT")) if (security && (await security.items(owner, candidate)).reviews.some((review) => review.id === action.itemId)) { reviewPane = candidate; break; }
         if (!security || !reviewPane || !["approve", "decline"].includes(action.decision)) throw new Error("That Security Copilot change is not waiting any more, or the decision is not approve or decline.");
-        await security.decideReview(owner, reviewPane, action.itemId, { approve: action.decision === "approve", ...(action.note ? { note: action.note } : {}) });
+        await security.decideReview(owner, reviewPane, action.itemId, { approve: action.decision === "approve", ...(action.note ? { note: action.note } : {}) }, by);
         break;
       }
       case "MONITORING:REVIEW": {
@@ -1417,7 +1422,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       case "JOB:REVIEW": {
         const item = job ? (await job.pendingItems(owner, null)).find((entry) => entry.kind === "REVIEW" && entry.id === action.itemId) : null;
         if (!job || !item?.applicationId) throw new Error("That Job Copilot review is not waiting any more.");
-        await job.decideReview(owner, item.applicationId, jobApplyReviewDecideSchema.parse({ reviewId: action.itemId, decision: action.decision, ...note }));
+        await job.decideReview(owner, item.applicationId, jobApplyReviewDecideSchema.parse({ reviewId: action.itemId, decision: action.decision, ...note }), {}, by);
         break;
       }
       default:
@@ -1491,7 +1496,8 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   const paneRunning = async (paneId: string) => { try { return (await options.inspectPane(await store.getPane(paneId))).state === "RUNNING"; } catch { return false; } };
   const held = options.controlRepository && serverLoad ? createHeldDispatch({ repository: options.controlRepository, level: async () => (await serverLoad.read()).level,
     deliver: async (item) => item.model && await paneRunning(item.paneId) ? { ok: false, result: "Wait for this CLI turn to finish before changing models." }
-      : options.roomTools.execute(item.model ? "set_pane_model" : "send_to_pane", item.model ? { pane: item.paneId, ...item.model, when: "after_turn" }
+      : options.roomTools.execute(item.model ? "set_pane_model" : item.configure ? "space_control" : "send_to_pane", item.model ? { pane: item.paneId, ...item.model, when: "after_turn" }
+      : item.configure ? { tool: "space_execute", arguments: { actions: [{ ...item.configure, target: { paneIds: [item.paneId] } }] } }
       : { panes: [item.paneId], text: item.text, when: "after_turn" }, { roomId: item.roomId, agentPaneId: "", actorId: item.owner, requestId: makeSpaceId("nous_held"), traceId: makeSpaceId("trace") }),
     notice: async (owner, key, line) => { await late.service?.notice(owner, key, line); } }) : null;
   const copilots = copilotDeps(options, ownerPanes);
@@ -1506,7 +1512,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   const filesRoot = options.filesRoot ?? roots.root;
   const files = createNousFiles({ ...(filesRoot ? { root: filesRoot } : {}), artifactRoot, ownRoot, rooms: liveRooms,
     // One page; the reader pages (P0 1/11: reading every page of every room at once ran the API out of heap).
-    listArtifacts: async (collection, roomId, page, pageSize) => Promise.resolve(store.listArtifacts({ roomId, collection, page, pageSize, sortOrder: "desc" })),
+    listArtifacts: async (collection, roomId, page, pageSize) => (await store.listArtifactsPage({ roomId, collection, page, pageSize, sortOrder: "desc" })).data,
     getArtifact: async (id) => Promise.resolve(store.getArtifact(id)) });
   async function addAgentFile(owner: string, input: { roomId: string; sourceRoot: string; sourcePath: string; filename: string; folder: string; copiedFrom?: string | null }) {
     const record = await persistAgentFile({ store, artifactRoot, sourceRoot: input.sourceRoot, sourcePath: input.sourcePath, roomId: input.roomId, paneId: null, cliSessionId: null,
@@ -1674,14 +1680,15 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   const marketing = options.copilots.marketing ? createNousMarketing({ read: async (owner) => {
     const service = options.copilots.marketing!;
     const mailCampaigns = options.copilots.mailCampaigns;
-    const [posts, metrics, mail] = await Promise.all([service.listPosts(owner, {}),
+    const [posts, metrics, mail, site] = await Promise.all([service.listPosts(owner, {}),
       // technical: 70 days covers the 30-day trend's own 30-day window and its snapshot lookback
       service.listMetrics(owner, new Date(Date.now() - 70 * 86_400_000).toISOString().slice(0, 10)),
       mailCampaigns ? mailCampaigns.campaigns(owner).then((campaigns) => Promise.all(campaigns.filter((campaign) => campaign.status !== "DRAFT").map(async (campaign) => {
         const stats = await mailCampaigns.stats(owner, campaign.id);
         return { name: campaign.name, status: campaign.status, sent: stats.byStatus.SENT ?? 0, replied: stats.replied, bounced: stats.bounced.hard + stats.bounced.soft, unsubscribed: stats.unsubscribed };
-      }))) : null]);
-    return { posts, metrics, mail, ga4Configured: Boolean(ga4ConfigFromEnv()), trafficConfigured: Boolean(process.env.SPACE_GITHUB_TRAFFIC_TOKEN), devtoConfigured: Boolean(process.env.SPACE_DEVTO_API_KEY), now: Date.now() };
+      }))) : null,
+      Promise.resolve(store.getUserSettings(owner)).then((settings) => readSiteVisits(historySince(settings)))]);
+    return { posts, metrics, mail, site, ga4Configured: Boolean(ga4ConfigFromEnv()), trafficConfigured: Boolean(process.env.SPACE_GITHUB_TRAFFIC_TOKEN), devtoConfigured: Boolean(process.env.SPACE_DEVTO_API_KEY), now: Date.now() };
   } }) : null;
   /** space_settle_decision and POST /api/nous/decisions/:id/settle (audit 6/11): an approved decision's outcome marked done with proof, or void. */
   const settleDecision = async (owner: string, id: string, { state, proof, reason }: { state: "DONE" | "VOID"; proof: string | null; reason: string }) => {
@@ -1704,6 +1711,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     sharedFiles,
     programs,
     operatorUpdates,
+    ...(options.config.installRoot ? { transfer: createTransferService({ installRoot: options.config.installRoot, databaseUrl: options.config.databaseUrl ?? null }) } : {}),
     ...(options.cliUpdateAllRunner ? { cliUpdate: createNousCliUpdate({ runner: options.cliUpdateAllRunner, runtimeSettings: async () => store.listCliRuntimeSettings(),
       notice: (owner, key, line) => late.service?.notice(owner, key, line),
       audit: async (owner, scope, ended) => { await store.recordAuditEvent({ actorUserId: owner, traceId: makeSpaceId("trace"), action: "nous.cli_update", targetType: "cli_update_all",
@@ -1882,6 +1890,8 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     repository, runner, tools, world, settings, annotate: (owner, text) => fileMentions.annotate(owner, text),
     onOperatorMessage: (owner, at) => { noteOperatorActive(owner, at); void options.notifications.releaseQuietHeld?.(owner).catch(() => {}); score.changed(owner); },
     requestActed: (owner, keys) => requestDone.acted(owner, keys),
+    // shortcut: only Mail reviews have requiresReview memories (Marketing, Freelance and Job pass no review flag yet); add theirs when they do.
+    reviewRequiredBy: async (owner, action) => action.copilot === "MAIL" && options.copilots.mail ? options.copilots.mail.reviewRequiredBy(owner, action.itemId) : null,
     selectModel: pickModel,
     // Transitions enqueue a notice while monitor.read is still completing: use its freshly stored state here.
     tokenMode: async (owner) => {
@@ -2191,7 +2201,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
         const user = await store.getUserSettings(owner);
         return { zone: ownerWorkingTimeZone(user), quiet: (await ownerQuietNow(user, owner)).quiet };
       },
-      lastAt: async (owner) => (await repository.listMessages(owner, 3_000)).filter((message) => typeof message.meta.pendingsList === "string").at(-1)?.createdAt ?? null
+      lastAt: async (owner) => (await repository.listMessages(owner, 3_000, 0)).filter((message) => typeof message.meta.pendingsList === "string").at(-1)?.createdAt ?? null
     },
     away: async (owner) => (await away.current(owner).catch(() => null)) !== null,
     ...(serverLoad ? { serverLine: async () => renderServerLoad(await serverLoad.read()).split("\n")[0] ?? null } : {}),
@@ -2758,3 +2768,4 @@ import { InMemoryNousSharedMemoryRepository, PostgresNousSharedMemoryRepository 
 import { createSharedMemory } from "./shared-memory.js";
 import { registerSharedMemoryRoutes } from "./shared-memory-routes.js";
 import { SPACE_INSTALL_ROOT } from "@space/contracts";
+import { readSiteVisits } from "../site-visits.js";

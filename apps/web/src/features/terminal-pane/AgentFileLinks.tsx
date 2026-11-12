@@ -314,11 +314,15 @@ export function AgentFileMentions({ children }: { children: ReactNode }) {
       if (known) { setOpen(known); return true; }
       if (!ARTIFACT_HREF.test(href) && !href.startsWith(WORKSPACE_FILE_HREF)) return false;
       setProblem(null);
-      void resolve(href).then((artifact) => {
-        if (artifact) setOpen(artifact);
-        // Not an Agent File (a room's Media item): its download in a new tab.
-        else if (ARTIFACT_HREF.test(href)) window.open(href, "_blank", "noopener");
-      }, (error: unknown) => setProblem(error instanceof Error ? error.message : "The file could not be opened."));
+      void resolve(href).then(async (artifact) => {
+        if (artifact) return setOpen(artifact);
+        if (!ARTIFACT_HREF.test(href)) return;
+        // Not an Agent File (an App Studio "(web)" preview, a room's Media item): /download serves only Agent Files (12/11: 404 from a
+        // notification), /file every artifact the caller may read, as the App Studio pane shows it; one it cannot serve says so instead.
+        const file = href.replace(/\/download$/, "/file");
+        if ((await fetch(file, { method: "HEAD" })).ok) window.open(file, "_blank", "noopener");
+        else setProblem("The file could not be opened.");
+      }).catch((error: unknown) => setProblem(error instanceof Error ? error.message : "The file could not be opened."));
       return true;
     };
     return { remark: remarkAgentFileLinks(index), artifact: (href) => byHref.get(href), open: setOpen, openHref };

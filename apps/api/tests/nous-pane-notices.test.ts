@@ -69,6 +69,14 @@ describe("Nous's cards to the operator", () => {
     expect((await f.service.list(owner, { status: "ALL", source: "NOUS", limit: 5 })).find((item) => item.paneId === bob.id)!.link).toEqual({ roomId: room.id, paneId: bob.id });
   });
 
+  it("operator 12/11 23:19 BKK: an item naming a Mail review by ref or in its words opens that review without Nous naming a target", async () => {
+    const f = fixture();
+    await f.notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Turso reply", items: [{ text: "Send the reply to Turso?", ref: "mailrev:5vC-c2wzYPUf" }] });
+    expect((await f.service.list(owner, { status: "ALL", source: "NOUS", limit: 5 }))[0]!.link.target).toBe("review:mailrev:5vC-c2wzYPUf");
+    await f.notices.notify(owner, room, bob, { room: "Freelance", pane: "Bob", title: "Turso reply", items: [{ text: "Send the reply (mailrev:5vC-c2wzYPUf) to Turso?" }] });
+    expect((await f.service.list(owner, { status: "ALL", source: "NOUS", limit: 5 })).find((item) => item.paneId === bob.id)!.link.target).toBe("review:mailrev:5vC-c2wzYPUf");
+  });
+
   it("asks its first item's question with the options and Nous's recommendation; a changed question alerts again (plan clipboard:5AQvaoSR-IZa)", async () => {
     const f = fixture();
     const items = [{ text: "Pick the Upwork profile" }, { text: "Which profile should Andy use?", question: "Which profile should Andy use?", options: ["Agency", "Freelancer"], recommended: "Freelancer" }];

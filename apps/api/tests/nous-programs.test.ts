@@ -358,6 +358,10 @@ it("stores the provider's yes as APPROVED while activation steps remain: another
     .toMatchObject({ program: { status: "APPROVED" }, warning: expect.stringContaining("reached tier is the provider's yes") });
   expect(await programs.upsert(owner, { id: upcloud.id, status: "APPLIED", benefits: [credits], ...use }))
     .toMatchObject({ program: { status: "APPROVED", nextAction: upcloud.nextAction } });
+  // Its completion still pending (operator 11/11, nous_msg:a5e13d01): kept by an upsert that leaves it out, cleared by null.
+  expect(await programs.upsert(owner, { id: upcloud.id, awaitingCompletion: true })).toMatchObject({ program: { awaitingCompletion: true } });
+  expect(await programs.upsert(owner, { id: upcloud.id, notes: "credit applied soon" })).toMatchObject({ program: { awaitingCompletion: true } });
+  expect(await programs.upsert(owner, { id: upcloud.id, awaitingCompletion: null })).toMatchObject({ program: { awaitingCompletion: false } });
   const tier = { id: "aws-activate", parent: "AWS", program: "AWS Activate", status: "IN_PROGRESS", tiers: [{ name: "Founders", status: "REACHED" }], ...use };
   expect(await programs.upsert(owner, tier)).toMatchObject({ program: { status: "APPROVED" } });
   // A pending benefit is no yes yet.

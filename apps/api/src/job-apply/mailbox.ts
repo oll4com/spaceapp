@@ -1,5 +1,6 @@
 import { promises as dns } from "node:dns";
 import type { JobApplyMailboxConfig } from "@space/contracts";
+import { maskPasswordResetLinks } from "../password-reset-mask.js";
 
 // The agent never sees the mailbox credential: the API opens IMAP, searches the mailbox for the messages that match, and hands
 // back codes, links or snippets.
@@ -156,15 +157,15 @@ export function createImapMailboxFactory(options: { connectTimeoutMs?: number } 
             snippet: ""
           };
           if (!matches(summary, filter)) continue;
-          const source = withSource && message.source ? message.source.toString("utf8") : "";
+          const source = withSource && message.source ? maskPasswordResetLinks(message.source.toString("utf8")) : "";
           if (source && isMailReport(summary, source)) summary.report = true;
           results.push({ sortKey: message.uid, value: map(summary, source) });
         }
         return results.sort((left, right) => right.sortKey - left.sortKey).slice(0, filter.limit).map((entry) => entry.value);
       };
       return {
-        recent: (filter) => scan(filter, true, (summary, source) => ({ ...summary, snippet: sourceToText(source).slice(0, 300) })),
-        texts: (filter) => scan(filter, true, (summary, source) => ({ ...summary, snippet: sourceToText(source).slice(0, 300), text: `${sourceToText(source)}\n${extractLinks(source).join("\n")}` })),
+        recent: (filter) => scan(filter, true, (summary, source) => ({ ...summary, snippet: maskPasswordResetLinks(sourceToText(source)).slice(0, 300) })),
+        texts: (filter) => scan(filter, true, (summary, source) => ({ ...summary, snippet: maskPasswordResetLinks(sourceToText(source)).slice(0, 300), text: maskPasswordResetLinks(`${sourceToText(source)}\n${extractLinks(source).join("\n")}`) })),
         async moveTo(uids, folder) {
           if (!uids.length) return;
           const range = uids.join(",");

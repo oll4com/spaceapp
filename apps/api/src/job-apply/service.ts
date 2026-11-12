@@ -81,6 +81,7 @@ import {
   type TaskItem
 } from "@space/contracts";
 import type { JobApplicationFieldRecord, JobApplicationRecord, JobApplyEventRecord, JobApplyMemoryRecord, JobApplyProfileRecord, JobApplyRepository, JobApplyRunRecord } from "@space/db";
+import type { RailAnswerBy } from "@space/db";
 import { forbiddenByMemoryText, forbiddingMemory, questionMemoryTerms } from "@space/db";
 import type { PinnedMemoryHit } from "../nous/operator-facts.js";
 import { SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
@@ -1453,7 +1454,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
         payload: { reviewId, fields: input.fields.slice(0, 200), note: input.note ?? null, ...(parks ? { previousNotes: application.notes } : {}) } });
       return { reviewId };
     },
-    async decideReview(owner: string, applicationId: string, input: JobApplyReviewDecision, context: JobApplyEventContext = {}) {
+    async decideReview(owner: string, applicationId: string, input: JobApplyReviewDecision, context: JobApplyEventContext = {}, by?: RailAnswerBy) {
       const events = await repository.listEvents(owner, { applicationId, types: ["REVIEW_REQUESTED"] });
       const review = events.find((event) => event.type === "REVIEW_REQUESTED" && event.payload.reviewId === input.reviewId);
       if (!review) throw new SpaceNotFoundError("The review was not found.");
@@ -1471,7 +1472,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       }
       await record(owner, { ...context, paneId: context.paneId ?? review.paneId ?? application?.paneId ?? null, applicationId, type: "REVIEW_DECIDED",
         message: input.decision === "approve" ? "You approved the submission" : input.decision === "edit" ? `You corrected ${input.edits?.length ?? 0} field(s)` : `You rejected the submission${input.note ? `: ${input.note}` : ""}`,
-        payload: { reviewId: input.reviewId, decision: input.decision, edits: input.edits ?? [], note: input.note ?? null } });
+        payload: { reviewId: input.reviewId, decision: input.decision, edits: input.edits ?? [], note: input.note ?? null, ...(by ? { by } : {}) } });
       return { decision: input.decision };
     },
     async waitForReview(owner: string, applicationId: string, input: { reviewId: string; waitMs: number }) {

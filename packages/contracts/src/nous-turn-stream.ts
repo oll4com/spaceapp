@@ -100,15 +100,13 @@ export function splitNousStreamLines(maxLineChars: number, takeLine: (line: stri
 
 /**
  * Reads one turn's stdout as it arrives (`push` returns an error that ends the turn, else null) and gives its result once the
- * process ended (`finish` throws with the reason). Streamed, only the last JSON line (the result record) and a short tail are kept.
+ * process ended (`finish` throws with the reason). Streamed, only the last JSON line (the result record) is kept.
  */
 export function createNousTurnReader(stream: boolean, onEvent?: (event: NousTurnEvent) => void) {
   let stdout = "";
   let lastJsonLine: string | null = null;
-  let tail = "";
   const lines = splitNousStreamLines(NOUS_TURN_MAX_OUTPUT_BYTES, (line) => {
     if (!line.trim()) return;
-    tail = (tail + line).slice(-2_048);
     const event = readNousStreamLine(line);
     if (event && "result" in event) lastJsonLine = line;
     if (event && !("result" in event)) onEvent?.(event);
@@ -119,21 +117,22 @@ export function createNousTurnReader(stream: boolean, onEvent?: (event: NousTurn
       stdout += chunk;
       return stdout.length > NOUS_TURN_MAX_OUTPUT_BYTES ? OVERSIZED_RESULT : null;
     },
-    finish(code: number | null, stderr: string): NousTurnResult {
+    finish(code: number | null, stderr: string, signal: string | null = null): NousTurnResult {
       const ended = stream ? lines.end() : null;
       if (ended) throw new Error(ended);
       // Streamed, the result record went through before the launcher's quota check: its message on stderr must still reach the API.
       if (code !== 0 && NOUS_QUOTA_STOP.test(stderr)) throw new Error(stderr.split("\n").map((value) => value.trim()).find((value) => NOUS_QUOTA_STOP.test(value))!.slice(0, 300));
-      try {
-        const result = parseNousTurnOutput(stream ? lastJsonLine ?? tail : stdout);
-        // A completion printed before a crash/kill is not a successful turn.
-        if (code !== 0 && !result.isError) throw new Error(`The CLI exited with code ${code ?? "unknown"}.`);
-        return result;
-      } catch {
-        // sudo's own warnings (its timestamp directory on a read-only /run) say nothing about the turn.
-        const line = `${stderr}\n${stream ? tail : stdout}`.split("\n").map((value) => value.trim()).find((value) => value && !/^sudo: unable to (?:mkdir|open)/.test(value));
-        throw new Error((line ?? `Claude Code exited with code ${code ?? "unknown"}.`).slice(0, 300));
-      }
+      let result: NousTurnResult | null = null;
+      try { result = parseNousTurnOutput(stream ? lastJsonLine ?? "" : stdout); } catch { /* no result record: said below */ }
+      // A completion printed before a crash/kill is not a successful turn.
+      if (result && (code === 0 || result.isError)) return result;
+      // sudo's own warnings (its timestamp directory on a read-only /run) say nothing about the turn, and stdout never does: it is the
+      // turn's own stream-json (12/11: a turn killed mid-stream by a host restart put a cut fragment of its tool input in the chat).
+      const line = stderr.split("\n").map((value) => value.trim()).find((value) => value && !/^sudo: unable to (?:mkdir|open)/.test(value));
+      if (line) throw new Error(line.slice(0, 300));
+      // The wrapper exits 128+n when Claude Code was killed by signal n.
+      const killed = signal ?? ({ 137: "SIGKILL", 143: "SIGTERM" } as Record<number, string>)[code ?? -1];
+      throw new Error(`The CLI ${killed ? `was stopped by ${killed} (likely a server restart)` : `exited with code ${code ?? "unknown"}`}${result ? "" : " before it returned a result"}.`);
     }
   };
 }

@@ -114,7 +114,9 @@ export function registerMailCopilotRoutes(app: FastifyInstance, service: MailCop
   });
   app.get("/api/mail-copilot/events", routeOptions, async (request) => {
     const owner = await deps.authenticatedOwner(request);
-    const query = parseQuery(mailCopilotEventListQuerySchema, request.query ?? {});
+    const { reviewId, ...query } = parseQuery(mailCopilotEventListQuerySchema, request.query ?? {});
+    // A review by its id, however old (the same lookup deciding it uses).
+    if (reviewId) return { events: (await service.listEvents(owner, { paneId: query.paneId, types: ["REVIEW_REQUESTED"] })).filter((event) => event.payload.reviewId === reviewId) };
     return { events: await service.listEvents(owner, query) };
   });
   app.post("/api/panes/:id/mail-copilot/answer", routeOptions, async (request) => {

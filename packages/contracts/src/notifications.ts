@@ -132,6 +132,23 @@ export const needsYouTargetSchema = z.string().trim().max(500).regex(/^(?:browse
   .describe("What Go to pane opens in the pane: thread:<gmail account>:<threadId> (a Mail Copilot thread), url:https://… (that page in a browser pane: its open tab, else a new tab), "
     + "tab:<tabId> (a browser pane's tab), browser (a copilot's browser), or a copilot item: question:<id>, review:<id>, post:<id>, lead:<id>, request:<id>, campaign:<id>.");
 
+/**
+ * The mail a card is about (operator 12/11 23:19 BKK: the mail's preview inside the card, Go now opening that mail): the Mail review its target
+ * or decision names, else one its items or words name (mailrev:…), and its thread target. Go opens `review:<id>` (the review and its thread) or the thread.
+ */
+export function needsYouMail(record: { body: string; payload: Record<string, unknown>; link?: { target?: string | null } | null }): { reviewId: string | null; account: string | null; threadId: string | null; target: string } | null {
+  const target = record.link?.target ?? "";
+  const thread = /^thread:([^:]+):(.+)$/.exec(target);
+  const answer = (record.payload.ask as { answer?: { kind?: string; copilot?: string; item?: string; itemId?: string } } | undefined)?.answer;
+  const items = Array.isArray(record.payload.items) ? record.payload.items as Array<{ ref?: unknown; text?: unknown }> : [];
+  // shortcut: a card naming several reviews opens the first, until a card carries one review per item.
+  const reviewId = /^review:(mailrev:[A-Za-z0-9_-]{6,80})$/.exec(target)?.[1]
+    ?? (answer?.kind === "COPILOT_DECISION" && answer.copilot === "MAIL" && answer.item === "REVIEW" && /^mailrev:[A-Za-z0-9_-]{6,80}$/.test(answer.itemId ?? "") ? answer.itemId : undefined)
+    ?? /\bmailrev:[A-Za-z0-9_-]{6,80}/.exec([...items.map((item) => `${String(item.ref ?? "")} ${String(item.text ?? "")}`), record.body].join("\n"))?.[0];
+  if (!reviewId && !thread) return null;
+  return { reviewId: reviewId ?? null, account: thread?.[1] ?? null, threadId: thread?.[2] ?? null, target: reviewId ? `review:${reviewId}` : target };
+}
+
 export const spaceNotificationSchema = z.object({
   id: notificationIdSchema,
   ownerUserId: z.string().min(1).max(200),

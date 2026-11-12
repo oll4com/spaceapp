@@ -28,13 +28,13 @@ export function useNotificationBootstrap(userId: string | null, navigate: Notifi
     setNotificationDeliveryHandler((fresh) => {
       void api.userSettings().then((settings) => { if (!cancelled) deliverNotifications(fresh, settings.notifications); }).catch(() => deliverNotifications(fresh, null));
     });
-    const schedule = () => { if (!cancelled) timer = window.setTimeout(() => void refreshNotifications().finally(schedule), document.hidden ? POLL_HIDDEN_MS : POLL_VISIBLE_MS); };
+    const schedule = () => { if (!cancelled) timer = window.setTimeout(() => void refreshNotifications({ ifChanged: true }).finally(schedule), document.hidden ? POLL_HIDDEN_MS : POLL_VISIBLE_MS); };
     void refreshNotifications().finally(schedule);
     const onStream = (event: Event) => {
       const parsed = notificationStreamPayloadSchema.safeParse((event as CustomEvent).detail);
       if (parsed.success) ingestNotificationStreamPayload(parsed.data);
     };
-    const onVisible = () => { if (!document.hidden) void refreshNotifications(); };
+    const onVisible = () => { if (!document.hidden) void refreshNotifications({ ifChanged: true }); };
     window.addEventListener(NOTIFICATION_STREAM_EVENT, onStream);
     document.addEventListener("visibilitychange", onVisible);
     // A tap on a native (Android / desktop app) notification arrives as its id; the record decides where to go.

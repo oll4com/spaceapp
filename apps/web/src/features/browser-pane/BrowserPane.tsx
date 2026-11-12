@@ -104,9 +104,10 @@ import { relativeTime } from "../job-apply-pane/QueueTab.js";
 import { requestNousFocus } from "../nous-focus/nous-focus-events.js";
 import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
-// shortcut: below this measured toolbar width the compact Live badge (state + fps, ~97px) would squeeze the address
-// field under the 160px the browser proofs require at 320px; upgrade to a two-row toolbar if phones need the badge.
-const LIVE_STATUS_MIN_TOOLBAR_WIDTH = 480;
+// shortcut: widths measured with the widest Live badge and a 13rem account email so the address keeps the 160px the
+// browser proofs require (public-host F6); measure the toolbar's overflow instead if labels grow.
+const NARROW_TOOLBAR_WIDTH = 560; // below: no Live badge or globe, Paste moves to the menu, the account name is a short chip
+const LABELLED_TOOLBAR_WIDTH = 1340; // from 1000px to here the inline controls show icons only and the email 6.5rem
 import { loadSharedBrowserStatus } from "./browser-status.js";
 
 export {
@@ -368,6 +369,8 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     return () => observer.disconnect();
   }, []);
   const compactToolbar = toolbarWidth < 1000;
+  const narrowToolbar = toolbarWidth < NARROW_TOOLBAR_WIDTH;
+  const tightToolbar = !compactToolbar && toolbarWidth < LABELLED_TOOLBAR_WIDTH;
   const session = (response?.session as BrowserSessionV2 | undefined) ?? null;
   const audible = useBrowserPaneAudible(paneRef, isVisible);
   const { audioState, resumeAudio } = useBrowserAudio(pane.id, session?.sessionId, audible && !observerOnly && session?.status !== "CLOSED");
@@ -375,6 +378,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const activeFrame = frame ?? response?.frame ?? null;
   const statusText = session?.statusReason ?? status?.statusReason ?? t("Browser session");
   const canUseSession = Boolean(session && status?.enabled);
+  const pasteDisabled = observerOnly || !session || session.status === "CLOSED" || pending;
   const activeRecordingJob = captureJobs.find(
     (job) => job.options.kind === "RECORDING" && (job.status === "QUEUED" || job.status === "RUNNING")
   ) ?? null;
@@ -2130,7 +2134,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           </div>
         ) : null}
       </div>
-      <div className={`browser-pane-toolbar${compactToolbar ? " browser-toolbar-compact" : ""}`} data-toolbar-width={toolbarWidth}>
+      <div className={`browser-pane-toolbar${compactToolbar ? " browser-toolbar-compact" : ""}${narrowToolbar ? " browser-toolbar-narrow" : ""}${tightToolbar ? " browser-toolbar-tight" : ""}`} data-toolbar-width={toolbarWidth}>
       {googleAccounts?.profiles.length ? <div ref={googleAccountPickerRef} className="browser-account-picker"
         onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setGoogleAccountMenuOpen(false); }}
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setGoogleAccountMenuOpen(false); googleAccountButtonRef.current?.focus(); } }}>
@@ -2230,10 +2234,10 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           </button> : null}
           </> : null}
           <div ref={browserToolbarRef} className="browser-pane-actions" aria-label={t("Browser toolbar actions {title}", { title: pane.title })}>
-            <button type="button" title={t("Paste clipboard text into the page")} aria-label={t("Paste into browser {title}", { title: pane.title })}
-              onClick={() => void pasteClipboard()} disabled={observerOnly || !session || session.status === "CLOSED" || pending}>
+            {!narrowToolbar ? <button type="button" title={t("Paste clipboard text into the page")} aria-label={t("Paste into browser {title}", { title: pane.title })}
+              onClick={() => void pasteClipboard()} disabled={pasteDisabled}>
               <Clipboard aria-hidden="true" />
-            </button>
+            </button> : null}
             <div className="pane-actions-overflow browser-toolbar-overflow">
             <button
               type="button"
@@ -2255,6 +2259,8 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             {browserToolbar.isOverflowOpen ? (
               <div className="icon-overflow-menu browser-tools-menu" role="menu" aria-label={t("Browser actions {title}", { title: pane.title })}>
                 {compactToolbar ? <>
+                  {narrowToolbar ? <button type="button" role="menuitem" aria-label={t("Paste into browser {title}", { title: pane.title })} disabled={pasteDisabled}
+                    onClick={() => { browserToolbar.closeMenus(); void pasteClipboard(); }}><Clipboard aria-hidden="true" /><span>{t("Paste")}</span></button> : null}
                   <label className="browser-menu-stream">{t("Stream mode")}
                     <select name="browser-stream-mode" value={streamMode} aria-label={t("Stream mode {title}", { title: pane.title })} disabled={!session || pending}
                       onChange={(event) => void setStream(event.target.value as BrowserStreamMode)}>
@@ -2470,7 +2476,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           ) : null}
         </div>
       </div>
-      {toolbarWidth === 0 || toolbarWidth >= LIVE_STATUS_MIN_TOOLBAR_WIDTH
+      {toolbarWidth === 0 || !narrowToolbar
         ? <BrowserLiveStatus compact paneRef={paneRef} sessionId={session?.status === "CLOSED" ? null : session?.sessionId ?? null} paused={selectedFrameIndex !== null} handoff={handoff} />
         : null}
       </div>

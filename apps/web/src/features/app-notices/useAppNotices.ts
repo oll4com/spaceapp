@@ -4,6 +4,7 @@ import { readStoredSessionString, writeStoredSessionString } from "../../session
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import { connectorResultMessage } from "../agent-pane/connector-result.js";
 import { settlePairAfterStepUp } from "../auth/mobile-pair-resume.js";
+import { takePasswordStepUp } from "../settings/LoginPasswordSettingsCard.js";
 import { openSettingsSection } from "../settings/settings-section-request.js";
 
 // Workspace-wide notices: the Live debug toast, room watchdog alerts, clipboard and
@@ -119,7 +120,10 @@ export function useAppNotices(): AppNotices {
         window.history.replaceState({}, document.title, nextUrl);
       } else if (params.get("mobileStepUp") === "ok") {
         // The Google step-up reloaded the page: Pair a phone started it, so Settings > Account opens and Mobile app pairs (mobile-pair-resume).
-        if (settlePairAfterStepUp(true)) {
+        if (takePasswordStepUp()) {
+          setAccountNotice("Confirmed it is you for 5 minutes. In Settings > Login password, leave the current password empty and save the new one.");
+          window.setTimeout(() => openSettingsSection("password"), 0);
+        } else if (settlePairAfterStepUp(true)) {
           setAccountNotice("Confirmed it is you. Settings > Account > Mobile app shows your pairing code.");
           window.setTimeout(() => openSettingsSection("account"), 0);
         } else {
@@ -127,7 +131,7 @@ export function useAppNotices(): AppNotices {
         }
         window.history.replaceState({}, document.title, window.location.pathname);
       } else if (googleLinkError) {
-        if (params.has("mobileStepUpError")) settlePairAfterStepUp(false);
+        if (params.has("mobileStepUpError")) { settlePairAfterStepUp(false); takePasswordStepUp(); }
         setAccountError(decodeURIComponent(googleLinkError));
         const nextUrl = window.location.pathname;
         window.history.replaceState({}, document.title, nextUrl);

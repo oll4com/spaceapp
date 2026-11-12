@@ -430,7 +430,7 @@ export const gatewayRequestLogFilterSchema = z.object({
   accountIds: z.array(gatewayIdSchema).max(100).optional(),
   apiKeyIds: z.array(gatewayIdSchema).max(100).optional(),
   models: z.array(z.string().min(1).max(160)).max(100).optional(),
-  providers: z.array(gatewayProviderSchema).max(20).optional(),
+  providers: z.array(gatewayProviderSchema).max(gatewayProviderSchema.options.length).optional(),
   statuses: z.array(gatewayLogStatusCategorySchema).max(5).optional(),
   clients: z.array(z.string().min(1).max(80)).max(50).optional()
 }).strict();
@@ -440,7 +440,7 @@ const gatewayFacetSchema = z.object({ value: z.string().max(200), count: z.numbe
 /** The values present in a time range, with counts, for the request log filters. */
 export const gatewayRequestLogFacetsSchema = z.object({
   models: z.array(gatewayFacetSchema).max(500),
-  providers: z.array(gatewayFacetSchema).max(20),
+  providers: z.array(gatewayFacetSchema),
   statuses: z.array(gatewayFacetSchema).max(5),
   accounts: z.array(gatewayFacetSchema).max(1000),
   apiKeys: z.array(gatewayFacetSchema).max(1000),
@@ -575,7 +575,7 @@ export const gatewayStatusSchema = z.object({
   accounts: z.object({
     total: z.number().int().min(0),
     active: z.number().int().min(0),
-    byProvider: z.array(z.object({ provider: gatewayProviderSchema, total: z.number().int().min(0), active: z.number().int().min(0) }).strict()).max(20)
+    byProvider: z.array(z.object({ provider: gatewayProviderSchema, total: z.number().int().min(0), active: z.number().int().min(0) }).strict())
   }).strict(),
   apiKeys: z.object({ total: z.number().int().min(0), active: z.number().int().min(0) }).strict(),
   last24h: z.object({
@@ -685,7 +685,7 @@ export const gatewayCompressionStatsSchema = z.object({
   /** Applied compression per provider. */
   byProvider: z.array(z.object({ provider: z.string().max(40), requests: z.number().int().min(0), modifiedRequests: z.number().int().min(0),
     originalTokens: z.number().int().min(0), compressedTokens: z.number().int().min(0), tokensSaved: z.number().int().min(0),
-    savingsPercent: z.number().min(0).max(100) }).strict()).max(20),
+    savingsPercent: z.number().min(0).max(100) }).strict()),
   byStrategy: z.array(z.object({ mode: z.enum(["SHADOW", "ON"]), strategy: z.string().max(40), blocks: z.number().int().min(0),
     rejectedBlocks: z.number().int().min(0), errorBlocks: z.number().int().min(0), tokensSaved: z.number().int().min(0),
     savingsPercent: z.number().min(0).max(100) }).strict()).max(40),
@@ -788,7 +788,7 @@ export const gatewayDashboardSchema = z.object({
   topModels: z.array(z.object({ model: z.string().max(200), requests: z.number().int().min(0), costUsd: z.number().min(0) }).strict()).max(6),
   latencyByModel: z.array(gatewayLatencyRowSchema).max(20),
   routes: z.array(gatewayLatencyRowSchema).max(20),
-  pools: z.array(gatewayPoolSchema).max(20),
+  pools: z.array(gatewayPoolSchema),
   live: z.array(gatewayLiveAccountSchema).max(50),
   recent: z.array(gatewayRequestLogSchema).max(20)
 }).strict();
@@ -885,7 +885,7 @@ export const gatewayPrefixCacheSchema = z.object({
   writePremiumUsd: amount,
   netUsd: z.number(),
   byProvider: z.array(z.object({ provider: z.string().max(40), requests: count, readTokens: count, writeTokens: count, readDiscountPercent: percentValue,
-    writePremiumPercent: amount, busts: count, netUsd: z.number() }).strict()).max(20),
+    writePremiumPercent: amount, busts: count, netUsd: z.number() }).strict()),
   /** Why a conversation that had a cache read none the next time (kept request logs). */
   misses: z.object({ ttlExpiry: count, accountSwitch: count, prefixChange: count }).strict()
 }).strict();
@@ -926,7 +926,7 @@ export const gatewayHeadroomSessionSchema = z.object({
   prefixCache: gatewayPrefixCacheSchema,
   compressionVsCache: z.object({ savedTokens: count, lostToBustTokens: count, netTokens: z.number().int() }).strict(),
   agents: z.array(gatewayClientUsageSchema).max(100),
-  providers: z.array(z.object({ provider: z.string().max(40), requests: count }).strict()).max(20),
+  providers: z.array(z.object({ provider: z.string().max(40), requests: count }).strict()),
   models: z.array(gatewayModelSavingsSchema).max(100),
   recent: z.array(gatewayRequestLogSchema).max(25),
   rateLimits: z.array(z.object({ accountId: gatewayIdSchema, label: z.string().max(120), planType: z.string().max(40).nullable(), primary: gatewayUsageWindowSchema,
@@ -945,7 +945,7 @@ export const gatewayHeadroomLifetimeSchema = z.object({
     bustTokens: count, ttlMinutes: count }).strict(),
   misses: z.object({ ttlExpiry: count, accountSwitch: count, prefixChange: count }).strict(),
   waste: z.array(z.object({ name: z.string().max(40), tokens: count }).strict()).max(20),
-  providers: z.array(z.object({ provider: z.string().max(40), requests: count, inputTokens: count, outputTokens: count, savedTokens: count }).strict()).max(20),
+  providers: z.array(z.object({ provider: z.string().max(40), requests: count, inputTokens: count, outputTokens: count, savedTokens: count }).strict()),
   clients: z.array(gatewayClientUsageSchema).max(100),
   models: z.array(z.object({ model: z.string().max(160), requests: count, inputTokens: count, outputTokens: count, savedTokens: count }).strict()).max(101),
   projects: z.array(z.object({ project: z.string().max(200), requests: count, savedTokens: count, savedUsd: amount, inputTokens: count, inputCostUsd: amount,
@@ -1200,19 +1200,43 @@ export function antigravityAccountGroup<T extends WeeklyQuotaSample>(
   return group === "gemini" ? account.gemini : group === "claude" ? account.claude : undefined;
 }
 
+type ClaudePoolSample = WeeklyQuotaSample & { label: string; signInRequired?: boolean };
+/**
+ * The Claude subscription accounts with their windows, each once: the signed-in profiles, then Space Gateway's pool, which lists those
+ * profiles' accounts again by alias or e-mail's local part and also the accounts only the gateway still holds (a profile signed out).
+ */
+export function claudeSubscriptionAccounts<T extends WeeklyQuotaSample & { label?: string; status?: string; email?: string | null; pool?: ClaudePoolSample[] | null }>(
+  accounts: T[],
+): Array<T | ClaudePoolSample> {
+  const seen = new Set<string>();
+  const counted: Array<T | ClaudePoolSample> = [];
+  for (const account of accounts) {
+    if (account.status !== "CONNECTED") continue;
+    counted.push(account);
+    for (const key of [account.label, account.email, account.email?.split("@")[0]]) if (key) seen.add(key.toLowerCase());
+  }
+  for (const member of accounts.flatMap((account) => account.pool ?? [])) {
+    if (member.signInRequired || seen.has(member.label.toLowerCase())) continue;
+    seen.add(member.label.toLowerCase());
+    counted.push(member);
+  }
+  return counted;
+}
+
 /**
  * A subscription CLI's weekly quota still free at its reset (plan clipboard:FDitYcI63D9R): the one figure the pane account menus, the
- * Quotas cards, Resources → Accounts & quotas and the usage routes (`atReset`, read by the Nous app) show. Claude and Antigravity count
- * their connected accounts, Codex every account; Antigravity per quota group id (`antigravityAccountGroup`), both "Gemini" and
+ * Quotas cards, Resources → Accounts & quotas and the usage routes (`atReset`, read by the Nous app) show. Claude counts each
+ * subscription account once, Space Gateway's pool included (`claudeSubscriptionAccounts`), Antigravity its connected accounts, Codex every account; Antigravity per quota group id (`antigravityAccountGroup`), both "Gemini" and
  * "Claude · GPT" when `group` is null.
  */
 export function subscriptionQuotaAtReset(
   provider: "claude" | "codex" | "antigravity",
-  accounts: Array<WeeklyQuotaSample & { status?: string; gemini?: WeeklyQuotaSample; claude?: WeeklyQuotaSample; groups?: Array<AntigravityGroupSample & { id: string }>; resetCredits?: number | null }>,
+  accounts: Array<WeeklyQuotaSample & { status?: string; label?: string; email?: string | null; pool?: ClaudePoolSample[] | null; gemini?: WeeklyQuotaSample; claude?: WeeklyQuotaSample; groups?: Array<AntigravityGroupSample & { id: string }>; resetCredits?: number | null }>,
   at: number,
   group: string | null = null,
 ): Array<QuotaLeftAtReset & { scope: string | null; resetCredits?: QuotaResetCredits }> {
-  const counted = provider === "codex" ? accounts : accounts.filter((account) => account.status === "CONNECTED");
+  const counted: typeof accounts = provider === "codex" ? accounts
+    : provider === "claude" ? claudeSubscriptionAccounts(accounts) : accounts.filter((account) => account.status === "CONNECTED");
   const scopes: Array<[(account: (typeof accounts)[number]) => WeeklyQuotaSample | undefined, string | null]> = provider !== "antigravity"
     ? [[(account) => account, null]]
     : group ? [[(account) => antigravityAccountGroup(account, group), null]] : [[(account) => account.gemini, "Gemini"], [(account) => account.claude, "Claude · GPT"]];

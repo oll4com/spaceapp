@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { questionWordMatch } from "@space/db";
-import { fitWhole, indexWords, rankByWords, rankIndexed, type WordIndex } from "./retrieval.js";
+import { fitWhole, indexWords, inSlices, rankByWords, rankIndexed, warmFolds, type WordIndex } from "./retrieval.js";
 
 /**
  * The operator's facts and rules, pinned in Nous's world every turn (plan clipboard:bTm-5PGrt9po U2): the Space Memory entries
@@ -23,24 +23,33 @@ export function memoryEntries(text: string): MemoryEntryLite[] {
   return entriesCache.entries;
 }
 let entriesCache: { text: string; entries: MemoryEntryLite[] } | null = null;
+const splitBlocks = (text: string) => text.split(/^(?=<!-- space-memory:id=)/m);
+// Each block's entry kept by the block's text (CPU report 12/11): a save parsed every block again, ~120-170 ms of main thread on stable's 14 MB.
+// false: the block is no live entry (no id or heading, or archived). Only the last text's blocks stay.
+type ParsedBlock = { entry: MemoryEntryLite; supersedes: string[] } | false;
+let parsedBlocks = new Map<string, ParsedBlock>();
 function parseMemoryEntries(text: string): MemoryEntryLite[] {
-  const blocks = text.split(/^(?=<!-- space-memory:id=)/m).map((block) => ({
-    block,
-    id: /^<!-- space-memory:id=([A-Za-z0-9:_-]{3,200}) -->/.exec(block)?.[1] ?? null,
-    heading: /^## (\d{4}-\d{2}-\d{2}) - (?:Space canonical memory: )?(.+)$/m.exec(block),
-    createdAt: /\bcreated_at=(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/.exec(block)?.[1] ?? null,
-    active: !/(?:lifecycle_status|status)=ARCHIVED\b/.test(block)
-  })).filter((entry) => entry.id && entry.heading && entry.active);
-  const superseded = new Set(blocks.flatMap((entry) => [...entry.block.matchAll(/\bsupersedes=([A-Za-z0-9:_-]{3,200})\b/g)].map((match) => match[1]!)));
-  return blocks.filter((entry) => !superseded.has(entry.id!)).map((entry) => {
-    const lines = entry.block.split("\n");
-    const headingAt = lines.findIndex((line) => line.startsWith("## "));
-    // The body: the entry's lines after its heading, without the metadata lines (source, created_at, tags) and the next entry's heading.
-    const body = lines.slice(headingAt + 1).filter((line) => !/^\s*-\s*(?:Source:|created_at=|Tags:)/i.test(line) && !line.startsWith("<!-- "))
-      .join("\n").split(/\n## /)[0]!.trim();
-    return { id: entry.id!, date: entry.heading![1]!, createdAt: entry.createdAt ?? `${entry.heading![1]!}T00:00:00.000Z`, title: entry.heading![2]!.replace(/\s+/g, " ").trim().slice(0, 200), body,
-      tags: [...entry.block.matchAll(/^\s*-\s*Tags:\s*(.+)$/gim)].flatMap((match) => match[1]!.split(",").map((tag) => tag.trim()).filter(Boolean)) };
-  }).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const blocks = splitBlocks(text);
+  const parsed = blocks.map((block) => parsedBlocks.get(block) ?? parseBlock(block));
+  parsedBlocks = new Map(blocks.map((block, n) => [block, parsed[n]!]));
+  const live = parsed.filter((block): block is Exclude<ParsedBlock, false> => block !== false);
+  const superseded = new Set(live.flatMap((block) => block.supersedes));
+  return live.filter((block) => !superseded.has(block.entry.id)).map((block) => block.entry).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+function parseBlock(block: string): ParsedBlock {
+  const id = /^<!-- space-memory:id=([A-Za-z0-9:_-]{3,200}) -->/.exec(block)?.[1];
+  const heading = /^## (\d{4}-\d{2}-\d{2}) - (?:Space canonical memory: )?(.+)$/m.exec(block);
+  if (!id || !heading || /(?:lifecycle_status|status)=ARCHIVED\b/.test(block)) return false;
+  const lines = block.split("\n");
+  const headingAt = lines.findIndex((line) => line.startsWith("## "));
+  // The body: the entry's lines after its heading, without the metadata lines (source, created_at, tags) and the next entry's heading.
+  const body = lines.slice(headingAt + 1).filter((line) => !/^\s*-\s*(?:Source:|created_at=|Tags:)/i.test(line) && !line.startsWith("<!-- "))
+    .join("\n").split(/\n## /)[0]!.trim();
+  const createdAt = /\bcreated_at=(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/.exec(block)?.[1] ?? `${heading[1]!}T00:00:00.000Z`;
+  // Its own strings (structuredClone): the entry outlives this memory text, and V8 keeps a substring as a slice that holds the whole text alive.
+  return structuredClone({ entry: { id, date: heading[1]!, createdAt, title: heading[2]!.replace(/\s+/g, " ").trim().slice(0, 200), body,
+    tags: [...block.matchAll(/^\s*-\s*Tags:\s*(.+)$/gim)].flatMap((match) => match[1]!.split(",").map((tag) => tag.trim()).filter(Boolean)) },
+  supersedes: [...block.matchAll(/\bsupersedes=([A-Za-z0-9:_-]{3,200})\b/g)].map((match) => match[1]!) });
 }
 
 /** R11-2 (6): the operator-rule entries (tag operator-rule), with their text, newest first. */
@@ -64,9 +73,16 @@ export function recallEntries(text: string, query: string): Array<{ id: string; 
 }
 // The last memory text's entries with their folded words: parsing and folding it each recall held the API's main thread 2.7 s (stable 4/11, 12 MB, 3,000 entries).
 let recallIndex: { text: string; index: WordIndex<ReturnType<typeof memoryEntries>[number]> } | null = null;
+const recallText = (entry: MemoryEntryLite) => `${entry.title} ${entry.title} ${entry.body}`;
 function recallIndexOf(text: string) {
-  if (recallIndex?.text !== text) recallIndex = { text, index: indexWords(memoryEntries(text), (entry) => `${entry.title} ${entry.title} ${entry.body}`) };
+  if (recallIndex?.text !== text) recallIndex = { text, index: indexWords(memoryEntries(text), recallText) };
   return recallIndex.index;
+}
+/** Startup (CPU report 12/11: the first recall held the main thread 946 ms on stable): parses and folds the memory in slices, then indexes it. */
+export async function warmRecall(text: string): Promise<void> {
+  await inSlices(splitBlocks(text), (block) => parsedBlocks.has(block) || parsedBlocks.set(block, parseBlock(block)));
+  await warmFolds(memoryEntries(text).map(recallText));
+  recallIndexOf(text);
 }
 
 /** The facts that match this turn's words, whole and best first, then how many there are in all and how to find the others. */

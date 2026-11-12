@@ -179,6 +179,23 @@ describe("Agent Files links in CLI output", () => {
     expect(filed).toHaveBeenCalledTimes(1);
   });
 
+  it("opens an App Studio (web) preview id by its /file route, never the Agent Files-only download (12/11: 404 from a notification)", async () => {
+    vi.spyOn(liveRuntime.api, "artifacts").mockResolvedValue({ data: [emails], pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 } });
+    const fetched = vi.fn(async (input: RequestInfo | URL) => ({ ok: String(input).includes("WpmgHSSP86Qw"), status: String(input).includes("WpmgHSSP86Qw") ? 200 : 404 }));
+    vi.stubGlobal("fetch", fetched);
+    const opened = vi.spyOn(window, "open").mockReturnValue(null);
+    render(<AgentFileMentions><FileMentionText text={'"Home" → artifact:WpmgHSSP86Qw (web), artifact:goneGoneGone (web)'} /></AgentFileMentions>);
+
+    fireEvent.click(screen.getByRole("link", { name: "artifact:WpmgHSSP86Qw" }));
+    await waitFor(() => expect(opened).toHaveBeenCalledWith("/api/artifacts/artifact%3AWpmgHSSP86Qw/file", "_blank", "noopener"));
+    expect(fetched).toHaveBeenCalledWith("/api/artifacts/artifact%3AWpmgHSSP86Qw/file", { method: "HEAD" });
+
+    fireEvent.click(screen.getByRole("link", { name: "artifact:goneGoneGone" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("The file could not be opened.");
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect(opened.mock.calls.flat().join(" ")).not.toContain("/download");
+  });
+
   it("names why a file could not be opened", async () => {
     vi.spyOn(liveRuntime.api, "workspaceAgentFile").mockRejectedValue(new Error("No file or folder nous/x.md under the agent workspace."));
     render(<AgentFileMentions><FileMentionText text="See nous/x.md" /></AgentFileMentions>);

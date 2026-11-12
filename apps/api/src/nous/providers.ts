@@ -187,18 +187,19 @@ export function createNousProviderCatalog(options: NousProviderCatalogOptions = 
         option = { available: false, reason: "Off for Nous: the Claude API budget is never spent by Nous (operator decision 8/11).", models: [] };
       } else {
         option = await providerOption(PROVIDERS.find((item) => item.id === own)!, accounts, true);
+        // "No … model" only when the provider itself is up: an unavailable one keeps its own reason (no account, quota, catalog down).
         if (route === "ANTIGRAVITY") {
           const argon = option.models.filter((m) => m.id.includes("argon"));
           option = { ...option, models: argon, available: option.available && argon.length > 0,
-            reason: argon.length ? option.reason : "No Argon model in provider catalog." };
+            reason: argon.length || !option.available ? option.reason : "No Argon model in provider catalog." };
         } else if (route === "ANTIGRAVITY_FLASH") {
           const flash = option.models.filter((m) => m.id.startsWith("gemini-") && !m.id.includes("argon"));
           option = { ...option, models: flash, available: option.available && flash.length > 0,
-            reason: flash.length ? option.reason : "No 3.8 Flash model in provider catalog." };
+            reason: flash.length || !option.available ? option.reason : "No 3.8 Flash model in provider catalog." };
         } else if (route === "ANTIGRAVITY_CLAUDE") {
           const claude = option.models.filter((m) => m.id.startsWith("claude-"));
           option = { ...option, models: claude, available: option.available && claude.length > 0,
-            reason: claude.length ? option.reason : "No Claude model in the Antigravity catalog." };
+            reason: claude.length || !option.available ? option.reason : "No Claude model in the Antigravity catalog." };
         }
       }
       const pool = accounts.accounts.filter((account) => account.provider === NOUS_PROVIDER_GATEWAY[own]

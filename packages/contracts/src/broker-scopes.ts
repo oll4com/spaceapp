@@ -27,6 +27,8 @@ const gatewayKeyRotation = ["GET /api/admin/gateway/keys", "POST /api/admin/gate
 /** Every space-admin-action action and the only routes its session may call (plus GET /api/auth/csrf). */
 export const adminActionRoutes: Readonly<Record<string, readonly string[]>> = {
   "shared-memory-list": ["GET /api/nous/shared-memory"],
+  // Settings → Transfer (plan clipboard:HO2VBvn_aaPI): status, pair, run; a real cutover or rollback only on dev (the script refuses it on stable).
+  "transfer": ["GET /api/transfer", "POST /api/transfer/pair", "POST /api/transfer/run"],
   "gateway-account-test": ["POST /api/admin/gateway/accounts/:account/test"],
   "gateway-settings": ["PATCH /api/admin/gateway/settings"],
   "gateway-key-models": ["PATCH /api/admin/gateway/keys/:key"],
@@ -39,6 +41,7 @@ export const adminActionRoutes: Readonly<Record<string, readonly string[]>> = {
   "gateway-api-key-add": ["POST /api/admin/gateway/api-key/add"],
   "gateway-account-switch": ["PATCH /api/admin/gateway/accounts/:account"],
   "gateway-logs": ["GET /api/admin/gateway/logs"],
+  "harness-switch": ["PATCH /api/admin/harness/enabled"],
   "gateway-claude-api-key": ["GET /api/admin/gateway/claude-api-key"],
   "gateway-anthropic-billing": ["GET /api/admin/gateway/anthropic-billing"],
   "claude-usage-accounts": ["GET /api/admin/claude-usage-accounts"],
@@ -80,6 +83,7 @@ export const adminActionRoutes: Readonly<Record<string, readonly string[]>> = {
   "proof-room-agent": ["GET /api/rooms", "GET /api/rooms/:room/room-agent"],
   "proof-room-delete": ["DELETE /api/rooms/:room?kind=AGENT_PROOF"],
   "cli-runtime-enable": ["PATCH /api/cli/runtime-settings/:runtime"],
+  "cli-vpn-verify": ["POST /api/cli/egress/profiles/:profile/verify"],
   "cli-update": ["GET /api/admin/cli-maintenance/update-all/detect", "POST /api/admin/cli-maintenance/update-all/run"],
   "server-ops": ["GET /api/admin/server-ops", "POST /api/admin/server-ops/clean-disk", "POST /api/admin/server-ops/deploy-remotes",
     "POST /api/admin/server-ops/clean-worktrees", "POST /api/admin/server-ops/restart"],
@@ -92,6 +96,8 @@ export const adminActionRoutes: Readonly<Record<string, readonly string[]>> = {
   "council-start": ["POST /api/council/runs"],
   "council-action": ["POST /api/council/runs/:run/:action"],
   "nous-state": ["GET /api/nous"],
+  // Read only: the user this session's owner-scoped records land on (the access check's broker-identity item, 12/11).
+  whoami: ["GET /api/auth/owner"],
   "nous-decisions": ["GET /api/nous/decisions"],
   "nous-messages": ["GET /api/nous/messages"],
   "nous-requests": ["GET /api/nous/requests"],

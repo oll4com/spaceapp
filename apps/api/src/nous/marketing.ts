@@ -1,4 +1,4 @@
-import type { MarketingMetric, MarketingPost, NousMarketingNumbers, NousMarketingPlatform, NousMarketingPostRow, NousMarketingReport, NousMarketingSource } from "@space/contracts";
+import type { MarketingMetric, MarketingPost, NousMarketingNumbers, NousMarketingPlatform, NousMarketingPostRow, NousMarketingReport, NousMarketingSource, NousSiteFunnel } from "@space/contracts";
 
 /**
  * The Nous "Marketing" page and space_marketing_stats (operator 5/11 10:42 BKK, nous_msg:25daa8b6ebbf489499694f64, plan clipboard:netzt-nNvtBL):
@@ -96,6 +96,8 @@ export interface MarketingReportInput {
   ga4Configured: boolean;
   trafficConfigured: boolean;
   devtoConfigured?: boolean;
+  /** spaceapp.dev's own page views (site-visits.ts); absent where nothing reads them, as the copilot's snapshots. */
+  site?: NousSiteFunnel | null;
   now: number;
 }
 
@@ -147,7 +149,7 @@ export function buildMarketingReport(input: MarketingReportInput): NousMarketing
   return {
     generatedAt: new Date(now).toISOString(), score: today.score, postsScore: today.postsScore, outcomesScore: today.outcomesScore, trend7: trend(7), trend30: trend(30), daysWithoutResult, target: MARKETING_SCORE_TARGET, daysBelowTarget,
     totals: { ...count(rows), ...sum(rows), zeroReach: published.filter((row) => row.score === 0).length },
-    platforms, posts: rows, sources: marketingSources(input, rows)
+    platforms, posts: rows, sources: marketingSources(input, rows), site: input.site ?? null
   };
 }
 

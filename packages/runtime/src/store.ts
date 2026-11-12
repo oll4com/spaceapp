@@ -819,6 +819,8 @@ export interface ClaimOwnerSetupInput {
 export interface OwnerCredentials {
   user: AuthUser;
   passwordHash: string;
+  /** Set when the password came from Settings replacing a .env operator hash: SHA-256 of that SPACE_OPERATOR_PASSWORD_HASH. */
+  envPasswordSha256?: string | null;
 }
 
 /** A new invite; only the SHA-256 of its one-time token is kept. */
@@ -956,6 +958,8 @@ export interface SpaceStore {
   ): MaybePromise<SetupConnectionCheckEvent[]>;
   getOwnerCredentials(): MaybePromise<OwnerCredentials | null>;
   updateOwnerPassword(passwordHash: string): MaybePromise<AuthUser>;
+  /** Makes userId the owner (if no one else is) with this password; false when another owner or a pending setup holds the row. */
+  adoptOwnerPassword(userId: string, passwordHash: string, envPasswordSha256: string): MaybePromise<boolean>;
   upsertPublicWaitlistSignup(input: PublicWaitlistSignupInput): MaybePromise<PublicWaitlistSignupOutcome>;
   upsertClipboardItem(input: UpsertClipboardItemInput): MaybePromise<ClipboardItem>;
   getClipboardItem(ownerUserId: string, clipboardItemId: string): MaybePromise<ClipboardItem | null>;
@@ -1022,6 +1026,8 @@ export interface SpaceStore {
   acceptUserInvite?(input: { tokenSha256: string; passwordHash: string; now: string }): MaybePromise<AuthUser | null>;
   /** A user who may sign in with a password (not disabled). */
   getPasswordUser?(email: string): MaybePromise<OwnerCredentials | null>;
+  /** A new password hash for a user who already signs in with one (Settings → Login password); false when there is none to replace. */
+  updateUserPassword?(userId: string, passwordHash: string): MaybePromise<boolean>;
   setUserDisabled?(userId: string, disabled: boolean, at: string): MaybePromise<boolean>;
   isUserDisabled?(userId: string): MaybePromise<boolean>;
   // Room sharing (SPACE_MULTI_USER_ENABLED). A pane's owner is the user who opened it in a room they do not own;
@@ -1244,7 +1250,13 @@ export interface SpaceStore {
     input: Omit<CreatePaneCliTranscriptChunkInput, "sequence">,
     traceId?: string
   ): MaybePromise<PaneCliTranscriptChunk>;
-  appendPaneCliHostOutputChunk(input: CreatePaneCliHostOutputInput, traceId?: string): MaybePromise<PaneCliTranscriptChunk>;
+  /** Writes one session's host-output batches in one transaction; `preview` becomes the CLI task's preview. Returns the highest
+   * sequence of the batches' final rows, or -1 when there are none. */
+  appendPaneCliHostOutputChunks(
+    inputs: CreatePaneCliHostOutputInput[],
+    preview?: CreatePaneCliHostOutputInput | null,
+    traceId?: string
+  ): MaybePromise<number>;
   getPaneCliHostOutputCursor(sessionId: string, generationId: string): MaybePromise<number>;
   listPaneCliTranscriptChunks(sessionId: string, limit?: number): MaybePromise<PaneCliTranscriptChunk[]>;
   listManagedCodexThreadIds(): MaybePromise<string[]>;
@@ -1411,6 +1423,8 @@ export interface SpaceStore {
   createArtifact(input: CreateArtifactInput, traceId?: string): MaybePromise<ArtifactRecord>;
   getArtifact(artifactId: string): MaybePromise<Artifact>;
   listArtifacts(query?: ListArtifactsQuery): MaybePromise<Artifact[]>;
+  /** One page of listArtifacts, optionally only of `roomIds`, with the total the query matches. */
+  listArtifactsPage(query: ListArtifactsQuery, roomIds?: readonly string[]): MaybePromise<{ data: Artifact[]; totalItems: number }>;
   updateArtifactRetention(artifactId: string, input: UpdateArtifactRetentionInput): MaybePromise<Artifact>;
   deleteExpiredBrowserArtifacts(at?: string): MaybePromise<Artifact[]>;
   pruneExpiredCliTranscriptChunks(input?: {
@@ -2629,6 +2643,7 @@ export class InMemorySpaceStore implements SpaceStore {
     onboardingVersion: number;
     onboardingCompletedAt: string | null;
     starterRoomId: string | null;
+    envPasswordSha256?: string;
   } | null = null;
   private setupExecutionStates = new Map<string, SetupExecutionState>();
   private setupConnectionVerifications = new Map<string, SetupConnectionVerification>();
@@ -3217,7 +3232,8 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!ownerUserId) return null;
     const user = this.users.get(ownerUserId);
     const passwordHash = this.userPasswordHashes.get(ownerUserId);
-    return user && passwordHash ? { user, passwordHash } : null;
+    const envPasswordSha256 = this.ownerSetup?.envPasswordSha256;
+    return user && passwordHash ? { user, passwordHash, ...(envPasswordSha256 ? { envPasswordSha256 } : {}) } : null;
   }
 
   private hasUserWithEmail(email: string): boolean {
@@ -3263,6 +3279,12 @@ export class InMemorySpaceStore implements SpaceStore {
     const user = [...this.users.values()].find((candidate) => candidate.email.toLowerCase() === email.toLowerCase());
     const passwordHash = user ? this.userPasswordHashes.get(user.id) : undefined;
     return user && passwordHash && !this.disabledUsers.has(user.id) ? { user, passwordHash } : null;
+  }
+
+  updateUserPassword(userId: string, passwordHash: string): boolean {
+    if (!this.userPasswordHashes.has(userId) || this.disabledUsers.has(userId)) return false;
+    this.userPasswordHashes.set(userId, passwordHash);
+    return true;
   }
 
   setUserDisabled(userId: string, disabled: boolean): boolean {
@@ -3316,6 +3338,15 @@ export class InMemorySpaceStore implements SpaceStore {
     }
     this.userPasswordHashes.set(credentials.user.id, passwordHash);
     return credentials.user;
+  }
+
+  adoptOwnerPassword(userId: string, passwordHash: string, envPasswordSha256: string): boolean {
+    if (!this.users.has(userId) || this.disabledUsers.has(userId)) return false;
+    if (this.ownerSetup && this.ownerSetup.ownerUserId !== userId) return false;
+    this.ownerSetup ??= { tokenHash: null, expiresAt: null, ownerUserId: userId, onboardingVersion: currentSetupOnboardingVersion, onboardingCompletedAt: nowIso(), starterRoomId: null };
+    this.ownerSetup.envPasswordSha256 = envPasswordSha256;
+    this.userPasswordHashes.set(userId, passwordHash);
+    return true;
   }
 
   upsertPublicWaitlistSignup(input: PublicWaitlistSignupInput): PublicWaitlistSignupOutcome {
@@ -3651,7 +3682,8 @@ export class InMemorySpaceStore implements SpaceStore {
     let calculatedPercentage = input.progressPercentage;
     if (calculatedPercentage === undefined && steps.length > 0) {
       const sum = steps.reduce((acc, step) => acc + (step.status === "COMPLETED" ? 100 : step.progress), 0);
-      calculatedPercentage = Math.round(sum / steps.length);
+      // task:jtb3OpgyqU99: rounding (199 of 200 steps) or an open step at 100% must not derive 100%, which closes the plan.
+      calculatedPercentage = Math.min(steps.every((step) => step.status === "COMPLETED") ? 100 : 99, Math.round(sum / steps.length));
     }
     const finalPercentage = Math.max(0, Math.min(100, calculatedPercentage ?? record.item.progressPercentage ?? 0));
     let executionStatus = input.executionStatus ?? record.item.executionStatus ?? "PLANNED";
@@ -4665,7 +4697,7 @@ export class InMemorySpaceStore implements SpaceStore {
       isMinimized: false,
       isClosed: false,
       split: { parentId: null, direction: null, size: null },
-      categoryColor: null,
+      categoryColor: input.categoryColor ?? null,
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -4736,7 +4768,7 @@ export class InMemorySpaceStore implements SpaceStore {
         isMinimized: false,
         isClosed: false,
         split: input.split ?? { parentId: null, direction: null, size: null },
-        categoryColor: null,
+        categoryColor: input.categoryColor ?? null,
         createdAt: timestamp,
         updatedAt: timestamp
       };
@@ -6797,11 +6829,17 @@ export class InMemorySpaceStore implements SpaceStore {
     return this.appendPaneCliTranscriptChunk({ ...parsed, sequence }, traceId);
   }
 
-  appendPaneCliHostOutputChunk(
-    input: CreatePaneCliHostOutputInput,
+  appendPaneCliHostOutputChunks(
+    inputs: CreatePaneCliHostOutputInput[],
+    // Every in-memory row already refreshes its task's preview (appendPaneCliTranscriptChunk).
+    _preview?: CreatePaneCliHostOutputInput | null,
     traceId = makeSpaceId("trace")
-  ): PaneCliTranscriptChunk {
-    const parsed = createPaneCliHostOutputInputSchema.parse(input);
+  ): number {
+    const batches = inputs.map((input) => createPaneCliHostOutputInputSchema.parse(input));
+    return batches.reduce((last, batch) => Math.max(last, this.appendPaneCliHostOutputBatch(batch, traceId).sequence), -1);
+  }
+
+  private appendPaneCliHostOutputBatch(parsed: CreatePaneCliHostOutputInput, traceId: string): PaneCliTranscriptChunk {
     const existing = [...this.paneCliTranscriptChunks.values()].find(
       (chunk) =>
         chunk.sessionId === parsed.sessionId &&
@@ -8853,6 +8891,12 @@ export class InMemorySpaceStore implements SpaceStore {
       .sort((a, b) =>
         query.sortOrder === "asc" ? a.createdAt.localeCompare(b.createdAt) : b.createdAt.localeCompare(a.createdAt)
       );
+  }
+
+  listArtifactsPage(query: ListArtifactsQuery, roomIds?: readonly string[]): { data: Artifact[]; totalItems: number } {
+    const all = this.listArtifacts(query).filter((artifact) => !roomIds || (artifact.roomId !== null && roomIds.includes(artifact.roomId)));
+    const start = (query.page - 1) * query.pageSize;
+    return { data: all.slice(start, start + query.pageSize), totalItems: all.length };
   }
 
   getArtifact(artifactId: string): Artifact {

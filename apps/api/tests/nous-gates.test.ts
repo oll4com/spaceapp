@@ -365,6 +365,24 @@ describe("Nous's gates", () => {
     expect(ask).toHaveBeenCalledTimes(3);
   });
 
+  it("asks the same files again once the yes that asked them was settled VOID (12/11 nous_decision:38180bbd, its schedule BLOCKED)", async () => {
+    const ask = vi.fn(async (input: { title: string }) => ({ id: "nous_decision:new", status: "OPEN", title: input.title }));
+    const at = new Date(Date.now() - 4 * 60_000).toISOString();
+    const prompt = { type: "PANE_TEXT", mode: "PROMPT", roomId: "room:cleo0001", paneId: "pane:kate0001", text: "Send the reply in reply.md" };
+    const kate = { id: "pane:kate0001", roomId: "room:cleo0001", paneName: "Kate", title: "Kate", mode: "TERMINAL", terminalRuntimeId: "cli:claude", isClosed: false };
+    const approved = (id: string, file: string, outcome: string) => ({ id, ownerUserId: "user:operator", category: "EXTERNAL", title: `Earlier ${id}`, body: "", options: [],
+      recommendation: null, refs: { files: [file] }, action: prompt, status: "APPROVED", answer: null, outcome, createdAt: at, answeredAt: at });
+    const decisions = [approved("nous_decision:void0001", "/var/lib/spaceapp-user/agent-workspace/mail/reply.md", "Void (marked by Nous): its control_schedule ended BLOCKED, nothing sent"),
+      approved("nous_decision:done0001", "/var/lib/spaceapp-user/agent-workspace/mail/other.md", "Done (marked by Nous): msg-1 — sent by hand")];
+    const tools = createNousTools({ ask, decisions: async () => decisions, rooms: async () => [{ id: "room:cleo0001", name: "Cleo" }], listPanes: async () => [kate] } as unknown as NousToolDeps);
+    const ctx = { owner: "user:operator", turnId: "nous_turn:void", callId: "toolu_void", traceId: "trace:void" };
+    const question = (file: string) => tools.execute("space_ask_operator", { category: "EXTERNAL", title: `Send ${file}`, body: "Send it.", recommendation: "Yes. Πρόβλεψη: ναι (85%)",
+      action: prompt, refs: { files: [`/var/lib/spaceapp-user/agent-workspace/mail/${file}`] }, checked: ["The mail thread: no reply yet"] }, ctx);
+    expect((await question("reply.md")).ok).toBe(true);
+    expect(await question("other.md")).toMatchObject({ ok: false, refused: true, display: "nous_decision:done0001 already asks these files" });
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
   it("asks a copilot item again once it was put up for review after the yes that decided it (4/11 mktpost:FXtekInmGgmV)", async () => {
     // 4/11 23:40/23:41 UTC: yeses with decision "revise"; the Marketing Copilot fixed both posts and requested review again at 23:42/23:43, and every new ask was held.
     const ask = vi.fn(async (input: { title: string }) => ({ id: "nous_decision:new", status: "OPEN", title: input.title }));
@@ -463,6 +481,18 @@ describe("Nous's gates", () => {
     const asked = await question("nous_decision:f308fe72");
     expect(asked).toMatchObject({ ok: true, result: expect.stringContaining("nous_decision:f308fe72 closed as replaced by it.") });
     expect(withdraw).toHaveBeenCalledWith("user:operator", "nous_decision:f308fe72", "Send the free-server applications, all 47 texts", false, "nous_decision:new00001");
+    expect(ask).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ replaces: "nous_decision:f308fe72" }));
+    // Nous 13/11: an ask that resolved to the decision it replaces never cancels itself ("Replaced by" its own id).
+    withdraw.mockClear();
+    ask.mockResolvedValueOnce({ id: "nous_decision:f308fe72", status: "OPEN", title: "Send the free-server applications, all 47 texts",
+      body: 'Not covered by "May send to third parties": copilot memory mailmem:SLvZ9IZgCRc4 requires that you read this review ("…").\n\nAll in one.' } as never);
+    const same = await question("nous_decision:f308fe72");
+    // and an ask maySend did not run tells Nous why, so it is not sent another way.
+    expect(same).toMatchObject({ ok: true, result: expect.stringContaining('Asked (nous_decision:f308fe72). The operator answers in the Nous dock; you hear back in a later turn. '
+      + 'Do not repeat the question. Not covered by "May send to third parties": copilot memory mailmem:SLvZ9IZgCRc4 requires that you read this review ("…"). '
+      + "It went to the operator; do not run it another way.") });
+    expect(same.result).not.toContain("closed as replaced");
+    expect(withdraw).not.toHaveBeenCalled();
   });
 
   it("asks only with a prediction: the field, written in one form and stored, or the recommendation's line; the ledger scores the stored one (R12-11)", async () => {
@@ -689,6 +719,24 @@ describe("Nous's gates", () => {
     expect((await release({ ...approved, text: "space-queue promote" })).ok).toBe(true);
     expect((await release({ type: "RELEASE_APPROVE", product: "run-spaceapp" })).ok).toBe(true);
     expect(ask).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets a newer candidate of a train approved in the last 24 hours past R11-4, on to R13-15b (10/11, run-spaceapp 1.2.0 64c3e719 -> 1a2d8e72)", async () => {
+    const ask = vi.fn(async (input: { title: string }) => ({ id: "nous_decision:newer", status: "APPROVED", title: input.title }));
+    const yes = { id: "nous_decision:9f8a7fba", ownerUserId: "user:operator", category: "RELEASE", title: "Approve 1.2.0", body: "", options: [], recommendation: null, refs: {},
+      action: { type: "RELEASE_APPROVE", product: "run-spaceapp" }, status: "APPROVED", answer: "approve", outcome: "Approved.",
+      createdAt: new Date(Date.now() - 3_600_000).toISOString(), answeredAt: new Date(Date.now() - 3_600_000).toISOString() };
+    let trains = [{ product: "run-spaceapp", version: "1.2.0", status: "OPEN", sourceSha: "1a2d8e72aa11", approvedSha: "64c3e719bb22", captain: { paneId: "pane:emma0001", name: "Emma" } }];
+    const tools = createNousTools({ ask, rooms: async () => [{ id: "room:gates1", name: "Main" }], listPanes: async () => [], decisions: async () => [yes], liveTrains: async () => trains } as unknown as NousToolDeps);
+    const ctx = { owner: "user:operator", turnId: "nous_turn:n1", callId: "toolu_n", traceId: "trace:n" };
+    const release = () => tools.execute("space_ask_operator", { category: "RELEASE", title: "Approve 1.2.0 1a2d8e72", body: "The clean publish commit.",
+      recommendation: "Yes. Πρόβλεψη: ναι (95%)", action: { type: "RELEASE_APPROVE", product: "run-spaceapp" }, checked: ["The release train: candidate recorded"] }, ctx);
+    expect((await release()).ok).toBe(true);
+    expect(ask).toHaveBeenCalledTimes(1);
+    // The same approved candidate again is still refused by R11-4.
+    trains = [{ ...trains[0]!, approvedSha: "1a2d8e72aa11" }];
+    expect(await release()).toMatchObject({ ok: false, display: "nous_decision:9f8a7fba already approved this" });
+    expect(ask).toHaveBeenCalledTimes(1);
   });
 
   it("asks for a hotfix approval only once its ticket waits on the stable queue (R10 hotfix-grant: ticket first, one decision)", async () => {
@@ -939,7 +987,7 @@ describe("Nous's gates", () => {
       // The 4/11 10:26 BKK card named the site only as "X".
       const x = { text: "X @oll4com: σύνδεση για τα posts Hetzner", steps: ["Open https://x.com/login", "Sign in as @oll4com"] };
       expect(await card("Dana", x)).toMatchObject({ ok: false, refused: true, display: "Space holds a sign-in for this site", result: expect.stringContaining("Vault login \"X @oll4com\" for x.com") });
-      expect(await tools.execute("space_focus_pane", { room: "Alex", pane: "Dana", reason: "Sign in to Claude for the Max plan page", checked: ["Dana: login page"] }, ctx))
+      expect(await tools.execute("space_focus_pane", { room: "Alex", pane: "Dana", reason: "Sign in to claude.ai for the Max plan page", checked: ["Dana: login page"] }, ctx))
         .toMatchObject({ refused: true, result: expect.stringContaining("site sign-in record claude.ai (GOOGLE, 1 successful)") });
       expect(notify).not.toHaveBeenCalled();
       // The stored method failed: the card goes, and says what was tried.
@@ -950,6 +998,25 @@ describe("Nous's gates", () => {
       expect((await card("Dana", { text: "Άνοιξε τον σύνδεσμο του X για το post", steps: ["Open the post's link in the Main room", "Read the post"] })).ok).toBe(true);
       expect((await card("Dana", { text: "Sign in to skroutz.gr for the return", steps: ["Open https://www.skroutz.gr/login", "Sign in"] })).ok).toBe(true);
       expect((await card("Dana", { text: x.text, ruleDiffers: "This is the second X account, not the Vault's", steps: ["Open the X app", "Sign in as @oll4news"] })).ok).toBe(true);
+    });
+
+    it("(2) matches only the host of the card's link: 11/11 03:08Z an npmjs.com card was refused for spaceapp.dev, web.app and 192.0.2.x logins", async () => {
+      const siteSignins = new InMemorySiteSigninsRepository();
+      await siteSignins.record("user:operator", { site: "spaceapp.dev", method: "OTHER", outcome: "SUCCESS" }, "test");
+      const items = [{ handle: "vault:s1", label: "SpaceApp dev", origins: ["https://spaceapp.dev"] }, { handle: "vault:w1", label: "Stremio subs", origins: ["https://stremio-dual-subs.web.app"] },
+        { handle: "vault:p1", label: "Proxmox public-host", origins: ["https://192.0.2.5:8006"] }, { handle: "vault:l1", label: "Local Space", origins: ["http://127.0.0.1:4911"] }];
+      // The Vault's list: everything without a site (what R66 reads), by host with one (vault/agent.ts listFilter).
+      const call = vi.fn(async ({ body }: { body: { site?: string } }) => ({ status: "LISTED", auditId: null, items: items.filter((item) => !body.site
+        || item.origins.some((origin) => { const host = new URL(origin).hostname; return host === body.site || host.endsWith(`.${body.site}`); })) }));
+      const { card, tools } = setup({ siteSignins, vault: { agent: { call } } } as unknown as Partial<NousToolDeps>);
+      // The text names no host: the old brand match read "spaceapp" (run-spaceapp), "web" (web.app) and the "0" of 1.2.0 as the IP logins' brand "0".
+      const reason = "Approve the npm login link for Jack's run-spaceapp 1.2.0 train (web login) as operator";
+      const steps = ["Open https://www.npmjs.com/login?next=/login/cli/abc", "Approve as operator"];
+      expect(await card("Dana", { text: reason, steps })).toMatchObject({ ok: true });
+      expect(await tools.execute("space_focus_pane", { room: "Alex", pane: "Dana", reason, steps, checked: ["Dana: npm login link waiting"] }, ctx)).not.toMatchObject({ refused: true });
+      // An npmjs.com login in the Vault is still the stored method.
+      items.push({ handle: "vault:n1", label: "npm operator", origins: ["https://www.npmjs.com"] });
+      expect(await card("Dana", { text: reason, steps })).toMatchObject({ refused: true, result: expect.stringContaining("npm operator") });
     });
 
     it("(3) answers an installed app version question from Space's device records (4/11 «δεν μου εμφανισε εκδοση»)", async () => {
@@ -1062,6 +1129,23 @@ describe("Nous's gates", () => {
       expect((await tools.execute("space_focus_pane", { room: "Alex", pane: "Dana", reason: "Enter CVV for billing",
         checked: ["At the final card-input form", "Verified total: $20/month tier"] }, ctx)).ok).toBe(true);
       expect(notify).toHaveBeenCalledTimes(2);
+    });
+
+    it("(8) holds only card entry, never a card that names a payout, a review card or a 2FA card (12-13/11: Alignerr ID check, Arize review, Upwork 2FA)", async () => {
+      const { card, notify } = setup();
+      // Dino/Nik 17:38Z: the Persona ID + selfie check; the ID country becomes the payout country («πληρωμή»).
+      expect((await card("Max", { text: "Alignerr identity check: Persona ID + selfie", target: "url:https://app.alignerr.com/persona-reverification",
+        steps: ["Open https://app.alignerr.com/persona-reverification", "Scan the ID: its country becomes the payout country (χώρα πληρωμής)", "Take the selfie"] })).ok).toBe(true);
+      // Dino/Jack 17:49Z: the Mail review card of thread "Arize AX startup pricing".
+      expect((await card("Dana", { text: "Review card: the reply to Arize AX startup pricing waits in Mail Copilot", target: "review:mailrev:oLB398mFW7pu",
+        ref: "notification:ac6a5788ff164b1d9a141764" })).ok).toBe(true);
+      // Bruno/Dana ~23:40 BKK: Upwork's Google 2FA card.
+      expect((await card("Max", { text: "Upwork Google 2FA card: approve the sign-in prompt on your phone", steps: ["Open the Google prompt on your phone", "Tap Yes"] })).ok).toBe(true);
+      expect(notify).toHaveBeenCalledTimes(3);
+      // The real case (operator rule 7/11) still waits for the final card form and the verified amount.
+      expect(await card("Dana", { text: "Namecheap: renew spaceapp.dev", steps: ["Open https://www.namecheap.com/cart/checkout", "Add payment method", "Enter the card number"] }))
+        .toMatchObject({ ok: false, refused: true, display: "Premature checkout card", result: expect.stringContaining("final card-input form") });
+      expect(notify).toHaveBeenCalledTimes(3);
     });
   });
 

@@ -894,6 +894,7 @@ function isUnsafeRequest(url: string, init?: RequestInit): boolean {
   const method = (init?.method ?? "GET").toUpperCase();
   return !["GET", "HEAD", "OPTIONS"].includes(method) &&
     url !== "/api/auth/login" &&
+    !url.startsWith("/api/auth/password-reset/") &&
     url !== "/api/auth/google/credential" &&
     url !== "/api/setup/claim";
 }
@@ -1021,7 +1022,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     headers["Content-Type"] = "application/json";
   }
   if (isUnsafeRequest(url, init)) {
-    headers[csrfHeaderName] = csrfToken ?? (await fetchCsrfToken());
+    // Start-up's first writes arrive together: one token read serves them all (10/11: three reads in one start-up).
+    headers[csrfHeaderName] = csrfToken ?? (await singleFlightRequest("csrf", fetchCsrfToken));
     // Where the operator writes from (plan clipboard:4TXfIZzj8ITW): it only describes, the server decides from the session and UA first.
     const client = clientHeader();
     if (client) headers["X-Space-Client"] = client;
@@ -1394,6 +1396,17 @@ if (typeof window !== "undefined") {
   window.addEventListener("space:cli-account-profiles-change", () => fetchCliAccountProfiles.invalidate());
 }
 
+/** Settings → Transfer (apps/api/src/transfer-service.ts): codes, counts and times, never a key or a command. */
+export type TransferAction = "keys" | "manifest" | "sync" | "cutover" | "rollback";
+export type TransferJob = { action: TransferAction; dryRun: boolean; startedAt: string; endedAt: string | null; result: unknown; error: string | null };
+export type TransferStatus = {
+  pairingCode: string | null;
+  target: { pairingCode: string; pairedAt: string | null } | null;
+  commands: { apply: boolean; switch: boolean };
+  state: { head: string | null; tables: number; files: number; cutoverAt: string | null; rollbackDryRun: string | null } | null;
+  job: TransferJob | null;
+};
+
 export const api = {
   healthPing: () => request<{ ok: boolean }>("/healthz", { cache: "no-store" }),
   systemHealth: (userView = false) => request<SystemHealthSnapshot>(userView ? "/api/system-health" : "/api/admin/system-analytics/health", { cache: "no-store" }),
@@ -1499,6 +1512,10 @@ export const api = {
       body: JSON.stringify({ email, password })
     }).then(noteServerModules).then(noteSignedInUser);
   },
+  requestPasswordReset: (email: string) =>
+    request<{ ok: true }>("/api/auth/password-reset/request", { method: "POST", body: JSON.stringify({ email }) }),
+  completePasswordReset: (token: string, newPassword: string) =>
+    request<{ ok: true }>("/api/auth/password-reset/complete", { method: "POST", body: JSON.stringify({ token, newPassword }) }),
   logout: async () => {
     const result = await request<{ ok: true }>("/api/auth/logout", { method: "POST" });
     csrfToken = null;
@@ -1530,6 +1547,11 @@ export const api = {
   revokeAppDevice: (id: string) => request<{ device: AppDeviceSession }>(`/api/auth/devices/${encodeURIComponent(id)}/revoke`, { method: "POST", body: JSON.stringify({}) }),
   allowAppDevice: (id: string) => request<{ device: AppDeviceSession }>(`/api/auth/devices/${encodeURIComponent(id)}/allow`, { method: "POST", body: JSON.stringify({}) }),
   mobileInstance: () => request<MobileInstanceStatus>("/api/mobile/instance"),
+  changePassword: async (newPassword: string, currentPassword?: string) => {
+    const result = await request<{ ok: true }>("/api/auth/password", { method: "POST", body: JSON.stringify({ newPassword, ...(currentPassword ? { currentPassword } : {}) }) });
+    csrfToken = null; // the answer carries a new session cookie, whose CSRF token differs
+    return result;
+  },
   stepUpWithPassword: (password: string) => request<{ steppedUp: true; until: string }>("/api/auth/step-up/password", { method: "POST", body: JSON.stringify({ password }) }),
   setUpMobileInstance: () => request<MobileInstanceStatus>("/api/mobile/instance", { method: "POST", body: JSON.stringify({}) }),
   rotateMobileInstance: (compromised: boolean) => request<MobileInstanceStatus>("/api/mobile/rotate", { method: "POST", body: JSON.stringify({ compromised }) }),
@@ -1693,6 +1715,8 @@ export const api = {
   vaultHandoffKeys: () => request<{ keys: VaultHandoffKey[] }>("/api/space-vault/keys"),
   vaultCreateHandoffKey: (body: { label: string; value: string; expiresInHours: number | null; kept: boolean }) => request<{ key: VaultHandoffKey }>("/api/space-vault/keys", { method: "POST", body: JSON.stringify(body) }),
   vaultDeleteHandoffKey: (id: string) => request<{ deleted: true }>(`/api/space-vault/keys/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  vaultRevealHandoffKey: (body: { id: string; epoch: number; operatorSignature: string }) => request<{ value: string }>("/api/space-vault/keys/reveal", { method: "POST", body: JSON.stringify(body) }),
+  vaultUpdateHandoffKey: (id: string, body: { label: string; value: string; kept: boolean }) => request<{ updated: true }>(`/api/space-vault/keys/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
   vaultAudit: (beforeSeq?: number) => request<{ entries: Array<{ id: string; seq: number; event: VaultAuditRecord; createdAt: string }>; nextBeforeSeq: number | null }>(
     `/api/space-vault/audit?limit=50${beforeSeq ? `&beforeSeq=${beforeSeq}` : ""}`),
   councilModels: () => request<CouncilModelsResponse>("/api/council/models"),
@@ -1714,9 +1738,9 @@ export const api = {
     request<{ entry: SharedMemoryEntry }>(`/api/nous/shared-memory/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
   deleteNousSharedMemory: (id: string, revision: number) => request<{ deleted: boolean }>(`/api/nous/shared-memory/${encodeURIComponent(id)}`, { method: "DELETE", body: JSON.stringify({ revision }) }),
   updateNousSharedMemoryPolicy: (input: Partial<Pick<SharedMemoryPolicy, "autoApprove" | "dailyUpgrade">>) => request<{ policy: SharedMemoryPolicy }>("/api/nous/shared-memory/policy", { method: "PATCH", body: JSON.stringify(input) }),
-  /** The latest page since the last Clear, or a page further back (`before` a message id; `cleared` the newest rows Clear hid). */
-  nousMessages: (page: { before?: string; cleared?: boolean } = {}) => request<{ messages: NousMessage[]; hasMore?: boolean; clearedAt?: string | null; waiting?: string[]; attachments?: Record<string, NousAttachment[]> }>(
-    `/api/nous/messages${page.before ? `?before=${encodeURIComponent(page.before)}` : page.cleared ? "?cleared=1" : ""}`),
+  /** The latest page since the last Clear (`since` its last `cursor`: only the rows changed since), or a page further back (`before` a message id; `cleared` the newest rows Clear hid). */
+  nousMessages: (page: { before?: string; cleared?: boolean; since?: string } = {}) => request<{ messages: NousMessage[]; hasMore?: boolean; clearedAt?: string | null; cursor?: string; waiting?: string[]; attachments?: Record<string, NousAttachment[]> }>(
+    `/api/nous/messages${page.before ? `?before=${encodeURIComponent(page.before)}` : page.cleared ? "?cleared=1" : page.since ? `?since=${encodeURIComponent(page.since)}` : ""}`),
   /** The Requests tab: every operator message, newest first, with how it ended; `before` a message id pages further back, `status` filters; `q` keeps those holding any of its words; `counts` cover every message `q` keeps. */
   nousRequests: (before?: string, status?: NousRequestStatus, limit?: number, q?: string) => {
     const query = new URLSearchParams({ ...(before ? { before } : {}), ...(status ? { status } : {}), ...(limit ? { limit: String(limit) } : {}), ...(q ? { q } : {}) }).toString();
@@ -1974,10 +1998,11 @@ export const api = {
   // Space notifications: what waits for the user, the newest records, read / acknowledge, and a test.
   /** nous_msg:8e7e6c25: a workspace path's Agent File (the one with its content, or filed now). */
   workspaceAgentFile: (path: string) => request<{ artifact: Artifact }>("/api/nous/files/agent-file", { method: "POST", body: JSON.stringify({ path }) }),
-  notificationsPending: () => request<import("@space/contracts").NotificationsPending>("/api/notifications/pending", { cache: "no-store" }),
+  // no-cache: the browser revalidates with the ETag, so an unchanged poll is a 304 without a body.
+  notificationsPending: () => request<import("@space/contracts").NotificationsPending>("/api/notifications/pending", { cache: "no-cache" }),
   notifications: (query: { status?: "OPEN" | "ALL" | "NEEDS_YOU"; source?: string; kind?: string; limit?: number; before?: string } = {}) =>
     request<{ notifications: import("@space/contracts").SpaceNotification[] }>(`/api/notifications?${new URLSearchParams({ ...(query.status ? { status: query.status } : {}),
-      ...(query.source ? { source: query.source } : {}), ...(query.kind ? { kind: query.kind } : {}), ...(query.limit ? { limit: String(query.limit) } : {}), ...(query.before ? { before: query.before } : {}) })}`, { cache: "no-store" }),
+      ...(query.source ? { source: query.source } : {}), ...(query.kind ? { kind: query.kind } : {}), ...(query.limit ? { limit: String(query.limit) } : {}), ...(query.before ? { before: query.before } : {}) })}`, { cache: "no-cache" }),
   notification: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}`, { cache: "no-store" }),
   markNotificationRead: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),
   ackNotification: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}/ack`, { method: "POST" }),
@@ -2793,6 +2818,9 @@ export const api = {
     return result;
   },
   appDiagnosticsStatus: () => request<AppDiagnosticsStatus>("/api/app-diagnostics"),
+  transferStatus: () => request<TransferStatus>("/api/transfer", { cache: "no-store" }),
+  transferPair: (card: string, code: string) => request<{ pairingCode: string }>("/api/transfer/pair", { method: "POST", body: JSON.stringify({ card, code }) }),
+  transferRun: (action: TransferAction, dryRun = false) => request<{ job: TransferJob }>("/api/transfer/run", { method: "POST", body: JSON.stringify({ action, dryRun }) }),
   deployQueueTicket: (id: string) => request<{ ticket: import("@space/contracts").DeployQueueTicket }>(`/api/admin/deploy-queue/tickets/${encodeURIComponent(id)}`, { cache: "no-store" }),
   deployQueue: () => request<DeployQueueReport>("/api/admin/deploy-queue", { cache: "no-store" }),
   releases: () => request<ReleasesReport>("/api/admin/releases", { cache: "no-store" }),
@@ -4415,7 +4443,7 @@ export const api = {
   mailActions: (paneId: string, query: { account?: string; source?: MailActionLogEntry["source"]; limit?: number } = {}) =>
     request<{ actions: MailActionLogEntry[] }>(`/api/mail-copilot/actions?${new URLSearchParams({ paneId, ...(query.account ? { account: query.account } : {}), ...(query.source ? { source: query.source } : {}), ...(query.limit ? { limit: String(query.limit) } : {}) })}`, { cache: "no-store" }),
   syncMailCopilot: (paneId: string) => request<{ accounts: number; created: number }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/sync`, { method: "POST", body: "{}" }),
-  mailCopilotEvents: (query: { paneId?: string; threadId?: string; since?: string; limit?: number } = {}) =>
+  mailCopilotEvents: (query: { paneId?: string; threadId?: string; reviewId?: string; since?: string; limit?: number } = {}) =>
     request<{ events: MailCopilotEvent[] }>(`/api/mail-copilot/events?${new URLSearchParams(Object.fromEntries(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)])))}`, { cache: "no-store" }),
   answerMailQuestion: (paneId: string, input: { questionId: string; answer: string }) =>
     request<{ memory: MailCopilotMemory }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/answer`, { method: "POST", body: JSON.stringify(input) }),

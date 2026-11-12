@@ -10,7 +10,7 @@
 //
 // Reaches the API with the pane's bridge token (SPACE_BROWSER_COMMAND_ENDPOINT, SPACE_BROWSER_ACTION_TOKEN); the token is never printed.
 import { pathToFileURL } from "node:url";
-import { harnessPaneEnvironment } from "../deploy/space-harness-pane-env.mjs";
+import { sharedServerPaneEnvironment } from "../deploy/space-harness-pane-env.mjs";
 
 const tokenHeader = "x-space-cli-browser-token";
 const days = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
@@ -79,7 +79,7 @@ function zonedToUtc([year, month, day, hour, minute], timeZone) {
 
 function endpoint(env) {
   // A Harness agent has no pane session in its environment: its harness session names the pane's tokens.
-  if (!env.SPACE_BROWSER_ACTION_TOKEN) env = { ...env, ...harnessPaneEnvironment(env.DSH_SESSION_ID) };
+  if (!env.SPACE_BROWSER_ACTION_TOKEN) env = { ...env, ...sharedServerPaneEnvironment(env) };
   const base = (env.SPACE_BROWSER_COMMAND_ENDPOINT || "").match(/^(https?:\/\/[^/?#]+(?:\/[^?#]*?)?)\/api\/cli\/browser\/commands\/?$/)?.[1];
   if (!base || !env.SPACE_BROWSER_ACTION_TOKEN) throw new Error("space-task runs inside a Space CLI pane (SPACE_BROWSER_COMMAND_ENDPOINT, SPACE_BROWSER_ACTION_TOKEN).");
   return { url: `${base}/api/cli/task-items`, token: env.SPACE_BROWSER_ACTION_TOKEN };

@@ -234,15 +234,32 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
   return { tasks: tasks.slice(-256), modelId, reasoningEffort, title: customTitle ?? aiTitle, titleManual: customTitle !== null, apiError, rateLimit, paceHold, lastAnswer, turnResults, modelPick };
 }
 
-async function readTail(path: string, maxBytes = CLAUDE_TRANSCRIPT_TAIL_BYTES): Promise<string[]> {
+/**
+ * Each transcript's timeline with the size, mtime and busy flag it was read at: the `--serve` reader reads every Claude pane at least
+ * every 30 s, and an unchanged transcript gives the same timeline, so it is not read and parsed again (CPU plan 4.5). Memory: a
+ * transcript not read for 10 minutes is dropped (its pane closed or is no longer polled) and read whole again at its next read.
+ */
+const timelines = new Map<string, { key: string; readAt: number; timeline: Omit<ClaudeNativeTurns, ClaudeLiveStatus> }>();
+
+async function readTimeline(path: string, busy: boolean, now: Date): Promise<Omit<ClaudeNativeTurns, ClaudeLiveStatus>> {
+  for (const [known, entry] of timelines) if (now.getTime() - entry.readAt > 600_000) timelines.delete(known);
+  const observedAt = now.toISOString();
   const handle = await open(path, "r");
   try {
-    const { size } = await handle.stat();
-    const start = Math.max(0, size - maxBytes);
-    const buffer = Buffer.alloc(size - start);
-    await handle.read(buffer, 0, buffer.length, start);
-    const lines = buffer.toString("utf8").split("\n");
-    return start > 0 ? lines.slice(1) : lines;
+    const { size, mtimeMs } = await handle.stat();
+    const key = `${size}|${mtimeMs}|${busy}`;
+    let cached = timelines.get(path);
+    if (cached?.key !== key) {
+      const start = Math.max(0, size - CLAUDE_TRANSCRIPT_TAIL_BYTES);
+      const buffer = Buffer.alloc(size - start);
+      await handle.read(buffer, 0, buffer.length, start);
+      const lines = buffer.toString("utf8").split("\n");
+      cached = { key, readAt: 0, timeline: claudeTaskTimeline(start > 0 ? lines.slice(1) : lines, busy, observedAt) };
+      timelines.set(path, cached);
+    }
+    cached.readAt = now.getTime();
+    // Only each task's observedAt differs from the read the timeline came from.
+    return { ...cached.timeline, tasks: cached.timeline.tasks.map((task) => ({ ...task, timing: { ...task.timing, observedAt } })) };
   } finally {
     await handle.close();
   }
@@ -293,19 +310,18 @@ export async function readClaudeNativeTurns(
     if (pid !== input.rootPid && ancestor !== input.rootPid) continue;
     const environ = (await readFile(join(procRoot, String(pid), "environ"), "utf8").catch(() => "")).split("\0");
     if (!environ.includes(`SPACE_CLI_SESSION_ID=${input.sessionId}`) || !environ.includes(`SPACE_PANE_ID=${input.paneId}`)) continue;
-    const projects = join(configDir, "projects");
-    let transcript = join(projects, claudeProjectDirName(cwd), `${nativeSessionId}.jsonl`);
-    let lines = await readTail(transcript).catch(() => null);
-    if (!lines) {
-      for (const dir of (await readdir(projects).catch(() => [] as string[])).slice(0, 2048)) {
-        transcript = join(projects, dir, `${nativeSessionId}.jsonl`);
-        lines = await readTail(transcript).catch(() => null);
-        if (lines) break;
-      }
-    }
     const status = claudeSessionStatus(session.status);
     const busy = status === "busy";
-    const timeline = claudeTaskTimeline(lines ?? [], busy, (options.now?.() ?? new Date()).toISOString());
+    const now = options.now?.() ?? new Date();
+    const projects = join(configDir, "projects");
+    let timeline = await readTimeline(join(projects, claudeProjectDirName(cwd), `${nativeSessionId}.jsonl`), busy, now).catch(() => null);
+    if (!timeline) {
+      for (const dir of (await readdir(projects).catch(() => [] as string[])).slice(0, 2048)) {
+        timeline = await readTimeline(join(projects, dir, `${nativeSessionId}.jsonl`), busy, now).catch(() => null);
+        if (timeline) break;
+      }
+    }
+    timeline ??= claudeTaskTimeline([], busy, now.toISOString());
     const waitingFor = status === "waiting" ? text(session.waitingFor)?.replace(/\s+/g, " ").trim().slice(0, 80) || null : null;
     const statusUpdatedAt = typeof session.statusUpdatedAt === "number" && Number.isFinite(session.statusUpdatedAt) && session.statusUpdatedAt > 0
       ? new Date(session.statusUpdatedAt).toISOString() : null;

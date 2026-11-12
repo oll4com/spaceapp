@@ -442,3 +442,5 @@
 .mc-camp-inline { display: inline-flex; align-items: center; gap: 8px; color: var(--jc-muted); }
 .mc-camp-inline select { height: 32px; border-radius: 16px; padding: 0 10px; }
 @media (prefers-reduced-motion: reduce) { .mc-pane .mc-camp :is(.mc-camp-card, .mc-camp-nav-tab) { transition: none; } }
+/* A Needs you card's Go lands on its review (operator 12/11 23:19 BKK). */
+.mc-pane .jc-pending.is-target { outline: 2px solid var(--jc-accent); outline-offset: 2px; }

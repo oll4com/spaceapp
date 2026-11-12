@@ -4,7 +4,7 @@ import {
   type NeedsYouAsk, type Pane, type SecurityAction, type SecurityActionBegin, type SecurityCopilotPaneMetadata, type SecurityCopilotPaneSettings, type SecurityEvent,
   type SecurityEventStatus, type SecurityEventType, type SecurityFinding, type SecurityHost, type SecurityInventory, type SecurityRunStatus
 } from "@space/contracts";
-import { securityFindingKey, type SecurityCopilotRepository } from "@space/db";
+import { securityFindingKey, type RailAnswerBy, type SecurityCopilotRepository } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError, type MaybePromise } from "@space/runtime";
 import type { NotificationService } from "../notifications/service.js";
 import { BRIEF_TAKEN_STALE_MS } from "../copilot-brief-watch.js";
@@ -423,7 +423,7 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
       const question = await repository.updateEvent(owner, questionId, { status: "ANSWERED", payload: { answer: trimmed(answer), answeredBy } }, ["OPEN"]);
       if (!question) throw new SpaceConflictError(`Question ${questionId} is already answered.`);
       options.onEvent?.(question);
-      await record(owner, pane, { type: "ANSWERED", message: answer, payload: { questionId, answeredBy } });
+      await record(owner, pane, { type: "ANSWERED", message: answer, payload: { questionId, answeredBy, ...(answeredBy === "NOUS" ? { by: "nous" } : {}) } });
       await options.notifications?.resolve(owner, `security:question:${questionId}`).catch(() => 0);
       return question;
     },
@@ -653,7 +653,7 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
       return finished;
     },
     /** A person's answer to a review (the rail, or Nous's decision card after the operator's yes). */
-    async decideReview(owner: string, pane: Pane, reviewId: string, input: { approve: boolean; note?: string }) {
+    async decideReview(owner: string, pane: Pane, reviewId: string, input: { approve: boolean; note?: string }, by?: RailAnswerBy) {
       assertPane(pane);
       const review = await eventOf(owner, pane, reviewId, "REVIEW");
       const decided = await repository.updateEvent(owner, reviewId, { status: input.approve ? "APPROVED" : "DECLINED", payload: { note: input.note ?? null, decidedAt: iso() } }, ["OPEN"]);
@@ -661,7 +661,7 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
       options.onEvent?.(decided);
       const actionId = String(review.payload.actionId);
       await repository.updateAction(owner, actionId, { status: input.approve ? "APPROVED" : "DECLINED" }, ["ASKED"]);
-      await record(owner, pane, { type: "REVIEWED", message: `${input.approve ? "Approved" : "Declined"}: ${review.message}${input.note ? ` (${input.note})` : ""}`, payload: { reviewId, actionId } });
+      await record(owner, pane, { type: "REVIEWED", message: `${input.approve ? "Approved" : "Declined"}: ${review.message}${input.note ? ` (${input.note})` : ""}`, payload: { reviewId, actionId, decision: input.approve ? "approve" : "decline", ...(by ? { by } : {}) } });
       await options.notifications?.resolve(owner, `security:review:${reviewId}`).catch(() => 0);
       const kickoffSent = await kick(owner, pane, true).catch(() => false);
       return { review: decided, kickoffSent };

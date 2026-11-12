@@ -13,6 +13,13 @@ import {
 enableStrictCspCompatibility();
 startWebSentry(window.__SPACE_SENTRY__);
 
+// styles.css pauses every CSS animation while the window is hidden or unfocused; after the event, when focus has settled (an iframe keeps it).
+const markWindowIdle = () => setTimeout(() => document.documentElement.toggleAttribute("data-window-idle", document.hidden || !document.hasFocus()));
+window.addEventListener("focus", markWindowIdle);
+window.addEventListener("blur", markWindowIdle);
+document.addEventListener("visibilitychange", markWindowIdle);
+markWindowIdle();
+
 async function mount() {
   if (new URLSearchParams(window.location.search).get("spaceDebug") === "1") {
     try {

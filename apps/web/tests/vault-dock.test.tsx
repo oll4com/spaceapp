@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   vaultLock: vi.fn(), vaultAudit: vi.fn(), setUpVault: vi.fn(), unlockVault: vi.fn(), recoverVault: vi.fn(), encryptVaultItem: vi.fn(), decryptVaultItem: vi.fn(),
   vaultSetAgentAccess: vi.fn(), vaultPendingRows: vi.fn(), vaultInboxKey: vi.fn(), importVaultPending: vi.fn(), listGoogleAccounts: vi.fn(), vaultItemRecords: vi.fn(), vaultSaveItems: vi.fn(), vaultDeleteItems: vi.fn(), vaultSiteCheck: vi.fn(),
   vaultSignupGrants: vi.fn(), vaultCreateSignupGrant: vi.fn(), vaultRevokeSignupGrant: vi.fn(), signVaultSignupGrant: vi.fn(), delegateVaultItems: vi.fn(),
-  vaultHandoffKeys: vi.fn(), vaultCreateHandoffKey: vi.fn(), vaultDeleteHandoffKey: vi.fn(), planDuplicateRemoval: vi.fn(),
+  vaultHandoffKeys: vi.fn(), vaultCreateHandoffKey: vi.fn(), vaultDeleteHandoffKey: vi.fn(), vaultRevealHandoffKey: vi.fn(), vaultUpdateHandoffKey: vi.fn(), planDuplicateRemoval: vi.fn(),
   gatewayAnthropicAdmin: vi.fn(), saveGatewayAnthropicAdminKey: vi.fn(), removeGatewayAnthropicAdminKey: vi.fn(), syncGatewayAnthropicBilling: vi.fn()
 }));
 vi.mock("../src/api.js", () => ({ api: mocks }));
@@ -93,17 +93,6 @@ describe("VaultDock", () => {
     await waitFor(() => expect(screen.queryByText("SYNTHETIC-recovery-key")).toBeNull());
   });
 
-  it("unlocks while the locked list is still loading (the list load never disables Unlock; 1/11 flake under load)", async () => {
-    mocks.vaultState.mockResolvedValue(state());
-    mocks.vaultItems.mockReturnValueOnce(new Promise(() => undefined));
-    render(<VaultDock />);
-    fireEvent.change(await screen.findByLabelText("Master password"), { target: { value: "a synthetic master" } });
-    const unlock = screen.getByRole("button", { name: "Unlock" }) as HTMLButtonElement;
-    expect(unlock.disabled).toBe(false);
-    fireEvent.click(unlock);
-    await waitFor(() => expect(mocks.unlockVault).toHaveBeenCalledWith(expect.anything(), "user:alice", "a synthetic master"));
-  });
-
   it("recovers with the recovery key and a new master password, then opens like an unlock (hardening step 14)", async () => {
     mocks.vaultState.mockResolvedValue(state());
     mocks.recoverVault.mockImplementation(async () => mocks.unlockVault());
@@ -166,7 +155,7 @@ describe("VaultDock", () => {
     expect(vaultSessionKeys()).toBeNull();
   });
 
-  it("lists logins agents saved at once while the Vault is locked, values closed, and shows why one still waits after an unlock (operator 30/10)", async () => {
+  it("shows only the unlock card while locked (operator 12/11), then the logins agents saved and why one still waits", async () => {
     mocks.vaultState.mockResolvedValue(state({ pendingItems: 2 }));
     const row = (id: string, kind: "NEW_ACCOUNT" | "CHANGE_PASSWORD", handle: string, label: string, origin: string, createdAt: string) =>
       ({ id: `vault_pending:${id.repeat(22)}`, kind, handle, label, origin, sealedUsername: null, sealedPassword: null, paneId: null, createdAt });
@@ -175,22 +164,21 @@ describe("VaultDock", () => {
       row("C", "CHANGE_PASSWORD", changed.metadata.id, "Mail", "https://shop.example", "2026-10-30T16:31:00.000Z")] });
     render(<VaultDock />);
     expect(await screen.findByRole("button", { name: "Unlock" })).toBeTruthy();
-    const saved = (await screen.findByText("Backblaze B2 (synthetic@example.com)")).closest("li")!;
-    expect(within(saved).getByText("https://www.backblaze.com")).toBeTruthy();
-    expect(within(saved).getByText(/^Saved by an agent · /)).toBeTruthy();
-    // A changed password of a login the Vault holds shows on that login's row; the rows ask for no unlock and offer no edit while locked.
-    expect(within(screen.getByText("Mail").closest("li")!).getByText(/^New password from an agent · /)).toBeTruthy();
-    expect(screen.queryByText(/added to Items when you unlock/)).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Edit / })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Add item" })).toBeNull();
-    expect(mocks.vaultPendingRows).toHaveBeenCalled();
+    // Locked: no list, no search, nothing read.
+    expect(screen.queryByText("Backblaze B2 (synthetic@example.com)")).toBeNull();
+    expect(screen.queryByLabelText("Search the Vault")).toBeNull();
+    expect(mocks.vaultItems).not.toHaveBeenCalled();
+    expect(mocks.vaultPendingRows).not.toHaveBeenCalled();
     // Unlocked: the import adds them; one that could not be added says why on its own row.
     mocks.importVaultPending.mockResolvedValue({ imported: 1, unreadable: [], failed: [{ id: `vault_pending:${"A".repeat(22)}`, kind: "NEW_ACCOUNT", label: "Backblaze B2 (synthetic@example.com)",
       origin: "https://www.backblaze.com", reason: "Request failed (500)." }] });
     fireEvent.change(screen.getByLabelText("Master password"), { target: { value: "a synthetic master" } });
     fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
     const stillWaiting = (await screen.findByText("Backblaze B2 (synthetic@example.com)")).closest("li")!;
+    expect(within(stillWaiting).getByText(/^Saved by an agent · /)).toBeTruthy();
     expect(await within(stillWaiting).findByText(/^Could not be added \(Request failed \(500\)\.\)/)).toBeTruthy();
+    // A changed password of a login the Vault holds shows on that login's row.
+    expect(within(screen.getByText("Mail").closest("li")!).getByText(/^New password from an agent · /)).toBeTruthy();
     expect(await screen.findByRole("button", { name: "Add item" })).toBeTruthy();
   });
 
@@ -272,12 +260,14 @@ describe("VaultDock", () => {
     render(<VaultDock />);
     fireEvent.change(await screen.findByLabelText("Master password"), { target: { value: "a synthetic master" } });
     fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
-    expect(await screen.findByText("Added 2 logins that agents saved or changed.")).toBeTruthy();
+    await waitFor(() => expect(mocks.importVaultPending).toHaveBeenCalled());
+    // The imported logins just join the list (operator 12/11: no "Added 2 logins…" notice).
     // No per-use approvals any more: the unlock alone re-delegates every item.
     await waitFor(() => expect(mocks.delegateVaultItems).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ vaultId: "vault:AAAAAAAAAAAAAAAAAAAAAA" }),
       { records: [changed], delegationGeneration: 0, epoch: 1, inbox: expect.objectContaining({ privateKey: expect.any(Uint8Array) }) }));
     expect(screen.queryByRole("region", { name: "Agent requests" })).toBeNull();
     expect(await screen.findByText(/Unlocked · Agents and Nous: on \(2 logins\)/)).toBeTruthy();
+    expect(screen.queryByText(/that agents saved or changed/)).toBeNull();
   });
 
   it("hands every login to agents on unlock also when adding the saved logins fails, and says why they wait (30/10 16:46 UTC)", async () => {
@@ -312,8 +302,8 @@ describe("VaultDock", () => {
       await waitFor(() => expect(mocks.delegateVaultItems).toHaveBeenCalledTimes(1));
       mocks.importVaultPending.mockResolvedValue({ imported: 1, unreadable: [], failed: [] });
       await vi.advanceTimersByTimeAsync(30_000);
-      expect(await screen.findByText("Added 1 login that agents saved or changed.")).toBeTruthy();
       await waitFor(() => expect(mocks.delegateVaultItems).toHaveBeenCalledTimes(2));
+      expect(screen.queryByText(/that agents saved or changed/)).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
       expect(await screen.findByText(/^agent · fill · submitted · Mail \(added .+\)$/)).toBeTruthy();
       // Back-to-back identical events read as one line.
@@ -427,6 +417,39 @@ describe("VaultDock", () => {
     expect(document.body.textContent).not.toContain("SYNTHETIC-mac-password");
   });
 
+  it("searches kept passwords and keys, shows a value with the unlocked dock's signature and edits it (operator request 2026-11-12)", async () => {
+    const key = { id: "vault_key:BBBBBBBBBBBBBBBBBBBBBB", label: "vm221 macOS spaceadmin password", createdAt: "2026-10-26T05:00:00.000Z", expiresAt: null,
+      takenAt: null, takenByPaneId: null, usedAt: null, usedByPaneId: null, hasValue: true, kept: true, savedBy: null };
+    mocks.vaultState.mockResolvedValue(state({ agentAccess: true, delegatedItems: 1 }));
+    mocks.vaultHandoffKeys.mockResolvedValue({ keys: [key, { ...key, id: "vault_key:CCCCCCCCCCCCCCCCCCCCCC", label: "Mailed DB password" }] });
+    mocks.vaultRevealHandoffKey.mockResolvedValue({ value: "SYNTHETIC-mac-password" });
+    mocks.vaultUpdateHandoffKey.mockResolvedValue({ updated: true });
+    render(<VaultDock />);
+    fireEvent.change(await screen.findByLabelText("Master password"), { target: { value: "a synthetic master" } });
+    fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Passwords & keys" }));
+    fireEvent.change(await screen.findByLabelText("Search passwords and keys"), { target: { value: "MAILED" } });
+    expect(screen.queryByText(key.label)).toBeNull();
+    expect(screen.getByText("Mailed DB password")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Search passwords and keys"), { target: { value: "" } });
+    // Show: a signed request for that id at the current epoch; Hide drops the value from the page.
+    fireEvent.click(await screen.findByRole("button", { name: `Show ${key.label}` }));
+    expect((await screen.findByLabelText(`Value of ${key.label}`)).textContent).toBe("SYNTHETIC-mac-password");
+    expect(mocks.vaultRevealHandoffKey).toHaveBeenCalledWith({ id: key.id, epoch: 1, operatorSignature: expect.stringMatching(/^[A-Za-z0-9_-]{86}$/) });
+    fireEvent.click(screen.getByRole("button", { name: `Hide ${key.label}` }));
+    expect(document.body.textContent).not.toContain("SYNTHETIC-mac-password");
+    // Edit: label, value and kept, saved by id.
+    fireEvent.click(screen.getByRole("button", { name: `Edit ${key.label}` }));
+    const form = await screen.findByRole("form", { name: "Edit key" });
+    expect((within(form).getByLabelText("Key") as HTMLInputElement).value).toBe("SYNTHETIC-mac-password");
+    fireEvent.change(within(form).getByLabelText("Label"), { target: { value: "vm221 root password" } });
+    fireEvent.change(within(form).getByLabelText("Key"), { target: { value: "SYNTHETIC-new" } });
+    fireEvent.click(within(form).getByLabelText("Keep it for every agent"));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocks.vaultUpdateHandoffKey).toHaveBeenCalledWith(key.id, { label: "vm221 root password", value: "SYNTHETIC-new", kept: false }));
+    expect(await screen.findByRole("form", { name: "New API key for an agent" })).toBeTruthy();
+  });
+
   it("signs no new sign-up grants; an active one is listed only to revoke it (operator request 2026-10-20)", async () => {
     const grant = { id: "vault_grant:AAAAAAAAAAAAAAAAAAAAAA", sites: ["https://shop.example"], dailyCap: 3, createdAt: "2026-10-18T02:00:00.000Z", expiresAt: "2026-11-17T02:00:00.000Z", revokedAt: null };
     mocks.vaultState.mockResolvedValue(state());
@@ -467,6 +490,11 @@ describe("VaultDock", () => {
     expect((screen.getByRole("switch", { name: "Agents and Nous can use this login" }) as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByRole("button", { name: "Without asking" })).toBeNull();
     expect(JSON.parse(localStorage.getItem("space:vault-defaults:v1")!)).toMatchObject({ generator: { length: 12 } });
+    // Back at the top right leaves without saving; there is no Cancel next to Save (operator 12/11).
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByRole("button", { name: "Add item" })).toBeTruthy();
+    expect(mocks.vaultSaveItem).not.toHaveBeenCalled();
   });
 
   it("turns agent access on with one switch, handing every login over, and off again", async () => {

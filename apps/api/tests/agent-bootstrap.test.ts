@@ -71,7 +71,7 @@ describe("Space agent bootstrap", () => {
   it("instructs CLI agents to run a live egress IP check in their network namespace instead of quoting static host IPs", () => {
     const cliMarkdown = buildCliAgentBootstrapMarkdown();
     expect(cliMarkdown).toContain("curl -4 -s --max-time 5 https://api.ipify.org");
-    expect(cliMarkdown).toContain("NEVER quote static host IPs (such as Proxmox `192.0.2.10`)");
+    expect(cliMarkdown).toContain("NEVER quote static host IPs (such as Proxmox `20.240.192.253`)");
     expect(buildSpaceAgentBootstrapPrompt({ channel: "WEB_CHAT" })).not.toContain("https://api.ipify.org");
   });
 
@@ -149,6 +149,11 @@ describe("Space agent bootstrap", () => {
     expect(VAULT_PASSWORDS_RULE).toContain("never ask or remind the operator to unlock");
     expect(buildCliAgentBootstrapMarkdown()).toContain(VAULT_PASSWORDS_RULE);
     expect(buildCliAgentBootstrapMarkdown({ paneMode: "MAIL_COPILOT" })).toContain(VAULT_PASSWORDS_RULE);
+  });
+
+  it("tells a CLI pane that loads no MCP servers where its Space tools are (12/11: panes read the empty MCP list as no site sign-in)", () => {
+    expect(buildSpaceAgentBootstrapPrompt({ channel: "CLI" })).toContain("this pane may load no MCP servers by design; the Space tools (space_browser incl. site sign-in");
+    expect(buildSpaceAgentBootstrapPrompt({ channel: "CLI" })).toContain(`space-capability info space_browser lists its tools (add a tool name for its input schema), and echo '{"serverId":"space_browser","toolName":"space_browser_context","arguments":{}}' | space-capability call runs one.`);
   });
 
   it("tells every CLI pane, copilots included, how to have graphics made with the Studio's options", () => {

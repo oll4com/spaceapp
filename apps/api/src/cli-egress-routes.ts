@@ -26,7 +26,7 @@ export function registerCliEgressRoutes(app: FastifyInstance, options: {
   store: Pick<SpaceStore, "listCliRuntimeSettings">;
   config: Pick<SpaceApiConfig, "cliVpnEnabled">;
   cliVpnBroker: Pick<CliVpnBroker, "status" | "replace" | "verify" | "remove" | "replaceProfile" | "verifyProfile" |
-    "rotateMullvadCity" | "rotateNordCity" | "removeProfile">;
+    "rotateMullvadCity" | "rotateNordCity" | "removeProfile" | "refreshEgress">;
   assertCliVpnAvailable: () => void;
   readCliVpnApplications: CliVpnApplicationsReader;
   recordAudit: AuditRecorder;
@@ -36,6 +36,15 @@ export function registerCliEgressRoutes(app: FastifyInstance, options: {
     store, config, cliVpnBroker, assertCliVpnAvailable, readCliVpnApplications, recordAudit,
     routeOptions: defaultRouteRateLimitOptions
   } = options;
+  // Operator 11/11: this server's and every VPN's exit IP measured soon after a start and every 4 hours, a VPN that stopped answering
+  // reconnected (broker refresh-egress); before, they changed only on a route change and the old server's IP stayed.
+  const refreshTimers: NodeJS.Timeout[] = [];
+  app.addHook("onReady", async () => {
+    if (!config.cliVpnEnabled || process.env.NODE_ENV === "test" || process.env.VITEST === "true") return;
+    const refresh = () => void cliVpnBroker.refreshEgress?.().catch((error: unknown) => app.log.warn({ err: error }, "CLI egress refresh failed."));
+    refreshTimers.push(setTimeout(refresh, 60_000).unref(), setInterval(refresh, 4 * 3_600_000).unref());
+  });
+  app.addHook("onClose", async () => { for (const timer of refreshTimers) clearTimeout(timer); });
   app.get("/api/cli/egress", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");

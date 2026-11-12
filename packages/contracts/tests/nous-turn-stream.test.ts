@@ -37,7 +37,26 @@ describe("a Nous turn's output, read the same in the worker and from the CLI con
     done.push(`${result()}\n`);
     expect(done.finish(0, "no available tokens/quota").text).toBe("Done.");
     expect(() => createNousTurnReader(true).finish(77, "sudo: unable to mkdir /run/sudo\nClaude Code is not signed in.\n")).toThrow("Claude Code is not signed in.");
-    expect(() => createNousTurnReader(false).finish(9, "")).toThrow("Claude Code exited with code 9.");
+    expect(() => createNousTurnReader(false).finish(9, "")).toThrow(/^The CLI exited with code 9 before it returned a result\.$/);
+  });
+
+  it("never quotes the turn's own stream-json when the CLI was killed mid-stream", () => {
+    // 12/11 05:37Z: a host restart killed Claude Code inside a tool call; the chat showed this cut line.
+    const cut = `${delta("n- The resize restarts pve-az.")}\n{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":", \\"pane`;
+    const killed = (code: number | null, stderr = "", signal: string | null = null) => {
+      const reader = createNousTurnReader(true);
+      reader.push(cut);
+      try { reader.finish(code, stderr, signal); } catch (error) { return (error as Error).message; }
+      return "no error";
+    };
+    expect(killed(143, "sudo: unable to mkdir /run/sudo/ts: Read-only file system\n")).toBe("The CLI was stopped by SIGTERM (likely a server restart) before it returned a result.");
+    expect(killed(null, "", "SIGKILL")).toBe("The CLI was stopped by SIGKILL (likely a server restart) before it returned a result.");
+    expect(killed(1)).toBe("The CLI exited with code 1 before it returned a result.");
+    expect(killed(1, "API Error: 500 Internal server error\n")).toBe("API Error: 500 Internal server error");
+    // A success record followed by a failed exit is still a failure, said plainly.
+    const late = createNousTurnReader(true);
+    late.push(`${result()}\n`);
+    expect(() => late.finish(2, "")).toThrow(/^The CLI exited with code 2\.$/);
   });
 
   it("keeps normalized Codex usage and refuses truncated or failed successful-looking output", () => {

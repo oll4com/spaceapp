@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   mailComposeInputSchema, mailCopilotEventInputSchema, mailCopilotMemoryCreateSchema, mailCopilotMemoryQuerySchema, mailCopilotMemoryUpdateSchema, mailCopilotNextRequestSchema,
-  mailCopilotQuestionAskSchema, mailCopilotQuestionWaitSchema, mailCopilotReportRequestSchema, mailCopilotReviewRequestSchema, mailCopilotReviewWaitSchema, mailThreadActionSchema,
+  mailCopilotQuestionAskSchema, mailCopilotQuestionWaitSchema, mailCopilotReportRequestSchema, mailCopilotReviewRequestSchema, mailCopilotReviewWaitSchema, mailCopilotRsvpRequestSchema, mailThreadActionSchema,
   mailRuleProposalSchema, mailRuleStatusSchema, mailThreadsQuerySchema, resolveMailCopilotPaneMetadata, type Pane
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
@@ -185,6 +185,11 @@ export function registerMailCopilotAgentRoutes(app: FastifyInstance, service: Ma
     const bridge = await context(request, reply);
     if (!bridge) return reply;
     return service.requestReview(bridge.owner, bridge.pane, parseBody(mailCopilotReviewRequestSchema, request.body ?? {}));
+  });
+  app.post(route("calendar/respond"), routeOptions, async (request, reply) => {
+    const bridge = await context(request, reply);
+    if (!bridge) return reply;
+    return service.requestRsvp(bridge.owner, bridge.pane, parseBody(mailCopilotRsvpRequestSchema, request.body ?? {}));
   });
   app.post(route("review/wait"), routeOptions, async (request, reply) => {
     const bridge = await context(request, reply);

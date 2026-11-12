@@ -1,3 +1,4 @@
+import type { MailCampaignsService } from "./mail-campaigns/service.js";
 import type { MailCopilotGoogleAccess } from "./mail-copilot/service.js";
 import { controlExecuteSchema, type Pane } from "@space/contracts";
 import { PostgresSpaceStore } from "@space/db";
@@ -8,7 +9,7 @@ import { stat } from "node:fs/promises";
 import { registerAdminUserRoutes } from "./admin-user-routes.js";
 import { registerAgentSessionHistoryRoutes, registerAgentSessionThreadRoutes } from "./agent-session-routes.js";
 import { registerAppSignIn } from "./app-signin.js";
-import { cookieName, defaultSessionRevocationStore, signOAuthState, verifyOAuthState, verifySession } from "./auth.js";
+import { cookieName, defaultSessionRevocationStore, googleRedirectUriFor, requestOrigin, signOAuthState, verifyOAuthState, verifySession } from "./auth.js";
 import { registerAuthRoutes } from "./auth-routes.js";
 import { googleBrowserProfilePathFor } from "./browser-sessions.js";
 import { registerClientErrorRoutes } from "./client-error-routes.js";
@@ -49,6 +50,10 @@ type SignInRoutesDeps = Pick<Deps<typeof registerAuthRoutes>, "auth" | "browserS
     defaultRouteRateLimitOptions: Deps<typeof registerAuthRoutes>["routeOptions"] & AppSignInDeps["routeOptions"];
     /** Tests' Google access and Gmail fetch (createApp's mailCopilot* options), for the pairing e-mail. */
     mailCopilotGoogle?: MailCopilotGoogleAccess; mailCopilotGmailFetch?: typeof fetch;
+    /** Tests: Forgot password's mail, instead of the owner's Mail Campaigns sender. */
+    passwordResetMail?: (owner: string, to: string, subject: string, text: string) => Promise<void>;
+    /** Mail Campaigns is created later, with the copilot panes; read per request. */
+    mailCampaigns?: () => MailCampaignsService | undefined;
   };
 type UserToolRoutesDeps = Pick<Deps<typeof registerAgentSessionThreadRoutes>, "codexParity" | "unifiedCliTaskRegistry" | "cliRuntimeVisibility" | "visibleCliRuntimeIds">
   & Pick<Deps<typeof registerAgentSessionHistoryRoutes>, "agentSessionHistoryService">
@@ -91,26 +96,24 @@ export function registerSignInRoutes(app: FastifyInstance, deps: SignInRoutesDep
     }
     return (await store.upsertUser(request.user)).id;
   };
-  const oauthRedirectBase = (request: FastifyRequest) => {
-    const forwardedProto = request.headers["x-forwarded-proto"];
-    const forwardedHost = request.headers["x-forwarded-host"];
-    const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers["host"] ?? `127.0.0.1:${config.port}`;
-    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (auth.secureCookies === true ? "https" : "http");
-    return `${String(proto).split(",")[0]!.trim()}://${String(host).split(",")[0]!.trim()}`;
-  };
   const connectorStateTools = {
     sign: (value: string) => signOAuthState(value, auth.sessionSecret),
     verify: (token: string | undefined) => verifyOAuthState(token, auth.sessionSecret),
     sessionHash: (request: FastifyRequest) => createHash("sha256").update(request.cookies[cookieName] ?? "").digest("hex"),
     redirectUri: (request: FastifyRequest, provider: "GOOGLE" | "MICROSOFT") => provider === "GOOGLE"
-      ? auth.googleRedirectUri || `${oauthRedirectBase(request)}/api/auth/google/callback`
-      : process.env.SPACE_MICROSOFT_REDIRECT_URI || `${oauthRedirectBase(request)}/api/connectors/microsoft/callback`,
+      ? googleRedirectUriFor(request, auth, config.port)
+      : process.env.SPACE_MICROSOFT_REDIRECT_URI || `${requestOrigin(request, auth.secureCookies, config.port)}/api/connectors/microsoft/callback`,
     secureCookies: auth.secureCookies
   };
   // The connector service is created with the other Dot services; the sign-in callback reaches it through this reference.
   const connectorServiceRef: { current: ReturnType<typeof createConnectorService> | null } = { current: null };
+  // Forgot password's mail (Nous 13/11): the owner's personal sender. shortcut: this install's sender id; a Settings choice if another install needs it.
+  const passwordResetMail = { get current() {
+    const campaigns = deps.mailCampaigns?.();
+    return deps.passwordResetMail ?? (campaigns ? (owner: string, to: string, subject: string, text: string) => campaigns.sendTransactional(owner, "msender:Yp9r40K3jQ46", { to, subject, text }) : null);
+  } };
   registerAuthRoutes(app, {
-    config, auth, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions,
+    config, auth, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions, passwordResetMail,
     googleAccountBrowserStatuses, dotsAuthenticatedOwner, connectorStateTools, connectorServiceRef, persistRevocation, appSignIn: registerAppSignIn(app, { store, crypto: connectorCrypto, events: eventBus, notifications: notificationService, decision: async (owner, id) => (await nousRef.current?.service.decisions(owner))?.find((item) => item.id === id) ?? null, goal: async (owner, id) => (await nousRef.current?.service.goalsView(owner))?.goals.find((item) => item.id === id) ?? null, sessionSecret: auth.sessionSecret, routeOptions: defaultRouteRateLimitOptions, persistRevocation, revocations: defaultSessionRevocationStore, databaseUrl: store instanceof PostgresSpaceStore ? config.databaseUrl : null, mobileRelayUrl: config.mobileRelayUrl, mobilePushUrl: config.mobilePushUrl, mobileDemo: config.mobileDemo, playIntegrityFile: config.playIntegrityServiceAccountFile,
       google: () => deps.mailCopilotGoogle ?? connectorServiceRef.current, gmailFetch: deps.mailCopilotGmailFetch })
   });

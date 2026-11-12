@@ -607,11 +607,12 @@
 .live-orb-iris {
   position: absolute;
   left: -10%;
-  right: -10%;
+  width: 240%;
   top: calc(var(--orb-level) - 6%);
   height: 24%;
   border-radius: 50%;
-  background: linear-gradient(90deg, #ff6fae, #ffd27a, #6cffb8, #63b6ff, #b48cff, #ff6fae);
+  /* Two colour cycles slid by one: a transform the compositor runs, where hue-rotate repainted every frame (desktop lag brief 11/11). */
+  background: linear-gradient(90deg, #ff6fae, #ffd27a, #6cffb8, #63b6ff, #b48cff, #ff6fae, #ffd27a, #6cffb8, #63b6ff, #b48cff, #ff6fae);
   mix-blend-mode: screen;
   filter: blur(6px);
   opacity: var(--orb-iris);
@@ -629,13 +630,18 @@
   to { transform: rotate(360deg); }
 }
 @keyframes live-orb-iris {
-  from { filter: blur(6px) hue-rotate(0deg); }
-  to { filter: blur(6px) hue-rotate(360deg); }
+  to { transform: translateX(-50%); }
 }
 @media (prefers-reduced-motion: reduce) {
   .live-orb-wave,
-  .live-orb-iris { animation: none; }
+  .live-orb-iris,
+  .space-shell .room-toolbar-collapsed .room-live-rail-button::before { animation: none; }
 }
+/* An idle Live orb stays still: its idle glow and sheen are invisible, and the motion kept the renderer at ~40% of a core
+   in every room (renderer profile 10/11). It moves again from "connecting" on. */
+.live-orb[data-live-status="idle"] :is(.live-orb-wave, .live-orb-iris),
+.live-orb[data-live-status="error"] .live-orb-iris,
+.space-shell .room-toolbar-collapsed .room-live-rail-button[data-live-status="idle"]::before { animation: none; }
 
 .live-rail-context-menu {
   position: fixed;

@@ -22,7 +22,9 @@ export const VAULT_ENVELOPE_PURPOSES = [
 export const VAULT_AGENT_STATUSES = ["FILLED", "SUBMITTED", "BLOCKED", "EXPIRED", "REVOKED", "ORIGIN_MISMATCH", "RATE_LIMITED", "APPROVAL_REQUESTED", "LISTED", "SAVED", "TAKEN", "USED"] as const;
 export const VAULT_AUDIT_ACTIONS = [
   "ENROLL", "UNLOCK", "LOCK", "PASSWORD_ROTATE", "RECOVERY_SET", "RECOVERY_USE", "ITEM_SAVE", "ITEM_DELETE",
-  "DELEGATE", "REVOKE", "FILL", "APPROVAL", "EPOCH_BUMP", "AGENT_LIST", "GENERATE", "SIGNUP_GRANT", "INBOX_SET", "KEY_HANDOFF"
+  "DELEGATE", "REVOKE", "FILL", "APPROVAL", "EPOCH_BUMP", "AGENT_LIST", "GENERATE", "SIGNUP_GRANT", "INBOX_SET", "KEY_HANDOFF",
+  // A host-to-host transfer re-sealing the server share and the active delegation (scripts/space-transfer.mjs, 2026-11-11).
+  "RESEAL", "MOVE_OUT", "MOVE_IN"
 ] as const;
 export const VAULT_NONCE_PURPOSES = ["UNLOCK_CHALLENGE", "FILL_USE", "REQUEST"] as const;
 /**
@@ -257,7 +259,9 @@ export const vaultAuditEventSchema = z.object({
   actor: z.enum(["OPERATOR", "AGENT", "BROKER", "SYSTEM"]), action: z.enum(VAULT_AUDIT_ACTIONS),
   result: z.enum(["OK", ...VAULT_AGENT_STATUSES]), reason: code.nullable().default(null),
   itemId: vaultItemIdSchema.nullable().default(null), origin: canonicalOrigin.nullable().default(null),
-  fields: z.array(z.enum(VAULT_FIELD_ROLES)).max(3).default([]), paneId: z.string().max(200).nullable().default(null)
+  fields: z.array(z.enum(VAULT_FIELD_ROLES)).max(3).default([]), paneId: z.string().max(200).nullable().default(null),
+  /** RESEAL, MOVE_OUT, MOVE_IN: sha256 hex of the old and new broker transport (public) keys; from is null when unknown. */
+  brokerKeys: z.object({ from: z.string().regex(/^[0-9a-f]{64}$/).nullable(), to: z.string().regex(/^[0-9a-f]{64}$/) }).strict().optional()
 }).strict();
 export type VaultAuditEvent = z.input<typeof vaultAuditEventSchema>;
 export type VaultAuditRecord = z.output<typeof vaultAuditEventSchema>;
@@ -420,7 +424,8 @@ export const vaultInboxKeySetRequestSchema = vaultInboxKeyRequestSchema.extend({
 // a session cookie alone can no longer swap the inbox key (which every password agents generate is sealed to), replace the
 // password or recovery envelope, or delete logins. The API verifies against the enrolled unlock public key, as the broker
 // does for delegations; the signed body names the current epoch, so a lock, revoke or password change voids older signatures.
-export const VAULT_OPERATOR_SIGNED_KINDS = ["inbox", "password", "recovery", "item-delete"] as const;
+// "key-reveal": showing a kept password or key in the dock (operator request 2026-11-12), so a session cookie alone reads none.
+export const VAULT_OPERATOR_SIGNED_KINDS = ["inbox", "password", "recovery", "item-delete", "key-reveal"] as const;
 export type VaultOperatorSignedKind = (typeof VAULT_OPERATOR_SIGNED_KINDS)[number];
 /** The bytes the unlock key signs: the kind, owner and vault, and the request body without its signature, as canonical JSON. */
 export function vaultOperatorRequestMessage(kind: VaultOperatorSignedKind, input: { ownerUserId: string; vaultId: string } & Record<string, unknown>): Uint8Array {

@@ -38,6 +38,11 @@ describe("dock header desktop titlebar integration", () => {
     expect(settingsCss).toMatch(/\.agent-settings-dock\.is-fullscreen\s*\{[^}]*inset:\s*max\(var\(--desktop-titlebar-height,\s*0px\),\s*env\(safe-area-inset-top/);
   });
 
+  it("keeps the update dot static (renderer profile 10/11)", () => {
+    expect(titlebarCss).toMatch(/\.desktop-window-titlebar-update-dot \{[^}]*\}/);
+    expect(titlebarCss.match(/\.desktop-window-titlebar-update-dot \{[^}]*\}/)?.[0]).not.toContain("animation");
+  });
+
   it("ensures side-surface-inline has overflow: hidden so dock header cannot scroll offscreen", () => {
     expect(desktopNavCss).toMatch(/\.space-shell\.shell-desktop\s+\.side-surface-inline\s*\{[^}]*overflow:\s*hidden;/);
   });

@@ -5,7 +5,7 @@ const incidents = vi.hoisted(() => [] as string[]);
 vi.mock("node:fs/promises", async (original) => ({ ...(await original<typeof import("node:fs/promises")>()),
   mkdir: async () => undefined, appendFile: async (_path: string, line: string) => { incidents.push(line); } }));
 
-const { createSpaceControlPanesOpen } = await import("../src/space-control-panes-open.js");
+const { createSpaceControlPanesOpen, paneCountsByName } = await import("../src/space-control-panes-open.js");
 
 function fixture(options: { open?: number; paneCap?: number; enabled?: string[]; registry?: { read(): Promise<unknown>; readFresh(): Promise<unknown> } } = {}) {
   const execute = vi.fn(async (_roomId: string, _actorId: string, command: { action: { counts: Record<string, number> } }) =>
@@ -59,5 +59,14 @@ describe("Space Control panes.open", () => {
     const debug = await fixture({ open: 4 }).open({ browser: 1 }, { debug: true }) as Record<string, unknown>;
     expect(debug).toMatchObject({ status: "FAILED", isError: true, debugDiagnosis: { operation: "panes.open", roomCapacity: { currentOpen: 4, maxAllowed: 4, requested: 1, freeSlots: 0 } } });
     await vi.waitFor(() => expect(incidents).toHaveLength(2));
+  });
+
+  it("reads a guessed pane type key as its catalog type (R84 12/11: job-copilot, jobcopilot, job, mail_copilot failed)", async () => {
+    expect(paneCountsByName({ "job-copilot": 1, "freelance-copilot": 1 })).toEqual({ jobs: 1, freelance: 1 });
+    expect(paneCountsByName({ jobcopilot: 1, job: 1, mail_copilot: 2, codex: 1 })).toEqual({ jobs: 2, mail: 2, codex: 1 });
+    expect(() => paneCountsByName({ wizard: 1 })).toThrow(/Unknown pane type 'wizard'\. Use one of: opencode, codex/);
+    const { open, execute } = fixture();
+    await open({ Codex: 1 });
+    expect(execute.mock.calls[0]![2].action.counts).toEqual({ codex: 1 });
   });
 });

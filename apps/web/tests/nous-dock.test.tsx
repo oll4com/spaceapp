@@ -131,7 +131,8 @@ function serve(overrides: {
     }
     if (url.startsWith("/api/notifications?status=NEEDS_YOU")) return Response.json({ notifications: overrides.needs?.() ?? [] });
     if (url.startsWith("/api/mail-copilot/threads/")) return Response.json({ thread: { account: "ntheogr@gmail.com", threadId: "1a1925b124bb7cb8", subject: "Your Zinc check is ready",
-      messages: [{ from: { name: "Mercor", address: "team@mercor.com" }, receivedAt: "2026-11-01T03:40:00.000Z" }] } });
+      messages: [{ from: { name: "Mercor", address: "team@mercor.com" }, to: [{ name: "", address: "ntheogr@gmail.com" }], cc: [], subject: "Your Zinc check is ready",
+        receivedAt: "2026-11-01T03:40:00.000Z", text: "Hi, your Zinc check is ready.", attachments: [{ filename: "zinc.pdf" }] }] } });
     if (url.startsWith("/api/artifacts/artifact%3A") && url.endsWith("/metadata")) {
       const id = decodeURIComponent(url.split("/")[3]!);
       return Response.json({ artifact: { id, filename: `${id}.bin`, mimeType: id.includes("cut") ? "video/mp4" : id.includes("doc") ? "application/pdf" : "image/png", byteSize: 1, sha256: "x",
@@ -507,6 +508,40 @@ describe("Nous dock", () => {
     }
   });
 
+  it("finds in the conversation from the Search button, ignoring case and Greek accents, newest match first (operator nous_msg:a44eacc4)", async () => {
+    const tool = (content: string, id: string) => ({ ...message("TOOL", content, id), meta: { name: "space_status" } });
+    // The fold's line shows its latest step only; the earlier one is inside the closed fold.
+    serve({ messages: [message("OPERATOR", "Έλεγξε το Backup", "a1b2c3d4"), tool("Έλεγξε το backup στο fold", "t0000001"), tool("Read the panes", "t0000002"),
+      { ...message("ANSWER", "Το backup είναι έτοιμο. ΑΝΤΙΓΡΑΦΑ ΑΣΦΑΛΕΙΑΣ όχι.", "a1b2c3d5"), createdAt: "2026-10-17T08:05:00.000Z" }] });
+    render(<NousDock canRun />);
+    await screen.findByText("Το backup είναι έτοιμο. ΑΝΤΙΓΡΑΦΑ ΑΣΦΑΛΕΙΑΣ όχι.");
+    const toggle = screen.getByRole("button", { name: "Search the conversation" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    const field = screen.getByRole("searchbox", { name: "Search the conversation" });
+    expect(document.activeElement).toBe(field);
+    // Typed without accents or capitals as the operator writes; the step inside the closed fold is not counted.
+    fireEvent.change(field, { target: { value: "ελεγξε" } });
+    await waitFor(() => expect(screen.getByText("1 of 1")).toBeTruthy());
+    fireEvent.change(field, { target: { value: "BACKUP" } });
+    await waitFor(() => expect(screen.getByText("2 of 2")).toBeTruthy());
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() => expect(screen.getByText("1 of 2")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Older match" }));
+    await waitFor(() => expect(screen.getByText("2 of 2")).toBeTruthy());
+    fireEvent.keyDown(field, { key: "Enter", shiftKey: true });
+    await waitFor(() => expect(screen.getByText("1 of 2")).toBeTruthy());
+    fireEvent.change(field, { target: { value: "ασφαλειας" } });
+    await waitFor(() => expect(screen.getByText("1 of 1")).toBeTruthy());
+    fireEvent.change(field, { target: { value: "nowhere" } });
+    await waitFor(() => expect(screen.getByText("No matches")).toBeTruthy());
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    expect(document.activeElement).toBe(toggle);
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+  });
+
   it("never loses a question past the newest 200 rows: Up loads earlier pages, Load earlier pages back (operator 31/10)", async () => {
     // 260 rows: the newest 200 hold only the last question; the two before it are further back, the first one the oldest of all.
     const row = (kind: NousMessage["kind"], content: string, n: number): NousMessage =>
@@ -713,11 +748,17 @@ describe("Nous dock", () => {
     expect(article.querySelector(".ny-meta")?.textContent).toMatch(/Due|Overdue/);
     expect(calls.some((call) => call.url.startsWith("/api/mail-copilot/threads/"))).toBe(false);
     fireEvent.click(within(article).getByRole("button", { name: "Details" }));
-    expect(await within(article).findByText(/^Your Zinc check is ready · Mercor · .* · ntheogr@gmail.com$/)).toBeTruthy();
+    // The mail itself, read in the card (operator 12/11 23:19 BKK).
+    const mail = await within(article).findByRole("region", { name: "Mail" });
+    expect(within(mail).getByText("From").nextElementSibling?.textContent).toBe("Mercor <team@mercor.com>");
+    expect(within(mail).getByText("To").nextElementSibling?.textContent).toBe("ntheogr@gmail.com");
+    expect(within(mail).getByText("Subject").nextElementSibling?.textContent).toBe("Your Zinc check is ready");
+    expect(within(mail).getByText("Attachments").nextElementSibling?.textContent).toBe("zinc.pdf");
+    expect(within(mail).getByText("Hi, your Zinc check is ready.")).toBeTruthy();
     expect(calls.some((call) => call.url.startsWith("/api/mail-copilot/threads/1a1925b124bb7cb8?") && call.url.includes("account=ntheogr%40gmail.com"))).toBe(true);
     expect(await within(article).findByText("Mercor application")).toBeTruthy();
     expect(within(article).getByText("Deadline").nextElementSibling?.textContent).toMatch(/\S/);
-    const facts = article.querySelector(".ny-facts")!;
+    const facts = article.querySelector(".ny-details > .ny-facts")!;
     expect(within(facts as HTMLElement).getByRole("link", { name: "app.zinc.work/checks/42" }).getAttribute("href")).toBe("https://app.zinc.work/checks/42");
     expect(article.querySelector("details:not(.ny-checked)")).toBeNull();
   });

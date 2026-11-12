@@ -1,6 +1,6 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   generateVaultSigningKey, generateVaultTransportKey, newVaultHandle, openWithVaultPrivateKey, sealToVaultPublicKey,
@@ -25,12 +25,20 @@ async function start(ark = vaultRandomBytes(32), stateDir?: string, now?: () => 
   const root = await mkdtemp(join(tmpdir(), "space-vault-broker-"));
   roots.push(root);
   const state = stateDir ?? join(root, "state");
-  const core = await createVaultBroker({ ark, stateDir: state, ...(now ? { now } : {}) });
+  // The move pin is this test user's (as root's on a host) in a folder of its own.
+  const movePeerPath = join(root, "pin", "move-peer.json");
+  const core = await createVaultBroker({ ark, stateDir: state, ...(now ? { now } : {}), movePeerPath, movePeerOwnerUid: process.getuid!() });
   const socketPath = join(root, "broker.sock");
   const server = createVaultBrokerHttpServer(core);
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
   servers.push(server);
-  return { ark, state, core, client: createSocketVaultBroker(socketPath) };
+  return { ark, state, core, movePeerPath, client: createSocketVaultBroker(socketPath) };
+}
+
+async function pin(path: string, peer: VaultBrokerCore, mode = 0o644) {
+  await mkdir(dirname(path), { recursive: true, mode: 0o755 });
+  await writeFile(path, JSON.stringify({ transportKey: b64.encode(peer.transportPublicKey), signingKey: b64.encode(peer.signingPublicKey) }));
+  await chmod(path, mode);
 }
 
 // Fills go over the Browser Host's own socket (H2 Option A); everything else over the API's.
@@ -224,6 +232,58 @@ describe("space-vault-broker", () => {
     roots.push(root);
     const real = await createVaultBroker({ ark: vault.ark, stateDir: join(root, "state") });
     expect((await real.handle("POST", "/v1/use", useRequest(vault, certificate, handle))).body).toHaveProperty("capability");
+  });
+});
+
+describe("space-vault-broker server move without an unlock (operator 20/10, 31/10)", () => {
+  it("hands the server share and the active delegation only to the broker root pinned; agents fill there at once", async () => {
+    const source = await enrolled();
+    const inbox = await generateVaultTransportKey();
+    const { handle, fillEnvelopes, request } = await delegation(source);
+    const signed = await source.client.delegate({ ...request, sealedInboxKey: await sealToVaultPublicKey(b64.decode(source.transport.publicKey), inbox.privateKey, source.scope) });
+    const target = await start();
+    const out = { ownerUserId: owner, vaultId: source.vaultId, unlockPublicKey: source.unlockPublicKey, serverShareEnvelope: source.serverShareEnvelope,
+      delegation: { certificate: signed.certificate, keyEnvelope: signed.keyEnvelope, inboxKeyEnvelope: signed.inboxKeyEnvelope } };
+    // Reaching the socket is not enough: no pin, or a pin others may write, refuses.
+    expect((await post(source.core, "/v1/move-out", out)).body).toEqual({ error: "MOVE_NOT_PINNED" });
+    await pin(source.movePeerPath, target.core, 0o666);
+    expect((await post(source.core, "/v1/move-out", out)).body).toEqual({ error: "MOVE_NOT_PINNED" });
+    await pin(source.movePeerPath, target.core);
+    const moved = await post(source.core, "/v1/move-out", out);
+    expect(moved.status).toBe(200);
+    const sealed = moved.body as { sealedServerShare: never; sealedFillKey: never; sealedInboxKey: never };
+    // Sealed to the target broker only: another key opens nothing.
+    const stranger = await generateVaultTransportKey();
+    await expect(openWithVaultPrivateKey(stranger.privateKey, stranger.publicKey, sealed.sealedFillKey, source.scope)).rejects.toThrow();
+
+    // The target rewraps the share under its own ARK; the operator's unlock key opens it there unchanged.
+    const serverShareEnvelope = await target.client.sealServerShare({ ...source.scope, sealedServerShare: sealed.sealedServerShare, unlockPublicKey: source.unlockPublicKey });
+    const reply = await generateVaultTransportKey();
+    const message = { ownerUserId: owner, vaultId: source.vaultId, epoch: 2, challenge: b64.encode(vaultRandomBytes(32)), replyPublicKey: b64.encode(reply.publicKey) };
+    const unlocked = await target.client.unlock({ ...message, signature: await signVaultMessage(source.unlock.privateKey, vaultUnlockChallengeMessage(message)), unlockPublicKey: source.unlockPublicKey, serverShareEnvelope });
+    expect(await openWithVaultPrivateKey(reply.privateKey, reply.publicKey, unlocked, source.scope)).toEqual(source.serverShare);
+
+    const moveIn = { ownerUserId: owner, vaultId: source.vaultId, certificate: signed.certificate, sealedFillKey: sealed.sealedFillKey, sealedInboxKey: sealed.sealedInboxKey };
+    expect((await post(target.core, "/v1/move-in", moveIn)).body).toEqual({ error: "MOVE_NOT_PINNED" });
+    await pin(target.movePeerPath, source.core);
+    // Only a delegation the pinned source signed: one the target's own peer pin does not name is refused.
+    expect((await post(source.core, "/v1/move-in", moveIn)).body).toEqual({ error: "CERTIFICATE_REFUSED" });
+    const landed = await post(target.core, "/v1/move-in", moveIn);
+    expect(landed.status).toBe(200);
+    const there = landed.body as { certificate: { claims: unknown }; keyEnvelope: unknown; inboxKeyEnvelope: unknown };
+    expect(there.certificate.claims).toEqual(signed.certificate.claims);
+    expect(there.inboxKeyEnvelope).toMatchObject({ purpose: "INBOX_KEY" });
+    expect(JSON.stringify([moved.body, landed.body])).not.toContain(SENTINEL);
+    // The stored fill envelopes work unchanged on the target; the source's certificate does not.
+    expect((await post(target.core, "/v1/use", useRequest(source, signed.certificate, handle))).body).toEqual({ error: "CERTIFICATE_REFUSED" });
+    const host = await generateVaultTransportKey();
+    const use = await post(target.core, "/v1/use", useRequest(source, there.certificate, handle));
+    const answer = await post(target.core, "/v1/fill", { capability: (use.body as { capability: unknown }).capability, keyEnvelope: there.keyEnvelope, fieldEnvelopes: fillEnvelopes[handle], replyPublicKey: b64.encode(host.publicKey) });
+    expect(JSON.parse(new TextDecoder().decode(await openWithVaultPrivateKey(host.privateKey, host.publicKey, (answer.body as { sealedFields: unknown }).sealedFields, source.scope)))).toEqual({ PASSWORD: SENTINEL });
+
+    // A revoked delegation never moves.
+    await post(source.core, "/v1/revoke", { ownerUserId: owner, vaultId: source.vaultId, generation: 2 });
+    expect((await post(source.core, "/v1/move-out", out)).body).toEqual({ error: "REVOKED" });
   });
 });
 

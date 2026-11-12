@@ -30,6 +30,8 @@ describe("Nous provider catalog", () => {
     expect(result[1].models[0]).toMatchObject({ id: "claude-opus-5-5", label: "Claude Opus 5.5" });
     expect(result[2].models.map((model) => [model.id, model.efforts])).toEqual([["gemini-3.8-flash-high", ["none"]], ["gemini-3.8-flash-medium", ["none"]]]);
     expect(readFileImpl).toHaveBeenCalledWith("/opt/spaceapp/var/gemini-models.last-good.json");
+    // A provider that is up but lists no Argon model says so.
+    expect((await catalog.list())[0].routes?.find((route) => route.route === "ANTIGRAVITY")).toMatchObject({ available: false, reason: "No Argon model in provider catalog." });
     expect(fetchImpl).toHaveBeenCalledWith(expect.stringContaining("/v1/models?limit=100"), expect.objectContaining({
       headers: { Authorization: "Bearer internal-test-key", "anthropic-version": "2023-06-01", "user-agent": "claude-code/space-nous-catalog" }, redirect: "error"
     }));
@@ -53,6 +55,9 @@ describe("Nous provider catalog", () => {
     expect(all[0].routes?.find((route) => route.route === "ANTIGRAVITY")?.name).toBe("Gemini Argon (Antigravity)");
     expect(all[0].routes?.find((route) => route.route === "ANTIGRAVITY_FLASH")?.name).toBe("Gemini 3.8 Flash (Antigravity)");
     expect(all[0].routes?.find((route) => route.route === "ANTIGRAVITY_CLAUDE")?.name).toBe("Claude (Antigravity)");
+    // An unavailable provider keeps its own reason on every Antigravity route, not "No … model in provider catalog" (12/11).
+    expect(all[0].routes?.filter((route) => route.route.startsWith("ANTIGRAVITY")).map((route) => route.reason))
+      .toEqual(Array(3).fill("Its Space Gateway accounts are paused or out of quota."));
   });
 
   it("does not include free pools or third-party relays on the Space provider", async () => {

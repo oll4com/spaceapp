@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
-import { artifactIdsIn, NEEDS_YOU_DONE_ANSWERS, NEEDS_YOU_GO_NOW, NEEDS_YOU_QUESTION_MORE, needsYouAnswerKind, needsYouAsk, needsYouGroup, needsYouHasPlace, needsYouPlace, needsYouTranslation, needsYouFiles,
-  type MailThread, type NotificationAnswerInput, type NousOverview, type NousPaneBoardPane, type SpaceNotification, type UiLanguage } from "@space/contracts";
+import { artifactIdsIn, NEEDS_YOU_DONE_ANSWERS, NEEDS_YOU_GO_NOW, NEEDS_YOU_QUESTION_MORE, needsYouAnswerKind, needsYouAsk, needsYouGroup, needsYouHasPlace, needsYouMail, needsYouPlace, needsYouTranslation, needsYouFiles,
+  type MailComposeInput, type MailCopilotEvent, type MailParticipant, type MailThread, type NotificationAnswerInput, type NousOverview, type NousPaneBoardPane, type SpaceNotification, type UiLanguage } from "@space/contracts";
 import { api } from "../../api.js";
 import { ChatMarkdown } from "../agent-pane/ChatMarkdown.js";
 import { browserTimeZone, formatUserTime, readDateTimeSettings } from "../date-time-settings/date-time-settings.js";
@@ -51,18 +51,39 @@ export function needsYouDueToday(plan: { dueAt?: string | null; overdue?: boolea
 /** The soonest due date among the plans a card unblocks. */
 export const soonestDue = (plans: NousOverview["plans"]) => plans.filter((plan) => plan.dueAt).sort((left, right) => left.dueAt!.localeCompare(right.dueAt!))[0];
 
-/** What a card is about from what the record names (plan clipboard:32etNsBgtbI- step 2): the mail its target names, the page, the site. */
-function useAbout(item: SpaceNotification, enabled: boolean): { mail: MailThread | null; page: string | null; site: string | null } {
-  const thread = /^thread:([^:]+):(.+)$/.exec(item.link?.target ?? "");
-  const [mail, setMail] = useState<MailThread | null>(null);
-  const account = thread?.[1];
-  const threadId = thread?.[2];
+/** The mail a card is about as the operator reads it (operator 12/11 23:19 BKK): a review's reply (what Approve sends), else the thread's newest message. */
+interface MailPreview { from: string; to: string; cc: string; subject: string; at: string | null; text: string; attachments: string[] }
+const who = (person: MailParticipant) => person.name ? `${person.name} <${person.address}>` : person.address;
+function reviewPreview(event: MailCopilotEvent | undefined): MailPreview | null {
+  const draft = event?.payload.draft as MailComposeInput | undefined;
+  if (!draft) return null;
+  const files = Array.isArray(event!.payload.attachments) ? event!.payload.attachments as Array<{ filename?: unknown }> : [];
+  return { from: draft.account, to: draft.to.join(", "), cc: (draft.cc ?? []).join(", "), subject: draft.subject, at: null, text: draft.text, attachments: files.map((file) => String(file.filename ?? "")).filter(Boolean) };
+}
+function threadPreview(thread: MailThread): MailPreview | null {
+  const last = thread.messages.at(-1);
+  return last ? { from: who(last.from), to: last.to.map(who).join(", "), cc: last.cc.map(who).join(", "), subject: last.subject || thread.subject, at: last.receivedAt ?? null, text: last.text,
+    attachments: last.attachments.map((file) => file.filename).filter(Boolean) } : null;
+}
+/** A mail body this long folds under "Show more". */
+const MAIL_FOLD = { lines: 12, characters: 900 };
+
+/** What a card is about from what the record names (plan clipboard:32etNsBgtbI- step 2): the mail it names (needsYouMail), the page, the site. */
+function useAbout(item: SpaceNotification, enabled: boolean): { mail: MailPreview | null; page: string | null; site: string | null } {
+  const named = needsYouMail(item);
+  const [mail, setMail] = useState<MailPreview | null>(null);
+  const reviewId = named?.reviewId;
+  const account = named?.account;
+  const threadId = named?.threadId;
   useEffect(() => {
-    if (!enabled || !account || !threadId) return;
+    if (!enabled || (!reviewId && !(account && threadId))) return;
     let cancelled = false;
-    void api.mailThread(item.paneId ?? undefined, account, threadId).then((result) => { if (!cancelled) setMail(result.thread); }).catch(() => undefined);
+    // A review read from the Mail Copilot store; its thread when it has no reply to show (a calendar answer) or is gone.
+    const load = async () => (reviewId ? reviewPreview((await api.mailCopilotEvents({ reviewId })).events[0]) : null)
+      ?? (account && threadId ? threadPreview((await api.mailThread(item.paneId ?? undefined, account, threadId)).thread) : null);
+    void load().then((preview) => { if (!cancelled) setMail(preview); }).catch(() => undefined);
     return () => { cancelled = true; };
-  }, [enabled, item.paneId, account, threadId]);
+  }, [enabled, item.paneId, reviewId, account, threadId]);
   const page = /^url:(https?:\/\/\S+)$/.exec(item.link?.target ?? "")?.[1] ?? null;
   return { mail, page, site: typeof item.payload.site === "string" ? item.payload.site : null };
 }
@@ -125,6 +146,7 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   const [sent, setSent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [original, setOriginal] = useState(false);
+  const [wholeMail, setWholeMail] = useState(false);
   const checkedOpen = useNousUiIds("needs.checkedOpen");
   const language = useUiLanguage();
   const t = (words: string, vars?: Record<string, string | number>) => uiText(language, words, vars);
@@ -133,7 +155,8 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   const translation = needsYouTranslation(item, agents);
   const shown = translation && !original ? translation : null;
   const question = original ? ask.question : labelIds(shown?.question ?? ask.question, agents);
-  const optionLabel = (option: string) => shown?.options[(ask.options ?? []).indexOf(option)] || uiText(agents, option);
+  // Space's own answer words (Approve, Decline…) read from the one table, never the model's guess (12/11: a shifted translation made both buttons «Απόρριψη»).
+  const optionLabel = (option: string) => (uiText(agents, option) !== option ? uiText(agents, option) : shown?.options[(ask.options ?? []).indexOf(option)]) || option;
   const place = needsYouPlace(item, pane?.mode);
   const kind: Kind = KIND_OF[needsYouGroup(item, pane?.mode)];
   // A review or rule takes Approve or Decline; words go with them as a note.
@@ -215,7 +238,7 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   const since = movedOn && pane?.summary.source === "MODEL" && pane.summary.generatedAt >= movedOn.at && pane.lineLanguage === agents ? pane.summary.line : movedOn?.summary ?? "";
   const failed = (item.payload.answerError as { text?: unknown } | undefined)?.text;
   const lastFailure = typeof failed === "string" ? failed : null;
-  const last = about.mail?.messages.at(-1);
+  const longMail = Boolean(about.mail && (about.mail.text.split("\n").length > MAIL_FOLD.lines || about.mail.text.length > MAIL_FOLD.characters));
   const links = httpsLinks(details).filter((url) => url !== about.page);
   const due = soonestDue(unblocks);
   const dueToday = needsYouDueToday(due);
@@ -228,10 +251,10 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   const previews = [...named].filter(([id]) => !chipped.has(id));
   // The approved §8.1 choice: a question about a mail or a page links it inside Details only (never on the closed card); any other card answered
   // here keeps its pane one click away there (a campaign is approved in its pane, a copilot's or Room Agent's card is about its pane).
-  const opens = place !== "HERE" ? null : /^thread:/.test(item.link?.target ?? "") ? "Open the mail" : /^(?:url|tab):/.test(item.link?.target ?? "") ? "Open the page"
+  const opens = place !== "HERE" ? null : needsYouMail(item) ? "Open the mail" : /^(?:url|tab):/.test(item.link?.target ?? "") ? "Open the page"
     : needsYouHasPlace(item, pane?.mode) ? "Go to pane" : null;
   const Icon = kind === "off" ? Smartphone : kind === "review" ? ClipboardCheck : kind === "pane" ? MousePointer2
-    : ask.code ? KeyRound : /^thread:/.test(item.link?.target ?? "") ? Mail : CircleHelp;
+    : ask.code ? KeyRound : needsYouMail(item) ? Mail : CircleHelp;
 
   const codeForm = (
     <form className="ny-field" onSubmit={(event) => { event.preventDefault(); if (text.trim()) void answer({ text: text.trim() }); }}>
@@ -244,7 +267,7 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   const wordsForm = (
     <form className="ny-field" onSubmit={(event) => { event.preventDefault(); if (text.trim() && !decision) void answer({ text: text.trim() }); }}>
       <input value={text} onChange={(event) => setText(event.target.value)} maxLength={2_000} aria-label={t("Your answer")} data-sensitive-masked="manual"
-        placeholder={t(decision ? "Add a note, then Approve or Decline" : typed ? "Type your answer" : answers.length ? "Or answer in your words" : "Your answer")} />
+        placeholder={t(decision ? "Note (optional)" : typed ? "Type your answer" : answers.length ? "Or answer in your words" : "Your answer")} />
       {decision ? null : <DockButton type="submit" tone={typed ? "primary" : "default"} icon={Send} disabled={busy || !text.trim()}>{t("Send")}</DockButton>}
     </form>
   );
@@ -292,8 +315,22 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
               {steps.length > STEPS_SHOWN ? <button type="button" className="ny-link" onClick={() => setAllSteps(!allSteps)}>{allSteps ? t("Fewer steps") : t("{count} more steps", { count: steps.length - STEPS_SHOWN })}</button> : null}
             </section>
           ) : null}
+          {about.mail ? (
+            <section className="ny-mail" aria-label={t("Mail")}>
+              <h4>{t("Mail")}</h4>
+              <dl className="ny-facts" data-sensitive-masked="manual">
+                <dt>{t("From")}</dt><dd>{about.mail.from}</dd>
+                <dt>{t("To")}</dt><dd>{about.mail.to}</dd>
+                {about.mail.cc ? <><dt>{t("Cc")}</dt><dd>{about.mail.cc}</dd></> : null}
+                <dt>{t("Subject")}</dt><dd>{about.mail.subject || t("(no subject)")}</dd>
+                {about.mail.at ? <><dt>{t("Received")}</dt><dd>{formatUserTime(about.mail.at, { withDate: true })}</dd></> : null}
+                {about.mail.attachments.length ? <><dt>{t("Attachments")}</dt><dd>{about.mail.attachments.join(" · ")}</dd></> : null}
+              </dl>
+              <div className={`ny-mail-body${longMail && !wholeMail ? " is-folded" : ""}`} data-sensitive-masked="manual">{about.mail.text.trim()}</div>
+              {longMail ? <button type="button" className="ny-link" aria-expanded={wholeMail} onClick={() => setWholeMail(!wholeMail)}>{t(wholeMail ? "Show less" : "Show more")}</button> : null}
+            </section>
+          ) : null}
           <dl className="ny-facts">
-            {about.mail ? <><dt>{t("Mail")}</dt><dd data-sensitive-masked="manual">{about.mail.subject || t("(no subject)")}{last ? ` · ${last.from.name || last.from.address}${last.receivedAt ? ` · ${formatUserTime(last.receivedAt)}` : ""}` : ""} · {about.mail.account}</dd></> : null}
             {about.page ? <><dt>{t("Page")}</dt><dd data-sensitive-masked="manual"><a href={about.page} target="_blank" rel="noopener noreferrer">{linkLabel(about.page)}</a></dd></> : null}
             {about.site && !about.page ? <><dt>{t("Site")}</dt><dd data-sensitive-masked="manual">{about.site}</dd></> : null}
             {unblocks.length ? <><dt>{t("Unblocks")}</dt><dd data-sensitive-masked="manual">{unblocks.map((plan) => plan.title).join(" · ")}</dd></> : null}
@@ -303,17 +340,24 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
           </dl>
           {previews.length ? <div className="ny-previews">{previews.map(([id, caption]) => <figure key={id}><ArtifactPreview id={id} label={caption} /><figcaption data-sensitive-masked="manual">{caption}</figcaption></figure>)}</div> : null}
           {checked ? <details className="ny-checked" open={checkedOpen.has(item.id)} onToggle={(event) => checkedOpen.setOpen(item.id, event.currentTarget.open)}><summary>{t(item.source === "AGENT" ? "What the agent checked" : "What Nous checked")}</summary><div className="ny-text" data-sensitive-masked="manual"><ChatMarkdown content={needsYouMarkdown(checked)} /></div></details> : null}
+          {/* A review's note comes before its Approve or Decline, which sends it. */}
+          {decision ? wordsForm : null}
           <div className="ny-answers">
             {place === "PANE" ? go : null}
             {ask.code ? codeForm : null}
-            {!ask.code ? answers.map((option) => (
-              <DockButton key={option} data-sensitive-masked="manual" tone={option === recommended || (option === PROBLEM && problem) ? "primary" : "default"} disabled={busy}
-                icon={option === DONE_OK ? Check : option === PROBLEM ? AlertTriangle : undefined} aria-pressed={option === PROBLEM ? problem : undefined} onClick={() => choose(option)}>
-                {optionLabel(option)}{option === ask.recommended && !offDefault && place !== "OFF_SPACE" ? ` ${t("(Recommended)")}` : ""}
-              </DockButton>
-            )) : null}
+            {!ask.code ? answers.map((option) => {
+              // A review's two answers never look alike, vouched or not (operator 12/11 21:38 BKK): Approve filled with a tick, Decline outlined with a cross.
+              const side = decision && (option === "Approve" || option === "Decline") ? option : null;
+              return (
+                <DockButton key={option} data-sensitive-masked="manual" className={side ? `ny-${side.toLowerCase()}` : undefined} disabled={busy}
+                  tone={side ? (side === "Approve" ? "primary" : "default") : option === recommended || (option === PROBLEM && problem) ? "primary" : "default"}
+                  icon={side === "Approve" || option === DONE_OK ? Check : side === "Decline" ? X : option === PROBLEM ? AlertTriangle : undefined} aria-pressed={option === PROBLEM ? problem : undefined} onClick={() => choose(option)}>
+                  {optionLabel(option)}{option === ask.recommended && !offDefault && place !== "OFF_SPACE" ? ` ${t("(Recommended)")}` : ""}
+                </DockButton>
+              );
+            }) : null}
             {!offDefault && ask.recommended && needsYouAnswerKind(item) ? (
-              <DockButton disabled={busy || Boolean(text.trim())} title={t("From now on, Space answers \"{answer}\" to cards like this one without asking you (Settings → Assistants & AI → Nous: Ask me again)", { answer: optionLabel(ask.recommended) })}
+              <DockButton tone="ghost" disabled={busy || Boolean(text.trim())} title={t("From now on, Space answers \"{answer}\" to cards like this one without asking you (Settings → Assistants & AI → Nous: Ask me again)", { answer: optionLabel(ask.recommended) })}
                 onClick={() => void answer({ option: ask.recommended!, always: true })}>{t("Always answer like this")}</DockButton>
             ) : null}
           </div>
@@ -322,7 +366,7 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
               <textarea value={text} onChange={(event) => setText(event.target.value)} maxLength={2_000} rows={3} aria-label={t("What went wrong?")} placeholder={t("What went wrong?")} data-sensitive-masked="manual" />
               <DockButton type="submit" tone="primary" icon={Send} disabled={busy || !text.trim()}>{t("Send")}</DockButton>
             </form>
-          ) : !ask.code ? wordsForm : null}
+          ) : !ask.code && !decision ? wordsForm : null}
           <div className="ny-footer">
             {variant === "peek" ? <button type="button" className="ny-link" onClick={() => setOpen(false)}>{t("Less")}<ChevronUp aria-hidden="true" /></button> : null}
             {opens ? <button type="button" className="ny-link" onClick={() => goToNeedsYouPane(item)}>{t(opens)}<ArrowUpRight aria-hidden="true" /></button> : null}

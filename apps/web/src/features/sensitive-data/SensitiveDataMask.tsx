@@ -87,7 +87,8 @@ function applyMaskMarkers(): void {
   }
   for (const input of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(MASKABLE_INPUT_SELECTOR)) {
     if (shouldIgnore(input)) continue;
-    const value = input.value ?? "";
+    // An empty field shows its placeholder (Space Gateway's Alias field shows the account's e-mail there).
+    const value = input.value || input.placeholder || "";
     if (value.trim().length >= 2 && hasSensitiveText(value)) {
       input.setAttribute(MASK_ATTRIBUTE, "text");
     }

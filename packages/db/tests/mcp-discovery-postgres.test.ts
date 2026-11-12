@@ -24,7 +24,7 @@ const identities = async (store: PostgresSpaceStore | InMemorySpaceStore) => ({
 
 describe.skipIf(unavailable !== null)(`MCP discovery recovery on disposable PostgreSQL${unavailable ? ` (${unavailable})` : ""}`, () => {
   let server: DisposablePostgres;
-  beforeAll(async () => { server = await startDisposablePostgres("mcp-discovery"); }, 120_000);
+  beforeAll(async () => { server = await startDisposablePostgres("mcp-discovery", { restartable: true }); }, 120_000);
   afterAll(async () => { await server?.stop(); }, 120_000);
 
   it("reconciles a complete snapshot like memory and does not resurrect old tools after restart", async () => {

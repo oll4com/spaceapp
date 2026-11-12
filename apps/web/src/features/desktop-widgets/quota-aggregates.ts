@@ -1,13 +1,13 @@
-import type {
-  AntigravityUsageAccount,
-  AntigravityUsageAccountList,
-  ApiProviderAccount,
-  ApiProviderAccountList,
-  ClaudeUsageAccountList,
-  CodexUsageAccount,
-  CodexUsageAccountList
+import {
+  claudeSubscriptionAccounts,
+  type AntigravityUsageAccount,
+  type AntigravityUsageAccountList,
+  type ApiProviderAccount,
+  type ApiProviderAccountList,
+  type ClaudeUsageAccountList,
+  type CodexUsageAccount,
+  type CodexUsageAccountList
 } from "@space/contracts";
-import { claudeSubscriptionAccounts } from "./quota-low.js";
 
 // Pure quota accounting shared by the AI quota widget and System Health.
 // Kept free of React/UI imports so System Health does not pull the widget in.
@@ -268,7 +268,7 @@ export function computeQuotaAggregates(
     Math.max(geminiActive5h, claudeActive5h), Math.max(geminiActiveW, claudeActiveW),
     Math.min(geminiMetrics.exhaustedAccounts, claudeMetrics.exhaustedAccounts), agyFailed);
 
-  const claudeMaxItems: QuotaBreakdownItem[] = claudeSubscriptionAccounts(claudeList).map((a) => ({
+  const claudeMaxItems: QuotaBreakdownItem[] = claudeSubscriptionAccounts(claudeList?.data ?? []).map((a) => ({
     id: `claude-max-${a.label}`,
     label: a.label,
     status: a.fiveHourRemainingPercent === 0 || a.weeklyRemainingPercent === 0 ? "QUOTA_EXCEEDED"

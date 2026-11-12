@@ -125,3 +125,10 @@ it("gives a T3 Code pane its own worktree of the room project, as for CLI panes"
   }
   expect(create).toHaveBeenCalledTimes(3);
 });
+
+it("opens Nous's panes blue and everyone else's uncolored", async () => {
+  const { room, commands } = setup(new WorktreeService(await scratchRoot()), "/test/project");
+  const open = (requestId: string) => commands.execute(room.id, "user_1", { requestId, catalogVersion: commands.version, action: { type: "OPEN_PANES", counts: { files: 1 } } }, "trace_1");
+  expect((await open("nous:turn_1:call_1")).data.map(pane => pane.categoryColor)).toEqual(["blue"]);
+  expect((await open("room-agent:abc")).data.map(pane => pane.categoryColor)).toEqual([null]);
+});

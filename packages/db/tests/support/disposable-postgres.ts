@@ -35,7 +35,8 @@ export interface DisposablePostgres {
   createDatabase(database: string): Promise<void>;
   /** Restarts the server and waits until it accepts queries again. "graceful"
    * is `docker restart` (the image's fast shutdown: open transactions roll back);
-   * "crash" SIGKILLs every server process and starts again with WAL recovery. */
+   * "crash" SIGKILLs every server process and starts again with WAL recovery.
+   * Only for a server started with `restartable: true`. */
   restart(mode: "graceful" | "crash"): Promise<void>;
   stop(): Promise<void>;
 }
@@ -43,7 +44,7 @@ export interface DisposablePostgres {
 /** Starts a throwaway PostgreSQL container with no network, reachable only
  * through a Unix socket in a task-owned temporary directory. Never use
  * createSpacePgPool against it: that factory may redirect to the live socket. */
-export async function startDisposablePostgres(label: string): Promise<DisposablePostgres> {
+export async function startDisposablePostgres(label: string, { restartable = false } = {}): Promise<DisposablePostgres> {
   if (!/^[a-z0-9-]{1,24}$/.test(label)) throw new Error("label must be short lowercase kebab-case");
   const root = await mkdtemp(path.join(os.tmpdir(), "space-pg-"));
   const socketDir = path.join(root, "socket");
@@ -86,15 +87,19 @@ export async function startDisposablePostgres(label: string): Promise<Disposable
     }
   };
 
+  // Data on tmpfs: initdb and test writes never touch the host disk (public-host IO starvation, docs/agents/app-data-disk.md).
+  // A restartable server keeps its data across a restart, so it stays in a volume with initdb's syncs off.
   try {
     docker([
-      "run", "--detach", "--pull=never", "--name", name, "--label", "space.disposable-test=1", "--network", "none",
+      "run", ...(restartable ? ["--env", "POSTGRES_INITDB_ARGS=--no-sync"] : ["--tmpfs", "/var/lib/postgresql/data"]), "--detach", "--pull=never", "--name", name, "--label", "space.disposable-test=1", "--network", "none",
       "--mount", `type=bind,source=${socketDir},target=/var/run/postgresql`,
       "--env", "POSTGRES_HOST_AUTH_METHOD=trust", disposablePostgresImage, "-c", "listen_addresses=", "-c", "fsync=off"
     ]);
     created = true;
     await waitUntilReady();
   } catch (error) {
+    // A `docker run` that timed out may still have created the container.
+    if (!created) try { docker(["rm", "--force", "--volumes", name], 60_000); } catch { /* never created */ }
     await stop();
     throw error;
   }
@@ -117,6 +122,7 @@ export async function startDisposablePostgres(label: string): Promise<Disposable
       try { await admin.query(`CREATE DATABASE ${database}`); } finally { await admin.end(); }
     },
     async restart(mode: "graceful" | "crash") {
+      if (!restartable) throw new Error("restart() needs startDisposablePostgres(label, { restartable: true }): tmpfs data is lost on restart.");
       if (mode === "graceful") docker(["restart", "--time", "10", name], 60_000);
       else {
         docker(["kill", "--signal", "KILL", name], 30_000);

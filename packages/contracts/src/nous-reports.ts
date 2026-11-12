@@ -179,4 +179,27 @@ export interface NousMarketingReport {
   /** Every post, newest first. */
   posts: NousMarketingPostRow[];
   sources: NousMarketingSource[];
+  /** spaceapp.dev's anonymous page views of the owner's history period (visit.php day files); null: never synced to this server. */
+  site?: NousSiteFunnel | null;
+}
+/** A count and the median seconds of what it counts. */
+export interface NousSiteRow { key: string; views: number; medianSeconds: number | null }
+export interface NousSiteFunnel {
+  /** The newest synced day file's change, and the first day of the period the numbers cover. */
+  updatedAt: string | null;
+  since: string;
+  /** Page views of the period (one per visit id), and how many came from our own addresses (left out of everything below). */
+  views: number;
+  internal: number;
+  /** Homepage sections in page order: views that reached it, median seconds on it, views that left the page there, clicks in it. */
+  sections: Array<{ id: string; reached: number; medianSeconds: number | null; exits: number; clicks: number }>;
+  /** Every page: views, median visible seconds, median scroll depth (%) and views that left the site from it. */
+  pages: Array<NousSiteRow & { medianDepth: number | null; leftSite: number }>;
+  referrers: NousSiteRow[];
+  sources: NousSiteRow[];
+  countries: NousSiteRow[];
+  screens: NousSiteRow[];
+  /** "from → to" within the site, and the named actions (install_copy, demo, github, docs, advisor). */
+  next: NousSiteRow[];
+  actions: NousSiteRow[];
 }

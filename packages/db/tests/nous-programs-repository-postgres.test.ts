@@ -13,12 +13,12 @@ const owner = "user:programs";
 const program = (id: string, parent: string, name: string, extra: Partial<NousProgram> = {}): NousProgram => ({
   id, page: "startup", parent, program: name, project: "SpaceApp", url: null, status: "APPLIED", statusReason: null, appliedAt: "2026-10-20T00:00:00.000Z",
   decidedAt: null, expectedReplyBy: null, validUntil: null, amount: null, commitments: null, account: "ntheo@spaceapp.dev", contacts: [], mails: [],
-  nextAction: null, reapply: null, sources: [], notes: null, givesMoney: null, tags: [], whatItIs: null, howWeUse: null, benefits: [], tiers: [], locked: [], createdAt: "2026-11-03T10:00:00.000Z", updatedAt: "2026-11-03T10:00:00.000Z", ...extra
+  nextAction: null, reapply: null, sources: [], notes: null, givesMoney: null, tags: [], whatItIs: null, howWeUse: null, benefits: [], tiers: [], locked: [], awaitingCompletion: false, createdAt: "2026-11-03T10:00:00.000Z", updatedAt: "2026-11-03T10:00:00.000Z", ...extra
 });
 
 async function behaves(repository: NousProgramsRepository) {
   const inception = program("nvidia-inception", "NVIDIA", "Inception", {
-    status: "APPROVED", givesMoney: true, tags: ["server-access", "ai-tokens"], whatItIs: "NVIDIA's startup program", howWeUse: "GPU credits; nothing from you", amount: { text: "$10.000 AWS credits", value: 10000, currency: "USD" }, contacts: ["inception@nvidia.com"], sources: ["clipboard:ZXXTJ1o3kIoJ"],
+    status: "APPROVED", awaitingCompletion: true, givesMoney: true, tags: ["server-access", "ai-tokens"], whatItIs: "NVIDIA's startup program", howWeUse: "GPU credits; nothing from you", amount: { text: "$10.000 AWS credits", value: 10000, currency: "USD" }, contacts: ["inception@nvidia.com"], sources: ["clipboard:ZXXTJ1o3kIoJ"],
     mails: [{ date: "2026-10-21T08:00:00.000Z", direction: "RECEIVED", from: "inception@nvidia.com", to: ["ntheo@spaceapp.dev"], subject: "Welcome", gmailAccount: "ntheo@spaceapp.dev", threadId: "19a0b" }],
     reapply: { needed: false, why: null, when: null },
     benefits: [{ what: "AWS credits", account: null, perMonth: null, total: { text: "$10,000", value: 10000, currency: "USD" }, used: null, remaining: null, usageAt: null,

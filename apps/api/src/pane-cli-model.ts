@@ -23,7 +23,7 @@ import { roomTerminalState } from "./room-terminal-screen.js";
 export function createPaneCliModel(options: {
   store: SpaceStore;
   cliTerminalManager: CliTerminalManager;
-  cliRuntimeRegistryCache: Pick<ReturnType<typeof createAgentRuntimeRegistryCache>, "read">;
+  cliRuntimeRegistryCache: Pick<ReturnType<typeof createAgentRuntimeRegistryCache>, "readStaleWhileRefreshing">;
   codexSessionSocketProbe: (socketPath: string) => Promise<boolean>;
   codexSocketControlFactory: (socketPath: string) => CodexAppServerSocketControlService;
   findCodexThreadRuntimeSettings: ReturnType<typeof createCodexThreadSettings>["findCodexThreadRuntimeSettings"];
@@ -34,7 +34,8 @@ export function createPaneCliModel(options: {
   const loadNativeCliModels = createNativeCliModelCatalog();
   /** `mark` names each step's finish for the status route's slow-step log (cliRouteSteps). */
   const readScreenNativeModelSettings = async (session: PaneCliSession, mark?: (step: string) => void, signal?: AbortSignal): Promise<PaneCliModelSettings> => {
-    const runtime = findRuntime(await cliRuntimeRegistryCache.read(), session.runtimeId);
+    // Stale snapshot: an expired 10 s cache made every status read wait ~3.5 s for runtime discovery (stable 12/11, 37 reads/hour).
+    const runtime = findRuntime(await cliRuntimeRegistryCache.readStaleWhileRefreshing(), session.runtimeId);
     mark?.("registry");
     if (!runtime?.detectedCommandPath || !isDirectOperatorParityRuntime(session.runtimeId)) {
       throw new SpaceConflictError("This CLI does not expose a model catalog.");
@@ -92,7 +93,9 @@ export function createPaneCliModel(options: {
     await switchNativeCliModel({ model, effort: input.reasoningEffort, runtimeId: active.runtimeId, assertCurrent,
       read: () => cliTerminalManager.observeRoomScreen(active.sessionId, true),
       readUndimmed: () => cliTerminalManager.observeRoomScreenUndimmed(active.sessionId),
-      write: (data) => cliTerminalManager.sendInput(active.sessionId, data, traceId, null, `model-picker:${traceId}:${step++}`),
+      // A fresh pane's first keys wait for its settled composer like a prompt: Claude Code still mounting kept "/model" as
+      // early input and dropped its Enter (12/11, two fresh panes left blocked). Esc never waits.
+      write: (data) => cliTerminalManager.sendInput(active.sessionId, data, traceId, null, `model-picker:${traceId}:${step++}`, true),
       // Claude's /model menu needs ~100x30; a narrower pane is fitted for the pick and given back its size.
       widen: async () => {
         const fit = await cliTerminalManager.fitPaneTerminal(pane.id, 100, 30);
@@ -105,7 +108,7 @@ export function createPaneCliModel(options: {
     // Gemini, OMP, Claude and Droid apply the effort together with the model.
     if (active.runtimeId !== 'cli:gemini' && active.runtimeId !== 'cli:omp' && active.runtimeId !== 'cli:claude' && active.runtimeId !== 'cli:droid') await switchNativeCliReasoning({ model, effort: input.reasoningEffort, runtimeId: active.runtimeId, assertCurrent,
       read: () => cliTerminalManager.observeRoomScreen(active.sessionId, true),
-      write: data => cliTerminalManager.sendInput(active.sessionId, data, traceId, null, `reasoning-picker:${traceId}:${step++}`)
+      write: data => cliTerminalManager.sendInput(active.sessionId, data, traceId, null, `reasoning-picker:${traceId}:${step++}`, true)
     });
     await assertCurrent();
     const current = { modelId: model.id, reasoningEffort: input.reasoningEffort };

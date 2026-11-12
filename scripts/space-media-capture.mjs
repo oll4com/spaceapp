@@ -152,9 +152,9 @@ export function validateStep(raw, instance) {
   if (raw.health !== undefined) step.health = oneOf(raw.health, HEALTH_SECTIONS, "health");
   if (raw.gateway !== undefined) step.gateway = oneOf(raw.gateway, Object.keys(GATEWAY_TABS), "gateway");
   if (raw.scene !== undefined) step.scene = parseScene(raw.scene);
-  if (raw.approved !== undefined) {
-    if (step.dock !== "nous-startup" && step.dock !== "nous-funding") throw new Error("--approved needs --dock nous-startup.");
-    if (raw.approved === true) step.approved = true;
+  for (const chip of ["approved", "waiting"]) if (raw[chip] !== undefined) {
+    if (step.dock !== "nous-startup" && step.dock !== "nous-funding") throw new Error(`--${chip} needs --dock nous-startup.`);
+    if (raw[chip] === true) step[chip] = true;
   }
   // One program opened (details open only on a click: the capture clicks it, as the operator would).
   if (raw.program !== undefined) {
@@ -436,6 +436,8 @@ async function openPage(chrome, input, session, viewport) {
   const fit = deviceScale(input, viewport);
   await chrome.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: fit, mobile: touch }, sid);
   await chrome.send("Emulation.setTouchEmulationEnabled", { enabled: touch, ...(touch ? { maxTouchPoints: 5 } : {}) }, sid);
+  // A headless page has no focused window, and Space pauses its animations in an unfocused one: shots show the app as the operator sees it.
+  await chrome.send("Emulation.setFocusEmulationEnabled", { enabled: true }, sid);
   const blocked = [];
   const outage = { active: false };
   if (session) {
@@ -618,9 +620,10 @@ async function applyStep(page, step) {
     try {
       await page.until(`Boolean(document.querySelector(".nous-programs .nous-program, .nous-programs .dock-kit-state:not(.is-loading), .nous-programs [role=alert]"))`, "The programs", 60_000);
     } catch { skipped.push(`dock:${step.dock}`); }
-    // The Approved status chip pressed, as the operator presses it (this browser's own UI state): the status chips' second (All, Approved, ...).
-    if (step.approved && !skipped.length && !await page.evaluate(`(() => { const b = document.querySelectorAll(".nous-programs [role=group]")[0]?.querySelectorAll("button")[1];
-      if (!b) return false; if (b.getAttribute("aria-pressed") !== "true") b.click(); return true; })()`)) skipped.push("approved");
+    // The Approved or Waiting status chip pressed, as the operator presses it (this browser's own UI state): All, Approved, In progress, Waiting, ...
+    const chip = step.approved ? "approved" : step.waiting ? "waiting" : null;
+    if (chip && !skipped.length && !await page.evaluate(`(() => { const b = document.querySelectorAll(".nous-programs [role=group]")[0]?.querySelectorAll("button")[${chip === "approved" ? 1 : 3}];
+      if (!b) return false; if (b.getAttribute("aria-pressed") !== "true") b.click(); return true; })()`)) skipped.push(chip);
     if (step.program && !skipped.length) {
       const head = JSON.stringify(`.nous-programs button[aria-controls="nous-program-${step.program}"]`);
       const opened = await page.evaluate(`(() => { const b = document.querySelector(${head}); if (!b) return false; if (b.getAttribute("aria-expanded") !== "true") b.click();
@@ -985,7 +988,7 @@ const options = {
   crop: { type: "string" }, theme: { type: "string" }, mode: { type: "string" }, icons: { type: "string" }, background: { type: "string" },
   tint: { type: "string" }, "room-theme": { type: "string" }, language: { type: "string" }, rail: { type: "string" }, appointments: { type: "string" }, "appointments-wheel": { type: "string" }, "token-usage": { type: "string" }, "requests-status": { type: "string" }, "requests-search": { type: "string" }, zoom: { type: "string" }, unmasked: { type: "boolean" }, format: { type: "string" },
   quality: { type: "string" }, frame: { type: "string" }, headline: { type: "string" }, subline: { type: "string" }, video: { type: "string" },
-  gif: { type: "boolean" }, stdin: { type: "boolean" }, outage: { type: "string" }, program: { type: "string" }, approved: { type: "boolean" },
+  gif: { type: "boolean" }, stdin: { type: "boolean" }, outage: { type: "string" }, program: { type: "string" }, approved: { type: "boolean" }, waiting: { type: "boolean" },
   "focus-search": { type: "boolean" }
 };
 

@@ -268,7 +268,7 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     let extraBetas: string[] = [];
     // A conversation that already has a cache binding: a large cache write now means its cached prefix was lost.
     const continuing = stickyHash ? (await stickyAccounts.get(stickyHash)) !== undefined : false;
-    const scope = key.accountScopeEnabled ? new Set(key.accountIds) : null;
+    const scope = await requestScope(key, request);
     const tried = new Set<string>();
     const controller = new AbortController();
     request.raw.once("close", () => { if (!reply.raw.writableEnded) controller.abort(); });
@@ -487,6 +487,18 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     }
   }
 
+  /**
+   * The key's account scope, narrowed by `x-space-gateway-account` (an account's e-mail) to that one account: Claude Code on a
+   * profile whose own login ended runs here on the same account (deploy/claude-vscode-parity). No match is an empty scope, never the pool.
+   */
+  async function requestScope(key: NonNullable<FastifyRequest["gatewayApiKey"]>, request: FastifyRequest): Promise<Set<string> | null> {
+    const scope = key.accountScopeEnabled ? new Set(key.accountIds) : null;
+    const pinned = header(request, "x-space-gateway-account")?.toLowerCase();
+    if (!pinned) return scope;
+    return new Set((await options.pool.accounts()).filter((account) => account.email?.toLowerCase() === pinned && (!scope || scope.has(account.id)))
+      .map((account) => account.id));
+  }
+
   /** The usable accounts for free calls: subscription accounts first, the API-key account last, only with the fallback on and never for Claude Code. */
   async function usableAccounts(scope: Set<string> | null, request: FastifyRequest): Promise<GatewayAccountRecord[]> {
     const settings = await options.settings();
@@ -501,7 +513,7 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
   async function countTokens(request: FastifyRequest, reply: FastifyReply) {
     if (!(await helpers.authenticate(request, reply))) return reply;
     const key = request.gatewayApiKey!;
-    const scope = key.accountScopeEnabled ? new Set(key.accountIds) : null;
+    const scope = await requestScope(key, request);
     const accounts = await usableAccounts(scope, request);
     let body: Record<string, unknown> = request.body && typeof request.body === "object" ? { ...(request.body as Record<string, unknown>) } : {};
     if (key.enforcedModel) body.model = key.enforcedModel;

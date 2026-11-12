@@ -9,6 +9,7 @@ import { CopilotLaunchDialog } from "../src/features/copilot-kit/CopilotLaunchDi
 import { JOB_COPILOT_KIND, MAIL_COPILOT_KIND, copilotKindForMode } from "../src/features/copilot-kit/copilot-kind.js";
 import { copilotLaunchDecision, copilotRuntimeOptions, defaultCopilotRuntimeId } from "../src/features/copilot-kit/copilot-runtimes.js";
 import { resetNousReviewing } from "../src/features/copilot-kit/nous-reviewing.js";
+import { NOTIFICATION_OPEN_EVENT } from "../src/features/notifications/pane-target.js";
 
 const apiMock = vi.hoisted(() => ({
   mailCopilotSettings: vi.fn(),
@@ -244,6 +245,18 @@ describe("MailCopilotPane rail", () => {
     expect(screen.queryByText("1 needs you")).toBeNull();
   });
 
+  it("shows a calendar answer for review and approves it like a reply (12/11)", async () => {
+    const rsvp = { ...review, id: "mailrev:rsvp0001", message: "Review: answer \"Yes\" to the invitation: Lexroom demo", payload: { reviewId: "mailrev:rsvp0001", rsvp: { response: "accepted", iCalUID: "uid-1", comment: "See you there" }, reasoning: null } };
+    apiMock.mailCopilotRun.mockResolvedValue({ run, status: "RUNNING", pending: [rsvp], backlog: 1 });
+    apiMock.decideMailReview.mockResolvedValue({ decision: "approve", sent: null });
+    render(<MailCopilotPane pane={pane} isVisible terminal={<div data-testid="terminal">xterm</div>} />);
+    const card = within(await screen.findByRole("region", { name: "Review a calendar answer" }));
+    expect(card.getByText("Answer Yes")).toBeTruthy();
+    expect(card.getByText("See you there")).toBeTruthy();
+    fireEvent.click(card.getByRole("button", { name: "Approve and answer" }));
+    await waitFor(() => expect(apiMock.decideMailReview).toHaveBeenCalledWith(pane.id, { reviewId: "mailrev:rsvp0001", decision: "approve" }));
+  });
+
   it("shows each mail sent to the AI with the request, the copilot's questions, the answers and the result", async () => {
     apiMock.mailFixRequests.mockResolvedValue({ requests: [
       { id: "mailevt:fix00001", account: "operator@example.invalid", threadId: "t1", subject: "vzdump backup failed", from: "root@pve.example", note: "Check and fix it", by: "operator", status: "DONE", requestedAt: "2026-10-14T15:26:48.000Z",
@@ -319,6 +332,20 @@ describe("MailCopilotPane rail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pause" }));
     await waitFor(() => expect(apiMock.pauseMailCopilotRun).toHaveBeenCalledWith(pane.id));
     expect(await screen.findByRole("button", { name: "Resume" })).toBeTruthy();
+  });
+
+  it("operator 12/11 23:19 BKK: a card's Go to a review lands on that review in Activity and opens its mail", async () => {
+    apiMock.mailThread.mockResolvedValue({ thread: { account: "me@gmail.com", threadId: "t1", subject: "Invoice", messages: [{
+      account: "me@gmail.com", threadId: "t1", messageId: "m1", from: { name: "Anna", address: "anna@acme.com" }, to: [], cc: [], replyTo: [], subject: "Invoice", receivedAt: "2026-10-13T08:00:00.000Z",
+      rfcMessageId: "<inv-1@acme.com>", references: null, labelIds: ["INBOX"], unread: false, starred: false, text: "Please find the invoice", html: null, blockedImages: false, attachments: [] }] } });
+    render(<MailCopilotPane pane={pane} isVisible terminal={<div data-testid="terminal">xterm</div>} />);
+    const card = await screen.findByRole("region", { name: "Review a reply" });
+    act(() => { window.dispatchEvent(new CustomEvent(NOTIFICATION_OPEN_EVENT, { detail: { paneId: pane.id, target: "review:mailrev:rev00001" } })); });
+    await waitFor(() => expect(apiMock.mailCopilotEvents).toHaveBeenCalledWith({ reviewId: "mailrev:rev00001" }));
+    expect(card.dataset.copilotPendingId).toBe("review:mailrev:rev00001");
+    await waitFor(() => expect(card.classList.contains("is-target")).toBe(true));
+    await waitFor(() => expect(apiMock.mailThread).toHaveBeenCalledWith(pane.id, "me@gmail.com", "t1", false));
+    expect(await screen.findByText("Please find the invoice")).toBeTruthy();
   });
 
   it("lists proposed and approved rules in the Rules tab and approves a proposal", async () => {

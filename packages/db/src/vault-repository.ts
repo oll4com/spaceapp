@@ -543,6 +543,17 @@ export class PostgresVaultRepository {
       FROM vault_handoff_keys k JOIN users u ON u.id = k.owner_user_id AND u.disabled_at IS NULL
       WHERE k.kept AND k.value_sealed IS NOT NULL AND (k.expires_at IS NULL OR k.expires_at > now()) ORDER BY k.created_at`)).rows;
   }
+  /** The sealed value for the owner's own dock to show or edit (operator request 2026-11-12); null when unknown, used or expired. */
+  async handoffKeySeal(owner: string, id: string): Promise<string | null> {
+    return (await this.pool.query<{ valueSealed: string }>(`SELECT value_sealed AS "valueSealed" FROM vault_handoff_keys
+      WHERE owner_user_id = $1 AND id = $2 AND value_sealed IS NOT NULL AND (expires_at IS NULL OR expires_at > now())`, [owner, id])).rows[0]?.valueSealed ?? null;
+  }
+  /** The owner's edit of a key that still holds a value: label, value and kept; times and panes stay. */
+  async updateHandoffKey(owner: string, id: string, input: { label: string; valueSealed: string; kept: boolean }): Promise<boolean> {
+    const result = await this.pool.query(`UPDATE vault_handoff_keys SET label = $3, value_sealed = $4, kept = $5
+      WHERE owner_user_id = $1 AND id = $2 AND value_sealed IS NOT NULL AND (expires_at IS NULL OR expires_at > now())`, [owner, id, input.label, input.valueSealed, input.kept]);
+    return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1;
+  }
   async deleteHandoffKey(owner: string, id: string): Promise<boolean> {
     const result = await this.pool.query(`DELETE FROM vault_handoff_keys WHERE owner_user_id = $1 AND id = $2`, [owner, id]);
     return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1;

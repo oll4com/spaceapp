@@ -236,3 +236,37 @@ describe.skipIf(missingBrowser)('taking control of a pane whose tab another tab 
     await expect.poll(text).toBe('visible');
   }, 60000);
 });
+
+// Single-page sites route by the fragment (portal.azure.com/#view/..., CVP 12/11): Chrome must get it, while what Space
+// stores, returns, audits (the route audits currentUrl) and logs stays fragment-free, since a fragment can carry tokens.
+describe.skipIf(missingBrowser)('a navigation fragment reaches Chrome only, in real Chrome', () => {
+  const server = createServer((_req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end('<html><body><script>document.body.textContent="hash="+location.hash;</script></body></html>');
+  });
+  let root: string; let temp: string; let origin: string;
+  let manager: ReturnType<typeof createBrowserSessionManager>;
+  const store = new InMemorySpaceStore();
+  const room = store.createRoom({ name: 'Fragment', initialPaneCount: 0 });
+  const pane = store.createPane({ roomId: room.id, title: 'Browser', mode: 'BROWSER' });
+  const text = async () => (await manager.action(pane, { type: 'extract_text' }, 'trace')).text;
+  beforeAll(async () => { temp = await mkdtemp(join(tmpdir(), 't-')); vi.stubEnv('TMPDIR', temp); root = await mkdtemp(join(tmpdir(), 'chrome-fragment-')); await new Promise<void>(r => server.listen(0, '127.0.0.1', r)); origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`; manager = createBrowserSessionManager({ store, config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: 'true', SPACE_BROWSER_SESSIONS_PROFILE_ROOT: root, SPACE_ARTIFACT_ROOT: root, SPACE_BROWSER_EVIDENCE_TARGET_ORIGIN: origin, SPACE_BROWSER_SESSIONS_AUDIO_ENABLED: 'false', SPACE_BROWSER_SESSIONS_XVFB_ENABLED: 'true' }) }); }, 30000);
+  afterAll(async () => { vi.restoreAllMocks(); await manager?.closeAll(); await new Promise<void>(r => server.close(() => r())); if (root) await rm(root, { recursive: true, force: true }); if (temp) await rm(temp, { recursive: true, force: true }); vi.unstubAllEnvs(); }, 30000);
+
+  it('sends the fragment to Page.navigate and keeps it out of stored state, the response and logs', async () => {
+    const fragment = '#view/Blade/token-7Qx';
+    await manager.startOrRestore({ pane, targetUrl: origin + '/', includeInitialFrame: false, traceId: 'trace' });
+    const logged: string[] = [];
+    const keep = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); return true; };
+    for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) vi.spyOn(console, method).mockImplementation(keep);
+    vi.spyOn(process.stdout, 'write').mockImplementation(keep);
+    vi.spyOn(process.stderr, 'write').mockImplementation(keep);
+    const response = await manager.navigate(pane, origin + '/app' + fragment, 'trace');
+    await expect.poll(text).toBe('hash=' + fragment);
+    await manager.getActive(pane);
+    vi.restoreAllMocks();
+    const stored = store.getActivePaneBrowserSession(pane.id)!;
+    expect(stored).toMatchObject({ targetUrl: origin + '/app', currentUrl: origin + '/app' });
+    expect(JSON.stringify([stored, response.session, response.frame?.currentUrl ?? null, logged])).not.toContain('token-7Qx');
+  }, 60000);
+});

@@ -280,9 +280,10 @@ export class PostgresMailCopilotRepository implements MailCopilotRepository {
     return eventRow(existing!);
   }
   async listEvents(owner: string, filter: MailEventFilter) {
+    // `since` compares whole milliseconds (date_trunc('milliseconds', created_at) > since), written on the bare column so the index applies.
     const rows = (await this.pool.query<Record<string, unknown>>(`SELECT ${eventColumns} FROM mail_copilot_events WHERE owner_user_id=$1
         AND ($2::text IS NULL OR pane_id=$2) AND ($3::text IS NULL OR thread_id=$3) AND ($4::text IS NULL OR account_email=$4)
-        AND ($5::text[] IS NULL OR type = ANY($5::text[])) AND ($6::text[] IS NULL OR status = ANY($6::text[])) AND ($7::timestamptz IS NULL OR date_trunc('milliseconds', created_at) > $7)
+        AND ($5::text[] IS NULL OR type = ANY($5::text[])) AND ($6::text[] IS NULL OR status = ANY($6::text[])) AND ($7::timestamptz IS NULL OR created_at >= date_trunc('milliseconds', $7::timestamptz) + interval '1 millisecond')
       ORDER BY created_at DESC, id DESC LIMIT $8`,
       [owner, filter.paneId ?? null, filter.threadId ?? null, filter.accountEmail ?? null, filter.types?.length ? filter.types : null, filter.status?.length ? filter.status : null, filter.since ?? null, filter.limit])).rows;
     return rows.map(eventRow);

@@ -21,7 +21,9 @@ const DONE_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const overlap = (words: Set<string>, other: string | Set<string>) => {
   if (words.size < 2) return 0;
   const found = typeof other === "string" ? titleWords(other) : other;
-  return [...words].filter((word) => found.has(word)).length / words.size;
+  let shared = 0;
+  for (const word of words) if (found.has(word)) shared += 1;
+  return shared / words.size;
 };
 const payloadOf = (record: SpaceNotification) => record.payload as Partial<RequestDonePayload>;
 /** The durable note that a request (its plan, id or turn) reached Done: it outlives the record's 30-day retention after Got it. */
@@ -92,10 +94,21 @@ export function dispatchedAnswerOnly(requests: ReadonlyArray<{ summary: string; 
     replyTo.length === 1 && replyTo[0] === id || texts.some((text) => text.includes(id.slice(0, "nous_msg:".length + 8)))))
     .map((request) => request.summary);
 }
+// Each note parsed once per text (CPU report 12/11: a Requests derive parsed every open-request note six times, ~60 ms a call). Callers get
+// shallow copies, so a nested value (tickets) is shared with the cache and must not be changed in place.
+const parsedRequests = new Map<string, { text: string; entry: NousOpenRequest | null }>();
 function requestsOf(notes: Array<{ key: string; text: string }>, closed: boolean): NousOpenRequest[] {
   return notes.flatMap((note) => {
     if (!note.key.startsWith(OPEN_REQUEST_PREFIX)) return [];
-    try { const entry = JSON.parse(note.text) as NousOpenRequest; return typeof entry.summary === "string" && Boolean(entry.closedAt) === closed && !entry.reopenedAt ? [{ ...entry, key: note.key }] : []; } catch { return []; }
+    let parsed = parsedRequests.get(note.key);
+    if (parsed?.text !== note.text) {
+      let entry: NousOpenRequest | null = null;
+      try { entry = JSON.parse(note.text) as NousOpenRequest; } catch { /* a note that does not parse is no request */ }
+      parsed = { text: note.text, entry: typeof entry?.summary === "string" ? entry : null };
+      parsedRequests.set(note.key, parsed);
+    }
+    const entry = parsed.entry;
+    return entry && Boolean(entry.closedAt) === closed && !entry.reopenedAt ? [{ ...entry, key: note.key }] : [];
   });
 }
 export const openRequestsOf = (notes: Array<{ key: string; text: string }>) => requestsOf(notes, false);

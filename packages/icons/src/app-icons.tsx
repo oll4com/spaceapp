@@ -61,6 +61,7 @@ import {
   ArrowUp as LucideArrowUp,
   ArrowUpToLine as LucideArrowUpToLine,
   ChevronsUp as LucideChevronsUp,
+  ChevronsDown as LucideChevronsDown,
   Bell as LucideBell,
   Mail as LucideMail,
   Bookmark as LucideBookmark,
@@ -789,8 +790,10 @@ export const VolumeX = LucideVolumeX;
 export const StickyNote = LucideStickyNote;
 export const ArrowUpToLine = LucideArrowUpToLine;
 export const ArrowDownToLine = LucideArrowDownToLine;
-// Nous conversation: back through the operator's own messages, newest first (operator request 2026-10-21).
+// Nous conversation: back through the operator's own messages, newest first (operator request 2026-10-21); down to the latest,
+// the same glyph height as Up (operator nous_msg:a44eacc4: ArrowDownToLine drew taller beside it).
 export const ChevronsUp = LucideChevronsUp;
+export const ChevronsDown = LucideChevronsDown;
 export const Hash = LucideHash;
 // Data and diff surfaces: Lucide glyphs routed through the shared icon module.
 export const AlignJustify = LucideAlignJustify;

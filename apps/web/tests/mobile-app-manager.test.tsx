@@ -15,7 +15,7 @@ const { settlePairAfterStepUp } = await import("../src/features/auth/mobile-pair
 const configured = { configured: true, fingerprint: "ABCD-EFGH-IJKL-MNOP-QRST-UVWX", retiring: [] };
 const offered = { offerId: "AAAAAAAAAAA", qr: "SPACEAPP-PAIR:1:abc", fingerprint: configured.fingerprint, scopes: ["read", "act", "decide"],
   expiresAt: new Date(Date.now() + 120_000).toISOString() };
-const stepUpRequired = () => new FakeApiError("Confirm it is you", { code: "STEP_UP_REQUIRED",
+const stepUpRequired = () => new FakeApiError("STEP_UP_REQUIRED: Confirm it is you", { code: "STEP_UP_REQUIRED",
   details: { stepUpUrl: "/api/auth/google/start?stepUp=mobile", passwordUrl: "/api/auth/step-up/password" } });
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); window.sessionStorage.clear(); });
 

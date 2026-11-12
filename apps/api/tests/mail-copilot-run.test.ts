@@ -146,6 +146,9 @@ describe("mail copilot run loop", () => {
       expect((await app.inject({ method: "POST", url: `${cli}/review/wait`, headers: agent, payload: { reviewId, waitMs: 0 } })).json()).toEqual({ decided: false, decision: null });
       const pending = await app.inject({ method: "GET", url: `${paneUrl}/run`, headers });
       expect(pending.json().pending).toEqual([expect.objectContaining({ kind: "REVIEW", id: reviewId })]);
+      // A Needs you card reads the review it names by its id (operator 12/11 23:19 BKK).
+      const byId = (await app.inject({ method: "GET", url: `/api/mail-copilot/events?reviewId=${encodeURIComponent(reviewId)}`, headers })).json().events as Array<{ type: string; payload: Record<string, unknown> }>;
+      expect(byId).toEqual([expect.objectContaining({ type: "REVIEW_REQUESTED", payload: expect.objectContaining({ reviewId, draft: expect.objectContaining({ subject: draft.subject }) }) })]);
       const notifications = await app.inject({ method: "GET", url: "/api/notifications/pending", headers });
       expect(notifications.json()).toMatchObject({ total: 1, bySource: { MAIL_COPILOT: 1 } });
 
@@ -216,6 +219,31 @@ describe("mail copilot run loop", () => {
       expect((await repository.listEvents(owner, { types: ["QUESTION", "REVIEW_REQUESTED"], limit: 10 }))).toEqual([]);
       // Another correspondent, another subject: raised as before.
       expect((await app.inject({ method: "POST", url: `${cli}/review`, headers: agent, payload: { draft: draft("anna@acme.com", "Re: Invoice question", "t2"), summary: "Reply resending the invoice" } })).statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("raises the review a memory's own exception requires, still refusing the question it forbids (Arize 13/11)", async () => {
+    // 13/11 ~00:21 BKK, thread 1a1a6d8a2e7817ff: mailmem:IaqhrZdR-y8H refused the Arize startup review its EXCEPTION (mailmem:SLvZ9IZgCRc4) requires.
+    const { app, agent, repository, store, pane } = await fixture([
+      { id: "m1", threadId: "t1", from: "Mohamad Al Karbi <malkarbi@arize.com>", subject: "Arize AX startup pricing", minutesAgo: 30, labelIds: ["INBOX"], plain: "How many calls a month?" }]);
+    try {
+      const owner = (await store.getRoom(pane.roomId)).ownerUserId!;
+      const rule = await repository.upsertMemory({ ownerUserId: owner, kind: "LESSON", key: "needs you cards",
+        text: "No question reaches the operator: never NEEDS_USER for startup program approvals or a third party asking a fact by email. EXCEPTION (operator 12/11 23:06 BKK): funding / startup program / investor mail always gets a DRAFT + space_mail_review_request.",
+        contactEmail: null, domain: null, accountEmail: null, tags: [], source: "USER", confidence: 1, pinned: false });
+      const question = await app.inject({ method: "POST", url: `${cli}/question`, headers: agent, payload: { question: "Arize asks about our startup volume by email: what should I answer?", accountEmail: "me@gmail.com", threadId: "t1" } });
+      expect(question.statusCode).toBe(409);
+      expect(question.json().error.message).toContain(rule.id);
+      const review = await app.inject({ method: "POST", url: `${cli}/review`, headers: agent, payload: {
+        draft: { account: "me@gmail.com", to: ["malkarbi@arize.com"], subject: "Re: Arize AX startup pricing", text: "About 120,000 LLM calls a month.", threadId: "t1" },
+        summary: "Arize AX startup pricing: our monthly volume, by email" } });
+      expect(review.statusCode).toBe(200);
+      // Nous 13/11 (mailrev:oLB398mFW7pu went out under maySend): the rule that requires this review keeps it the operator's to read.
+      const reviews = createMailCopilotService({ google: () => google, repository });
+      expect(await reviews.reviewRequiredBy(owner, review.json().reviewId)).toMatchObject({ id: rule.id });
+      expect(await reviews.reviewRequiredBy(owner, "mailrev:unknown00001")).toBeNull();
     } finally {
       await app.close();
     }
@@ -401,6 +429,39 @@ describe("mail copilot run loop", () => {
     draftMail.files = [{ id: "att-other", filename: "Other.pdf", mimeType: "application/pdf", data: pdf }];
     await expect(service.decideReview(owner, pane, { reviewId: second.reviewId, decision: "approve" })).rejects.toThrow("changed since the review");
     expect(gmail.writes.filter((write) => write.path === "/messages/send")).toHaveLength(1);
+  });
+
+  it("answers a calendar invitation only once the operator approves it, and names the re-consent for an account without Google Calendar (12/11)", async () => {
+    const tool = vi.fn(async () => ({ status: "COMPLETED" as const, result: { account: "me@gmail.com", eventId: "g1", response: "accepted" } }));
+    const repository = new InMemoryMailCopilotRepository();
+    const service = createMailCopilotService({ google: () => ({ ...google, tool }), repository });
+    const store = new InMemorySpaceStore();
+    const pane = store.createPane({ roomId: store.createRoom({ name: "Mail", initialPaneCount: 0 }).id, title: "Mail Copilot", mode: "MAIL_COPILOT", terminalRuntimeId: "cli:claude" });
+    const owner = "user:owner";
+    const rsvp = { account: "me@gmail.com", iCalUID: "abc@google.com", response: "accepted" as const, summary: "Yes to the Lexroom call", threadId: "t1" };
+
+    const { reviewId } = await service.requestRsvp(owner, pane, rsvp);
+    expect(tool).not.toHaveBeenCalled();
+    expect((await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] }))[0]).toMatchObject({ threadId: "t1",
+      message: 'Review: answer "Yes" to the invitation: Yes to the Lexroom call', payload: { reviewId, rsvp: { iCalUID: "abc@google.com", response: "accepted" } } });
+    expect(await service.decideReview(owner, pane, { reviewId, decision: "approve" })).toEqual({ decision: "approve", sent: null });
+    expect(tool).toHaveBeenCalledWith(owner, "calendar.respond", { iCalUID: "abc@google.com", response: "accepted", account: "me@gmail.com" });
+    expect(await service.waitForReview(owner, { reviewId, waitMs: 0 })).toMatchObject({ decided: true, decision: "approve", answered: { eventId: "g1" } });
+    // A rejected answer never reaches the calendar.
+    const declined = await service.requestRsvp(owner, pane, { ...rsvp, response: "declined" });
+    await service.decideReview(owner, pane, { reviewId: declined.reviewId, decision: "reject", note: "not now" });
+    expect(tool).toHaveBeenCalledTimes(1);
+    // A reject Nous's decision ran carries by "nous" (the decision ledger leaves it out); the operator's own carries none.
+    const byNous = await service.requestRsvp(owner, pane, { ...rsvp, response: "declined" });
+    await service.decideReview(owner, pane, { reviewId: byNous.reviewId, decision: "reject", note: "Duplicate" }, "nous");
+    const decided = await repository.listEvents(owner, { types: ["REVIEW_DECIDED"] });
+    expect(decided.find((event) => event.payload.reviewId === byNous.reviewId)!.payload.by).toBe("nous");
+    expect(decided.find((event) => event.payload.reviewId === declined.reviewId)!.payload.by).toBeUndefined();
+
+    const mailOnly = createMailCopilotService({ repository: new InMemoryMailCopilotRepository(),
+      google: () => ({ ...google, tool, async googleAccounts() { return [{ email: "me@gmail.com", capabilities: ["MAIL_READ", "MAIL_COMPOSE"] as ConnectorCapability[] }]; } }) });
+    await expect(mailOnly.requestRsvp(owner, pane, rsvp)).rejects.toThrow("me@gmail.com has not allowed Google Calendar for Space, so the copilot cannot answer invitations. "
+      + "Allow Gmail & Calendar again for it in Job Copilot Setup → Google account.");
   });
 
   it("answers a question its own memory may answer with the memories first, and asks only with afterMemory (R13-5)", async () => {

@@ -155,6 +155,9 @@ export const nousProgramInputSchema = z.object({
   // Gives money: cash, investment or spendable credits with a value (API usage, cloud, GPU, storage); not courses, memberships, free
   // tiers, free services or seats only (operator 3/11, nous_msg:c85c7a41). A program with mixed benefits that include money counts.
   givesMoney: z.boolean().nullable().optional(),
+  // APPROVED whose completion still waits on the provider (credit, activation, code, card verification; operator 11/11, nous_msg:a5e13d01):
+  // the page lists it under Waiting too. null clears it (false).
+  awaitingCompletion: z.boolean().nullable().transform((value) => value ?? false).optional(),
   // Grouped tags (NOUS_PROGRAM_TAGS; another slug is kept and shown as written). Replaced whole when given.
   tags: z.preprocess(list, z.array(z.string().trim().min(1).transform((tag) => tag.toLowerCase()))).optional(),
   // Operator 4/11 15:09 BKK (R73): what the service or program is, in one line, and how SpaceApp/oll4 uses it with what that needs (a card, a
@@ -178,7 +181,7 @@ export interface NousProgram {
   amount: { text: string; value: number | null; currency: string | null } | null;
   commitments: string | null; account: string | null; contacts: string[]; mails: NousProgramMail[]; nextAction: string | null;
   reapply: { needed: boolean; why: string | null; when: string | null } | null;
-  sources: string[]; notes: string | null; givesMoney: boolean | null; tags: string[]; whatItIs: string | null; howWeUse: string | null; benefits: NousProgramBenefit[]; tiers: NousProgramTier[]; locked?: string[]; createdAt: string; updatedAt: string;
+  sources: string[]; notes: string | null; givesMoney: boolean | null; tags: string[]; whatItIs: string | null; howWeUse: string | null; benefits: NousProgramBenefit[]; tiers: NousProgramTier[]; locked?: string[]; awaitingCompletion?: boolean; createdAt: string; updatedAt: string;
 }
 
 /** The usage report's file (plan clipboard:MUFqsrKfQtAt): `{ generatedAt, entries: [{ id, benefits }] }`, merged into the stored lines. */

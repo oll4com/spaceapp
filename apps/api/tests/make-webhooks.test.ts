@@ -2,7 +2,18 @@ import { createHmac } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// The default lookup reads fixed host paths: answer those from this map only, so a real file on the host never leaks into the test.
+const hostFiles = vi.hoisted(() => new Map<string, string>());
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const hostPath = (path: string) => path.startsWith("/opt/spaceapp/secrets/") || path.startsWith("/var/lib/spaceapp-user/.config/space/");
+  return { ...actual, readFile: ((path: string, ...rest: [never]) => hostPath(String(path))
+    ? hostFiles.has(String(path)) ? Promise.resolve(hostFiles.get(String(path))) : Promise.reject(new Error("ENOENT"))
+    : actual.readFile(path, ...rest)) as typeof actual.readFile };
+});
 import { afterWrite, createMakeWebhooks, emitMakeEvent, setMakeWebhooks } from "../src/make-webhooks.js";
 
 const hook = "https://hook.eu1.make.com/abc123";
@@ -59,6 +70,21 @@ describe("Make outbound webhooks", () => {
     await writeFile(join(dir, "make-webhook-programs.url"), hook);
     await emit("user:someone", "program.approved", "c", {}); // not the operator
     expect(calls).toEqual([]);
+  });
+
+  it("reads the install root's secrets first, then the agent's ~/.config/space, when no dir is given", async () => {
+    hostFiles.clear();
+    const calls: string[] = [];
+    const emit = createMakeWebhooks({
+      instance: "stable", allow: async () => true,
+      fetch: (async (url: string) => { calls.push(url); return new Response(null, { status: 200 }); }) as typeof fetch
+    });
+    hostFiles.set(`${SPACE_AGENT_HOME}/.config/space/make-webhook-push.url`, "https://hook.eu1.make.com/home");
+    hostFiles.set(`${SPACE_AGENT_HOME}/.config/space/make-webhook.secret`, "s");
+    await emit("user:operator", "done", "a", {});
+    hostFiles.set(`${SPACE_INSTALL_ROOT}/secrets/space-make-webhook-push.url`, `${hook}\n`);
+    await emit("user:operator", "done", "b", {});
+    expect(calls).toEqual(["https://hook.eu1.make.com/home", hook]);
   });
 
   it("is off by default: no sender set leaves writers untouched and emits nothing", async () => {

@@ -56,9 +56,40 @@ describe("Nous conversation steps in the agents' language", () => {
     expect(translate.mock.calls[0]![0]).toEqual(["Checked Cody in Alex: ok working", "Updated goal \"πρεπει να βρουμε\": waits on THIRD_PARTY", "Read Zoe's reports"]);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const read = await steps("user:operator", page);
-    expect(read.find((message) => message.id === "m2")!.meta.translation).toEqual({ language: "el", text: "el:Checked Cody in Alex: ok working" });
+    expect(read.find((message) => message.id === "m2")!.meta.translation).toEqual({ language: "el", text: "el:Checked Cody in Alex: ok working", at: expect.any(String) });
     expect(read.find((message) => message.id === "m3")!.meta.translation).toBeUndefined();
     expect(translate).toHaveBeenCalledTimes(1);
+  });
+
+  // Desktop start-up 10/11: the dock polled the whole 2.2 MB page every 3-20 s, 443 of 628 reads an hour identical to the one before.
+  it("sends a `since` read only the rows written or translated after the dock's cursor, with the whole page's waiting", async () => {
+    let now = Date.now();
+    const at = (ms: number) => new Date(ms).toISOString();
+    const rows = [{ ...row("m1", "OPERATOR", "old question"), updatedAt: at(now - 60_000) }, { ...row("m2", "TOOL", "Read Zoe's reports"), updatedAt: at(now - 60_000) },
+      { ...row("m3", "OPERATOR", "new question"), updatedAt: at(now - 1_000) }];
+    const translate = vi.fn(async (texts: string[]) => texts.map((text) => `el:${text}`));
+    const forMessages = vi.fn(async (_owner: string, ids: string[]) => Object.fromEntries(ids.map((id) => [id, []])));
+    const app = Fastify();
+    registerNousRoutes(app, { messagePage: async () => ({ messages: rows, hasMore: false }) } as unknown as NousService, {
+      routeOptions: {}, owner: async () => "user:operator", parseQuery: (schema, query) => schema.parse(query), attachments: { forMessages },
+      stepTranslations: createStepTranslations({ translate, language: async () => "el", warn: vi.fn(), now: () => now })
+    } as unknown as Parameters<typeof registerNousRoutes>[2]);
+    try {
+      const read = async (since?: string) => (await app.inject({ url: `/api/nous/messages${since ? `?since=${encodeURIComponent(since)}` : ""}` })).json();
+      const full = await read();
+      expect(full.messages.map((message: NousMessage) => message.id)).toEqual(["m1", "m2", "m3"]);
+      expect(full.waiting).toEqual(["m1", "m3"]);
+      await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(1));
+      // m3 changed 1 s ago (inside the overlap) and m2's translation arrived after the cursor: both go; m1 stays with the dock.
+      const next = await read(full.cursor);
+      expect(next.messages.map((message: NousMessage) => message.id)).toEqual(["m2", "m3"]);
+      expect(next.messages[0].meta.translation.text).toBe("el:Read Zoe's reports");
+      expect(next).toMatchObject({ waiting: ["m1", "m3"], hasMore: false, clearedAt: null, attachments: { m3: [] } });
+      expect(forMessages.mock.calls.at(-1)![1]).toEqual(["m3"]);
+      now += 60_000;
+      expect((await read(at(now))).messages).toEqual([]);
+      expect((await app.inject({ url: "/api/nous/messages?since=yesterday" })).statusCode).toBeGreaterThanOrEqual(400);
+    } finally { await app.close(); }
   });
 
   it("leaves an English operator's page alone and waits 10 minutes after a failed batch", async () => {

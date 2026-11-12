@@ -51,10 +51,10 @@ describe("CLI host persistence", () => {
       content: "same host output"
     };
 
-    const first = store.appendPaneCliHostOutputChunk(input, "trace:host-output");
-    const replay = store.appendPaneCliHostOutputChunk(input, "trace:host-output-replay");
+    const first = store.appendPaneCliHostOutputChunks([input], null, "trace:host-output");
+    const replay = store.appendPaneCliHostOutputChunks([input, input], null, "trace:host-output-replay");
 
-    expect(replay.chunkId).toBe(first.chunkId);
+    expect(replay).toBe(first);
     expect(store.listPaneCliTranscriptChunks(firstSession.sessionId)).toHaveLength(1);
     expect(store.getPaneCliHostOutputCursor(firstSession.sessionId, input.generationId)).toBe(0);
   });
@@ -67,14 +67,15 @@ describe("CLI host persistence", () => {
       generationId: "019f4e26-28e1-7cb8-8e82-5fe14f793741",
       outputSequence: 7, stream: "stdout" as const, content
     };
-    const final = store.appendPaneCliHostOutputChunk(input);
+    const final = store.appendPaneCliHostOutputChunks([input]);
     const rows = store.listPaneCliTranscriptChunks(firstSession.sessionId);
     expect(rows.length).toBeGreaterThan(1);
     expect(rows.map(row => row.content).join("")).toBe(content);
     expect(rows.every(row => row.content.length <= 32768 && row.byteLength <= 65536)).toBe(true);
     expect(rows.slice(0, -1).every(row => row.hostOutputSequence === null)).toBe(true);
     expect(rows.at(-1)?.hostOutputSequence).toBe(7);
-    expect(store.appendPaneCliHostOutputChunk(input).chunkId).toBe(final.chunkId);
+    expect(rows.at(-1)?.sequence).toBe(final);
+    expect(store.appendPaneCliHostOutputChunks([input])).toBe(final);
     expect(store.listPaneCliTranscriptChunks(firstSession.sessionId)).toEqual(rows);
     expect(store.getPaneCliHostOutputCursor(firstSession.sessionId, input.generationId)).toBe(7);
   });

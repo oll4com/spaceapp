@@ -7,7 +7,7 @@ import { NotificationToastHost } from "../src/features/notifications/Notificatio
 import { deliverNotifications } from "../src/features/notifications/notification-delivery.js";
 import { desktopNotificationPermission, setDesktopNotifications, showDesktopNotification, subscribeNativeNotificationOpen, subscribePushTokenRegistration } from "../src/features/notifications/desktop-notifications.js";
 import {
-  ingestNotificationStreamPayload, openNotification, peekNotificationStore, pushNotificationToast, refreshNotifications, resetNotificationStore, setNotificationDeliveryHandler, setNotificationNavigator
+  ingestNotificationStreamPayload, openNotification, peekNotificationStore, pushNotificationToast, refreshNotifications, resetNotificationStore, setNotificationDeliveryHandler, setNotificationNavigator, subscribeNotificationStore
 } from "../src/features/notifications/notification-store.js";
 import { consumeDoneView } from "../src/features/nous/nous-done-events.js";
 import { consumeNeedsYouView } from "../src/features/needs-you/needs-you-view.js";
@@ -87,6 +87,26 @@ describe("Space notifications (web)", () => {
     // Rooms with open notifications count as needing attention.
     expect(workspaceRoomActivity([], {}, 0, 2).attention).toBe(true);
     expect(workspaceRoomActivity([], {}, 0, 0).attention).toBe(false);
+  });
+
+  it("a timed refresh with the same answer notifies no one (the Nous tabs page again on every store change); a change or an action's refresh does", async () => {
+    let items = [notification("same")];
+    apiMock.notificationsPending.mockImplementation(async () => structuredClone(pending(items)));
+    apiMock.notifications.mockImplementation(async () => ({ notifications: structuredClone(items) }));
+    await refreshNotifications();
+    const before = peekNotificationStore();
+    const listener = vi.fn();
+    const stop = subscribeNotificationStore(listener);
+    await refreshNotifications({ ifChanged: true });
+    expect(peekNotificationStore()).toBe(before);
+    expect(listener).not.toHaveBeenCalled();
+    await refreshNotifications();
+    expect(listener).toHaveBeenCalledTimes(1);
+    items = [notification("same", { status: "READ" })];
+    await refreshNotifications({ ifChanged: true });
+    expect(peekNotificationStore().items[0]?.status).toBe("READ");
+    expect(listener).toHaveBeenCalledTimes(2);
+    stop();
   });
 
   it("delivers a needs-you request on a pane as the focus banner instead of a toast, with one chime; the device setting off keeps the toast (operator request 2026-10-24)", async () => {
