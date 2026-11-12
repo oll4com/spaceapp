@@ -105,9 +105,10 @@ import { cachedTokenUsage, registerTokenUsageRoute, tokenUsageBreakdown, tokenUs
 import { createNousScore, nousScoreErrors, scoreDay, nousScoreLine, NOUS_SCORE_RESET_NOTE, NOUS_SCORE_WINDOW_DAYS, parseScoreReset, registerNousScoreRoutes } from "./score.js";
 import { approvalStates } from "./approvals.js";
 import type { HealthCollectorSample } from "../system-health-collector.js";
-import { accountHold, botCheckHold, vaultReadBackHold, workingSigninHold, confirmedControlBatch, createNousTools, NOUS_MEMORY_PAGE, nousToolDefinitions, pendingNousBriefOf, type CopilotBriefEvent, type NousCopilotDeps, type NousCopilotItem, type NousToolDeps } from "./tools.js";
+import { accountHold, botCheckHold, physicalAskHold, vaultReadBackHold, workingSigninHold, confirmedControlBatch, createNousTools, NOUS_MEMORY_PAGE, nousToolDefinitions, pendingNousBriefOf, type CopilotBriefEvent, type NousCopilotDeps, type NousCopilotItem, type NousToolDeps } from "./tools.js";
 import { createNousFiles, NOUS_OWN_LINK } from "./files.js";
 import { createFileMentions, type FileMentions } from "./file-mentions.js";
+import { unknownRefs } from "./named-refs.js";
 import { createNousSharedFiles, registerNousSharedFileRoutes } from "./shared-files.js";
 import { createNousPrograms, NOUS_PROGRAMS_IMPORT_DIR, NOUS_PROGRAMS_IMPORT_OWNER, registerNousProgramRoutes } from "./programs.js";
 import { createOperatorUpdates } from "./operator-updates.js";
@@ -851,6 +852,8 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     // 7/11 REVIEW item 1: a bot check comes last, once every field is filled.
     const formFirst = botCheckHold(card);
     if (formFirst) return formFirst;
+    const physical = physicalAskHold(card);
+    if (physical) return physical;
     // 7/11 Oracle: a sign-in the Vault holds waits for the agent's fill and masked readout.
     // nous_msg:fe72e061: no reset or recovery card while the stored sign-in works (the operator's order in `checked` overrides).
     const working = await workingSigninHold(siteSigninsFor(store), input.ownerUserId, card);
@@ -1804,6 +1807,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     notifications: {
       list: async (owner) => (await allNotifications(options.notifications.list, owner, { status: "OPEN" })).filter((item) => item.source !== "NOUS"),
       resolve: async (owner, id) => Boolean(await options.notifications.setStatus(owner, id, "RESOLVED")),
+      get: (owner, id) => options.notifications.get(owner, id),
       ...(nousDb ? { elsewhere: nousDb.notificationElsewhere } : {})
     },
     releaseTrain: (input, by) => options.releaseTrain(input, by),
@@ -1888,6 +1892,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     answer: (owner, id, input, answerOptions) => late.service!.answer(owner, id, input, answerOptions) }, log: app.log }) : null;
   const service = late.service = createNousService({
     repository, runner, tools, world, settings, annotate: (owner, text) => fileMentions.annotate(owner, text),
+    unknownRefs: (owner, text) => unknownRefs(text, async (id) => Boolean(await options.notifications.get(owner, id))),
     onOperatorMessage: (owner, at) => { noteOperatorActive(owner, at); void options.notifications.releaseQuietHeld?.(owner).catch(() => {}); score.changed(owner); },
     requestActed: (owner, keys) => requestDone.acted(owner, keys),
     // shortcut: only Mail reviews have requiresReview memories (Marketing, Freelance and Job pass no review flag yet); add theirs when they do.

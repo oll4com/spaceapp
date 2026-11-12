@@ -250,6 +250,8 @@ export function createPaneReports(deps: PaneReportsDeps) {
       const asks = input.status === "needs-you" || (input.status === "blocked" && HANDS_NEEDS.test(input.needs ?? ""));
       // R23-3: Needs you shows every artifact an ask names, so one that does not open for the owner is refused before anything is stored.
       if (asks) {
+        // 12/11 REVIEW (3 of 7 agent cards without "Checked first", Finn, Dana, Jack): a blocked report that raises the card needs checked like a needs-you.
+        if (input.status === "blocked" && !input.checked?.length) throw Object.assign(new Error(`This blocked report asks for the operator's hands, so it raises a Needs you card: ${AGENT_ASK_LAST_RULE} Nothing reported.`), { statusCode: 422 });
         for (const id of artifactIdsIn([input.summary, input.needs ?? "", ...(input.options ?? []), ...(input.files ?? [])].join("\n"))) {
           const artifact = await Promise.resolve().then(() => deps.store.getArtifact(id)).catch(() => null);
           const home = artifact && !artifact.deletedAt && artifact.roomId ? await Promise.resolve().then(() => deps.store.getRoom(artifact.roomId!)).catch(() => null) : null;

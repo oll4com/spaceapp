@@ -55,7 +55,7 @@ import { awaitsOperator, NOUS_SAVE_REQUEST, NOUS_SAVE_RETRY_TEXT } from "./save-
 import { textPrediction } from "./predictions.js";
 import { SECURITY_OWN_HOST_KINDS } from "../security-copilot/service.js";
 import { MONITORING_OWN_HOST_KINDS } from "../monitoring-copilot/service.js";
-import { answersSameQuestion, cardStems, foldText, sameCardSubject, FOCUS_PANE_DESCRIPTION, focusPaneSchema, holdsFact, NOUS_ASK_LAST_RULE, NOUS_PREDICTION_RULE, nousCheckedSchema, notifyOperatorArgsSchema, ruleRecommendation, titleWords,
+import { answersSameQuestion, cardStems, foldText, sameCardSubject, FOCUS_PANE_DESCRIPTION, focusPaneSchema, holdsFact, NOUS_ASK_LAST_RULE, NOUS_PREDICTION_RULE, nousCheckedSchema, notifyOperatorArgsSchema, principleConflicts, ruleRecommendation, titleWords,
   type NousPaneNotices } from "./pane-notices.js";
 import { paneCheckedArgsSchema, waitsOnOperatorClaim, type NousPaneWatch } from "./pane-watch.js";
 import { nousOpsGatewayArgsSchema, nousOpsGatewayText, nousOpsServicesArgsSchema, nousOpsServicesText, nousOpsUsageArgsSchema, nousOpsUsageText, type NousOpsDeps } from "./ops-views.js";
@@ -228,6 +228,8 @@ export interface NousToolDeps {
   notifications: {
     list(owner: string): Promise<SpaceNotification[]>;
     resolve(owner: string, id: string): Promise<boolean>;
+    /** One of the owner's notifications by id, whatever its status. */
+    get?(owner: string, id: string): Promise<SpaceNotification | null>;
     /** R41: a notification of another account (space_db_query reads every account's rows), never its text. */
     elsewhere?(owner: string, id: string): Promise<{ source: string; kind: string; status: string; createdAt: string } | null>;
   };
@@ -584,8 +586,9 @@ const GUEST_FORM = /^\s*guest form:\s*https?:\/\//i;
  * («πληρωμή») or "Connects" refused an Alignerr ID check, the Arize review card and Dana's Upwork 2FA card.
  */
 const CHECKOUT_PAYMENT_ASK = new RegExp([
-  String.raw`\bcheck-?out\b|https?:\/\/\S*\b(?:billing|payments?|pay)\b`,
-  String.raw`\b(?:billing|payment|card|credit card|debit card)\s+(?:page|form|details|info(?:rmation)?|fields?|input|entry)\b`,
+  // 13/11 review: an identity, 2FA, sign-in or pairing page under a payments path (Upwork /nx/payments/identity-verification) and an "ID card" are no card entry.
+  String.raw`\bcheck-?out\b|https?:\/\/(?!\S*(?:identity|verif|2fa|two-?factor|security|log-?in|sign-?in|pair))\S*\b(?:billing|payments?|pay)\b`,
+  String.raw`(?<!\b(?:id|identity)\s)\b(?:billing|payment|card|credit card|debit card)\s+(?:page|form|details|info(?:rmation)?|fields?|input|entry)\b`,
   String.raw`\b(?:credit|debit) card\b|\bcard\s*(?:number|no\.?|#)|\bcvc\b|\bcvv\b|\bexpiry date\b`,
   String.raw`\badd\s+(?:a\s+|the\s+)?(?:new\s+)?(?:payment method|card|credit card|billing)\b`,
   String.raw`(?<!\b(?:did|have|has) (?:you|they|we) )\b(?:pay|paying|purchase|buy|top[ -]?up|charge[sd]?)\b[^.\n]{0,40}?(?:[$€£]\s?\d|\d[\d.,]*\s?(?:usd|eur|€|connects?|credits?)\b)`,
@@ -643,6 +646,18 @@ export function botCheckHold(card: { text: string; checked?: readonly string[] }
     + "holds goes to the operator as one list before the page), up to the bot check, and keep the page fresh. Then raise the card for the bot check "
     + "alone and say so in `checked` (\"all fields filled: …\") (7/11: the operator answered «fill everything, give focus only for the CAPTCHA» on "
     + "UpCloud, YZi, lablab, Oracle and Vonage cards). Nothing raised.";
+}
+/** An ask that needs the operator's hands on hardware: USB or other physical media, or a server's own screen or console. */
+const PHYSICAL_ASK = /(?:^|\s)(?:to|on|onto|into|from|σε|από|στο) (?:a |an |the |ένα )?USB\b|\bUSB (?:stick|drive|key|disk|flash)|flash drive|thumb drive|στικάκι|physical (?:media|access|console|disk|drive|key)|(?:local|physical|serial|server'?s?|host'?s?) (?:console|screen|monitor|keyboard)|φυσικ(?:ό|ή) (?:μέσο|πρόσβαση)|τοπική κονσόλα|οθόνη του (?:server|host)/i;
+/**
+ * 12/11 REVIEW (card «Αντίγραφο ARK του Vault σε USB» answered against the recommendation, 2 corrections): the operator has only a PC and a
+ * phone, so a card or decision asking for USB, physical media or a server's local screen is refused; the operator's order in `checked` overrides.
+ */
+export function physicalAskHold(card: { text: string; checked?: readonly string[] }): string | null {
+  if (!PHYSICAL_ASK.test(card.text) || (card.checked ?? []).some((item) => OPERATOR_ORDER_ID.test(ORDER_ITEM.exec(item)?.[1] ?? ""))) return null;
+  return "Not raised: the operator has only a PC and a phone, no USB, physical media or server screen within reach. Offer a step they can take there: "
+    + "a file downloaded to the PC (Agent Files or the app), an escrow copy in the Vault or cloud storage, a console the browser opens. "
+    + "Only the operator's own order in `checked` (\"operator order nous_msg:<id>\") raises it as written. Nothing raised.";
 }
 /** An error code a flow answered (STEP_UP_REQUIRED, PAIRING_FAILED, ...); upper case only, so prose about a failure does not count. */
 const FLOW_ERROR_CODE = /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:REQUIRED|FAILED|DENIED|FORBIDDEN|INVALID|EXPIRED|ERROR|UNAUTHORI[SZ]ED)\b/;
@@ -982,10 +997,14 @@ const schemas = {
     action: nousDecisionActionSchema.optional().describe("What the server runs if the operator approves. Without it the answer comes back to you."),
     urgent: z.boolean().optional().describe("Alert at once even while the operator is away: only a security incident or a risk of data loss."),
     checked: nousCheckedSchema.optional().describe("What you checked before asking (1-8 items: a source and what it showed). Required for every decision."),
-    prediction: z.object({
+    // 13/11 review (repeating since 11/11): the card's own line ("Πρόβλεψη: ναι (90%)", "yes (90%)") given as a string is that object.
+    prediction: z.preprocess((value) => {
+      const line = typeof value === "string" ? /^\s*(?:(?:Πρόβλεψη|Prediction)\s*:\s*)?(.*?)\s*\(?\s*(\d{1,3})\s*%\s*\)?[\s.]*$/isu.exec(value) : null;
+      return line ? { answer: line[1], confidence: Number(line[2]) } : value;
+    }, z.object({
       answer: z.string().trim().min(1).max(200).describe("\"yes\" (approves), \"no\" (declines), one of the options word for word, or, with no options, the words you expect him to write (\"yes, but by Friday\")."),
       confidence: z.number().int().min(0).max(100).describe("How sure you are, 0-100.")
-    }).strict().optional().describe("How you expect the operator to answer; the server writes \"Prediction: … (N %)\" on the card (in Greek on a Greek card). Required unless the recommendation already ends with that line."),
+    }).strict()).optional().describe("How you expect the operator to answer; the server writes \"Prediction: … (N %)\" on the card (in Greek on a Greek card). Required unless the recommendation already ends with that line."),
     replaces: nousDecisionIdSchema.optional().describe("An open decision of yours this one corrects or widens (another target, a newer commit, everything in one): Space closes it as replaced once this one is asked; do not withdraw it first."),
     ruleDiffers: z.string().trim().min(1).max(500).optional().describe("Only when Space answered that an operator rule already decides this: how this case differs from that rule (shown on the card).")
   }),
@@ -1689,6 +1708,9 @@ export function createNousTools(deps: NousToolDeps) {
       // R66 (4/11: five subjects reached the operator on two cards from two panes): an open card on another pane already asking it is updated, not repeated.
       others ??= await otherCards(owner, paneId);
       const twin = await sameSubjectCard(said, subjectKeys(item), others);
+      if (twin?.card.closed) return hold("A card asked this in the last 2 hours", `Card ${twin.card.id} ("${clipText(twin.card.title, 80)}", ${twin.card.closed}) asked `
+        + `"${clipText(twin.text, 120)}"${twin.same ? ` (the same ${twin.same})` : ""}. Act on its answer or outcome; nothing was raised. `
+        + "Only if this is another subject or that answer no longer holds, raise the item again with ruleDiffers saying how.");
       if (twin) return hold("An open card already asks this", `Card ${twin.card.id} ("${clipText(twin.card.title, 80)}") already asks "${clipText(twin.text, 120)}"`
         + `${twin.same ? ` (the same ${twin.same})` : ""}. Update that card `
         + "(space_notify_operator on its pane with its whole list) or resolve it when it is done; nothing was raised. Only if this is another subject, raise the item again with ruleDiffers saying how.");
@@ -1733,12 +1755,15 @@ export function createNousTools(deps: NousToolDeps) {
     return [...found.values()];
   }
   /** R66: the operator's open Nous cards on other panes, each with its items' questions (a card on the same pane is replaced by the new list). */
-  async function otherCards(owner: string, paneId: string): Promise<Array<{ id: string; title: string; items: Array<{ text: string; keys: string[] }> }>> {
+  async function otherCards(owner: string, paneId: string): Promise<Array<{ id: string; title: string; closed?: string; items: Array<{ text: string; keys: string[] }> }>> {
     const open = deps.paneNotices?.open ? await deps.paneNotices.open(owner).catch(() => []) : [];
-    return open.filter((card) => card.paneId !== paneId).map((card) => {
+    // 13/11 REVIEW (one npm 2FA link on 3 cards): a card on any pane raised in the last 2 hours and closed since is the same ask too.
+    const closed = deps.paneNotices?.closedSince ? await deps.paneNotices.closedSince(owner, Date.now() - 2 * 3_600_000).catch(() => []) : [];
+    return [...open.filter((card) => card.paneId !== paneId), ...closed].map((card, index, all) => {
       const items = (Array.isArray(card.payload.items) ? card.payload.items as Array<Record<string, unknown>> : [])
         .map((item) => ({ text: [item.text, item.question].filter((part) => typeof part === "string" && part).join(" "), keys: subjectKeys(item) })).filter((item) => item.text);
-      return { id: card.id, title: card.title, items: items.length ? items : [{ text: card.title, keys: [] }] };
+      return { id: card.id, title: card.title, ...(index < all.length - closed.length ? {} : { closed: `${card.status.toLowerCase()} at ${(card.resolvedAt ?? card.ackedAt ?? card.updatedAt).slice(11, 16)} UTC` }),
+        items: items.length ? items : [{ text: card.title, keys: [] }] };
     });
   }
   /** R66: bge-m3 vectors of card texts, kept by text (an open card's items are read again on every new card). */
@@ -1759,8 +1784,8 @@ export function createNousTools(deps: NousToolDeps) {
    * R66: an open card asking the same subject, by meaning (bge-m3 cosine at least NOUS_LESSON_SAME_CAUSE, two lessons of one cause) or by its words
    * (`sameCardSubject`); two texts naming only different sites are different subjects (an hCaptcha on claude.ai is not one on deepinfra.com).
    */
-  async function sameSubjectCard(asked: string, keys: string[], cards: Array<{ id: string; title: string; items: Array<{ text: string; keys: string[] }> }>):
-    Promise<{ card: { id: string; title: string }; text: string; same?: string } | null> {
+  async function sameSubjectCard(asked: string, keys: string[], cards: Array<{ id: string; title: string; closed?: string; items: Array<{ text: string; keys: string[] }> }>):
+    Promise<{ card: { id: string; title: string; closed?: string }; text: string; same?: string } | null> {
     const pairs = cards.flatMap((card) => card.items.map((item) => ({ card, ...item })));
     if (!pairs.length) return null;
     // Plan clipboard:USQ6ktIIN_1D step 9: the same ref, page, thread or site is one subject whatever the words.
@@ -1802,6 +1827,18 @@ export function createNousTools(deps: NousToolDeps) {
     for (const key of [call, ...fresh.map((match) => `${ctx.turnId}|${match.key}`)]) lessonsShown.set(key, Date.now());
     return hold(`Held once: ${fresh.length === 1 ? "a lesson is" : `${fresh.length} lessons are`} about this`, "The operator corrected you on this before. Read "
       + `${fresh.length === 1 ? "this lesson" : "these lessons"} and do what ${fresh.length === 1 ? "it says" : "they say"}; then make the call again if it still stands (in this turn it passes).\n${renderLessons(fresh, "this call")}`);
+  }
+  /** 1056: a recommendation against a saved principle rule ("keep over delete") is held once per turn and subject, as lessonHold does. */
+  async function principleHold(ctx: NousToolContext, picks: Array<{ pick?: string; context: string; ruleDiffers?: string }>, subject: string): Promise<NousToolOutcome | null> {
+    const call = `${ctx.turnId}|principle|${subject}`;
+    if (!deps.operatorRules || ctx.turn?.reason === "HELPER" || lessonsShown.has(call) || !picks.some((entry) => entry.pick && !entry.ruleDiffers)) return null;
+    const rules = await deps.operatorRules().catch(() => []);
+    const lines = picks.flatMap((entry) => entry.pick && !entry.ruleDiffers ? principleConflicts(entry.pick, entry.context, rules)
+      .map((hit) => `"${clipText(entry.pick!, 80)}" goes against "${hit.principle}" (operator rule [${hit.rule.id}] "${clipText(hit.rule.title, 120)}")`) : []);
+    if (!lines.length) return null;
+    lessonsShown.set(call, Date.now());
+    return hold("Held once: the recommendation goes against your rule", `${lines.join("; ")}. Recommend what the rule says; if this case really differs, `
+      + "say how in ruleDiffers, or make the call again unchanged (in this turn it passes).");
   }
   /** R13-11, R13-15: the operator's newest approval of a product's release (a RELEASE_APPROVE decision they approved). */
   const releaseYes = async (owner: string, product: string) => (await deps.decisions?.(owner, 200).catch(() => [] as NousDecision[]) ?? [])
@@ -2315,7 +2352,11 @@ export function createNousTools(deps: NousToolDeps) {
     // R10-7: a plan's pane may be closed (its task reopens it, and the world lists such plans): its id links it. R10-16: a task's too, and
     // by name when the room holds exactly one closed pane of that name (and no open one: findPane found none).
     const closed = closedOk ? await closedPane(room, ref.pane, closedOk === "name") : null;
-    return closed ? { roomId: room.id, paneId: closed.id, paneTitle: paneLabel(closed), note: ` (linked; ${reopensWithTask(closed)}.)`, closed } : { problem: found.problem! };
+    if (closed) return { roomId: room.id, paneId: closed.id, paneTitle: paneLabel(closed), note: ` (linked; ${reopensWithTask(closed)}.)`, closed };
+    // 13/11 review: a name open in exactly one other room links that pane; several keep findPane's error.
+    const only = found.elsewhere?.length === 1 ? found.elsewhere[0]! : null;
+    return only ? { roomId: only.room.id, paneId: only.pane.id, paneTitle: paneLabel(only.pane), note: ` (No pane "${ref.pane}" in ${room.name}: linked ${paneLabel(only.pane)} in ${only.room.name}; name that room next time.)` }
+      : { problem: found.problem! };
   }
   /** R10-16: what a task bound to a closed pane says. */
   const boundClosed = (pane: Pane, nextRunAt: string | null | undefined) =>
@@ -2353,7 +2394,8 @@ export function createNousTools(deps: NousToolDeps) {
       const { index = 0, paneId, error, detail } = entry as { index?: number; paneId?: string | null; error?: string; detail?: string };
       const action = actions[index] ?? {};
       const target = paneId ?? ((action.target as { paneIds?: string[] } | undefined)?.paneIds ?? []).join(", ");
-      return `FAILED ${String(action.operation ?? action.kind ?? "action")}${target ? ` ${target}` : ""}: ${error || detail || "no reason given"}`;
+      // 13/11 review ("FAILED panes.open: [" ×4): a multi-line error (zod's issue list) on one line, so the first line holds all of it.
+      return `FAILED ${String(action.operation ?? action.kind ?? "action")}${target ? ` ${target}` : ""}: ${(error || detail || "no reason given").replace(/\s*\n\s*/g, " ")}`;
     });
     return failed.length ? { ...outcome, result: `${failed.join("\n")}\n${outcome.result}` } : outcome;
   };
@@ -2774,8 +2816,10 @@ export function createNousTools(deps: NousToolDeps) {
       // space_send_to_pane (after a running turn, or held for its next empty prompt) instead of failing.
       const sendInstead = async (pane: Pane, why: string) => {
         const sent = await handlers.space_send_to_pane({ room: room.id, panes: [pane.id], text: args.answer!.trim() }, ctx);
-        return { ...sent, result: `${paneLabel(pane)} ${why}, so your answer went through space_send_to_pane. ${sent.result}` };
+        return { ...sent, ...(sent.ok ? { display: "SENT_AS_PROMPT" } : {}), result: `${paneLabel(pane)} ${why}, so your answer went through space_send_to_pane. ${sent.result}` };
       };
+      // 12/11 review (27 in 7 days, Bob and Hugo IDLE): a pane at its empty prompt asked in prose, so even "1" or "yes" is its next prompt.
+      const idleAnswer = !args.decline && Boolean(args.answer?.trim());
       // Daily review 2026-10-21: copilot panes got "Only CLI panes have prompts to answer" (11 in 7 days) without the tool that reaches them.
       // R11-2 (1) (REVIEW 29/10: 6 of 8 calls failed, 5 in one turn at 01:18 UTC): the call routes instead: a QUESTION of that pane goes to the
       // copilot's own answer path, a prompt its CLI waits at is answered like a terminal's, anything else names the tool that reaches the pane.
@@ -2805,7 +2849,7 @@ export function createNousTools(deps: NousToolDeps) {
           await deps.answerPrompt(pane, { sessionId: observed.sessionId, answer, ...(observed.promptFingerprint ? { fingerprint: observed.promptFingerprint } : {}) }, ctx.traceId);
           return { ok: true, display: `Answered ${paneLabel(pane)}'s CLI prompt`, result: `${paneLabel(pane)}'s CLI waited at a prompt: answered "${clipText(answer, 60)}". Read it again to see the effect.` };
         }
-        if (prompt) return sendInstead(pane, "is a copilot pane with no question and no CLI prompt waiting");
+        if (prompt || (idleAnswer && observed?.state === "IDLE")) return sendInstead(pane, "is a copilot pane with no question and no CLI prompt waiting");
         return fail(`${paneLabel(pane)} has no prompt to answer`, `${paneLabel(pane)} is a copilot pane with no question and no CLI prompt waiting now (${observed?.state ?? "state unknown"}). `
           + "Send it a text as its next prompt with space_send_to_pane (Marketing, Freelance, Design, App Studio, Video, Security and Monitoring take it as a brief); its open items: space_copilot_items.");
       }
@@ -2839,7 +2883,7 @@ export function createNousTools(deps: NousToolDeps) {
       }
       const answered = fromRoom(await deps.roomTool("answer_pane_prompt", { pane: found.pane.id, ...(args.answer !== undefined ? { answer: args.answer } : {}),
         ...(args.submit !== undefined ? { submit: args.submit } : {}), ...(args.decline ? { decline: true } : {}) }, roomCtx(ctx, room.id)));
-      if (!answered.ok && prompt && /is not waiting for an answer/.test(answered.result)) return sendInstead(found.pane, "no longer waited on a prompt");
+      if (!answered.ok && (prompt || (idleAnswer && /\(state IDLE\)/.test(answered.result))) && /is not waiting for an answer/.test(answered.result)) return sendInstead(found.pane, "no longer waited on a prompt");
       // Daily review 2026-10-21: "no observable response" came back 16 times in 7 days, often five times in a row with the same answer.
       return !answered.ok && /no observable response/i.test(answered.result) ? { ...answered, result: `${answered.result} The screen did not change: `
         + "the prompt may have closed, may need Enter (submit true) or may take arrow keys only. Read the pane (space_read_pane) before you answer again; never repeat the same answer." } : answered;
@@ -3502,10 +3546,18 @@ export function createNousTools(deps: NousToolDeps) {
         closedPane = link.closed ?? null;
       }
       let task: TaskItem | null = null;
-      if (args.bind !== undefined) task = await deps.tasks.rebind(ctx.owner, args.task, binding ?? { roomId: null, paneId: null, paneTitle: null });
-      if (args.status !== undefined || args.schedule !== undefined || args.title !== undefined || args.objective !== undefined) {
-        task = await deps.tasks.update(ctx.owner, args.task, { ...(args.status ? { status: args.status } : {}), ...(args.schedule !== undefined ? { schedule: args.schedule } : {}),
-          ...(args.title ? { title: args.title } : {}), ...(args.objective ? { objective: args.objective } : {}) });
+      try {
+        if (args.bind !== undefined) task = await deps.tasks.rebind(ctx.owner, args.task, binding ?? { roomId: null, paneId: null, paneTitle: null });
+        if (args.status !== undefined || args.schedule !== undefined || args.title !== undefined || args.objective !== undefined) {
+          task = await deps.tasks.update(ctx.owner, args.task, { ...(args.status ? { status: args.status } : {}), ...(args.schedule !== undefined ? { schedule: args.schedule } : {}),
+            ...(args.title ? { title: args.title } : {}), ...(args.objective ? { objective: args.objective } : {}) });
+        }
+      } catch (error) {
+        if (!(error instanceof Error && /was not found|^No task /.test(error.message))) throw error;
+        // 13/11 review ("Task item task:nth-… was not found" ×3; no Space view shows such ids): name the real ones so the retry lands.
+        const open = await deps.tasks.list(ctx.owner);
+        return fail("No such task", `${args.task} is no task id. Open tasks: ${open.length ? open.map((item) => `[${item.id}] "${clipText(item.title, 80)}"`).join("; ") : "none"}. `
+          + "Use the id in brackets as space_tasks shows it. Nothing changed.");
       }
       return { ok: true, display: `Task "${task!.title.slice(0, 60)}": ${task!.status}${task!.paneTitle ? ` · ${task!.paneTitle}` : ""}`,
         result: `Task ${task!.id} is ${task!.status}${task!.paneTitle ? `, bound to ${task!.paneTitle}` : ", without a pane"}${task!.schedule?.nextRunAt ? `, next run ${task!.schedule.nextRunAt}` : ""}.`
@@ -3795,10 +3847,15 @@ export function createNousTools(deps: NousToolDeps) {
       const questionId = matches[0]?.id ?? args.question;
       // Workbench review 2026-10-21: 10 answers in 7 days to questions the operator or the copilot had already closed; nothing is left to do.
       const result = await deps.copilots.answerQuestion(ctx.owner, { copilot: args.copilot, questionId, paneId: matches[0]?.paneId ?? args.pane ?? null, answer: args.answer })
-        .catch((error: unknown) => {
+        .catch(async (error: unknown) => {
           if (error instanceof Error && /is not waiting any more/.test(error.message)) return null;
-          if (error instanceof Error && /question was not found/.test(error.message)) return fail("No such question", `"${clipText(args.question, 120)}" is neither the id nor the words of an open ${args.copilot} question. Open now: ${listed(open)}. Answer with its id. Nothing answered.`);
-          throw error;
+          if (!(error instanceof Error && /question was not found/.test(error.message))) throw error;
+          // 13/11 review (7 of 7 failures): a needs-you card's id whose copilot question had already closed is no error.
+          const card = args.question.startsWith("notification:") ? await deps.notifications?.get?.(ctx.owner, args.question).catch(() => null) : null;
+          if (card) return { ok: true, display: "ALREADY_CLOSED", result: `${args.question} ALREADY_CLOSED: ${card.source} ${card.kind} "${card.title}" `
+            + (card.status === "RESOLVED" ? `was closed ${card.resolvedAt ?? card.updatedAt} ${card.payload.answeredBy ? `by ${String(card.payload.answeredBy)}` : "(answered in the rail, or the copilot moved on)"}`
+              : `is ${card.status} but its question is no longer open (answered, or past its hold)`) + ". Nothing answered; read space_copilot_items for what still waits." };
+          return fail("No such question", `"${clipText(args.question, 120)}" is neither the id nor the words of an open ${args.copilot} question. Open now: ${listed(open)}. Answer with its id. Nothing answered.`);
         });
       if (result && typeof result === "object") return result;
       if (result === null) {
@@ -3842,6 +3899,12 @@ export function createNousTools(deps: NousToolDeps) {
       const lesson = await lessonHold(ctx, [args.title, args.body, args.recommendation, ...(args.options ?? [])], ["ask", target?.type, target?.itemId ?? target?.paneId ?? target?.roomId,
         args.refs?.planId, args.refs?.mailThread?.threadId].map((part) => String(part ?? "")).join("|"));
       if (lesson) return lesson;
+      // 1056: the pick is the option the prediction names, else the recommendation's words (with the title it says yes to).
+      const stated = recommendation.replace(/\s*(?:Πρόβλεψη|Prediction)\s*:[^\n]*/giu, "").trim();
+      const pick = args.options?.find((option) => foldText(option) === foldText(prediction.answer)) ?? `${stated}${prediction.answer === "yes" ? `\n${args.title}` : ""}`;
+      const against = await principleHold(ctx, [{ pick, context: [args.title, args.body, ...(args.options ?? [])].join("\n"), ruleDiffers: args.ruleDiffers }],
+        ["ask", target?.type, target?.itemId ?? target?.paneId ?? target?.roomId, args.title].map((part) => String(part ?? "")).join("|"));
+      if (against) return against;
       // Stable 2026-10-22: "REJECT"/"APPROVE" passed here, failed on the operator's yes (copilots take lower case) and came back as new cards.
       // R13-4: a decision word another rail uses is mapped to the one this item takes, and the answer says so.
       const copilotAction = args.action?.type === "COPILOT" ? args.action : null;
@@ -4066,6 +4129,8 @@ export function createNousTools(deps: NousToolDeps) {
       if (facts.refusal) return hold("Space holds the account facts for this", facts.refusal);
       const formFirst = botCheckHold({ text: texts.join("\n"), checked: args.checked });
       if (formFirst) return hold("Fill the page first", formFirst.replace("Nothing raised.", "Nothing asked."));
+      const physical = physicalAskHold({ text: texts.join("\n"), checked: args.checked });
+      if (physical) return hold("The operator has only a PC and a phone", physical.replace("Nothing raised.", "Nothing asked."));
       vaultLines.push(...facts.lines, ...facts.vault.filter((line) => !vaultLines.includes(line)));
       const supportSite = vaultLines.length && SUPPORT_ASK.test(texts.join("\n")) ? sites.find((site) => vaultLines.some((line) => line.includes(` for ${site}:`))) : undefined;
       const supportKey = `${ctx.owner}\n${supportSite}`;
@@ -4245,8 +4310,13 @@ export function createNousTools(deps: NousToolDeps) {
       const { room, problem } = await findRoom(ctx.owner, args.room);
       if (!room) return fail(`Could not find ${args.room}`, problem!);
       // R10-7: a check may be recorded on a closed pane named by its id; R26: or by its name, when the room holds only that one.
-      const found = await findPane(room, args.pane).then(async (open) => open.pane ? open : { ...open, pane: await closedPane(room, args.pane, true) });
+      const named = await findPane(room, args.pane).then(async (open) => open.pane ? open : { ...open, pane: await closedPane(room, args.pane, true) });
+      // 13/11 review (7 failures in a day; the resolver leaves checks of a room's closed panes here, and several closed of one name match
+      // none): a name open in exactly one other room is checked there, and the answer says so.
+      const only = !named.pane && named.elsewhere?.length === 1 ? named.elsewhere[0]! : null;
+      const found = only ? { pane: only.pane, problem: null } : named;
       if (!found.pane) return fail(`Could not find ${args.pane}`, found.problem!);
+      const moved = only ? `(No open pane "${args.pane}" in ${room.name}: checked ${paneLabel(only.pane)} in ${only.room.name}; name that room next time.) ` : "";
       // Operator 28/10 14:59 BKK (finished panes at once): a pane idle at its prompt after its own done or failed report is not working.
       if (args.verdict === "OK_WORKING" && deps.paneLastReport) {
         const last = await deps.paneLastReport(ctx.owner, found.pane.id).catch(() => null);
@@ -4276,7 +4346,8 @@ export function createNousTools(deps: NousToolDeps) {
           + "Its copilot run may read RUNNING while its agent waits: read it (space_read_pane) and get it going with space_send_to_pane (the next brief) or "
           + "space_restart_pane; space_copilot_control start only when its run is off; or record WAITING_* with what it waits for and nextCheckInMinutes.");
       }
-      return deps.paneWatch.checked(ctx.owner, room, found.pane, args);
+      const checked = await deps.paneWatch.checked(ctx.owner, only?.room ?? room, found.pane, args);
+      return moved ? { ...checked, result: `${moved}${checked.result}` } : checked;
     },
     async space_pane_reports(args, ctx) {
       if (!deps.paneReports) return fail("Pane reports are unavailable");
@@ -4751,8 +4822,12 @@ export function createNousTools(deps: NousToolDeps) {
       if (known) return known;
       const unproven = unprovenNowHold(args.items, args.checked);
       if (unproven) return hold("The flow failed when checked", unproven);
-      const lesson = await lessonHold(ctx, [args.title, ...args.items.flatMap((item) => [item.text, item.question ?? ""])], `card|${found.pane.id}`);
+      // 1056 (13/11 REVIEW: 6 card misses on 12/11): the recommendation written on a card meets its lessons too (a prediction-miss lesson names the answer).
+      const lesson = await lessonHold(ctx, [args.title, ...args.items.flatMap((item) => [item.text, item.question ?? "", item.recommended ?? ""])], `card|${found.pane.id}`);
       if (lesson) return lesson;
+      const against = await principleHold(ctx, args.items.map((item) => ({ pick: item.recommended, context: [args.title, item.text, item.question ?? "", ...(item.options ?? [])].join("\n"),
+        ruleDiffers: item.ruleDiffers })), `card|${found.pane.id}`);
+      if (against) return against;
       const facts = await accountFacts(ctx.owner, [args.title, ...args.items.flatMap((item) => [item.text, item.question ?? "", ...(item.steps ?? [])])], undefined,
         [...args.checked, ...args.items.flatMap((item) => item.triedStored ? [`Stored sign-in tried: ${item.triedStored}`] : [])], true, true);
       if (facts.refusal) return hold("Space holds the account facts for this", facts.refusal);

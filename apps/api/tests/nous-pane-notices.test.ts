@@ -3,7 +3,7 @@ import { eventSchema, type Pane, type Room } from "@space/contracts";
 import { InMemorySiteSigninsRepository, InMemorySpaceNotificationsRepository } from "@space/db";
 import { makeSpaceId, SpaceEventBus } from "@space/runtime";
 import { createNotificationService } from "../src/notifications/service.js";
-import { baseRateRecommendation, createNousPaneNotices, ledgerRecommendation, ruleRecommendation } from "../src/nous/pane-notices.js";
+import { baseRateRecommendation, createNousPaneNotices, ledgerRecommendation, principleConflicts, ruleRecommendation } from "../src/nous/pane-notices.js";
 import { heldForNousNote, NOUS_QUESTION_REWAKE_MS, sweepCopilotQuestions } from "../src/nous/copilot-questions.js";
 import { cardTextMatched } from "../src/nous/predictions.js";
 import { createNousTools, type NousToolDeps } from "../src/nous/tools.js";
@@ -24,6 +24,16 @@ function fixture(held = false) {
 }
 
 describe("Nous's cards to the operator", () => {
+  it("closedSince: the pane cards raised since a time that are closed now (13/11 REVIEW, one subject on 3 cards)", async () => {
+    const f = fixture();
+    await f.notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Upwork needs you", items: [{ text: "Pass the Cloudflare check" }] });
+    await f.notices.notify(owner, room, bob, { room: "Freelance", pane: "Bob", title: "Meridial needs you", items: [{ text: "Sign the W-8BEN form" }] });
+    expect(await f.notices.closedSince(owner, Date.now() - 3_600_000)).toEqual([]);
+    await f.service.resolve(owner, "nous:pane:pane:andy0001", "done");
+    expect((await f.notices.closedSince(owner, Date.now() - 3_600_000)).map((card) => card.paneId)).toEqual([andy.id]);
+    expect(await f.notices.closedSince(owner, Date.now() + 1_000)).toEqual([]);
+  });
+
   it("keeps one card per pane: a new list replaces the items, unread again and alerted once; the same list changes nothing", async () => {
     const f = fixture();
     const first = await f.notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Upwork needs you", items: [{ text: "Pass the Cloudflare check" }] });
@@ -668,5 +678,28 @@ describe("Copilot questions go to Nous first (Ask Last step 7, 2026-10-27)", () 
     expect(await f.service.resolve(owner, "job-apply:question:jobq:fresh00001")).toBe(1);
     expect(await sweepCopilotQuestions({ notifications: f.service, sources: ["JOB_COPILOT"], holds: async () => true, paneOpen: async () => true, missingSince,
       openItemIds: async () => { throw new Error("Job Copilot unavailable"); } })).toEqual({ resolved: 0, released: 0 });
+  });
+});
+
+describe("1056: a recommendation against a saved principle rule (13/11 REVIEW: Vault→keep, Pavago→skip)", () => {
+  const rule = (id: string, title: string, body: string) => ({ id, title, body });
+  it("keep over delete: a delete pick is flagged, a keep pick or a negated delete is not", () => {
+    const rules = [rule("space_memory:keep0001", "Records", "Keep old entries over deleting them; archive instead.")];
+    expect(principleConflicts("Delete it", "Old Vault login for a closed account", rules)).toEqual([{ principle: "keep over delete", rule: { id: "space_memory:keep0001", title: "Records" } }]);
+    expect(principleConflicts("Keep", "Old Vault login", rules)).toEqual([]);
+    expect(principleConflicts("Keep it, never delete", "Old Vault login", rules)).toEqual([]);
+    expect(principleConflicts("Delete it", "Old Vault login", [rule("space_memory:x", "Mail", "Archive what is done.")])).toEqual([]);
+  });
+  it("a free option first: a paid pick is flagged only when a free option is on the table", () => {
+    const rules = [rule("space_memory:free0001", "Tools", "Always look for a free solution first, before any paid plan.")];
+    expect(principleConflicts("Buy the Pro plan", "Pavago hiring tool: Pro plan or the free open-source alternative", rules)).toMatchObject([{ principle: "a free option first" }]);
+    expect(principleConflicts("Buy the Pro plan", "Pavago hiring tool: Pro plan or skip", rules)).toEqual([]);
+    expect(principleConflicts("Use the free tier", "Pro plan or the free tier", rules)).toEqual([]);
+  });
+  it("the operator reads funding mail before it is sent: sending a funding mail unread is flagged, showing the draft is not", () => {
+    const rules = [rule("space_memory:fund0001", "Funding outreach", "The operator reads every funding mail before it is sent.")];
+    expect(principleConflicts("Send it now", "Reply to the accelerator about the grant", rules)).toMatchObject([{ principle: "the operator reads funding mail before it is sent" }]);
+    expect(principleConflicts("Show me the draft first, then send", "Reply to the accelerator about the grant", rules)).toEqual([]);
+    expect(principleConflicts("Send it now", "Reply to the landlord about the lease", rules)).toEqual([]);
   });
 });

@@ -95,6 +95,23 @@ describe("Nous's pane watch", () => {
     expect((await tools.execute("space_pane_checked", { room: "Bruno", pane: "Andy", verdict: "FINE" }, ctx)).ok).toBe(false);
   });
 
+  it("checks a pane named in a room that holds it closed twice where exactly one other room has it open; several open keep the error (13/11 review)", async () => {
+    const repository = new InMemoryNousPaneChecksRepository();
+    const cleo = room("room:cleo00001", "Cleo");
+    const dino = room("room:dino00001", "Dino");
+    const max = pane("pane:max00001", "Max", { roomId: cleo.id });
+    const closedTwice = ["pane:max00002", "pane:max00003", "pane:eve00003", "pane:eve00004"].map((id) => pane(id, id.includes("max") ? "Max" : "Eve", { isClosed: true }));
+    const panes: Record<string, Pane[]> = { [bruno.id]: [andy, ...closedTwice], [cleo.id]: [max, pane("pane:eve00001", "Eve", { roomId: cleo.id })], [dino.id]: [pane("pane:eve00002", "Eve", { roomId: dino.id })] };
+    const tools = createNousTools({ paneWatch: createNousPaneWatch({ repository, now: () => now }), inspectPane: async () => null, rooms: async () => [bruno, cleo, dino],
+      listPanes: async (roomId: string) => panes[roomId] ?? [] } as unknown as NousToolDeps);
+    const ctx = { owner, turnId: "nous_turn:w2", callId: "toolu_w2", traceId: "trace:w2" };
+    expect(await tools.execute("space_pane_checked", { room: "Bruno", pane: "Max", verdict: "OPERATOR_TEST", note: "Login test" }, ctx))
+      .toMatchObject({ ok: true, result: expect.stringContaining('(No open pane "Max" in Bruno: checked Max in Cleo; name that room next time.)') });
+    expect(await repository.list(owner)).toMatchObject([{ paneId: max.id, roomId: cleo.id, verdict: "OPERATOR_TEST" }]);
+    expect(await tools.execute("space_pane_checked", { room: "Bruno", pane: "Eve", verdict: "OPERATOR_TEST", note: "Login test" }, ctx))
+      .toMatchObject({ ok: false, result: expect.stringContaining('"Eve" is open in Cleo (pane:eve00001), Dino (pane:eve00002)') });
+  });
+
   it("operator 8/11 20:04 BKK: KEEP_OPEN because the pane waits for the operator needs their Needs you card or an open decision on it", async () => {
     expect(waitsOnOperatorClaim("Cloud Identity: waits on the operator's SMS code")).not.toBeNull();
     expect(waitsOnOperatorClaim("Waits for the promote")).toBeNull();

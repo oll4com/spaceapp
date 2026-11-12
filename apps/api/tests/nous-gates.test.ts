@@ -520,6 +520,11 @@ describe("Nous's gates", () => {
     // The line alone is read the way the scorer reads it.
     await tools.execute("space_ask_operator", { ...base, title: "Start the lab?", options: [], recommendation: "Start it. Πρόβλεψη: ναι (90%)" }, ctx);
     expect(ask).toHaveBeenLastCalledWith(expect.objectContaining({ refs: { prediction: { answer: "yes", confidence: 90 } } }), expect.anything());
+    // 13/11 review: "prediction: expected object, received string" (repeating since 11/11): the line as a string is the object.
+    await tools.execute("space_ask_operator", { ...base, title: "Start the lab?", options: [], recommendation: "Start it.", prediction: "Πρόβλεψη: ναι (90%)" }, ctx);
+    expect(ask).toHaveBeenLastCalledWith(expect.objectContaining({ refs: { prediction: { answer: "yes", confidence: 90 } } }), expect.anything());
+    await tools.execute("space_ask_operator", { ...base, recommendation: "The lab.", prediction: "(β) Shop 65%" }, ctx);
+    expect(ask).toHaveBeenLastCalledWith(expect.objectContaining({ refs: { prediction: { answer: "(β) Shop", confidence: 65 } } }), expect.anything());
 
     const repository = new InMemoryNousRepository();
     const service = createNousService({ repository, runner: async () => ({ text: "ok", isError: false }), world: async () => ({ text: "world", overview: {} }),
@@ -950,10 +955,10 @@ describe("Nous's gates", () => {
     const dana = { id: "pane:dana0001", roomId: "room:alex0001", paneName: "Dana", title: "Dana", mode: "TERMINAL", isClosed: false };
     const max = { ...dana, id: "pane:max00001", paneName: "Max", title: "Max" };
     const entry = (id: string, title: string, body: string) => ({ id, title, body, rule: false, stems: cardStems(`${title} ${body}`) });
-    const setup = (deps: Partial<NousToolDeps> & { open?: () => Promise<unknown[]> } = {}) => {
+    const setup = (deps: Partial<NousToolDeps> & { open?: () => Promise<unknown[]>; closedSince?: () => Promise<unknown[]> } = {}) => {
       const notify = vi.fn(async () => ({ ok: true, display: "Sent the card", result: "ok" }));
-      const { open, ...rest } = deps;
-      const tools = createNousTools({ rooms: async () => [{ id: "room:alex0001", name: "Alex" }], listPanes: async () => [dana, max], paneNotices: { notify, ...(open ? { open } : {}) },
+      const { open, closedSince, ...rest } = deps;
+      const tools = createNousTools({ rooms: async () => [{ id: "room:alex0001", name: "Alex" }], listPanes: async () => [dana, max], paneNotices: { notify, ...(open ? { open } : {}), ...(closedSince ? { closedSince } : {}) },
         ...rest } as unknown as NousToolDeps);
       const card = (pane: string, item: Record<string, unknown>, checked = ["Space Memory: looked"]) => tools.execute("space_notify_operator", { room: "Alex", pane, title: `${pane} needs you`, items: [item],
         checked }, ctx);
@@ -1056,6 +1061,38 @@ describe("Nous's gates", () => {
       expect((await setup({ open }).card("Dana", { text: "Print the Skroutz return label", question: "Did you print the label?", options: ["Printed", "Not yet"], recommended: "Not yet" })).ok).toBe(true);
     });
 
+    it("(4c) 1056: a card's recommended option meets its lessons (13/11 REVIEW: Vault→keep and Pavago→skip were answered against the recommendation)", async () => {
+      const recall = vi.fn(async (_owner: string, text: string) => /Delete it/.test(text)
+        ? [{ key: "lessons-prediction-misses", text: "The operator keeps Vault entries; recommend Keep.", updatedAt: "", similarity: 0.8, shared: [] }] : []);
+      const { card, notify } = setup({ lessons: { recall } } as unknown as Partial<NousToolDeps>);
+      const item = { text: "Old Vault login for the closed Toggl account", question: "What should happen to it?", options: ["Keep", "Delete it"], recommended: "Delete it" };
+      expect(await card("Dana", item)).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("recommend Keep") });
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("(4d) 1056: a card or decision recommending against a saved principle rule is held once (keep over delete)", async () => {
+      const operatorRules = async () => [{ id: "space_memory:keep0001", title: "Records", body: "Keep old entries over deleting them." }];
+      const { card, notify, tools } = setup({ operatorRules } as Partial<NousToolDeps>);
+      const item = { text: "Old Vault login for the closed Toggl account", question: "What should happen to it?", options: ["Keep", "Delete it"], recommended: "Delete it" };
+      expect(await card("Dana", item)).toMatchObject({ refused: true, result: expect.stringContaining("\"Delete it\" goes against \"keep over delete\" (operator rule [space_memory:keep0001]") });
+      expect((await card("Dana", item)).ok).toBe(true);
+      expect((await card("Max", { ...item, ruleDiffers: "The login leaks a shared password" })).ok).toBe(true);
+      expect(notify).toHaveBeenCalledTimes(2);
+      expect(await tools.execute("space_ask_operator", { category: "DESTRUCTIVE", title: "Delete the old Toggl backups?", body: "They take 2 GB.", recommendation: "Yes. Prediction: yes (70%)",
+        checked: ["Disk: 2 GB of Toggl backups"] }, ctx)).toMatchObject({ refused: true, result: expect.stringContaining("keep over delete") });
+    });
+
+    it("(4b) refuses an item a card closed in the last 2 hours already asked, on any pane (13/11 REVIEW: one npm 2FA link on 3 cards)", async () => {
+      const closedSince = vi.fn(async () => [{ id: "notification:npm00001", paneId: "pane:dana0001", title: "Dana needs you", status: "RESOLVED", resolvedAt: "2026-11-12T09:12:00.000Z",
+        updatedAt: "2026-11-12T09:12:00.000Z", payload: { items: [{ text: "npm 2FA link for run-spaceapp 1.2.0: open it and approve the publish" }] } }]);
+      const { card, notify } = setup({ closedSince });
+      expect(await card("Dana", { text: "Approve the npm 2FA link for the run-spaceapp 1.2.0 publish" }))
+        .toMatchObject({ refused: true, display: "A card asked this in the last 2 hours", result: expect.stringContaining("Card notification:npm00001 (\"Dana needs you\", resolved at 09:12 UTC)") });
+      expect(Date.now() - (closedSince.mock.calls[0] as unknown as [string, number])[1]).toBeGreaterThanOrEqual(2 * 3_600_000);
+      expect(notify).not.toHaveBeenCalled();
+      expect((await card("Dana", { text: "Approve the npm 2FA link for the run-spaceapp 1.2.0 publish", ruleDiffers: "The first link expired before it was used" })).ok).toBe(true);
+    });
+
     it("(5) two panes, one subject, one card: the same ref, thread or site holds the second whatever its words (plan clipboard:USQ6ktIIN_1D step 9)", async () => {
       // The first pane's card is open when the second pane asks; nothing here shares two words, and there is no embedder.
       const cards: Array<{ id: string; paneId: string; title: string; payload: { items: unknown[] } }> = [];
@@ -1146,6 +1183,18 @@ describe("Nous's gates", () => {
       expect(await card("Dana", { text: "Namecheap: renew spaceapp.dev", steps: ["Open https://www.namecheap.com/cart/checkout", "Add payment method", "Enter the card number"] }))
         .toMatchObject({ ok: false, refused: true, display: "Premature checkout card", result: expect.stringContaining("final card-input form") });
       expect(notify).toHaveBeenCalledTimes(3);
+    });
+
+    it("(9) passes an identity check under a payments URL, an ID card, a 2FA login and a phone pairing card; a checkout URL still holds (13/11 review)", async () => {
+      const { card, notify } = setup();
+      expect((await card("Max", { text: "Upwork identity check: ID + selfie", target: "url:https://www.upwork.com/nx/payments/identity-verification" })).ok).toBe(true);
+      expect((await card("Max", { text: "Contra wants ID card details: photograph the ID card, then a selfie" })).ok).toBe(true);
+      expect((await card("Max", { text: "Upwork Google 2FA SMS code", steps: ["Open https://www.upwork.com/ab/account-security/login?redir=/nx/payments/", "Type the SMS code"] })).ok).toBe(true);
+      expect((await card("Dana", { text: "Nous Pro: pair your phone, scan the QR in the paid Nous app", steps: ["Open http://127.0.0.1:4911/nous/pair", "Scan the QR"] })).ok).toBe(true);
+      expect(notify).toHaveBeenCalledTimes(4);
+      expect(await card("Dana", { text: "Fiverr: buy the gig", steps: ["Open https://www.fiverr.com/payments/checkout", "Enter the card number"] }))
+        .toMatchObject({ ok: false, refused: true, display: "Premature checkout card" });
+      expect(notify).toHaveBeenCalledTimes(4);
     });
   });
 

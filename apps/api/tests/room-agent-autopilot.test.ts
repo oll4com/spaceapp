@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Pane } from "@space/contracts";
 import { InMemoryRoomAgentMonitorRepository } from "@space/db";
-import { AUTOPILOT_CONTINUE_PROMPT, CONTINUE_RETRY_MS, createRoomAgentAutopilot, NOUS_PROMPT_WINDOW_MS, parseAutopilotDecision, promptExcerpt } from "../src/room-agent-autopilot.js";
+import { AUTOPILOT_CONTINUE_PROMPT, CONTINUE_RETRY_MS, createRoomAgentAutopilot, NOUS_PROMPT_WINDOW_MS, NOUS_WAIT_WINDOW_MS, parseAutopilotDecision, promptExcerpt } from "../src/room-agent-autopilot.js";
 import type { RoomPaneObservation } from "../src/room-pane-control.js";
 import { roomTerminalState } from "../src/room-terminal-screen.js";
 
@@ -121,7 +121,7 @@ describe("Room Agent autopilot", () => {
     expect((await c.repository.getEvent(event.eventId))?.status).toBe("HANDLED");
   });
 
-  it("R68: answers a Claude permission prompt Nous left open past its window (Claude Code denies it at 2 min); others stay Nous's", async () => {
+  it("R68: answers a Claude permission prompt Nous left open past its window (Claude Code denies it at 2 min), any other wait after 2 min", async () => {
     const repository = new InMemoryRoomAgentMonitorRepository();
     const answer = vi.fn(async () => ({ answered: true }));
     let offset = 0;
@@ -137,6 +137,17 @@ describe("Room Agent autopilot", () => {
     runtime = "cli:claude";
     await autopilot.sweep([pane.roomId]);
     expect(await repository.getEvent(event.eventId)).toMatchObject({ status: "HANDLED", decision: 'Answered "1": Runs its tests' });
+    // 13/11 REVIEW (Finn's `sed -n` prompt 7.3 min unanswered): any CLI's wait Nous left open 2 minutes is the autopilot's.
+    const finnRepository = new InMemoryRoomAgentMonitorRepository();
+    const codex = createRoomAgentAutopilot({ repository: finnRepository, getPane: async () => ({ ...pane, terminalRuntimeId: "cli:codex" }) as Pane,
+      inspect: async () => observation(screen("Bash: sed -n 1,80p notes.md")), answer, complete: async () => '{"action":"ANSWER","answer":"1","submit":false,"reason":"Reads a file"}', deferTo: async () => true, now: () => Date.now() + offset });
+    const finn = await finnRepository.addEvent({ roomId: pane.roomId, paneId: pane.id, paneName: "Finn", kind: "WAITING", severity: "ATTENTION", title: "Finn is waiting: Approval", detail: null });
+    offset = NOUS_PROMPT_WINDOW_MS;
+    await codex.sweep([pane.roomId]);
+    expect((await finnRepository.getEvent(finn.eventId))?.status).toBe("OPEN");
+    offset = NOUS_WAIT_WINDOW_MS;
+    await codex.sweep([pane.roomId]);
+    expect(await finnRepository.getEvent(finn.eventId)).toMatchObject({ status: "HANDLED", decision: 'Answered "1": Reads a file' });
   });
 
   it("continues a pane that stopped on an API error at its empty prompt, and leaves drafts, busy panes and repeats to the operator", async () => {

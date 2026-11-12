@@ -232,6 +232,32 @@ export function ruleRecommendation(item: { question?: string; options?: string[]
   return best ? { option: best.option, rule: best.rule } : null;
 }
 
+/** A match of `pattern` in `text` that no negation ("never delete", "not paid") just before it turns around. */
+const affirms = (text: string, pattern: RegExp) => [...text.matchAll(new RegExp(pattern.source, "giu"))]
+  .some((match) => !/(?:^|[^\p{L}])(?:never|not|no|don't|do not|avoid|without|μην|ποτέ|όχι)\s+(?:\S+\s+)?$/iu.test(text.slice(Math.max(0, match.index - 20), match.index)));
+/**
+ * 1056 (13/11 REVIEW: Vault→keep and Pavago→skip were answered against the recommendation): the operator's principle rules, which name no option
+ * so `ruleRecommendation` misses them: what marks a saved rule as the principle, and a recommended pick (with its card's text) against it.
+ * shortcut: three principles in English wording; add one here when a REVIEW finds another principle a card went against.
+ */
+const PRINCIPLES: Array<{ name: string; rule: RegExp; against: (pick: string, context: string) => boolean }> = [
+  { name: "keep over delete", rule: /\bkeep\b[^.\n]*\b(?:over|instead of|rather than|before|not)\b[^.\n]*\b(?:delet|remov|discard)/i,
+    against: (pick) => affirms(pick, /\b(?:delet(?:e|ing)|remov(?:e|ing)|discard(?:ing)?|purg(?:e|ing)|eras(?:e|ing)|wip(?:e|ing))\b/) },
+  { name: "a free option first", rule: /\bfree\b[^.\n]*\b(?:first|over|before|instead of|rather than)\b|\bfree (?:solution|option|tier|alternative)s?\b/i,
+    against: (pick, context) => affirms(pick, /\b(?:paid|pay(?:ing)?|buy(?:ing)?|purchas(?:e|ing)|subscri(?:be|bing|ption)|premium|upgrad(?:e|ing))\b|[$€£]\s?\d/)
+      && affirms(context, /\bfree\b|\bopen[- ]source\b|\bself[- ]host/) },
+  { name: "the operator reads funding mail before it is sent", rule: /\bfunding\b[^\n]*\b(?:mail|e-?mail)s?\b[^\n]*\bbefore\b[^\n]*\bsen[dt]\b/i,
+    against: (pick, context) => /\b(?:funding|grant|investor|fundrais\w*|accelerator)s?\b/i.test(`${pick}\n${context}`) && affirms(pick, /\bsend(?:ing)?\b/)
+      && !/\b(?:review|read|draft|approv\w*|show)\b/i.test(pick) },
+];
+/** 1056: the saved principle rules a recommended pick contradicts (the card's or decision's text is `context`). */
+export function principleConflicts(pick: string, context: string, rules: Array<{ id: string; title: string; body: string }>): Array<{ principle: string; rule: { id: string; title: string } }> {
+  return PRINCIPLES.flatMap((principle) => {
+    const rule = principle.against(pick, context) ? rules.find((entry) => principle.rule.test(`${entry.title}\n${entry.body}`)) : undefined;
+    return rule ? [{ principle: principle.name, rule: { id: rule.id, title: rule.title } }] : [];
+  });
+}
+
 const bodyOf = (items: NotifyOperatorArgs["items"]) => items.map((item) => `• ${item.text}${(item.steps ?? []).map((step, index) => `\n  ${index + 1}. ${step}`).join("")}`).join("\n");
 /** R20-asks-2: what only the operator's hands do (a sign-in, a code, a payment set-up, an install), which needs a link and numbered steps. */
 /** R24-2: a payment-method result card (its options report a state) and a `checked` line that says what the billing page showed. */
@@ -458,6 +484,17 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
 
     /** R66: every open Nous card (every pane), for the duplicate-subject check before a new item. */
     open: openCards,
+    /** 13/11 REVIEW (one npm 2FA link on 3 cards): Nous's pane cards raised since `since` that are closed now, for the same check. */
+    async closedSince(owner: string, since: number): Promise<SpaceNotification[]> {
+      const out: SpaceNotification[] = [];
+      for (let before: string | undefined; ;) {
+        const page = await deps.notifications.list(owner, { status: "ALL", source: "NOUS", limit: 200, ...(before ? { before } : {}) });
+        const fresh = page.filter((item) => Date.parse(item.createdAt) >= since);
+        out.push(...fresh.filter((item) => !live(item) && (item.dedupeKey?.startsWith(NOUS_PANE_NOTICE_PREFIX) || item.dedupeKey === NOUS_GENERAL_NOTICE_KEY)));
+        if (page.length < 200 || fresh.length < page.length) return out;
+        before = page.at(-1)!.createdAt;
+      }
+    },
 
     /** The world's section: Nous's open cards, so it can update or resolve them; empty when there are none. */
     async summary(owner: string, names: { room(id: string | null): string | null; pane(id: string | null): string | null }): Promise<string> {

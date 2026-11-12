@@ -1,9 +1,9 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "f99c644e3c825933528148c3e15caa302b417e96",
-  "fileCount": 5882,
-  "transformations": 422,
+  "sourceCommit": "da459fc481b2cf06d9bceeb8266786fd4f89e458",
+  "fileCount": 5884,
+  "transformations": 424,
   "files": [
     {
       "path": ".github/funding.json",
@@ -9655,9 +9655,9 @@
     },
     {
       "path": "apps/api/src/cli-runtime-descriptors.ts",
-      "sourceObjectId": "25e54e799042d56c51dac9d1972a0cd23923565e",
-      "sha256": "1cf49e39a8f84beb8fea60ea2ab41fda24834365dbf66d48b2b2f699c25a0723",
-      "size": 29163
+      "sourceObjectId": "071ade601a31c150f2f5c56bfadff7c9849eaa11",
+      "sha256": "54244d7b364f7b5a23f09e7e042e48fef393aacd93e0a55eadc6a0b0af0ac5a9",
+      "size": 29317
     },
     {
       "path": "apps/api/src/cli-runtime-pane-restore.ts",
@@ -11335,9 +11335,9 @@
     },
     {
       "path": "apps/api/src/nous/followups.ts",
-      "sourceObjectId": "090d8d945b8e20f32a1cdba16809ae82732cba44",
-      "sha256": "de7a22cf7bd688d51a0cd0546e4f39c9660d1b10325c802e3ce5f1bd19f70852",
-      "size": 13948
+      "sourceObjectId": "4beac52907d976782d55678608deaa236c8c9be0",
+      "sha256": "cd59ccbfd7e0cf39e7e6008dae8e320188bf8ead4177e99e49c6c892e7a3f0f2",
+      "size": 16320
     },
     {
       "path": "apps/api/src/nous/git.ts",
@@ -11430,6 +11430,12 @@
       "size": 1614
     },
     {
+      "path": "apps/api/src/nous/named-refs.ts",
+      "sourceObjectId": "e2679f59b93fcbbfed63f39769db65754cb5fd8f",
+      "sha256": "0fba9246f24d85e53356a1c017c99423d63d40913c1375b88002c00713de8589",
+      "size": 1545
+    },
+    {
       "path": "apps/api/src/nous/notes-archive.ts",
       "sourceObjectId": "cc10d869cf5faad3e8a0cfbb7036a08916af08c9",
       "sha256": "e972fa280853eab3746ddddb6afa316a99d8610f78fb97f959f9e71b013e79e8",
@@ -11485,9 +11491,9 @@
     },
     {
       "path": "apps/api/src/nous/pane-notices.ts",
-      "sourceObjectId": "eb001e5d4ef871cbc0489685ad4e3122ffff02ac",
-      "sha256": "147b0c1a05fa2179288a49aa1e931078f87423bbb4b670a9e97fecc703695da8",
-      "size": 47371
+      "sourceObjectId": "362e3b5254e9d94be2d903797b08b410b146f0d4",
+      "sha256": "5ece1e4c7bc519f5e18679c3949c48f0e19efa0ba7cf2278d1eec42c3fa581af",
+      "size": 50769
     },
     {
       "path": "apps/api/src/nous/pane-watch.ts",
@@ -11605,9 +11611,9 @@
     },
     {
       "path": "apps/api/src/nous/service.ts",
-      "sourceObjectId": "d4d5334edb8dac661c11b10224e79e6cb86d47ab",
-      "sha256": "a0d872f74e22fd3485155f10796442ab4ad4fdd0af00e6b1eb72aa37de9a7f18",
-      "size": 189498
+      "sourceObjectId": "cd9f43dce62d5aecb5cf00595774920f7468f786",
+      "sha256": "1e4164783ad7d4a7cb3364ce81f6d7e751e33bfbcd3a8d5ea48d6b3c9437ed9c",
+      "size": 189924
     },
     {
       "path": "apps/api/src/nous/shared-files.ts",
@@ -11689,9 +11695,9 @@
     },
     {
       "path": "apps/api/src/nous/tools.ts",
-      "sourceObjectId": "55d4f31e0fb265e285522e7a11c69d771a5ad52f",
-      "sha256": "c527f49953753530811bbd0ede7201fd9b5da1548c4f6c50f295c48c108af6d2",
-      "size": 505298
+      "sourceObjectId": "b63165af1c271d8e950a693a6ced5356f34d0bea",
+      "sha256": "bc43509590d796167e45b20fda83a372fb0320e50a8b3f3cc2f0025c8ec68ede",
+      "size": 514362
     },
     {
       "path": "apps/api/src/nous/turn-items.ts",
@@ -11725,9 +11731,9 @@
     },
     {
       "path": "apps/api/src/nous/wiring.ts",
-      "sourceObjectId": "96399c6644bcd18fe8a31caf260596ca9c2f0c2f",
-      "sha256": "76e6ebe027c1aee61de97a24dd0838eac8cba729bd1dc94f8425d7a549edcee6",
-      "size": 252723
+      "sourceObjectId": "375674bfa25a04e6a14026fd1668108e3b768633",
+      "sha256": "1981e55d1715c87c709a1571df68027bdd1820a89151872edb33b94644e0583e",
+      "size": 253050
     },
     {
       "path": "apps/api/src/nous/workbench.ts",
@@ -11893,9 +11899,9 @@
     },
     {
       "path": "apps/api/src/pane-reports.ts",
-      "sourceObjectId": "9da6a9be62f02f98a413b6705d2e6d512930bc1b",
-      "sha256": "dc1a4c07655bf84d5db2174ab21a5f82ecf9ab1b4269480ae4bc3c58111b8267",
-      "size": 29933
+      "sourceObjectId": "3c43f559f48a62b3ca694dbf6271d124f0e6ed68",
+      "sha256": "e89059b5fa8f80114d1418134c1475a6436701ad5d10fd73cce0c189dfa42db5",
+      "size": 30336
     },
     {
       "path": "apps/api/src/pane-routes-wiring.ts",
@@ -12133,9 +12139,9 @@
     },
     {
       "path": "apps/api/src/room-agent-autopilot.ts",
-      "sourceObjectId": "e721152ba40f3a106f787cfe1a5fb790a91f03f0",
-      "sha256": "2c7709e0a30a24620c431a067a3b12ec9bf47cd98dd0b84c2d389402810b2dfb",
-      "size": 16520
+      "sourceObjectId": "17691d82e137ebb0ded4c2a1d25152a3d65b7d5d",
+      "sha256": "4a33a05ba18dcd72671e60b4a91fc8041865808c9552cd399079d45e08ca5e22",
+      "size": 16806
     },
     {
       "path": "apps/api/src/room-agent-chat.ts",
@@ -14017,9 +14023,9 @@
     },
     {
       "path": "apps/api/tests/cli-pane-model-launch.test.ts",
-      "sourceObjectId": "1c578200c84007e6ab04dc6f24b704ca9694aba4",
-      "sha256": "8e1baefc0924557b7514206ad89b7d7d54f491f42033ce7ff2c9b41c010ad2cd",
-      "size": 1968
+      "sourceObjectId": "bfa6d0f0ca5ff094d119a120cc0a00441efbee2f",
+      "sha256": "df39d1b66eddb0c4a5955ee62cb01eb4c1f95ceb9176e91e1602e7ef9f12b2b3",
+      "size": 2160
     },
     {
       "path": "apps/api/tests/cli-pane-reopen.test.ts",
@@ -15517,15 +15523,15 @@
     },
     {
       "path": "apps/api/tests/nous-followups.test.ts",
-      "sourceObjectId": "10e2380ecc928d2e1f930a8dd74bc3e1abe5ffe1",
-      "sha256": "30149fe1629fd41a7e4bc1870163af5df6b47b4f9f06f459e7e1fe0e170bef24",
-      "size": 16995
+      "sourceObjectId": "3c612717b635fa53020c393941700655339e012f",
+      "sha256": "df2f808f797845b322ce7a5ad41ca69ec3725143fd34b4c3f0b3402335d586b8",
+      "size": 19785
     },
     {
       "path": "apps/api/tests/nous-gates.test.ts",
-      "sourceObjectId": "5b54f8172e51243bc9b2f805513c952bbbcf817e",
-      "sha256": "5546bc3e50e67431ff18774222def9c2bdc3a67b4dce39d438af005a811aa8c3",
-      "size": 133058
+      "sourceObjectId": "0942a726f0ac8749ff1a15a4ba5fe7f6bb6d42b6",
+      "sha256": "0e2c237ff3e9bee3aa1c126dd63afab50ebcab606a1c53e68c48529d2597f1fe",
+      "size": 138497
     },
     {
       "path": "apps/api/tests/nous-gateway-fallback.test.ts",
@@ -15642,6 +15648,12 @@
       "size": 6540
     },
     {
+      "path": "apps/api/tests/nous-named-refs.test.ts",
+      "sourceObjectId": "7d2fdc8d36f71813deae35d57ec117a7413243c7",
+      "sha256": "d70d12ec8f399086ed463c2d292d60794ca6b3ef869e2304c87ce31699acbee9",
+      "size": 1189
+    },
+    {
       "path": "apps/api/tests/nous-ops-views.test.ts",
       "sourceObjectId": "375765b3129c186d92ecab1618cee5f7e97e05b8",
       "sha256": "f3428f9204548f48316bc2c65f7f19c24ab2a7e13b6b011800687ab54d61dacb",
@@ -15667,15 +15679,15 @@
     },
     {
       "path": "apps/api/tests/nous-pane-notices.test.ts",
-      "sourceObjectId": "6daa7579061091f423054d425f8f6e3d2837ad21",
-      "sha256": "cb68f141e774b3e2199006036f31a15194cf874a821eeff2b75f372fb2a1f8d1",
-      "size": 69613
+      "sourceObjectId": "6e42da562930fbdc9b1d7947f61440759bf8187f",
+      "sha256": "c66fd6309e6fbd2b268395b039bb3527dd5bd31c6ff081849b0168953192cb62",
+      "size": 72710
     },
     {
       "path": "apps/api/tests/nous-pane-watch.test.ts",
-      "sourceObjectId": "57965290460d5e2c714c33d98b8ffc5a1cda89e2",
-      "sha256": "c14bfce5ace42eb3932d8d26a5ac24ca19f90b6f94daca8bde396e242fe0d7d8",
-      "size": 10963
+      "sourceObjectId": "19f08281d28dcff3f6b8dada3a9d5c6ac6e0b1e7",
+      "sha256": "55548d29940641864de3742c1bba2402a115fab887d03c042e9642c44069fe2a",
+      "size": 12784
     },
     {
       "path": "apps/api/tests/nous-plan-map.test.ts",
@@ -15775,9 +15787,9 @@
     },
     {
       "path": "apps/api/tests/nous-self-upgrade.test.ts",
-      "sourceObjectId": "a6ee16c4b6903e0bf8a3e0d585267747c04585f3",
-      "sha256": "f506f82d21bdecc36d82b67d7bf4bb555cd14789b0d7d100d8cb7626696e0e5e",
-      "size": 171766
+      "sourceObjectId": "63afa67d53c4ac8c4513573512d3eefe10ef4681",
+      "sha256": "e68ce1b45ee671feeeca543851e7d06962d25276d336db98ab037300c2ceef63",
+      "size": 172661
     },
     {
       "path": "apps/api/tests/nous-server-load.test.ts",
@@ -15871,9 +15883,9 @@
     },
     {
       "path": "apps/api/tests/nous-workbench.test.ts",
-      "sourceObjectId": "c9fd2ace25c58f5f06e64dd6599d165fe0a8e8c9",
-      "sha256": "1647b56e12994aed4987d96ac14e4768da2393d6b71c65b6ca547faae350bb67",
-      "size": 58018
+      "sourceObjectId": "cee304fc68125834cb1def578fced82472ccb90f",
+      "sha256": "9a55069b5311d7faf9be6e6b06e47d5b2ecbc93ee062678654af64535f4814c6",
+      "size": 59540
     },
     {
       "path": "apps/api/tests/nous-worker-trace.test.ts",
@@ -15883,9 +15895,9 @@
     },
     {
       "path": "apps/api/tests/nous.test.ts",
-      "sourceObjectId": "45731516211a8004dec6d60a4e108c22013fb05a",
-      "sha256": "c5b78884377e7632560480478dc17c542b7344621087085333443b6a5b0d4279",
-      "size": 273151
+      "sourceObjectId": "d40d693372e09faf299b2d8b50c4f06301180d11",
+      "sha256": "fcc2a2f147968379a3279ed5279b69165608b07218dd9d71908b4d496cb5e759",
+      "size": 273654
     },
     {
       "path": "apps/api/tests/observability-cardinality.test.ts",
@@ -16045,9 +16057,9 @@
     },
     {
       "path": "apps/api/tests/pane-reports.test.ts",
-      "sourceObjectId": "2c0309ff9cb3f1ff8ddb34b15e5197f44ad78e5e",
-      "sha256": "7a2a8699d2a5dde7535b8d9e90adb114c6ed520f27a7e8cd4f74e3f84aebc367",
-      "size": 36638
+      "sourceObjectId": "127a3a7855fa000702691c78cbcfb5fd90280335",
+      "sha256": "1bc597f6696c9e4325f189f768a3404bd2e353d6ce83a7da13f26bd6b3c0162b",
+      "size": 37114
     },
     {
       "path": "apps/api/tests/pane-routes-wiring.test.ts",
@@ -16399,9 +16411,9 @@
     },
     {
       "path": "apps/api/tests/room-agent-autopilot.test.ts",
-      "sourceObjectId": "c90817cb1c15c8ba5dce486510bebb9590384cf8",
-      "sha256": "8a8839782e1680c04271d229372eba42c539bd60768e86f704b024b68d368069",
-      "size": 16325
+      "sourceObjectId": "b2833858cd15fad12c800833dc17dca87b462a9f",
+      "sha256": "db4bdbbb77edfb715258d101e875173b57ebfc8bb1f7aaa35496dfe44d8aa3c0",
+      "size": 17501
     },
     {
       "path": "apps/api/tests/room-agent-chat.test.ts",
@@ -35161,9 +35173,9 @@
     },
     {
       "path": "scripts/space-progress.mjs",
-      "sourceObjectId": "ea9310fbac01ea90de080b5218d6dcf5c7796266",
-      "sha256": "88548acd2d9ce2a402fdc5e7867917de81586d666ae077d0ee12a330cb603b2f",
-      "size": 10878
+      "sourceObjectId": "36b130c3246702e08cf8a5e61048f6116644a949",
+      "sha256": "3c993a2ed99dc90646af9eff37f98b78619e5ca435c48b40c988171a97877a14",
+      "size": 10932
     },
     {
       "path": "scripts/space-security-copilot-mcp.mjs",

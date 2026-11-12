@@ -51,6 +51,8 @@ const CONTINUES_PER_HOUR = 3;
  * is the autopilot's at its next 30 s sweep, Nous first or not.
  */
 export const NOUS_PROMPT_WINDOW_MS = 60_000;
+/** 12-13/11 REVIEW (Bob's plan-save confirm 8.4 min, Finn's `sed -n` prompt 7.3 min, both unanswered): any wait Nous left open this long is the autopilot's. */
+export const NOUS_WAIT_WINDOW_MS = 120_000;
 /**
  * R69a (Hugo 4/11 02:51 and 03:08 UTC: the continue found no empty prompt yet, then the 8 s watchdog stopped its typing, and each went to
  * the operator at once): a missed continue is tried again at the following 30 s sweeps for this long, then it is the operator's.
@@ -214,9 +216,12 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
     return settle(event, "HANDLED", `Answered "${decision.answer!.slice(0, 80)}": ${decision.reason}`, question);
   }
 
-  const expiring = async (event: RoomAgentEvent) => event.kind === "WAITING" && event.title.endsWith("Permission prompt") && Boolean(event.paneId)
-    && now() - Date.parse(event.createdAt) >= NOUS_PROMPT_WINDOW_MS && await options.repository.autopilotEnabled(event.roomId)
-    && (await options.getPane(event.paneId!).catch(() => null))?.terminalRuntimeId === "cli:claude";
+  const expiring = async (event: RoomAgentEvent) => {
+    if (event.kind !== "WAITING" || !event.paneId || !await options.repository.autopilotEnabled(event.roomId)) return false;
+    const age = now() - Date.parse(event.createdAt);
+    return age >= NOUS_WAIT_WINDOW_MS || (age >= NOUS_PROMPT_WINDOW_MS && event.title.endsWith("Permission prompt")
+      && (await options.getPane(event.paneId).catch(() => null))?.terminalRuntimeId === "cli:claude");
+  };
 
   async function handle(event: RoomAgentEvent): Promise<RoomAgentEvent | null> {
     if (event.status !== "OPEN" || event.severity !== "ATTENTION" || inFlight.has(event.eventId)) return null;

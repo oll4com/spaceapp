@@ -22,10 +22,14 @@ describe("pane model pick at CLI launch", () => {
     expect(env.SPACE_CLI_REASONING_EFFORT).toBeUndefined();
   });
 
-  it("starts Oh My Pi on Space's default too, so its own config default never decides", () => {
-    const fallback = findCliRuntimeDescriptor("cli:omp")!.defaultModelId;
-    const env = buildCliEnvironment(config, { runtimeId: "cli:omp", modelId: fallback, reasoningEffort: "high" });
-    expect(env.SPACE_CLI_MODEL_ID).toBe("space-gateway/gpt-6-sol");
+  it.each([
+    ["cli:omp", "space-gateway/gpt-6-sol"],
+    // Hermes's own config default (provider auto) reached DeepSeek's 401 (public-host 2026-11-12).
+    ["cli:hermes", "space-gateway-claude:claude-opus-5-5"]
+  ])("starts %s on Space's default too, so its own config default never decides", (runtimeId, pick) => {
+    const fallback = findCliRuntimeDescriptor(runtimeId)!.defaultModelId;
+    const env = buildCliEnvironment(config, { runtimeId, modelId: fallback, reasoningEffort: "high" });
+    expect(env.SPACE_CLI_MODEL_ID).toBe(pick);
     expect(env.SPACE_CLI_REASONING_EFFORT).toBe("high");
   });
 

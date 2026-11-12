@@ -564,6 +564,11 @@ describe("U4: the top tool failures of 19/10", () => {
       { kind: "pane", operation: "restart", target: { paneIds: ["pane:bob00001"], state: "OPEN" } }] }, ctx);
     expect(outcome.result.split("\n")[0]).toBe("FAILED restart pane:bob00001: Native controls for this CLI runtime are not supported.");
     expect(outcome.result).toContain('"dotId":null');
+    // 13/11 review ("FAILED panes.open: [" ×4): a multi-line error stays whole on the first line.
+    const issues = JSON.stringify([{ code: "too_big", path: ["counts", "opencode"], message: "Too big: expected number to be <=16" }], null, 2);
+    f.roomTool.mockResolvedValueOnce({ ok: false, display: "Space Control failed", result: JSON.stringify({ status: "FAILED", results: [{ index: 0, status: "FAILED", error: issues }] }) });
+    const open = await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "resource", operation: "panes.open", input: { counts: { opencode: 40 } } }] }, ctx);
+    expect(open.result.split("\n")[0]).toBe('FAILED panes.open: [ { "code": "too_big", "path": [ "counts", "opencode" ], "message": "Too big: expected number to be <=16" } ]');
     // A receipt with nothing failed is unchanged.
     expect((await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "pane", operation: "stop", target: { paneIds: ["pane:andy0001"], state: "OPEN" } }] }, ctx)).result).toBe("ran space_control");
   });
@@ -1569,7 +1574,8 @@ describe("Daily review 2026-10-21: errors that say the next step", () => {
     const state: Record<string, string> = { "pane:andy0001": "WAITING_FOR_INPUT", "pane:cody0001": "IDLE" };
     const f = tools({ listPanes: async () => [pane("pane:andy0001", "Andy"), copilot], copilots: { items: async () => items, answerQuestion, brief: async () => "brief recorded" } as never }, state);
     const answer = (text: string, extra: Record<string, unknown> = {}) => f.tools.execute("space_answer_pane", { room: "Main", pane: "Cody", answer: text, ...extra }, ctx);
-    expect(await answer("085330")).toMatchObject({ ok: false, result: expect.stringContaining("Cody is a copilot pane with no question and no CLI prompt waiting now (IDLE). Send it a text as its next prompt with space_send_to_pane") });
+    // 12/11 review: an IDLE copilot pane asked in prose, so even a bare code goes as its next prompt.
+    expect(await answer("085330")).toMatchObject({ ok: true, display: "SENT_AS_PROMPT", result: expect.stringContaining("Cody is a copilot pane with no question and no CLI prompt waiting, so your answer went through space_send_to_pane.") });
     items.push({ copilot: "FREELANCE", kind: "QUESTION", id: "flq:code00001", paneId: copilot.id, title: "The Upwork code?", detail: "" });
     expect(await answer("085330")).toMatchObject({ ok: true, result: expect.stringContaining('its question flq:code00001 ("The Upwork code?") got the answer through the copilot') });
     expect(answerQuestion).toHaveBeenCalledWith(owner, { copilot: "FREELANCE", questionId: "flq:code00001", paneId: copilot.id, answer: "085330" });

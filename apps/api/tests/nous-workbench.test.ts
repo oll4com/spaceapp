@@ -653,6 +653,12 @@ describe("Nous reliability fixes (workbench review 2026-10-21)", () => {
     expect(await words.execute("space_copilot_answer", { copilot: "MAIL", question: "Arize pricing reply", answer: "Archive it" }, ctx))
       .toMatchObject({ ok: false, display: "No such question", result: expect.stringContaining("Open now: [mailq:bloo] BlooMind") });
     expect(byId).toHaveBeenCalledTimes(3);
+    // 13/11 review: 7 of 7 failures named a needs-you card whose question had closed; an id that never existed still fails.
+    const card = { id: "notification:card01", source: "JOB_COPILOT", kind: "QUESTION", title: "Job Copilot has a question", status: "RESOLVED", resolvedAt: "2026-11-12T10:00:00.000Z", updatedAt: "2026-11-12T10:00:00.000Z", payload: { answeredBy: "USER" } };
+    const cards = nousFor({ copilots: { items, answerQuestion: byId } as never, notifications: { list: async () => [], resolve: async () => false, get: async (_o: string, id: string) => id === card.id ? card : null } as never });
+    expect(await cards.execute("space_copilot_answer", { copilot: "JOB", question: card.id, answer: "Yes" }, ctx))
+      .toMatchObject({ ok: true, display: "ALREADY_CLOSED", result: expect.stringContaining("was closed 2026-11-12T10:00:00.000Z by USER") });
+    expect(await cards.execute("space_copilot_answer", { copilot: "JOB", question: "notification:never01", answer: "Yes" }, ctx)).toMatchObject({ ok: false, display: "No such question" });
     const calls: Array<[string, Record<string, unknown>]> = [];
     const roomTool = vi.fn(async (name: string, args: Record<string, unknown>) => {
       calls.push([name, args]);
@@ -665,13 +671,12 @@ describe("Nous reliability fixes (workbench review 2026-10-21)", () => {
     expect(calls.map(([name]) => name)).toEqual(["answer_pane_prompt", "send_to_pane"]);
     expect(calls[1]![1]).toMatchObject({ panes: [andy.id], text: "Use the staging database for this step" });
     calls.length = 0;
-    expect((await nousFor({ roomTool: roomTool as never }).execute("space_answer_pane", { room: "Cleo", pane: "Andy", answer: "1" }, ctx)).ok).toBe(false);
-    expect(calls.map(([name]) => name)).toEqual(["answer_pane_prompt"]);
-    // Item 10 (round 5): one word that is no menu key goes as the next prompt too; "yes" stays an answer to a prompt that is gone.
+    // 12/11 review (Bob, Hugo IDLE x7): a pane at its empty prompt asked in prose, so "1" and "yes" go as its next prompt too.
+    expect(await nousFor({ roomTool: roomTool as never }).execute("space_answer_pane", { room: "Cleo", pane: "Andy", answer: "1" }, ctx)).toMatchObject({ ok: true, display: "SENT_AS_PROMPT" });
+    expect(calls.map(([name]) => name)).toEqual(["answer_pane_prompt", "send_to_pane"]);
     calls.length = 0;
-    expect((await nousFor({ roomTool: roomTool as never }).execute("space_answer_pane", { room: "Cleo", pane: "Andy", answer: "continue" }, ctx)).ok).toBe(true);
-    expect((await nousFor({ roomTool: roomTool as never }).execute("space_answer_pane", { room: "Cleo", pane: "Andy", answer: "yes" }, ctx)).ok).toBe(false);
-    expect(calls.map(([name]) => name)).toEqual(["answer_pane_prompt", "send_to_pane", "answer_pane_prompt"]);
+    expect((await nousFor({ roomTool: roomTool as never }).execute("space_answer_pane", { room: "Cleo", pane: "Andy", answer: "yes" }, ctx)).ok).toBe(true);
+    expect(calls.map(([name]) => name)).toEqual(["answer_pane_prompt", "send_to_pane"]);
     // 2026-10-30 REVIEW ("not waiting for an answer" ×5): a pane whose turn still runs gets the answer through space_send_to_pane too.
     calls.length = 0;
     const running = vi.fn(async (name: string, args: Record<string, unknown>) => {
@@ -682,6 +687,11 @@ describe("Nous reliability fixes (workbench review 2026-10-21)", () => {
     });
     expect(await nousFor({ roomTool: running as never }).execute("space_answer_pane", { room: "Cleo", pane: "Andy", answer: "Use the staging database" }, ctx)).toMatchObject({ ok: true });
     expect(calls.map(([name]) => name)).toEqual(["answer_pane_prompt", "send_to_pane"]);
+    // Item 10 (round 5): while the turn runs, one word that is no menu key goes after it; "yes" or "1" stays an answer to a prompt that is gone.
+    calls.length = 0;
+    expect((await nousFor({ roomTool: running as never }).execute("space_answer_pane", { room: "Cleo", pane: "Andy", answer: "continue" }, ctx)).ok).toBe(true);
+    expect((await nousFor({ roomTool: running as never }).execute("space_answer_pane", { room: "Cleo", pane: "Andy", answer: "yes" }, ctx)).ok).toBe(false);
+    expect(calls.map(([name]) => name)).toEqual(["answer_pane_prompt", "send_to_pane", "answer_pane_prompt"]);
     // A pane without a CLI names the tools that reach it instead of the Room Agent's bare refusal.
     const web = { ...andy, id: "pane:web000001", title: "Web", paneName: "Web", mode: "BROWSER", terminalRuntimeId: null };
     calls.length = 0;

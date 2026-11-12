@@ -19,6 +19,7 @@ import { NOUS_GATEWAY_PACE_HOLD, SpaceRouteError, type SpaceRouteFailure } from 
 import { awayGrantCovers, renderAwayContext, renderAwayLog, type NousAwayControl, type NousAwayTurn } from "./away.js";
 import type { NousGoals } from "./goals.js";
 import { withCheckedBlock } from "./pane-notices.js";
+import { unknownRefsLine } from "./named-refs.js";
 import { claimsDone, renderLessons, type NousLessons } from "./lessons.js";
 import { waitsOnOperatorClaim } from "./pane-watch.js";
 import { fitPrompt as fitSections, fitWhole, historyLines, NOUS_PROMPT_BUDGET_CHARS, NOUS_RETRIEVED_SECTION_CHARS, relevantHistory, relevantParts, withoutSaid, type PromptPart as WorldPromptPart } from "./retrieval.js";
@@ -246,6 +247,8 @@ export interface NousServiceDeps {
   repository: NousRepository;
   /** nous_msg:8e7e6c25: a text with each workspace file it names filed in Agent Files and its id written beside it. */
   annotate?(owner: string, text: string): Promise<string>;
+  /** 1041 (12/11 REVIEW): the notification ids and workspace paths a text names that do not exist (`unknownRefs`). */
+  unknownRefs?(owner: string, text: string): Promise<string[]>;
   /** Hold A (plan clipboard:ZWJJdBgHm64Z): the open requests a turn acted on (their notes' keys), for the REVIEW's "no act for 6 h". */
   requestActed?(owner: string, keys: string[]): Promise<void>;
   runner: NousRunner;
@@ -904,7 +907,9 @@ export function createNousService(deps: NousServiceDeps) {
       // a turn the operator did not start then posts nothing, an answer to them keeps its first paragraph as the final.
       const fresh = quiet || reason === "GOAL" || nothingNew(reason, said) ? "" : withoutSaid(said, (await deps.repository.listMessages(owner, limits.historyMessages, 0))
         .filter((message) => message.kind === "ANSWER" && now() - Date.parse(message.createdAt) < SAID_MS).map((message) => message.content));
-      const answer = fresh || (reason === "OPERATOR" || reason === "DECISION" ? said.split(/\n\s*\n/)[0]!.trim() || "Done." : "");
+      const kept = fresh || (reason === "OPERATOR" || reason === "DECISION" ? said.split(/\n\s*\n/)[0]!.trim() || "Done." : "");
+      const unknown = kept && deps.unknownRefs ? await deps.unknownRefs(owner, kept).catch(() => []) : [];
+      const answer = unknown.length ? `${kept}\n\n${unknownRefsLine(unknown)}` : kept;
       if (!quiet && reason !== "GOAL" && !nothingNew(reason, said) && answer) await addMessage(owner, turnId, "ANSWER", "DONE", answer, { reason, startedAt, ...replyTo(replyIds), ...(beside ? { beside: true } : {}) });
       // Operator 31/10 13:37 BKK: an answer that refuses his order brings Nous one line to carry it out next turn.
       const refusal = reason === "OPERATOR" ? operatorRefusal(result.text) : null;

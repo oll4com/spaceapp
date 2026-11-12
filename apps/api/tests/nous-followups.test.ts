@@ -66,6 +66,19 @@ describe("Nous's follow-ups", () => {
     expect((await f.repository.list(owner, 10)).map((item) => item.status).sort()).toEqual(["CANCELLED", "FIRED", "FIRED", "FIRED"]);
   });
 
+  it("1057 (13/11 REVIEW): a time wait whose note names a running ticket fires when that ticket ends; an ended or unknown ticket keeps the time", async () => {
+    const f = fixture();
+    f.tickets.set("q-20261113-010203-ab12", "VERIFYING");
+    f.tickets.set("q-20261113-010203-cd34", "DEPLOYED");
+    const running = await f.followups.run(owner, { op: "add", note: "Check the UpCloud lag after q-20261113-010203-ab12", inMinutes: 240 }, null);
+    expect(running).toMatchObject({ ok: true, display: "Set a follow-up when ticket q-20261113-010203-ab12 ends", result: expect.stringContaining("still VERIFYING") });
+    expect(running).not.toHaveProperty("meta");
+    expect(await f.followups.run(owner, { op: "add", note: "Re-read q-20261113-010203-cd34", inMinutes: 30 }, null)).toMatchObject({ display: "Set a follow-up at 2026-10-17T13:30:00.000Z" });
+    expect(await f.followups.run(owner, { op: "add", note: "Re-read q-20261113-010203-ef56", inMinutes: 30 }, null)).toMatchObject({ display: "Set a follow-up at 2026-10-17T13:30:00.000Z" });
+    f.tickets.set("q-20261113-010203-ab12", "DEPLOYED");
+    expect(await f.followups.tick()).toBe(1);
+  });
+
   it("R22-3 (1/11: promote 46ed's follow-ups came back in 3-4 turns): ONE line per ticket end with every note, closed by the turn that saw it", async () => {
     const f = fixture();
     await f.followups.run(owner, { op: "add", note: "Run live:verify:dev for R21-1", ticket: "q-20261031-223319-46ed" }, null);
@@ -160,6 +173,26 @@ describe("Nous's follow-ups", () => {
     await notice.mock.calls[0]![3]!();
     expect((await repository.list(owner, 10)).map((item) => [item.note, item.status, item.outcome])).toEqual(expect.arrayContaining([
       ["Read Finn's report", "CANCELLED", "Finn closed before it finished"], ["Read Kate", "OPEN", null]]));
+  });
+
+  it("1045 (12/11: post-boot checks by Hugo, whose pane closed at the reboot): the server re-arms the check 10 min later, and it fires with the worker gone", async () => {
+    let clock = Date.parse("2026-11-12T19:30:00.000Z");
+    const repository = new InMemoryNousFollowupsRepository();
+    const notice = vi.fn<(owner: string, key: string, line: string, onDone?: () => Promise<void>) => Promise<void>>(async () => {});
+    let hugoOpen = true;
+    const followups = createNousFollowups({ repository, notice, now: () => clock, paneOpen: async () => hugoOpen });
+    expect((await followups.run(owner, { op: "add", note: "Post-boot checks after the reboot: services up, plan pZwo step 7", pane: "Hugo" }, { paneId: "pane:hugo0001", paneLabel: "Hugo" })).result)
+      .toContain("the server arms this check itself 10 min later");
+    hugoOpen = false; // the reboot closes the worker's pane
+    expect(await followups.tick()).toBe(0);
+    expect(notice).not.toHaveBeenCalled();
+    const open = (await repository.list(owner, 10)).filter((item) => item.status === "OPEN");
+    expect(open).toMatchObject([{ trigger: { kind: "TIME", dueAt: "2026-11-12T19:40:00.000Z" }, note: expect.stringContaining("armed by the server (Hugo closed at the reboot)") }]);
+    clock += 10 * 60_000;
+    expect(await followups.tick()).toBe(1);
+    expect(notice.mock.calls[0]![2]).toMatch(/Post-reboot check armed by the server .*plan pZwo step 7[\s\S]*keep the plan step IN_PROGRESS until it reports/);
+    await notice.mock.calls[0]![3]!();
+    expect((await repository.list(owner, 10)).every((item) => item.status === "FIRED")).toBe(true);
   });
 
   it("folds every follow-up whose pane closed into ONE inbox line, closed by the turn that saw it (queue item 40, 28/10 10:48: 17 lines)", async () => {

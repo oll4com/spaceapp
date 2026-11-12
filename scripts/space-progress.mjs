@@ -85,7 +85,7 @@ export const progressReportTool = {
       recommended: { type: "string", maxLength: 80 },
       target: { type: "string", maxLength: 500, pattern: "^(?:browser|activity|setup|[a-z][a-z-]*:\\S+)$", description: "needs-you: what Go to pane opens: thread:<gmail account>:<threadId>, url:https://... (a page in this pane's browser), tab:<tabId>." },
       report: { type: "string" },
-      checked: { type: "array", items: { type: "string", minLength: 3, maxLength: 200 }, minItems: 1, maxItems: 8, description: "needs-you (required): what you looked up before asking, each a source and what it showed." },
+      checked: { type: "array", items: { type: "string", minLength: 3, maxLength: 200 }, minItems: 1, maxItems: 8, description: "needs-you, and blocked when needs asks for the operator's hands (required): what you looked up before asking, each a source and what it showed." },
       files: { type: "array", items: { type: "string", pattern: "^artifact:[A-Za-z0-9_-]{6,80}$" }, minItems: 1, description: "needs-you: the Agent Files the ask is about (artifact:<id>); the card shows each as a chip that opens it." }
     },
     required: ["status", "summary"],

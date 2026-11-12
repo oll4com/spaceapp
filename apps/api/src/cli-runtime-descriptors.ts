@@ -59,7 +59,8 @@ export interface CliRuntimeDescriptor {
    * unless `launchesDefaultModel` is set. */
   defaultModelId: string | null;
   /** Space owns this default: the wrapper gets it like any pane pick, so the CLI's own config
-   * default never decides which model a pane runs (Oh My Pi, operator decision 2026-10-18). */
+   * default never decides which model a pane runs (Oh My Pi, operator decision 2026-10-18; Hermes,
+   * whose config default `provider: auto` reached DeepSeek's 401 with the paid CLIs off, public-host 2026-11-12). */
   launchesDefaultModel?: true;
   credentialVerifiedReason: string;
   loginBootstrapReason: string | null;
@@ -478,6 +479,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     accountProfileEnv: null,
     paneModelLaunchEnv: true,
     defaultModelId: "space-gateway-claude:claude-opus-5-5",
+    launchesDefaultModel: true,
     credentialVerifiedReason: "Hermes Agent v0.20.1 installed at ~/.hermes; node-pty TUI smoke and end-to-end chat smoke verified.",
     loginBootstrapReason: null
   },

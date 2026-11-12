@@ -51,6 +51,11 @@ export const readTicketStatus = async (ticketId: string, roots?: string[]): Prom
 /** R44-2: the ids a follow-up's note waits on; two open follow-ups never name the same one. R47-2: every copilot item a decision decides too. */
 const FOLLOWED_IDS = /\b(?:nous_decision|review|mailrev|mktpost|mcamp|mktcamp|flmsg|fllead):[A-Za-z0-9_-]{6,80}/g;
 
+/** 1045: a note that is a check after a reboot or host restart; the pane it waits on closes at that reboot. */
+const POST_REBOOT = /\breboot|\bpost-?boot\b|\brestart(?:s|ing)?\s+(?:of\s+)?(?:the\s+)?(?:vm|host|pane host|server)\b|επανεκκίνηση/i;
+/** 1045: how long after the pane closed at the reboot the server's check fires (the host and its services are back by then). */
+const POST_REBOOT_DELAY_MS = 10 * 60_000;
+
 const describe = (trigger: NousFollowupTrigger) => trigger.kind === "TIME" ? `at ${trigger.dueAt}`
   : trigger.kind === "TICKET" ? `when ticket ${trigger.ticketId} ends` : `when ${trigger.paneLabel} finishes`;
 const lineOf = (item: NousFollowup) => `[${item.id}] ${item.status} ${describe(item.trigger)}: ${item.note}${item.outcome ? ` (${item.outcome}, ${item.closedAt})` : ""}`;
@@ -106,17 +111,23 @@ export function createNousFollowups(deps: NousFollowupsDeps) {
         const id = (same.note.match(FOLLOWED_IDS) ?? []).find((each) => named.has(each))!;
         return { ok: false, refused: true, display: `${same.id} already follows ${id}`, result: `${same.id} is already open on ${id}; nothing added. Use it (op cancel ${same.id} first to set another): ${lineOf(same)}` };
       }
+      // 1057 (13/11 REVIEW: deferrals that could have run): a time wait whose note names a merge-queue ticket still running fires when that
+      // ticket ends instead. shortcut: tickets only; a wait on a pane's or plan's job named in the note still keeps its time.
+      const namedTicket = args.ticket || pane ? undefined : args.note.match(/\bq-\d{8}-\d{6}-[0-9a-f]{4}\b/)?.[0];
+      const namedStatus = namedTicket ? await ticketStatus(namedTicket).catch(() => null) : null;
+      const ticket = args.ticket ?? (namedStatus && !ENDED.has(namedStatus) ? namedTicket : undefined);
+      const moved = ticket && !args.ticket ? ` Its note names ticket ${ticket}, still ${namedStatus}: it fires when that ticket ends, not at the time given.` : "";
       let trigger: NousFollowupTrigger;
-      if (args.ticket) {
+      if (ticket) {
         // R23-4 (1/11 00:00 UTC: four follow-ups on one ticket each asked a promote): a ticket Nous already watches keeps ONE follow-up; the note joins it.
-        const watching = (await deps.repository.list(owner, 0)).find((item) => item.status === "OPEN" && item.trigger.kind === "TICKET" && item.trigger.ticketId === args.ticket);
+        const watching = (await deps.repository.list(owner, 0)).find((item) => item.status === "OPEN" && item.trigger.kind === "TICKET" && item.trigger.ticketId === ticket);
         if (watching) {
           const notes = watching.note.split("\n").map((line) => line.trim());
           const joined = notes.includes(args.note.trim()) ? watching : await deps.repository.appendNote(owner, watching.id, args.note.trim());
-          if (joined) return { ok: true, display: `Added to the follow-up on ticket ${args.ticket}`, result: `Ticket ${args.ticket} already has a follow-up; `
-            + `${joined === watching ? "it already holds this note" : "this note joined it"}, one line when the ticket ends: ${lineOf(joined)}` };
+          if (joined) return { ok: true, display: `Added to the follow-up on ticket ${ticket}`, result: `Ticket ${ticket} already has a follow-up; `
+            + `${joined === watching ? "it already holds this note" : "this note joined it"}, one line when the ticket ends: ${lineOf(joined)}${moved}` };
         }
-        trigger = { kind: "TICKET", ticketId: args.ticket };
+        trigger = { kind: "TICKET", ticketId: ticket };
       } else if (pane) trigger = { kind: "PANE", ...pane };
       else {
         const due = args.at !== undefined ? Date.parse(args.at) : now() + args.inMinutes! * 60_000;
@@ -124,8 +135,10 @@ export function createNousFollowups(deps: NousFollowupsDeps) {
         trigger = { kind: "TIME", dueAt: new Date(due).toISOString() };
       }
       const added = await deps.repository.add({ ownerUserId: owner, note: args.note, trigger });
+      const rearm = trigger.kind === "PANE" && POST_REBOOT.test(args.note) ? ` If ${trigger.paneLabel} closes at the reboot, the server arms this check itself `
+        + `${POST_REBOOT_DELAY_MS / 60_000} min later; keep the plan step IN_PROGRESS until it reports.` : "";
       // R22-5: a time follow-up is a deferral the daily REVIEW weighs (tool row meta).
-      return { ok: true, display: `Set a follow-up ${describe(trigger)}`, result: lineOf(added),
+      return { ok: true, display: `Set a follow-up ${describe(trigger)}`, result: `${lineOf(added)}${moved}${rearm}`,
         ...(trigger.kind === "TIME" ? { meta: { deferral: { kind: "FOLLOWUP", id: added.id, until: trigger.dueAt, what: args.note } } } : {}) };
     },
 
@@ -146,6 +159,15 @@ export function createNousFollowups(deps: NousFollowupsDeps) {
         }
         // Queue item 14 (27/10: one waited on a Bruno/Finn that no longer existed): a pane closed before it finished ends its follow-up.
         if (item.trigger.kind === "PANE" && deps.paneOpen && await deps.paneOpen(item.trigger.paneId).catch(() => null) === false) {
+          // 1045 (12/11: plan pZwo step 7 "post-boot checks by Hugo", Hugo's pane closed at the reboot and no one checked): a post-reboot check
+          // whose pane closed is not cancelled: the server re-arms it as its own time follow-up, which no reboot of a pane closes.
+          if (POST_REBOOT.test(item.note)) {
+            const label = item.trigger.paneLabel;
+            await deps.repository.add({ ownerUserId: item.ownerUserId, trigger: { kind: "TIME", dueAt: new Date(now() + POST_REBOOT_DELAY_MS).toISOString() },
+              note: `Post-reboot check armed by the server (${label} closed at the reboot): ${item.note}\nRun the check now (a live worker may run it for you) and keep the plan step IN_PROGRESS until it reports.` });
+            await deps.repository.close(item.ownerUserId, item.id, "FIRED", `${label} closed at the reboot: re-armed on the server`);
+            continue;
+          }
           cancelled.set(item.ownerUserId, [...(cancelled.get(item.ownerUserId) ?? []), item]);
         }
       }

@@ -1377,6 +1377,9 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
       expect(moved!.result).toContain("bound to Bob");
       expect(daily!.ok).toBe(true);
       expect(await f.store.getTaskItem(owner, task!.id)).toMatchObject({ paneId: f.bob.id, paneTitle: "Bob", schedule: { recurrence: { kind: "DAILY", time: "09:00" } } });
+      // 13/11 review ("Task item task:nth-… was not found" ×3): an unknown id answers with the real ids, for a change or a move.
+      const [status, move] = await f.run(["space_task_update", { task: "task:nth-2", status: "DONE" }], ["space_task_update", { task: "task:nth-2", bind: { room: "Main", pane: "Bob" } }]);
+      for (const outcome of [status, move]) expect(outcome).toMatchObject({ ok: false, display: "No such task", result: expect.stringContaining(`[${task!.id}] "Nightly check"`) });
       await f.run(["space_task_update", { task: task!.id, bind: null, schedule: null, status: "DONE" }]);
       expect(await f.store.getTaskItem(owner, task!.id)).toMatchObject({ paneId: null, schedule: null, status: "DONE" });
     } finally {
