@@ -3,9 +3,9 @@
 Notable user-facing changes are documented here. This project follows
 Semantic Versioning.
 
-## [Unreleased]
+## [1.2.0] - 2026-11-11
 
-Planned as 1.2.0. Changes since 1.1.9, up to the sanitized Space app @ a6f92b14f7 (the 1.2.0 c9 candidate's
+Changes since 1.1.9, up to the sanitized Space app @ a6f92b14f7 (the 1.2.0 c9 candidate's
 export source): Node.js 26 and TypeScript 7, Nous on self-hosted installs, and the fixes from the 1.1.9 in-app
 reviews. Open items are listed in `docs/quality/KNOWN_LIMITATIONS.md`.
 
@@ -210,11 +210,11 @@ reviews. Open items are listed in `docs/quality/KNOWN_LIMITATIONS.md`.
 
 ### Performance
 
-- Room switches: warm switches are faster after the TypeScript 7 move (p95 about 108 ms → 87 ms), and a switch no
+- Room switches: warm switches are faster after the TypeScript 7 move (p95 about 108 ms → 87 ms, measured on the maker's host, not benchmarked elsewhere), and a switch no
   longer rewrites every terminal pane's file input or the debug log once per pane.
 - Browser panes stream live only for the pane in front of you; one an agent drives out of view gets a 1 fps preview,
   and hidden or minimized panes stream nothing.
-- Nous dock: Requests loads in 54 ms instead of 2.3 s for 3,000 messages, and Space Memory is parsed once per text
+- Nous dock: Requests loads in 54 ms instead of 2.3 s for 3,000 messages (measured on the maker's host, not benchmarked elsewhere), and Space Memory is parsed once per text
   instead of on every recall.
 - Nous uses fewer tokens: inbox lines are batched, routine-only batches take no turn, and background and goal turns
   get only the context of their own work.
