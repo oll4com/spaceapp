@@ -23,6 +23,7 @@ import {
   applyConfigRepairs,
   commitInstallation,
   composeCommand,
+  composeProjectName,
   credentialProviders,
   initializeInstallation,
   inspectSystemResources,
@@ -421,8 +422,10 @@ export async function run(argv, {
     if (args.some((arg) => !["--dry-run", "--fix"].includes(arg))) throw new Error("Usage: repair [--dry-run] or doctor --fix");
     return repairRuntime({ root, config: null, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch, inspectResources, dryRun: args.includes("--dry-run") });
   }
-  let config = await loadConfig(root);
-  if (commandNeedsRuntimeFiles(command, args)) {
+  // A first install that failed and rolled back leaves volumes and a container but no config.json (1.2.1 Windows lab): purge still clears them.
+  const purge = command === "uninstall" && args[0] === "--purge-data";
+  let config = await loadConfig(root).catch((error) => { if (purge && error.code === "ENOENT") return null; throw error; });
+  if (config && commandNeedsRuntimeFiles(command, args)) {
     const withId = withTelemetryInstallId(config);
     if (withId !== config) await saveConfig(root, config = withId);
     await writeRuntimeFiles(root, config);
@@ -625,7 +628,10 @@ export async function run(argv, {
       }
       stdout.write("Removing SpaceApp containers, network, and Docker volumes...\n");
       const code = await runtimeExecute(
-        composeCommand("purge", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+        config
+          ? composeCommand("purge", root, { profile: config.profile, companionsEnabled: config.companionsEnabled })
+          // No compose files to read: Compose finds the project's containers, network and volumes by its project label.
+          : { command: "docker", args: ["compose", "--project-name", composeProjectName(root), "--project-directory", root, "down", "--volumes", "--remove-orphans"] },
         { stdin, stdout, stderr }
       );
       if (code === 0) {

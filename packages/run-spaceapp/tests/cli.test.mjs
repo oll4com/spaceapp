@@ -1844,6 +1844,29 @@ test("confirmed purge reports removed volumes and retained host files", async ()
   assert.match(stdout.value(), /npm uninstall -g run-spaceapp/);
 });
 
+test("purge after a rolled-back first install without config.json removes the project's containers and volumes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-uninstall-purge-noconfig-"));
+  const stdout = capture();
+  const calls = [];
+  const options = {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: capture().stream,
+    prepareDockerPath: async () => null,
+    execute: async (spec) => { calls.push(spec.args ?? []); return 0; }
+  };
+  await run(["init"], { ...options, stdin: ttyStdin("y") });
+  await rm(join(root, "config.json"));
+
+  assert.equal(await run(["uninstall", "--purge-data"], { ...options, stdin: Readable.from(["DELETE\n"]) }), 0);
+  const purge = calls.find((args) => args.includes("--volumes"));
+  assert.deepEqual(purge.slice(-3), ["down", "--volumes", "--remove-orphans"]);
+  assert.match(purge[purge.indexOf("--project-name") + 1], /^spaceapp-[0-9a-f]{12}$/);
+  assert.ok(!purge.includes("-f"), "no compose files exist to pass");
+  assert.match(stdout.value(), /Docker volumes removed/);
+});
+
 test("owner password reset passes the password only over container stdin", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-owner-reset-"));
   const stdout = capture();
