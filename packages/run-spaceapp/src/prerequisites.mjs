@@ -942,7 +942,12 @@ function linuxReentryCommand({
   requestedProfile = "auto",
   requestedAccessMode,
   noOpen = false,
-  answers = null
+  answers = null,
+  companionsEnabled = false,
+  ref = null,
+  localImages = false,
+  logFile = null,
+  json = false
 } = {}) {
   if (!["auto", "small", "medium", "large", "light", "standard"].includes(requestedProfile)) {
     throw new Error("Invalid SpaceApp profile for Docker group re-entry.");
@@ -958,6 +963,12 @@ function linuxReentryCommand({
     requestedProfile,
     ...installAccessArgs(requestedAccessMode, "Docker group re-entry"),
     ...(noOpen ? ["--no-open"] : []),
+    // The run's other flags too, else re-entry pulls images a --local-images install has loaded (hz lab 1.2.1, 13/11).
+    ...(companionsEnabled ? ["--with-companions"] : []),
+    ...(ref ? ["--ref", ref] : []),
+    ...(localImages ? ["--local-images"] : []),
+    ...(logFile ? ["--log-file", logFile] : []),
+    ...(json ? ["--json"] : []),
     ...(answers ? ["--non-interactive", "--answers", JSON.stringify(answers)] : [])
   ].map(shellQuote).join(" ");
 }

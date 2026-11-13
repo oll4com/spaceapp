@@ -726,7 +726,7 @@ test("Ubuntu installs Docker Engine from Docker's official repository and re-ent
 });
 
 test("Linux Docker group re-entry keeps an approved unattended install unattended (hz lab 1.2.0, 13/11)", async () => {
-  const reentry = async (controller) => {
+  const reentry = async (controller, flags = {}) => {
     const calls = [];
     const stdin = Readable.from([]);
     if (controller) stdin._spaceappPromptController = controller;
@@ -742,7 +742,7 @@ test("Linux Docker group re-entry keeps an approved unattended install unattende
         return spec.command === "docker" && spec.args.includes("info") ? 1 : 0;
       },
       sleep: async () => {},
-      installArgs: { requestedProfile: "small", requestedAccessMode: "isolated", noOpen: true }
+      installArgs: { requestedProfile: "small", requestedAccessMode: "isolated", noOpen: true, ...flags }
     });
     assert.deepEqual(result, { code: 0, reexecuted: true });
     return calls.find((spec) => spec.command === "sg").args[2];
@@ -753,6 +753,12 @@ test("Linux Docker group re-entry keeps an approved unattended install unattende
   ));
   assert.doesNotMatch(await reentry({ nonInteractive: true, answers: { confirm: false } }), /--non-interactive/);
   assert.doesNotMatch(await reentry(null), /--non-interactive|--answers/);
+  // The run's other flags survive too: a --local-images lab install pulled from the registry after re-entry (hz lab 1.2.1).
+  assert.ok((await reentry({ nonInteractive: true, answers },
+    { companionsEnabled: true, ref: "hn", localImages: true, logFile: "/tmp/it's.log", json: true })).endsWith(
+    `'--no-open' '--with-companions' '--ref' 'hn' '--local-images' '--log-file' '/tmp/it'\\''s.log' '--json' '--non-interactive' '--answers' '${JSON.stringify(answers)}'`
+  ));
+  assert.doesNotMatch(await reentry(null), /--local-images|--log-file|--ref|--json|--with-companions/);
 });
 
 test("Linux starts an installed inactive Docker Engine, grants group access, and continues in one command", async () => {

@@ -402,7 +402,8 @@ export async function run(argv, {
       prepareDockerPath,
       request,
       sleep,
-      persistSetupToken
+      persistSetupToken,
+      globalFlags
     });
   }
   if (command === "init") {
@@ -691,7 +692,8 @@ async function installCommand(args, {
   prepareDockerPath,
   request,
   sleep,
-  persistSetupToken
+  persistSetupToken,
+  globalFlags = {}
 }) {
   const wizard = await planInteractiveSetup({
     args,
@@ -807,7 +809,10 @@ async function installCommand(args, {
     stdout,
     stderr,
     execute,
-    installArgs: { root, requestedProfile, requestedAccessMode, noOpen, autoConfirm: true }
+    installArgs: {
+      root, requestedProfile, requestedAccessMode, noOpen, autoConfirm: true, companionsEnabled, ref,
+      localImages: globalFlags.localImages, logFile: globalFlags.logFile, json: globalFlags.json
+    }
   });
   if (prerequisiteResult.reexecuted) {
     return prerequisiteResult.code;
