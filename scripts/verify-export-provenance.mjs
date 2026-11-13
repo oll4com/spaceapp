@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Checks this checkout against PUBLIC_EXPORT_MANIFEST.json without access to the private tree:
 // every exported file must match the manifest's SHA-256 and size; a file whose bytes still hash to
-// the recorded private git blob id was exported unchanged, any other file was sanitized.
+// the recorded private git blob id was exported unchanged, any other file was sanitized. Every other file
+// (installer, Dockerfile, workflows) is maintained by this repository itself and named in publicOwned (INT5-C-F9).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -25,6 +27,17 @@ function editedAfterExport(root, path) {
   }
 }
 
+// The checkout's files: git's tracked list, or every file under root for a `git archive` extract (no .git of its
+// own, even when extracted inside another repository).
+async function checkoutFiles(root) {
+  if (existsSync(join(root, ".git"))) {
+    return execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\0").filter(Boolean);
+  }
+  return (await readdir(root, { recursive: true, withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name).slice(root.length + 1).split("\\").join("/"));
+}
+
 export async function verifyExportProvenance(root) {
   const manifest = JSON.parse(await readFile(join(root, "PUBLIC_EXPORT_MANIFEST.json"), "utf8"));
   const result = { sourceCommit: manifest.sourceCommit, files: manifest.files.length, unchanged: 0, sanitized: [], problems: [] };
@@ -39,6 +52,8 @@ export async function verifyExportProvenance(root) {
       result.sanitized.push(file.path);
     }
   }
+  const exported = new Set(manifest.files.map((file) => file.path).concat("PUBLIC_EXPORT_MANIFEST.json"));
+  result.publicOwned = (await checkoutFiles(root)).filter((path) => !exported.has(path)).sort();
   if (result.sanitized.length !== manifest.transformations) {
     result.problems.push(`manifest records ${manifest.transformations} transformations, found ${result.sanitized.length}`);
   }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -41,4 +41,22 @@ test("names the public commit that edited an exported file outside the export", 
   git("commit", "-qam", "docs: add a badge", "--author=Web Editor <web@example.invalid>");
   const result = await verifyExportProvenance(root);
   assert.deepEqual(result.problems, [`differs from the manifest: README.md (edited on public main outside the export by ${git("rev-parse", "--short", "HEAD")} Web Editor: docs: add a badge; port the change into SpaceApp's source so the next export carries it)`]);
+});
+
+test("names every file the manifest does not cover as public-owned, in a git checkout and in an archive extract (INT5-C-F9)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-provenance-owned-"));
+  await mkdir(join(root, ".github", "workflows"), { recursive: true });
+  await writeFile(join(root, "same.txt"), "same\n");
+  await writeFile(join(root, "Dockerfile"), "FROM scratch\n");
+  await writeFile(join(root, ".github", "workflows", "ci.yml"), "on: push\n");
+  const files = [{ path: "same.txt", sourceObjectId: blob("same\n"), sha256: sha256("same\n"), size: 5 }];
+  await writeFile(join(root, "PUBLIC_EXPORT_MANIFEST.json"), JSON.stringify({ sourceCommit: "a".repeat(40), transformations: 0, files }));
+  const owned = [".github/workflows/ci.yml", "Dockerfile"];
+  assert.deepEqual((await verifyExportProvenance(root)).publicOwned, owned);
+  execFileSync("git", ["-C", root, "init", "-q"]);
+  execFileSync("git", ["-C", root, "add", "-A"]);
+  await writeFile(join(root, "untracked.log"), "build output\n");
+  const result = await verifyExportProvenance(root);
+  assert.deepEqual(result.publicOwned, owned);
+  assert.deepEqual(result.problems, []);
 });
