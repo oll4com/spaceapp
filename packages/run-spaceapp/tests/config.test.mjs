@@ -176,6 +176,15 @@ test("an install that opted in before install ids existed gets one beside its op
   assert.match(renderRuntimeEnv(off), /^SPACEAPP_INSTALL_ID=$/m);
 });
 
+test("the browser container gets at most a quarter of the machine's RAM, never more than its profile", () => {
+  const config = { ...createDefaultConfig({ version: "1.2.1", profile: "large" }), workspaces: [] };
+  const limit = (gib) => /^SPACEAPP_BROWSER_MEMORY_LIMIT=(.+)$/m.exec(renderRuntimeEnv(config, null, {}, gib * 1024 ** 3))[1];
+  assert.equal(limit(2), "512m");
+  assert.equal(limit(4), "1024m");
+  assert.equal(limit(7.4), "1894m");
+  assert.equal(limit(64), "2048m");
+});
+
 test("workspace registration accepts only existing absolute directories and avoids duplicates", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-workspace-"));
   const workspace = join(root, "project");
@@ -235,6 +244,7 @@ test("initialization creates idempotent secrets with container-readable POSIX pe
   assert.equal(first.setupToken?.length > 30, true);
   assert.equal(second.setupToken, null);
   assert.match(await readFile(join(root, "seccomp-cli.json"), "utf8"), /"unshare"/);
+  assert.match(await readFile(join(root, "seccomp-browser.json"), "utf8"), /Chromium sandbox/);
   assert.equal(
     await readFile(join(root, "secrets", "postgres-password"), "utf8"),
     passwordBefore

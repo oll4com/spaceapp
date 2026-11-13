@@ -14,7 +14,8 @@ CLI packages that retain their own licenses and service terms:
 
 `templates/seccomp-cli.json` is Docker's default seccomp profile from
 `github.com/moby/profiles` (`seccomp/v0.2.4`, Apache-2.0) with one added rule for
-user namespaces.
+user namespaces. The launcher derives `seccomp-browser.json` from it with that rule
+narrowed to `clone`, `setns` and `unshare`.
 
 Claude Code (`@anthropic-ai/claude-code@2.1.301`) is governed by Anthropic's
 commercial terms and is not included in published SpaceApp images. It is

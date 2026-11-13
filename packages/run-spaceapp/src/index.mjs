@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   chmod,
@@ -13,6 +14,7 @@ import {
 import { availableParallelism, homedir, totalmem } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import {
   normalizeWorkspaceName,
   stripTrailingLineEndings
@@ -638,7 +640,18 @@ export async function writeSetupToken(root, token) {
   return target;
 }
 
-export function renderRuntimeEnv(config, imageLock = PACKAGE_IMAGE_LOCK, recordedDigests = {}) {
+// Technical bound (plan clipboard:DpmApwi78Fdh §3): the browser container takes at most a quarter of the machine's RAM
+// (about 500 MB on 2 GB, 1 GB on 4 GB), below the profile's own limit. Inside it the Browser Host keeps fewer live browsers
+// (browserSessionCap) and closes the least recently used agent browser first; a closed browser's tabs come back on its next start.
+export const BROWSER_MEMORY_SHARE = 0.25;
+
+// shortcut: Docker Desktop is judged by the host's RAM, not its VM's (the profile limit still caps it); read docker info if that bites.
+export function browserMemoryLimit(profileLimit, memoryBytes = totalmem()) {
+  const profileMiB = Number.parseFloat(profileLimit) * (profileLimit.endsWith("g") ? 1024 : 1);
+  return `${Math.min(profileMiB, Math.floor((memoryBytes * BROWSER_MEMORY_SHARE) / 1024 ** 2))}m`;
+}
+
+export function renderRuntimeEnv(config, imageLock = PACKAGE_IMAGE_LOCK, recordedDigests = {}, memoryBytes = totalmem()) {
   validateConfig(config);
   const settings = PROFILE_RUNTIME_SETTINGS[config.profile];
   return [
@@ -655,7 +668,7 @@ export function renderRuntimeEnv(config, imageLock = PACKAGE_IMAGE_LOCK, recorde
     `SPACEAPP_CORE_CPU_LIMIT=${settings.coreCpuLimit}`,
     `SPACEAPP_CLI_MEMORY_LIMIT=${settings.cliMemoryLimit}`,
     `SPACEAPP_CLI_CPU_LIMIT=${settings.cliCpuLimit}`,
-    `SPACEAPP_BROWSER_MEMORY_LIMIT=${settings.browserMemoryLimit}`,
+    `SPACEAPP_BROWSER_MEMORY_LIMIT=${browserMemoryLimit(settings.browserMemoryLimit, memoryBytes)}`,
     `SPACEAPP_BROWSER_CPU_LIMIT=${settings.browserCpuLimit}`,
     `SPACEAPP_POSTGRES_MEMORY_LIMIT=${settings.postgresMemoryLimit}`,
     `SPACEAPP_POSTGRES_CPU_LIMIT=${settings.postgresCpuLimit}`,
@@ -684,7 +697,44 @@ export async function userNamespacesUsable(platform = process.platform, read = (
 // mounts). Only where the sandbox can run: elsewhere it would widen the container for nothing.
 const CLI_SANDBOX_OPTIONS = ["    security_opt:", "      - seccomp=./seccomp-cli.json", "      - apparmor=unconfined"];
 
-export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
+// Chromium's own sandbox (INT5-C-F3) needs new user, PID and network namespaces, none of the CLI's mounts. Docker's
+// AppArmor profile stays on: it lets those namespaces through also where the host restricts them (lab 13/11, AppArmor 4
+// with apparmor_restrict_unprivileged_userns=1). Where no namespace can be made, the Browser Host runs --no-sandbox and
+// says so in its health.
+export function browserSeccompProfile(cliProfile) {
+  const profile = JSON.parse(cliProfile);
+  const rule = profile.syscalls.find((entry) => entry.comment?.startsWith("SpaceApp CLI container: user namespaces"));
+  if (!rule) throw new Error("seccomp-cli.json has no user-namespace rule to derive the browser profile from.");
+  rule.names = ["clone", "setns", "unshare"];
+  rule.comment = "SpaceApp browser container: user namespaces for the Chromium sandbox (INT5-C-F3)";
+  return `${JSON.stringify(profile, null, 2)}\n`;
+}
+
+// INT5-C-F3: the browser container mounts only its two folders of the data volume (profiles, recordings), never the
+// rest of it (memory, other artifacts). Compose mounts a volume's folder from Docker Engine 26 (API 1.45); an older
+// engine gives the browser the whole volume, as before, and compose.workspaces.yml says so.
+function browserDataMounts(subpath) {
+  const folders = ["browser-profiles", "browser-evidence"].flatMap((folder) => [
+    "      - type: volume",
+    "        source: spaceapp-data",
+    `        target: /var/lib/spaceapp/artifacts/${folder}`,
+    "        volume:",
+    `          subpath: artifacts/${folder}`
+  ]);
+  return ["  spaceapp-browser:", "    volumes:", ...(subpath ? folders : [
+    "      # Docker Engine older than 26 cannot mount a volume's folder: the browser sees the whole data volume.",
+    "      - spaceapp-data:/var/lib/spaceapp"
+  ])];
+}
+
+export async function dockerMountsVolumeFolders(
+  apiVersion = () => promisify(execFile)("docker", ["version", "--format", "{{.Server.APIVersion}}"], { timeout: 15_000 }).then(({ stdout }) => stdout)
+) {
+  const [major, minor] = String(await apiVersion().catch(() => "")).trim().split(".").map(Number);
+  return major > 1 || (major === 1 && minor >= 45);
+}
+
+export function renderWorkspaceCompose(config, { cliSandbox = false, browserFolders = false } = {}) {
   validateConfig(config);
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
@@ -696,7 +746,7 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     ? ["    volumes:", ...mounts]
     : ["    volumes: []"];
   if (config.users === undefined) {
-    return ["services:", "  spaceapp-core:", ...service, "  spaceapp-cli:", ...service, ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []), ""].join("\n");
+    return ["services:", "  spaceapp-core:", ...service, "  spaceapp-cli:", ...service, ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []), ...browserDataMounts(browserFolders), ""].join("\n");
   }
   // "user enable": accounts are on, and the core starts a USER's CLIs only in that user's own container.
   const users = config.users;
@@ -749,6 +799,7 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     "  spaceapp-cli:",
     ...service,
     ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []),
+    ...browserDataMounts(browserFolders),
     ...userServices,
     ...(users.length > 0 ? ["volumes:"] : []),
     ...users.flatMap((user) => ["cli-state", "memory", "cli-socket", "workspaces"].map((kind) => `  spaceapp-${kind}-${userSlug(user.id)}: {}`)),
@@ -1000,7 +1051,10 @@ export async function writeRuntimeFiles(root, config, imageLock = PACKAGE_IMAGE_
     }
   }
   await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config, imageLock, recorded));
-  await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config, { cliSandbox: await userNamespacesUsable() }));
+  await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config, {
+    cliSandbox: await userNamespacesUsable(),
+    browserFolders: await dockerMountsVolumeFolders()
+  }));
   // The core reads it as uid 10001 through a read-only bind mount.
   await atomicWrite(join(root, "cli-hosts.json"), renderCliHosts(config), 0o644);
   for (const user of config.users ?? []) await mkdir(providerSecretsRoot(root, user.id), { recursive: true, mode: 0o700 });
@@ -1115,7 +1169,7 @@ export async function prepareInstallation(root, {
 export async function commitInstallation(root, config, {
   templateDir = defaultTemplateDir(),
   persistConfig = true,
-  // Compose resolves ./seccomp-cli.json against the project directory, also when the compose files are staged.
+  // Compose resolves ./seccomp-*.json against the project directory, also when the compose files are staged.
   projectRoot = root
 } = {}) {
   validateHome(root);
@@ -1124,7 +1178,9 @@ export async function commitInstallation(root, config, {
   await mkdir(root, { recursive: true, mode: 0o700 });
   await atomicWrite(join(root, "compose.yml"), composeTemplate);
   await mkdir(projectRoot, { recursive: true, mode: 0o700 });
-  await atomicWrite(join(projectRoot, "seccomp-cli.json"), await readFile(join(defaultTemplateDir(), "seccomp-cli.json"), "utf8"));
+  const cliProfile = await readFile(join(defaultTemplateDir(), "seccomp-cli.json"), "utf8");
+  await atomicWrite(join(projectRoot, "seccomp-cli.json"), cliProfile);
+  await atomicWrite(join(projectRoot, "seccomp-browser.json"), browserSeccompProfile(cliProfile));
   await writeRuntimeFiles(root, config);
   if (persistConfig) await saveConfig(root, config);
 }

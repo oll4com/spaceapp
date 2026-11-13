@@ -132,13 +132,28 @@ services:
       - spaceapp-cli-state:/cli-state:ro
       - spaceapp-codex-sessions:/sessions
 
+  # One-shot: the browser mounts only its folders of the data volume (compose.workspaces.yml), which must exist first.
+  browser-data-init:
+    image: ghcr.io/oll4com/spaceapp-browser:${SPACEAPP_IMAGE_TAG}${SPACEAPP_BROWSER_IMAGE_DIGEST:-}
+    profiles: ["standard"]
+    restart: "no"
+    user: "0:0"
+    network_mode: none
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["install", "-d", "-o", "10001", "-g", "10001", "-m", "0700", "/data", "/data/artifacts", "/data/artifacts/browser-profiles", "/data/artifacts/browser-evidence"]
+    volumes:
+      - spaceapp-data:/data
+
   spaceapp-browser:
     image: ghcr.io/oll4com/spaceapp-browser:${SPACEAPP_IMAGE_TAG}${SPACEAPP_BROWSER_IMAGE_DIGEST:-}
     profiles: ["standard"]
     restart: unless-stopped
     init: true
+    # Docker's seccomp profile plus the user namespaces Chromium's sandbox needs (INT5-C-F3); Docker's AppArmor stays.
     security_opt:
       - no-new-privileges:true
+      - seccomp=./seccomp-browser.json
     mem_limit: "${SPACEAPP_BROWSER_MEMORY_LIMIT}"
     cpus: "${SPACEAPP_BROWSER_CPU_LIMIT}"
     environment:
@@ -149,14 +164,16 @@ services:
       SPACE_BROWSER_SESSIONS_ENABLED: "true"
       SPACE_BROWSER_HOST_SOCKET: /run/spaceapp-browser/browser-host.sock
       SPACE_BROWSER_SESSIONS_DEFAULT_URL: about:blank
+    # compose.workspaces.yml adds its data: the profile and recording folders, or the whole volume on Docker Engine < 26.
     volumes:
-      - spaceapp-data:/var/lib/spaceapp
       - spaceapp-browser-socket:/run/spaceapp-browser
     secrets:
       - database-url
     depends_on:
       postgres:
         condition: service_healthy
+      browser-data-init:
+        condition: service_completed_successfully
     networks:
       - spaceapp
 

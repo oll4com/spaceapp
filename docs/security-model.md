@@ -81,6 +81,16 @@ account.
   than Docker's defaults. Where the host restricts them (Ubuntu 23.10 and later:
   `kernel.apparmor_restrict_unprivileged_userns=1`) the sandbox could not run,
   so the container keeps Docker's defaults and Codex asks before each command.
+- The browser container runs Chromium with its own sandbox. It gets Docker's
+  default seccomp profile plus the user-namespace calls Chromium needs (`clone`,
+  `setns`, `unshare`; `seccomp-browser.json`) and keeps Docker's own AppArmor
+  profile, which allows them even where the host restricts unprivileged user
+  namespaces. If the kernel still refuses them, the Browser Host runs Chromium
+  with `--no-sandbox` and says so in its health. Its memory limit is a quarter
+  of the machine's RAM, at most the profile's. It mounts only its own folders of
+  the data volume (browser profiles and recordings); with Docker Engine older
+  than 26, which cannot mount a volume's folder, it gets the whole data volume
+  and `compose.workspaces.yml` says so.
 - Telemetry is disabled by default.
 - Mutable owner memory is separate from the immutable generic starter memory.
 

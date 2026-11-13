@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { createDefaultConfig, renderWorkspaceCompose, userNamespacesUsable } from "../src/index.mjs";
+import { browserSeccompProfile, createDefaultConfig, dockerMountsVolumeFolders, renderWorkspaceCompose, userNamespacesUsable } from "../src/index.mjs";
 
-const template = await readFile(new URL("../templates/compose.yml", import.meta.url), "utf8");
+const template = (await readFile(new URL("../templates/compose.yml", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 const images = [...template.matchAll(/^\s+image:\s*(\S+)\s*$/gm)].map((match) => match[1]);
 const storageSource = await readFile(new URL("../src/storage.mjs", import.meta.url), "utf8");
 
@@ -50,4 +50,33 @@ test("the CLI container gets the user-namespace profile only where the host allo
   // Everything else stays denied by the default profile, e.g. bpf, keyctl and perf_event_open.
   const allowed = new Set(profile.syscalls.filter((rule) => rule.action === "SCMP_ACT_ALLOW" && !rule.includes?.caps).flatMap((rule) => rule.names));
   for (const name of ["bpf", "keyctl", "perf_event_open", "kexec_load"]) assert.equal(allowed.has(name), false, name);
+});
+
+test("the browser gets Chromium's sandbox and only its folders of the data volume (INT5-C-F3)", async () => {
+  const browser = template.slice(template.indexOf("\n  spaceapp-browser:\n"), template.indexOf("\n  codex-lb:\n"));
+  assert.match(browser, /no-new-privileges:true\n      - seccomp=\.\/seccomp-browser\.json\n/);
+  assert.doesNotMatch(browser, /apparmor=|spaceapp-data/);
+  assert.match(browser, /browser-data-init:\n        condition: service_completed_successfully/);
+  const init = template.slice(template.indexOf("\n  browser-data-init:\n"), template.indexOf("\n  spaceapp-browser:\n"));
+  assert.match(init, /profiles: \["standard"\]\n    restart: "no"\n    user: "0:0"\n    network_mode: none/);
+  assert.match(init, /"10001", "-g", "10001", "-m", "0700", .*"\/data\/artifacts\/browser-profiles", "\/data\/artifacts\/browser-evidence"\]/);
+
+  const folders = (subpath) => [`      - type: volume\n        source: spaceapp-data\n        target: /var/lib/spaceapp/artifacts/${subpath}\n        volume:\n          subpath: artifacts/${subpath}\n`];
+  for (const config of [createDefaultConfig({ version: "1.2.1" }), { ...createDefaultConfig({ version: "1.2.1" }), users: [] }]) {
+    const narrow = renderWorkspaceCompose(config, { browserFolders: true });
+    for (const mount of [...folders("browser-profiles"), ...folders("browser-evidence")]) assert.ok(narrow.includes(mount), mount);
+    assert.match(narrow, /  spaceapp-browser:\n    volumes:\n      - type: volume\n/);
+    assert.doesNotMatch(narrow, /spaceapp-data:\/var\/lib\/spaceapp/);
+    assert.match(renderWorkspaceCompose(config), /  spaceapp-browser:\n    volumes:\n      # Docker Engine older than 26 [^\n]*\n      - spaceapp-data:\/var\/lib\/spaceapp\n/);
+  }
+  assert.equal(await dockerMountsVolumeFolders(async () => "1.45\n"), true);
+  assert.equal(await dockerMountsVolumeFolders(async () => "1.52"), true);
+  assert.equal(await dockerMountsVolumeFolders(async () => "1.44"), false);
+  assert.equal(await dockerMountsVolumeFolders(async () => { throw new Error("Cannot connect to the Docker daemon"); }), false);
+
+  const cli = await readFile(new URL("../templates/seccomp-cli.json", import.meta.url), "utf8");
+  const profile = JSON.parse(browserSeccompProfile(cli));
+  assert.deepEqual(profile.syscalls.at(-1).names, ["clone", "setns", "unshare"]);
+  assert.deepEqual({ ...profile, syscalls: profile.syscalls.slice(0, -1) }, { ...JSON.parse(cli), syscalls: JSON.parse(cli).syscalls.slice(0, -1) });
+  assert.throws(() => browserSeccompProfile(JSON.stringify({ syscalls: [] })), /user-namespace rule/);
 });
