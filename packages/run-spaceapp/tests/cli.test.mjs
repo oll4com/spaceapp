@@ -1217,7 +1217,9 @@ test("failures before cutover preserve configuration; failures after cutover ret
       failure === "pull" ? 41 : failure === "up" ? 42 : failure === "browser-cleanup" ? 43 : 1
     );
     for (const [path, content] of committedState) {
-      if(failure==='pull'||path==='secrets/setup-token')assert.equal(await readFile(join(root, path), "utf8"), content);
+      // After the rotate the file holds the token the database took (step 6b), so a cleanup failure leaves them matching.
+      if(path==='secrets/setup-token'&&failure==='browser-cleanup')assert.notEqual(await readFile(join(root, path), "utf8"), content);
+      else if(failure==='pull'||path==='secrets/setup-token')assert.equal(await readFile(join(root, path), "utf8"), content);
     }
     const actual=JSON.parse(await readFile(join(root,'config.json'),'utf8'));
     assert.equal(actual.version,failure==='pull'?'0.1.10':RUNTIME_VERSION);

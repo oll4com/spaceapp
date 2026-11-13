@@ -646,8 +646,10 @@ export async function writeSetupToken(root, token) {
 // Browser (plan clipboard:DpmApwi78Fdh §3): a quarter, about 500 MB on 2 GB and 1 GB on 4 GB; inside it the Browser Host keeps
 // fewer live browsers (browserSessionCap) and a closed browser's tabs come back on its next start. CLI: half, so an agent
 // tool's runaway is killed in its own container instead of a whole-machine OOM taking the core (2 GB lab, light browser step 6).
+// Core: half too (step 6b, Nous 13/11), so a light profile's 2g never claims a whole 2 GB machine.
 export const BROWSER_MEMORY_SHARE = 0.25;
 export const CLI_MEMORY_SHARE = 0.5;
+export const CORE_MEMORY_SHARE = 0.5;
 
 export function memoryShareLimit(profileLimit, share, memoryBytes) {
   const profileMiB = Number.parseFloat(profileLimit) * (profileLimit.endsWith("g") ? 1024 : 1);
@@ -676,7 +678,7 @@ export function renderRuntimeEnv(config, imageLock = PACKAGE_IMAGE_LOCK, recorde
     `SPACEAPP_PROFILE=${safeEnv(config.profile)}`,
     `SPACEAPP_BROWSER_ENABLED=${settings.browserEnabled}`,
     `SPACEAPP_WORKFLOWS_ENABLED=${settings.temporalEnabled}`,
-    `SPACEAPP_CORE_MEMORY_LIMIT=${settings.coreMemoryLimit}`,
+    `SPACEAPP_CORE_MEMORY_LIMIT=${memoryShareLimit(settings.coreMemoryLimit, CORE_MEMORY_SHARE, memoryBytes)}`,
     `SPACEAPP_CORE_CPU_LIMIT=${settings.coreCpuLimit}`,
     `SPACEAPP_CLI_MEMORY_LIMIT=${memoryShareLimit(settings.cliMemoryLimit, CLI_MEMORY_SHARE, memoryBytes)}`,
     `SPACEAPP_CLI_CPU_LIMIT=${settings.cliCpuLimit}`,

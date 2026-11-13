@@ -180,12 +180,12 @@ test("an install that opted in before install ids existed gets one beside its op
   assert.match(renderRuntimeEnv(off), /^SPACEAPP_INSTALL_ID=$/m);
 });
 
-test("the browser gets at most a quarter and the CLI half of Docker's memory, never more than their profile", async () => {
+test("the browser gets at most a quarter and the CLI and core half of Docker's memory, never more than their profile", async () => {
   const config = { ...createDefaultConfig({ version: "1.2.1", profile: "large" }), workspaces: [] };
   const limit = (name, gib) => new RegExp(`^SPACEAPP_${name}_MEMORY_LIMIT=(.+)$`, "m").exec(renderRuntimeEnv(config, null, {}, gib * 1024 ** 3))[1];
   assert.deepEqual([2, 4, 7.4, 64].map((gib) => limit("BROWSER", gib)), ["512m", "1024m", "1894m", "2g"]);
   assert.deepEqual([2, 4, 7.4, 64].map((gib) => limit("CLI", gib)), ["1024m", "2048m", "3788m", "4g"]);
-  assert.equal(limit("CORE", 2), "4g");
+  assert.deepEqual([2, 4, 7.4, 64].map((gib) => limit("CORE", gib)), ["1024m", "2048m", "3788m", "4g"]);
   assert.equal(await dockerMemoryBytes(async () => "4100000000\n"), 4100000000);
   assert.equal(await dockerMemoryBytes(async () => { throw new Error("Cannot connect to the Docker daemon"); }), totalmem());
   assert.match(renderRuntimeEnv({ ...config, profile: "light" }, null, {}, 1966 * 1024 ** 2), /^SPACEAPP_BROWSER_ENABLED=true$/m);

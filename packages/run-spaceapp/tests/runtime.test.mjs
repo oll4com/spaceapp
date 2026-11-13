@@ -121,7 +121,7 @@ test("compose activates the browser for the standard and light profiles, never f
 });
 
 test("runtime env applies bounded light and standard resource settings without secrets", () => {
-  const standard = renderRuntimeEnv(config);
+  const standard = renderRuntimeEnv(config, undefined, {}, 64 * 1024 ** 3);
   const light = renderRuntimeEnv({ ...config, profile: "light" }, undefined, {}, 64 * 1024 ** 3);
 
   assert.match(standard, /^SPACEAPP_IMAGE_TAG=0\.1\.0$/m);

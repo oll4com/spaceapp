@@ -1027,11 +1027,7 @@ async function installCommand(args, {
       }
     }
 
-    stage = "cleanup";
-    const cleanupCode = await removeInactiveProfileServices({root, config: result.config,
-      stateRoot: stagedStateRoot, execute, stdin, stdout, stderr});
-    if (cleanupCode !== 0) return await failAfterRuntimeMutation(cleanupCode);
-
+    // Saved right after the rotate: a core that restarts takes this file again (initializeOwnerSetup, step 6b).
     if (setupToken) {
       try {
         await persistSetupToken(root, setupToken);
@@ -1042,9 +1038,12 @@ async function installCommand(args, {
         );
         return await failAfterRuntimeMutation(1);
       }
-
-
     }
+
+    stage = "cleanup";
+    const cleanupCode = await removeInactiveProfileServices({root, config: result.config,
+      stateRoot: stagedStateRoot, execute, stdin, stdout, stderr});
+    if (cleanupCode !== 0) return await failAfterRuntimeMutation(cleanupCode);
 
     await commitInstallation(root, result.config);
     if(upgradeCheckpoint) await markCheckpointVerified(upgradeCheckpoint);
