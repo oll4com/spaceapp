@@ -52,6 +52,19 @@ test('a first install sends the anonymous ping only when the owner answers yes',
   assert.equal(typeof agreed.pings[1].duration_s,'number');
   assert.doesNotMatch(await readFile(join(declined.root,'runtime.env'),'utf8'),/^SPACEAPP_INSTALL_ID=.+$/m);
 });
+test('install --ref carries the channel code only in an opted-in install_started, and a malformed one never fails the install', async(t)=>{
+  const install=(telemetry,ref)=>['install','--ref',ref,'--non-interactive','--answers',JSON.stringify({confirm:true,profile:'light',access:'isolated',companions:false,telemetry,open:false})];
+  const agreed=await fixture(t); delete agreed.options.env.SPACEAPP_TELEMETRY;
+  assert.equal(await run(install(true,'HN'),agreed.options),0);
+  assert.deepEqual(agreed.pings.map(p=>[p.event,p.ref]),[['install_started','hn'],['install_completed',undefined]]);
+  const declined=await fixture(t); delete declined.options.env.SPACEAPP_TELEMETRY;
+  assert.equal(await run(install(false,'hn'),declined.options),0);
+  assert.ok(!declined.urls.some(x=>x.includes('install-ping')));
+  const malformed=await fixture(t); delete malformed.options.env.SPACEAPP_TELEMETRY;
+  assert.equal(await run(install(true,'me@example.com'),malformed.options),0);
+  assert.equal(malformed.pings[0].event,'install_started');
+  assert.ok(!('ref' in malformed.pings[0]));
+});
 test('a failed first install with telemetry on reports the step it stopped at', async(t)=>{
   const f=await fixture(t); delete f.options.env.SPACEAPP_TELEMETRY;
   const execute=f.options.execute;

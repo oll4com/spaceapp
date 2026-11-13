@@ -105,9 +105,15 @@ export function describeOsVersion(platform, {
 
 const positiveInteger = (value) => Number.isInteger(value) && value > 0 ? value : undefined;
 
-/** System facts sent with install_started: OS version, CPUs, RAM in GiB, profile and access mode. */
-export function installFunnelFacts({ platform, resources, profile, accessMode }, options) {
+/** The channel code of `install --ref` (set by the site's copy button from utm_source); anything else is dropped. */
+export const normalizeInstallRef = (value) => /^[a-z0-9._-]{1,40}$/.test(String(value ?? "").trim().toLowerCase())
+  ? String(value).trim().toLowerCase() : undefined;
+
+/** System facts sent with install_started: OS version, CPUs, RAM in GiB, profile, access mode and the --ref channel. */
+export function installFunnelFacts({ platform, resources, profile, accessMode, ref }, options) {
+  const channel = normalizeInstallRef(ref);
   return {
+    ...(channel ? { ref: channel } : {}),
     os_version: describeOsVersion(platform, options),
     cpus: positiveInteger(resources?.cpuCount),
     ram_gb: positiveInteger(Math.round((resources?.totalMemoryBytes ?? 0) / 2 ** 30)),

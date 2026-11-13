@@ -73,7 +73,11 @@ send events to `https://spaceapp.dev/install-ping.php`, each with a new random
 event ID and that install ID:
 
 - `install_started`: operating system and its version, CPU architecture, CPU
-  count, RAM in GiB, profile, access mode, launcher and runtime versions.
+  count, RAM in GiB, profile, access mode, launcher and runtime versions, and
+  the channel code of `install --ref <channel>` when the command has one (the
+  install button on spaceapp.dev adds it from the link you arrived by, such as
+  `--ref hn`; lowercase letters, digits, `.`, `_` and `-`, at most 40, anything
+  else is dropped). Without telemetry Yes the code is never sent.
 - `install_completed` or `install_failed`: the duration and, on failure, the
   step that failed (`resources`, `docker`, `doctor`, `pull`, `storage`, `start`,
   `ready`, `owner_setup`, `cleanup`).

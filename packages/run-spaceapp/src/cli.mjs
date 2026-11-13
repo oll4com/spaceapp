@@ -64,6 +64,7 @@ import {
 } from "./package-info.mjs";
 import {
   createInstallFunnel,
+  normalizeInstallRef,
   installFunnelFacts,
   isInstallPingAllowed
 } from "./telemetry.mjs";
@@ -712,7 +713,8 @@ async function installCommand(args, {
     noOpen,
     companionsEnabled,
     telemetryEnabled,
-    installId
+    installId,
+    ref
   } = wizard;
   const existingConfig = await loadExistingInstallation(root);
   const accessMode = resolveInstallAccessMode(
@@ -751,7 +753,7 @@ async function installCommand(args, {
   // reports completed or failed (interrupted, or an error outside these steps) stays "started".
   const reportFunnel = existingConfig || !result.config.installId ? null : createInstallFunnel({
     installId: result.config.installId, platform, arch, launcherVersion, runtimeVersion, request,
-    facts: installFunnelFacts({ platform, resources, profile, accessMode })
+    facts: installFunnelFacts({ platform, resources, profile, accessMode, ref })
   });
   void reportFunnel?.("install_started");
   let stage = "resources";
@@ -1136,7 +1138,8 @@ async function planInteractiveSetup({
       noOpen: actions.noOpen !== false,
       companionsEnabled: actions.companionsEnabled ?? false,
       telemetryEnabled: actions.telemetry ?? false,
-      installId: actions.installId
+      installId: actions.installId,
+      ref: normalizeInstallRef(actions.ref)
     };
   }
 
@@ -1157,7 +1160,8 @@ async function planInteractiveSetup({
     stdout.write(
       "Anonymous telemetry sends spaceapp.dev a random install ID with the OS and its version, CPUs, RAM, profile,\n" +
       "install progress, screen size, browser, language and country (no IP is stored), whether the owner, a CLI and\n" +
-      "a first answer were set up, and one 'active' event a day. Never files, prompts, answers, accounts or credentials.\n"
+      "a first answer were set up, one 'active' event a day, and the --ref channel code if the command has one.\n" +
+      "Never files, prompts, answers, accounts or credentials.\n"
     );
     const telemetryChoice = await promptYesNo(stdin, stdout, "Enable anonymous usage telemetry?", { defaultYes: false, answerKey: "telemetry" });
     // Created at consent so a Windows continuation after the Docker install keeps the same install id.
@@ -1193,6 +1197,7 @@ async function planInteractiveSetup({
         companionsEnabled: companionsChoice,
         telemetry: telemetryChoice,
         installId,
+        ref: parsed.ref,
         noOpen: !openBrowserChoice
       });
     }
@@ -1202,7 +1207,8 @@ async function planInteractiveSetup({
       noOpen: !openBrowserChoice,
       companionsEnabled: companionsChoice,
       telemetryEnabled: telemetryChoice,
-      installId
+      installId,
+      ref: parsed.ref
     };
   }
 
@@ -1749,8 +1755,19 @@ function parseInstallArgs(args) {
   let requestedAccessMode;
   let noOpen = false;
   let companionsEnabled = false;
+  let ref;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
+    // A channel code is only marketing data: a malformed one is dropped, never an install failure.
+    if (argument === "--ref" && index + 1 < args.length) {
+      ref = normalizeInstallRef(args[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--ref=")) {
+      ref = normalizeInstallRef(argument.slice("--ref=".length));
+      continue;
+    }
     if (argument === "--no-open" && !noOpen) {
       noOpen = true;
       continue;
@@ -1778,7 +1795,7 @@ function parseInstallArgs(args) {
       continue;
     }
     throw new Error(
-      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
+      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open] [--ref <channel>]`
     );
   }
   if (
@@ -1789,10 +1806,10 @@ function parseInstallArgs(args) {
     )
   ) {
     throw new Error(
-      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
+      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open] [--ref <channel>]`
     );
   }
-  return { requestedProfile, requestedAccessMode, noOpen, companionsEnabled };
+  return { requestedProfile, requestedAccessMode, noOpen, companionsEnabled, ref };
 }
 
 async function loadExistingInstallation(root) {
@@ -2804,7 +2821,7 @@ Usage: ${UNIVERSAL_COMMAND} <command>
        spaceapp <command>             Optional global launcher
 
   init                              Create a local SpaceApp installation
-  install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]
+  install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open] [--ref <channel>]
                                     Install prerequisites, initialize, and start
   reinstall [--keep-data] [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]
                                     Clean reinstallation preserving data and credentials
