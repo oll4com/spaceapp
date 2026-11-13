@@ -603,7 +603,10 @@ async function ensureLinuxDocker({
     return { code: groupCode, reexecuted: false };
   }
 
-  const reentryCommand = linuxReentryCommand(installArgs);
+  // An approved unattended run (--non-interactive with confirm) stays unattended after re-entry, else it stops at the TTY gate.
+  const controller = stdin?._spaceappPromptController;
+  const answers = controller?.nonInteractive === true && controller.answers?.confirm === true ? controller.answers : null;
+  const reentryCommand = linuxReentryCommand({ ...installArgs, answers });
   stdout.write("Docker Engine is ready. Continuing SpaceApp installation with the new group membership...\n");
   const reentryCode = await execute(
     { command: "sg", args: ["docker", "-c", reentryCommand] },
@@ -938,7 +941,8 @@ async function readLinuxOsRelease() {
 function linuxReentryCommand({
   requestedProfile = "auto",
   requestedAccessMode,
-  noOpen = false
+  noOpen = false,
+  answers = null
 } = {}) {
   if (!["auto", "small", "medium", "large", "light", "standard"].includes(requestedProfile)) {
     throw new Error("Invalid SpaceApp profile for Docker group re-entry.");
@@ -953,7 +957,8 @@ function linuxReentryCommand({
     "--profile",
     requestedProfile,
     ...installAccessArgs(requestedAccessMode, "Docker group re-entry"),
-    ...(noOpen ? ["--no-open"] : [])
+    ...(noOpen ? ["--no-open"] : []),
+    ...(answers ? ["--non-interactive", "--answers", JSON.stringify(answers)] : [])
   ].map(shellQuote).join(" ");
 }
 

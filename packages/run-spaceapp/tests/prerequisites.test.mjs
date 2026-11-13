@@ -725,6 +725,36 @@ test("Ubuntu installs Docker Engine from Docker's official repository and re-ent
   ));
 });
 
+test("Linux Docker group re-entry keeps an approved unattended install unattended (hz lab 1.2.0, 13/11)", async () => {
+  const reentry = async (controller) => {
+    const calls = [];
+    const stdin = Readable.from([]);
+    if (controller) stdin._spaceappPromptController = controller;
+    const result = await ensureDockerAvailable({
+      platform: "linux",
+      arch: "x64",
+      env: { USER: "spaceuser", PATH: "/usr/bin:/bin" },
+      stdin,
+      stdout: capture().stream,
+      stderr: capture().stream,
+      execute: async (spec) => {
+        calls.push(spec);
+        return spec.command === "docker" && spec.args.includes("info") ? 1 : 0;
+      },
+      sleep: async () => {},
+      installArgs: { requestedProfile: "small", requestedAccessMode: "isolated", noOpen: true }
+    });
+    assert.deepEqual(result, { code: 0, reexecuted: true });
+    return calls.find((spec) => spec.command === "sg").args[2];
+  };
+  const answers = { confirm: true, profile: "small", access: "isolated", telemetry: false, open: false };
+  assert.ok((await reentry({ nonInteractive: true, answers })).endsWith(
+    `'--no-open' '--non-interactive' '--answers' '${JSON.stringify(answers)}'`
+  ));
+  assert.doesNotMatch(await reentry({ nonInteractive: true, answers: { confirm: false } }), /--non-interactive/);
+  assert.doesNotMatch(await reentry(null), /--non-interactive|--answers/);
+});
+
 test("Linux starts an installed inactive Docker Engine, grants group access, and continues in one command", async () => {
   const calls = [];
   const stdout = capture();
