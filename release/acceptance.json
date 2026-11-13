@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "834c65cbfb5930074f3666e45c079377acaa72d88c3b3a4417b1dd99c40d68e7",
-  "sourceCommit": "1376c48a593980506b7a278c4aac9b27ab9d1546",
-  "spaceSourceCommit": "da459fc481b2cf06d9bceeb8266786fd4f89e458",
+  "candidateDigest": "9414106c7f40d6cb3e8b5bf969f3f4daca03a908a404131901fa7069ca5a893b",
+  "sourceCommit": "509efa0da24e3bfe27dc673e09f8c0732859dc36",
+  "spaceSourceCommit": "5094f26afb1cbf2a9160261a794388e1cf70a73f",
   "launcherVersion": "1.2.1",
   "runtimeVersion": "1.2.1",
-  "createdAt": "2026-11-13T03:04:54.260Z",
+  "createdAt": "2026-11-13T06:34:46.259Z",
   "launcherTarballSha256": "0409a36102386d4af630a673366eba36a9d2a4d072cb6b53fca9ba6549c46e20",
   "labProof": {
-    "acceptanceSha256": "1535ff465d74755a0b850947b2ad90324cb4cd87c175c361d8a4878df7193271",
-    "allCasesPass": false,
+    "acceptanceSha256": "2ca6a22fc5f5f72a293ae90b634be92e19727316cd65cb5c0138618c9d2e4643",
+    "allCasesPass": true,
     "approval": "operator RELEASE_APPROVE 891e7a61; Nous option A on 32494"
   },
   "pendingAfterPublication": [
@@ -24,9 +24,9 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "acceptance-linux-dind.json",
-      "artifactSha256": "4c815746beaf28afc7abe65eb3f236566086f2e9b5db0c2a0d3dc87adc9f0811",
-      "note": "linux-fresh-install case, disposable docker:29-dind on VM207, --local-images; images built from overlay 0d2bfefe (Space da459fc481); 1376c48a changes only the Windows headless docker config in cli.mjs"
+      "artifact": "linux/B.txt",
+      "artifactSha256": "832c7ce548ac4e69e6e84dbb01ddbb3dfb8373c32885099957be5f27a07a7b8a",
+      "note": "hz-vm207 systemd+Docker lab, --local-images, images built from overlay 509efa0d (Space 5094f26afb), readyz ok, labels checked"
     },
     {
       "platform": "linux",
@@ -35,10 +35,10 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "sub4/linux/summary.txt",
-      "artifactSha256": "8e2e7337ee5b6f34e585474016c0ba3992249095f81b430170efce01a2b8f423",
+      "artifact": "linux/sub4u/summary.txt",
+      "artifactSha256": "4686b62c47e95fe5fefbb6a0ab0a10dbaf820a05faada6de09975caddc54489f",
       "dataPreserved": true,
-      "note": "U: 1.2.0 from npm with registry pulls, then update to 1.2.1; secrets, workspaces, DB marker preserved"
+      "note": "U: 1.2.0 from npm with registry pulls and its ghcr.io provenance check (TLS-passthrough tunnel via vm208), update to 1.2.1; secrets, workspaces, DB marker preserved"
     },
     {
       "platform": "linux",
@@ -47,8 +47,8 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "sub4/linux/summary.txt",
-      "artifactSha256": "8e2e7337ee5b6f34e585474016c0ba3992249095f81b430170efce01a2b8f423",
+      "artifact": "linux/sub4u/summary.txt",
+      "artifactSha256": "4686b62c47e95fe5fefbb6a0ab0a10dbaf820a05faada6de09975caddc54489f",
       "dataPreserved": true,
       "note": "R: spaceapp-core removed, doctor --fix, ready"
     },
@@ -59,8 +59,8 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "sub4/linux/summary.txt",
-      "artifactSha256": "8e2e7337ee5b6f34e585474016c0ba3992249095f81b430170efce01a2b8f423",
+      "artifact": "linux/sub4u/summary.txt",
+      "artifactSha256": "4686b62c47e95fe5fefbb6a0ab0a10dbaf820a05faada6de09975caddc54489f",
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
       "note": "S: docker.service and socket stopped, install started it, ready"
@@ -72,15 +72,15 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "sub4/linux/F2-first-agent-fresh-pane/summary.json",
-      "artifactSha256": "6d243133deab088ee40064c3accfa6f08100f4785bd32920d6ea9b11d8a39fde",
+      "artifact": "linux/sub4u/F-first-agent-0632/summary.json",
+      "artifactSha256": "eda0235269eda129fd11a61d0bca268737a1058bb3a3bd7ce89499ebf02bcd86",
       "uiOpened": true,
       "responseObserved": true,
       "freeModel": true,
-      "nativeTaskId": "ses_e2db82accffee2P7rAfzkdAsJ3",
+      "nativeTaskId": "ses_e2c644054ffeUwk8GAPVA3RrpD",
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
-      "note": "room:szYsycRWpc23 pane:w0m5ebgpFjUq, cost 0 (13-native-session.json)"
+      "note": "room:EUSJ4LWpYdj1 pane:9X4uu1JkvotX, cost 0 (F-13-native-session.json)"
     },
     {
       "platform": "windows",
@@ -89,10 +89,10 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "windows/r0d2f/summary.txt",
-      "artifactSha256": "55855f9ac6361f6dc67a29c40584a04395a7e8c68d6a217dd5db381e07555b32",
+      "artifact": "win121/w5094/summary.txt",
+      "artifactSha256": "40e67593b14127bcb750c237897a9d16f103eab82d5c1a6e0eade575e1c689cb",
       "interactiveDesktop": true,
-      "note": "win121 (Windows 11, per-user Docker Desktop 29.9.3, labadmin interactive session): fresh 1.2.1 install, --local-images, readyz ok"
+      "note": "win121 (Windows 11, per-user Docker Desktop 29.9.3, labadmin interactive session): fresh 1.2.1 install, --local-images, readyz ok, labels checked"
     },
     {
       "platform": "windows",
@@ -101,8 +101,8 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "sub4/win121/s4b/summary.txt",
-      "artifactSha256": "acdd4fb642bbbab76c8c5e2836b7e070ab8f7e117a5a394f40b028f0554144c5",
+      "artifact": "win121/w5094/summary.txt",
+      "artifactSha256": "40e67593b14127bcb750c237897a9d16f103eab82d5c1a6e0eade575e1c689cb",
       "interactiveDesktop": true,
       "dataPreserved": true,
       "note": "U: 1.2.0 (images pulled from the registry first, --local-images) then update to 1.2.1, data preserved. The registry-only path is W2, checked right after publication"
@@ -114,8 +114,8 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "sub4/win121/s4b/summary.txt",
-      "artifactSha256": "acdd4fb642bbbab76c8c5e2836b7e070ab8f7e117a5a394f40b028f0554144c5",
+      "artifact": "win121/w5094/summary.txt",
+      "artifactSha256": "40e67593b14127bcb750c237897a9d16f103eab82d5c1a6e0eade575e1c689cb",
       "interactiveDesktop": true,
       "dataPreserved": true,
       "note": "R: spaceapp-core removed, doctor --fix, ready"
@@ -127,8 +127,8 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "sub4/win121/s4b/summary.txt",
-      "artifactSha256": "acdd4fb642bbbab76c8c5e2836b7e070ab8f7e117a5a394f40b028f0554144c5",
+      "artifact": "win121/w5094/summary.txt",
+      "artifactSha256": "40e67593b14127bcb750c237897a9d16f103eab82d5c1a6e0eade575e1c689cb",
       "interactiveDesktop": true,
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
@@ -141,16 +141,16 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "sub4/win121/s4/F/summary.json",
-      "artifactSha256": "6a3e423f2bf521265cff0ebc95155edc668259a251f6213297950d794010e403",
+      "artifact": "win121/w5094/F/summary.json",
+      "artifactSha256": "968e88454bdd2f7f1e609e899cc87916397be5bd4e9e2539a5ccf4a744e8d84f",
       "interactiveDesktop": true,
       "uiOpened": true,
       "responseObserved": true,
       "freeModel": true,
-      "nativeTaskId": "ses_e2dad7fadffeuJeOKERLeXMpck",
+      "nativeTaskId": "ses_e2c737169ffeN2zwBNsaVRCAmz",
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
-      "note": "room:5G6FdUI54nwb pane:krYglOFB-g6r, cost 0 (13-native-session.json)"
+      "note": "room:8fwfqF7hJer_ pane:Zo9kFGDb1Ebc, cost 0 (13-native-session.json)"
     },
     {
       "platform": "linux",
@@ -168,7 +168,7 @@
       "artifact": "linux-profiles.json",
       "artifactSha256": "2052405004c7208c91af01893587daddb7ba04bbfe65de549c81891117cc9fda",
       "carriedFrom": "1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
     },
     {
       "platform": "windows",
@@ -187,7 +187,7 @@
       "artifact": "windows-profiles.json",
       "artifactSha256": "7e37bd9bae4505b3830967b826e71f6666d6beabf6dd9edaef4a7b7735d73276",
       "carriedFrom": "1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
     },
     {
       "platform": "macos",
@@ -205,7 +205,7 @@
       "artifact": "macos-profiles.json",
       "artifactSha256": "098a2f5a21f32f9c8f79a07854e4525a19e8ef5be3e53074a2c5c8dbe94939da",
       "carriedFrom": "1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
     },
     {
       "platform": "macos",
@@ -218,7 +218,7 @@
       "artifactSha256": "f9e93ed7f92f107c8bf96fa1be0a66ed9272a4f9d3f474dbe3ec9c6e8398fcf3",
       "ownerUi": true,
       "carriedFrom": "1.2.0 c15 64c3e71 (c14 1e365cf)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
     },
     {
       "platform": "macos",
@@ -231,7 +231,7 @@
       "artifactSha256": "96dc0ba8ee5d1fa2e06d995697d97ccda2921b28bbf4ec850f7667751e63ee90",
       "dataPreserved": true,
       "carriedFrom": "1.2.0 c15 64c3e71 (c14 1e365cf)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
     },
     {
       "platform": "macos",
@@ -244,7 +244,7 @@
       "artifactSha256": "450e6c6be6b80ac51a923df058cdaf110b0862a71f07ccd80aa3f472102a5601",
       "dataPreserved": true,
       "carriedFrom": "1.2.0 c15 64c3e71 (c13 cf4d247, via c14 1e365cf)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
     },
     {
       "platform": "macos",
@@ -258,7 +258,7 @@
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
       "carriedFrom": "1.2.0 c15 64c3e71 (c13 cf4d247, via c14 1e365cf)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
     },
     {
       "platform": "macos",
@@ -276,7 +276,7 @@
       "artifact": "c7-macos-first-agent.json",
       "artifactSha256": "8a1a41cb1f6c53dcf17a122747bd6891ef4d866be28e7c0216a6005cf937731d",
       "carriedFrom": "1.1.9 25fb63fd (c7 1ea6bf8)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
     }
   ]
 }
