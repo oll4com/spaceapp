@@ -1,9 +1,7 @@
-<h1 align="center">SpaceApp</h1>
-
-<p align="center"><b>Self-hosted rooms where Claude Code, Codex, OpenCode and Gemini CLI keep working after you close the laptop.</b></p>
+<h3 align="center">Self-hosted rooms where Claude Code, Codex, OpenCode and Gemini CLI keep working after you close the laptop.</h3>
 
 <p align="center">
-  <img src="docs/images/demo-10s.gif" alt="One SpaceApp room: Codex, Claude Code and Gemini answer side by side in three panes" width="900" />
+  <img src="docs/images/demo-10s.gif" alt="One SpaceApp room: Codex, Claude Code and Gemini answer side by side in three panes" width="760" />
 </p>
 
 ```bash
