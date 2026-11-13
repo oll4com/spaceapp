@@ -156,6 +156,17 @@ case "${1:-}" in
     ensure_runtime_dirs
     exec node /app/deploy/docker/opencode-standalone.mjs "${1#opencode-}"
     ;;
+  opencode-nous)
+    # Nous with no Claude Code signed in: one turn on the Getting Started pane's free model. The first run picks and saves it when
+    # the pane has not started yet, so both use the same one; stdout is the turn's stream, so its messages go to stderr.
+    if [ "$runtime_name" != "opencode" ]; then
+      echo "This action is only for OpenCode." >&2
+      exit 64
+    fi
+    ensure_runtime_dirs
+    node /app/deploy/docker/opencode-first-run.mjs >&2 || true
+    exec node /app/deploy/docker/opencode-nous.mjs
+    ;;
   agent-tools|agent-chat)
     # Nous (core has no Claude Code): one headless turn on the owner's own Claude login, the request on stdin.
     if [ "$runtime_name" != "claude" ]; then

@@ -111,6 +111,7 @@ const publicScripts = new Set([
   "scripts/tests/opencode-standalone.test.mjs",
   // Nous on a public install (2026-10-27): the CLI container runs its Claude Code turns.
   "scripts/tests/claude-agent.test.mjs",
+  "scripts/tests/opencode-nous.test.mjs",
   "scripts/container-image-size-budget.mjs",
   "scripts/fix-build-permissions.mjs",
   "scripts/portable-backup.mjs",

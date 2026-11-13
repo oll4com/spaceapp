@@ -22,7 +22,9 @@ const actions = new Map([
   // Nous on a public install (operator decision 2026-10-27): its Claude Code turns (up to 20 minutes, streamed) and the pane
   // board's one answer, on the owner's own Claude login, in their own slots so a long turn never blocks a credential check.
   ['agent-tools', { command: 'claude-vscode-parity', input: 1024 * 1024, timeout: 21 * 60_000, stdout: 64 * 1024 * 1024, stream: true, pool: 'agent' }],
-  ['agent-chat', { command: 'claude-vscode-parity', input: 64 * 1024, timeout: 610_000, stdout: 1024 * 1024, pool: 'agent' }]
+  ['agent-chat', { command: 'claude-vscode-parity', input: 64 * 1024, timeout: 610_000, stdout: 1024 * 1024, pool: 'agent' }],
+  // The same turn on the Getting Started pane's free OpenCode model while no Claude Code is signed in (Nous 13/11).
+  ['opencode-nous', { command: 'opencode-vscode-parity', input: 1024 * 1024, timeout: 21 * 60_000, stdout: 64 * 1024 * 1024, stream: true, pool: 'agent' }]
 ]);
 const wrapper = /^[a-z][a-z0-9-]{0,40}-vscode-parity$/;
 // A Nous request is JSON in JSON: its 1 MB input escaped once more.
