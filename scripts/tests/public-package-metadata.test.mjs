@@ -288,6 +288,16 @@ test("public policy files are present and point security reports to a private ch
   }
 });
 
+test("the supported security release follows latest instead of retaining an obsolete version table (F3)", async () => {
+  const security = await readFile(join(root, "SECURITY.md"), "utf8");
+  const supported = security.match(/^## Supported versions\s*\n([\s\S]*?)(?=^## |$(?![\s\S]))/m)?.[1];
+  assert.ok(supported, "SECURITY.md must explain supported versions");
+  assert.match(supported, /latest published `run-spaceapp` release/);
+  assert.match(supported, /SpaceApp version it installs/);
+  assert.match(supported, /run-spaceapp@latest/);
+  assert.doesNotMatch(supported, /\b\d+\.\d+\.\d+\b/, "a hardcoded release becomes stale on the next publication");
+});
+
 test("every THIRD_PARTY_LICENSES file the code names ships in the tree, the images and the notices (Claude review 1.1.7 F5)", async () => {
   const { readdir } = await import("node:fs/promises");
   const shipped = new Set(await readdir(join(root, "THIRD_PARTY_LICENSES")));

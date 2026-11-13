@@ -8,6 +8,15 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
+test("the core runtime inherits the sqlite3 executable used for model statistics (F19)", async () => {
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const stages = Object.fromEntries(dockerfile.split(/^(?=FROM )/m).map((stage) => [stage.match(/^FROM \S+ AS (\S+)/)?.[1], stage]));
+  assert.match(stages.core, /^FROM runtime-base AS core/m);
+  const apt = stages["runtime-base"].replace(/\\\r?\n\s*/g, " ")
+    .match(/apt-get install\s+[^&;]+/g)?.join(" ") || "";
+  assert.match(apt, /(?:^|\s)sqlite3(?:\s|$)/, "Python's sqlite3 module does not supply the sqlite3 CLI");
+});
+
 test("public Dockerfile provides native multi-arch core, browser, and redistributable pinned CLI targets", async () => {
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
   const normalizedDockerfile = dockerfile.replace(/\\\r?\n\s*/g, " ");
