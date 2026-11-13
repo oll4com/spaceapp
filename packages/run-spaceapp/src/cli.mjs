@@ -15,7 +15,7 @@ import {
   writeFile
 } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import process from "node:process";
 import {
   addUser,
@@ -111,14 +111,25 @@ export function writeWindowsCredentialHint(platform, stderr) {
   );
 }
 
-export async function withHeadlessDockerConfig(platform, spec, run) {
+// A per-user Docker Desktop keeps the compose plugin only in the user's .docker\cli-plugins and its own resources folder, so an
+// empty --config hid it ("unknown flag: --project-name" on every registry pull, win121 lab 2026-11-13): name those folders.
+export function headlessDockerConfig(env = process.env) {
+  const dirs = [
+    env.DOCKER_CONFIG ? win32.join(env.DOCKER_CONFIG, "cli-plugins") : env.USERPROFILE && win32.join(env.USERPROFILE, ".docker", "cli-plugins"),
+    env.LOCALAPPDATA && win32.join(env.LOCALAPPDATA, "Programs", "DockerDesktop", "resources", "cli-plugins"),
+    (env.ProgramFiles || env.PROGRAMFILES) && win32.join(env.ProgramFiles || env.PROGRAMFILES, "Docker", "Docker", "resources", "cli-plugins")
+  ].filter(Boolean);
+  return { auths: {}, cliPluginsExtraDirs: dirs };
+}
+
+export async function withHeadlessDockerConfig(platform, spec, run, env = process.env) {
   if (platform !== "win32") {
     return run(spec);
   }
   const configDir = await mkdtemp(join(tmpdir(), "spaceapp-docker-config-"));
   await writeFile(
     join(configDir, "config.json"),
-    JSON.stringify({ auths: {} }),
+    JSON.stringify(headlessDockerConfig(env)),
     { mode: 0o600 }
   );
   try {
