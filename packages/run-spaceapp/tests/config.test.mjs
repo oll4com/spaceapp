@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, totalmem } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
@@ -17,6 +17,7 @@ import {
   resolveInstallProfile,
   resolveSpaceAppHome,
   renderRuntimeEnv,
+  dockerMemoryBytes,
   saveConfig
 } from "../src/index.mjs";
 
@@ -67,6 +68,9 @@ test("automatic profile selection uses CPU, memory and disk while legacy choices
   assert.equal(resolveInstallProfile("auto", {...resources,freeDiskBytes:7*GiB}), "small");
   assert.equal(resolveInstallProfile("auto", {...resources,freeDiskBytes:8*GiB}), "medium");
   assert.equal(resolveInstallProfile("auto", 64*GiB), "small");
+  // light is the 2 GB class: a 2 GB VM reports about 1.9 GiB (light browser step 6); below it nothing fits and light names what is missing.
+  assert.equal(resolveInstallProfile("auto", {...resources,totalMemoryBytes:1966*1024**2}), "light");
+  assert.equal(resolveInstallProfile("auto", {...resources,totalMemoryBytes:1.5*GiB}), "light");
   assert.equal(resolveInstallProfile("light", resources), "light");
   assert.equal(resolveInstallProfile("standard", resources), "standard");
   assert.throws(() => resolveInstallProfile("full", resources), /auto, small, medium, large, light, or standard/i);
@@ -176,13 +180,15 @@ test("an install that opted in before install ids existed gets one beside its op
   assert.match(renderRuntimeEnv(off), /^SPACEAPP_INSTALL_ID=$/m);
 });
 
-test("the browser container gets at most a quarter of the machine's RAM, never more than its profile", () => {
+test("the browser gets at most a quarter and the CLI half of Docker's memory, never more than their profile", async () => {
   const config = { ...createDefaultConfig({ version: "1.2.1", profile: "large" }), workspaces: [] };
-  const limit = (gib) => /^SPACEAPP_BROWSER_MEMORY_LIMIT=(.+)$/m.exec(renderRuntimeEnv(config, null, {}, gib * 1024 ** 3))[1];
-  assert.equal(limit(2), "512m");
-  assert.equal(limit(4), "1024m");
-  assert.equal(limit(7.4), "1894m");
-  assert.equal(limit(64), "2048m");
+  const limit = (name, gib) => new RegExp(`^SPACEAPP_${name}_MEMORY_LIMIT=(.+)$`, "m").exec(renderRuntimeEnv(config, null, {}, gib * 1024 ** 3))[1];
+  assert.deepEqual([2, 4, 7.4, 64].map((gib) => limit("BROWSER", gib)), ["512m", "1024m", "1894m", "2g"]);
+  assert.deepEqual([2, 4, 7.4, 64].map((gib) => limit("CLI", gib)), ["1024m", "2048m", "3788m", "4g"]);
+  assert.equal(limit("CORE", 2), "4g");
+  assert.equal(await dockerMemoryBytes(async () => "4100000000\n"), 4100000000);
+  assert.equal(await dockerMemoryBytes(async () => { throw new Error("Cannot connect to the Docker daemon"); }), totalmem());
+  assert.match(renderRuntimeEnv({ ...config, profile: "light" }, null, {}, 1966 * 1024 ** 2), /^SPACEAPP_BROWSER_ENABLED=true$/m);
 });
 
 test("workspace registration accepts only existing absolute directories and avoids duplicates", async () => {

@@ -168,6 +168,7 @@ export async function createPortableBackup({
       "--exclude=./.spaceapp-restore-staging",
       "--exclude=./.spaceapp-restore-rollback",
       "--exclude=./.spaceapp-restore-previous",
+      "--exclude=./artifacts/.spaceapp-restore-previous",
       "--exclude=./artifacts/browser-profiles",
       "--exclude=./browser-profiles",
       ...hostSecretEntries.map((name) => `--exclude=./${name}`),

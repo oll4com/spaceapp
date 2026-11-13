@@ -100,13 +100,14 @@ test("version 2 manifests may carry the Temporal dumps and nothing else", async 
   await assert.rejects(async () => validateBackupManifest((await backupWith({ "database.dump": "db", "data.tar.gz": "data" }, 2)).backup), /unsupported/);
 });
 
-async function restoreFixture() {
+async function restoreFixture(backupFiles = {}) {
   const work = await mkdtemp(join(tmpdir(), "spaceapp-portable-restore-order-"));
   const source = join(work, "source");
   await mkdir(join(source, "data"), { recursive: true });
   await mkdir(join(source, "memory"));
   await writeFile(join(source, "data", "restored.txt"), "from backup");
   await writeFile(join(source, "memory", "graph.json"), "{}");
+  await writeTree(join(source, "data"), backupFiles);
   execFileSync("tar", ["--create", "--gzip", `--file=${join(work, "data.tar.gz")}`, `--directory=${join(source, "data")}`, "."]);
   execFileSync("tar", ["--create", "--gzip", `--file=${join(work, "memory.tar.gz")}`, `--directory=${join(source, "memory")}`, "."]);
   const { root } = await backupWith({
@@ -145,6 +146,30 @@ async function restoreFixture() {
     return { result, dataRoot, memoryRoot, log: async () => readFile(log, "utf8") };
   };
 }
+
+async function writeTree(root, files) {
+  for (const [path, text] of Object.entries(files)) {
+    await mkdir(dirname(join(root, path)), { recursive: true });
+    await writeFile(join(root, path), text);
+  }
+}
+
+// In an installation they are volumes mounted inside artifacts: moved into .spaceapp-restore-previous, its removal would empty them.
+test("restore never moves the browser's profiles and recordings; the backup's recordings join them (INT5-C-F3)", async () => {
+  const restore = await restoreFixture({
+    "artifacts/report.pdf": "from backup", "artifacts/browser-evidence/cap-1/a.webm": "backup rec", "artifacts/browser-evidence/cap-2/b.webm": "backup version"
+  });
+  const ok = await restore({}, (dataRoot) => writeTree(dataRoot, {
+    "artifacts/old.pdf": "live", "artifacts/browser-profiles/acct/Cookies": "login",
+    "artifacts/browser-evidence/cap-2/b.webm": "live version", "artifacts/browser-evidence/cap-3/c.webm": "live rec"
+  }));
+  await ok.result;
+  const read = (path) => readFile(join(ok.dataRoot, "artifacts", path), "utf8");
+  assert.deepEqual((await readdir(join(ok.dataRoot, "artifacts"))).sort(), ["browser-evidence", "browser-profiles", "report.pdf"]);
+  assert.equal(await read("browser-profiles/acct/Cookies"), "login");
+  assert.deepEqual(await Promise.all(["cap-1/a.webm", "cap-2/b.webm", "cap-3/c.webm"].map((file) => read(`browser-evidence/${file}`))),
+    ["backup rec", "live version", "live rec"]);
+});
 
 test("restore swaps the files in only after every database restored", async () => {
   const restore = await restoreFixture();

@@ -86,11 +86,15 @@ account.
   `setns`, `unshare`; `seccomp-browser.json`) and keeps Docker's own AppArmor
   profile, which allows them even where the host restricts unprivileged user
   namespaces. If the kernel still refuses them, the Browser Host runs Chromium
-  with `--no-sandbox` and says so in its health. Its memory limit is a quarter
-  of the machine's RAM, at most the profile's. It mounts only its own folders of
-  the data volume (browser profiles and recordings); with Docker Engine older
-  than 26, which cannot mount a volume's folder, it gets the whole data volume
-  and `compose.workspaces.yml` says so.
+  with `--no-sandbox` and says so in its health (`browserSandbox` in `/readyz`);
+  `doctor` then prints a WARN line. Its memory limit is a quarter of the memory
+  Docker's containers share (`docker info`), at most the profile's; the CLI
+  container's is half of it. It mounts only its own volumes, browser profiles
+  and recordings, never the data volume. On the first start after an upgrade a
+  one-shot `browser-data-init` copies an earlier installation's browser
+  folders from the data volume into them and marks them copied; the originals
+  stay in the data volume. A restore never moves or deletes these volumes: the
+  backup's recordings are added, existing ones are kept.
 - Telemetry is disabled by default.
 - Mutable owner memory is separate from the immutable generic starter memory.
 

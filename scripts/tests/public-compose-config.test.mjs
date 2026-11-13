@@ -22,7 +22,8 @@ test("generated profiles and access modes have the expected merged Docker Compos
     ["light", "isolated"],
     ["light", "host-root"],
     ["standard", "isolated"],
-    ["standard", "host-root"]
+    ["standard", "host-root"],
+    ["small", "isolated"]
   ]) {
     const installation = await mkdtemp(
       join(tmpdir(), `spaceapp-compose-${profile}-${accessMode}-`)
@@ -41,7 +42,7 @@ test("generated profiles and access modes have the expected merged Docker Compos
         "-f", join(installation, "compose.yml"),
         "-f", join(installation, "compose.workspaces.yml"),
         "-f", join(installation, "compose.host-access.yml"),
-        ...(profile === "standard" ? ["--profile", "standard"] : [])
+        ...(profile !== "small" ? ["--profile", "standard"] : [])
       ];
       const { stdout, stderr } = await execFileAsync("docker", [
         ...commonArgs,
@@ -75,12 +76,15 @@ test("generated profiles and access modes have the expected merged Docker Compos
       );
       assert.equal(
         services.stdout.split(/\r?\n/).includes("spaceapp-browser"),
-        profile === "standard"
+        profile !== "small" // light keeps one browser (light browser step 6)
       );
       assert.equal(
         core.environment.SPACE_BROWSER_SESSIONS_ENABLED,
-        profile === "standard" ? "true" : "false"
+        profile !== "small" ? "true" : "false"
       );
+      // INT5-C-F3: the browser never mounts the data volume; core waits for the one-shot copy of earlier browser data.
+      assert.equal(model.services["spaceapp-browser"]?.volumes.some((volume) => volume.source === "spaceapp-data") ?? false, false);
+      assert.equal(core.depends_on["browser-data-init"].condition, "service_completed_successfully");
       assert.equal(typeof core.mem_limit, "string");
       assert.equal(typeof core.cpus, "number");
 

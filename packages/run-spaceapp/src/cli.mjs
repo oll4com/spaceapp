@@ -429,7 +429,7 @@ export async function run(argv, {
 
   if (command === "doctor" && !args.includes("--fix")) {
     assertNoArgs(args, "doctor");
-    return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources });
+    return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources, request });
   }
   if (command === "repair" || command === "doctor" && args.includes("--fix")) {
     if (args.some((arg) => !["--dry-run", "--fix"].includes(arg))) throw new Error("Usage: repair [--dry-run] or doctor --fix");
@@ -465,7 +465,7 @@ export async function run(argv, {
   }
   if (command === "doctor") {
     assertNoArgs(args, "doctor");
-    return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources });
+    return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources, request });
   }
   if (command === "support-bundle") {
     let outPath = null;
@@ -1154,7 +1154,7 @@ async function planInteractiveSetup({
       { label: "small (SpaceApp + OpenCode; no background workflows or managed browser)", value: "small" },
       { label: "medium (background workflows and integration workers)", value: "medium" },
       { label: "large (workflows + managed browser; larger resource limits)", value: "large" },
-      { label: "light (legacy compatibility)", value: "light" },
+      { label: "light (2 GB class: workflows + one managed browser)", value: "light" },
       { label: "standard (legacy compatibility)", value: "standard" }
     ], { defaultIndex: Math.max(0, ["auto", "small", "medium", "large", "light", "standard"].indexOf(parsed.requestedProfile)), answerKey: "profile" });
     const accessChoice = await promptChoice(stdin, stdout, "Which access mode?", [
@@ -2461,7 +2461,8 @@ async function doctor({
   profile,
   operation,
   storagePlan,
-  dockerReady = false
+  dockerReady = false,
+  request
 }) {
   const configuration = profile ? { ok: true, detail: "Prepared installation configuration" } : await loadConfig(root).then(() => ({ ok: true, detail: root })).catch((error) => ({ ok: false, detail: `${error.message}. Run install for a new setup, or doctor --fix for an existing setup.` }));
   const detectedResources = resources ?? await inspectResources(root);
@@ -2532,6 +2533,14 @@ async function doctor({
     stderr.write(`${dockerInstallHelp(platform)}\n`);
   } else if (dockerEngine.code !== 0) {
     stderr.write(`${dockerEngineHelp(platform)}\n`);
+  }
+  // INT5-C-F3: where the sandbox ladder ends at --no-sandbox, the running app's health says so; information only, no exit code.
+  const running = request && dockerEngine.code === 0 ? await loadConfig(root).catch(() => null) : null;
+  if (running) {
+    const sandbox = await request(`http://${running.bindHost}:${running.port}/readyz`, { method: "GET", signal: AbortSignal.timeout(3000) })
+      .then((res) => res.json()).then((body) => body?.dependencies?.browserSandbox).catch(() => null);
+    if (sandbox === "SANDBOXED") stdout.write("PASS Browser sandbox: Chromium runs in its own sandbox\n");
+    if (sandbox === "NO_SANDBOX") stderr.write("WARN Browser sandbox: Chromium's sandbox is unavailable on this host; browsers run with --no-sandbox (docs/security-model.md)\n");
   }
   return checks.every((check) => check.ok) ? 0 : 1;
 }
@@ -2869,7 +2878,9 @@ Profiles (auto uses CPU, RAM and free disk, then checks Docker resources):
           Background integration workers and managed browser are disabled.
   medium: 4 CPUs, 11 GiB usable RAM, 8 GiB fresh space; adds background workers.
   large:  8 CPUs, 15 GiB usable RAM, 11 GiB fresh space; adds managed browser.
-  light/standard: compatibility settings for existing installations.
+  light:  4 CPUs, 1.7 GiB usable RAM (2 GB class), 8 GiB fresh space; workflows and
+          one managed browser, limits from Docker's memory.
+  standard: compatibility settings for existing installations.
 Upgrades keep the installed profile unless you explicitly choose another one.
 Upgrade space: missing layers + database checkpoint + 0.5 GiB reserve.
 Cached target images need no extra image space; existing data stays in place.

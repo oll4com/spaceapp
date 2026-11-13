@@ -33,8 +33,8 @@ Each backup is stored below the installation's `backups` directory and
 contains:
 
 - `database.dump`: PostgreSQL custom-format dump;
-- `data.tar.gz`: application data, excluding mutable memory and browser
-  profiles;
+- `data.tar.gz`: application data and browser recordings, excluding mutable
+  memory and browser profiles;
 - `memory.tar.gz`: mutable owner memory;
 - `manifest.json`: format metadata, sizes, and SHA-256 checksums;
 - `spaceapp-config.json`: the installation settings, including the registered
@@ -71,7 +71,8 @@ The launcher:
 5. validates the selected manifest, checksums, archive paths, and format;
 6. replaces application data, memory, and PostgreSQL state (each database is
    restored into an emptied schema, so a backup made by an older SpaceApp also
-   restores into a newer installation);
+   restores into a newer installation); browser profiles stay as they are and
+   the backup's browser recordings are added to the existing ones;
 7. starts the application again;
 8. puts the CLI settings of the backup back and lists the backup's workspaces
    that are not registered on this host, with the `workspace add` command for

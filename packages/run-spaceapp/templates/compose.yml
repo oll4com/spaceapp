@@ -64,6 +64,9 @@ services:
       - spaceapp-cli-socket:/run/spaceapp-cli
       - spaceapp-browser-socket:/run/spaceapp-browser
       - spaceapp-workspaces:/workspaces
+      # The browser's profiles and recordings have their own volumes, so the browser container mounts only them (INT5-C-F3).
+      - spaceapp-browser-profiles:/var/lib/spaceapp/artifacts/browser-profiles
+      - spaceapp-browser-evidence:/var/lib/spaceapp/artifacts/browser-evidence
       # Only Codex's session logs, read-only, to see a Codex pane's turns; never the Codex home or its credentials.
       - spaceapp-codex-sessions:/var/lib/spaceapp-cli/providers/codex/sessions:ro
       - ./backups:/backups
@@ -81,6 +84,8 @@ services:
       spaceapp-cli:
         condition: service_started
       codex-sessions-init:
+        condition: service_completed_successfully
+      browser-data-init:
         condition: service_completed_successfully
     networks:
       - spaceapp
@@ -132,18 +137,32 @@ services:
       - spaceapp-cli-state:/cli-state:ro
       - spaceapp-codex-sessions:/sessions
 
-  # One-shot: the browser mounts only its folders of the data volume (compose.workspaces.yml), which must exist first.
+  # One-shot: the browser's profiles and recordings moved from spaceapp-data to their own volumes (INT5-C-F3). It copies
+  # an earlier installation's folders once, marks them copied and leaves them in spaceapp-data (nothing is deleted); an
+  # interrupted copy has no mark and runs again. The core image, so a new data volume gets the core's own folders.
+  # Known limit: the copy needs free disk as large as those folders; without it this fails and the core does not start.
   browser-data-init:
-    image: ghcr.io/oll4com/spaceapp-browser:${SPACEAPP_IMAGE_TAG}${SPACEAPP_BROWSER_IMAGE_DIGEST:-}
-    profiles: ["standard"]
+    image: ghcr.io/oll4com/spaceapp-core:${SPACEAPP_IMAGE_TAG}${SPACEAPP_CORE_IMAGE_DIGEST:-}
     restart: "no"
     user: "0:0"
     network_mode: none
     security_opt:
       - no-new-privileges:true
-    entrypoint: ["install", "-d", "-o", "10001", "-g", "10001", "-m", "0700", "/data", "/data/artifacts", "/data/artifacts/browser-profiles", "/data/artifacts/browser-evidence"]
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        set -eu;
+        [ -d /var/lib/spaceapp/artifacts ] || install -d -o 10001 -g 10001 -m 0700 /var/lib/spaceapp/artifacts;
+        for d in browser-profiles browser-evidence; do
+        old=/var/lib/spaceapp/artifacts/$$d;
+        if [ -d "$$old" ] && [ ! -e "$$old/.copied-to-volume" ]; then cp -a "$$old/." "/new/$$d/"; touch "$$old/.copied-to-volume"; fi;
+        chown 10001:10001 "/new/$$d"; chmod 0700 "/new/$$d";
+        done
     volumes:
-      - spaceapp-data:/data
+      - spaceapp-data:/var/lib/spaceapp
+      - spaceapp-browser-profiles:/new/browser-profiles
+      - spaceapp-browser-evidence:/new/browser-evidence
 
   spaceapp-browser:
     image: ghcr.io/oll4com/spaceapp-browser:${SPACEAPP_IMAGE_TAG}${SPACEAPP_BROWSER_IMAGE_DIGEST:-}
@@ -164,9 +183,11 @@ services:
       SPACE_BROWSER_SESSIONS_ENABLED: "true"
       SPACE_BROWSER_HOST_SOCKET: /run/spaceapp-browser/browser-host.sock
       SPACE_BROWSER_SESSIONS_DEFAULT_URL: about:blank
-    # compose.workspaces.yml adds its data: the profile and recording folders, or the whole volume on Docker Engine < 26.
+    # Its profiles and recordings only, never the rest of the data volume (memory, other artifacts).
     volumes:
       - spaceapp-browser-socket:/run/spaceapp-browser
+      - spaceapp-browser-profiles:/var/lib/spaceapp/artifacts/browser-profiles
+      - spaceapp-browser-evidence:/var/lib/spaceapp/artifacts/browser-evidence
     secrets:
       - database-url
     depends_on:
@@ -278,6 +299,8 @@ volumes:
   spaceapp-codex-sessions:
   spaceapp-cli-socket:
   spaceapp-browser-socket:
+  spaceapp-browser-profiles:
+  spaceapp-browser-evidence:
   spaceapp-memory:
   spaceapp-postgres:
   spaceapp-workspaces:

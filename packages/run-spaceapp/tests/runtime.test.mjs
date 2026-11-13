@@ -111,20 +111,18 @@ test("compose can use staged state without changing the installation project ide
   assert.equal(command.args.includes(join(stagedStateRoot, "compose.host-access.yml")), true);
 });
 
-test("compose activates the optional browser only for the standard profile", () => {
-  const standard = composeCommand("up", home, { profile: "standard" });
-  const light = composeCommand("up", home, { profile: "light" });
-
-  assert.deepEqual(standard.args.slice(-7), ["--profile", "standard", "--profile", "workflows", "up", "-d", "--remove-orphans"]);
-  assert.equal(standard.args.includes("--profile"), true);
-  assert.equal(light.args.includes("standard"), false);
-  assert.equal(light.args.includes("workflows"), true);
+test("compose activates the browser for the standard and light profiles, never for small", () => {
+  const withBrowser = ["--profile", "standard", "--profile", "workflows", "up", "-d", "--remove-orphans"];
+  assert.deepEqual(composeCommand("up", home, { profile: "standard" }).args.slice(-7), withBrowser);
+  // Light browser step 6: the 2 GB class keeps one managed Chromium.
+  assert.deepEqual(composeCommand("up", home, { profile: "light" }).args.slice(-7), withBrowser);
+  assert.equal(composeCommand("up", home, { profile: "small" }).args.includes("standard"), false);
   assert.throws(() => composeCommand("up", home, { profile: "full" }), /small, medium, large, light, or standard/i);
 });
 
 test("runtime env applies bounded light and standard resource settings without secrets", () => {
   const standard = renderRuntimeEnv(config);
-  const light = renderRuntimeEnv({ ...config, profile: "light" });
+  const light = renderRuntimeEnv({ ...config, profile: "light" }, undefined, {}, 64 * 1024 ** 3);
 
   assert.match(standard, /^SPACEAPP_IMAGE_TAG=0\.1\.0$/m);
   assert.match(standard, /^SPACEAPP_BIND_HOST=127\.0\.0\.1$/m);
@@ -138,7 +136,7 @@ test("runtime env applies bounded light and standard resource settings without s
   assert.throws(() => renderRuntimeEnv({ ...config, optionalModules: "games; rm -rf /" }), /optionalModules/);
   assert.match(standard, /^SPACEAPP_BROWSER_ENABLED=true$/m);
   assert.match(standard, /^SPACEAPP_CORE_MEMORY_LIMIT=4g$/m);
-  assert.match(light, /^SPACEAPP_BROWSER_ENABLED=false$/m);
+  assert.match(light, /^SPACEAPP_BROWSER_ENABLED=true$/m);
   assert.match(light, /^SPACEAPP_CORE_MEMORY_LIMIT=2g$/m);
   assert.match(light, /^SPACEAPP_CLI_MEMORY_LIMIT=2g$/m);
   assert.match(light, /^SPACEAPP_POSTGRES_MEMORY_LIMIT=768m$/m);

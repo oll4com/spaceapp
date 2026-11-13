@@ -1,4 +1,4 @@
-import { lstat, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { cp, lstat, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import process from "node:process";
 import { basename, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -19,6 +19,9 @@ const stagingName = ".spaceapp-restore-staging";
 // The databases as they were before the restore, and the files the restore replaced, kept until it has finished.
 const rollbackName = ".spaceapp-restore-rollback";
 const previousName = ".spaceapp-restore-previous";
+// The browser's profiles and recordings are volumes of their own mounted inside artifacts (INT5-C-F3): moving artifacts would
+// take them into the folder a restore deletes, so artifacts is swapped one level down and these two are never moved.
+const browserVolumes = ["browser-profiles", "browser-evidence"];
 const restoreArgs = ["--no-owner", "--no-acl", "--single-transaction", "--exit-on-error"];
 // Each database is restored into an emptied public schema instead of pg_restore --clean: tables a newer SpaceApp added that
 // reference tables in the dump no longer block their drop, so a backup made by an older version restores (1.1.7 review,
@@ -139,6 +142,8 @@ async function restoreBackup({
   const dataStaging = join(dataRoot, stagingName);
   const memoryStaging = join(memoryRoot, stagingName);
   const rollbackDirectory = join(dataRoot, rollbackName);
+  const artifactsRoot = join(dataRoot, "artifacts");
+  const stagedArtifacts = join(dataStaging, "artifacts");
   const restored = [];
   let swapped = null;
   let keepRollback = false;
@@ -177,7 +182,7 @@ async function restoreBackup({
       ].join("\n"));
     }
     // Files a failed restore could not put back are the owner's only copy: never delete them to start another restore.
-    for (const root of [dataRoot, memoryRoot]) {
+    for (const root of [dataRoot, artifactsRoot, memoryRoot]) {
       const left = await readdir(join(root, previousName)).catch(() => []);
       if (left.length) {
         throw new RestoreUnchangedError(`${join(root, previousName)} holds files an earlier restore could not put back. Move them back into ${root} (or delete the folder once they are not needed) and run the restore again. Nothing was changed.`);
@@ -205,7 +210,15 @@ async function restoreBackup({
       }
       // The journal exists before the first move, so a swap that fails part way is undone too (1.1.9 in-app review, Codex #2).
       swapped = {};
-      await swapEntries(dataRoot, dataStaging, new Set(["memory", stagingName, rollbackName, ...hostSecretEntries]), (swap) => { swapped.data = swap; });
+      const nested = await stat(artifactsRoot).then((entry) => entry.isDirectory(), () => false);
+      await swapEntries(dataRoot, dataStaging, new Set(["memory", stagingName, rollbackName, ...(nested ? ["artifacts"] : []), ...hostSecretEntries]), (swap) => { swapped.data = swap; });
+      if (nested) {
+        await mkdir(stagedArtifacts, { recursive: true });
+        await swapEntries(artifactsRoot, stagedArtifacts, new Set(browserVolumes), (swap) => { swapped.artifacts = swap; });
+        // The backup's recordings join the ones here, never over them; an undone restore leaves the copied ones (no loss).
+        await cp(join(stagedArtifacts, "browser-evidence"), join(artifactsRoot, "browser-evidence"), { recursive: true, force: false })
+          .catch((error) => { if (error.code !== "ENOENT") throw error; });
+      }
       await swapEntries(memoryRoot, memoryStaging, new Set([stagingName]), (swap) => { swapped.memory = swap; });
     } catch (error) {
       const fileProblem = swapped ? await undoSwap(swapped).then(() => null, (undoError) => undoError) : null;
@@ -229,14 +242,13 @@ async function restoreBackup({
       throw new Error([
         `Restore failed (${reason}) and could not be fully undone.`,
         ...stillRestored.map((databaseName) => `${databaseName} is at the backup's state, not at its state before the restore.`),
-        ...(fileProblem ? [`The files could not be put back (${fileProblem.message}); the replaced files are in ${join(dataRoot, previousName)} and ${join(memoryRoot, previousName)}: move them back before running the restore again.`] : []),
+        ...(fileProblem ? [`The files could not be put back (${fileProblem.message}); the replaced files are in ${join(dataRoot, previousName)}, ${join(artifactsRoot, previousName)} and ${join(memoryRoot, previousName)}: move them back before running the restore again.`] : []),
         "To finish the restore instead, run the same restore again: it restores every database and the files from the backup.",
         "To put a database back as it was before the restore, run in the core container, with its database connection:",
         ...steps
       ].join("\n"));
     }
-    await rm(swapped.data.previous, { recursive: true, force: true });
-    await rm(swapped.memory.previous, { recursive: true, force: true });
+    for (const swap of Object.values(swapped)) await rm(swap.previous, { recursive: true, force: true });
   } finally {
     await rm(dataStaging, { recursive: true, force: true });
     await rm(memoryStaging, { recursive: true, force: true });
@@ -274,13 +286,14 @@ async function swapEntries(root, staging, preserved, begin) {
     swap.movedOut.push(entry);
   }
   for (const entry of await readdir(staging)) {
+    if (preserved.has(entry)) continue;
     await rename(join(staging, entry), join(root, entry));
     swap.movedIn.push(entry);
   }
 }
 
-async function undoSwap({ data, memory }) {
-  for (const swap of [memory, data].filter(Boolean)) {
+async function undoSwap({ data, artifacts, memory }) {
+  for (const swap of [memory, artifacts, data].filter(Boolean)) {
     for (const entry of swap.movedIn) await rm(join(swap.root, entry), { recursive: true, force: true });
     for (const entry of swap.movedOut) await rename(join(swap.previous, entry), join(swap.root, entry));
     await rm(swap.previous, { recursive: true, force: true });

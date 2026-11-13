@@ -54,8 +54,9 @@ const PROFILE_RUNTIME_SETTINGS = Object.freeze({
     postgresMemoryLimit: "1g", postgresCpuLimit: "2.0",
     temporalMemoryLimit: "1g", temporalCpuLimit: "2.0"
   }),
+  // The 2 GB class with one managed browser (light browser step 6, Nous 13/11).
   light: Object.freeze({
-    browserEnabled: false,
+    browserEnabled: true,
     temporalEnabled: true,
     coreMemoryLimit: "2g",
     coreCpuLimit: "2.0",
@@ -88,8 +89,8 @@ export const PROFILE_REQUIREMENTS = Object.freeze({
   small: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 6.5 * 1024 ** 3 },
   medium: { cpuCount: 4, memoryBytes: 11 * 1024 ** 3, freshDiskBytes: 8 * 1024 ** 3 },
   large: { cpuCount: 8, memoryBytes: 15 * 1024 ** 3, freshDiskBytes: 11 * 1024 ** 3 },
-  // Existing installations keep their settings and background integrations.
-  light: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 8 * 1024 ** 3 },
+  // 2 GB class: a 2 GB machine reports about 1.9 GiB (lab 13/11: 1966 MB). Existing installations keep their settings.
+  light: { cpuCount: 4, memoryBytes: 1.7 * 1024 ** 3, freshDiskBytes: 8 * 1024 ** 3 },
   standard: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 11 * 1024 ** 3 }
 });
 
@@ -184,10 +185,11 @@ export function resolveInstallProfile(requestedProfile, resources) {
   }
   // Memory-only callers cannot safely choose a larger footprint.
   if (typeof resources === "number") return "small";
-  for (const profile of ["large", "medium", "small"]) {
+  for (const profile of ["large", "medium", "small", "light"]) {
     if (installResourceChecks(resources, profile).every((check) => check.ok)) return profile;
   }
-  return "small";
+  // Nothing fits: the failed checks name the smallest class's needs.
+  return "light";
 }
 
 export function resolveInstallAccessMode(requestedMode, existingMode = "isolated") {
@@ -286,7 +288,7 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
   const requirements = PROFILE_REQUIREMENTS[profile];
   if (!requirements) throw new Error("Unknown installation profile.");
   const minFreeDisk = requiredDiskBytes ?? (operation === "fresh" ? requirements.freshDiskBytes : 512 * 1024 ** 2);
-  const engineMemoryBytes = { small: 3, medium: 5, large: 7, light: 3, standard: 3 }[profile] * 1024 ** 3;
+  const engineMemoryBytes = { small: 3, medium: 5, large: 7, light: 1.7, standard: 3 }[profile] * 1024 ** 3;
   return [
     {
       name: "CPU",
@@ -296,7 +298,7 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
     {
       name: "Memory",
       ok: totalMemoryBytes >= requirements.memoryBytes,
-      detail: `${formatGibibytes(totalMemoryBytes)} GiB available; ${formatGibibytes(requirements.memoryBytes)} GiB usable${requirements.memoryBytes === 7 * 1024 ** 3 ? " (8 GB-class system)" : ""} required`
+      detail: `${formatGibibytes(totalMemoryBytes)} GiB available; ${formatGibibytes(requirements.memoryBytes)} GiB usable${{ [7 * 1024 ** 3]: " (8 GB-class system)", [1.7 * 1024 ** 3]: " (2 GB-class system)" }[requirements.memoryBytes] ?? ""} required`
     },
     {
       name: "Free disk",
@@ -640,15 +642,25 @@ export async function writeSetupToken(root, token) {
   return target;
 }
 
-// Technical bound (plan clipboard:DpmApwi78Fdh §3): the browser container takes at most a quarter of the machine's RAM
-// (about 500 MB on 2 GB, 1 GB on 4 GB), below the profile's own limit. Inside it the Browser Host keeps fewer live browsers
-// (browserSessionCap) and closes the least recently used agent browser first; a closed browser's tabs come back on its next start.
+// Technical bounds, shares of the memory Docker's containers share (docker info MemTotal), below each profile's own limit.
+// Browser (plan clipboard:DpmApwi78Fdh §3): a quarter, about 500 MB on 2 GB and 1 GB on 4 GB; inside it the Browser Host keeps
+// fewer live browsers (browserSessionCap) and a closed browser's tabs come back on its next start. CLI: half, so an agent
+// tool's runaway is killed in its own container instead of a whole-machine OOM taking the core (2 GB lab, light browser step 6).
 export const BROWSER_MEMORY_SHARE = 0.25;
+export const CLI_MEMORY_SHARE = 0.5;
 
-// shortcut: Docker Desktop is judged by the host's RAM, not its VM's (the profile limit still caps it); read docker info if that bites.
-export function browserMemoryLimit(profileLimit, memoryBytes = totalmem()) {
+export function memoryShareLimit(profileLimit, share, memoryBytes) {
   const profileMiB = Number.parseFloat(profileLimit) * (profileLimit.endsWith("g") ? 1024 : 1);
-  return `${Math.min(profileMiB, Math.floor((memoryBytes * BROWSER_MEMORY_SHARE) / 1024 ** 2))}m`;
+  const shareMiB = Math.floor((memoryBytes * share) / 1024 ** 2);
+  return shareMiB < profileMiB ? `${shareMiB}m` : profileLimit;
+}
+
+// Docker Desktop runs containers in a VM with less memory than the host; Docker on Linux reports the host's.
+export async function dockerMemoryBytes(
+  memTotal = () => promisify(execFile)("docker", ["info", "--format", "{{.MemTotal}}"], { timeout: 15_000 }).then(({ stdout }) => stdout)
+) {
+  const bytes = Number(String(await memTotal().catch(() => "")).trim());
+  return Number.isFinite(bytes) && bytes > 0 ? bytes : totalmem();
 }
 
 export function renderRuntimeEnv(config, imageLock = PACKAGE_IMAGE_LOCK, recordedDigests = {}, memoryBytes = totalmem()) {
@@ -666,9 +678,9 @@ export function renderRuntimeEnv(config, imageLock = PACKAGE_IMAGE_LOCK, recorde
     `SPACEAPP_WORKFLOWS_ENABLED=${settings.temporalEnabled}`,
     `SPACEAPP_CORE_MEMORY_LIMIT=${settings.coreMemoryLimit}`,
     `SPACEAPP_CORE_CPU_LIMIT=${settings.coreCpuLimit}`,
-    `SPACEAPP_CLI_MEMORY_LIMIT=${settings.cliMemoryLimit}`,
+    `SPACEAPP_CLI_MEMORY_LIMIT=${memoryShareLimit(settings.cliMemoryLimit, CLI_MEMORY_SHARE, memoryBytes)}`,
     `SPACEAPP_CLI_CPU_LIMIT=${settings.cliCpuLimit}`,
-    `SPACEAPP_BROWSER_MEMORY_LIMIT=${browserMemoryLimit(settings.browserMemoryLimit, memoryBytes)}`,
+    `SPACEAPP_BROWSER_MEMORY_LIMIT=${memoryShareLimit(settings.browserMemoryLimit, BROWSER_MEMORY_SHARE, memoryBytes)}`,
     `SPACEAPP_BROWSER_CPU_LIMIT=${settings.browserCpuLimit}`,
     `SPACEAPP_POSTGRES_MEMORY_LIMIT=${settings.postgresMemoryLimit}`,
     `SPACEAPP_POSTGRES_CPU_LIMIT=${settings.postgresCpuLimit}`,
@@ -710,31 +722,7 @@ export function browserSeccompProfile(cliProfile) {
   return `${JSON.stringify(profile, null, 2)}\n`;
 }
 
-// INT5-C-F3: the browser container mounts only its two folders of the data volume (profiles, recordings), never the
-// rest of it (memory, other artifacts). Compose mounts a volume's folder from Docker Engine 26 (API 1.45); an older
-// engine gives the browser the whole volume, as before, and compose.workspaces.yml says so.
-function browserDataMounts(subpath) {
-  const folders = ["browser-profiles", "browser-evidence"].flatMap((folder) => [
-    "      - type: volume",
-    "        source: spaceapp-data",
-    `        target: /var/lib/spaceapp/artifacts/${folder}`,
-    "        volume:",
-    `          subpath: artifacts/${folder}`
-  ]);
-  return ["  spaceapp-browser:", "    volumes:", ...(subpath ? folders : [
-    "      # Docker Engine older than 26 cannot mount a volume's folder: the browser sees the whole data volume.",
-    "      - spaceapp-data:/var/lib/spaceapp"
-  ])];
-}
-
-export async function dockerMountsVolumeFolders(
-  apiVersion = () => promisify(execFile)("docker", ["version", "--format", "{{.Server.APIVersion}}"], { timeout: 15_000 }).then(({ stdout }) => stdout)
-) {
-  const [major, minor] = String(await apiVersion().catch(() => "")).trim().split(".").map(Number);
-  return major > 1 || (major === 1 && minor >= 45);
-}
-
-export function renderWorkspaceCompose(config, { cliSandbox = false, browserFolders = false } = {}) {
+export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   validateConfig(config);
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
@@ -746,7 +734,7 @@ export function renderWorkspaceCompose(config, { cliSandbox = false, browserFold
     ? ["    volumes:", ...mounts]
     : ["    volumes: []"];
   if (config.users === undefined) {
-    return ["services:", "  spaceapp-core:", ...service, "  spaceapp-cli:", ...service, ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []), ...browserDataMounts(browserFolders), ""].join("\n");
+    return ["services:", "  spaceapp-core:", ...service, "  spaceapp-cli:", ...service, ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []), ""].join("\n");
   }
   // "user enable": accounts are on, and the core starts a USER's CLIs only in that user's own container.
   const users = config.users;
@@ -799,7 +787,6 @@ export function renderWorkspaceCompose(config, { cliSandbox = false, browserFold
     "  spaceapp-cli:",
     ...service,
     ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []),
-    ...browserDataMounts(browserFolders),
     ...userServices,
     ...(users.length > 0 ? ["volumes:"] : []),
     ...users.flatMap((user) => ["cli-state", "memory", "cli-socket", "workspaces"].map((kind) => `  spaceapp-${kind}-${userSlug(user.id)}: {}`)),
@@ -1050,11 +1037,8 @@ export async function writeRuntimeFiles(root, config, imageLock = PACKAGE_IMAGE_
       await atomicWrite(join(root, "image-digests.json"), `${JSON.stringify(recorded, null, 2)}\n`, 0o644);
     }
   }
-  await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config, imageLock, recorded));
-  await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config, {
-    cliSandbox: await userNamespacesUsable(),
-    browserFolders: await dockerMountsVolumeFolders()
-  }));
+  await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config, imageLock, recorded, await dockerMemoryBytes()));
+  await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config, { cliSandbox: await userNamespacesUsable() }));
   // The core reads it as uid 10001 through a read-only bind mount.
   await atomicWrite(join(root, "cli-hosts.json"), renderCliHosts(config), 0o644);
   for (const user of config.users ?? []) await mkdir(providerSecretsRoot(root, user.id), { recursive: true, mode: 0o700 });

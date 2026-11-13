@@ -40,17 +40,18 @@ work: during image pulls the launcher switches Docker to a temporary
 credential-free config so Docker Desktop's graphical credential helper is never
 invoked outside an interactive logon.
 
-The launcher selects `small`, `medium`, or `large` automatically using CPU,
-RAM and free disk. Docker's CPU and RAM allocation is checked as well.
+The launcher selects `small`, `medium`, `large`, or `light` (2 GB machines)
+automatically using CPU, RAM and free disk. Docker's CPU and RAM allocation is checked as well.
 
 | Profile | CPU | Usable RAM | Fresh free space | Services |
 | --- | --- | --- | --- | --- |
 | small | 4 | 7 GiB | 6.5 GiB | SpaceApp, OpenCode, PostgreSQL |
 | medium | 4 | 11 GiB | 8 GiB | small + background workflow/integration workers |
 | large | 8 | 15 GiB | 11 GiB | medium + managed Chromium, larger limits |
+| light | 4 | 1.7 GiB | 8 GiB | medium + one managed Chromium; limits from Docker's memory |
 
-Use `install --profile small|medium|large` to choose explicitly. Existing
-`light` and `standard` profiles remain compatible. Upgrades preserve the installed
+Use `install --profile small|medium|large|light` to choose explicitly. Existing
+`standard` profiles remain compatible. Upgrades preserve the installed
 profile unless you explicitly choose another one. Companions and additional AI
 CLIs remain optional and can be installed when needed.
 
@@ -98,8 +99,7 @@ The environment variable `SPACEAPP_TELEMETRY` overrides the answer: `0`, `false`
 `no` or `off` never send the ping or the `first_answer` event; `1`, `true`,
 `yes` or `on` send them, which is how unattended installs opt in.
 
-The legacy `light` profile runs the workflow service without managed Chromium;
-`standard` runs both. Resource limits are maximums, not immediate RAM or
+The legacy `standard` profile runs the workflow service and managed Chromium. Resource limits are maximums, not immediate RAM or
 disk reservations. The launcher stores only non-secret configuration in the
 current user's platform config directory:
 

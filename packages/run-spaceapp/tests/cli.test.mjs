@@ -594,7 +594,7 @@ test("install accepts 7.4 GiB usable memory on an 8 GB-class CachyOS laptop and 
   const stderr = capture();
   let dockerStartupReached = false;
 
-  assert.equal(await run(["install", "--profile", "light", "--no-open"], {
+  assert.equal(await run(["install", "--profile", "small", "--no-open"], {
     env: { SPACEAPP_HOME: root },
     platform: "linux",
     stdout: stdout.stream,
@@ -611,7 +611,7 @@ test("install accepts 7.4 GiB usable memory on an 8 GB-class CachyOS laptop and 
     execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 0);
 
-  assert.match(stdout.value(), /Selected profile: light \(7\.4 GiB system memory detected\)/i);
+  assert.match(stdout.value(), /Selected profile: small \(7\.4 GiB system memory detected\)/i);
   assert.match(stdout.value(), /PASS Memory: 7\.4 GiB available; 7 GiB usable \(8 GB-class system\) required/i);
   assert.equal(dockerStartupReached, true);
   assert.equal(stderr.value(), "");
@@ -1080,12 +1080,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
   const browserCleanup = calls.find((spec) =>
     spec.args.slice(-4).join(" ") === "rm --stop --force spaceapp-browser"
   );
-  assert.ok(browserCleanup, "light upgrades must remove a browser container left by the standard profile");
-  assert.deepEqual(
-    browserCleanup.args.slice(browserCleanup.args.indexOf("--profile"), -4),
-    ["--profile", "standard", "--profile", "workflows"],
-    "browser cleanup must activate the service's standard Compose profile"
-  );
+  assert.equal(browserCleanup, undefined, "light keeps the standard profile's browser (light browser step 6)");
   for (const spec of calls.filter(spec => spec.args.includes("compose"))) {
     assert.equal(spec.args[spec.args.indexOf("--project-name") + 1], projectBefore);
   }
@@ -1184,7 +1179,8 @@ test("failures before cutover preserve configuration; failures after cutover ret
     ));
     const stagedStateRoots = new Set();
 
-    const code = await run(["install", "--profile", "light", "--no-open"], {
+    // small drops the standard profile's browser (light keeps it since light browser step 6).
+    const code = await run(["install", "--profile", "small", "--no-open"], {
       env: { SPACEAPP_HOME: root },
       platform: "linux",
       stdout: capture().stream,
@@ -1559,7 +1555,7 @@ test("install does not misreport a failed Docker group re-entry as a pre-downloa
   assert.doesNotMatch(stderr.value(), /stopped before downloading images/i);
 });
 
-test("install stops before image pulls when usable memory is below 7 GiB", async () => {
+test("install stops before image pulls below the 2 GB class", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-small-"));
   const stdout = capture();
   const stderr = capture();
@@ -1573,7 +1569,7 @@ test("install stops before image pulls when usable memory is below 7 GiB", async
     stdin: ttyStdin(...FRESH_APPROVALS),
     inspectResources: async () => ({
       cpuCount: 4,
-      totalMemoryBytes: 6.9 * 1024 ** 3,
+      totalMemoryBytes: 1.5 * 1024 ** 3,
       freeDiskBytes: 20 * 1024 ** 3
     }),
     execute: async (spec, io) => {
@@ -1585,7 +1581,7 @@ test("install stops before image pulls when usable memory is below 7 GiB", async
 
   assert.match(
     stderr.value(),
-    /FAIL Memory: 6\.9 GiB available; 7 GiB usable \(8 GB-class system\) required/i
+    /FAIL Memory: 1\.5 GiB available; 1\.7 GiB usable \(2 GB-class system\) required/i
   );
   assert.equal(calls.some((call) => call.args.includes("pull")), false);
   assert.equal(calls.some((call) => call.args.includes("up")), false);
@@ -2129,4 +2125,26 @@ test("doctor reports PASS for 8 GiB disk when light profile is selected", async 
   assert.equal(await run(["doctor"], options), 0);
 
   assert.match(stdout.value(), /PASS Free disk: 8 GiB available; 0\.5 GiB required additionally for maintenance/);
+});
+
+test("doctor names the browser's --no-sandbox from the running app's health without changing its result (INT5-C-F3)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-doctor-sandbox-"));
+  const resources = { cpuCount: 16, totalMemoryBytes: 24 * 1024 ** 3, freeDiskBytes: 64 * 1024 ** 3 };
+  const options = (browserSandbox, stdout, stderr) => ({
+    env: { SPACEAPP_HOME: root }, platform: "win32", stdout: stdout.stream, stderr: stderr.stream,
+    inspectResources: async () => resources,
+    execute: async () => 0,
+    request: async (url) => {
+      assert.match(url, /^http:\/\/127\.0\.0\.1:4911\/readyz$/);
+      return { json: async () => ({ dependencies: { browserSandbox } }) };
+    }
+  });
+  const init = { stdout: capture(), stderr: capture() };
+  await run(["init"], { ...options(null, init.stdout, init.stderr), stdin: ttyStdin("y") });
+  for (const [state, line] of [["NO_SANDBOX", /^WARN Browser sandbox: .*--no-sandbox/m], ["SANDBOXED", /^PASS Browser sandbox: Chromium runs in its own sandbox$/m]]) {
+    const stdout = capture();
+    const stderr = capture();
+    assert.equal(await run(["doctor"], options(state, stdout, stderr)), 0);
+    assert.match(state === "NO_SANDBOX" ? stderr.value() : stdout.value(), line);
+  }
 });
