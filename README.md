@@ -1,35 +1,16 @@
-<p align="center">
-  <a href="https://oll4.com/?utm_source=github&utm_medium=readme"><img src="https://img.shields.io/badge/Created%20by-oll4.com-ffe900?style=for-the-badge&labelColor=0a0e13" alt="Created by oll4.com" height="36"></a>
-</p>
+<h1 align="center">SpaceApp</h1>
 
-<h3 align="center">🏅 Accepted into Anthropic’s Claude for Startups program.<br>Enrolled in the OpenAI Partner Network.</h3>
-
-<p align="center"><sub>Through SpaceApp's maker, oll4.com, since October 2026. Membership in a program is not an endorsement of SpaceApp by Anthropic, OpenAI or NVIDIA.<br>© 2025 NVIDIA, the NVIDIA logo, and NVIDIA Inception are trademarks and/or registered trademarks of NVIDIA Corporation in the U.S. and other countries.</sub></p>
-
-<p align="center"><br><img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/nvidia-inception-program-badge-rgb-for-screen.svg" alt="NVIDIA Inception program member badge" width="150" /><br><br>SpaceApp is a member of NVIDIA Inception.<br><br></p>
+<p align="center"><b>Self-hosted rooms where Claude Code, Codex, OpenCode and Gemini CLI keep working after you close the laptop.</b></p>
 
 <p align="center">
-  <a href="https://spaceapp.dev/?utm_source=github&utm_medium=readme"><img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/spaceapp-hero-banner.png" alt="SpaceApp — The Super Agent App" width="900" /></a>
+  <img src="docs/images/demo-10s.gif" alt="One SpaceApp room: Codex, Claude Code and Gemini answer side by side in three panes" width="900" />
 </p>
 
-<h1 align="center">One goal. Super agents. Your space.</h1>
+```bash
+npx --yes run-spaceapp@latest install
+```
 
-<p align="center"><b>A self-hosted workspace where your AI coding agents work side by side,<br>and one mind runs them for you. On your machine, from any device.</b></p>
-
-<p align="center">
-  <a href="#-quick-start"><img src="https://img.shields.io/badge/Install-one%20command-ffe900?style=for-the-badge&labelColor=0a0e13" alt="Install SpaceApp with one command"></a>
-  <a href="https://spaceapp.dev/spaceappmock/?utm_source=github&utm_medium=readme"><img src="https://img.shields.io/badge/Live%20demo-in%20your%20browser-FFFFFF?style=for-the-badge&labelColor=0a0e13" alt="Try the live demo in your browser"></a>
-  <a href="https://spaceapp.dev/?utm_source=github&utm_medium=readme"><img src="https://img.shields.io/badge/Website-spaceapp.dev-FFFFFF?style=for-the-badge&labelColor=0a0e13" alt="Website spaceapp.dev"></a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/oll4com/spaceapp/releases"><img src="https://img.shields.io/github/v/release/oll4com/spaceapp?color=ffe900&labelColor=0a0e13&label=release" alt="GitHub Release"></a>
-  <a href="https://www.npmjs.com/package/run-spaceapp"><img src="https://img.shields.io/npm/v/run-spaceapp?color=ffe900&labelColor=0a0e13&label=npm%20run-spaceapp" alt="npm package"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-ffe900.svg?labelColor=0a0e13" alt="License"></a>
-  <img src="https://img.shields.io/badge/Linux%20%7C%20macOS%20%7C%20Windows%2011-Docker-ffe900.svg?labelColor=0a0e13" alt="Linux, macOS and Windows 11 with Docker">
-  <a href="https://discord.gg/dUszP7HpmS"><img src="https://img.shields.io/badge/Discord-join-ffe900.svg?logo=discord&logoColor=white&labelColor=0a0e13" alt="Discord community"></a>
-  <a href="https://sentry.io/?utm_source=spaceapp&utm_medium=readme"><img src="https://img.shields.io/badge/Error%20monitoring-Sentry-ffe900.svg?logo=sentry&logoColor=white&labelColor=0a0e13" alt="Error monitoring by Sentry"></a>
-</p>
+<p align="center"><a href="https://spaceapp.dev/spaceappmock/?utm_source=github&utm_medium=readme"><b>Try the live demo</b></a> in your browser, no sign-up · <a href="https://spaceapp.dev/?utm_source=github&utm_medium=readme">spaceapp.dev</a></p>
 
 ---
 
@@ -163,6 +144,27 @@ Installed versions and your credentials decide what can run; see the [compatibil
 SpaceApp is hosted by Open Source Europe on Open Collective. Your support pays for the server SpaceApp is built and tested on, the install test machines and the spaceapp.dev domain, and every expense is shown publicly on the collective's page.
 
 <a href="https://opencollective.com/spaceapp"><img src="https://img.shields.io/badge/Sponsor-Open%20Collective-ffe900?style=for-the-badge&logo=opencollective&logoColor=white&labelColor=0a0e13" alt="Sponsor SpaceApp on Open Collective" height="36"></a>
+
+## 🏅 Programs and badges
+
+<p align="center">
+  <a href="https://oll4.com/?utm_source=github&utm_medium=readme"><img src="https://img.shields.io/badge/Created%20by-oll4.com-ffe900?style=for-the-badge&labelColor=0a0e13" alt="Created by oll4.com" height="36"></a>
+</p>
+
+<h3 align="center">Accepted into Anthropic’s Claude for Startups program.<br>Enrolled in the OpenAI Partner Network.</h3>
+
+<p align="center"><sub>Through SpaceApp's maker, oll4.com, since October 2026. Membership in a program is not an endorsement of SpaceApp by Anthropic, OpenAI or NVIDIA.<br>© 2025 NVIDIA, the NVIDIA logo, and NVIDIA Inception are trademarks and/or registered trademarks of NVIDIA Corporation in the U.S. and other countries.</sub></p>
+
+<p align="center"><br><img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/nvidia-inception-program-badge-rgb-for-screen.svg" alt="NVIDIA Inception program member badge" width="150" /><br><br>SpaceApp is a member of NVIDIA Inception.<br><br></p>
+
+<p align="center">
+  <a href="https://github.com/oll4com/spaceapp/releases"><img src="https://img.shields.io/github/v/release/oll4com/spaceapp?color=ffe900&labelColor=0a0e13&label=release" alt="GitHub Release"></a>
+  <a href="https://www.npmjs.com/package/run-spaceapp"><img src="https://img.shields.io/npm/v/run-spaceapp?color=ffe900&labelColor=0a0e13&label=npm%20run-spaceapp" alt="npm package"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-ffe900.svg?labelColor=0a0e13" alt="License"></a>
+  <img src="https://img.shields.io/badge/Linux%20%7C%20macOS%20%7C%20Windows%2011-Docker-ffe900.svg?labelColor=0a0e13" alt="Linux, macOS and Windows 11 with Docker">
+  <a href="https://discord.gg/dUszP7HpmS"><img src="https://img.shields.io/badge/Discord-join-ffe900.svg?logo=discord&logoColor=white&labelColor=0a0e13" alt="Discord community"></a>
+  <a href="https://sentry.io/?utm_source=spaceapp&utm_medium=readme"><img src="https://img.shields.io/badge/Error%20monitoring-Sentry-ffe900.svg?logo=sentry&logoColor=white&labelColor=0a0e13" alt="Error monitoring by Sentry"></a>
+</p>
 
 ## 📄 License
 
