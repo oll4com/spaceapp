@@ -16,7 +16,7 @@ test('a free-model Nous turn takes only a checked request and allows only Nous\'
     assert.equal(nousRequest(request), null, JSON.stringify(request)?.slice(0, 80));
   }
   const config = nousConfig(nousRequest(turn()));
-  assert.deepEqual(config.permission, { '*': 'deny', 'space_nous_*': 'allow' });
+  assert.deepEqual(config.permission, { '*': 'deny', read: 'allow', external_directory: 'deny', 'space_nous_*': 'allow' });
   assert.equal(config.mcp.servers.space_nous.codemode, false);
   assert.equal(config.agent.nous.steps, 40);
   assert.ok(!JSON.stringify(config).includes(token));
@@ -47,6 +47,9 @@ test('OpenCode\'s events become Claude Code\'s stream-json, the last step\'s tex
   failed.push('{"type":"text","part":{"text":"x"}}\n{"type":"error","error":{"data":{"message":"Free usage limit reached"}}}\n');
   assert.equal(failed.finish(1).result, 'Free usage limit reached');
   assert.equal(openCodeOutputReader({}, 'm', () => {}).finish(0).result, 'OpenCode gave no answer.');
+  const unfinished = openCodeOutputReader({}, 'm', () => {});
+  unfinished.push('{"type":"step_start"}\n{"type":"text","part":{"text":"Checking."}}\n{"type":"step_finish","part":{}}\n{"type":"step_start"}\n{"type":"text","part":{"text":"All panes idle."}}\n');
+  assert.equal(unfinished.finish(0).result, 'All panes idle.');
 });
 
 test('a turn serves Nous\'s tools privately, waits for them, streams the answer and leaves nothing behind', async () => {

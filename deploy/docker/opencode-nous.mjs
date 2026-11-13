@@ -43,7 +43,9 @@ export function nousConfig(request) {
     autoupdate: false, share: 'disabled', instructions: [], plugin: [],
     // The token comes from the environment, never this file.
     mcp: { servers: { space_nous: { type: 'remote', url: request.mcpUrl, headers: { Authorization: 'Bearer {env:SPACE_NOUS_MCP_TOKEN}' }, enabled: true, oauth: false, codemode: false, timeout: 60_000 } } },
-    permission: { '*': 'deny', 'space_nous_*': 'allow', ...(request.shell ? { shell: 'allow' } : {}) },
+    // Zen refuses its free tier ("Free usage limit reached") to a request with none of OpenCode's own tools (hz lab 13/11): read stays,
+    // confined to the turn's empty work folder by external_directory.
+    permission: { '*': 'deny', read: 'allow', external_directory: 'deny', 'space_nous_*': 'allow', ...(request.shell ? { shell: 'allow' } : {}) },
     agent: { nous: { mode: 'primary', prompt: '{file:./system.md}', steps: request.maxTurns } }
   };
 }
@@ -90,6 +92,8 @@ export function openCodeOutputReader(request, model, emit) {
     },
     finish(code, otherFailure = null) {
       if (pending.trim()) line(pending);
+      // `opencode run` exits without the last step's step_finish (hz lab 13/11): that step's text is still the answer.
+      if (step.length) answer = step.join('\n\n');
       const error = otherFailure ?? failure ?? (code !== 0 ? `OpenCode exited with code ${code ?? 'unknown'}.` : !answer.trim() ? 'OpenCode gave no answer.' : null);
       return { type: 'result', provider: 'opencode', subtype: error ? 'error' : 'success', is_error: Boolean(error), result: error ?? answer,
         num_turns: steps, ...(steps ? { modelUsage: { [model]: usage } } : {}) };
