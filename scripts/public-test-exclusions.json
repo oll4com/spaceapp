@@ -25,6 +25,7 @@
   "apps/api/tests/source-control-routes-host.test.ts": "needs the install root: a workspace project there and the plugin catalog's fixed plugins folder, which a public checkout does not have (2026-10-30)",
   "apps/api/tests/space-load-gate-thresholds.test.ts": "needs scripts/space-load-gate.mjs, a host operations script the public tree does not ship (1.1.6 re-cut 2026-10-18)",
   "apps/api/tests/t3code-bindings.test.ts": "reads a private deploy file or script",
+  "apps/api/tests/transfer-service.test.ts": "needs scripts/space-transfer.mjs, the transfer engine the export does not ship (2026-11-13, release run 43356775404)",
   "apps/api/tests/upload-record-postgres.integration.test.ts": "runs only against a PostgreSQL socket a maintainer provides and checks that it lies in the maintainers' reports folder, a private path the export would have to rewrite in code; without the socket it skips (2026-10-31)",
   "apps/api/tests/vault-phase6-mcp.test.ts": "starts the Vault MCP server from scripts/, which the public tree does not ship (2026-10-30)",
   "apps/web/tests/dots-proof-probe-dom.test.tsx": "imports scripts/dots-chat-proof.mjs, which the public tree does not ship (2026-10-30)",
