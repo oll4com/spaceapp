@@ -1,11 +1,21 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "26db75ccff012b484ac037828ee6ac4d9f5888b403d494610ef5a19194cdd57b",
-  "sourceCommit": "64c3e719a2d0f3a4f62d678e0ee27d6e58c91765",
-  "labSourceCommit": "64c3e719a2d0f3a4f62d678e0ee27d6e58c91765",
-  "launcherVersion": "1.2.0",
-  "runtimeVersion": "1.2.0",
-  "createdAt": "2026-11-10T02:11:44.494Z",
+  "candidateDigest": "834c65cbfb5930074f3666e45c079377acaa72d88c3b3a4417b1dd99c40d68e7",
+  "sourceCommit": "1376c48a593980506b7a278c4aac9b27ab9d1546",
+  "spaceSourceCommit": "da459fc481b2cf06d9bceeb8266786fd4f89e458",
+  "launcherVersion": "1.2.1",
+  "runtimeVersion": "1.2.1",
+  "createdAt": "2026-11-13T03:04:54.260Z",
+  "launcherTarballSha256": "0409a36102386d4af630a673366eba36a9d2a4d072cb6b53fca9ba6549c46e20",
+  "labProof": {
+    "acceptanceSha256": "1535ff465d74755a0b850947b2ad90324cb4cd87c175c361d8a4878df7193271",
+    "allCasesPass": false,
+    "approval": "operator RELEASE_APPROVE 891e7a61; Nous option A on 32494"
+  },
+  "pendingAfterPublication": [
+    "windows W1: fresh 1.2.1 install from the registry, no --local-images",
+    "windows W2: update 1.2.0 -> 1.2.1 from the registry, no --local-images"
+  ],
   "checks": [
     {
       "platform": "linux",
@@ -14,11 +24,9 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux-fresh-install.json",
-      "artifactSha256": "b1bb79cb42ee993b0929cb660642f272d7a24d11993174706c979e7b6f6379eb",
-      "ownerUi": true,
-      "carriedFrom": "c14 1e365cf",
-      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+      "artifact": "acceptance-linux-dind.json",
+      "artifactSha256": "4c815746beaf28afc7abe65eb3f236566086f2e9b5db0c2a0d3dc87adc9f0811",
+      "note": "linux-fresh-install case, disposable docker:29-dind on VM207, --local-images; images built from overlay 0d2bfefe (Space da459fc481); 1376c48a changes only the Windows headless docker config in cli.mjs"
     },
     {
       "platform": "linux",
@@ -27,11 +35,10 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux-upgrade.json",
-      "artifactSha256": "1b9b6301a21b2191de6b8132f6b0fd391235f06c35ab6a44a4ae216ed246da81",
+      "artifact": "sub4/linux/summary.txt",
+      "artifactSha256": "8e2e7337ee5b6f34e585474016c0ba3992249095f81b430170efce01a2b8f423",
       "dataPreserved": true,
-      "carriedFrom": "c14 1e365cf",
-      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+      "note": "U: 1.2.0 from npm with registry pulls, then update to 1.2.1; secrets, workspaces, DB marker preserved"
     },
     {
       "platform": "linux",
@@ -40,11 +47,10 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "c13-linux-repair.json",
-      "artifactSha256": "be54a6949ae6682720b98af1a58c4fe70c94fc34e5ec08a01946f98cbd04c05f",
+      "artifact": "sub4/linux/summary.txt",
+      "artifactSha256": "8e2e7337ee5b6f34e585474016c0ba3992249095f81b430170efce01a2b8f423",
       "dataPreserved": true,
-      "carriedFrom": "c13 cf4d247, via c14 1e365cf",
-      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+      "note": "R: spaceapp-core removed, doctor --fix, ready"
     },
     {
       "platform": "linux",
@@ -53,601 +59,224 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "c13-linux-docker-stopped.json",
-      "artifactSha256": "525739b85d4a8384a6c211a6c9d177c4c02a411e282daa10d0f2d84e464fac3e",
+      "artifact": "sub4/linux/summary.txt",
+      "artifactSha256": "8e2e7337ee5b6f34e585474016c0ba3992249095f81b430170efce01a2b8f423",
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
-      "carriedFrom": "c13 cf4d247, via c14 1e365cf",
-      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+      "note": "S: docker.service and socket stopped, install started it, ready"
     },
     {
       "platform": "linux",
       "scenario": "first-agent",
-      "pass": false,
+      "pass": true,
       "executed": true,
-      "exitCode": 1,
+      "exitCode": 0,
       "ready": true,
+      "artifact": "sub4/linux/F2-first-agent-fresh-pane/summary.json",
+      "artifactSha256": "6d243133deab088ee40064c3accfa6f08100f4785bd32920d6ea9b11d8a39fde",
       "uiOpened": true,
-      "freeModel": true,
-      "responseObserved": false,
-      "knownException": "OpenCode Zen refused every free model from the lab's egress address (big-pickle: provider.quota, deepseek-v4.1-flash-free: provider.quota, glm-5.3-flash-free: provider.quota, iceman-free: provider.quota, inkling-2-small-free: provider.auth); everything up to the answer ran, and the Codex first agent passed on the same install",
-      "artifact": "linux-first-agent.json",
-      "artifactSha256": "2d3b652a4a5e3b5bfe0c0c84127a346da00677df7ef57f071fb3fb8276763f0f",
-      "carriedFrom": "c14 1e365cf",
-      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "linux",
-      "scenario": "profiles",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "profilesObserved": [
-        "small",
-        "medium",
-        "large"
-      ],
-      "dataPreserved": true,
-      "artifact": "linux-profiles.json",
-      "artifactSha256": "2052405004c7208c91af01893587daddb7ba04bbfe65de549c81891117cc9fda",
-      "carriedFrom": "medium and large from c13 cf4d247, via c14 1e365cf",
-      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "fresh-install",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "artifact": "windows-fresh-install.json",
-      "artifactSha256": "667b2818fab6238b8c1e11ff1d103eb04cc8518b31aceb8019a076e1f68c49ca",
-      "ownerUi": true,
-      "interactiveDesktop": true,
-      "carriedFrom": "c14 1e365cf",
-      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "upgrade",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "artifact": "windows-upgrade.json",
-      "artifactSha256": "ac0c1f3b84bd9508a645705d52121bcba8ddddeb8decbc2dc833ccccc90aaf9c",
-      "dataPreserved": true,
-      "interactiveDesktop": true,
-      "carriedFrom": "c14 1e365cf",
-      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "repair",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "artifact": "c13-windows-repair.json",
-      "artifactSha256": "b5e1119c42ca5ff389816428fc28d4851e166baf9fbabe4a3be4277d19b6b805",
-      "dataPreserved": true,
-      "interactiveDesktop": true,
-      "carriedFrom": "c13 cf4d247, via c14 1e365cf",
-      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "docker-stopped",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "artifact": "c13-windows-docker-stopped.json",
-      "artifactSha256": "425c21ee7cafa588a76b183167affed63a8b6c7882b3cf1258dfea0286e1ddaf",
-      "dataPreserved": true,
-      "dockerInitiallyStopped": true,
-      "interactiveDesktop": true,
-      "carriedFrom": "c13 cf4d247, via c14 1e365cf",
-      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "first-agent",
-      "pass": false,
-      "executed": true,
-      "exitCode": 1,
-      "ready": true,
-      "uiOpened": true,
-      "freeModel": true,
-      "responseObserved": false,
-      "knownException": "OpenCode Zen refused every free model from the lab's egress address (big-pickle: provider.quota, deepseek-v4.1-flash-free: provider.quota, glm-5.3-flash-free: provider.quota, iceman-free: provider.quota, inkling-2-small-free: provider.auth); everything up to the answer ran, and the Codex first agent passed on the same install",
-      "artifact": "windows-first-agent.json",
-      "artifactSha256": "a6dfa5018f34bed73b09a1bf116e6d6b49d40eedd86f285a8c61ea4ea3d5cc9f",
-      "interactiveDesktop": true,
-      "carriedFrom": "c14 1e365cf",
-      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "profiles",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "profilesObserved": [
-        "small",
-        "medium",
-        "large"
-      ],
-      "dataPreserved": true,
-      "interactiveDesktop": true,
-      "artifact": "windows-profiles.json",
-      "artifactSha256": "7e37bd9bae4505b3830967b826e71f6666d6beabf6dd9edaef4a7b7735d73276",
-      "carriedFrom": "medium and large from c13 cf4d247, via c14 1e365cf",
-      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "fresh-install",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "artifact": "macos-fresh-install.json",
-      "artifactSha256": "f9e93ed7f92f107c8bf96fa1be0a66ed9272a4f9d3f474dbe3ec9c6e8398fcf3",
-      "ownerUi": true,
-      "carriedFrom": "c14 1e365cf",
-      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "upgrade",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "artifact": "macos-upgrade.json",
-      "artifactSha256": "96dc0ba8ee5d1fa2e06d995697d97ccda2921b28bbf4ec850f7667751e63ee90",
-      "dataPreserved": true,
-      "carriedFrom": "c14 1e365cf",
-      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "repair",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "artifact": "c13-macos-repair.json",
-      "artifactSha256": "450e6c6be6b80ac51a923df058cdaf110b0862a71f07ccd80aa3f472102a5601",
-      "dataPreserved": true,
-      "carriedFrom": "c13 cf4d247, via c14 1e365cf",
-      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "docker-stopped",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "artifact": "c13-macos-docker-stopped.json",
-      "artifactSha256": "2a9cc56171fd05dac4c1a9a44d28aa4752edc81daed546766f028ea733f82448",
-      "dataPreserved": true,
-      "dockerInitiallyStopped": true,
-      "carriedFrom": "c13 cf4d247, via c14 1e365cf",
-      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "first-agent",
-      "pass": false,
-      "executed": true,
-      "exitCode": 1,
-      "ready": true,
-      "uiOpened": true,
-      "freeModel": true,
-      "responseObserved": false,
-      "knownException": "OpenCode Zen refused every free model from the lab's egress address (big-pickle: provider.quota, deepseek-v4.1-flash-free: provider.quota, glm-5.3-flash-free: provider.quota, iceman-free: provider.quota, inkling-2-small-free: provider.auth); everything up to the answer ran, and the Codex first agent passed on the same install",
-      "artifact": "macos-first-agent.json",
-      "artifactSha256": "74cabddf0a67bd7f6112ebf74e913e27497cac64126075c9991a791cc53220cf",
-      "carriedFrom": "c14 1e365cf",
-      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "profiles",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "profilesObserved": [
-        "small",
-        "medium",
-        "large"
-      ],
-      "dataPreserved": true,
-      "artifact": "macos-profiles.json",
-      "artifactSha256": "098a2f5a21f32f9c8f79a07854e4525a19e8ef5be3e53074a2c5c8dbe94939da",
-      "carriedFrom": "medium and large from c13 cf4d247, via c14 1e365cf",
-      "carriedReason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13 Then c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    }
-  ],
-  "supplementary": [
-    {
-      "platform": "linux",
-      "scenario": "first-agent-codex",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "uiOpened": true,
-      "nativeTaskId": "rollout-2026-11-09T23-56-35-01a1c2be-0464-7ba1-ae7a-4c09dbba10b5",
       "responseObserved": true,
-      "freeModel": false,
-      "cli": "codex",
-      "modelId": "spacegw/gpt-5-mini",
-      "approvals": 1,
-      "cleanupVerified": true,
-      "artifact": "linux-first-agent-codex.json",
-      "artifactSha256": "a1fb570961573c7a4936e7f69b4b6037799655ce5c78bfb3d8c13cf425105395",
-      "carriedFrom": "c14 1e365cf",
-      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "first-agent-codex",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "uiOpened": true,
-      "nativeTaskId": "rollout-2026-11-10T00-44-17-01a1c2e9-b013-7da1-aaf5-25b5f3f6f5ef",
-      "responseObserved": true,
-      "freeModel": false,
-      "cli": "codex",
-      "modelId": "spacegw/gpt-5-mini",
-      "approvals": 9,
-      "cleanupVerified": true,
-      "interactiveDesktop": true,
-      "artifact": "windows-first-agent-codex.json",
-      "artifactSha256": "c8e2f6a1cb6145dbbb428b7e7d7cecb38a765051f887ed6825127bf8b3fdd2b9",
-      "carriedFrom": "c14 1e365cf",
-      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "first-agent-codex",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "uiOpened": true,
-      "nativeTaskId": "rollout-2026-11-10T01-36-19-01a1c319-5600-7e40-a502-8eded17ad1e3",
-      "responseObserved": true,
-      "freeModel": false,
-      "cli": "codex",
-      "modelId": "spacegw/gpt-5-mini",
-      "approvals": 2,
-      "cleanupVerified": true,
-      "artifact": "macos-first-agent-codex.json",
-      "artifactSha256": "3e0e7266c86ab5c0bc20fa2115cffb6cbf2dbbc2993d53ea0425fe3950496ae7",
-      "carriedFrom": "c14 1e365cf",
-      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "linux",
-      "scenario": "first-answer-telemetry-no",
-      "pass": true,
-      "artifact": "linux-telemetry-no.json",
-      "artifactSha256": "f23740416e6db267a8d8353600016ee5a33533b027a4f1276f4f4655d940d0c1",
-      "carriedFrom": "c14 1e365cf",
-      "carriedReason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "first-agent-zen-azure",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "uiOpened": true,
       "freeModel": true,
-      "responseObserved": true,
-      "permissionPromptSeen": false,
+      "nativeTaskId": "ses_e2db82accffee2P7rAfzkdAsJ3",
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
-      "nativeTaskId": "ses_e395d4c09ffe5RIAZTlss2VyzP",
-      "observedAt": "2026-11-10T18:04:01.439Z",
-      "egress": "158.158.34.206",
-      "artifact": "windows-first-agent-zen-azure.json",
-      "artifactSha256": "0333258c2ca763f8826260958e34d8369cce1288d7464db41ab6cb08f83c3cf7",
-      "zenRecordSha256": "006cf1ef71a53c65d0b25be86b09d8e0ad0ff0d6c024fb5cb6a08a24f7d90e15",
-      "host": "native Azure Windows 11 Pro 25H2 VM (Standard_D4s_v5, Windows L1, WSL2 L2), WSL 3.0.5.0, Docker Desktop 4.99.0, Node v22.23.4",
-      "testedArtifacts": {
-        "launcherTgzSha256": "d1b089746f9557fd2c2b94b08e022f83d0e33950f12cb4bc69a6703307d29ca1",
-        "imagesArchiveSha256": "702f4558c1e24449f4546f38a6eb78d2d98e224e0dd71e8d163dd79a71696e96",
-        "sourceCommit": "64c3e719a2d0f3a4f62d678e0ee27d6e58c91765"
-      },
-      "carriedFrom": "c15 64c3e71",
-      "carriedReason": "Gate 2 (Cody, 2026-11-10 17:56-18:10Z) ran the c15 first-agent case on c15 bits; c16 and c17 change CI, tests, the export manifest, the image budget and apps/api/src/server-ops-routes.ts, whose routes an installed SpaceApp never registers (SPACE_PUBLIC_DISTRIBUTION)",
-      "notRun": [
-        "starter workspace",
-        "telemetry",
-        "badge",
-        "two panes",
-        "rc3",
-        "WSL start time"
-      ],
-      "caveat": "Windows client marketplace image: hosting rights (E3/E5 or Dev/Test) not verified, licenseType not set. The lab VM219 cannot run WSL2 (third nesting level), so the required windows/first-agent check stays the c14 run under the Zen exception"
-    }
-  ],
-  "carriedProofs": [
+      "note": "room:szYsycRWpc23 pane:w0m5ebgpFjUq, cost 0 (13-native-session.json)"
+    },
     {
-      "platform": "linux",
+      "platform": "windows",
+      "scenario": "fresh-install",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "windows/r0d2f/summary.txt",
+      "artifactSha256": "55855f9ac6361f6dc67a29c40584a04395a7e8c68d6a217dd5db381e07555b32",
+      "interactiveDesktop": true,
+      "note": "win121 (Windows 11, per-user Docker Desktop 29.9.3, labadmin interactive session): fresh 1.2.1 install, --local-images, readyz ok"
+    },
+    {
+      "platform": "windows",
+      "scenario": "upgrade",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "sub4/win121/s4b/summary.txt",
+      "artifactSha256": "acdd4fb642bbbab76c8c5e2836b7e070ab8f7e117a5a394f40b028f0554144c5",
+      "interactiveDesktop": true,
+      "dataPreserved": true,
+      "note": "U: 1.2.0 (images pulled from the registry first, --local-images) then update to 1.2.1, data preserved. The registry-only path is W2, checked right after publication"
+    },
+    {
+      "platform": "windows",
       "scenario": "repair",
-      "artifact": "c13-linux-repair.json",
-      "artifactSha256": "be54a6949ae6682720b98af1a58c4fe70c94fc34e5ec08a01946f98cbd04c05f",
-      "from": "c13 cf4d247",
-      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "sub4/win121/s4b/summary.txt",
+      "artifactSha256": "acdd4fb642bbbab76c8c5e2836b7e070ab8f7e117a5a394f40b028f0554144c5",
+      "interactiveDesktop": true,
+      "dataPreserved": true,
+      "note": "R: spaceapp-core removed, doctor --fix, ready"
     },
     {
-      "platform": "linux",
+      "platform": "windows",
       "scenario": "docker-stopped",
-      "artifact": "c13-linux-docker-stopped.json",
-      "artifactSha256": "525739b85d4a8384a6c211a6c9d177c4c02a411e282daa10d0f2d84e464fac3e",
-      "from": "c13 cf4d247",
-      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "sub4/win121/s4b/summary.txt",
+      "artifactSha256": "acdd4fb642bbbab76c8c5e2836b7e070ab8f7e117a5a394f40b028f0554144c5",
+      "interactiveDesktop": true,
+      "dataPreserved": true,
+      "dockerInitiallyStopped": true,
+      "note": "S: Docker Desktop stopped (0 processes), launcher restarted it, ready"
+    },
+    {
+      "platform": "windows",
+      "scenario": "first-agent",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "sub4/win121/s4/F/summary.json",
+      "artifactSha256": "6a3e423f2bf521265cff0ebc95155edc668259a251f6213297950d794010e403",
+      "interactiveDesktop": true,
+      "uiOpened": true,
+      "responseObserved": true,
+      "freeModel": true,
+      "nativeTaskId": "ses_e2dad7fadffeuJeOKERLeXMpck",
+      "cli": "opencode",
+      "modelId": "opencode/big-pickle",
+      "note": "room:5G6FdUI54nwb pane:krYglOFB-g6r, cost 0 (13-native-session.json)"
     },
     {
       "platform": "linux",
-      "scenario": "profiles (medium, large)",
+      "scenario": "profiles",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "profilesObserved": [
+        "small",
+        "medium",
+        "large"
+      ],
+      "dataPreserved": true,
       "artifact": "linux-profiles.json",
       "artifactSha256": "2052405004c7208c91af01893587daddb7ba04bbfe65de549c81891117cc9fda",
-      "from": "medium and large from c13 cf4d247",
-      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
+      "carriedFrom": "1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf)",
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
     },
     {
       "platform": "windows",
-      "scenario": "repair",
-      "artifact": "c13-windows-repair.json",
-      "artifactSha256": "b5e1119c42ca5ff389816428fc28d4851e166baf9fbabe4a3be4277d19b6b805",
-      "from": "c13 cf4d247",
-      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
-    },
-    {
-      "platform": "windows",
-      "scenario": "docker-stopped",
-      "artifact": "c13-windows-docker-stopped.json",
-      "artifactSha256": "425c21ee7cafa588a76b183167affed63a8b6c7882b3cf1258dfea0286e1ddaf",
-      "from": "c13 cf4d247",
-      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
-    },
-    {
-      "platform": "windows",
-      "scenario": "profiles (medium, large)",
+      "scenario": "profiles",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "profilesObserved": [
+        "small",
+        "medium",
+        "large"
+      ],
+      "dataPreserved": true,
+      "interactiveDesktop": true,
       "artifact": "windows-profiles.json",
       "artifactSha256": "7e37bd9bae4505b3830967b826e71f6666d6beabf6dd9edaef4a7b7735d73276",
-      "from": "medium and large from c13 cf4d247",
-      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
+      "carriedFrom": "1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf)",
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
+    },
+    {
+      "platform": "macos",
+      "scenario": "profiles",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "profilesObserved": [
+        "small",
+        "medium",
+        "large"
+      ],
+      "dataPreserved": true,
+      "artifact": "macos-profiles.json",
+      "artifactSha256": "098a2f5a21f32f9c8f79a07854e4525a19e8ef5be3e53074a2c5c8dbe94939da",
+      "carriedFrom": "1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf)",
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
+    },
+    {
+      "platform": "macos",
+      "scenario": "fresh-install",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "macos-fresh-install.json",
+      "artifactSha256": "f9e93ed7f92f107c8bf96fa1be0a66ed9272a4f9d3f474dbe3ec9c6e8398fcf3",
+      "ownerUi": true,
+      "carriedFrom": "1.2.0 c15 64c3e71 (c14 1e365cf)",
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
+    },
+    {
+      "platform": "macos",
+      "scenario": "upgrade",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "macos-upgrade.json",
+      "artifactSha256": "96dc0ba8ee5d1fa2e06d995697d97ccda2921b28bbf4ec850f7667751e63ee90",
+      "dataPreserved": true,
+      "carriedFrom": "1.2.0 c15 64c3e71 (c14 1e365cf)",
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
     },
     {
       "platform": "macos",
       "scenario": "repair",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
       "artifact": "c13-macos-repair.json",
       "artifactSha256": "450e6c6be6b80ac51a923df058cdaf110b0862a71f07ccd80aa3f472102a5601",
-      "from": "c13 cf4d247",
-      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
+      "dataPreserved": true,
+      "carriedFrom": "1.2.0 c15 64c3e71 (c13 cf4d247, via c14 1e365cf)",
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
     },
     {
       "platform": "macos",
       "scenario": "docker-stopped",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
       "artifact": "c13-macos-docker-stopped.json",
       "artifactSha256": "2a9cc56171fd05dac4c1a9a44d28aa4752edc81daed546766f028ea733f82448",
-      "from": "c13 cf4d247",
-      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
-    },
-    {
-      "platform": "macos",
-      "scenario": "profiles (medium, large)",
-      "artifact": "macos-profiles.json",
-      "artifactSha256": "098a2f5a21f32f9c8f79a07854e4525a19e8ef5be3e53074a2c5c8dbe94939da",
-      "from": "medium and large from c13 cf4d247",
-      "reason": "c14 1e365cf = c13 cf4d247 + the export of Space dev 6f572c31d2 (c13 was 1a0169178e): the launcher code is unchanged (packages/run-spaceapp changes only its version stamp); the images change app code (apps/api, apps/web, packages/contracts, packages/gateway, packages/db with migrations 0315-0317). c14 re-ran on all three systems the fresh install, the real 1.1.9 -> c14 update (every migration through 0317, data preserved) and the first agent, so repair, Docker stopped and the profile transitions, which the launcher drives, stand from c13"
-    },
-    {
-      "platform": "linux",
-      "scenario": "fresh-install",
-      "artifact": "linux-fresh-install.json",
-      "artifactSha256": "b1bb79cb42ee993b0929cb660642f272d7a24d11993174706c979e7b6f6379eb",
-      "from": "c14 1e365cf",
-      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "linux",
-      "scenario": "upgrade",
-      "artifact": "linux-upgrade.json",
-      "artifactSha256": "1b9b6301a21b2191de6b8132f6b0fd391235f06c35ab6a44a4ae216ed246da81",
-      "from": "c14 1e365cf",
-      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "linux",
-      "scenario": "first-agent",
-      "artifact": "linux-first-agent.json",
-      "artifactSha256": "2d3b652a4a5e3b5bfe0c0c84127a346da00677df7ef57f071fb3fb8276763f0f",
-      "from": "c14 1e365cf",
-      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "fresh-install",
-      "artifact": "windows-fresh-install.json",
-      "artifactSha256": "667b2818fab6238b8c1e11ff1d103eb04cc8518b31aceb8019a076e1f68c49ca",
-      "from": "c14 1e365cf",
-      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "upgrade",
-      "artifact": "windows-upgrade.json",
-      "artifactSha256": "ac0c1f3b84bd9508a645705d52121bcba8ddddeb8decbc2dc833ccccc90aaf9c",
-      "from": "c14 1e365cf",
-      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "first-agent",
-      "artifact": "windows-first-agent.json",
-      "artifactSha256": "a6dfa5018f34bed73b09a1bf116e6d6b49d40eedd86f285a8c61ea4ea3d5cc9f",
-      "from": "c14 1e365cf",
-      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "fresh-install",
-      "artifact": "macos-fresh-install.json",
-      "artifactSha256": "f9e93ed7f92f107c8bf96fa1be0a66ed9272a4f9d3f474dbe3ec9c6e8398fcf3",
-      "from": "c14 1e365cf",
-      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "upgrade",
-      "artifact": "macos-upgrade.json",
-      "artifactSha256": "96dc0ba8ee5d1fa2e06d995697d97ccda2921b28bbf4ec850f7667751e63ee90",
-      "from": "c14 1e365cf",
-      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
+      "dataPreserved": true,
+      "dockerInitiallyStopped": true,
+      "carriedFrom": "1.2.0 c15 64c3e71 (c13 cf4d247, via c14 1e365cf)",
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
     },
     {
       "platform": "macos",
       "scenario": "first-agent",
-      "artifact": "macos-first-agent.json",
-      "artifactSha256": "74cabddf0a67bd7f6112ebf74e913e27497cac64126075c9991a791cc53220cf",
-      "from": "c14 1e365cf",
-      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "linux",
-      "scenario": "first-agent-codex",
-      "artifact": "linux-first-agent-codex.json",
-      "artifactSha256": "a1fb570961573c7a4936e7f69b4b6037799655ce5c78bfb3d8c13cf425105395",
-      "from": "c14 1e365cf",
-      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "first-agent-codex",
-      "artifact": "windows-first-agent-codex.json",
-      "artifactSha256": "c8e2f6a1cb6145dbbb428b7e7d7cecb38a765051f887ed6825127bf8b3fdd2b9",
-      "from": "c14 1e365cf",
-      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "first-agent-codex",
-      "artifact": "macos-first-agent-codex.json",
-      "artifactSha256": "3e0e7266c86ab5c0bc20fa2115cffb6cbf2dbbc2993d53ea0425fe3950496ae7",
-      "from": "c14 1e365cf",
-      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    },
-    {
-      "platform": "linux",
-      "scenario": "first-answer-telemetry-no",
-      "artifact": "linux-telemetry-no.json",
-      "artifactSha256": "f23740416e6db267a8d8353600016ee5a33533b027a4f1276f4f4655d940d0c1",
-      "from": "c14 1e365cf",
-      "reason": "c15 64c3e71 = c14 1e365cf + the 1.2.0 Zen first-answer exception (decision nous-20261106-report-25457 in zenFirstAnswerExceptions, scripts/release-evidence.mjs, with its test) and the 1.2.0 stamp (packages/run-spaceapp/package.json, package-lock.json); no launcher, image or app code changed. git diff --stat 1e365cf2..64c3e71: package-lock.json | 2 +-; packages/run-spaceapp/package.json | 4 ++--; scripts/release-evidence.mjs | 5 ++++-; scripts/tests/release-evidence.test.mjs | 13 +++++++++++++; 4 files changed, 20 insertions(+), 4 deletions(-)"
-    }
-  ],
-  "limitations": [
-    "Candidate c17: public c16 7769d8f6 + the fixes for the public test suite and the image budget, nothing else. The core image budget is 1200 MiB (Nous decision 2026-11-10; Node 26 measured core linux/arm64 at 1158.1 MiB in Container matrix 42858766035). Nine test files that were stale in SpaceApp's source carry the Space fix bcbe773ee7: browser-routes-wiring, cli-browser-accounts, cli-routes-wiring, nous-pane-notices, nous-tokens, checkbox-switch-inventory, nous-goals and space-pool-route3 as test fixes, and safe-child-process through apps/api/src/server-ops-routes.ts, which now spawns through safe-child-process.ts. The server-ops routes are registered only when SPACE_PUBLIC_DISTRIBUTION is not true (cli-routes-wiring.ts), and every launcher install sets it to true, so no code path of an installed SpaceApp changed. Three tests that need private scripts or the operator's mail domain left the public tree through scripts/public-test-exclusions.json (nous-account-hold, cli-maintenance-orphans-postgres, key-pools). The public tree skips one web test, responsive-shell \"keeps a persisted selected room active when it is beyond the default room page\" (Nous approved it on 2026-11-10 under the operator's May approve Warm changes allowance; nothing else in the Warm tests, thresholds or App.tsx changed): after a reload the app opens the first room instead of the stored one, a failure older than 1.2.0 (Cody's c15-warm.md: it fails the same at 2aa0ad6705^, before the seven App.tsx commits Nous approved, at 0747cd544e of 2026-10-24 and at 520b8ba95c). Its fix goes through Space and removes the skip. Gate 2 on Windows (Cody, 2026-11-10 17:56-18:10Z, supplementary windows/first-agent-zen-azure): the c15 first-agent case passed on Zen (opencode/big-pickle, exit 0, no refusal) on a native Azure Windows 11 Pro VM, with the c15 launcher and images (built from 64c3e71), not rebuilt for c17; the lab VM219 cannot run WSL2, so the required windows/first-agent check stays c14's under the Zen exception. macOS (VM221) has not re-run on Zen. After the first full CI run: files-upload-http waits for the staged-file cleanup the upload route runs after its reply (CI 42879837540), and .gitleaksignore lists the 8 reviewed findings of 1a2d8e72, Vault key handles (vault_key:<id>), opaque ids and not credentials (Security 42879854034). CI on 69bbf86a: attempt 1 failed only the real-Chrome frame-stream poll of browser-account-profile-chrome (it passed on 2d18377e), attempt 2 (run 42885561245) failed nous.test.ts because a random pane id ended in \"-\" and the trailing \\b of paneIdIn cut it off; Nous now reads a pane or CLI session id ending in \"-\" whole, and a test pins it. CI and Security on 25f3ba36 (42895647306, 42895663412): the event-loop report lost a block that ended at its tick (reset() ran before the delay histogram recorded it), so it now reads in setImmediate; the needs-you code test looked for \"481\", which was inside a random notification id, and now looks for the whole code. The mail sync test read the two newest events by position, and the expired-history note and the gap's mail can share a millisecond (a tie orders by random id, Security 42895663412): it now finds each by type. CI 42895647306 attempt 2 on 25f3ba36: the Space Control video capture test read the capture request right after a fake 6 s, but the capture reaches the browser after real file I/O; it now waits for the request. CI 42905475477 on c7ec1dfa: the event-loop test still failed; reset() also forgets the delay histogram's last tick, so a block that straddles a report is lost even with the setImmediate read. The test blocks 100 ms after a report, inside an interval, and the code names the limit (the next block profiles). Security 42911060446 on 276e73c5: the real-Chrome profile test's first headed Chrome launch missed the fixed 10 s DevTools deadline (the test took 10.58 s; with three launches it passed in 6.4-9.5 s on earlier runs, so that cold first launch already used ~3.5-6.5 s). browser-sessions.ts gives Chrome 20 s, inside the Browser Host's 30 s request; a Chrome that exits still fails at once. CI 42921793242 on 6459c48d: after a tab moved to another Google account and the host restarted, the pane had 3 tabs instead of 2. Chrome still lists a closing tab until it detaches, and the pane forgot it only then, so the saved tab list kept the closed copy; switchPageAccount and closePage now drop the tab at once, and the real-Chrome test checks the saved list right after the move. Every check and supplementary proof stays c15's (c14's own run, or what c14 carried from c13) with its createdAt.",
-    "Candidate c16: public 1a2d8e72 (the c15 tree 64c3e71 squashed for publication, candidateDigest ca071c95) + four CI fixes and nothing else: .github/workflows/release.yml installs the packages before the readiness checks, packages/run-spaceapp/tests/runtime.test.mjs reads compose.yml with LF line endings on Windows checkouts, packages/run-spaceapp/package.json runs its tests with a bare node --test (Node 20 on Windows expands no tests/*.test.mjs glob), and PUBLIC_EXPORT_MANIFEST.json records the size and SHA-256 of the package-lock.json this tree carries. No launcher, image or app code changed, so every check and supplementary proof stays c15's (c14's own run, or what c14 carried from c13) with its createdAt.",
-    "Candidate c15: public lab tree 64c3e71 (stamp 1.2.0) = c14 1e365cf + the 1.2.0 Zen first-answer exception and the 1.2.0 stamp, nothing else. Every check and supplementary proof is c14's own run (or what c14 carried from c13) and names c14 in carriedFrom with the c14..c15 diff stat. The tested launcher and images carry the lab stamp 1.2.0-nous.c14 (testedArtifacts); the release workflow rebuilds the images from this source, and the published package must pass scripts/shipped-image-evidence.mjs before latest.",
-    "Candidate c14: public lab tree 1e365cf (lab stamp 1.2.0-nous.c14, not a release version) = c13 cf4d247 + the export of Space dev 6f572c31d2, which holds 31944be0df (a busy CLI credential agent is asked again for up to 20 s instead of read as signed out) and 06146070da (self-hosted skips the gateway-priority-panes push).",
-    "c14's own runs on 1e365cf: fresh install, the real 1.1.9 -> 1.2.0-nous.c14 update and the first agent (Codex) on Linux vm218, Windows vm219 and macOS vm221, and telemetry No on Linux. Repair, Docker stopped and the medium and large profile transitions are carried from c13 cf4d247, each marked carriedFrom with its reason.",
-    "The small profile was not run as a transition of its own: every c14 fresh install selected small (7.7-8 GiB runners) and reached ready on it, and every c13 transition started from small (small -> medium, small -> large) with data preserved.",
-    "Known environment/provider limit, not a SpaceApp defect, one failed check per system (first-agent, the free-model first answer): from the lab's egress address OpenCode Zen answered \"Free usage limit reached\" (provider.quota) for big-pickle, deepseek-v4.1-flash-free, glm-5.3-flash-free and iceman-free and \"not available in your country\" (provider.auth) for inkling-2-small-free, on all three systems (records 2026-11-09T23:45:14.586Z, 2026-11-10T00:32:03.979Z, 2026-11-10T01:24:39.821Z). Decision nous-20261106-report-25457 (Nous 6/11, as 1.1.9's ZEN_KNOWN): 1.2.0 has no zenFirstAnswerExceptions entry, so scripts/release-evidence.mjs names these three checks. The Codex first agent through Space Gateway (spacegw/gpt-5-mini, not a free model) passed on all three systems as a supplementary proof.",
-    "After 'spaceapp credentials set codex' the runtime list showed Codex LOGIN_REQUIRED for 559-606 s (the 10-minute missing-credential cache); the lab waited it out. The fix ships on dev only and is not part of 1.2.0-nous.c14.",
-    "Not re-run on c13 or c14: rc3 (c13 vm218 and vm221 failed only on oneSharedServer, as c12 on all three), update badge and two native panes on Windows (c13 vm219 stopped on an upstream OpenCode catalog 503), Getting Started first prompt, telemetry Yes, upgrade from 1.1.7, automatic browser opening. See candidate-c13.md and candidate-c14.md.",
-    "Lab-tested artifacts: launcher run-spaceapp-1.2.0-nous.c14.tgz sha256 be5139e9268941fe2f52dbe29269ab87c73fce753452c0d0591d48902b89850c; images from images-1.2.0-nous.c14.tar.gz sha256 973cb01bc1c0b3a139cd639d422acc19a4388ed88c3175a5e09c253341e19e1d (core sha256:e8284f983351b68376b8f80744a058c34140e9bab44bb6c3c4fa927193639a4a, cli sha256:1612fcffb3fa3a89889a7cbeb427c779db32e1dacb38d8eec13d7bb523c5ba0e). A release bump to 1.2.0 changes the candidate digest and the versions this file was tested with, so the release candidate needs its own evidence (or carried proofs with their reason, as 1.1.9 c8).",
-    "Windows commands ran as interactive scheduled tasks in an owned RDP session; this is not keystroke coverage of every wizard prompt.",
-    "VM hosts are x86_64. ARM64 container validation remains a release workflow gate.",
-    "Fresh installer timings use preloaded local candidate images; they exclude network image downloads.",
-    "npm next publication, environment approval and latest promotion have not been done."
-  ],
-  "testedArtifacts": {
-    "launcherTgzSha256": "be5139e9268941fe2f52dbe29269ab87c73fce753452c0d0591d48902b89850c",
-    "imagesArchiveSha256": "973cb01bc1c0b3a139cd639d422acc19a4388ed88c3175a5e09c253341e19e1d",
-    "images": {
-      "cli": "sha256:1612fcffb3fa3a89889a7cbeb427c779db32e1dacb38d8eec13d7bb523c5ba0e",
-      "core": "sha256:e8284f983351b68376b8f80744a058c34140e9bab44bb6c3c4fa927193639a4a"
-    },
-    "spaceSourceCommit": "6f572c31d2168343fb0597b632262ab9e54c96fd"
-  },
-  "candidate": {
-    "spaceSourceCommit": "6f572c31d2168343fb0597b632262ab9e54c96fd",
-    "overlayCommit": "64c3e719a2d0f3a4f62d678e0ee27d6e58c91765",
-    "images": {
-      "cli": "sha256:1612fcffb3fa3a89889a7cbeb427c779db32e1dacb38d8eec13d7bb523c5ba0e",
-      "core": "sha256:e8284f983351b68376b8f80744a058c34140e9bab44bb6c3c4fa927193639a4a"
-    },
-    "testedOverlayCommit": "1e365cf236f3b46d404574c9c0baf5623960f926"
-  },
-  "knownIssues": [],
-  "knownExceptions": [
-    {
-      "platform": "linux",
-      "scenario": "first-agent",
-      "decision": "nous-20261106-report-25457",
-      "reason": "OpenCode Zen refused every free model from the lab's egress address (big-pickle: provider.quota, deepseek-v4.1-flash-free: provider.quota, glm-5.3-flash-free: provider.quota, iceman-free: provider.quota, inkling-2-small-free: provider.auth); everything up to the answer ran, and the Codex first agent passed on the same install",
-      "observedAt": "2026-11-09T23:45:14.586Z",
-      "egress": "162.55.99.104",
-      "modelsRefused": [
-        "opencode/big-pickle",
-        "opencode/deepseek-v4.1-flash-free",
-        "opencode/glm-5.3-flash-free",
-        "opencode/iceman-free",
-        "opencode/inkling-2-small-free"
-      ],
-      "zenRecordSha256": "1c634ec305c45df658e176d1f8ba301354c3803b1c706693c1e0817832cdb52a",
-      "artifact": "linux-first-agent.json"
-    },
-    {
-      "platform": "windows",
-      "scenario": "first-agent",
-      "decision": "nous-20261106-report-25457",
-      "reason": "OpenCode Zen refused every free model from the lab's egress address (big-pickle: provider.quota, deepseek-v4.1-flash-free: provider.quota, glm-5.3-flash-free: provider.quota, iceman-free: provider.quota, inkling-2-small-free: provider.auth); everything up to the answer ran, and the Codex first agent passed on the same install",
-      "observedAt": "2026-11-10T00:32:03.979Z",
-      "egress": "162.55.99.104",
-      "modelsRefused": [
-        "opencode/big-pickle",
-        "opencode/deepseek-v4.1-flash-free",
-        "opencode/glm-5.3-flash-free",
-        "opencode/iceman-free",
-        "opencode/inkling-2-small-free"
-      ],
-      "zenRecordSha256": "c869034784b528b3be6c43d44d9b89d2d74d5626ba7b30ff1a386c1db0a6de62",
-      "artifact": "windows-first-agent.json"
-    },
-    {
-      "platform": "macos",
-      "scenario": "first-agent",
-      "decision": "nous-20261106-report-25457",
-      "reason": "OpenCode Zen refused every free model from the lab's egress address (big-pickle: provider.quota, deepseek-v4.1-flash-free: provider.quota, glm-5.3-flash-free: provider.quota, iceman-free: provider.quota, inkling-2-small-free: provider.auth); everything up to the answer ran, and the Codex first agent passed on the same install",
-      "observedAt": "2026-11-10T01:24:39.821Z",
-      "egress": "162.55.99.104",
-      "modelsRefused": [
-        "opencode/big-pickle",
-        "opencode/deepseek-v4.1-flash-free",
-        "opencode/glm-5.3-flash-free",
-        "opencode/iceman-free",
-        "opencode/inkling-2-small-free"
-      ],
-      "zenRecordSha256": "ba3b24d522ddca79ab56d4ecd202a9eecf8bcc4fb0a2a7b5b0c07e5e0cf7d825",
-      "artifact": "macos-first-agent.json"
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "uiOpened": true,
+      "nativeTaskId": "ses_e7ec4592affewcyzOu2ZQUa44s",
+      "responseObserved": true,
+      "freeModel": true,
+      "cli": "opencode",
+      "modelId": "opencode/big-pickle",
+      "artifact": "c7-macos-first-agent.json",
+      "artifactSha256": "8a1a41cb1f6c53dcf17a122747bd6891ef4d866be28e7c0216a6005cf937731d",
+      "carriedFrom": "1.1.9 25fb63fd (c7 1ea6bf8)",
+      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..1376c48a: 349 files changed, 10559 insertions(+), 2341 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (da459fc481)."
     }
   ]
 }
