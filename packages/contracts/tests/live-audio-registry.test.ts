@@ -11,7 +11,8 @@ import {
   isLiveAudioProviderId,
   validateLiveAudioConfig,
   voiceRealtimeSessionRequestSchema,
-  voiceRealtimeSessionResponseSchema
+  voiceRealtimeSessionResponseSchema,
+  voiceTranscriptionModelSchema
 } from "../src/index.js";
 
 describe("Live Audio Registry and Schemas", () => {
@@ -87,6 +88,13 @@ describe("Live Audio Registry and Schemas", () => {
 
     const localModels = getModelsForProvider("local").map((m) => m.id);
     expect(localModels).toContain("local-qwen3-greek");
+
+    // SenseVoice is an offline transcriber: it hears and writes, it never speaks.
+    const senseVoice = getModelsForProvider("local").find((m) => m.id === "local-sensevoice-small");
+    expect(senseVoice).toMatchObject({ providerId: "local", nativeAudio: true, badge: "Offline", capabilities: { speechToText: true, bidirectionalAudio: false, speechToSpeech: false } });
+    expect(voiceTranscriptionModelSchema.parse("local-sensevoice-small")).toBe("local-sensevoice-small");
+    expect(inferProviderFromModel("local-sensevoice-small")).toBe("local");
+    expect(validateLiveAudioConfig({ provider: "local", model: "local-sensevoice-small" }).valid).toBe(true);
 
     const vercelModels = getModelsForProvider("vercel").map((m) => m.id);
     expect(vercelModels).toContain("openai/gpt-live-1");

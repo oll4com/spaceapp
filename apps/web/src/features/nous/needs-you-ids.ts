@@ -2,7 +2,7 @@ import type { UiLanguage } from "@space/contracts";
 
 /**
  * Operator 1/11 23:08 BKK «needs you … επεξηγηματικα»: a card read "flq:U-Ji6bd-RQ2e". Space's record ids in a card's text read as what they
- * name, in the operator's language; the card's "Show original" keeps them as written. Tickets (q-…) and anything in `code` stay: the operator
+ * name, in the operator's language, in the original too (S6, 13/11: "Show original" changes the language only). Tickets (q-…) and anything in `code` stay: the operator
  * types those. A new id prefix that reaches cards joins this table.
  */
 const LABELS: Record<string, [el: string, en: string]> = {

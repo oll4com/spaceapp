@@ -497,8 +497,10 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     return { from: header(headers, "From"), subject: header(headers, "Subject"), labelIds: (message.labelIds as string[] | undefined) ?? [], hasAttachment: parts.some((part) => part.filename) };
   }
   /** The message a conversation is about: the newest one someone else sent (the operator's own reply is not the correspondent). */
-  function correspondent(messages: GmailJson[], account: string): GmailJson | null {
-    return [...messages].reverse().find((message) => senderAddress(header(headersOf(message), "From")) !== account) ?? messages.at(-1) ?? null;
+  /** The account and every address the owner sends as: never the correspondent (13/11 cbc40ebc: a reply from the send-as alias ntheo@ was logged as the correspondent, so the Score never saw the Vultr send). */
+  const mine = async (owner: string, account: string) => new Set([account, ...await ownAddresses(owner)].map((address) => address.toLowerCase()));
+  function correspondent(messages: GmailJson[], own: ReadonlySet<string>): GmailJson | null {
+    return [...messages].reverse().find((message) => !own.has(senderAddress(header(headersOf(message), "From")))) ?? messages.at(-1) ?? null;
   }
   /** One row of the per-account action log; a failed write never fails the action itself. */
   async function logAction(owner: string, input: { accountEmail: string; threadId: string; messageId?: string | null; action: MailOperatorAction; labelIds?: string[]; facts: Pick<MailRuleSubject, "from" | "subject"> | null;
@@ -528,6 +530,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       if (!fresh.length) return 0;
       let facts: MailRuleSubject | null = null;
       let messages: GmailJson[] = [];
+      let own: ReadonlySet<string> = new Set([email]);
       if (change.deleted) {
         // A deleted message has no metadata left; the log or the new-mail event still knows who sent it.
         const known = (await repository.listActions(owner, { accountEmail: email, threadId: change.threadId, limit: 1 }))[0];
@@ -538,7 +541,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         if (!facts) return 0;
       } else {
         messages = await client.thread(change.threadId, "metadata").then((thread) => (thread.messages as GmailJson[] | undefined) ?? [], () => []);
-        const message = correspondent(messages, email);
+        const message = correspondent(messages, own = await mine(owner, email));
         facts = message ? ruleSubject(message) : null;
       }
       let count = 0;
@@ -549,7 +552,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
           // A sent message is a reply or a forward of someone's mail; a new message of the operator's own is no action on mail.
           const sent = messages.find((message) => change.sent.includes(String(message.id ?? "")));
           const subject = sent ? header(headersOf(sent), "Subject") : "";
-          const answered = messages.some((message) => senderAddress(header(headersOf(message), "From")) !== email);
+          const answered = messages.some((message) => !own.has(senderAddress(header(headersOf(message), "From"))));
           if (/^\s*fwd?\s*:/i.test(subject)) action = "FORWARD";
           else if (!answered) continue;
           messageId = sent ? String(sent.id ?? "") || null : null;
@@ -572,7 +575,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     const held = (actions: MailOperatorAction[], label: string) => recent.some((row) => actions.includes(row.action) && row.labelIds.includes(label));
     const changes = [["LABEL", job.added.filter((label) => !held(["LABEL", "MOVE"], label))], ["UNLABEL", job.removed.filter((label) => !held(["UNLABEL"], label))]] as const;
     if (changes.every(([, labels]) => !labels.length)) return 0;
-    const message = correspondent(await client.thread(threadId, "metadata").then((thread) => (thread.messages as GmailJson[] | undefined) ?? [], () => []), email);
+    const message = correspondent(await client.thread(threadId, "metadata").then((thread) => (thread.messages as GmailJson[] | undefined) ?? [], () => []), await mine(owner, email));
     let count = 0;
     for (const [action, labelIds] of changes) {
       if (labelIds.length && await logAction(owner, { accountEmail: email, threadId, action, labelIds, facts: message ? ruleSubject(message) : null, actor: "SPACE", source: "GMAIL" })) count += 1;
@@ -591,9 +594,10 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     const jobLabels = new Set(userLabels.filter((label) => label.name.startsWith(JOB_COPILOT_LABEL_PREFIX)).map((label) => label.id));
     const counts = await mapLimited(page.ids, 4, async (threadId): Promise<number> => {
       const messages = await client.thread(threadId, "metadata").then((thread) => (thread.messages as GmailJson[] | undefined) ?? [], () => []);
-      const message = correspondent(messages, email);
+      const own = await mine(owner, email);
+      const message = correspondent(messages, own);
       // Conversations only of the operator's own mail say nothing about how they handle mail they receive.
-      if (!message || senderAddress(header(headersOf(message), "From")) === email) return 0;
+      if (!message || own.has(senderAddress(header(headersOf(message), "From")))) return 0;
       const labels = new Set(messages.flatMap((entry) => (entry.labelIds as string[] | undefined) ?? []));
       const filed = [...labels].filter((label) => /^Label_\d+$/.test(label) && !jobLabels.has(label));
       const actions: Array<{ action: MailOperatorAction; labelIds: string[] }> = [];
@@ -850,8 +854,8 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       // Read after the change: the correspondent for the log, and the labels a label action answers with.
       let after: Promise<GmailJson[]> | null = null;
       const messages = () => after ??= client.thread(threadId, "metadata").then((thread) => (thread.messages as GmailJson[] | undefined) ?? [], (error: unknown) => { throw gmailError(input.account, error); });
-      const subject = () => messages().then((list) => {
-        const message = correspondent(list, input.account);
+      const subject = () => messages().then(async (list) => {
+        const message = correspondent(list, await mine(owner, input.account));
         return message ? ruleSubject(message) : null;
       });
       const labelsNow = async () => LABEL_ACTIONS.has(input.action)
@@ -1453,8 +1457,8 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     async requestFix(owner: string, pane: Pane, input: MailCopilotFixRequest & { by?: "operator" | "rule"; ruleId?: string; ruleName?: string; facts?: MailRuleSubject | null; messageId?: string }): Promise<{ event: MailCopilotEvent; runStarted: boolean }> {
       await mailAccounts(owner, pane, input.account);
       const by = input.by ?? "operator";
-      const facts = input.facts !== undefined ? input.facts : await clientFor(owner, input.account).then((client) => client.thread(input.threadId, "metadata")).then((thread) => {
-        const message = correspondent((thread.messages as GmailJson[] | undefined) ?? [], input.account);
+      const facts = input.facts !== undefined ? input.facts : await clientFor(owner, input.account).then((client) => client.thread(input.threadId, "metadata")).then(async (thread) => {
+        const message = correspondent((thread.messages as GmailJson[] | undefined) ?? [], await mine(owner, input.account));
         return message ? ruleSubject(message) : null;
       }, (error: unknown) => { throw gmailError(input.account, error); });
       const row = await logAction(owner, { accountEmail: input.account, threadId: input.threadId, messageId: input.messageId ?? null, action: "FIX", facts,

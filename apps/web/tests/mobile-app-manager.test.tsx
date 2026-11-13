@@ -95,11 +95,17 @@ describe("MobileAppManager", () => {
     apiMock.createMobilePairing.mockResolvedValue({ offerId: "AAAAAAAAAAA", qr: "SPACEAPP-PAIR:1:abc", fingerprint: configured.fingerprint, scopes: ["read", "act"],
       expiresAt: new Date(Date.now() + 120_000).toISOString() });
     apiMock.cancelMobilePairing.mockResolvedValue({ cancelled: true });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     render(<MobileAppManager />);
     fireEvent.click(await screen.findByRole("button", { name: "Pair a phone" }));
     const code = await screen.findByRole("img", { name: "Pairing code" });
     expect(code.closest("[data-sensitive-masked='pairing']")).toBeTruthy();
     expect(screen.getByText(/check that it shows the fingerprint ABCD-EFGH-IJKL-MNOP-QRST-UVWX/)).toBeTruthy();
+    // Space Link (ADR-014): the same code links another SpaceApp; writeText fires no copy event, so the Space clipboard never keeps it.
+    fireEvent.click(screen.getByRole("button", { name: "Copy code for another SpaceApp" }));
+    expect(await screen.findByRole("button", { name: "Copied: paste it in the other SpaceApp" })).toBeTruthy();
+    expect(writeText).toHaveBeenCalledWith("SPACEAPP-PAIR:1:abc");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(apiMock.cancelMobilePairing).toHaveBeenCalledWith("AAAAAAAAAAA"));
     await waitFor(() => expect(screen.queryByRole("img", { name: "Pairing code" })).toBeNull());

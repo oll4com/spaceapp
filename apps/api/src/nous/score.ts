@@ -9,6 +9,7 @@ import type { ApprovalSettlement } from "./approvals.js";
 import { predictionAccuracy } from "./predictions.js";
 import { NOUS_WEIGHTS, type NousDimension, type NousDimensionScore, type NousScorecard } from "./progress.js";
 import { SETTLED_DECISION_OUTCOME } from "./workbench.js";
+import { scorePushItems, type UnworkedScoreVariable } from "./score-push.js";
 
 /**
  * Score (operator 3/11 23:11 BKK «θα σε βαθμολογεί αρνητικά όσο πλάνα και request μένουν ανοιχτά», plan clipboard:1NF6u6gcCwtj): Nous's
@@ -20,10 +21,11 @@ export const NOUS_SCORE_WEIGHTS = {
   /** Each open plan, its squared full-day age, and more when no open pane works on it or it is STALLED (stalled-plans.ts). */
   openPlan: -2, openPlanPerDay: -2, planAgeExponent: 2, planNoWorkingPane: -3, planStalled: -5,
   /**
-   * Every open pane; an idle or finished pane left open past one hour costs extra. Each completed day in the window also costs its average
-   * number of open panes (all types, from the 15-minute snapshots) × paneDay (operator 4/11 nous_msg:44e3fd48).
+   * Every open pane. Each completed day in the window also costs its average number of open panes (all types, from the 15-minute snapshots)
+   * × paneDay (operator 4/11 nous_msg:44e3fd48). A pane open and doing nothing past 60 min costs idlePanePerHour per started hour past it
+   * (operator 13/11 09:48 BKK nous_msg:b1994bb4, the Mail Copilot excepted).
    */
-  openPane: -1, paneIdlePast1h: -2, paneDay: -0.2,
+  openPane: -1, paneDay: -0.2, idlePanePerHour: -2,
   /**
    * Idle open browsers (operator 5/11 14:47 BKK «αρνητική βαθμολογία … για όσους browser κρατάς ανοιχτούς χωρίς να χρειάζονται»): a live pane
    * browser with no use for over BROWSER_IDLE_MS (30 min), per started hour past it; and each one Space's browser reaper had to close in the window.
@@ -97,7 +99,9 @@ const DAY_MS = 86_400_000;
 const LESSON_INCIDENT = /^--- Incident \((?:merged from \S+, )?(\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z)?)/gm;
 /** Counts are grouped in the owner's local day; refused calls are included in failed by the fact recorder, so subtract them once. */
 export interface NousScoreDayErrors { day: string; calls: number; failed: number; refused: number; corrections: number; lessons: number;
-  declined: number; predictionMisses: number; couldHaveDecided: number; chatErrors: number; decisionsFailed: number }
+  declined: number; predictionMisses: number; couldHaveDecided: number; chatErrors: number; decisionsFailed: number;
+  /** Failed calls (refused excluded) by tool: the causes the errors lever names for a code-fix pane. */
+  tools?: Record<string, number> }
 const dayFormatters = new Map<string, Intl.DateTimeFormat>();
 export function scoreDay(at: number, timeZone: string): string {
   let formatter = dayFormatters.get(timeZone);
@@ -119,17 +123,29 @@ export function nousScoreErrors(input: { now: number; timeZone: string; facts: N
   for (const fact of input.facts) {
     const day = on(fact.endedAt);
     if (!day) continue;
-    for (const tool of Object.values(fact.tools)) { day.calls += tool.calls; day.failed += Math.max(0, tool.failed - tool.refused); day.refused += tool.refused; }
+    for (const [name, tool] of Object.entries(fact.tools)) {
+      const failed = Math.max(0, tool.failed - tool.refused);
+      day.calls += tool.calls; day.failed += failed; day.refused += tool.refused;
+      if (failed) day.tools = { ...day.tools, [name]: (day.tools?.[name] ?? 0) + failed };
+    }
     day.corrections += fact.outcomes.filter((outcome) => outcome.correction).length;
     if (fact.status === "FAILED" || fact.status === "TIMEOUT") day.chatErrors += 1;
   }
   // A lesson counts on its creation and on each incident it gained (a same-cause save or a merged lesson, at the merged one's own date), never on a
   // rewrite or the merge itself (4/11: 52 merges in 7 days each moved an old lesson into today). A note with no created_at counts only its incidents: its update
   // is a rewrite (5/11: 103 legacy lessons rewritten in the window cost ~515 points; migration 0300 gave them their creation date).
+  // A lesson saved in a turn whose cause is already charged costs nothing (13/11, 8+~20 of 39): the daily REVIEW re-records failures, misses and
+  // corrections already counted, and a correction's own lesson would charge it twice (operator decision b6effe98 α). Self-found lessons count.
+  // shortcut: matched by time, so a lesson of a turn running beside such a turn is excused too; record the turn id on the note if that matters.
+  const charged = input.facts.filter((fact) => fact.reason === "REVIEW" || fact.outcomes.some((outcome) => outcome.correction))
+    .map((fact) => [Date.parse(fact.startedAt), Date.parse(fact.endedAt)] as const);
   for (const lesson of input.lessons) {
     if (!/^lessons(?:-|$)/.test(lesson.key)) continue;
     const incidents = [...(lesson.text ?? "").matchAll(LESSON_INCIDENT)].map((match) => match[1]!.length === 10 ? `${match[1]}T00:00:00.000Z` : match[1]!);
-    for (const at of [lesson.createdAt ?? null, ...incidents]) { const day = at ? on(at) : null; if (day) day.lessons += 1; }
+    for (const at of [lesson.createdAt ?? null, ...incidents]) {
+      if (!at || charged.some(([from, to]) => Date.parse(at) >= from && Date.parse(at) <= to)) continue;
+      const day = on(at); if (day) day.lessons += 1;
+    }
   }
   for (const decision of input.decisions) {
     const answered = decision.answeredAt ? on(decision.answeredAt) : null;
@@ -149,12 +165,16 @@ export function nousScoreErrors(input: { now: number; timeZone: string; facts: N
 export interface NousScoreInput {
   now: number;
   /** progress and pane (the working or idle pane's name) only name the lever's move; they cost nothing. */
-  plans: Array<{ id: string; title: string; createdAt: string; working: boolean; stalled: string | null; progress?: number; pane?: string | null }>;
+  /** `waits`: its next step when no step can run (all open ones BLOCKED): the 90 % push sends it nothing, so its lever says so (13/11, 14 levers said "send"). */
+  plans: Array<{ id: string; title: string; createdAt: string; working: boolean; stalled: string | null; progress?: number; pane?: string | null; waits?: string | null;
+    /** `held`: the plan map's wait on someone else (plan-map planHoldText: the operator, a third party, a promote, a date, another plan, the server): no pane to open for it. */
+    held?: string | null }>;
   completedPlans: Array<{ id: string; title: string; at: string }>;
   requests: Array<{ id: string | null; summary: string; openedAt: string }>;
   done: Array<{ id: string; title: string; at: string }>;
   utilization: { value: number; target: number; what: string } | null;
-  panes: Array<{ id: string; title: string; idleSince: string | null }>;
+  /** `idleSince`: when it stopped working (no turn, no browser in use), null while it works; `mode` names the Mail Copilot, never charged idle. */
+  panes: Array<{ id: string; title: string; idleSince: string | null; mode?: string }>;
   /** The live pane browsers unused past 30 minutes that nothing keeps (browser-reaper.ts), and those the reaper closed in the window. */
   browsers?: { idle: Array<{ id: string; title: string; idleSince: string }>; reaped: Array<{ id: string | null; title: string; at: string }> };
   /** The decisions; `sent` is a mail thread's SENT check (mailThreadSent) by decision id, absent where it has no thread or it was not read. */
@@ -172,7 +192,7 @@ export interface NousScoreInput {
   /** Calendar days and today use the owner's working time zone. */
   timeZone: string;
   /** The OPEN tasks with a DAILY schedule and a pane, and their runs in the window (typed: the text reached the pane). */
-  dailyTasks: Array<{ id: string; title: string; createdAt: string; time: string; timeZone: string }>;
+  dailyTasks: Array<{ id: string; title: string; createdAt: string; time: string; timeZone: string; scheduledSince?: string }>;
   taskRuns: Array<{ taskId: string; dueAt: string; typed: boolean }>;
   /** The operator's messages in the window: Nous's first answer covering each and its Done record, when there is one. */
   messages: Array<{ id: string; at: string; answeredAt: string | null; doneAt: string | null }>;
@@ -184,7 +204,9 @@ export interface NousScoreInput {
   lostAtResets?: Array<Pick<GatewayLostWindow, "label" | "quotaKey" | "resetAt" | "lostPercent" | "lostTokens" | "lostCostUsd">>;
   /** The Marketing page's read (nous/marketing.ts); absent where no Marketing Copilot runs. */
   marketing?: Pick<NousMarketingReport, "score" | "target" | "daysBelowTarget" | "daysWithoutResult"> & {
-    posts: Array<Pick<NousMarketingPostRow, "id" | "number" | "channel" | "status" | "at" | "score" | "title">> } | null;
+    posts: Array<Pick<NousMarketingPostRow, "id" | "number" | "channel" | "status" | "at" | "score" | "title"> & { kind?: string }> } | null;
+  /** What the working panes are on: each working plan's title and each working pane's latest report; a variable none names has no pane on it. */
+  working?: string[];
   /** The owner's score reset (NOUS_SCORE_RESET_NOTE): nothing before `at` counts, and `offset` (the score then) is taken off, so it read 0 then. */
   reset?: NousScoreReset | null;
 }
@@ -231,7 +253,8 @@ function marketingItems(input: NonNullable<NousScoreInput["marketing"]>, now: nu
       points: round(short * w.marketingPerPoint + marketing.daysBelowTarget * w.marketingDayBelowTarget * (short / marketing.target)),
       detail: `${marketing.daysBelowTarget} d in a row below it · ${w.marketingPerPoint} a point short, ${w.marketingDayBelowTarget} a day × the share short` }] : []),
     ...recent.filter((entry) => entry.status === "FAILED").map((entry) => post(entry, w.marketingFailed, "failed to publish")),
-    ...recent.filter((entry) => entry.status === "PUBLISHED" && entry.score === 0).map((entry) => post(entry, w.marketingZeroReach, "published, reached no one")),
+    // A reply is a conversation (step 1.6): it never counts as a post that reached no one.
+    ...recent.filter((entry) => entry.status === "PUBLISHED" && entry.score === 0 && entry.kind !== "REPLY").map((entry) => post(entry, w.marketingZeroReach, "published, reached no one")),
     ...(marketing.daysWithoutResult ? [{ id: null, label: `${marketing.daysWithoutResult} of the last 7 days without a post that brought anything`,
       points: marketing.daysWithoutResult * w.marketingDayWithoutResult, detail: `${w.marketingDayWithoutResult} a day` }] : [])
   ];
@@ -241,7 +264,7 @@ function marketingItems(input: NonNullable<NousScoreInput["marketing"]>, now: nu
 export interface NousScoreLever { id: string | null; label: string; points: number; perDay: number; action: string }
 
 /** The score and its tiles from what is open now and what happened in the window; pure. */
-export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "tiles" | "breakdown"> & { levers: NousScoreLever[] } {
+export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "tiles" | "breakdown"> & { levers: NousScoreLever[]; unworked: UnworkedScoreVariable[]; projects: Array<{ name: string; points: number }> } {
   const w = NOUS_SCORE_WEIGHTS;
   // After a reset every window and age starts at it: what was open then counts from then, what happened before never.
   const resetAt = input.reset ? Date.parse(input.reset.at) : 0;
@@ -255,10 +278,13 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
     return { id: plan.id, label: plan.title, points, detail: [`open ${ageText(age)}`, plan.working ? "a pane works on it" : "no working pane",
       ...(plan.stalled ? [`STALLED: ${plan.stalled}`] : [])].join(" · ") };
   });
-  const panes = input.panes.map((pane): NousScoreItem => {
-    const idle = pane.idleSince ? Math.max(0, input.now - from(pane.idleSince)) : 0;
-    return { id: pane.id, label: pane.title, points: w.openPane + (idle > HOUR_MS ? w.paneIdlePast1h : 0),
-      detail: idle > HOUR_MS ? `idle or finished ${ageText(idle)} · left open` : "open" };
+  const panes = input.panes.map((pane): NousScoreItem => ({ id: pane.id, label: pane.title, points: w.openPane, detail: "open" }));
+  // Idle open panes: past 60 min doing nothing, every started hour past it costs. A pane already under Idle open browsers is charged there only.
+  const browserIdle = new Set((input.browsers?.idle ?? []).map((browser) => browser.id));
+  const idlePanes = input.panes.flatMap((pane): NousScoreItem[] => {
+    const idle = pane.idleSince && pane.mode !== "MAIL_COPILOT" && !browserIdle.has(pane.id) ? Math.max(0, input.now - from(pane.idleSince)) : 0;
+    return idle > HOUR_MS ? [{ id: pane.id, label: pane.title, points: Math.ceil((idle - HOUR_MS) / HOUR_MS) * w.idlePanePerHour,
+      detail: `idle or finished ${ageText(idle)} · ${w.idlePanePerHour} an hour past 60 min` }] : [];
   });
   // Each live idle browser: once past 30 min unused, every started hour costs (the first at once).
   const browserHours = (idleSince: string) => Math.max(1, Math.ceil((input.now - from(idleSince) - BROWSER_IDLE_MS) / HOUR_MS));
@@ -342,9 +368,12 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
   // A day is judged once the scheduler's own wait for a busy pane is over (it skips the occurrence then). Every claimed occurrence leaves a
   // run row, so days before the oldest row are days before the run log existed (stable: 31/10 22:33 UTC, 43 of 46 "missed" days 4/11), never misses.
   const logStart = input.taskRuns.length ? Math.min(...input.taskRuns.map((run) => Date.parse(run.dueAt))) - 1 : since;
+  // Days before the schedule last began to apply (a pause, operator 9/11: 21 of the 22 "missed" days on 13/11) were never owed; it owes
+  // only the 12 h before (R71 in taskScheduleNextRunAt), so that is where judging starts.
   const dailyTasks = input.dailyTasks.map((task): NousScoreItem => {
     const due: string[] = [];
-    for (let at = nextDotScheduleRun({ kind: "DAILY", time: task.time }, task.timeZone, Math.max(Date.parse(task.createdAt), since, logStart)); at !== null && at <= input.now - DOT_SCHEDULE_GRACE_MS;
+    const owedFrom = task.scheduledSince ? Date.parse(task.scheduledSince) - DOT_SCHEDULE_GRACE_MS : 0;
+    for (let at = nextDotScheduleRun({ kind: "DAILY", time: task.time }, task.timeZone, Math.max(Date.parse(task.createdAt), owedFrom, since, logStart)); at !== null && at <= input.now - DOT_SCHEDULE_GRACE_MS;
       at = nextDotScheduleRun({ kind: "DAILY", time: task.time }, task.timeZone, at)) due.push(scoreDay(at, task.timeZone));
     const ran = new Set(input.taskRuns.filter((run) => run.taskId === task.id && run.typed).map((run) => scoreDay(Date.parse(run.dueAt), task.timeZone)));
     const missed = due.filter((day) => !ran.has(day));
@@ -401,8 +430,9 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
   const resetLabel = input.reset ? `At the reset ${input.reset.at.slice(0, 16).replace("T", " ")} UTC` : "";
   const tiles = [
     tile("plans", "Open plans", plans, `${plans.length} open`),
-    tile("panes", "Open panes", [...panes, ...paneDays], `${panes.length} open · ${panes.filter((pane) => pane.points < w.openPane).length} idle past 1 h`
+    tile("panes", "Open panes", [...panes, ...paneDays], `${panes.length} open`
       + (paneDays.length ? ` · ${round(input.paneDays.reduce((sum, day) => sum + day.average, 0) / input.paneDays.length)} open a day on average` : "")),
+    tile("idlePanes", "Idle open panes", idlePanes, `${idlePanes.length} pane${idlePanes.length === 1 ? "" : "s"} idle past 60 min`),
     tile("browsers", "Idle open browsers", [...idleBrowsers, ...reapedBrowsers], `${idleBrowsers.length} open unused past 30 min · ${reapedBrowsers.length} closed by Space in ${NOUS_SCORE_WINDOW_DAYS} days`),
     tile("goals", "Goals", goals, `${goals.length} active · unmet days, no progress and overdue`),
     tile("projects", "Big projects", projects, `${projectRows.length} projects · lower success and more days cost more`),
@@ -425,14 +455,49 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
       detail: `the score then (${signed(input.reset.offset)}) taken off; only what happens after it moves the score` }], "only what happens after it counts")] : [])
   ].map((entry) => baseline?.[entry.key] ? { ...entry, points: round(entry.points - baseline[entry.key]!),
     items: [...entry.items, { id: null, label: resetLabel, points: -baseline[entry.key]!, detail: "what this counted then, taken off; only what happens after it moves it" }] } : entry);
-  // What makes up the negative (operator 4/11 nous_msg:5e5d7526): every costing tile, each big project on its own, biggest first.
-  const costs = [...tiles.filter((entry) => entry.key !== "projects" && entry.key !== "reset" && entry.points < 0).map((entry) => ({ label: entry.label, points: entry.points, detail: entry.detail })),
-    ...projectRows.filter((row) => row.points < 0).map((row) => ({ label: row.name, points: row.points, detail: row.detail }))];
+  // What makes up the negative (operator 4/11 nous_msg:5e5d7526): every costing tile, each big project on its own, biggest first. A project row takes
+  // off its own reset baseline (project:<name>), so the rows add up to the tile (13/11: Startup programs −185.6 here, Big projects −1.6 on the tile);
+  // a reset stored before those keys has only the tile's, so the projects show as the one tile.
+  const projectBaseline = (name: string) => baseline?.[`project:${name}`] ?? 0;
+  const perProject = !baseline?.projects || projectRows.some((row) => `project:${row.name}` in baseline);
+  const projectsTile = tiles.find((entry) => entry.key === "projects")!;
+  const costs = [...tiles.filter((entry) => entry.key !== "projects" && entry.key !== "reset").map((entry) => ({ key: entry.key, label: entry.label, points: entry.points, detail: entry.detail })),
+    ...(perProject ? projectRows.map((row) => ({ key: "projects" as const, label: row.name, points: round(row.points - projectBaseline(row.name)), detail: row.detail }))
+      : [{ key: "projects" as const, label: projectsTile.label, points: projectsTile.points, detail: projectsTile.detail }])].filter((entry) => entry.points < 0);
   const lost = costs.reduce((sum, entry) => sum + entry.points, 0);
-  const breakdown = costs.map((entry) => ({ ...entry, share: round((entry.points / lost) * 100) })).sort((a, b) => a.points - b.points);
+  const shared = costs.map((entry) => ({ ...entry, share: round((entry.points / lost) * 100) })).sort((a, b) => a.points - b.points);
+  const breakdown = shared.map((entry) => ({ label: entry.label, points: entry.points, share: entry.share, detail: entry.detail }));
+  const score = round(tiles.reduce((sum, entry) => sum + entry.points, 0));
+  // A variable no item lever removes (13/11, goal 84ba917a: "No move removes Daily Nous errors −538" left it to the window): the move that cuts it
+  // at its cause. Errors name their causes with counts, worst first, for a code-fix pane.
+  const totalTools = new Map<string, number>();
+  for (const day of errors) for (const [tool, count] of Object.entries(day.tools ?? {})) totalTools.set(tool, (totalTools.get(tool) ?? 0) + count);
+  const unnamed = totals.failed - [...totalTools.values()].reduce((sum, count) => sum + count, 0);
+  const errorCauses = ([...[...totalTools].map(([tool, count]) => [`${tool} failed`, count, w.toolFailure] as const), ["failed tools", unnamed, w.toolFailure],
+    ["corrections", totals.corrections, w.correction], ["lessons", totals.lessons, w.lesson], ["declined decisions", totals.declined, w.decisionDeclined],
+    ["prediction misses", totals.predictionMisses, w.predictionMiss], ["asked though it could decide", totals.couldHaveDecided, w.couldHaveDecided],
+    ["failed or timed-out turns", totals.chatErrors, w.chatError], ["decisions whose action failed", totals.decisionsFailed, w.decisionFailed]] as const)
+    .filter(([, count]) => count > 0).sort((a, b) => a[1] * a[2] - b[1] * b[2]).map(([what, count, weight]) => `${what} ×${count} (${signed(count * weight)})`).join(", ");
+  const windowDays = Math.max(1, Math.ceil((input.now - since) / DAY_MS));
+  const variableMoves: Partial<Record<NousScoreTile["key"], string>> = {
+    dailyErrors: `open or brief a code-fix pane with these causes and counts: ${errorCauses || "none counted"}; each cause it fixes stops its count`,
+    response: `brief a code-fix pane on what made these first answers or Dones slow (${tiles.find((entry) => entry.key === "response")!.items.filter((item) => item.points < 0).map((item) => `${item.label}: ${item.detail}`).join("; ")})`,
+    dailyTasks: `brief a code-fix pane on why these runs missed their pane (${dailyTasks.filter((item) => item.points < 0).map((item) => `${item.label}: ${item.detail}`).join("; ")})`,
+    lostTokens: "spend each subscription week before its reset: panes and helpers on the pools the Provider advice names",
+    marketing: "brief the Marketing Copilot on its failed and no-reach posts and the days without a result",
+    scorecard: "work the scorecard dimensions below their baseline (space_world Scorecard)",
+    projects: "move its open entries (apply, follow up or close each) and brief its copilot or a code-fix pane on what keeps failing"
+  };
+  const words = (label: string) => label.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 4);
+  // shortcut: a pane counts as on a variable when a working plan's title or a working pane's report names every word of it; link plans to variables if this misses.
+  const covered = (label: string) => (input.working ?? []).some((text) => words(label).every((word) => text.toLowerCase().includes(word)));
+  const withMove = shared.filter((entry) => variableMoves[entry.key]);
+  const unworkedVariable = (entry: (typeof shared)[number]) => score < 0 && entry.share > 5 && !covered(entry.label);
+  const variableLever = (entry: (typeof shared)[number], prefix = ""): NousScoreLever => ({ id: null,
+    label: `${entry.label} (${entry.share}% of the negative)`, points: entry.points,
+    perDay: entry.key === "dailyErrors" || entry.key === "response" ? round(entry.points / windowDays) : 0, action: `${prefix}${variableMoves[entry.key]!}` });
   // Levers: every open item a move of Nous's removes or stops growing, costliest by tomorrow first (no count: No Arbitrary Limits).
   const requestPoints = (age: number) => w.openRequest + (age > HOUR_MS ? w.requestPast1h : 0) + (age > 6 * HOUR_MS ? w.requestPast6h : 0) + (age > DAY_MS ? w.requestPast24h : 0);
-  const idlePanes = panes.filter((pane) => pane.points < w.openPane);
   const levers: NousScoreLever[] = [
     ...input.plans.map((plan, index): NousScoreLever => {
       const days = Math.floor(Math.max(0, input.now - from(plan.createdAt)) / DAY_MS);
@@ -441,6 +506,8 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
         perDay: w.openPlanPerDay * ((days + 1) ** w.planAgeExponent - days ** w.planAgeExponent),
         action: progress >= 95 ? "complete it with its proof (space_plan_update), it removes all of it"
           : plan.working ? `${plan.pane ?? "its pane"} works on it: send the next step the moment it reports`
+            : plan.held ? `it ${plan.held}: no pane to open or send; clear the wait (you: one ask; a third party: follow up; a date or another plan: nothing until then)`
+            : plan.waits ? `every open step waits (next: ${plan.waits}): nothing to send; unblock its step when the wait ends (space_plan_update)`
             : plan.pane ? `send ${plan.pane} its next step now` : "no pane works on it: open one and send the next step" };
     }),
     ...input.requests.map((request, index): NousScoreLever => {
@@ -461,23 +528,27 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
     }),
     ...dailyTasks.filter((task) => task.points < 0).map((task): NousScoreLever => ({ id: task.id, label: `Daily task [${task.id}] "${task.label}"`, points: task.points,
       perDay: w.dailyTaskMissed, action: "make sure today's run reaches its pane (space_tasks); missed days leave only with the window" })),
-    ...(idlePanes.length ? [{ id: null, label: `${idlePanes.length} pane${idlePanes.length === 1 ? "" : "s"} idle or finished past 1 h`, points: round(idlePanes.reduce((sum, pane) => sum + pane.points, 0)),
-      perDay: round(idlePanes.length * w.paneDay), action: "save each to memory and close it (Standing orders) before you open new panes: it frees RAM and room slots" }] : []),
+    ...(idlePanes.length ? [{ id: null, label: `${idlePanes.length} pane${idlePanes.length === 1 ? "" : "s"} idle past 60 min (${[...idlePanes].sort((a, b) => a.points - b.points).map((pane) => `${pane.label} [${pane.id}] ${pane.detail.split(" · ")[0]}`).join(", ")})`,
+      points: round(idlePanes.reduce((sum, pane) => sum + pane.points + w.openPane, 0)), perDay: round(idlePanes.length * (24 * w.idlePanePerHour + w.paneDay)),
+      action: "save each to memory and close it (Standing orders) before you open new panes: it frees RAM and room slots; one that waits (on you, a date, a promote, a queue ticket) is closed too, not kept open" }] : []),
     ...(input.browsers?.idle ?? []).map((browser, index): NousScoreLever => ({ id: browser.id, label: `Browser of ${browser.title} unused ${ageText(Math.max(0, input.now - from(browser.idleSince)))}`,
       points: idleBrowsers[index]!.points, perDay: 24 * w.idleBrowserPerHour,
       action: `close it: close its pane if it is done, or its tabs (space_browser_close_tab); each one Space has to close costs ${w.browserReaped}` })),
     ...(use && use.value < use.target ? [{ id: null, label: `Utilization ${Math.round(use.value)}% against ${use.target}%`, points: utilization[0]!.points, perDay: 0,
-      action: "dispatch now: plans and requests to idle panes, helpers (space_subagents) on free slots, panes on pools the Provider advice says to use" }] : [])
+      action: "dispatch now: plans and requests to idle panes, helpers (space_subagents) on free slots, panes on pools the Provider advice says to use" }] : []),
+    ...withMove.filter((entry) => !unworkedVariable(entry)).map((entry) => variableLever(entry))
   ].filter((lever) => lever.points + lever.perDay < 0).sort((a, b) => (a.points + a.perDay) - (b.points + b.perDay));
-  return { score: round(tiles.reduce((sum, entry) => sum + entry.points, 0)), tiles, breakdown, levers };
+  // While the Score is negative, a variable over 5 % of it that no pane works on goes first, saying so.
+  const unworked = withMove.filter(unworkedVariable).map((entry) => variableLever(entry, "no pane works on it: "));
+  // The same variables as hold A items on every snapshot (score-push.ts, operator 13/11 07:23 BKK).
+  const unworkedVariables = withMove.filter(unworkedVariable).map((entry): UnworkedScoreVariable => ({ label: entry.label, share: entry.share, points: entry.points, move: variableMoves[entry.key]! }));
+  return { score, tiles, breakdown, levers: [...unworked, ...levers], unworked: unworkedVariables, projects: projectRows.map((row) => ({ name: row.name, points: row.points })) };
 }
 
-/** The world's "## Score levers now": every lever costliest by tomorrow first, then the costs no move removes (they leave the window by themselves). */
-export function nousScoreLeversText(levers: NousScoreLever[], score: Pick<NousScore, "tiles">): string {
-  const passive = score.tiles.filter((entry) => ["dailyErrors", "response", "lostTokens"].includes(entry.key) && entry.points < 0);
+/** The world's "## Score levers now": a variable over 5 % of a negative Score that no pane works on first, then every lever costliest by tomorrow first. */
+export function nousScoreLeversText(levers: NousScoreLever[]): string {
   return ["## Score levers now (your first measure: take the top move first; points now → tomorrow if left · the move that cuts them)",
-    ...(levers.length ? levers.map((lever) => `- ${lever.label.replace(/\s+/g, " ")} · ${signed(lever.points)} now → ${signed(lever.points + lever.perDay)} tomorrow · ${lever.action}`) : ["- none"]),
-    ...(passive.length ? [`No move removes ${passive.map((entry) => `${entry.label} ${signed(entry.points)}`).join(", ")}: they leave the ${NOUS_SCORE_WINDOW_DAYS}-day window by themselves; add no new ones.`] : [])].join("\n");
+    ...(levers.length ? levers.map((lever) => `- ${lever.label.replace(/\s+/g, " ")} · ${signed(lever.points)} now → ${signed(lever.points + lever.perDay)} tomorrow · ${lever.action}`) : ["- none"])].join("\n");
 }
 
 /** The world's line and space_nous_progress's: the score, its changes and the tile that costs most with its worst item. */
@@ -487,10 +558,10 @@ export function nousScoreLine(score: NousScore): string {
   const change = (label: string, value: number | null) => value === null ? `${label} –` : `${label} ${signed(value)}`;
   return `Score: ${signed(score.score)} (${change("Δ24h", score.change24h)}, ${change("Δ7d", score.change7d)})`
     + (worst && worst.points < 0 ? `, worst: ${worst.label} ${signed(worst.points)}${item && item.points < 0 ? ` (${item.label.slice(0, 80)} ${signed(item.points)})` : ""}` : "")
-    + score.tiles.filter((tile) => ["panes", "browsers", "goals", "dailyErrors", "dailyTasks", "response", "projects", "marketing", "lostTokens", "approvedNotDone"].includes(tile.key))
+    + score.tiles.filter((tile) => ["panes", "idlePanes", "browsers", "goals", "dailyErrors", "dailyTasks", "response", "projects", "marketing", "lostTokens", "approvedNotDone"].includes(tile.key))
       .map((tile) => `, ${tile.label}: ${tile.detail} (${signed(tile.points)})`).join("")
     + (score.breakdown.length ? `. Negative by variable: ${score.breakdown.map((entry) => `${entry.label} ${signed(entry.points)} (${entry.share} %)`).join(", ")}` : "")
-    + ". Open panes (now and each past day's average), browsers kept open unused past 30 min (per hour, and each Space had to close) and requests cost points; plan age grows quadratically. Unmet goals cost per day, more without progress or past deadline. Daily errors count failed tools, failed or timed-out turns and declined, mispredicted or failed decisions."
+    + ". Open panes (now and each past day's average), each started hour a pane sits idle past 60 min, browsers kept open unused past 30 min (per hour, and each Space had to close) and requests cost points; plan age grows quadratically. Unmet goals cost per day, more without progress or past deadline. Daily errors count failed tools, failed or timed-out turns and declined, mispredicted or failed decisions."
     + " Each missed day of a daily task costs points, so does a first answer slower than 2 min or a Done slower than 6 h, and the big projects' (funding, jobs, crypto, freelance) low success, more each day without it, and marketing below its target (failed and no-reach posts, days without a result)."
     + ` Lost tokens (a subscription week left unused at its reset) cost ${-NOUS_SCORE_WEIGHTS.lostAtResetPerPoint} a point.`
     + ` EXTERNAL decisions approved and not confirmed done (their copilot item's final state or its replacement post's, not before an approved post's scheduled date, one done settles its duplicates, a send of ours to their recipients or in any thread of any account with no bounce for them after it, else an outcome that ran; space_settle_decision marks one done with proof or void) cost points past a ${NOUS_SCORE_WEIGHTS.approvedNotDoneGraceHours} h grace, more each hour.`;
@@ -519,10 +590,13 @@ export function paneDaysOf(rows: ScoreRow[], now: number, timeZone: string): Nou
 export function createNousScore(deps: { repository: Repository; input(owner: string, now: number): Promise<Omit<NousScoreInput, "paneDays">>; owners(): Promise<string[]>;
   /** Stores the owner's reset (NOUS_SCORE_RESET_NOTE) so input() returns it from then on. */
   saveReset?(owner: string, reset: NousScoreReset): Promise<void>;
+  /** Hands each snapshot's unworked variables to Nous as hold A items (wiring: service.notice "score-push"). */
+  push?(owner: string, push: NonNullable<ReturnType<typeof scorePushItems>>): Promise<void>;
   now?: () => number; warn?(error: unknown): void }) {
   const now = deps.now ?? Date.now;
   const latest = new Map<string, NousScore>();
   const leversOf = new Map<string, NousScoreLever[]>();
+  const unworkedOf = new Map<string, UnworkedScoreVariable[]>();
   const running = new Map<string, Promise<NousScore>>();
   // The retained snapshots (30 days), read once per owner; each snapshot this process writes is appended, so neither Δ nor the graph reads them again.
   const snapshots = new Map<string, Promise<ScoreRow[]>>();
@@ -543,7 +617,7 @@ export function createNousScore(deps: { repository: Repository; input(owner: str
     const [base, all] = await Promise.all([deps.input(owner, at), rowsOf(owner)]);
     // Snapshots before the reset count neither in the pane days nor in Δ.
     const history = base.reset ? all.filter((row) => Date.parse(row.at) >= Date.parse(base.reset!.at)) : all;
-    const { score, tiles, breakdown, levers } = nousScore({ ...base, paneDays: paneDaysOf(history, at, base.timeZone) });
+    const { score, tiles, breakdown, levers, unworked } = nousScore({ ...base, paneDays: paneDaysOf(history, at, base.timeZone) });
     // The snapshot nearest before the mark, within an hour of it (none when the history is younger).
     const ago = (ms: number) => {
       const before = history.filter((row) => Date.parse(row.at) <= at - ms && Date.parse(row.at) > at - ms - HOUR_MS).at(-1);
@@ -553,6 +627,7 @@ export function createNousScore(deps: { repository: Repository; input(owner: str
     partsOf.set(view, { ...Object.fromEntries(tiles.map((entry) => [entry.key, entry.points])), openPanes: base.panes.length });
     latest.set(owner, view);
     leversOf.set(owner, levers);
+    unworkedOf.set(owner, unworked);
     return view;
   }
   function refresh(owner: string): Promise<NousScore> {
@@ -573,6 +648,9 @@ export function createNousScore(deps: { repository: Repository; input(owner: str
           const rows = await rowsOf(owner);
           rows.push({ at: view.at, score: view.score, parts });
           rows.splice(0, rows.findIndex((row) => Date.parse(row.at) >= now() - 30 * DAY_MS));
+          // shortcut: re-pushed every snapshot (15 min) while no working pane names the variable, a recorded wait included; skip variables a live follow-up names if this costs too many turns.
+          const push = scorePushItems(view.score, unworkedOf.get(owner) ?? []);
+          if (push) await deps.push?.(owner, push);
         } catch (error) { deps.warn?.(error); }
       }));
     })().catch((error) => deps.warn?.(error)).finally(() => { snapshotRunning = null; });
@@ -605,7 +683,7 @@ export function createNousScore(deps: { repository: Repository; input(owner: str
     /** The newest score computed, without computing (the world and space_nous_progress read it every turn); null before the first. */
     cached: (owner: string) => latest.get(owner) ?? null,
     /** The world's "## Score levers now" from the newest score; null before the first. */
-    leversText: (owner: string) => { const kept = latest.get(owner); return kept ? nousScoreLeversText(leversOf.get(owner) ?? [], kept) : null; },
+    leversText: (owner: string) => { const kept = latest.get(owner); return kept ? nousScoreLeversText(leversOf.get(owner) ?? []) : null; },
     /**
      * Score reset (admin action nous-score-reset, operator 9/11 nous_msg:8d5af119): the score with every window starting now is stored as the
      * offset and each tile's points as its baseline (operator 11/11: every tile 0, no ±), so all read 0 now and only what happens after moves
@@ -615,8 +693,10 @@ export function createNousScore(deps: { repository: Repository; input(owner: str
       if (!deps.saveReset) throw new Error("The score reset is not wired here.");
       const at = new Date(now()).toISOString();
       // Errors and pane days are events, so none fall after a reset made this instant.
-      const { score, tiles } = nousScore({ ...(await deps.input(owner, Date.parse(at))), reset: { at, offset: 0 }, dailyErrors: [], paneDays: [] });
-      await deps.saveReset(owner, { at, offset: score, tiles: Object.fromEntries(tiles.filter((entry) => entry.points !== 0).map((entry) => [entry.key, entry.points])) });
+      const { score, tiles, projects } = nousScore({ ...(await deps.input(owner, Date.parse(at))), reset: { at, offset: 0 }, dailyErrors: [], paneDays: [] });
+      // Each big project's own baseline too (project:<name>), so the breakdown's project rows add up to the tile.
+      await deps.saveReset(owner, { at, offset: score, tiles: Object.fromEntries([...tiles.map((entry) => [entry.key, entry.points] as const),
+        ...projects.map((row) => [`project:${row.name}`, row.points] as const)].filter(([, points]) => points !== 0)) });
       await running.get(owner)?.catch(() => null); // a compute started before the reset would show the old score
       return refresh(owner);
     },

@@ -39,8 +39,21 @@ export const voiceTranscriptionModelOptions: VoiceTranscriptionModel[] = [
   "gpt-4o-mini-transcribe",
   "whisper-1",
   "gpt-realtime-whisper",
-  "local-qwen3-greek" as VoiceTranscriptionModel
+  "local-qwen3-greek" as VoiceTranscriptionModel,
+  "local-sensevoice-small" as VoiceTranscriptionModel
 ];
+
+export const LOCAL_SENSEVOICE_DOWN = "Local SenseVoice (offline) is not running on this server. Choose Gemini or Whisper in Settings → Voice input, or start space-local-voice-transcribe.service.";
+
+/** The local SenseVoice daemon runs when its port answers HTTP at all (the websocket server answers a plain GET with 426). */
+export async function isLocalSenseVoiceUp(config: SpaceApiConfig): Promise<boolean> {
+  try {
+    await fetch(config.localSenseVoiceUrl.replace(/^ws/, "http"), { signal: AbortSignal.timeout(3_000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export async function getLocalVoiceProviderStatus(config: SpaceApiConfig): Promise<Record<string, unknown>> {
   try {
@@ -615,6 +628,18 @@ export async function createVoiceRealtimeCall(
       model: targetModel,
       websocketUrl,
       sessionId: `nova_live_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    });
+  }
+
+  // 3a. Local SenseVoice-Small: the API's bridge (sensevoice-voice-bridge.ts) talks to the daemon on this server.
+  // When it is down the call fails with a clear message; audio never goes to a cloud model the operator did not choose.
+  if (input.model === "local-sensevoice-small") {
+    if (!(await isLocalSenseVoiceUp(config))) throw new Error(LOCAL_SENSEVOICE_DOWN);
+    return voiceRealtimeSessionResponseSchema.parse({
+      provider: "local",
+      model: "local-sensevoice-small",
+      websocketUrl: config.localSenseVoiceUrl,
+      sessionId: `sensevoice_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
     });
   }
 

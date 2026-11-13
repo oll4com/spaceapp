@@ -261,7 +261,7 @@ export function createPaneReports(deps: PaneReportsDeps) {
         // A needs-you that clears the ask ("--needs none") raises nothing, so no sign-in check holds it.
         const refused = /^(?:none|nothing|-)$/i.test(input.needs?.trim() ?? "") ? null : await deps.signinCard?.({ ownerUserId: owner, roomId: room.id, paneId: pane.id, source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION",
           title: `${pane.paneName ?? pane.title} needs you`, body: [input.summary, input.needs ?? "", ...(input.options ?? [])].join("\n"),
-          link: { roomId: room.id, paneId: pane.id, ...(input.target ? { target: input.target } : {}) }, dedupeKey: null, payload: { checked: input.checked ?? [] }, telegram: null })
+          link: { roomId: room.id, paneId: pane.id, ...(input.target ? { target: input.target } : {}) }, dedupeKey: null, payload: { checked: input.checked ?? [], ...(input.report ? { report: input.report } : {}) }, telegram: null })
           .catch((error: unknown) => { deps.log?.warn(error, "The sign-in card check failed."); return null; });
         if (refused) throw Object.assign(new Error(refused.replace(/Nothing raised\.$/, "Nothing reported.")), { statusCode: 409 });
       }

@@ -309,6 +309,21 @@ describe("BrowserPane", () => {
     render(<BrowserPane pane={browserPane()} agentNumber={4} mobile />);
     await waitFor(() => expect(apiMock.startBrowserSession).toHaveBeenCalledWith("pane:browser-proof", expect.objectContaining({ viewport: "mobile" })));
   });
+  // F6 (13/11): a browser closed by its last tab, Stop or the reaper stays closed when the pane loads again; ERROR starts again.
+  it.each([false, true])("keeps a closed browser closed when the pane loads (mobile: %s)", async (mobile) => {
+    apiMock.browserSession.mockResolvedValue(sessionResponse({ status: "CLOSED", isActive: false, pages: [], activePageId: null }));
+    render(<BrowserPane pane={browserPane()} agentNumber={4} mobile={mobile} />);
+    expect(await screen.findByRole("button", { name: "Start browser" })).toBeTruthy();
+    expect(apiMock.startBrowserSession).not.toHaveBeenCalled();
+    expect(apiMock.setBrowserViewport).not.toHaveBeenCalled();
+  });
+  it("starts a browser in ERROR again when the pane loads", async () => {
+    apiMock.browserSession.mockResolvedValue(sessionResponse({ status: "ERROR" }));
+    render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+    await waitFor(() => expect(apiMock.startBrowserSession).toHaveBeenCalledExactlyOnceWith("pane:browser-proof", {
+      viewport: "desktop", targetUrl: "about:blank", ownerAgentId: "agent:4"
+    }));
+  });
   beforeEach(() => {
     installSpaceRuntime(liveRuntime);
     vi.useRealTimers();
@@ -857,8 +872,9 @@ describe("BrowserPane", () => {
     await waitFor(() => expect(input.value).toBe("https://google.com/"));
     expect(apiMock.navigateBrowser).toHaveBeenCalledExactlyOnceWith("pane:browser-proof", "https://google.com/");
     if (status === "READY") expect(apiMock.startBrowserSession).not.toHaveBeenCalled();
+    // The closed browser stayed closed when the pane loaded: the address starts it.
     else expect(apiMock.startBrowserSession).toHaveBeenCalledExactlyOnceWith("pane:browser-proof", {
-      viewport: "desktop", targetUrl: "about:blank", ownerAgentId: "agent:4"
+      viewport: "desktop", targetUrl: "https://google.com/", ownerAgentId: "agent:4"
     });
     expect(screen.queryByRole("alert")).toBeNull();
   });

@@ -78,6 +78,11 @@
 .nous-tagline .nous-model-link.nous-model-link:hover { color: var(--dock-accent); }
 .nous-tagline .nous-model-link.nous-model-link:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 2px; border-radius: 4px; }
 .nous-status { margin: 0.25rem 0 0; font-size: var(--dock-font-sm); color: var(--dock-muted); }
+/* Space Link's Remote / Managing marks (NousRemoteMark): the details are the hover title. */
+.nous-remote-line { margin: 0.25rem 0 0; display: flex; gap: 0.35rem; }
+.nous-remote-mark { font: inherit; font-size: var(--dock-font-sm); padding: 0 0.5rem; border: 1px solid var(--dock-border); border-radius: 999px; background: transparent; color: var(--dock-text); cursor: pointer; }
+.nous-remote-mark.is-remote { border-color: var(--dock-warning); color: var(--dock-warning); background: var(--dock-warning-soft); }
+.nous-remote-mark:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 1px; }
 .nous-status.is-idle { color: var(--dock-success); }
 .nous-status.is-thinking { color: var(--dock-accent); }
 .nous-status.is-paused_model { color: var(--dock-warning); }
@@ -854,11 +859,19 @@
 .nous-appointments-agenda { max-height: min(16rem, 30vh); overflow-y: auto; scrollbar-width: thin; }
 .nous-live { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.6rem; }
 .nous-live h3 { margin: 0; font-size: 0.86rem; font-weight: 600; color: var(--dock-text); }
-.nous-live-counts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.35rem; margin: 0; }
+.nous-live-counts { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0.35rem; margin: 0; }
 .nous-live-counts > div { display: grid; gap: 0.1rem; padding: 0.35rem 0.4rem; border: 1px solid var(--dock-border); border-radius: 8px; text-align: center; }
 .nous-live-counts dt { font-size: 0.66rem; color: var(--dock-muted); }
 .nous-live-counts dd { margin: 0; font-size: 1rem; font-weight: 650; color: var(--dock-text); font-variant-numeric: tabular-nums; }
 .nous-live-counts > .is-attention dd { color: var(--dock-warning); }
+/* The Load tile opens the Load view: the button's ::after covers the whole tile. */
+.nous-live-counts > .nous-live-load { position: relative; }
+.nous-live-counts > .nous-live-load:has(button):hover { border-color: var(--dock-accent); }
+.nous-live-load-open { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.nous-live-load-open::after { content: ""; position: absolute; inset: 0; border-radius: 8px; }
+.nous-live-load-open:focus-visible { outline: none; }
+.nous-live-load-open:focus-visible::after { outline: 2px solid var(--dock-accent); outline-offset: 1px; }
+.nous-live-load small { display: block; font-size: 0.6rem; font-weight: 400; color: var(--dock-muted); }
 .nous-live-plans { display: grid; gap: 0.3rem; margin: 0; padding: 0; list-style: none; }
 .nous-live-plans li:has(> .nous-live-plan-open) { display: block; }
 .nous-live-plans :is(li, .nous-live-plan-open) { display: grid; grid-template-columns: 0.45rem minmax(0, 1fr) 4.5rem 2.6rem; align-items: center; gap: 0.4rem; font-size: 0.74rem; }
@@ -1226,6 +1239,7 @@
 .nous-program-worth { color: var(--dock-text); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* A program's grouped tags (operator 6/11 21:42 BKK): quiet badges; the chips above filter by them. */
 .nous-program-tag { padding: 0.05rem 0.4rem; border: 1px solid var(--dock-border); border-radius: 999px; color: var(--dock-muted); font-size: 0.62rem; white-space: nowrap; }
+.nous-program-tag.is-choose { border-color: var(--dock-accent); color: var(--dock-accent); }
 .nous-program-next { color: var(--dock-muted); white-space: nowrap; }
 .nous-program-next.is-overdue { color: var(--dock-warning); }
 .nous-program-reapply { display: inline-flex; align-items: center; gap: 0.2rem; color: var(--dock-warning); font-weight: 600; white-space: nowrap; }

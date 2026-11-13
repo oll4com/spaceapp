@@ -9,7 +9,8 @@ export const NOUS_PROGRAM_STATUSES = ["APPROVED", "REJECTED", "IN_PROGRESS", "AP
 export type NousProgramPage = (typeof NOUS_PROGRAM_PAGES)[number];
 export type NousProgramStatus = (typeof NOUS_PROGRAM_STATUSES)[number];
 /** The grouped tags the programs files carry (operator 6/11 21:42 BKK, nous_msg:f0287998): the pages' tag chips, in this order (cash first, 7/11). */
-export const NOUS_PROGRAM_TAGS = ["cash-grants", "ai-tokens", "server-access", "dev-tools", "perks"] as const;
+// choose (operator 13/11 08:39 BKK, plan clipboard:mmmeF0-e3x4G): worth joining: AI tokens or servers SpaceApp uses, over $1,000, nothing to pay.
+export const NOUS_PROGRAM_TAGS = ["cash-grants", "ai-tokens", "server-access", "dev-tools", "perks", "choose"] as const;
 export type NousProgramTag = (typeof NOUS_PROGRAM_TAGS)[number];
 const CASH_WORDS = /\b(grants?|cash|equity|invest\w*|funding|non-dilutive|prizes?|awards?|bount(?:y|ies)|seed|loans?|subsid\w*|stipends?)\b/i;
 const TAG_WORDS: Array<[NousProgramTag, RegExp]> = [
@@ -27,7 +28,13 @@ const PERK = /\b(credits?|tokens?|seats?|membership|vouchers?|coupons?|vps|hosti
  * never written back: Cash is only money paid into our account (grants, prizes, bounties paid, investment), never credits, tokens, seats, plans
  * or perks; the Gateway pools, Claude for Startups and Codex are AI tokens only; a cloud provider's program is Servers/Cloud only.
  */
-export function nousProgramCategories(program: Pick<NousProgram, "id" | "parent" | "program" | "amount" | "tags" | "whatItIs" | "howWeUse" | "notes" | "benefits">): string[] {
+type CategorySource = Pick<NousProgram, "id" | "parent" | "program" | "amount" | "tags" | "whatItIs" | "howWeUse" | "notes" | "benefits">;
+export function nousProgramCategories(program: CategorySource): string[] {
+  // choose is a mark on top of the type, never a type itself: the stored tag rides along every path.
+  const chosen = program.tags.includes("choose"), types = categories(chosen ? { ...program, tags: program.tags.filter((tag) => tag !== "choose") } : program);
+  return chosen ? [...types, "choose"] : types;
+}
+function categories(program: CategorySource): string[] {
   const name = `${program.parent} ${program.program}`;
   if (GATEWAY_PROGRAM_PROVIDERS[program.id] || AI_TOKENS_ONLY.test(`${program.id} ${name}`)) return ["ai-tokens"];
   if (CLOUD.test(name) && !CONTEST.test(name)) return ["server-access"];

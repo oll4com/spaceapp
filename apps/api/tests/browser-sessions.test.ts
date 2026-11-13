@@ -103,18 +103,18 @@ describe("browser runtime network guard", () => {
       .rejects.toMatchObject({ errorCode: "BROWSER_TARGET_BLOCKED" });
   });
 
-  // 12/11 (public-host): Google sent a pane's sign-in back to http://127.0.0.1:4911/api/auth/google/callback, which resolves to
+  // 12/11 (public-host): Google sent a pane's sign-in back to the main host's /api/auth/google/callback, which resolves to
   // the VM's private address, and the guard blocked it; only Space's own host is let through, never another private host.
   it("lets Google's sign-in return through when it is on the pane browser's own Space host", async () => {
-    const resolver = async () => [{ address: "192.0.2.209" }];
-    const callback = "http://127.0.0.1:4911/api/auth/google/callback?state=s";
-    await expect(new BrowserRequestGuard("http://127.0.0.1:4911", { resolver }).assertAllowed(callback))
+    const resolver = async () => [{ address: "10.20.0.209" }];
+    const callback = "https://space.example.com/api/auth/google/callback?state=s";
+    await expect(new BrowserRequestGuard("https://space.example.com:4911", { resolver }).assertAllowed(callback))
       .rejects.toMatchObject({ errorCode: "BROWSER_TARGET_BLOCKED" });
-    const origins = googleReturnOrigins("http://127.0.0.1:4911", "http://127.0.0.1:4911/api/auth/google/callback");
-    expect(origins).toEqual(["http://127.0.0.1:4911"]);
-    await expect(new BrowserRequestGuard(["http://127.0.0.1:4911", ...origins], { resolver }).assertAllowed(callback)).resolves.toBe(callback);
-    expect(googleReturnOrigins("http://127.0.0.1:4911", "https://example.invalid/callback")).toEqual([]);
-    expect(googleReturnOrigins("http://127.0.0.1:4911", undefined)).toEqual([]);
+    const origins = googleReturnOrigins("https://space.example.com:4911", "https://space.example.com/api/auth/google/callback");
+    expect(origins).toEqual(["https://space.example.com"]);
+    await expect(new BrowserRequestGuard(["https://space.example.com:4911", ...origins], { resolver }).assertAllowed(callback)).resolves.toBe(callback);
+    expect(googleReturnOrigins("https://space.example.com:4911", "https://hestia.example.com/callback")).toEqual([]);
+    expect(googleReturnOrigins("https://space.example.com:4911", undefined)).toEqual([]);
   });
 
   it("allows the Harness origin through the shared browser-host guard path", async () => {

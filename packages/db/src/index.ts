@@ -114,6 +114,7 @@ export * from "./dot-delegations-repository.js";
 export * from "./auto-route-shadow-repository.js";
 export * from "./session-revocation-repository.js";
 export * from "./app-device-session-repository.js";
+export * from "./instance-link-repository.js";
 export * from "./mobile-instance-key-repository.js";
 export * from "./dot-evals-repository.js";
 export * from "./channels-repository.js";

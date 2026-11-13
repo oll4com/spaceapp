@@ -128,6 +128,18 @@ describe("task store", () => {
     expect(store.deleteTaskItem("user:one", kept[1]!.id).id).toBe(kept[1]!.id);
   });
 
+  it("marks when a schedule began to apply like the Postgres store: a pause clears it, the restore sets it, a time change keeps it", () => {
+    const store = new InMemorySpaceStore();
+    const daily = (time: string) => ({ recurrence: { kind: "DAILY" as const, time }, timeZone: "Asia/Bangkok" });
+    const task = store.upsertTaskItem({ ownerUserId: "user:one", source: "MANUAL", title: "Daily", objective: "Daily scan", status: "OPEN", schedule: daily("09:00") });
+    expect(task.schedule?.scheduledSince).toBeUndefined();
+    store.updateTaskItem("user:one", task.id, { schedule: null });
+    const since = store.updateTaskItem("user:one", task.id, { schedule: daily("09:00") }).schedule?.scheduledSince;
+    expect(since).toEqual(expect.any(String));
+    expect(store.updateTaskItem("user:one", task.id, { schedule: daily("09:20") }).schedule?.scheduledSince).toBe(since);
+    expect(store.updateTaskItem("user:one", task.id, { status: "DONE" }).schedule?.scheduledSince).toBeUndefined();
+  });
+
   it("searches case-insensitively, filters status, and paginates newest first", () => {
     const store = new InMemorySpaceStore();
     store.upsertTaskItem({

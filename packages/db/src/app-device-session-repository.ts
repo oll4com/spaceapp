@@ -27,7 +27,7 @@ export interface AppDeviceSessionRecord extends AppDeviceSession, PairedDeviceFi
   sidSha256: string;
 }
 
-type NewSignIn = { id: string; ownerUserId: string; app: AppSignInId; deviceName: string; sidSha256: string; expiresAt: string };
+type NewSignIn = { id: string; ownerUserId: string; app: AppDeviceSession["app"]; deviceName: string; sidSha256: string; expiresAt: string };
 type NewPaired = NewSignIn & { noisePublic: string; decidePublicSpki: string | null; decideSecurityLevel: PairedDeviceFields["decideSecurityLevel"];
   decideSerials?: string[] | null; requestedScopes: MobileDeviceScope[]; rendezvousId?: string | null };
 const UNPAIRED: PairedDeviceFields = { noisePublic: null, decidePublicSpki: null, decideSecurityLevel: null, decideSerials: null, scopes: null, requestedScopes: null, confirmedAt: null, lastSeenAt: null,
@@ -144,7 +144,7 @@ export class InMemoryAppDeviceSessionRepository implements AppDeviceSessionRepos
   async dispose() {}
 }
 
-interface Row extends Omit<PairedDeviceFields, "confirmedAt" | "lastSeenAt"> { id: string; ownerUserId: string; app: AppSignInId; deviceName: string; sidSha256: string;
+interface Row extends Omit<PairedDeviceFields, "confirmedAt" | "lastSeenAt"> { id: string; ownerUserId: string; app: AppDeviceSession["app"]; deviceName: string; sidSha256: string;
   createdAt: Date; expiresAt: Date; revokedAt: Date | null; confirmedAt: Date | null; lastSeenAt: Date | null }
 const columns = `id, owner_user_id AS "ownerUserId", app, device_name AS "deviceName", sid_sha256 AS "sidSha256",
   created_at AS "createdAt", expires_at AS "expiresAt", revoked_at AS "revokedAt", noise_public AS "noisePublic", decide_public_spki AS "decidePublicSpki",

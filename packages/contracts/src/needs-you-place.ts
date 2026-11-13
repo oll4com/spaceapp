@@ -1,4 +1,4 @@
-import { NEEDS_YOU_GO_NOW, needsYouAsk, needsYouHasPlace, type SpaceNotification } from "./notifications.js";
+import { artifactIdsIn, NEEDS_YOU_GO_NOW, needsYouAsk, needsYouHasPlace, type SpaceNotification } from "./notifications.js";
 
 /**
  * Where the operator does what a needs-you card asks (plan clipboard:ytwWl09xNH0Z, operator 3/11 19:25 and 19:30 BKK: a phone-only update card
@@ -32,4 +32,19 @@ export function needsYouGroup(card: Card, paneMode?: string | null): NeedsYouGro
   const place = needsYouPlace(card, paneMode);
   if (place !== "HERE") return place;
   return needsYouAsk(card).answer.kind === "COPILOT_DECISION" || APPROVAL_KINDS.test(card.kind) ? "APPROVALS" : "QUESTIONS";
+}
+
+/**
+ * One layout per pane kind (plan clipboard:T2uboz26Oh3q §6 / S8): only "the thing" and the answers change, the skeleton stays. HANDS: his hands
+ * in a pane or off Space. SECURITY: a Security or Monitoring copilot (a severity chip; its reviews too). VISUAL: a studio's card, or options
+ * that name files (tiles). REVIEW: an approval (the draft it sends). QUESTION: every other card.
+ */
+export type NeedsYouLayout = "VISUAL" | "HANDS" | "REVIEW" | "SECURITY" | "QUESTION";
+const STUDIO_SOURCES = new Set(["DESIGN", "VIDEO", "APP_STUDIO"]);
+export function needsYouLayout(card: Card, paneMode?: string | null): NeedsYouLayout {
+  const group = needsYouGroup(card, paneMode);
+  if (group === "PANE" || group === "OFF_SPACE") return "HANDS";
+  if (card.source === "SECURITY_COPILOT" || card.source === "MONITORING_COPILOT") return "SECURITY";
+  if (STUDIO_SOURCES.has(card.source) || (needsYouAsk(card).options ?? []).some((option) => artifactIdsIn(option).length)) return "VISUAL";
+  return group === "APPROVALS" ? "REVIEW" : "QUESTION";
 }

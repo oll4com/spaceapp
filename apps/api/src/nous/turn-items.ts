@@ -22,6 +22,8 @@ export interface NousTurnItem {
   /** R37-1: a copilot review held for Nous, by its item id (mktpost:…, flmsg:…) and its card (notification:…). */
   review?: string;
   notification?: string;
+  /** Held even when the turn answers in words, like a question (the 90 % push, 13/11: 121 of 224 pushes got words and no tool call). */
+  always?: boolean;
 }
 /** A tool call of the turn (helpers' calls count for their parent turn); `subjects` are toolSubjects' pane and plan keys. */
 export interface NousTurnAct { name: string; args: Record<string, unknown>; ok: boolean; subjects: string[] }
@@ -39,7 +41,7 @@ const dispatches = (act: NousTurnAct) => DISPATCH.has(act.name)
 function counts(act: NousTurnAct): boolean {
   if (!act.ok) return false;
   switch (act.name) {
-    case "space_request_done": case "space_nous_outcome": case "space_plan_update": return true;
+    case "space_request_done": case "space_nous_outcome": case "space_plan_update": case "space_task_update": return true;
     // Round 2 (1/11 10:42-10:58 UTC: nine held turns whose act was a follow-up naming the request): a follow-up is the wait recorded.
     case "space_nous_followup": return act.args.op === "add";
     case "space_open_requests": return Array.isArray(act.args.close) && act.args.close.length > 0;
@@ -76,7 +78,8 @@ const decides = (act: NousTurnAct, item: NousTurnItem) => act.ok && REVIEW_ACTS.
 export const itemActed = (item: NousTurnItem, acts: readonly NousTurnAct[]): boolean =>
   item.kind === "REVIEW" ? acts.some((act) => decides(act, item))
     : item.kind === "QUESTION" ? acts.some((act) => settles(act) && names(act, item))
-    : item.kind === "UTILIZATION" ? acts.some((act) => act.ok && dispatches(act))
+    // Idle capacity moves by a dispatch, helpers started, or the wait recorded (a follow-up saying what blocks the work and when to look again).
+    : item.kind === "UTILIZATION" ? acts.some((act) => act.ok && (dispatches(act) || act.name === "space_subagents" || (act.name === "space_nous_followup" && act.args.op === "add")))
     : item.kind === "STUCK" ? acts.some((act) => unsticks(act) && names(act, item)) : acts.some((act) => counts(act) && names(act, item));
 export const unhandledItems = (items: readonly NousTurnItem[], acts: readonly NousTurnAct[]): NousTurnItem[] => items.filter((item) => !itemActed(item, acts));
 
@@ -95,7 +98,8 @@ export function renderItemsHold(reason: string, items: readonly NousTurnItem[], 
   return `Held: your ${reason} turn ${silent ? "answered NOTHING_NEW" : "ended"} while ${items.length === 1 ? "an item" : `${items.length} items`} below had no act (operator 31/10 22:19 BKK: `
     + "Nous moves work on its own, not only when he asks). Act on each now: a request you checked finished in this turn goes to Done, one at a time with that check (space_request_done, or space_open_requests close of that one); "
     + "a request or plan that waits gets its next step sent to a pane (space_send_to_pane, space_copilot_brief, space_open_panes, space_execute prompt) "
-    + "naming its id or plan, or its wait recorded (space_plan_update waitsOn, space_pane_checked WAITING_*, a space_nous_followup naming it); idle capacity gets parallel work started; "
+    + "naming its id or plan, or its wait recorded (space_plan_update waitsOn, space_pane_checked WAITING_*, a space_nous_followup naming it); idle capacity gets parallel work started "
+    + "(a pane, space_subagents) or what blocks it recorded (space_nous_followup add); "
     + "a stuck pane is restarted, stopped or closed (space_restart_pane, space_stop_pane, space_close_pane, space_execute); "
     + `${REVIEW_ACT_LINE}. `
     + `If something blocks an item, write it in words instead of NOTHING_NEW.${question}`;

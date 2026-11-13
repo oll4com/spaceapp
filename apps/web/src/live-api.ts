@@ -4,6 +4,13 @@ import type { SavedSignature, SignatureField, SignaturePlacement, SignatureReque
 /** Settings > Mobile app (Nous Pro 1b, apps/api/src/mobile/routes.ts). */
 export interface MobileInstanceStatus { configured: boolean; fingerprint?: string; createdAt?: string; retiring?: Array<{ fingerprint: string; until: string }> }
 export interface MobilePairingOffer { offerId: string; qr: string; fingerprint: string; scopes: string[]; expiresAt: string }
+/** Space Link (ADR-014): another SpaceApp this one manages, as GET /api/instance-links lists it (never its sealed key). */
+/** A session open on this SpaceApp now (Space Link's Remote mark): a linked SpaceApp's Nous (app spaceapp-link) or a phone. */
+export interface LiveDeviceSession { deviceId: string; app: string; name: string; ip: string; since: string; scopes: string[];
+  last: { method: string; path: string; at: string } | null; rttMs: number | null }
+/** Who manages this SpaceApp now (Space Link lease) and whether its person took management back. */
+export interface LiveDevices { sessions: LiveDeviceSession[]; lease: { deviceId: string; name: string; since: string } | null; takenBackAt: string | null }
+export interface InstanceLink { id: string; label: string; origins: string[]; deviceId: string; scopes: string[]; createdAt: string; lastSeenAt: string | null; connected: boolean }
 import type { FreelanceEgressRoute } from "@space/contracts";
 import type { ClientErrorReport } from "./client-error-reporter.js";
 import type { LiveHistorySnapshot, PersistedLiveTurn } from "./features/live-pane/live-history-sync.js";
@@ -766,7 +773,7 @@ export type BrowserDiagnosticsPayload = BrowserDiagnosticsResponse;
 
 /** `GET /api/artifacts/:id/metadata`: `embedded` holds a PNG's text chunks, `design` its parsed `spaceapp:design` JSON. */
 export interface ArtifactMetadataPayload {
-  artifact: { id: string; filename: string; mimeType: string; byteSize: number; sha256: string; createdAt: string; roomId: string | null; metadata: Record<string, unknown> };
+  artifact: { id: string; filename: string; mimeType: string; byteSize: number; sha256: string; createdAt: string; roomId: string | null; paneId: string | null; metadata: Record<string, unknown> };
   image: { width: number; height: number } | null;
   embedded: Record<string, string>;
   design: Record<string, unknown> | null;
@@ -1557,6 +1564,12 @@ export const api = {
   rotateMobileInstance: (compromised: boolean) => request<MobileInstanceStatus>("/api/mobile/rotate", { method: "POST", body: JSON.stringify({ compromised }) }),
   createMobilePairing: () => request<MobilePairingOffer>("/api/mobile/pairing", { method: "POST", body: JSON.stringify({}) }),
   cancelMobilePairing: (offerId: string) => request<{ cancelled: boolean }>(`/api/mobile/pairing/${encodeURIComponent(offerId)}`, { method: "DELETE" }),
+  listInstanceLinks: () => request<{ links: InstanceLink[] }>("/api/instance-links"),
+  liveDeviceSessions: () => request<LiveDevices>("/api/auth/devices/live"),
+  linkManagement: (action: "take-back" | "give-back") => request<LiveDevices>(`/api/auth/devices/live/${action}`, { method: "POST", body: "{}" }),
+  linkInstance: (code: string) => request<{ link: InstanceLink; pending: string[] }>("/api/instance-links", { method: "POST", body: JSON.stringify({ code }) }),
+  checkInstanceLink: (id: string) => request<{ link: InstanceLink; scopes: string[]; status: number; rttMs: number }>(`/api/instance-links/${encodeURIComponent(id)}/check`, { method: "POST", body: JSON.stringify({}) }),
+  removeInstanceLink: (id: string) => request<{ ok: true }>(`/api/instance-links/${encodeURIComponent(id)}`, { method: "DELETE" }),
   checkGoogleAccountBrowser: (id: string) => request<{ account: GoogleAccountSummary; check: GoogleBrowserCheckSummary }>(`/api/auth/google/accounts/${encodeURIComponent(id)}/browser-check`, {
     method: "POST", body: JSON.stringify({})
   }),

@@ -1,14 +1,24 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { NousOverview } from "@space/contracts";
+import type { NousLoad, NousOverview } from "@space/contracts";
+import { api } from "../../api.js";
 import { loadPlanCompletion, PlanCompletionBar, type PlanCompletion } from "../clipboard-dock/PlanCompletionBar.js";
 
 /**
  * The Nous dock's live stats (operator request 2026-10-17, plan clipboard:wr9yNPJwkDrp): rooms, agents by state and agents on a plan,
  * from Nous's overview. The system tiles and sparklines left on 2026-10-21 (operator request): the right rail shows those figures.
  */
-export function NousLiveStats({ overview, active }: { overview: NousOverview | null; active: boolean }) {
+export function NousLiveStats({ overview, active, onOpenLoad }: { overview: NousOverview | null; active: boolean; onOpenLoad?(): void }) {
   const live = overview?.live;
   const onPlans = plansOnPanes(overview);
+  // The Load view's own figures (operator 13/11 07:51 BKK, nous_msg:ceb66b0357124a2d8586e795), read again with each overview.
+  const [load, setLoad] = useState<NousLoad | null>(null);
+  useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    api.nousLoad("1h").then((next) => { if (!cancelled) setLoad(next); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [active, overview]);
+  const percent = load?.overall == null ? "—" : `${Math.round(load.overall)}%`;
   return (
     <section className="nous-live" aria-label="Live stats" data-motion={active ? "on" : "off"}>
       <h3>Live</h3>
@@ -19,6 +29,11 @@ export function NousLiveStats({ overview, active }: { overview: NousOverview | n
           <div><dt>Idle</dt><dd>{live ? live.agents.idle : "—"}</dd></div>
           <div className={live?.agents.waiting ? "is-attention" : undefined}><dt>Waiting</dt><dd>{live ? live.agents.waiting : "—"}</dd></div>
           <div><dt>On a plan</dt><dd>{overview ? onPlans.length : "—"}</dd></div>
+          <div className={`nous-live-load${load?.limit ? " is-attention" : ""}`}><dt>Load</dt><dd>
+            {onOpenLoad ? <button type="button" className="nous-live-load-open" onClick={onOpenLoad}
+              aria-label={`Open the Load view: ${percent} of capacity in use${load ? `, target ${load.target}%` : ""}`}>{percent}</button> : percent}
+            {load ? <small>target {load.target}%</small> : null}
+          </dd></div>
         </dl>
       </NousLivePlans>
     </section>

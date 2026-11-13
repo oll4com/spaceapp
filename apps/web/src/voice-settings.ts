@@ -14,6 +14,10 @@ import { saveUserSettingImmediate } from "./features/user-settings/user-settings
 
 export const VOICE_SETTINGS_STORAGE_KEY = "space.voiceTranscription.settings";
 export const VOICE_SETTINGS_UPDATED_EVENT = "space:voice-transcription-settings-updated";
+/** SenseVoice-Small knows Chinese, English, Japanese, Korean and Cantonese, not Greek. */
+export const SENSEVOICE_GREEK_NOTE = "SenseVoice is for English (also Chinese, Japanese, Korean and Cantonese) and does not know Greek. For Greek, choose Gemini or Whisper.";
+export const senseVoiceForGreek = (settings: Pick<VoiceComposerSettings, "model" | "language">) =>
+  settings.model === "local-sensevoice-small" && settings.language === "el";
 
 export type VoiceInsertMode = "append" | "replace";
 

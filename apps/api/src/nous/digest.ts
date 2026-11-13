@@ -184,10 +184,20 @@ export function renderNousWorldSections(world: NousWorld): PromptPart[] {
   for (const part of world.planMap ? planMapParts(world.planMap, 6) : []) { section(part.name, part.rank, part.readWith, part.entries); sections.push(part.text); }
   if (world.planActivity) { section("Plan activity", 4, undefined, true); sections.push(world.planActivity); }
 
-  // A scheduled task whose pane is closed never runs; only a room read now can tell (daily review 2026-10-21).
+  // What the scheduler (task-schedules.ts runOccurrence) does at the run with a task's pane, as only a room read now can tell. 13/11: the old
+  // "PANE CLOSED: it never runs there" was false (a closed pane reopens) and told Nous to rebind 10 daily tasks by hand.
   const roomPanes = new Map(world.rooms.map(({ room, sample }) => [room.id, sample?.data ?? null]));
-  const paneClosed = (task: TaskItem) => Boolean(task.schedule && task.paneId && task.roomId)
-    && (!roomPanes.has(task.roomId!) || roomPanes.get(task.roomId!)?.some((pane) => pane.id === task.paneId && !pane.isClosed) === false);
+  const paneAtRun = (task: TaskItem) => {
+    if (!task.schedule || !task.paneId || !task.roomId) return "";
+    const rebind = "rebind it (space_task_update bind to an open pane, or bind null for a reminder)";
+    if (!roomPanes.has(task.roomId)) return ` · ROOM ARCHIVED OR GONE: it cannot run there; ${rebind}`;
+    const panes = roomPanes.get(task.roomId);
+    const pane = panes?.find((entry) => entry.id === task.paneId);
+    if (!panes || (pane && !pane.isClosed)) return "";
+    if (pane) return " · pane closed: Space reopens it when the task runs (no rebind needed)";
+    return task.source === "AGENT" && task.schedule.recurrence.kind !== "ONCE" ? " · pane gone: Space opens a new CLI pane in its room when the task runs"
+      : ` · PANE GONE: the run fails; ${rebind}`;
+  };
   // R58 (goal 35813e48): a task still not delivered 15 minutes after it fell due is named here; the scheduler keeps trying it each tick.
   const lateMinutes = (task: TaskItem) => task.schedule?.nextRunAt ? Math.floor((Date.parse(world.now) - Date.parse(task.schedule.nextRunAt)) / 60_000) : 0;
   section("Open tasks", 5, "space_tasks", true);
@@ -195,7 +205,7 @@ export function renderNousWorldSections(world: NousWorld): PromptPart[] {
     ...(world.tasks.length ? world.tasks.map((task) => `- [${task.id}] ${task.status} "${oneLine(task.title, 100)}"${task.paneId || task.roomId ? ` · ${where(task.roomId, task.paneId)}` : ""}`
       + `${task.schedule?.nextRunAt ? ` · next run ${task.schedule.nextRunAt}` : ""}`
       + `${lateMinutes(task) >= 15 ? ` · UNDELIVERED ${lateMinutes(task)} min past due (Space retries it at its pane's next empty prompt): read the pane (space_read_pane), clear what holds it or send the task yourself` : ""}`
-      + `${paneClosed(task) ? " · PANE CLOSED: it never runs there; rebind it (space_task_update bind to an open pane, or bind null for a reminder)" : ""}`) : ["- none"]));
+      + paneAtRun(task)) : ["- none"]));
 
   section("Release trains", 3);
   sections.push("## Release trains", world.trains.trim() || "No release trains.");

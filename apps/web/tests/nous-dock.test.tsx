@@ -680,10 +680,10 @@ describe("Nous dock", () => {
       // An agent's card names the agent as the one who checked (plan clipboard:7L5KyWp3kQsP step 4); Nous's cards keep "What Nous checked".
       const checked = within(card).getByText("What the agent checked").closest("details")!;
       expect([checked.open, checked.querySelector("li")?.textContent]).toEqual([false, "Space Memory: no colour rule"]);
-      expect(within(card).getByRole("button", { name: "Blue (Recommended)" }).className).toContain("is-primary");
+      expect(within(card).getByRole("button", { name: "Blue Recommended" }).className).toContain("is-primary");
       // A masked shot hides the request's own words and keeps Space's labels readable (plan clipboard:32etNsBgtbI- step 4).
       const masked = (element: Element | null) => Boolean(element?.closest('[data-sensitive-masked="manual"]'));
-      for (const element of [within(card).getByRole("heading", { name: "Which colour?" }), details, within(card).getByRole("button", { name: "Blue (Recommended)" })]) expect(masked(element)).toBe(true);
+      for (const element of [within(card).getByRole("heading", { name: "Which colour?" }), details, within(card).getByRole("button", { name: "Blue Recommended" })]) expect(masked(element)).toBe(true);
       for (const name of ["Open the page", "It no longer needs me"]) expect(masked(within(card).getByRole("button", { name }))).toBe(false);
       expect(masked(checked.querySelector("summary"))).toBe(false);
       // Its own answers make it a question answered here: no Go to pane, its page one click away inside Details (the approved §8.1 choice).
@@ -694,7 +694,7 @@ describe("Nous dock", () => {
       expect((within(card).getByRole("button", { name: "Always answer like this" }) as HTMLButtonElement).disabled).toBe(false);
       fireEvent.change(within(card).getByRole("textbox", { name: "Your answer" }), { target: { value: "the darker one" } });
       expect((within(card).getByRole("button", { name: "Always answer like this" }) as HTMLButtonElement).disabled).toBe(true);
-      fireEvent.click(within(card).getByRole("button", { name: "Blue (Recommended)" }));
+      fireEvent.click(within(card).getByRole("button", { name: "Blue Recommended" }));
       await waitFor(() => expect(calls.find((call) => call.url === "/api/notifications/notification%3Aneeds000001/answer")?.body).toEqual({ option: "Blue", text: "the darker one" }));
       expect(await within(card).findByText("Sent to Emma: it gets your answer as its next prompt.")).toBeTruthy();
       waiting = [];
@@ -709,7 +709,7 @@ describe("Nous dock", () => {
     }
   });
 
-  it("R23-3 (operator «Θέλω να τα δω όλα αυτά»): a card asking about artifacts shows each one, under the option that names it", async () => {
+  it("R23-3 (operator «Θέλω να τα δω όλα αυτά»): a card asking about artifacts shows each one as a tile, the option that names it answered from it", async () => {
     const card = { id: "notification:needs000010", ownerUserId: "user:operator", roomId: "room:work000001", paneId: "pane:andy0000001", source: "AGENT", kind: "NEEDS_YOU",
       severity: "ATTENTION", title: "Andy needs you", body: "Two icons and a cut are ready; the brief is artifact:doc0000001.", status: "OPEN", createdAt: at, updatedAt: at, readAt: null, resolvedAt: null,
       link: { roomId: "room:work000001", paneId: "pane:andy0000001" }, dedupeKey: "agent:needs-you:pane:andy0000001",
@@ -722,14 +722,16 @@ describe("Nous dock", () => {
     fireEvent.click(within(views).getByRole("button", { name: /^Needs you\s*1$/ }));
     const article = await screen.findByRole("article", { name: "Andy needs you" });
     fireEvent.click(within(article).getByRole("button", { name: "Details" }));
-    const blue = await within(article).findByRole("img", { name: "Blue artifact:icon000001" });
+    // S4 (plan clipboard:T2uboz26Oh3q): each is a tile, its option's words without the id; the tile's button answers it, so the answers row keeps only "Neither".
+    const blue = await within(article).findByRole("img", { name: "Blue" });
     expect(blue.getAttribute("src")).toBe("/api/artifacts/artifact%3Aicon000001/file");
-    expect((await within(article).findByRole("img", { name: "Green artifact:icon000002" })).getAttribute("src")).toBe("/api/artifacts/artifact%3Aicon000002/file");
-    // A video plays in place, any other file is a link; ids the question or body name are captioned with their id.
-    const cut = await within(article).findByLabelText("artifact:cut0000001");
-    expect(cut.tagName).toBe("VIDEO");
+    expect((await within(article).findByRole("img", { name: "Green" })).getAttribute("src")).toBe("/api/artifacts/artifact%3Aicon000002/file");
+    expect(within(article).getByRole("button", { name: "Blue Recommended" })).toBeTruthy();
+    expect(within(article).getAllByRole("button", { name: /^(?:Neither|Green)$/ }).map((button) => button.textContent)).toEqual(["Green", "Neither"]);
+    // A video is a still with a play mark that opens the preview, any other file is a link; ids the question or body name are captioned with their file name.
+    expect((await within(article).findByRole("button", { name: "Preview artifact:cut0000001.bin" })).querySelector("video")).toBeTruthy();
     expect((await within(article).findByRole("link", { name: "artifact:doc0000001.bin" })).getAttribute("href")).toBe("/api/artifacts/artifact%3Adoc0000001/file");
-    expect(article.querySelectorAll(".ny-previews figure")).toHaveLength(4);
+    expect(article.querySelectorAll(".ny-choices figure")).toHaveLength(4);
   });
 
   it("says what a card is about on Details, reading the mail only then: the mail, the plan it unblocks with its date, its links (operator 1/11 11:58 BKK)", async () => {
@@ -993,6 +995,14 @@ describe("Nous dock", () => {
     await waitFor(() => expect((effort as HTMLSelectElement).disabled).toBe(true));
     fireEvent.click(cheaper);
     await waitFor(() => expect(saved()).toMatchObject({ lowSpend: { cheaperModel: true } }));
+    // The Load target per spend mode (operator 13/11 07:30 BKK): today's 90 in each, saved whole; 0 never pushes.
+    const normalTarget = screen.getByRole("spinbutton", { name: "Load target in NORMAL (%)" });
+    expect((normalTarget as HTMLInputElement).value).toBe("90");
+    fireEvent.change(normalTarget, { target: { value: "80" } }); fireEvent.blur(normalTarget);
+    await waitFor(() => expect(saved()).toMatchObject({ lowSpend: { loadTargets: { NORMAL: 80, LOW: 90, CRITICAL: 90 } } }));
+    const criticalTarget = screen.getByRole("spinbutton", { name: "Load target in CRITICAL (%)" });
+    fireEvent.change(criticalTarget, { target: { value: "0" } }); fireEvent.blur(criticalTarget);
+    await waitFor(() => expect(saved()).toMatchObject({ lowSpend: { loadTargets: { NORMAL: 80, LOW: 90, CRITICAL: 0 } } }));
     expect(saved()).not.toHaveProperty("models");
     expect(saved()).not.toHaveProperty("fallbackModel");
   });
@@ -1232,6 +1242,30 @@ describe("Nous dock", () => {
     expect(within(stats).getByText("Not on a pane 1")).toBeTruthy();
     expect(within(within(stats).getByRole("list", { name: "Plans not on a pane" })).getByTitle("Taxes (Pane closed)").textContent).toBe("Taxes");
     expect(stats.getAttribute("data-motion")).toBe("on");
+  });
+
+  it("searches the board's Plans as the operator types and opens the Load view from Live's Load tile (operator 13/11 07:51 BKK)", async () => {
+    serve({ plans: [
+      { id: "clipboard:plan01", title: "Σχέδιο φόρων", progress: 40, status: "IN_PROGRESS", room: "Main", pane: "Hugo", nextStep: null },
+      { id: "clipboard:plan02", title: "Docs", progress: 80, status: "IN_PROGRESS", room: "Main", pane: "Andy", nextStep: "2. Υποβολή" }] });
+    render(<NousDock canRun />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open Nous fullscreen" }));
+    const section = await screen.findByRole("region", { name: "Plans" });
+    const count = () => section.querySelector("h3 .nous-board-count")?.textContent;
+    await waitFor(() => expect(count()).toBe("2"));
+    const search = within(section).getByRole("searchbox", { name: "Search plans" });
+    fireEvent.change(search, { target: { value: "σχεδιο" } });
+    expect(within(section).getAllByRole("button", { name: /^Open the plan/ }).map((button) => button.querySelector("strong")?.textContent)).toEqual(["Σχέδιο φόρων"]);
+    expect(count()).toBe("1");
+    fireEvent.change(search, { target: { value: "υποβολη" } });
+    expect(within(section).getByRole("button", { name: "Open the plan Docs, 80%" })).toBeTruthy();
+    fireEvent.change(search, { target: { value: "nothing" } });
+    expect([count(), within(section).getByText("No plan matches.").tagName]).toEqual(["0", "P"]);
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect((search as HTMLInputElement).value).toBe("");
+    expect(count()).toBe("2");
+    fireEvent.click(await within(screen.getByRole("region", { name: "Live stats" })).findByRole("button", { name: "Open the Load view: 42% of capacity in use, target 90%" }));
+    expect(await screen.findByRole("region", { name: "Load" })).toBeTruthy();
   });
 
   it("shows the plan map in the dock's Plans tab: the holds, what to unblock first, the dates and every plan grouped by what it waits on (operator request 2026-10-25)", async () => {

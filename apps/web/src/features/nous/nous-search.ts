@@ -1,6 +1,13 @@
 // Find in the Nous conversation (operator nous_msg:a44eacc4): what the list shows, ignoring case and Greek accents, as the house fold does.
 const fold = (text: string) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().replace(/ς/g, "σ");
 
+/** The board's Plans search (operator 13/11 07:51 BKK, nous_msg:ceb66b0357124a2d8586e795): every word somewhere in the title, the pane, the room or the next step. */
+export function searchPlans<T extends { title: string; pane?: string | null; room?: string | null; nextStep?: string | null }>(plans: T[], query: string): T[] {
+  const words = fold(query).split(/\s+/).filter(Boolean);
+  if (!words.length) return plans;
+  return plans.filter((plan) => { const text = fold([plan.title, plan.pane, plan.room, plan.nextStep].filter(Boolean).join(" ")); return words.every((word) => text.includes(word)); });
+}
+
 /** Every place the query appears in the text the list shows, in reading order. Text in a closed fold (a run of steps) is skipped. */
 export function findConversationText(root: HTMLElement, query: string): Range[] {
   const needle = fold(query.trim());

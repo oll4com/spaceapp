@@ -16,6 +16,7 @@ import type { NousSelectedModel } from "./model-choice.js";
 import { decisionPredictedOption, decisionPrediction, optionPredictionMatched } from "./predictions.js";
 import { nousControlRisk, nousToolLabel, type NousToolOutcome, type NousTools } from "./tools.js";
 import { NOUS_GATEWAY_PACE_HOLD, SpaceRouteError, type SpaceRouteFailure } from "./space-provider.js";
+import { SPACE_DATABASE_DOWN } from "../room-agent-tools.js";
 import { awayGrantCovers, renderAwayContext, renderAwayLog, type NousAwayControl, type NousAwayTurn } from "./away.js";
 import type { NousGoals } from "./goals.js";
 import { withCheckedBlock } from "./pane-notices.js";
@@ -151,12 +152,14 @@ export const NOUS_PERSONA = [
   "Close the notifications you handled with space_resolve_notification so the operator's list keeps only what is theirs.",
   // Operator order 2026-10-21: answers in seconds, not minutes; helpers are a must whenever a turn has several things to handle.
   "Helpers (space_subagents) are mandatory when a turn has two or more independent things to handle (several operator requests, several panes, plans, reports, files or mails to read or check, research, preparing plans and briefs): answer the operator first with space_reply_now, then give them to helpers in ONE call at the start (one helper per thing; there is no count cap), each with a short title and complete instructions, and do the rest yourself while they work; never do them one after another yourself, and never use them for one quick action. You keep the decisions, the operator's cards, memory and notes, the outcome and the final answer; helpers report back briefly, and you act on their reports. A call answers within 45 s; helpers still RUNNING then report through space_subagents {runId} while you go on with other work.",
-  "Before your final message in every turn that answered the operator, call space_nous_outcome once: how each of their requests ended (SELF, HELPER with the tool you lacked, OPERATOR, PENDING; correction when they corrected you or repeated a request). When the operator corrects you, save the lesson (space_note, key lessons-<cause>).",
+  "Before your final message in every turn that answered the operator, call space_nous_outcome once: how each of their requests ended (SELF, HELPER with the tool you lacked, OPERATOR, PENDING; correction only when they say you were wrong or repeat a request you reported done; not a new request, a card answer or a repeat while you were still working). When the operator corrects you, save the lesson (space_note, key lessons-<cause>).",
   "Never forget a pane: every open pane needs a check. Read the panes the world lists under \"Panes not checked\", then record each with space_pane_checked (verdict, one line, next check). A pane the operator opened for their own tests is OPERATOR_TEST: drive it while its task runs; once that task is done, save to memory and close it like any finished pane. A pane whose work is finished gets no OK verdict: it waits for its save and close in the Standing orders turns.",
   "Panes report to you: Space records each CLI pane's last answer when its turn ends, its question and options when it waits, and a heartbeat every 10 minutes while it works; agents add started, blocked, needs-decision and done themselves. The world's pane lines show the newest report. Read a pane's reports with space_pane_reports before reading its screen, and never ask a pane to repeat or summarise what its reports already say.",
   "When the operator asks how much you have improved, call space_nous_progress and answer with its percentage, points and baseline date.",
   "What only the operator's hands can do (sign-in, password, CAPTCHA, a click bot protection blocks, a document or an answer only they have) goes on ONE card per pane with space_notify_operator, in the operator's language (English unless the world says otherwise), the whole list for that pane each time; resolve the card when nothing is left there. Write the card as a question: the item's question, its options and your recommendation (one of them); the operator answers from the card and their answer reaches you as their message with the pane's refs (it starts \"My answer to\"): act on it and resolve the card. Never list these in your answer: say only how many panes wait for them. Decisions stay space_ask_operator.",
   "Before you tell the operator that something waits for them, check it against the world now (open decisions, notifications, your cards): notes and logs go stale.",
+  // 13/11 Score lever (6 of 18 real corrections in 7 days: a credit, a token, a risk line, a handoff told from old memory as current).
+  "The same for any fact you take from memory, a note, a report or a handoff (a balance, a credit, a token, a risk, a pane's state): check it on its real surface now, or give its date and say you did not re-check it.",
   // Operator 2/11 09:49 BKK «γιατι βλεπω ολα αυτα τα εμαιλ!!»; Space also replaces any slip on write (withoutOwnAddresses in tools.ts).
   "Never write the operator's own e-mail addresses (connected Gmail, Vault logins, sign-in accounts) in a decision, card, Needs you item or checked entry: name the account by its site or role instead (\"your Gmail\", \"the Upwork sign-in\").",
   // Fable 5.1 (operator decision 2026-10-24): the model guide's prompt-tunable shifts, as rules of how Nous works.
@@ -198,6 +201,8 @@ const defaultLimits: NousLimits = { turnMs: 20 * 60_000, inboxDebounceMs: 10 * 6
   historyMessages: 500, modelPauseMs: 10 * 60_000, deliverMs: 30_000 };
 /** Technical bound (model context): the conversation before the turn, beside the world and the retrieved sections. */
 export const NOUS_HISTORY_MAX_CHARS = 60_000;
+/** The Score's first-answer target is 2 minutes: past this an operator turn with no space_reply_now yet reads a reminder with each tool answer. */
+const NOUS_REPLY_NUDGE_MS = 60_000;
 /** Safety: a failing operator turn retries 3 times; its messages then wait for the next turn, never lost. */
 const OPERATOR_RETRIES = 3;
 /** An explicit model refused with no reset time is tried again after this (brief 9/11 REVIEW). */
@@ -269,6 +274,8 @@ export interface NousServiceDeps {
   autonomous?: boolean;
   /** Why no turn can run here now (null when one can): the dock says it, and no turn of Nous's own starts meanwhile. */
   unavailable?(): Promise<string | null>;
+  /** Space Link (ADR-014): why this SpaceApp's own autonomous turns wait (another SpaceApp's Nous holds its lease), else null. The operator's and decision turns run. */
+  managed?(owner: string): string | null;
   /** Turning Nous on is refused with that reason (a self-hosted install whose Claude Code is not connected). */
   enableNeedsRunner?: boolean;
   /** Away mode (plan clipboard:B7eTUHTJYg3X); without it the operator is always here. */
@@ -704,8 +711,8 @@ export function createNousService(deps: NousServiceDeps) {
     const left = unhandledItems(items, live.acts);
     const acted = [...new Set(items.filter((item) => item.requestKey && !left.includes(item)).map((item) => item.requestKey!))];
     if (acted.length) await deps.requestActed?.(owner, acted).catch((error) => warn({ err: error, owner }, "Nous request act record failed."));
-    // Held copilot questions and R37-1 reviews hold whatever the turn answered; the other items only a NOTHING_NEW.
-    const heldBack = silent ? left : left.filter((item) => item.kind === "QUESTION" || item.kind === "REVIEW");
+    // Held copilot questions, R37-1 reviews and the 90 % push's items hold whatever the turn answered; the other items only a NOTHING_NEW.
+    const heldBack = silent ? left : left.filter((item) => item.kind === "QUESTION" || item.kind === "REVIEW" || item.always);
     if (!heldBack.length) return held;
     const leftKeys = new Set(heldBack.map((item) => item.key));
     const again: NousTurnItem[] = [];
@@ -975,12 +982,20 @@ export function createNousService(deps: NousServiceDeps) {
       // operator's chat, no pause, not a Daily Nous error (STOPPED, with the reason in the turn's facts); the loop runs the work again later.
       const paceHeld = status === "FAILED" && !hold && reason !== "OPERATOR" && reason !== "DECISION" && NOUS_GATEWAY_PACE_HOLD.test(message);
       if (paceHeld) { status = "STOPPED"; failure = clip(`Held by Space Gateway's pace cap: ${primary}`, 300); }
+      // 12/11 (8 of 12 Daily Nous turn errors): a turn Space's own restart killed or whose database stopped answering is not Nous failing:
+      // STOPPED with the cause in its facts (no Daily Nous error), retried as before; a background one writes nothing red in the chat.
+      const spaceDown = status === "FAILED" && !hold && !paceHeld && (/The CLI was stopped by SIG(?:TERM|KILL)\b/.test(primary)
+        || (SPACE_DATABASE_DOWN.test(primary) && !NOUS_GATEWAY_UNREACHABLE.test(primary)));
+      if (spaceDown) { status = "STOPPED"; failure = clip(`Space failed under the turn (restart or database): ${primary}`, 300); }
       // The operator's Stop and an instance without the model (dev) leave the messages to the next turn; anything else retries them.
       retry = !stopped && !(error instanceof NousUnavailableError) && !hold && !wait;
       if (stopped) await addMessage(owner, turnId, "ERROR", "FAILED", "Stopped.");
       else if (signal.aborted) await addMessage(owner, turnId, "ERROR", "FAILED", "This turn took too long and was stopped.");
       else if (paceHeld) {
         warn({ owner, reason }, "Nous background turn held by Space Gateway's pace cap.");
+        entry.lastError = clip(message, 1_000);
+      } else if (spaceDown && reason !== "OPERATOR" && reason !== "DECISION") {
+        warn({ err: error, owner, reason }, "Nous background turn stopped by Space's restart or database.");
         entry.lastError = clip(message, 1_000);
       } else if (hold) {
         if (!hold.refusals) await addMessage(owner, turnId, "ERROR", "FAILED", `No account of Nous's provider has quota now (${clip(message, 300)}). `
@@ -1022,19 +1037,23 @@ export function createNousService(deps: NousServiceDeps) {
       if (retry && extra.standing && extra.standing.attempt === 1 && !entry.queuedStanding) {
         entry.queuedStanding = { ...extra.standing, attempt: 2, notBefore: Math.max(now() + limits.retryMs, entry.pausedUntil + 1_000) };
       }
-      if (retry && !extra.standing) retryLater(owner, entry);
+      // Score 13/11 (11 of 70 slow first answers in 7 days sat in this wait): an operator turn that failed before any answer tries again at once.
+      if (retry && !extra.standing) retryLater(owner, entry, reason === "OPERATOR" && !live.acts.some((act) => act.ok && act.name === "space_reply_now"));
       void next(owner);
     }
   }
 
-  /** After a failed turn the operator's waiting messages run again later (after a model pause ends), at most OPERATOR_RETRIES times in a row. */
-  function retryLater(owner: string, entry: OwnerRuntime) {
+  /**
+   * After a failed turn the operator's waiting messages run again later (after a model pause ends), at most OPERATOR_RETRIES times in a row;
+   * `unanswered` (an operator turn that sent no answer yet): the first retry runs at once, the next ones a step sooner.
+   */
+  function retryLater(owner: string, entry: OwnerRuntime, unanswered = false) {
     if (entry.retryTimer || entry.retries >= OPERATOR_RETRIES) return;
     entry.retries += 1;
     entry.retryTimer = setTimeout(() => {
       entry.retryTimer = null;
       void answerWaiting(owner, entry).catch((error) => warn({ err: error, owner }, "Nous retry failed."));
-    }, Math.max(limits.retryMs * entry.retries, entry.pausedUntil - now() + 1_000));
+    }, Math.max(limits.retryMs * (entry.retries - (unanswered ? 1 : 0)), entry.pausedUntil - now() + 1_000));
     entry.retryTimer.unref?.();
   }
 
@@ -1086,14 +1105,14 @@ export function createNousService(deps: NousServiceDeps) {
     if (entry.goalTimer) { clearTimeout(entry.goalTimer); entry.goalTimer = null; }
     if (!deps.goals || entry.runningGoal) return;
     const settings = await deps.settings(owner);
-    if (!settings.enabled || !settings.goals.loop || await deps.unavailable?.()) return;
+    if (!settings.enabled || !settings.goals.loop || await deps.unavailable?.() || deps.managed?.(owner)) return;
     if (entry.pausedUntil > now()) { armGoal(owner, entry.pausedUntil - now() + 1_000); return; }
     // R11-1: the gateway probe calls this again when Space Gateway answers.
     if (holding(entry)) return;
     if ((await deps.tokenMode?.(owner) ?? "NORMAL") === "CRITICAL") return;
     const goal = await deps.goals.pick(owner, now(), settings.goals);
     if (goal) { void runTurn(owner, "GOAL", { goal }); return; }
-    const due = await deps.goals.nextDue(owner, now());
+    const due = await deps.goals.nextDue(owner, now(), settings.goals);
     if (due !== null) armGoal(owner, Math.max(1_000, due - now()));
   }
   function armGoal(owner: string, delayMs: number) {
@@ -1110,6 +1129,8 @@ export function createNousService(deps: NousServiceDeps) {
     if (unavailable) return clip(unavailable, 200);
     if (!settings.goals.loop) return "The goal loop is off (Settings → Assistants & AI → Nous → Goals).";
     if (entry.pausedUntil > now()) return "Nous's model is paused after a failure.";
+    const managed = deps.managed?.(owner);
+    if (managed) return managed;
     if (entry.hold) return `${entry.hold.kind === "gateway" ? "Space Gateway is unreachable" : "No account has quota"} since ${new Date(entry.hold.since).toISOString().slice(11, 16)} UTC: goal turns wait for it.`;
     if ((await deps.tokenMode?.(owner) ?? "NORMAL") === "CRITICAL") return "Low-spend mode is CRITICAL: goal turns wait for the next reset.";
     return null;
@@ -1214,6 +1235,8 @@ export function createNousService(deps: NousServiceDeps) {
     // The lines wait: the next one after Claude Code is connected runs them.
     if (await deps.unavailable?.()) return;
     if (entry.pausedUntil > now()) { schedule(owner, entry.pausedUntil - now() + 1_000); return; }
+    // Space Link: the lines wait while another SpaceApp's Nous manages this one, rechecked a minute on.
+    if (deps.managed?.(owner)) { schedule(owner, limits.gatewayProbeMs); return; }
     // R11-1: the lines (and a queued standing turn) wait for Space Gateway; the probe's line starts the next turn.
     if (holding(entry)) return;
     // 2/11 REVIEW (31/10: background turns spent every Claude Max 5-hour window, then 26 OPERATOR turns failed): in CRITICAL (no account of the
@@ -1273,7 +1296,7 @@ export function createNousService(deps: NousServiceDeps) {
         turnsThisHour: turnsThisHour(entry), lastError: entry.lastError, openDecisions: open.length, inbox: entry.inbox.size,
         away: deps.away ? await deps.away.view(owner) : null,
         ...(deps.goals ? { goals: { active: (await deps.goals.list(owner, { statuses: ["ACTIVE"] })).length,
-          nextAt: entry.runningGoal ? null : await deps.goals.nextDue(owner, now()).then((at) => at === null ? null : new Date(at).toISOString()), held: await goalHold(owner, entry, settings) } } : {})
+          nextAt: entry.runningGoal ? null : await deps.goals.nextDue(owner, now(), settings.goals).then((at) => at === null ? null : new Date(at).toISOString()), held: await goalHold(owner, entry, settings) } } : {})
       };
     },
 
@@ -1296,6 +1319,7 @@ export function createNousService(deps: NousServiceDeps) {
     },
 
     operatorMessageRefs: (owner: string) => deps.repository.listOperatorMessageRefs(owner),
+    operatorMessageByClientId: (owner: string, clientId: string) => deps.repository.operatorMessageByClientId(owner, clientId),
 
     /** What the turns of the last `days` ran on and cost, per UTC day, reason and model (the model study, 2026-10-21). */
     async turnCosts(owner: string, days: number): Promise<NousTurnCosts> {
@@ -1402,9 +1426,14 @@ export function createNousService(deps: NousServiceDeps) {
         ...(typed !== null && outcome.ok ? { text: typed } : {}) } });
       // 4/11: operator messages that came while this operator turn runs reach it with this answer; the turn answers them now.
       const carried = !helper && running?.reason === "OPERATOR" ? takeUndelivered(runtime(owner), running) : [];
-      if (!carried.length) return outcome;
-      const zone = deps.timeZone ? await deps.timeZone(owner).catch(() => "UTC") : "UTC";
-      return { ...outcome, result: `${outcome.result || outcome.display}\n\n${renderOperatorMessages(carried, zone, CARRIED_HEAD)}\n${CARRIED_ASK}` };
+      // Score 13/11 (31 of 70 slow first answers in 7 days came after 8 to 105 tool calls): past a minute, an operator turn with no answer yet is told so.
+      const waited = !helper && running?.reason === "OPERATOR" && name !== "space_reply_now" && !running.acts.some((act) => act.ok && act.name === "space_reply_now")
+        ? now() - Date.parse(running.startedAt) : 0;
+      const nudge = waited >= NOUS_REPLY_NUDGE_MS ? `The operator has waited ${Math.round(waited / 1_000)} s with no answer: call space_reply_now now with the short answer `
+        + "(what you found or will do), then go on with the work." : "";
+      if (!carried.length && !nudge) return outcome;
+      const zone = carried.length && deps.timeZone ? await deps.timeZone(owner).catch(() => "UTC") : "UTC";
+      return { ...outcome, result: [outcome.result || outcome.display, ...(carried.length ? [`${renderOperatorMessages(carried, zone, CARRIED_HEAD)}\n${CARRIED_ASK}`] : []), ...(nudge ? [nudge] : [])].join("\n\n") };
     },
 
     /**
@@ -1429,7 +1458,7 @@ export function createNousService(deps: NousServiceDeps) {
      */
     async send(owner: string, content: string, options: { person?: boolean; refs?: { roomId: string; paneId: string }; via?: "TELEGRAM"; client?: NousClientContext;
       /** A paired phone's message through the mobile channel (ADR-013, security review P1-3): NOUS_MOBILE_RULE applies to it. */
-      mobile?: { device: string; scopes: string[] } } = {}): Promise<NousMessage> {
+      mobile?: { device: string; scopes: string[] }; clientId?: string } = {}): Promise<NousMessage> {
       const entry = runtime(owner);
       // Where the operator writes from (plan clipboard:4TXfIZzj8ITW); Space's own answers on their behalf (person false) carry none.
       const client = options.client ?? (options.via === "TELEGRAM" ? { app: "TELEGRAM" as const } : undefined);
@@ -1443,13 +1472,13 @@ export function createNousService(deps: NousServiceDeps) {
         const goal = command.kind === "CREATE" ? await deps.goals!.create(owner, command.text, options.via === "TELEGRAM" ? "the operator (Telegram)" : "the operator") : null;
         const reply = goal ? `Goal recorded: "${clip(goal.text, 300)}". Nous starts on it now and keeps at it in goal turns of its own; the Goals view shows its progress.` : await deps.goals!.listText(owner);
         const message = await addMessage(owner, null, "OPERATOR", "DONE", content, { person: options.person === true, goalCommand: command.kind, ...(goal ? { goalId: goal.id } : {}),
-          ...(options.via ? { via: options.via } : {}), ...(client ? { client } : {}), reply });
+          ...(options.via ? { via: options.via } : {}), ...(client ? { client } : {}), ...(options.clientId ? { clientId: options.clientId } : {}), reply });
         await addMessage(owner, null, "ANSWER", "DONE", reply, { startedAt: new Date(now()).toISOString(), replyTo: [message.id], goalCommand: command.kind, ...(goal ? { goalId: goal.id } : {}) });
         if (goal) void goalTick(owner).catch((error) => warn({ err: error, owner }, "Nous goal loop failed."));
         return message;
       }
       const message = await addMessage(owner, null, "OPERATOR", "DONE", content, { person: options.person === true, ...(options.refs ? { refs: options.refs, via: "PANE_BOARD" } : options.via ? { via: options.via } : {}),
-        ...(client ? { client } : {}), ...(options.mobile ? { mobile: options.mobile } : {}) });
+        ...(client ? { client } : {}), ...(options.mobile ? { mobile: options.mobile } : {}), ...(options.clientId ? { clientId: options.clientId } : {}) });
       // The operator's first message after Away began ends it; that turn briefs them from the away log.
       const ended = deps.away ? await deps.away.end(owner, "RETURN").catch((error) => { warn({ err: error, owner }, "Nous away end failed."); return null; }) : null;
       if (ended) entry.briefing = renderAwayLog(ended.session, ended.log);
@@ -1539,7 +1568,7 @@ export function createNousService(deps: NousServiceDeps) {
       if (!settings.enabled) return "OFF";
       const entry = runtime(owner);
       // 2/11 REVIEW: CRITICAL's last room is the operator's and decisions' reserve; the next tick asks again.
-      if (entry.pausedUntil > now() || await deps.unavailable?.() || holding(entry) || await deps.tokenMode?.(owner) === "CRITICAL") return "PAUSED";
+      if (entry.pausedUntil > now() || await deps.unavailable?.() || deps.managed?.(owner) || holding(entry) || await deps.tokenMode?.(owner) === "CRITICAL") return "PAUSED";
       if (entry.queuedStanding) return "QUEUED";
       const first = text.split("\n").find((line) => line.startsWith("## ")) ?? text.split("\n")[0] ?? reason;
       // R13-9: a pendings list's slot is kept on its inbox line (meta.pendingsList), so a restart never posts it again within 3 hours.
@@ -1943,7 +1972,7 @@ export function createNousService(deps: NousServiceDeps) {
       const entry = runtime(owner);
       const settings = await deps.settings(owner);
       const view = await deps.goals.view(owner);
-      const nextAt = entry.runningGoal ? null : await deps.goals.nextDue(owner, now());
+      const nextAt = entry.runningGoal ? null : await deps.goals.nextDue(owner, now(), settings.goals);
       return { ...view, loop: { on: settings.enabled && settings.goals.loop, running: entry.runningGoal?.goalId ?? null, nextAt: nextAt === null ? null : new Date(nextAt).toISOString(), held: await goalHold(owner, entry, settings) } };
     },
 

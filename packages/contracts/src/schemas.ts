@@ -3975,8 +3975,15 @@ export const spaceTextCaptchaCommandSchema = z.object({
   }
 });
 
+// One fixed Alibaba Cloud slider ("Please slide to verify") attempt; no selectors, URLs or page content in or out.
+export const spaceSliderCaptchaCommandSchema = z.object({
+  type: z.literal("SLIDER_CAPTCHA"),
+  pageId: z.string().min(1).max(200).optional()
+}).strict();
+
 export const spaceCliBrowserCommandSchema = z.discriminatedUnion("type", [
   spaceTextCaptchaCommandSchema,
+  spaceSliderCaptchaCommandSchema,
   z.object({
     type: z.literal("DEVTOOLS"),
     includeNetwork: z.boolean().default(true),
@@ -4298,6 +4305,7 @@ export const voiceTranscriptionModelSchema = z.enum([
   "gpt-realtime-whisper",
   "whisper-1",
   "local-qwen3-greek",
+  "local-sensevoice-small",
   "gemini-3.8-live",
   "gemini-3.8-live-extended-thinking",
   "gemini-3.1-flash-live-preview",
@@ -9575,7 +9583,9 @@ export const taskScheduleSchema = storedTaskScheduleSchema
   .extend({
     nextRunAt: isoDateTimeSchema.nullable(),
     lastRunAt: isoDateTimeSchema.nullable(),
-    lastOutcome: z.string().max(500).nullable()
+    lastOutcome: z.string().max(500).nullable(),
+    /** When the schedule last began to apply (next run from none to some); absent: since the task was made. */
+    scheduledSince: isoDateTimeSchema.optional()
   })
   .strict();
 

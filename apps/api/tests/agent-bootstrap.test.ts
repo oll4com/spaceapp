@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   BROWSER_HYGIENE_RULE,
-  CLOUDFLARE_HELPER_RULE, PRESS_HOLD_HELPER_RULE, RECAPTCHA_HELPER_RULE, HCAPTCHA_HELPER_RULE, TEXT_CAPTCHA_HELPER_RULE,
+  CLOUDFLARE_HELPER_RULE, PRESS_HOLD_HELPER_RULE, RECAPTCHA_HELPER_RULE, HCAPTCHA_HELPER_RULE, TEXT_CAPTCHA_HELPER_RULE, SLIDER_CAPTCHA_HELPER_RULE,
   OPERATOR_HANDS_RULE,
   OPERATOR_ORDERS_RULE,
   operatorLanguageRule,
@@ -125,6 +125,7 @@ describe("Space agent bootstrap", () => {
       expect(text).toContain(RECAPTCHA_HELPER_RULE);
       expect(text).toContain(HCAPTCHA_HELPER_RULE);
       expect(text).toContain(TEXT_CAPTCHA_HELPER_RULE);
+      expect(text).toContain(SLIDER_CAPTCHA_HELPER_RULE);
     }
     for (const skill of ["space-job-applications", "space-mail-copilot", "space-marketing-copilot", "space-freelance-copilot",
       "space-design", "space-video", "space-app-studio", "space-security-copilot", "space-monitoring-copilot"]) {
@@ -132,6 +133,7 @@ describe("Space agent bootstrap", () => {
       expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8")).toContain(PRESS_HOLD_HELPER_RULE);
       expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8")).toContain(RECAPTCHA_HELPER_RULE);
       expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8")).toContain(TEXT_CAPTCHA_HELPER_RULE);
+      expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8")).toContain(SLIDER_CAPTCHA_HELPER_RULE);
     }
   });
 

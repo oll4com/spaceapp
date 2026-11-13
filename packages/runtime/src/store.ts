@@ -1,4 +1,4 @@
-import { t3CodePaneMetadataSchema, type FreelanceEgressRoute, type T3CodePaneMetadata } from "@space/contracts";
+import { t3CodePaneMetadataSchema, type FreelanceEgressRoute, type T3CodePaneMetadata, type TaskSchedule } from "@space/contracts";
 import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, appStudioPaneMetadataSchema, videoPaneMetadataSchema, securityCopilotPaneMetadataSchema, type SecurityCopilotPaneMetadata, monitoringCopilotPaneMetadataSchema, type MonitoringCopilotPaneMetadata, type AppStudioPaneMetadata, type VideoPaneMetadata, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
 import { type PlanExecutionEvent } from "./plan-execution-repository.js";
 import { managedPlanProjection } from "./plan-execution-projection.js";
@@ -676,6 +676,11 @@ export interface TaskItemListResult {
 }
 
 /** One handled occurrence of a scheduled task (plan clipboard:GA__W4qBxSPR): advanced and logged together. RUNNING: typed into its pane. */
+/** The Postgres store's scheduled_since: set when the next run goes from none to some on an existing task (undefined `previous`: a new one). */
+function scheduledSince(nextRunAt: string | null, previous: TaskSchedule | null | undefined, now: string): string | undefined {
+  return nextRunAt === null || previous === undefined ? undefined : previous?.nextRunAt ? previous.scheduledSince : now;
+}
+
 export interface TaskScheduleClaim { nextRunAt: string | null; outcome: string; status: Extract<TaskRunStatus, "RUNNING" | "SKIPPED" | "FAILED" | "REMINDER">; at: string }
 /** A pane report as the task run log reads it (pane_reports). */
 export interface TaskRunReport { paneId: string; at: string; status: string; summary: string }
@@ -3770,7 +3775,8 @@ export class InMemorySpaceStore implements SpaceStore {
       characterCount: Array.from(parsed.objective).length,
       createdAt: existing?.item.createdAt ?? timestamp,
       lastUsedAt: timestamp,
-      schedule: schedule ? { ...schedule, nextRunAt, lastRunAt: pending?.lastRunAt ?? null, lastOutcome: pending?.lastOutcome ?? null } : null
+      schedule: schedule ? { ...schedule, nextRunAt, lastRunAt: pending?.lastRunAt ?? null, lastOutcome: pending?.lastOutcome ?? null,
+        scheduledSince: scheduledSince(nextRunAt, existing ? pending : undefined, timestamp) } : null
     });
     this.taskSequence += 1;
     this.taskItems.set(item.id, {
@@ -3824,6 +3830,12 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!record || record.ownerUserId !== ownerUserId) {
       throw new SpaceNotFoundError(`Task item ${taskItemId} was not found.`);
     }
+    // Tasks are keyed by their objective (upsertTaskItem), as in the Postgres store.
+    const contentHash = parsed.objective === undefined ? record.contentHash : createHash("sha256").update(parsed.objective).digest("hex");
+    if ([...this.taskItems.values()].some((other) => other !== record && other.ownerUserId === ownerUserId && other.contentHash === contentHash)) {
+      throw new SpaceConflictError("Another task already has this exact objective.");
+    }
+    record.contentHash = contentHash;
     const pending = record.item.schedule;
     const given = resolveTaskScheduleZone(parsed.schedule, ownerWorkingTimeZone(this.getUserSettings(ownerUserId)));
     const schedule = given !== undefined ? given : pending && { recurrence: pending.recurrence, timeZone: pending.timeZone };
@@ -3836,7 +3848,8 @@ export class InMemorySpaceStore implements SpaceStore {
       ...(parsed.status !== undefined ? { status: parsed.status } : {}),
       characterCount: parsed.objective !== undefined ? Array.from(parsed.objective).length : record.item.characterCount,
       lastUsedAt: nowIso(),
-      schedule: schedule ? { ...schedule, nextRunAt, lastRunAt: pending?.lastRunAt ?? null, lastOutcome: pending?.lastOutcome ?? null } : null
+      schedule: schedule ? { ...schedule, nextRunAt, lastRunAt: pending?.lastRunAt ?? null, lastOutcome: pending?.lastOutcome ?? null,
+        scheduledSince: scheduledSince(nextRunAt, pending, nowIso()) } : null
     });
     record.item = updated;
     return updated;

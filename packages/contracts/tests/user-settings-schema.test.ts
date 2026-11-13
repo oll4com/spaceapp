@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultUserSettings, updateUserSettingsInputSchema, userSettingsSchema } from "../src/schemas.js";
-import { NOUS_TURN_KINDS, nousModelMatchesProvider, nousProvider, nousSettingsWithProvider, nousLowSpendSettingsSchema, nousSettingsInputSchema, nousSettingsSchema } from "../src/nous.js";
+import { NOUS_TURN_KINDS, nousModelMatchesProvider, nousProvider, nousSettingsWithProvider, nousLowSpendSettingsSchema, mergeNousSettings, nousSettingsInputSchema, nousSettingsSchema } from "../src/nous.js";
 
 describe("userSettingsSchema & updateUserSettingsInputSchema", () => {
   it("uses Astra high for new choices while preserving saved Opus and inferring its provider", () => {
@@ -45,6 +45,16 @@ describe("userSettingsSchema & updateUserSettingsInputSchema", () => {
       criticalBudgetRemainingPercent: 20, maxTurnsPerHour: 6, models: { inbox: { model: "claude-sonnet-5-5", effort: "medium" } },
       criticalModels: { inbox: { model: "claude-haiku-5-5", effort: "medium" }, standing: { model: "claude-haiku-5-5", effort: "medium" }, helper: { model: "claude-haiku-5-5", effort: "medium" } } });
     expect(nousSettingsInputSchema.parse({ maxTurnsPerHour: 5 })).not.toHaveProperty("lowSpend");
+    // The Load target per spend mode (13/11): today's 90 in every mode until the operator sets it.
+    expect(legacy.lowSpend.loadTargets).toEqual({ NORMAL: 90, LOW: 90, CRITICAL: 90 });
+  });
+
+  it("saves the Load target per spend mode, 0-100, and a lowSpend PATCH without it keeps it", () => {
+    const before = nousSettingsSchema.parse({ lowSpend: { loadTargets: { NORMAL: 80, LOW: 60, CRITICAL: 0 } } });
+    expect(mergeNousSettings(before, nousSettingsInputSchema.parse({ lowSpend: { maxTurnsPerHour: 3 } })).lowSpend.loadTargets).toEqual({ NORMAL: 80, LOW: 60, CRITICAL: 0 });
+    expect(mergeNousSettings(before, nousSettingsInputSchema.parse({ lowSpend: { loadTargets: { NORMAL: 85, LOW: 60, CRITICAL: 0 } } })).lowSpend.loadTargets.NORMAL).toBe(85);
+    expect(nousSettingsSchema.safeParse({ lowSpend: { loadTargets: { NORMAL: 101 } } }).success).toBe(false);
+    expect(nousSettingsSchema.safeParse({ lowSpend: { loadTargets: { LOW: -1 } } }).success).toBe(false);
   });
 
   it("keeps legacy dock tabs on, saves explicit choices and never accepts a Conversation switch", () => {

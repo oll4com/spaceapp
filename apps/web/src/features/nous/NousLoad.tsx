@@ -69,7 +69,7 @@ export function NousLoad({ active }: { active: boolean }) {
         </div>
         <div className="nous-load-now" aria-live="polite">
           <p className="nous-load-percent"><AnimatedNumber value={Math.round(overall)} /><span>%</span></p>
-          <p className="nous-muted">of capacity in use · target {load.target}%</p>
+          <p className="nous-muted">of capacity in use · target {load.target}%{load.targetMode ? ` · ${load.targetMode}` : ""}</p>
           {load.host ? <p className="nous-muted">Physical host: {load.host} · OVERLOADED only past 90%</p> : null}
           {load.limit ? <p className="nous-load-limit">At a limit: {load.limit}</p>
             : load.overall !== null ? <p className="nous-load-headroom">{overall < load.target ? `${Math.round(load.target - overall)}% headroom to use` : "At or above the target"}</p> : null}

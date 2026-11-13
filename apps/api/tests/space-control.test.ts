@@ -143,6 +143,11 @@ describe("Space control",()=>{
   const read=await c.execute([{kind:"watch",operation:"status",id:scheduleId}],"read-one");
   expect(read.results[0]).toMatchObject({status:"COMPLETED",evidence:{result:{id:scheduleId,status:"SCHEDULED"}}});
  });
+ it("reads a watch status with no id as the room's watches (12-13/11: 3 failed calls)",async()=>{
+  const c=fixture(),pane=c.panes[0]!;
+  const read=await c.execute([{kind:"watch",operation:"status",target:{paneIds:[pane.id]}}],"status-no-id");
+  expect(read.results[0]).toMatchObject({status:"COMPLETED",evidence:{result:[]}});
+ });
  it("an omp stop whose first Escape ended only a pty:true command interrupts once more and confirms the turn's end (step 9, 3/11)",async()=>{
   const c=fixture(),pane=c.panes[0]!;
   const base={...await c.controller.inspect(pane),runtimeId:"cli:omp"};

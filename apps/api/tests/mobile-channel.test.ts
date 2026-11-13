@@ -7,13 +7,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import {
-  MobileNoiseHandshake, decodeMobileFrame, decodeMobilePairQr, encodeMobileFrame, mobileHandshakePrologue, mobileIntegrityRequestHash, mobilePairingPsk, noiseKeyPair, vaultBase64url as b64,
+  LINK_APP, MobileNoiseHandshake, decodeMobileFrame, decodeMobilePairQr, encodeMobileFrame, encodeMobilePairQr, mobileHandshakePrologue, mobileIntegrityRequestHash, mobilePairingPsk, noiseKeyPair, vaultBase64url as b64,
   type MobileFrame, type MobileNoiseTransport, type MobilePairQr
 } from "@space/contracts";
 import { InMemoryAppDeviceSessionRepository } from "@space/db";
 import { InMemorySpaceStore, SpaceEventBus } from "@space/runtime";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import { InstanceLinkError } from "../src/instance-link/client.js";
+import { instanceLinksFor } from "../src/instance-link/routes.js";
 import { cookieName, createCsrfToken, hashPassword, signSession } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
 import { MOBILE_APP_SIGNERS, verifyDecideKeyAttestation } from "../src/mobile/attestation.js";
@@ -340,6 +342,82 @@ describe("pairing a phone over the channel", () => {
     expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/revoke`, headers: person })).statusCode).toBe(200);
     await vi.waitFor(() => expect(allowed.phone.state.closed).toBe(4403));
     expect((await connect(qr, device, { deviceId })).closed).toBe(4403);
+  });
+
+  // Space Link (ADR-014): another SpaceApp's Nous pairs as a device of app spaceapp-link, held like a phone, then reaches LINK_ROUTE_SCOPES only.
+  it("a SpaceApp link pairs as a server, is held until allowed, and reaches Space Control's state and panes, never screens, Nous or the Vault", async () => {
+    const qr = await offer();
+    const { paired, phone: pairing, device } = await pair(qr, { deviceName: "SpaceApp vm207", app: LINK_APP, appVersion: "1.3.0", platform: "server", wantScopes: ["read", "act"] });
+    pairing.ws.terminate();
+    const deviceId = paired!.deviceId as string;
+    expect(paired).toMatchObject({ scopes: ["read"], pending: ["read", "act"] });
+    expect(await cards()).toContainEqual(expect.objectContaining({ title: "New SpaceApp link: SpaceApp vm207", severity: "URGENT", payload: { deviceId } }));
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/allow`, headers: person })).statusCode).toBe(200);
+    const link = (await connect(qr, device, { deviceId, appVersion: "1.3.0" })).phone;
+    const denied = { status: 403, body: { error: { code: "MOBILE_SCOPE_DENIED" } } }, refused = { status: 400, body: { error: { code: "MOBILE_BODY" } } };
+    expect(await link.request("GET", "/api/auth/me")).toMatchObject({ status: 200, body: { user: { id: operator.id } } });
+    expect((await link.request("POST", "/api/control/v1/inspect", { section: "STATE" })).status).not.toBe(403);
+    expect(await link.request("POST", "/api/control/v1/inspect", { section: "CONTENT" })).toMatchObject(refused);
+    expect(await link.request("POST", "/api/control/v1/commands", { roomId: "room:a", requestId: "r1", actions: [{ kind: "cli", runtimeId: "codex", enabled: false }] })).toMatchObject(refused);
+    expect(await link.request("POST", "/api/control/v1/commands", { roomId: "room:a", requestId: "r1", userExplicitlyAuthorized: true, actions: [{ kind: "pane", operation: "close", target: {} }] })).toMatchObject(refused);
+    // The phone's routes are not the link's: no Nous chat, no notifications, no Vault, no settings.
+    for (const [m, p] of [["GET", "/api/nous"], ["POST", "/api/notifications/read-all"], ["GET", "/api/space-vault/items"], ["GET", "/api/user-settings"]] as const) {
+      expect(await link.request(m, p, m === "POST" ? {} : undefined), `${m} ${p}`).toMatchObject(denied);
+    }
+    link.ws.terminate();
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/revoke`, headers: person })).statusCode).toBe(200);
+  });
+
+  // Space Link slice 2 (ADR-014): this SpaceApp's own client pairs with a listening SpaceApp (here itself, on a real socket) from the code
+  // its person pastes, keeps the device key sealed, connects with IK once allowed, and forgets the key when the link is removed.
+  it("links another SpaceApp from its pairing code, connects once allowed, and forgets the link when removed", async () => {
+    const origin = `http://${await app.listen({ port: 0, host: "127.0.0.1" }).then((url) => new URL(url).host)}`;
+    const code = encodeMobilePairQr({ ...(await offer()), u: [origin], r: null });
+    expect((await app.inject({ method: "POST", url: "/api/instance-links", headers: phone, payload: { code } })).statusCode).toBe(403);
+    expect((await app.inject({ method: "POST", url: "/api/instance-links", headers: person, payload: { code: "SPACEAPP-PAIR:1:bad" } })).statusCode).toBe(400);
+    const linked = await app.inject({ method: "POST", url: "/api/instance-links", headers: person, payload: { code } });
+    expect(linked.json()).toMatchObject({ link: { id: expect.stringMatching(/^link:/), origins: [origin], scopes: ["read"], connected: false }, pending: ["read", "act"] });
+    expect(linked.body).not.toContain(code.slice(16));
+    const { id, deviceId } = linked.json().link as { id: string; deviceId: string };
+    expect(await cards()).toContainEqual(expect.objectContaining({ title: expect.stringMatching(/^New SpaceApp link: SpaceApp /), payload: { deviceId } }));
+    expect(await audit("instance_link.paired", id)).toMatchObject({ metadata: { deviceId, pending: ["read", "act"] } });
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/allow`, headers: person })).statusCode).toBe(200);
+    const checked = await app.inject({ method: "POST", url: `/api/instance-links/${id}/check`, headers: person });
+    expect(checked.json()).toMatchObject({ status: 200, scopes: ["read", "act"], link: { connected: true, scopes: ["read", "act"], lastSeenAt: expect.any(String) } });
+    // A second check reuses the open session.
+    expect((await app.inject({ method: "POST", url: `/api/instance-links/${id}/check`, headers: person })).json()).toMatchObject({ status: 200 });
+    expect((await app.inject({ method: "GET", url: "/api/instance-links", headers: person })).json().links).toEqual([expect.objectContaining({ id, connected: true })]);
+    expect((await app.inject({ method: "GET", url: "/api/instance-links", headers: person })).body).not.toContain("sealed");
+    // Slice 3: what Nous's space_remote calls, by the link's name; this side sends only the link's routes, the other side keeps its gates.
+    const links = instanceLinksFor(store)!;
+    const label = (await links.list(operator.id))[0]!.label;
+    expect(await links.request(operator.id, label, "GET", "/api/rooms")).toMatchObject({ status: 200, link: { id }, rttMs: expect.any(Number) });
+    await expect(links.request(operator.id, id, "GET", "/api/space-vault/items")).rejects.toThrow(/answers only GET \/api\/auth\/me/);
+    await expect(links.request(operator.id, id, "GET", "/api/control/v1/layout/../../space-vault/items")).rejects.toThrow(InstanceLinkError);
+    await expect(links.request(operator.id, "nope", "GET", "/api/rooms")).rejects.toThrow("No linked SpaceApp is nope.");
+    await expect(links.request("user:other", id, "GET", "/api/rooms")).rejects.toThrow(InstanceLinkError);
+    expect(await links.request(operator.id, id, "POST", "/api/control/v1/commands", { roomId: "room:a", requestId: "r2", userExplicitlyAuthorized: true,
+      actions: [{ kind: "pane", operation: "close", target: {} }] })).toMatchObject({ status: 400, body: { error: { code: "MOBILE_BODY" } } });
+    // Slice 4, the Remote mark: the managed side (here the same SpaceApp) sees the link's session, address, scopes and last request; a phone never does.
+    expect((await app.inject({ method: "GET", url: "/api/auth/devices/live", headers: person })).json().sessions).toContainEqual(expect.objectContaining({ deviceId,
+      app: "spaceapp-link", ip: expect.stringMatching(/127\.0\.0\.1/), scopes: ["read", "act"], since: expect.any(String),
+      last: { method: "POST", path: "/api/control/v1/commands", at: expect.any(String) } }));
+    expect((await app.inject({ method: "GET", url: "/api/auth/devices/live", headers: phone })).statusCode).toBe(403);
+    // Slice 5, the lease: that act took it; Take back holds the link at reading (and B's Nous works again) until Give back.
+    const close = { roomId: "room:a", requestId: "r3", actions: [{ kind: "pane", operation: "close", target: {} }] };
+    expect((await app.inject({ method: "GET", url: "/api/auth/devices/live", headers: person })).json()).toMatchObject({ lease: { deviceId }, takenBackAt: null });
+    expect((await app.inject({ method: "POST", url: "/api/auth/devices/live/take-back", headers: phone, payload: {} })).statusCode).toBe(403);
+    expect((await app.inject({ method: "POST", url: "/api/auth/devices/live/take-back", headers: person, payload: {} })).json()).toMatchObject({ lease: null, takenBackAt: expect.any(String) });
+    expect(await audit("instance_link.taken_back", operator.id)).toBeDefined();
+    expect(await links.request(operator.id, id, "POST", "/api/control/v1/commands", close)).toMatchObject({ status: 409, body: { error: { code: "LINK_TAKEN_BACK" } } });
+    expect((await links.request(operator.id, id, "GET", "/api/rooms")).status).toBe(200);
+    expect((await app.inject({ method: "POST", url: "/api/auth/devices/live/give-back", headers: person, payload: {} })).json()).toMatchObject({ takenBackAt: null });
+    expect((await links.request(operator.id, id, "POST", "/api/control/v1/commands", close)).status).not.toBe(409);
+    expect((await app.inject({ method: "DELETE", url: `/api/instance-links/${id}`, headers: person })).json()).toEqual({ ok: true });
+    expect(await audit("instance_link.removed", id)).toBeDefined();
+    expect((await app.inject({ method: "GET", url: "/api/instance-links", headers: person })).json().links).toEqual([]);
+    expect((await app.inject({ method: "POST", url: `/api/instance-links/${id}/check`, headers: person })).statusCode).toBe(404);
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/revoke`, headers: person })).statusCode).toBe(200);
   });
 
   // Nous Pro phase 2b (plan clipboard:kTV3y2lwO-99 step 6, design §5, §8.1): a phone behind NAT pairs and connects through the instance's

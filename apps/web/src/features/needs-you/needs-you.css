@@ -33,6 +33,8 @@
   color: var(--modern-text, var(--room-text, #f5f5f5));
   font-size: 14px;
   line-height: 1.45;
+  /* S8: the dock (~400 px), Nous full screen and a phone each get their grid from the card's own width, not the window's. */
+  container: ny-card / inline-size;
 }
 .ny-card.kind-off { --ny-kind: var(--needs-off); }
 .ny-card.kind-review { --ny-kind: var(--needs-review); }
@@ -46,11 +48,16 @@
 .ny-meta > span + span::before { content: "·"; margin-right: 8px; }
 .ny-meta svg { width: 12px; height: 12px; margin-right: 3px; vertical-align: -1px; }
 .ny-kind { color: var(--ny-kind); font-weight: 600; }
-.ny-due { color: var(--needs-urgent); font-weight: 600; }
+.ny-due, .ny-urgent { color: var(--needs-urgent); font-weight: 600; }
 .ny-corner.dock-kit-icon-button { border-color: transparent; background: transparent; color: var(--modern-muted, #aaaaaa); }
 .ny-actions, .ny-answers, .ny-sent, .ny-error, .ny-details { grid-column: 2 / -1; }
 .ny-actions, .ny-answers { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .ny-answers:empty { display: none; }
+/* S7: the recommended answer leads on a row of its own, its badge in the button's own colour. */
+.ny-answers > .is-recommended { flex: 1 1 100%; justify-content: center; }
+.ny-badge { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 0.72rem; font-weight: 600;
+  background: color-mix(in srgb, currentColor 18%, transparent); }
+.ny-badge svg { width: 12px; height: 12px; }
 /* A review's Approve and Decline never look alike (operator 12/11 21:38 BKK, both read «Απόρριψη» and looked the same): green and filled, red and outlined. */
 .ny-card .dock-kit-button.ny-approve, .ny-card .dock-kit-button.ny-approve:hover:not(:disabled) { border-color: transparent; background: var(--needs-ok); color: var(--modern-bg, #101010); }
 .ny-card .dock-kit-button.ny-decline { border-color: color-mix(in srgb, var(--needs-urgent) 60%, transparent); background: transparent; color: var(--needs-urgent); }
@@ -74,9 +81,21 @@
   font-size: 13px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ny-mail-body.is-folded { max-height: 15em; overflow: hidden; mask-image: linear-gradient(to bottom, #000 75%, transparent); }
 .ny-mail .ny-link { justify-self: start; }
-.ny-previews { display: grid; grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr)); gap: 8px; }
-.ny-previews figure { margin: 0; display: grid; gap: 4px; font-size: 12px; }
-.ny-previews img, .ny-previews video { width: 100%; max-height: 12rem; object-fit: contain; border-radius: 6px; }
+/* S4 (plan clipboard:T2uboz26Oh3q): each file a card names is a tile; its picture opens the preview, its button answers the option. */
+.ny-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+/* One shrinkable column, rows at the top: a long or badged answer wraps in its tile instead of widening it (S9, 9607 after shots). */
+.ny-choice { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; align-content: start; gap: 6px; padding: 6px; border: 1px solid var(--modern-border, #303030); border-radius: 10px; font-size: 12px; }
+.ny-choice.is-recommended { border-color: var(--modern-accent, #82aaff); }
+.ny-choice-media { position: relative; display: grid; place-items: center; aspect-ratio: 4 / 3; width: 100%; padding: 0; overflow: hidden; border: 0; border-radius: 6px;
+  background: var(--modern-bg, #101010); color: var(--modern-muted, #aaaaaa); font: inherit; }
+button.ny-choice-media { cursor: zoom-in; }
+button.ny-choice-media:focus-visible { outline: 2px solid var(--modern-accent, #82aaff); outline-offset: 2px; }
+.ny-choice-media img, .ny-choice-media video { width: 100%; height: 100%; object-fit: contain; }
+.ny-choice-play { position: absolute; width: 32px; height: 32px; padding: 6px; border-radius: 50%; background: rgb(0 0 0 / 0.55); color: #fff; }
+.ny-choice-file { overflow-wrap: anywhere; }
+.ny-choice .dock-kit-button { width: 100%; justify-content: center; flex-wrap: wrap; padding: 4px 6px; white-space: normal; text-align: center; }
+.ny-choice .ny-badge { margin-left: 0; }
+.ny-choice figcaption { color: var(--modern-muted, #aaaaaa); overflow-wrap: anywhere; }
 .ny-checked summary { cursor: pointer; color: var(--modern-muted, #aaaaaa); font-size: 12px; font-weight: 600; }
 .ny-field { display: flex; gap: 8px; align-items: center; grid-column: 2 / -1; }
 .ny-field:has(textarea) { align-items: flex-end; }
@@ -91,6 +110,9 @@
 .ny-link { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; padding: 0; border: 0; background: transparent; color: var(--modern-muted, #aaaaaa);
   font: inherit; font-size: 12.5px; cursor: pointer; }
 .ny-link:hover { color: var(--modern-text, #f5f5f5); }
+/* S6: the translation's own muted line under the card text; it changes the language only. */
+.ny-translated { margin: 0; font-size: 0.8rem; color: var(--modern-muted, #aaaaaa); }
+.ny-translated .ny-link { min-height: 0; font-size: inherit; text-decoration: underline; }
 .ny-link svg { width: 13px; height: 13px; }
 .ny-link:focus-visible, .ny-corner:focus-visible { outline: 2px solid var(--modern-accent, #82aaff); outline-offset: 2px; border-radius: 4px; }
 .ny-sent { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--needs-ok); font-size: 13px; }
@@ -130,12 +152,27 @@
   .ny-card .dock-kit-button, .ny-link, .ny-corner.dock-kit-icon-button, .ny-field input, .ny-field textarea { min-height: 44px; }
   .ny-corner.dock-kit-icon-button { width: 44px; height: 44px; }
 }
-@media (max-width: 640px) {
-  .ny-peek { max-height: 60vh; }
+@media (max-width: 640px) { .ny-peek { max-height: 60vh; } }
+/* S8 (plan clipboard:T2uboz26Oh3q §7.6): tiles 1 column below 280 px (S9), 2 below 520 px, 3 to 4 above; answers one column in a narrow card, two in a wide one. */
+@container ny-card (max-width: 439px) {
   .ny-answers .dock-kit-button { flex: 1 1 100%; }
-  /* At phone width what follows the title uses the whole card, not only the column right of the icon. */
-  .ny-actions, .ny-answers, .ny-sent, .ny-error, .ny-details, .ny-field { grid-column: 1 / -1; }
+  /* What follows the title uses the whole card, not only the column right of the icon. */
+  .ny-actions, .ny-answers, .ny-sent, .ny-error, .ny-details, .ny-field, .ny-files { grid-column: 1 / -1; }
+  /* A closed row keeps one meta line (room · pane · time); its kind and source stay for screen readers, the kind on the tile's hover. */
+  .ny-card:not(.is-open) .ny-meta { flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }
+  .ny-card:not(.is-open) .ny-meta > :is(.ny-kind, .ny-source) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .ny-card:not(.is-open) .ny-meta > .ny-source + span::before { content: none; }
+  .ny-card:not(.is-open) .ny-meta > span { flex: 0 0 auto; }
+  /* The room · pane part gives way first, so the time stays readable. */
+  .ny-card:not(.is-open) .ny-meta > span[data-sensitive-masked] { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 }
+@container ny-card (min-width: 520px) {
+  .ny-choices { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ny-answers > .dock-kit-button:not(.is-recommended) { flex: 1 1 calc(50% - 4px); justify-content: center; }
+}
+@container ny-card (min-width: 760px) { .ny-choices { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+/* Two tiles in a narrow dock are under 135 px, too narrow for an answer with its Recommended badge. */
+@container ny-card (max-width: 279px) { .ny-choices { grid-template-columns: minmax(0, 1fr); } }
 @media (prefers-reduced-motion: reduce) {
   .ny-peek { animation: none; }
 }
@@ -148,5 +185,4 @@
 .ny-file svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--modern-accent, #82aaff); }
 .ny-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ny-file small { color: var(--modern-muted, #aaaaaa); font-size: 11px; white-space: nowrap; }
-@media (max-width: 640px) { .ny-files { grid-column: 1 / -1; } }
 @media (pointer: coarse) { .ny-file { min-height: 44px; } }

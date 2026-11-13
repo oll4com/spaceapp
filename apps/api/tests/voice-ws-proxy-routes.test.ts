@@ -5,7 +5,7 @@ import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { createCsrfToken, signSession } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
-import { createVoiceRealtimeCall } from "../src/voice-transcription.js";
+import { createVoiceRealtimeCall, LOCAL_SENSEVOICE_DOWN } from "../src/voice-transcription.js";
 
 vi.mock("../src/voice-transcription.js", async (original) => ({ ...await original<typeof import("../src/voice-transcription.js")>(), createVoiceRealtimeCall: vi.fn() }));
 const secret = "voice-proxy-unit-test-session-secret";
@@ -100,5 +100,33 @@ describe("voice proxy authenticated routes", () => {
     await reject(headers());
     expect(connected).toHaveBeenCalledTimes(1);
     const upstreamClosed = once(upstream, "close"); socket.close(); await upstreamClosed;
+  });
+  it("relays local SenseVoice through the bridge, and answers 502 with a clear message when the daemon is down", async () => {
+    const { app, server } = await fixture();
+    const address = server.address() as { port: number };
+    vi.mocked(createVoiceRealtimeCall).mockResolvedValueOnce({ provider: "local", model: "local-sensevoice-small", websocketUrl: `ws://127.0.0.1:${address.port}` });
+    server.on("connection", (daemon: WebSocket) => daemon.on("message", (request: Buffer) => {
+      expect(request.readInt32LE(0)).toBe(16000);
+      expect(request.readInt32LE(4)).toBe(1600 * 4);
+      daemon.send(JSON.stringify({ lang: "<|en|>", text: "hello there" }));
+    }));
+    const listening = await app.listen({ host: "127.0.0.1", port: 0 });
+    const response = await app.inject({ method: "POST", url: "/api/voice/realtime/calls", headers: headers(), payload: { provider: "local", model: "local-sensevoice-small" } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().websocketUrl).toMatch(/^\/api\/voice\/ws-proxy\//);
+    const socket = new WebSocket(`${listening.replace(/^http/, "ws")}${response.json().websocketUrl}`, { headers: headers() }); clients.push(socket);
+    await once(socket, "open");
+    socket.send(JSON.stringify({ type: "start", sample_rate: 16000, language: "en" }));
+    socket.send(Buffer.alloc(3200), { binary: true });
+    socket.send(JSON.stringify({ type: "stop" }));
+    const [final] = await once(socket, "message") as [Buffer];
+    expect(JSON.parse(final.toString())).toEqual({ type: "user_transcript", text: "hello there", final: true });
+    const [code] = await once(socket, "close") as [number];
+    expect(code).toBe(1000);
+
+    vi.mocked(createVoiceRealtimeCall).mockRejectedValueOnce(new Error(LOCAL_SENSEVOICE_DOWN));
+    const down = await app.inject({ method: "POST", url: "/api/voice/realtime/calls", headers: headers(), payload: { provider: "local", model: "local-sensevoice-small" } });
+    expect(down.statusCode).toBe(502);
+    expect(down.json().error).toMatchObject({ code: "VOICE_REALTIME_CALL_FAILED", message: LOCAL_SENSEVOICE_DOWN });
   });
 });

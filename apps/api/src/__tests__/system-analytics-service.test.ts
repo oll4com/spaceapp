@@ -138,6 +138,43 @@ describe("SystemAnalyticsService", () => {
     expect((await repository.getBackfill()).status).not.toBe("COMPLETE");
   });
 
+  it("samples on every 10 s timer tick only while analytics is read, else every 30 s (CPU phase 5)", async () => {
+    const input = fixture();
+    let nowMs = Date.parse(sampledAt);
+    const readProcessTable = vi.fn(async (): Promise<SystemAnalyticsProcessRow[]> => []);
+    const service = new SystemAnalyticsService({
+      ...ownedHistory,
+      repository: new InMemorySystemAnalyticsRepository(),
+      store: createStore(input),
+      liveSessions: async () => [],
+      now: () => new Date(nowMs),
+      coreCount: 1,
+      readProcessTable,
+      readMeminfo: async () => "MemTotal: 1024 kB\nMemAvailable: 1024 kB\n",
+      readProcStat: async () => "cpu 0 0 0 100 0 0 0 0 0 0\n"
+    });
+    const ticks = async (count: number) => {
+      const sampled: boolean[] = [];
+      for (let tick = 0; tick < count; tick += 1) {
+        const before = readProcessTable.mock.calls.length;
+        await service.sample({ timer: true });
+        sampled.push(readProcessTable.mock.calls.length > before);
+        nowMs += 10_000;
+      }
+      return sampled;
+    };
+    // Nobody reads: the first tick and then every third one.
+    expect(await ticks(7)).toEqual([true, false, false, true, false, false, true]);
+    // A read (the current sample is 10 s old, fresh enough) keeps every tick for a minute.
+    await service.resources("10m");
+    expect(readProcessTable).toHaveBeenCalledTimes(3);
+    expect(await ticks(9)).toEqual([true, true, true, true, true, true, true, false, false]);
+    // Direct samples (startup, a stale read) are never skipped.
+    await service.sample();
+    expect(readProcessTable).toHaveBeenCalledTimes(11);
+    await service.dispose();
+  });
+
   it("groups the full descendant tree under the actual room and pane name", async () => {
     const input = fixture();
     const processes: SystemAnalyticsProcessRow[] = [

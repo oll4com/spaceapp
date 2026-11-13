@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createServer, type AddressInfo } from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import {
   createVoiceRealtimeCall,
   delegatedReasoningEffort,
   getLiveAudioProvidersStatus,
+  LOCAL_SENSEVOICE_DOWN,
   resolveLiveAudioCredentials
 } from "../src/voice-transcription.js";
 import { clearDelegatedModelVerdicts } from "../src/live-openai-model-fallback.js";
@@ -44,6 +46,21 @@ describe("Voice Provider Session Routing and Credentials", () => {
     expect(vercel?.displayName).toBe("Vercel AI Gateway");
     expect(vercel?.transport).toBe("websocket");
     expect(vercel?.defaultModel).toBe("openai/gpt-live-1");
+  });
+
+  it("routes local SenseVoice to this server's daemon, and fails with a clear message when it is down", async () => {
+    // The daemon's websocket server answers a plain GET with 426; any answer means it runs.
+    const daemon = createServer((_request, response) => { response.writeHead(426); response.end(); });
+    await new Promise<void>((resolve) => daemon.listen(0, "127.0.0.1", resolve));
+    const config = getApiConfig({ SPACE_LOCAL_SENSEVOICE_URL: `ws://127.0.0.1:${(daemon.address() as AddressInfo).port}` });
+    const input = { provider: "local" as const, model: "local-sensevoice-small", language: "en" };
+    try {
+      await expect(createVoiceRealtimeCall(config, input)).resolves.toMatchObject({ provider: "local", model: "local-sensevoice-small", websocketUrl: config.localSenseVoiceUrl });
+    } finally {
+      daemon.closeAllConnections();
+      await new Promise((resolve) => daemon.close(resolve));
+    }
+    await expect(createVoiceRealtimeCall(config, input)).rejects.toThrow(LOCAL_SENSEVOICE_DOWN);
   });
 
   it("blocks Google Live session when credentials are not configured", async () => {

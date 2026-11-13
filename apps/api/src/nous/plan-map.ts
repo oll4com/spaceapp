@@ -174,6 +174,12 @@ export function planMapParts(text: string, rank: number): Array<{ name: string; 
     { name: "Plan map: the plans that wait, have a date or depend on another", text: text.slice(at + 1), rank, entries: true, readWith: "space_world {\"section\": \"Plan map\"} reads every row" }];
 }
 
+/** A plan's wait on someone or something other than Nous (its waitsOn, a dependency, the server): the Score lever opens no pane for it. */
+export function planHoldText(map: PlanMap, planId: string, zone = "UTC"): string | null {
+  const hold = map.nodes.get(planId)?.hold;
+  return hold && hold.kind !== "NOUS" ? holdText(hold, zone) : null;
+}
+
 /** Why a plan is not stalled: a wait on a date, another plan or the server is not Nous's to nudge (its root is). */
 export function stalledHold(map: PlanMap, planId: string): string | null {
   const hold = map.nodes.get(planId)?.hold;

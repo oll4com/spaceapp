@@ -1,6 +1,6 @@
 import { LIVE_AUDIO_PROVIDERS, type LiveAudioProviderId } from "@space/contracts";
 import { useVoiceInput } from "./VoiceInputProvider.js";
-import { writeVoiceComposerSettings, type VoiceComposerSettings } from "../../voice-settings.js";
+import { SENSEVOICE_GREEK_NOTE, senseVoiceForGreek, writeVoiceComposerSettings, type VoiceComposerSettings } from "../../voice-settings.js";
 import { Mic, RefreshCw } from "../ui-theme/app-icons.js";
 import { SettingsActionMenu } from "../settings/SettingsActionMenu.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
@@ -111,11 +111,10 @@ export function VoiceSettingsCard() {
       <label className="settings-flat-row">
         <span className="settings-flat-row-copy"><strong>Voice model</strong><small>Audio and speech model.</small></span>
         <select name="voice-input-model" value={settings.model} onChange={(event) => updateVoiceSettings({ model: event.target.value as VoiceComposerSettings["model"] })}>
-          {modelOptions.map((model) => (
-            <option key={model} value={model}>
-              {model}
-            </option>
-          ))}
+          {modelOptions.map((model) => {
+            const badge = providerDescriptor?.models.find((m) => m.id === model)?.badge;
+            return <option key={model} value={model}>{badge ? `${model} · ${badge}` : model}</option>;
+          })}
         </select>
       </label>
       <label className="settings-flat-row">
@@ -139,6 +138,7 @@ export function VoiceSettingsCard() {
           ))}
         </select>
       </label>
+      {!browser && senseVoiceForGreek(settings) ? <p className="settings-flat-note voice-settings-help" role="note">{SENSEVOICE_GREEK_NOTE}</p> : null}
       <label className="settings-flat-row">
         <span className="settings-flat-row-copy"><strong>Insert mode</strong><small>How finished speech enters the prompt.</small></span>
         <select name="voice-input-insert-mode" value={settings.insertMode} onChange={(event) => updateVoiceSettings({ insertMode: event.target.value as VoiceComposerSettings["insertMode"] })}>

@@ -17,20 +17,28 @@ const DEFAULT_INTERVAL_MS = 6 * 3_600_000;
 /** The GitHub issues already named to Nous, so an API restart never names one twice (round 4 item 3). */
 export const GITHUB_ISSUES_NOTICED_PATH = `${SPACE_INSTALL_ROOT}/var/inventory/github-issues-noticed.json`;
 const REQUEST_TIMEOUT_MS = 10_000;
+/**
+ * Stars that are not marketing (plan clipboard:UoygRDurSshE step 1.5): the project's own accounts and the test accounts that starred
+ * on 16/10 07:22-07:31 UTC. The operator edits the list with SPACE_MARKETING_STAR_EXCLUDE (comma-separated GitHub logins), which replaces it.
+ */
+export const MARKETING_STAR_EXCLUDE_DEFAULT = ["oll4com", "spaceappdv-hub", "indgmopai-dot", "indgmopai1-dotcom", "niggmopai-dot", "flpgmopai-oss",
+  "christofboris2-ui", "mesgnud", "otiumgr-oss"];
+export const marketingStarExclude = (env = process.env.SPACE_MARKETING_STAR_EXCLUDE) =>
+  env?.trim() ? env.split(",").map((login) => login.trim()).filter(Boolean) : MARKETING_STAR_EXCLUDE_DEFAULT;
 
-async function json(fetchImpl: typeof fetch, url: string, token?: string): Promise<unknown> {
+async function json(fetchImpl: typeof fetch, url: string, token?: string, accept = "application/json"): Promise<unknown> {
   const response = await fetchImpl(url, {
-    headers: { accept: "application/json", "user-agent": "space-marketing-copilot", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: { accept, "user-agent": "space-marketing-copilot", ...(token ? { authorization: `Bearer ${token}` } : {}) },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
   });
   if (!response.ok) throw new Error(`${new URL(url).host} answered HTTP ${response.status}`);
   return response.json();
 }
 /** Every page of a GitHub list (GitHub's page holds 100, technical; until 31/10 only the first page was read). `items`: a search answer's list. */
-async function githubAll(fetchImpl: typeof fetch, url: string, items = false): Promise<unknown[]> {
+async function githubAll(fetchImpl: typeof fetch, url: string, items = false, token?: string, accept?: string): Promise<unknown[]> {
   const out: unknown[] = [];
   for (let page = 1; ; page += 1) {
-    const body = await json(fetchImpl, `${url}${url.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
+    const body = await json(fetchImpl, `${url}${url.includes("?") ? "&" : "?"}per_page=100&page=${page}`, token, accept);
     const list = items ? (body as { items?: unknown })?.items : body;
     const rows = Array.isArray(list) ? list : [];
     out.push(...rows);
@@ -79,7 +87,12 @@ export async function fetchPublicMetrics(day: string, fetchImpl: typeof fetch = 
       const days = ours!.filter((row) => posted.has(row.day)).sort((a, b) => a.day.localeCompare(b.day));
       if (!days.length) throw new Error(`no day posted since ${from}`);
       add("NPM", "downloads_day", days.at(-1)!.downloads);
-      if (days.length >= 7) add("NPM", "downloads_week", days.slice(-7).reduce((sum, row) => sum + row.downloads, 0));
+      if (days.length >= 7) {
+        const week = days.slice(-7).map((row) => row.downloads);
+        add("NPM", "downloads_week", week.reduce((sum, value) => sum + value, 0));
+        // Median day × 7: release days (~200 mirror/scanner downloads each, 13/10-11/11) do not count as marketing.
+        add("NPM", "downloads_week_typical", 7 * week.sort((a, b) => a - b)[3]!);
+      }
       else errors.push(`npm: only ${days.length} days posted since ${from}, last week unknown`);
     })().catch((error: unknown) => { errors.push(`npm: ${error instanceof Error ? error.message : String(error)}`); })
   ]);
@@ -89,9 +102,10 @@ export async function fetchPublicMetrics(day: string, fetchImpl: typeof fetch = 
 /**
  * The repository's traffic over GitHub's 14-day window: views, unique visitors, clones, unique cloners and the top 5
  * referrers. GitHub keeps traffic for 14 days and shows it only with push access, so it needs a token; a daily
- * record turns it into history.
+ * record turns it into history. With it, the real stars by their starred_at (the stargazers list needs a token too):
+ * all of them and those of the 30 days to `day`, the `exclude` logins left out.
  */
-export async function fetchRepoTraffic(day: string, token: string, fetchImpl: typeof fetch = fetch, repo = GITHUB_DEFAULT_REPO): Promise<{ metrics: MarketingMetric[]; errors: string[] }> {
+export async function fetchRepoTraffic(day: string, token: string, fetchImpl: typeof fetch = fetch, repo = GITHUB_DEFAULT_REPO, exclude = marketingStarExclude()): Promise<{ metrics: MarketingMetric[]; errors: string[] }> {
   const metrics: MarketingMetric[] = [];
   const errors: string[] = [];
   const add = (source: string, key: string, value: number | null) => { if (value !== null) metrics.push({ day, source, key, value }); };
@@ -107,7 +121,15 @@ export async function fetchRepoTraffic(day: string, token: string, fetchImpl: ty
         const referrer = (entry as { referrer?: unknown }).referrer;
         if (typeof referrer === "string" && referrer) add("GITHUB_REFERRERS", referrer.slice(0, 80), numberAt(entry, "count"));
       }
-    }).catch((error: unknown) => { errors.push(`GitHub referrers: ${error instanceof Error ? error.message : String(error)}`); })
+    }).catch((error: unknown) => { errors.push(`GitHub referrers: ${error instanceof Error ? error.message : String(error)}`); }),
+    githubAll(fetchImpl, `https://api.github.com/repos/${repo}/stargazers`, false, token, "application/vnd.github.star+json").then((body) => {
+      const skip = new Set(exclude.map((login) => login.toLowerCase()));
+      const since = Date.parse(`${day}T23:59:59Z`) - 30 * DAY_MS;
+      const real = (body as Array<{ starred_at?: unknown; user?: { login?: unknown } }>)
+        .filter((entry) => typeof entry.user?.login === "string" && !skip.has(entry.user.login.toLowerCase()) && typeof entry.starred_at === "string");
+      add("GITHUB", "stars_real", real.length);
+      add("GITHUB", "stars_gained_30d", real.filter((entry) => Date.parse(entry.starred_at as string) > since).length);
+    }).catch((error: unknown) => { errors.push(`GitHub stargazers: ${error instanceof Error ? error.message : String(error)}`); })
   ]);
   return { metrics, errors };
 }

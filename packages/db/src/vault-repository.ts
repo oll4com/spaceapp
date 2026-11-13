@@ -57,8 +57,23 @@ const fromVaultRow = (row: VaultRow): VaultState => ({
 
 interface ItemRow { id: string; label: string; origins: string[]; fieldRoles: string[]; policy: unknown; status: string; googleAccountId: string | null; loginKey: string | null; loginPage: string | null; keyVersion: number; dekEnvelope: unknown; fields: unknown; history: unknown }
 const itemColumns = `i.id, i.label, i.origins, i.field_roles AS "fieldRoles", i.policy, i.status, i.google_account_id AS "googleAccountId", i.login_key AS "loginKey", i.login_page AS "loginPage", i.key_version AS "keyVersion", i.dek_envelope AS "dekEnvelope", i.fields, i.history`;
+// One over-long label once emptied the whole list (13/11): the routes refuse it, and this last guard cuts any that still reach a save
+// or a stored row to the schema's 80 code points, with a warning naming the id and length (never the label).
+const fitLabel = (label: string, id: string) => {
+  const chars = Array.from(label.trim());
+  if (chars.length > 80) console.warn(`[vault] label of ${id} cut from ${chars.length} to 80 characters`);
+  return chars.slice(0, 80).join("");
+};
+// A row that still fails its schema is left out of a list with a warning (its id and the failing fields, never a value),
+// so one bad row never fails the whole list (13/11); a single read of it still fails.
+const readable = <R extends { id: unknown }, T>(rows: R[], read: (row: R) => T): T[] => rows.flatMap((row) => {
+  try { return [read(row)]; } catch (error) {
+    console.warn(`[vault] row ${String(row.id)} left out of the list: ${(error as { issues?: Array<{ path: PropertyKey[] }> }).issues?.map((issue) => issue.path.join(".")).join(", ") ?? (error as Error).name}`);
+    return [];
+  }
+});
 const fromItemRow = (row: ItemRow): VaultItemRecord => vaultItemRecordSchema.parse({
-  metadata: { id: row.id, label: row.label, origins: row.origins, fieldRoles: row.fieldRoles, policy: row.policy, status: row.status, googleAccountId: row.googleAccountId, loginKey: row.loginKey, loginPage: row.loginPage },
+  metadata: { id: row.id, label: fitLabel(row.label, row.id), origins: row.origins, fieldRoles: row.fieldRoles, policy: row.policy, status: row.status, googleAccountId: row.googleAccountId, loginKey: row.loginKey, loginPage: row.loginPage },
   keyVersion: row.keyVersion, dekEnvelope: row.dekEnvelope, fields: row.fields, history: row.history
 });
 
@@ -174,7 +189,7 @@ export class PostgresVaultRepository {
    * entry is null when its handle belongs to another owner; the whole answer is null without a vault.
    */
   async saveItems(owner: string, inputs: VaultItemRecordInput[]): Promise<Array<VaultItemRecord | null> | null> {
-    const items = inputs.map((input) => vaultItemRecordSchema.parse(input));
+    const items = inputs.map((input) => vaultItemRecordSchema.parse({ ...input, metadata: { ...input.metadata, label: fitLabel(input.metadata.label, input.metadata.id) } }));
     return this.transaction(async (client) => {
       const vault = await this.lock(client, owner);
       if (!vault) return null;
@@ -209,21 +224,21 @@ export class PostgresVaultRepository {
   async listItems(owner: string): Promise<VaultItemMetadata[]> {
     const rows = (await this.pool.query<ItemRow>(`SELECT ${itemColumns} FROM vault_items i JOIN users u ON u.id = i.owner_user_id AND u.disabled_at IS NULL
       WHERE i.owner_user_id = $1 ORDER BY lower(i.label), i.id`, [owner])).rows;
-    return rows.map((row) => fromItemRow(row).metadata);
+    return readable(rows, (row) => fromItemRow(row).metadata);
   }
 
   /** Every item with its envelopes in one read (the dock's hand-over and Chrome import, instead of one request per item). */
   async listItemRecords(owner: string): Promise<VaultItemRecord[]> {
     const rows = (await this.pool.query<ItemRow>(`SELECT ${itemColumns} FROM vault_items i JOIN users u ON u.id = i.owner_user_id AND u.disabled_at IS NULL
       WHERE i.owner_user_id = $1 ORDER BY lower(i.label), i.id`, [owner])).rows;
-    return rows.map(fromItemRow);
+    return readable(rows, fromItemRow);
   }
 
   /** The items of one login under every account (same browser-made login key), through vault_items_login_key_idx. */
   async itemsByLoginKey(owner: string, loginKey: string): Promise<VaultItemMetadata[]> {
     const rows = (await this.pool.query<ItemRow>(`SELECT ${itemColumns} FROM vault_items i JOIN users u ON u.id = i.owner_user_id AND u.disabled_at IS NULL
       WHERE i.owner_user_id = $1 AND i.login_key = $2`, [owner, loginKey])).rows;
-    return rows.map((row) => fromItemRow(row).metadata);
+    return readable(rows, (row) => fromItemRow(row).metadata);
   }
 
   /** Per item: when it was added and last changed, and how many fills used it (successful FILL audit events). */
@@ -446,7 +461,7 @@ export class PostgresVaultRepository {
   }
 
   async addPending(owner: string, input: VaultPendingSecret): Promise<boolean> {
-    const pending = vaultPendingSecretSchema.parse(input);
+    const pending = vaultPendingSecretSchema.parse({ ...input, label: fitLabel(input.label, input.handle) });
     const vault = await this.getVault(owner);
     if (!vault) return false;
     await this.pool.query(`INSERT INTO vault_pending (id, vault_id, owner_user_id, kind, handle, label, origin, sealed_username, sealed_password, pane_id, created_at, login_page)
@@ -455,10 +470,10 @@ export class PostgresVaultRepository {
     return true;
   }
   async listPending(owner: string): Promise<VaultPendingSecret[]> {
-    const rows = (await this.pool.query<Record<string, unknown> & { createdAt: Date | string }>(`SELECT p.id, p.kind, p.handle, p.label, p.origin, p.sealed_username AS "sealedUsername",
+    const rows = (await this.pool.query<Record<string, unknown> & { id: string; createdAt: Date | string }>(`SELECT p.id, p.kind, p.handle, p.label, p.origin, p.sealed_username AS "sealedUsername",
         p.sealed_password AS "sealedPassword", p.pane_id AS "paneId", p.created_at AS "createdAt", p.login_page AS "loginPage"
       FROM vault_pending p JOIN users u ON u.id = p.owner_user_id AND u.disabled_at IS NULL WHERE p.owner_user_id = $1 ORDER BY p.created_at`, [owner])).rows;
-    return rows.map((row) => vaultPendingSecretSchema.parse({ ...row, createdAt: iso(row.createdAt) }));
+    return readable(rows, (row) => vaultPendingSecretSchema.parse({ ...row, label: fitLabel(String(row.label), String(row.handle)), createdAt: iso(row.createdAt) }));
   }
   /**
    * A login's login page (nous_msg:cc5aba71), metadata only: the filed item and a new login the dock has not filed yet. No value is

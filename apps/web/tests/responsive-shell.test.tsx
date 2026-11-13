@@ -5292,8 +5292,11 @@ describe("Space responsive shell", () => {
   });
 
   it("keeps a persisted selected room active when it is beyond the default room page", async () => {
-    // The persisted room selection is stored per user since 4399759d7d.
+    // The persisted room selection is stored per user since 4399759d7d; the app writes both keys together.
+    // shortcut: with only the per-user key, App.tsx's persistence effect (selectedRoomId still null after setAuth) removes it
+    // before bootstrap reads it; fix that race in App.tsx after run-spaceapp 1.2.1 (EXT-G-4 freezes App.tsx until then).
     window.sessionStorage.setItem("space.selectedRoomId.user:operator", "room:catalog-126");
+    window.sessionStorage.setItem("space.selectedRoomId", "room:catalog-126");
     setViewport(768, 900);
     const rooms = Array.from({ length: 126 }, (_, index) => ({
       id: `room:catalog-${index + 1}`,

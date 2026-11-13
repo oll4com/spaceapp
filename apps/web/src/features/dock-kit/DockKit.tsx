@@ -6,7 +6,8 @@ import {
   useRef,
   useState,
   type ButtonHTMLAttributes,
-  type ReactNode
+  type ReactNode,
+  type Ref
 } from "react";
 import {
   Info,
@@ -109,6 +110,7 @@ export function useDockFullscreen(): [boolean, (next: boolean | ((current: boole
 }
 
 export interface DockButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  ref?: Ref<HTMLButtonElement>;
   icon?: LucideIcon;
   tone?: DockTone | "ghost";
   busy?: boolean;

@@ -24,6 +24,21 @@ function fixture(held = false) {
 }
 
 describe("Nous's cards to the operator", () => {
+  it("plan clipboard:T2uboz26Oh3q S5: Space's gate notes go under Checked first, naming their item, never into the item the operator reads", async () => {
+    const f = fixture();
+    const notify = (differs: string) => f.notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Andy needs you", checked: ["Vault: one Hetzner login"],
+      items: [{ text: "Pay the Hetzner invoice", ruleDiffers: differs }, { text: "Renew the Hetzner domain", triedStored: "the Vault login: Hetzner asks for a new device code" }] });
+    expect((await notify("A dunning notice now names suspension on 6/11")).ok).toBe(true);
+    const card = (await f.service.list(owner, { status: "OPEN", source: "NOUS", limit: 5 }))[0]!;
+    expect(card.body).toBe("• Pay the Hetzner invoice\n• Renew the Hetzner domain\n\nChecked first:\n• Vault: one Hetzner login\n"
+      + "• Pay the Hetzner invoice: Differs from what Space holds: A dunning notice now names suspension on 6/11\n"
+      + "• Renew the Hetzner domain: Stored sign-in tried: the Vault login: Hetzner asks for a new device code");
+    expect((card.payload.items as Array<{ ruleDiffers?: string }>)[0]!.ruleDiffers).toBe("A dunning notice now names suspension on 6/11");
+    // The same notes are the same card; a changed note updates it, as when it was in the item.
+    expect((await notify("A dunning notice now names suspension on 6/11")).display).toBe("The card for Andy in Freelance already lists this");
+    expect((await notify("The suspension moved to 5/11")).display).toMatch(/^Updated/);
+  });
+
   it("closedSince: the pane cards raised since a time that are closed now (13/11 REVIEW, one subject on 3 cards)", async () => {
     const f = fixture();
     await f.notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Upwork needs you", items: [{ text: "Pass the Cloudflare check" }] });
@@ -32,6 +47,18 @@ describe("Nous's cards to the operator", () => {
     await f.service.resolve(owner, "nous:pane:pane:andy0001", "done");
     expect((await f.notices.closedSince(owner, Date.now() - 3_600_000)).map((card) => card.paneId)).toEqual([andy.id]);
     expect(await f.notices.closedSince(owner, Date.now() + 1_000)).toEqual([]);
+  });
+
+  it("open and closedSince carry the pane agents' needs-you cards too, for Nous's duplicate check (13/11 Cartesia card)", async () => {
+    const f = fixture();
+    await f.service.raise({ ownerUserId: owner, roomId: room.id, paneId: andy.id, source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION", title: "Andy needs you",
+      body: "Cartesia: enter the card", link: { roomId: room.id, paneId: andy.id }, dedupeKey: `agent:needs-you:${andy.id}`, payload: {}, telegram: null });
+    await f.service.raise({ ownerUserId: owner, roomId: room.id, paneId: bob.id, source: "AGENT", kind: "INFO", severity: "INFO", title: "Bob finished",
+      body: "done", link: { roomId: room.id, paneId: bob.id }, dedupeKey: `agent:finished:${bob.id}`, payload: {}, telegram: null });
+    expect((await f.notices.open(owner)).map((card) => [card.source, card.paneId])).toEqual([["AGENT", andy.id]]);
+    await f.service.resolve(owner, `agent:needs-you:${andy.id}`, "answered");
+    expect(await f.notices.open(owner)).toEqual([]);
+    expect((await f.notices.closedSince(owner, Date.now() - 3_600_000)).map((card) => [card.source, card.paneId])).toEqual([["AGENT", andy.id]]);
   });
 
   it("keeps one card per pane: a new list replaces the items, unread again and alerted once; the same list changes nothing", async () => {
@@ -189,7 +216,9 @@ describe("Nous's cards to the operator", () => {
     expect(await service.list(owner, { status: "OPEN", limit: 5 })).toHaveLength(0);
     // What changed since his answer, an answer older than 2 hours, or another question: raised.
     expect((await ask("Turn on the allowance switches in Settings now?", "two switches are still off after the reload")).ok).toBe(true);
-    expect((await service.list(owner, { status: "OPEN", limit: 5 }))[0]!.body).toContain("(Since your answer: two switches are still off after the reload)");
+    // Plan clipboard:T2uboz26Oh3q S5: what changed is the item's `since` (the card's "Since then"), not words in its text.
+    const since = (await service.list(owner, { status: "OPEN", limit: 5 }))[0]!;
+    expect([since.body.includes("Since your answer"), (since.payload.items as Array<{ since?: string }>)[0]!.since]).toEqual([false, "two switches are still off after the reload"]);
     expect((await ask("Restart the Browser Host tonight?")).ok).toBe(true);
   });
 
@@ -206,6 +235,10 @@ describe("Nous's cards to the operator", () => {
     const raised = (await service.list(owner, { status: "OPEN", limit: 5 }))[0]!;
     expect(raised.payload.ask).toMatchObject({ options: ["Done", "Not yet", "Failed", "Need links/steps"] });
     expect(raised.body).toContain("• Set up Google billing\n  1. Open https://console.cloud.google.com/billing as ntheogr@gmail.com\n  2. Link the Space project");
+    // 13/11: work in a desktop ERP has no link to give; it names the tool, and its numbered steps are still due.
+    const erp = { text: "Install the ERP update on the office PC (login Mach 301)" };
+    expect(await card({ ...erp, steps: ["Open the ERP"] })).toMatchObject({ ok: false, refused: true });
+    expect((await card({ ...erp, steps: ["Open the ERP on the office PC", "Run Help → Update"] })).ok).toBe(true);
     // An item that is no hands work needs none.
     expect((await notices.notify(owner, room, bob, { room: "Freelance", pane: "Bob", title: "Pick", items: [{ text: "Pick the Upwork profile" }] })).ok).toBe(true);
   });
@@ -322,13 +355,13 @@ describe("Nous's cards to the operator", () => {
   it("R60 (cards 2-3/11): site work an agent can do is an agent's, the operator's own part waits for a signed-in page, and the extras speak the options' language", async () => {
     // Turing ×2, Lendable «Βάλε agent», Reddit «νέος κωδικός»; Backblaze «μην με πηγαινεις σε μια σελιδα που δεν εχεις κανει login», PayPal tax data.
     const siteSignins = new InMemorySiteSigninsRepository();
-    for (const site of ["turing.com", "reddit.com", "backblaze.com"]) await siteSignins.record(owner, { site, method: "GOOGLE", googleAccountEmail: "info@example.invalid", outcome: "SUCCESS" }, "test");
+    for (const site of ["turing.com", "reddit.com", "backblaze.com", "spaceapp.example"]) await siteSignins.record(owner, { site, method: "GOOGLE", googleAccountEmail: "info@example.invalid", outcome: "SUCCESS" }, "test");
     const notify = vi.fn(async () => ({ ok: true, display: "Sent the card", result: "ok" }));
     const tools = createNousTools({ rooms: async () => [room], listPanes: async () => [andy], siteSignins, vault: { agent: { call: async () => ({ status: "LISTED", items: [] }) } },
       paneNotices: { notify } } as unknown as NousToolDeps);
     const ctx = { owner, turnId: "nous_turn:r60", callId: "toolu_r60", traceId: "trace:r60" };
-    const card = (text: string, checked: string[]) => tools.execute("space_notify_operator", { room: "Freelance", pane: "Andy", title: "Andy needs you",
-      items: [{ text, steps: ["Open https://www.turing.com/dashboard", "Do it"] }], checked }, ctx);
+    const card = (text: string, checked: string[], steps = ["Open https://www.turing.com/dashboard", "Do it"]) => tools.execute("space_notify_operator", { room: "Freelance", pane: "Andy", title: "Andy needs you",
+      items: [{ text, ...(steps.length ? { steps } : {}) }], checked }, ctx);
     expect(await card("Turing: 3 tests by 22:05 on turing.com", ["Andy's report: three tests wait"])).toMatchObject({ ok: false, refused: true,
       result: expect.stringContaining("an agent can do this (rule 4d47dcab): Space signed in to turing.com before") });
     expect(await card("Reddit: νέος κωδικός στο reddit.com", ["Andy's report: reset mail arrived"])).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("rule 4d47dcab") });
@@ -336,8 +369,15 @@ describe("Nous's cards to the operator", () => {
     expect(await backblaze(["the Vault has no card"])).toMatchObject({ ok: false, refused: true,
       result: expect.stringContaining("only the operator does this part, on a page an agent already signed in to") });
     // R83-1 (b094f6c3eb, 8/11): a card form ask also names the amount verified on the open page.
-    expect((await backblaze(["Cody signed in to backblaze.com, the billing page is open at the card field", "Total verified on the open page: $6/month"])).ok).toBe(true);
-    expect(notify).toHaveBeenCalledTimes(1);
+    const ready = ["Cody signed in to backblaze.com, the billing page is open at the card field", "Total verified on the open page: $6/month"];
+    // 13/11 Cartesia: a card entry is never a list of steps, even at the card field.
+    expect(await backblaze(ready)).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("never a list of steps") });
+    expect((await card("Backblaze: add the card on backblaze.com billing so the backup starts", ready, [])).ok).toBe(true);
+    // 13/11: root work (sudo, systemctl) is the operator's: no agent has sudo, wherever Space signed in.
+    const root = (steps: string[]) => tools.execute("space_notify_operator", { room: "Freelance", pane: "Andy", title: "Andy needs you", checked: ["Andy's report: the agent is built"],
+      items: [{ text: "Space backup agent on the host: upload the key and enable the service", steps: ["Open http://127.0.0.1:4911/settings/backup", ...steps] }] }, ctx);
+    expect((await root(["sudo install -m 755 space-backup /usr/local/bin", "sudo systemctl enable --now space-backup"])).ok).toBe(true);
+    expect(notify).toHaveBeenCalledTimes(2);
 
     // 1/11 X Premium: "Failed" recommended; 1/11 Twitch 2FA: Greek options got "Failed" and "Need links/steps".
     const f = fixture();
@@ -512,7 +552,7 @@ describe("Copilot questions go to Nous first (Ask Last step 7, 2026-10-27)", () 
     await f.notices.notify(owner, room, andy, { room: room.name, pane: "Andy", title: "Job Copilot asks", items: [{ text: "Your Bangkok postal code?", ref: question.id }],
       checked: ["Space Memory and copilot memories: no postal code"] });
     const nousCard = (await f.service.list(owner, { status: "OPEN", source: "NOUS", limit: 5 }))[0]!;
-    expect(nousCard.body).toContain("Your Bangkok postal code? (answers the Job Copilot's question)");
+    expect(nousCard.body).toBe("• Your Bangkok postal code?\n\nChecked first:\n• Space Memory and copilot memories: no postal code\n• It answers the Job Copilot's question");
     expect((await f.service.get(owner, question.id))!.payload.heldForNous).toMatchObject({ card: nousCard.id });
     expect(await f.needsYou()).toEqual([nousCard.id]);
     const sweep = () => sweepCopilotQuestions({ notifications: f.service, sources: ["JOB_COPILOT"], holds: async () => true, now: f.now, missingSince: new Map(),
@@ -525,6 +565,17 @@ describe("Copilot questions go to Nous first (Ask Last step 7, 2026-10-27)", () 
     // Off: today's behaviour, nothing held.
     f.setHolds(false);
     expect((await f.ask("job-apply:question:jobq:second0001")).payload.heldForNous).toBeUndefined();
+  });
+
+  it("operator 13/11 07:12 BKK (plan clipboard:T2uboz26Oh3q S2): a card naming no pane that answers a held card takes that card's room, pane and page", async () => {
+    const f = questions();
+    const question = await f.ask("job-apply:question:jobq:relayPane001", { link: { roomId: room.id, paneId: andy.id, target: "tab:page-apply" } });
+    await f.notices.notify(owner, room, null, { room: room.name, title: "Job Copilot asks", items: [{ text: "Your Bangkok postal code?", ref: question.id }] });
+    const relay = (await f.service.list(owner, { status: "OPEN", source: "NOUS", limit: 5 }))[0]!;
+    expect([relay.roomId, relay.paneId, relay.link, relay.dedupeKey]).toEqual([room.id, andy.id, { roomId: room.id, paneId: andy.id, target: "tab:page-apply" }, `nous:pane:${andy.id}`]);
+    // A card naming no pane that answers no held card stays the general card.
+    await f.notices.notify(owner, room, null, { room: room.name, title: "Send the invoice PDF", items: [{ text: "Download it from the bank" }] });
+    expect((await f.service.list(owner, { status: "OPEN", source: "NOUS", limit: 5 })).find((item) => item.title === "Send the invoice PDF")).toMatchObject({ paneId: null, dedupeKey: "nous:general" });
   });
 
   it("holds a Mail Copilot NEEDS_USER card for Nous too, never resolves it for a missing rail item, and releases it after its hour (queue item 32)", async () => {

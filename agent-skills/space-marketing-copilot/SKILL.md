@@ -21,6 +21,8 @@ hCaptcha (including grocery lists, quantities and post-submit full-screen challe
 
 Microsoft Azure / Microsoft account text-image CAPTCHA (Type the letters): use space_browser_text_captcha with targetPaneId and action inspect. Read every letter/digit in order with native vision, including both lines; answer with action answer, answer text and the returned checkpoint. A stale image needs a fresh reading. The CAPTCHA Submit may continue tenant/account creation, so the original operation must already be authorized. SUBMITTED is not success: inspect again for rejection/new images and verify the site result separately. This fixed handler also works for the existing masked-screenshot viewer of a Vault-fenced page; it reveals no field values. On refusal report the exact blocker; never reload or change routes to bypass it.
 
+Alibaba Cloud / Aliyun slider ("Please slide to verify"): call space_browser_slider_captcha on space_browser once with targetPaneId from space_browser_context and optionally its active pageId. It drags only the provider's slider, at most 3 slides, clicking only the provider's own retry between them, and returns a status. CLEARED covers the slider only: re-snapshot and verify the site's next step. On REJECTED or UNSUPPORTED_CHALLENGE hand off to the operator; never reload, change routes or run it again on that page to retry.
+
 Use this skill inside a **Marketing Copilot pane** (pane mode `MARKETING_COPILOT`). The pane shows its own
 managed browser (the operator's logged-in accounts), this CLI session, and a rail where the operator writes
 briefs, reviews your posts, answers your questions and reads your Memory. Posts, memory, activity and the
@@ -85,6 +87,9 @@ Show HN, weekly tip, demo video): `references/campaigns.md`.
   no hype words, no emoji walls, one clear link (https://spaceapp.dev or the GitHub repository) and the install
   command when it helps: `npx --yes run-spaceapp@latest install`.
 - English by default (the audience is global); the operator's own replies decide otherwise.
+- Before review or publishing, run every draft through `space-no-ai-slop` (Reddit and Hacker News remove posts
+  that read as AI-written) and the matching `space-marketingskills` skill: `copywriting`, `launch`,
+  `community-marketing`, `directory-submissions`, `ai-seo` or `competitors`.
 
 ## Reviews and autonomy (never worked around)
 

@@ -849,6 +849,7 @@ type TaskItemRow = {
   nextRunAt: Date | string | null;
   lastRunAt: Date | string | null;
   lastOutcome: string | null;
+  scheduledSince: Date | string | null;
 };
 
 type UserLinkRow = Omit<UserLink, "createdAt" | "updatedAt"> & {
@@ -1791,7 +1792,11 @@ const clipboardItemSelect = `
   FROM clipboard_items
 `;
 
-const taskScheduleColumns = `recurrence, time_zone AS "timeZone", next_run_at AS "nextRunAt", last_run_at AS "lastRunAt", last_outcome AS "lastOutcome"`;
+const taskScheduleColumns = `recurrence, time_zone AS "timeZone", next_run_at AS "nextRunAt", last_run_at AS "lastRunAt", last_outcome AS "lastOutcome", scheduled_since AS "scheduledSince"`;
+
+/** A schedule begins to apply when its next run goes from none to some (set, restored, reopened); right-hand columns read the old row. */
+const scheduledSinceSql = (next: string, old: string) =>
+  `CASE WHEN ${next} IS NULL THEN NULL WHEN ${old}next_run_at IS NULL THEN clock_timestamp() ELSE ${old}scheduled_since END`;
 
 const taskItemReturning = `id, title, objective, status, source, room_id AS "roomId", pane_id AS "paneId", pane_title AS "paneTitle",
   occurrence_count AS "occurrenceCount", character_count AS "characterCount", created_at AS "createdAt", last_used_at AS "lastUsedAt",
@@ -3033,13 +3038,14 @@ function mapClipboardItem(row: ClipboardItemRow): ClipboardItem {
 }
 
 function mapTaskItem(row: TaskItemRow): TaskItem {
-  const { recurrence, timeZone, nextRunAt, lastRunAt, lastOutcome, ...item } = row;
+  const { recurrence, timeZone, nextRunAt, lastRunAt, lastOutcome, scheduledSince, ...item } = row;
   return taskItemSchema.parse({
     ...item,
     createdAt: toIso(row.createdAt),
     lastUsedAt: toIso(row.lastUsedAt),
     schedule: recurrence && timeZone ? {
-      recurrence, timeZone, nextRunAt: nextRunAt ? toIso(nextRunAt) : null, lastRunAt: lastRunAt ? toIso(lastRunAt) : null, lastOutcome
+      recurrence, timeZone, nextRunAt: nextRunAt ? toIso(nextRunAt) : null, lastRunAt: lastRunAt ? toIso(lastRunAt) : null, lastOutcome,
+      ...(scheduledSince ? { scheduledSince: toIso(scheduledSince) } : {})
     } : null
   });
 }
@@ -5502,7 +5508,8 @@ export class PostgresSpaceStore implements SpaceStore {
             last_used_at = clock_timestamp(),
             recurrence = EXCLUDED.recurrence,
             time_zone = EXCLUDED.time_zone,
-            next_run_at = EXCLUDED.next_run_at
+            next_run_at = EXCLUDED.next_run_at,
+            scheduled_since = ${scheduledSinceSql("EXCLUDED.next_run_at", "task_items.")}
           RETURNING ${taskItemReturning}
         `,
         [
@@ -5601,7 +5608,7 @@ export class PostgresSpaceStore implements SpaceStore {
       const nextRunAt = taskScheduleNextRunAt(schedule, parsed.status ?? current.status, Date.now(), current.schedule,
         { createdAt: current.createdAt, lastRunAt: toIso(currentRow!.lastRunAt) });
       const values: unknown[] = [ownerUserId, taskItemId, schedule ? JSON.stringify(schedule.recurrence) : null, schedule?.timeZone ?? null, nextRunAt];
-      const updates = ["recurrence = $3::jsonb", "time_zone = $4", "next_run_at = $5"];
+      const updates = ["recurrence = $3::jsonb", "time_zone = $4", "next_run_at = $5", `scheduled_since = ${scheduledSinceSql("$5::timestamptz", "")}`];
       if (parsed.title !== undefined) {
         values.push(parsed.title);
         updates.push(`title = $${values.length}`);
@@ -5609,6 +5616,9 @@ export class PostgresSpaceStore implements SpaceStore {
       if (parsed.objective !== undefined) {
         values.push(parsed.objective);
         updates.push(`objective = $${values.length}`, `character_count = char_length($${values.length})`);
+        // Tasks are keyed by their objective (upsertTaskItem): a stale hash made every later rebind insert a new, unscheduled copy (Temu 12/11).
+        values.push(createHash("sha256").update(parsed.objective).digest("hex"));
+        updates.push(`content_hash = $${values.length}`);
       }
       if (parsed.status !== undefined) {
         values.push(parsed.status);
@@ -5618,7 +5628,10 @@ export class PostgresSpaceStore implements SpaceStore {
       const result = await client.query<TaskItemRow>(
         `UPDATE task_items SET ${updates.join(", ")} WHERE owner_user_id = $1 AND id = $2 RETURNING ${taskItemReturning}`,
         values
-      );
+      ).catch((error: unknown) => {
+        if ((error as { code?: string }).code === "23505") throw new SpaceConflictError("Another task already has this exact objective.");
+        throw error;
+      });
       return mapTaskItem(firstOrNotFound(result.rows, `Task item ${taskItemId} was not found.`));
     });
   }

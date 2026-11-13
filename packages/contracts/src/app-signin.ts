@@ -53,7 +53,8 @@ export type AppHandoffRedeem = z.infer<typeof appHandoffRedeemSchema>;
 export const appDeviceSessionIdSchema = z.string().regex(/^appdev:[A-Za-z0-9_-]{6,80}$/);
 export const appDeviceSessionSchema = z.object({
   id: appDeviceSessionIdSchema,
-  app: appSignInIdSchema,
+  /** A SpaceApp link (ADR-014, LINK_APP) pairs over the mobile channel and never signs in, so it is no AppSignInId. */
+  app: z.union([appSignInIdSchema, z.literal("spaceapp-link")]),
   deviceName: z.string(),
   createdAt: z.string(),
   expiresAt: z.string(),

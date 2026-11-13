@@ -2000,7 +2000,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         app.log.error({ err: error }, "Initial system analytics sample failed.");
       });
       systemAnalyticsSampleTimer = setInterval(
-        () => void systemAnalyticsService.sample().catch((error) => app.log.error({ err: error }, "System analytics sample failed.")),
+        () => void systemAnalyticsService.sample({ timer: true }).catch((error) => app.log.error({ err: error }, "System analytics sample failed.")),
         10_000
       );
       systemAnalyticsSampleTimer.unref();

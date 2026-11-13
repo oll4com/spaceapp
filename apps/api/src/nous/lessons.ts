@@ -25,7 +25,7 @@ const BATCH = 16;
 /** After a failed embedding run the index waits this long before it tries again (keywords meanwhile), so a down gateway is not asked every turn. */
 const RETRY_MS = 10 * 60_000;
 /** The answer within `ms`, else null (the work goes on in the background). */
-async function within<T>(work: Promise<T>, ms: number): Promise<T | null> {
+export async function within<T>(work: Promise<T>, ms: number): Promise<T | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); timer.unref?.(); });
   try { return await Promise.race([work, late]); } finally { clearTimeout(timer); }

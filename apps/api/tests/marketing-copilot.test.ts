@@ -48,6 +48,42 @@ describe("Marketing Copilot publication gate", () => {
     expect((await service.beginPublish(owner, target, linkedin.id)).status).toBe("PUBLISHING");
   });
 
+  it("sends every post on a channel to review for 7 days after a removal there, unless the operator approved it", async () => {
+    const { service, advance } = setup();
+    const target = pane({ autonomy: "FULL" });
+    const draft = async () => (await service.createPost(owner, target, { channel: "LINKEDIN", kind: "POST", body, assets: [] })).post;
+    const first = await draft();
+    await service.beginPublish(owner, target, first.id);
+    await service.finishPublish(owner, target, { postId: first.id, url: "https://www.linkedin.com/feed/update/urn:li:activity:1" });
+    await service.recordPostMetrics(owner, target, { postId: first.id, metrics: { removed: 1 } });
+    advance(86_400_000 + 1);
+    const next = await draft();
+    await expect(service.beginPublish(owner, target, next.id)).rejects.toThrow(/MARKETING_NEEDS_REVIEW: LinkedIn removed .* in the last 7 days/);
+    await service.requestReview(owner, target, { postId: next.id });
+    await service.decideReview(owner, target, next.id, { decision: "approve" });
+    expect((await service.beginPublish(owner, target, next.id)).status).toBe("PUBLISHING");
+    await service.finishPublish(owner, target, { postId: next.id, url: "https://www.linkedin.com/feed/update/urn:li:activity:2" });
+    advance(7 * 86_400_000);
+    expect((await service.beginPublish(owner, target, (await draft()).id)).status).toBe("PUBLISHING");
+  });
+
+  it("counts a post the site removed at submit (a failure that says 'removed by') in the 7-day removal hold, not other failures", async () => {
+    const { service, advance } = setup();
+    const target = pane({ autonomy: "FULL" });
+    const draft = async () => (await service.createPost(owner, target, { channel: "LINKEDIN", kind: "POST", body, assets: [] })).post;
+    const timeout = await draft();
+    await service.beginPublish(owner, target, timeout.id);
+    await service.failPublish(owner, target, { postId: timeout.id, reason: "the page did not load" });
+    advance(86_400_000 + 1);
+    const filtered = await draft();
+    await service.beginPublish(owner, target, filtered.id);
+    await service.failPublish(owner, target, { postId: filtered.id, reason: "Sorry, this post has been removed by LinkedIn's filters" });
+    advance(86_400_000 + 1);
+    await expect(service.beginPublish(owner, target, (await draft()).id)).rejects.toThrow(new RegExp(`LinkedIn removed ${filtered.id} in the last 7 days`));
+    advance(7 * 86_400_000);
+    expect((await service.beginPublish(owner, target, (await draft()).id)).status).toBe("PUBLISHING");
+  });
+
   it("publishes under Rules only a post an approved rule covers, and counts the rule's use", async () => {
     const { service, repository } = setup();
     const target = pane({ autonomy: "RULES" });
@@ -249,6 +285,23 @@ describe("Marketing Copilot reviews, briefs and runs", () => {
     expect((await service.decideCampaign(owner, target, campaign.id, "approve")).status).toBe("ACTIVE");
     expect((await repository.listEvents(owner, { types: ["BRIEF"], limit: 5 }))[0]).toMatchObject({ campaignId: campaign.id, status: "PENDING" });
     expect((await service.recallMemory(owner, { query: "subreddit saturdays", limit: 5 }))[0]?.text).toBe("r/selfhosted");
+  });
+  it("archives a campaign without deleting it, reopens it, gives it one number, and marks posts personal (plan 5.5, 1.1)", async () => {
+    const { service } = setup();
+    const target = pane();
+    const campaign = await service.createCampaign(owner, target, { name: "Show HN", channels: ["HACKER_NEWS"] }, "USER");
+    expect((await service.decideCampaign(owner, null, campaign.id, "complete")).status).toBe("DONE");
+    expect((await service.listCampaigns(owner)).map((entry) => entry.id)).toContain(campaign.id);
+    expect((await service.decideCampaign(owner, null, campaign.id, "approve")).status).toBe("ACTIVE");
+    await expect(service.decideCampaign(owner, null, campaign.id, "approve")).rejects.toThrow("already active");
+    expect((await service.setCampaignMetric(owner, campaign.id, "stars")).payload.metric).toBe("stars");
+    expect((await service.setCampaignMetric(owner, campaign.id, null)).payload).not.toHaveProperty("metric");
+    const { post } = await service.createPost(owner, target, { channel: "X", kind: "POST", body, assets: [] });
+    expect(await service.setPostTopic(owner, [post.id, post.id], "personal")).toEqual([post.id]);
+    expect((await service.getPost(owner, post.id)).evidence.topic).toBe("personal");
+    expect(await service.setPostTopic(owner, [post.id], "personal")).toEqual([]);
+    await service.setPostTopic(owner, [post.id], null);
+    expect((await service.getPost(owner, post.id)).evidence).not.toHaveProperty("topic");
   });
 });
 

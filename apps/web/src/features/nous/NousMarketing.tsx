@@ -63,6 +63,8 @@ export function NousMarketing({ active }: { active: boolean }) {
       </ul>
       <p className="nous-programs-total">{t("Posts score {posts} · outcomes score {outcomes} (stars, downloads, installs, visitors) · updated {date}",
         { posts: report.postsScore ?? "–", outcomes: report.outcomesScore ?? "–", date: formatAppDateTime(report.generatedAt) })}</p>
+      {report.conversations?.posts ? <p className="nous-programs-total">{t("Conversations (replies, outside the posts score): {published} published · {views} views · {replies} replies",
+        { published: report.conversations.published, views: count(report.conversations.views), replies: count(report.conversations.replies) })}</p> : null}
       <section className="nous-report-funnel" aria-label={t("Score by platform")}>
         <h3>{t("Score by platform (last 30 days)")}</h3>
         {report.platforms.map((platform) => (

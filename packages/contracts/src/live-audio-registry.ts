@@ -12,9 +12,13 @@ export interface LiveAudioModel {
   providerId: LiveAudioProviderId;
   defaultVoice: string;
   nativeAudio: boolean;
+  /** Short tag shown next to the model in pickers, e.g. "Offline". */
+  badge?: string;
   capabilities: {
     bidirectionalAudio: boolean;
     speechToSpeech: boolean;
+    /** Transcription only: the model hears speech and returns text, it never speaks. */
+    speechToText?: boolean;
     interruption: boolean;
     tools: boolean;
     vision: boolean;
@@ -376,6 +380,16 @@ export const LIVE_AUDIO_PROVIDERS: Record<LiveAudioProviderId, LiveAudioProvider
           tools: false,
           vision: false
         }
+      },
+      {
+        id: "local-sensevoice-small",
+        label: "Local SenseVoice-Small (INT8 Offline)",
+        description: "Offline speech-to-text on this server (sherpa-onnx); English, Chinese, Japanese, Korean, Cantonese; no Greek",
+        providerId: "local",
+        defaultVoice: "default",
+        nativeAudio: true,
+        badge: "Offline",
+        capabilities: { bidirectionalAudio: false, speechToSpeech: false, speechToText: true, interruption: false, tools: false, vision: false }
       }
     ],
     voices: [

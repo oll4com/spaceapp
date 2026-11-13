@@ -21,7 +21,7 @@ export interface TaskScheduleRunnerDeps {
   inspect(pane: Pane): Promise<RoomPaneObservation>;
   /** requestId (OBS-006): the id the typing is traced and logged under; a task's own is kept on its run. */
   answer(pane: Pane, input: { expectedSessionId: string; answer: string; submit: boolean; expectedPromptFingerprint: string }, requestId?: string): Promise<unknown>;
-  /** Reopens the task's closed CLI pane as its owner (Space Control: a terminal resumes its conversation, a copilot-style pane starts its CLI). */
+  /** Reopens the task's closed CLI pane, or starts the CLI of an open one that has none, as its owner (Space Control: a terminal resumes its conversation, a copilot-style pane starts its CLI). */
   reopen?(pane: Pane, ownerUserId: string): Promise<unknown>;
   /** R44-3: opens a new CLI pane in the owner's room for a recurring agent task that has no pane there (Space Control panes.open). */
   openPane?(roomId: string, ownerUserId: string): Promise<Pane>;
@@ -71,6 +71,8 @@ export function createTaskScheduleRunner(deps: TaskScheduleRunnerDeps) {
   const cleared = new Set<string>();
   /** Occurrences whose typing threw: the next try waits TASK_STAGGER_MS, then twice as long each time, at most TASK_RETRY_MS. */
   const typingFailed = new Map<string, { count: number; at: number; reason: string }>();
+  /** Occurrences whose open pane had no running CLI, and when Space last started it there (once each TASK_RETRY_MS). */
+  const started = new Map<string, number>();
   let lastTypedAt = Number.NEGATIVE_INFINITY;
   /** R44-3: occurrences that opened a pane (never a second one) and tasks Nous heard have no pane (one line each). */
   const opened = new Set<string>();
@@ -141,13 +143,24 @@ export function createTaskScheduleRunner(deps: TaskScheduleRunnerDeps) {
       catch (error) { return waitOrSkip(`its closed pane could not be reopened (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"})`, "FAILED"); }
       return waitOrSkip("its pane was reopened and its CLI did not reach its prompt");
     }
-    if (now() - lastTypedAt < TASK_STAGGER_MS) return waitOrSkip("another task was typed under a minute ago");
+    // The stagger only spaces typings out, it never costs an occurrence (12/11 post-reboot burst: KEQ0 skipped at its grace end, a missed day in the Score).
+    if (now() - lastTypedAt < TASK_STAGGER_MS) return "WAITING" as const;
     const occurrence = `${task.id}|${dueAt}`;
     // 7/11 Bruno/Kate: a reopened OpenCode pane failed the typing on every 30 s tick (25 room watchdog alerts in 15 minutes).
     const failed = typingFailed.get(occurrence);
     if (failed && now() - failed.at < Math.min(TASK_RETRY_MS, TASK_STAGGER_MS * 2 ** (failed.count - 1))) return waitOrSkip(failed.reason, "FAILED");
     const observed = await deps.inspect(pane).catch(() => null);
-    if (observed && (!observed.sessionId || observed.state === "EXITED" || observed.state === "ERROR")) return waitOrSkip("the pane has no running CLI");
+    if (observed && (!observed.sessionId || observed.state === "EXITED" || observed.state === "ERROR")) {
+      // 11-12/11 (Score daily tasks, ~18 of 20 missed days): after the host move and the reboot the bound panes stayed open with no CLI until someone
+      // opened their room, and the tasks only waited out their grace. Space starts or resumes the pane's CLI as it reopens a closed pane, once each TASK_RETRY_MS.
+      const last = started.get(occurrence);
+      if (!deps.reopen || (last !== undefined && now() - last < TASK_RETRY_MS)) return waitOrSkip("the pane has no running CLI");
+      if (started.size > 1_000) started.clear();
+      started.set(occurrence, now());
+      try { await deps.reopen(pane, task.ownerUserId); }
+      catch (error) { return waitOrSkip(`the pane had no running CLI and Space could not start it (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"})`, "FAILED"); }
+      return waitOrSkip("the pane had no running CLI; Space started it and it did not reach its prompt");
+    }
     // R11-5: a model the CLI's footer marks unavailable holds the task like a busy pane, and Nous hears it once per outage.
     if (observed && noteModelState(task.ownerUserId, pane, observed.text)) return waitOrSkip("the pane's model is unavailable (gateway or provider)");
     // An idle pane that still has not taken the task TASK_RETRY_MS after it fell due: one miss each TASK_RETRY_MS (each tick tries again), Nous hears the second with its cause.

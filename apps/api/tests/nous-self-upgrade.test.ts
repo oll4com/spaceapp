@@ -1594,15 +1594,21 @@ describe("Daily review 2026-10-21: errors that say the next step", () => {
     expect(same).toMatchObject({ ok: false, result: expect.stringContaining("Read the pane (space_read_pane) before you answer again; never repeat the same answer.") });
   });
 
-  it("flags a scheduled task whose pane is closed in the world, with how to rebind it (task:wY8Cs2_OPK-5)", async () => {
+  it("tells Nous what the scheduler does with a task's closed or gone pane, and asks a rebind only where it cannot run (task:wY8Cs2_OPK-5, 13/11)", async () => {
     const closed = { ...pane("pane:fg0i0001", "Finn"), isClosed: true } as unknown as Pane;
-    const task = (id: string, paneId: string) => ({ id, title: "Daily self-review", status: "OPEN", roomId: "room:main0001", paneId,
-      schedule: { recurrence: { kind: "DAILY", time: "07:00" }, timeZone: "Asia/Bangkok", nextRunAt: "2026-10-21T00:00:00.000Z", lastRunAt: null, lastOutcome: null } });
+    const task = (id: string, paneId: string, extra: Record<string, unknown> = {}) => ({ id, title: "Daily self-review", status: "OPEN", roomId: "room:main0001", paneId, source: "AGENT",
+      schedule: { recurrence: { kind: "DAILY", time: "07:00" }, timeZone: "Asia/Bangkok", nextRunAt: "2026-10-21T00:00:00.000Z", lastRunAt: null, lastOutcome: null }, ...extra });
     const world = renderNousWorld({ rooms: [{ room: room("room:main0001", "Main"), sample: { data: [pane("pane:andy0001", "Andy"), closed], activity: {}, details: {} } as never }],
-      notifications: [], plans: [], tasks: [task("task:closed01", "pane:fg0i0001"), task("task:open0001", "pane:andy0001")] as never, trains: "", decisions: [], notes: [],
-      now: "2026-10-21T09:00:00.000Z" });
-    expect(world).toMatch(/\[task:closed01\][^\n]*PANE CLOSED: it never runs there; rebind it \(space_task_update bind to an open pane, or bind null for a reminder\)/);
-    expect(world).not.toMatch(/\[task:open0001\][^\n]*PANE CLOSED/);
+      notifications: [], plans: [], trains: "", decisions: [], notes: [], now: "2026-10-21T09:00:00.000Z",
+      tasks: [task("task:closed01", "pane:fg0i0001"), task("task:open0001", "pane:andy0001"), task("task:gone0001", "pane:gone0001"),
+        task("task:gonemanl", "pane:gone0001", { source: "MANUAL" }), task("task:noroom01", "pane:fg0i0001", { roomId: "room:arch0001" })] as never });
+    const line = (id: string) => world.split("\n").find((entry) => entry.includes(`[${id}]`)) ?? "";
+    expect(line("task:closed01")).toContain("pane closed: Space reopens it when the task runs (no rebind needed)");
+    expect(world).not.toContain("never runs there");
+    expect(line("task:open0001")).not.toMatch(/closed|gone|rebind/i);
+    expect(line("task:gone0001")).toContain("pane gone: Space opens a new CLI pane in its room when the task runs");
+    expect(line("task:gonemanl")).toContain("PANE GONE: the run fails; rebind it (space_task_update bind to an open pane, or bind null for a reminder)");
+    expect(line("task:noroom01")).toContain("ROOM ARCHIVED OR GONE: it cannot run there; rebind it");
   });
 });
 

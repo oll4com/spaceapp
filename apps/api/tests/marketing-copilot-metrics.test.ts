@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { defaultMarketingCopilotPaneMetadata, type Pane, type Room } from "@space/contracts";
 import { InMemoryMarketingCopilotRepository } from "@space/db";
-import { createMarketingCopilotMetrics, fetchPublicMetrics } from "../src/marketing-copilot/metrics.js";
+import { createMarketingCopilotMetrics, fetchPublicMetrics, MARKETING_STAR_EXCLUDE_DEFAULT, marketingStarExclude } from "../src/marketing-copilot/metrics.js";
 import { createMarketingCopilotService } from "../src/marketing-copilot/service.js";
 
 const owner = "user:operator";
@@ -46,6 +46,8 @@ describe("marketing copilot analytics", () => {
       { day: "2026-10-14", source: "GITHUB", key: "stars", value: 120 }, { day: "2026-10-14", source: "GITHUB", key: "release_downloads", value: 16 },
       // The newest posted day (13/10), and its 7 newest posted days: 11/10 was never posted, so they reach back to 6/10.
       { day: "2026-10-14", source: "NPM", key: "downloads_day", value: 60 }, { day: "2026-10-14", source: "NPM", key: "downloads_week", value: 210 },
+      // The typical week: the median posted day (25) × 7, so a release-day spike (60 here) does not count.
+      { day: "2026-10-14", source: "NPM", key: "downloads_week_typical", value: 175 },
       // Queue item 41: issues and pull requests on their own; the repository's open_issues_count (3 here) counts both and is not recorded.
       { day: "2026-10-14", source: "GITHUB", key: "open_issues", value: 8 }, { day: "2026-10-14", source: "GITHUB", key: "open_prs", value: 265 }
     ]) });
@@ -70,15 +72,18 @@ describe("marketing copilot analytics", () => {
     npm = "stale";
     await job().tick();
     const npmRows = (await service.analytics(owner)).metrics.filter((metric) => metric.source === "NPM");
-    expect(npmRows).toEqual([{ day: "2026-10-25", source: "NPM", key: "downloads_day", value: 60 }, { day: "2026-10-25", source: "NPM", key: "downloads_week", value: 210 }]);
+    expect(npmRows).toEqual([{ day: "2026-10-25", source: "NPM", key: "downloads_day", value: 60 }, { day: "2026-10-25", source: "NPM", key: "downloads_week", value: 210 },
+      { day: "2026-10-25", source: "NPM", key: "downloads_week_typical", value: 175 }]);
   });
 
   it("records the repository's traffic with the token, for the operator's pane only", async () => {
-    const calls: Array<{ url: string; auth: string | null }> = [];
+    const calls: Array<{ url: string; auth: string | null; accept?: string | null }> = [];
     const apis = publicApis(120);
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      calls.push({ url, auth: new Headers(init?.headers).get("authorization") });
+      calls.push({ url, auth: new Headers(init?.headers).get("authorization"), accept: new Headers(init?.headers).get("accept") });
+      if (url.includes("/stargazers?")) return Response.json([{ starred_at: "2026-08-01T00:00:00Z", user: { login: "early" } },
+        { starred_at: "2026-10-10T00:00:00Z", user: { login: "fan" } }, { starred_at: "2026-10-16T07:25:24Z", user: { login: "OLL4COM" } }]);
       if (url.endsWith("/traffic/views")) return Response.json({ count: 42, uniques: 9, views: [] });
       if (url.endsWith("/traffic/clones")) return Response.json({ count: 300, uniques: 51, clones: [] });
       if (url.endsWith("/traffic/popular/referrers")) return Response.json([{ referrer: "github.com", count: 20, uniques: 4 }, ...Array.from({ length: 6 }, (_, index) => ({ referrer: `site${index}.example`, count: 1, uniques: 1 }))]);
@@ -98,15 +103,23 @@ describe("marketing copilot analytics", () => {
       { day: "2026-10-16", source: "GITHUB_TRAFFIC", key: "clones_14d", value: 300 }, { day: "2026-10-16", source: "GITHUB_TRAFFIC", key: "cloners_14d", value: 51 },
       { day: "2026-10-16", source: "GITHUB_REFERRERS", key: "github.com", value: 20 }
     ]));
+    // Real stars by starred_at, the project's own account left out (step 1.5).
+    expect((await service.analytics(owner)).metrics.filter((metric) => metric.key.startsWith("stars_"))).toEqual(expect.arrayContaining([
+      { day: "2026-10-16", source: "GITHUB", key: "stars_real", value: 2 }, { day: "2026-10-16", source: "GITHUB", key: "stars_gained_30d", value: 1 }]));
+    expect(calls.find((call) => call.url.includes("/stargazers?"))).toMatchObject({ auth: "Bearer token-test", accept: "application/vnd.github.star+json" });
     // Every referrer GitHub reports (until 31/10 the first 5).
     expect(traffic.filter((metric) => metric.source === "GITHUB_REFERRERS")).toHaveLength(7);
-    // The token goes only to the traffic API; another owner's pane records no traffic.
+    // The token goes only to the traffic and stargazers APIs; another owner's pane records no traffic.
     expect(calls.filter((call) => call.url.includes("/traffic/")).map((call) => call.auth)).toEqual(Array(3).fill("Bearer token-test"));
-    expect(calls.filter((call) => !call.url.includes("/traffic/")).every((call) => call.auth === null)).toBe(true);
+    expect(calls.filter((call) => !call.url.includes("/traffic/") && !call.url.includes("/stargazers?")).every((call) => call.auth === null)).toBe(true);
     expect((await service.analytics("user:other")).metrics.some((metric) => metric.source.startsWith("GITHUB_"))).toBe(false);
     calls.length = 0;
     await job().tick();
-    expect(calls.some((call) => call.url.includes("/traffic/"))).toBe(false);
+    expect(calls.some((call) => call.url.includes("/traffic/") || call.url.includes("/stargazers?"))).toBe(false);
+  });
+  it("reads the star exclusion list from SPACE_MARKETING_STAR_EXCLUDE, else the default", () => {
+    expect(marketingStarExclude(" a , b,,")).toEqual(["a", "b"]);
+    expect(marketingStarExclude("")).toEqual(MARKETING_STAR_EXCLUDE_DEFAULT);
   });
 
   it("records a day per owner with a Marketing Copilot pane and posts one weekly digest to its Activity", async () => {
@@ -120,7 +133,7 @@ describe("marketing copilot analytics", () => {
     const job = () => createMarketingCopilotMetrics({ service, store: { listRooms: () => [room, { id: "room:other001", ownerUserId: "user:other" } as Room], listPanes: (roomId) => roomId === room.id ? [pane] : [otherPane] },
       fetchImpl: publicApis(stars), log: { warn: vi.fn() }, now: () => today, installPingsPath });
     await pings(["2026-10-06T10:00:00Z", "installA1"]);
-    expect(await job().tick()).toEqual({ owners: 2, metrics: 8 });
+    expect(await job().tick()).toEqual({ owners: 2, metrics: 9 });
     today = new Date("2026-10-14T09:00:00.000Z");
     stars = 107;
     // installA1 went quiet; two new installations were active this week; the project's own lab VM never counts.
@@ -147,7 +160,7 @@ describe("marketing copilot analytics", () => {
       : roomId === room.id ? [earlier, latest] : [closed("pane:mkt000012", archivedRoom.id, "2026-10-19T00:00:00.000Z")]);
     const job = createMarketingCopilotMetrics({ service, store: { listRooms: () => [room, archivedRoom], listPanes }, fetchImpl: publicApis(14), log: { warn: vi.fn() },
       now: () => today, installPingsPath: join(await mkdtemp(join(tmpdir(), "mk-no-pings-")), "none.log") });
-    expect(await job.tick()).toEqual({ owners: 1, metrics: 8 });
+    expect(await job.tick()).toEqual({ owners: 1, metrics: 9 });
     expect(listPanes.mock.calls.every(([, includeClosed]) => includeClosed === true)).toBe(true);
     expect((await service.analytics(owner)).metrics.find((metric) => metric.key === "stars")?.value).toBe(14);
     expect((await repository.listEvents(owner, { types: ["METRICS"], limit: 5 })).map((event) => event.paneId)).toEqual([latest.id]);

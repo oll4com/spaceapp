@@ -7,6 +7,7 @@ import { closeoutSince, closeoutSkipReason, createStandingOrders, keptOpenForTas
 import { itemActed, type NousTurnItem } from "../src/nous/turn-items.js";
 import { deferralLines, localDayHour, renderDailyReview, type NousDeferral } from "../src/nous/daily-review.js";
 import { createNousFollowups } from "../src/nous/followups.js";
+import { promptsComing } from "../src/nous/requests-waiting.js";
 import { createNousTools, type NousToolDeps } from "../src/nous/tools.js";
 import { awaitsOperator } from "../src/nous/save-request.js";
 import { noteOperatorPaneInput, operatorPromptedLast } from "../src/queue-operator-grants.js";
@@ -171,7 +172,7 @@ describe("finished panes (close-out candidates)", () => {
 function fixture(options: { panes?: PaneState[]; plans?: ClipboardItem[]; tasks?: TaskItem[]; reports?: PaneReport[]; summaries?: NousPaneSummaryRow[]; checks?: NousPaneCheck[]; notifications?: SpaceNotification[]; standing?: StandingOrdersDeps["standing"]; away?: boolean; planMap?: StandingOrdersDeps["planMap"];
   browsers?: Map<string, CloseoutBrowser> | null; utilizationLow?: StandingOrdersDeps["utilizationLow"]; reviewLoad?: (owner: string) => Promise<string | null>;
   spend?: Awaited<ReturnType<NonNullable<StandingOrdersDeps["spend"]>>>; requests?: StandingOrdersDeps["requests"]; executions?: Array<{ planId: string; paneId: string }>;
-  closePane?: StandingOrdersDeps["closePane"] } = {}) {
+  closePane?: StandingOrdersDeps["closePane"]; prompts?: ReadonlySet<string> | null } = {}) {
   let clock = T0;
   const closeouts = new InMemoryNousPaneCloseoutsRepository();
   const marks = new InMemoryNousPlanMarksRepository();
@@ -182,7 +183,7 @@ function fixture(options: { panes?: PaneState[]; plans?: ClipboardItem[]; tasks?
   const notice = vi.fn(async () => {});
   const collect = vi.fn<StandingOrdersDeps["collect"]>(async () => ({ rooms: [{ room, sample: state.unread ? null : sample(state.panes) }], reports: state.reports.filter((entry, index, all) => all.findIndex((other) => other.paneId === entry.paneId) === index),
     notifications: state.notifications, decisions: [], copilotItems: [], plans: state.plans, checks: state.checks, tasks: state.tasks, executions: (options.executions ?? []) as never, summaries: state.summaries,
-    ...(state.browsers !== undefined ? { browsers: state.browsers } : {}) }));
+    ...(state.browsers !== undefined ? { browsers: state.browsers } : {}), ...(options.prompts !== undefined ? { prompts: options.prompts } : {}) }));
   const orders = createStandingOrders({
     closeouts, marks, settings: async () => state.settings, owners: async () => [owner],
     collect,
@@ -457,7 +458,7 @@ describe("the daily self-review (operator decision 2026-10-24)", () => {
     expect(low).toHaveBeenCalledWith(owner, 1);
     // Hold A (plan clipboard:ZWJJdBgHm64Z): idle capacity is an item the turn acts on before it may answer NOTHING_NEW.
     const idle = "Utilization stayed under the 90% target for 15 min. Waiting: 1 open plan";
-    expect(f.notice).toHaveBeenCalledWith(owner, "utilization-low", idle, [{ key: "utilization", kind: "UTILIZATION", line: idle }]);
+    expect(f.notice).toHaveBeenCalledWith(owner, "utilization-low", idle, [{ key: "utilization", kind: "UTILIZATION", line: idle, always: true }]);
     expect(f.standing.mock.calls.find((call) => call[1] === "REVIEW")?.[2]).toContain("## Utilization\n2026-10-20: average 41% of capacity in use");
     f.advance(5 * MIN);
     await f.orders.tickOwner(owner);
@@ -485,7 +486,7 @@ describe("the daily self-review (operator decision 2026-10-24)", () => {
     const [, , text, items] = f.notice.mock.calls.find((call) => (call as unknown[])[1] === "utilization-low") as unknown as [string, string, string, Array<Record<string, unknown>>];
     expect(text).toBe(["Utilization stayed under the 90% target for 15 min.", "Plans not on a pane (open a pane for each now):", `- ${items[1]!.line}`,
       "Plans whose pane is idle or done (send each its next step now):", `- ${items[2]!.line}`, `- ${items[3]!.line}`, `- ${items[4]!.line}`].join("\n"));
-    expect(items).toEqual([{ key: "utilization", kind: "UTILIZATION", line: text },
+    expect(items).toEqual([{ key: "utilization", kind: "UTILIZATION", line: text, always: true },
       expect.objectContaining({ key: "plan:clipboard:n", line: expect.stringContaining("no open pane · next: 2. Step 2 (PENDING): open a pane for it now at the plan's minimum model (space_open_panes) and send it \"Implement the following plan. Plan ID: clipboard:n\"") }),
       expect.objectContaining({ key: "plan:clipboard:r", kind: "PLAN", plan: "clipboard:r", pane: andy.id, line: expect.stringContaining("Andy idle · next: 1. Step 1 (PENDING): send it to Andy now") }),
       expect.objectContaining({ key: "plan:clipboard:o", pane: bob.id, line: expect.stringContaining("Bob idle · next: 1. Step 1 (PENDING): send it to Bob now") }),
@@ -513,7 +514,7 @@ describe("the daily self-review (operator decision 2026-10-24)", () => {
     const [, , text, items] = f.notice.mock.calls.find((call) => (call as unknown[])[1] === "utilization-low") as unknown as [string, string, string, Array<Record<string, unknown>>];
     // The line names each pane→step pair, and each is an item: Nous cannot answer NOTHING_NEW while one waits.
     expect(text).toBe(["Utilization stayed under the 90% target for 15 min.", "Plans whose pane is idle or done (send each its next step now):", `- ${items[1]!.line}`, `- ${items[2]!.line}`].join("\n"));
-    expect(items).toEqual([{ key: "utilization", kind: "UTILIZATION", line: text },
+    expect(items).toEqual([{ key: "utilization", kind: "UTILIZATION", line: text, always: true },
       expect.objectContaining({ key: "plan:clipboard:d", kind: "PLAN", plan: "clipboard:d", pane: andy.id, line: expect.stringContaining("Andy done · next: 2. Step 2 (PENDING): send it to Andy now") }),
       expect.objectContaining({ key: "plan:clipboard:i", kind: "PLAN", plan: "clipboard:i", pane: bob.id, line: expect.stringContaining("Bob idle · next: 2. Step 2 (IN_PROGRESS): send it to Bob now") })]);
     // Not stalled: the stalled nudges stay as they were.
@@ -727,6 +728,45 @@ describe("the standing orders tick", () => {
     expect(waiting.text()).toContain("→ close it now (space_close_pane)");
     expect(closePane).not.toHaveBeenCalled();
     expect((await waiting.closeouts.list(owner))[0]).toMatchObject({ state: "VERIFIED" });
+  });
+
+  it("never closes a pane prompted since it finished, or with a prompt held or scheduled for it (13/11 Eva/Andy: closed 18 s after Nous typed its plan step)", async () => {
+    const closePane = vi.fn<NonNullable<StandingOrdersDeps["closePane"]>>(async () => true);
+    const eva = cli("pane:eva00001", "Eva");
+    const verified = async (options: { prompts?: ReadonlySet<string> | null } = {}) => {
+      const f = fixture({ closePane, panes: [{ pane: eva, state: "done", since: iso(T0 + 2 * MIN) }], ...options });
+      noteSpacePrompt(eva.id, T0); // the save's own text, typed just before its row: not new work
+      await f.orders.saveRequested(owner, room.id, [eva.id]);
+      f.state.reports = [report(eva.id, iso(T0 + 2 * MIN), "Saved what I learned: space_memory:ab12cd34ef56.")];
+      f.advance(5 * MIN);
+      return f;
+    };
+    await (await verified()).orders.tickOwner(owner);
+    expect(closePane).toHaveBeenCalledWith(owner, room.id, eva.id);
+    closePane.mockClear();
+    // Nous types the next plan step at +4 min; the dashboard still reads done since +2: kept, and no "close it now" line.
+    const f = await verified();
+    noteSpacePrompt(eva.id, T0 + 4 * MIN);
+    expect(await f.orders.tickOwner(owner)).toMatchObject({ paneLines: 0, turn: null });
+    expect((await f.closeouts.list(owner))[0]).toMatchObject({ state: "VERIFIED" });
+    // Its turn ended after the prompt: no longer new, but it worked after the save, so Nous decides.
+    f.state.panes = [{ pane: eva, state: "done", since: iso(T0 + 20 * MIN) }];
+    f.advance(40 * MIN);
+    await f.orders.tickOwner(owner);
+    expect(f.text()).toContain("Main/Eva · done 25 min · save asked 10:00 UTC, verified space_memory:ab12cd34ef56 → close it now");
+    // A prompt held or scheduled for it, or a failed read of them, keeps it too.
+    for (const prompts of [new Set([eva.id]), null]) await (await verified({ prompts })).orders.tickOwner(owner);
+    // The operator's own line after it finished counts like Space's.
+    const typed = await verified();
+    noteOperatorPaneInput(eva.id, "και το επόμενο\r", T0 + 4 * MIN);
+    await typed.orders.tickOwner(owner);
+    expect(closePane).not.toHaveBeenCalled();
+    expect([...promptsComing([
+      { kind: "nous_held", actorId: owner, key: "pane:a", value: { status: "HELD" } },
+      { kind: "schedule", actorId: owner, key: "s1", value: { status: "SCHEDULED", condition: "AT_TIME", command: { actions: [{ kind: "pane", operation: "continue", target: { paneIds: ["pane:b"] } }] } } },
+      { kind: "schedule", actorId: owner, key: "s2", value: { status: "COMPLETED", command: { actions: [{ target: { paneIds: ["pane:c"] } }] } } },
+      { kind: "schedule", actorId: "user:other", key: "s3", value: { status: "SCHEDULED", command: { actions: [{ target: { paneIds: ["pane:d"] } }] } } }
+    ], owner)]).toEqual(["pane:a", "pane:b"]);
   });
 
   it("hands an unverified save back to Nous after 20 minutes: ask once more, then close or keep open", async () => {

@@ -119,6 +119,7 @@ export const apiConfigRegistry = {
   awsRegion: field(["AWS_REGION","AWS_DEFAULT_REGION"], "public", "parser"),
   localVoiceProviderUrl: field(["SPACE_LOCAL_VOICE_PROVIDER_URL"], "sensitive", "parser"),
   localVoiceProviderToken: field(["SPACE_LOCAL_VOICE_PROVIDER_TOKEN"], "secret", "parser"),
+  localSenseVoiceUrl: field(["SPACE_LOCAL_SENSEVOICE_URL"], "sensitive", "parser"),
   vercelVoiceKeyFile: field(["SPACE_VERCEL_VOICE_KEY_FILE","SPACE_VERCEL_AI_GATEWAY_KEY_FILE"], "sensitive", "parser"),
   vercelVoiceApiKey: field(["AI_GATEWAY_API_KEY","VERCEL_AI_GATEWAY_API_KEY"], "secret", "parser"),
   vercelVoiceBaseUrl: field(["SPACE_VERCEL_VOICE_BASE_URL"], "sensitive", "parser"),

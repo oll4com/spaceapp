@@ -71,7 +71,7 @@ flowchart LR
 | DeepSeek harness | `space-deepseek-harness.service` | `space-harness` | `dsh --profile web` | `127.0.0.1:3080` |
 | Merge queue | `space-merge-queue.service` | `spaceapp-user` | `scripts/space-queue.mjs daemon` | none (file state in `/opt/spaceapp/var/merge-queue/`) |
 | CLI resource guard | `space-cli-resource-guard.service` | `root` | `/opt/spaceapp/bin/space-cli-resource-guard` | none |
-| Temporal | `docker-compose.yml` service `temporal` (development) | container | `temporalio/server` 1.30.8; one-shot `temporal-schema` and `temporal-namespace` jobs (`temporalio/admin-tools`) | `127.0.0.1:7233`, namespace `default` |
+| Temporal | `docker-compose.yml` service `temporal` (development) | container | `temporalio/server` 1.30.9; one-shot `temporal-schema` and `temporal-namespace` jobs (`temporalio/admin-tools`) | `127.0.0.1:7233`, namespace `default` |
 | PostgreSQL | `docker-compose.yml` service `postgres` (development) | container | `pgvector/pgvector` image | `127.0.0.1:54329` in development; the API uses `SPACE_DATABASE_URL` |
 
 The public installer runs a different packaging (Docker Compose with

@@ -115,7 +115,7 @@ async function resolveImapHost(host: string): Promise<string> {
   }
 }
 
-export function createImapMailboxFactory(options: { connectTimeoutMs?: number } = {}): MailboxFactory {
+export function createImapMailboxFactory(options: { connectTimeoutMs?: number; socketTimeoutMs?: number } = {}): MailboxFactory {
   return {
     async open(config, password) {
       const { ImapFlow } = await import("imapflow");
@@ -128,8 +128,11 @@ export function createImapMailboxFactory(options: { connectTimeoutMs?: number } 
         logger: false,
         connectionTimeout: options.connectTimeoutMs ?? 20_000,
         greetingTimeout: options.connectTimeoutMs ?? 20_000,
-        socketTimeout: 60_000
+        socketTimeout: options.socketTimeoutMs ?? 60_000
       });
+      // API audit 12/11: imapflow emits a socket timeout after connect as 'error'; with no listener it shut the API down. The
+      // connection closes and the pending or next command rejects with it.
+      client.on("error", () => undefined);
       await client.connect();
       const lock = await client.getMailboxLock("INBOX");
       const scan = async <T>(filter: MailboxSearchFilter & { /** No limit: every match. */ limit?: number }, withSource: boolean,

@@ -9,7 +9,7 @@ import { controlSkillsPage } from "./space-control-resources.js";
 import type { ControlActor } from "./space-control-settings.js";
 import type { SystemHealthMonitor } from "./system-health-service.js";
 import { buildVoiceTranscriptionSettings } from "./voice-settings.js";
-import { getLiveAudioProvidersStatus, getLocalVoiceProviderStatus } from "./voice-transcription.js";
+import { getLiveAudioProvidersStatus, getLocalVoiceProviderStatus, isLocalSenseVoiceUp } from "./voice-transcription.js";
 
 type SpaceControlInspectSectionDeps = {
   store: SpaceStore;
@@ -100,7 +100,7 @@ export function createSpaceControlInspectSections(deps: SpaceControlInspectSecti
       };
     }
     if(input.section==="VOICE"){
-      const transcription = buildVoiceTranscriptionSettings(config);
+      const transcription = buildVoiceTranscriptionSettings(config, await isLocalSenseVoiceUp(config));
       const providers = await getLiveAudioProvidersStatus(config).catch(() => ({ providers: [] }));
       const local = await getLocalVoiceProviderStatus(config).catch(() => ({ status: "unavailable" }));
       return { transcription, providers, local };

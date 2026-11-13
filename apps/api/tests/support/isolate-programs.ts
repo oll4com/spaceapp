@@ -5,3 +5,5 @@ import { join } from "node:path";
 // operator's real programs (4/11: eight program-use inbox lines in nous.test.ts). A folder that does not exist imports nothing.
 process.env.SPACE_NOUS_PROGRAMS_DIR = join(tmpdir(), "space-test-no-programs");
 process.env.SPACE_NOUS_PROGRAMS_USAGE_FILE = join(tmpdir(), "space-test-no-programs", "usage-fields.json");
+// The startup program meters read this server's Azure check and call Murf with its key (src/nous/program-meters.ts): off in every test app.
+process.env.SPACE_PROGRAM_METERS = "off";

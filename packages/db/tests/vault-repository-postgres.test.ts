@@ -131,6 +131,26 @@ describe.skipIf(unavailable !== null)(`vault repository on PostgreSQL${unavailab
     }
   }, 60_000);
 
+  it("cuts an over-long label to 80 on save, and one over-long stored label never empties the list (13/11)", async () => {
+    const erin = "user:vault-erin";
+    await pool.query("INSERT INTO users(id, email, role) VALUES ($1, 'vault-erin@space.local', 'OPERATOR')", [erin]);
+    const { vaultId } = await repository.enroll(erin, await enrollment(erin));
+    const long = await item(erin, vaultId);
+    const saved = await repository.saveItem(erin, { ...long, metadata: { ...long.metadata, label: "L".repeat(90) } });
+    expect(saved?.metadata.label).toBe("L".repeat(80));
+    const other = await item(erin, vaultId);
+    await repository.saveItem(erin, other);
+    await pool.query("UPDATE vault_items SET label = $2 WHERE id = $1", [other.metadata.id, `${"é".repeat(87)}👍`]);
+    expect((await repository.listItems(erin)).map((entry) => entry.label).sort()).toEqual(["L".repeat(80), "é".repeat(80)]);
+    expect(await repository.listItemRecords(erin)).toHaveLength(2);
+    // A row failing the schema for any other reason is left out; the good items still list.
+    const broken = await item(erin, vaultId);
+    await repository.saveItem(erin, broken);
+    await pool.query("UPDATE vault_items SET origins = ARRAY['not an origin'] WHERE id = $1", [broken.metadata.id]);
+    expect((await repository.listItems(erin)).map((entry) => entry.id).sort()).toEqual([long.metadata.id, other.metadata.id].sort());
+    expect((await repository.listItemRecords(erin)).map((entry) => entry.metadata.id).sort()).toEqual([long.metadata.id, other.metadata.id].sort());
+  });
+
   it("fails closed for a disabled owner", async () => {
     await repository.enroll(carol, await enrollment(carol));
     const nonce = (await repository.issueNonce(carol, "UNLOCK_CHALLENGE", 60_000))!;
@@ -259,6 +279,12 @@ describe.skipIf(unavailable !== null)(`vault repository on PostgreSQL${unavailab
     expect(await repository.setLoginPage(bob, usernameOnly.handle, "https://shop.example/login")).toBe(0);
     expect(await repository.setLoginPage(alice, usernameOnly.handle, "https://shop.example/login")).toBe(1);
     expect((await repository.listPending(alice))[0]?.loginPage).toBe("https://shop.example/login");
+    // An over-long waiting label is cut on add, and one already stored still lists, so the agents' hand-off keeps working (13/11).
+    expect(await repository.deletePending(alice, usernameOnly.id)).toBe(true);
+    const longPending = { ...pending, id: newVaultHandle("vault_pending"), handle: newVaultHandle("vault_item"), label: "P".repeat(88) };
+    expect(await repository.addPending(alice, longPending)).toBe(true);
+    await pool.query("UPDATE vault_pending SET label = $2 WHERE id = $1", [longPending.id, "Q".repeat(88)]);
+    expect((await repository.listPending(alice)).map((entry) => entry.label)).toEqual(["Q".repeat(80)]);
   });
 
   it("protects a pane for the page a fill landed in, for one owner only, and forgets it on unprotect", async () => {

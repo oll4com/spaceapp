@@ -19,7 +19,7 @@ const input = (extra: Partial<NousScoreInput> = {}): NousScoreInput => ({ now: N
 describe("NOUS_SCORE_WEIGHTS", () => {
   it("is the one table of weights: open work costs, finished work gives", () => {
     // A changed weight is a decision of the operator: this table and the docs change together.
-    expect(NOUS_SCORE_WEIGHTS).toEqual({ openPlan: -2, openPlanPerDay: -2, planAgeExponent: 2, openPane: -1, paneIdlePast1h: -2, paneDay: -0.2, goalPerDay: -2, goalNoProgressDay: -3, goalOverdueDay: -20, toolFailure: -2, lesson: -5, decisionDeclined: -5, predictionMiss: -3, chatError: -1, decisionFailed: -3, planNoWorkingPane: -3, planStalled: -5, openRequest: -2, requestPast1h: -2,
+    expect(NOUS_SCORE_WEIGHTS).toEqual({ openPlan: -2, openPlanPerDay: -2, planAgeExponent: 2, openPane: -1, paneDay: -0.2, idlePanePerHour: -2, goalPerDay: -2, goalNoProgressDay: -3, goalOverdueDay: -20, toolFailure: -2, lesson: -5, decisionDeclined: -5, predictionMiss: -3, chatError: -1, decisionFailed: -3, planNoWorkingPane: -3, planStalled: -5, openRequest: -2, requestPast1h: -2,
       requestPast6h: -4, requestPast24h: -8, planCompleted: 5, requestDone: 3, utilizationPerPoint: 0.5, lostAtResetPerPoint: -95, correction: -5, couldHaveDecided: -3, scorecardPerPoint: 0.5,
       dailyTaskMissed: -5, slowReply: -2, slowReplyPast10x: -2, slowDone: -2, slowDonePast24h: -4, projectShortfallPerPoint: -0.2, projectDay: -1, programOpen: -1, programNotApplied: -0.2,
       marketingPerPoint: -0.2, marketingDayBelowTarget: -1, marketingFailed: -2, marketingZeroReach: -0.5, marketingDayWithoutResult: -1, idleBrowserPerHour: -2, browserReaped: -2,
@@ -35,7 +35,7 @@ describe("nousScore", () => {
   it("charges marketing below its target, more each day in a row, its failed and no-reach posts of the window and days without a result", () => {
     const row = (number: number, status: string, hoursAgo: number, score: number | null) => ({ id: `mktpost:p${number}`, number, channel: "X", status, at: at(hoursAgo * HOUR), score, title: `Post ${number}` });
     const marketing = { score: 30, target: 50, daysBelowTarget: 4, daysWithoutResult: 2,
-      posts: [row(4, "PUBLISHED", 2, 0), row(3, "FAILED", 5, 0), row(2, "PUBLISHED", 6, 40), row(1, "PUBLISHED", 24 * 9, 0)] };
+      posts: [row(4, "PUBLISHED", 2, 0), { ...row(5, "PUBLISHED", 3, 0), kind: "REPLY" }, row(3, "FAILED", 5, 0), row(2, "PUBLISHED", 6, 40), row(1, "PUBLISHED", 24 * 9, 0)] };
     const tile = nousScore(input({ marketing })).tiles.find((entry) => entry.key === "marketing")!;
     expect(tile.detail).toBe("30/100 · target 50 · 4 d below it");
     expect(tile.items.map((item) => [item.label, item.points])).toEqual([
@@ -100,14 +100,24 @@ describe("nousScore", () => {
     }));
     // A 9-day plan: −2 −2×81 −3 now, −2×(100−81) more tomorrow; a request 7 h old crosses 24 h (−8); the goal −2 and −3 without progress today.
     expect(levers.map((lever) => [lever.id ?? lever.label, lever.points, lever.perDay])).toEqual([
-      ["clipboard:a", -167, -38], ["nous_goal:g", -15, -5], ["nous_msg:3", -8, -8], ["nous_msg:4", -16, 0],
-      ["Utilization 70% against 90%", -10, 0], ["2 panes idle or finished past 1 h", -6, -0.4], ["clipboard:b", -2, -2]]);
+      ["clipboard:a", -167, -38], ["2 panes idle past 60 min (Done 1 [pane:1] idle or finished 2 h, Done 2 [pane:2] idle or finished 2 h)", -6, -96.4],
+      ["nous_goal:g", -15, -5], ["nous_msg:3", -8, -8], ["nous_msg:4", -16, 0],
+      ["Utilization 70% against 90%", -10, 0], ["Daily Nous errors (2.6% of the negative)", -6, -0.9], ["clipboard:b", -2, -2]]);
     expect(levers[0]!.action).toContain("complete it with its proof");
     expect(levers.at(-1)!.action).toBe("Alex works on it: send the next step the moment it reports");
-    const text = nousScoreLeversText(levers, { tiles });
+    // 13/11: a plan whose open steps all wait gets nothing from the 90 % push, so its lever says so instead of "send it its next step now".
+    const waits = nousScore(input({ plans: [{ id: "clipboard:w", title: "Waits", createdAt: at(2 * HOUR), working: false, stalled: null, progress: 40, pane: "Bruno", waits: "sign-in" }] }));
+    expect(waits.levers.find((lever) => lever.id === "clipboard:w")!.action).toBe("every open step waits (next: sign-in): nothing to send; unblock its step when the wait ends (space_plan_update)");
+    // 13/11: a plan waiting on the operator (its waitsOn «continue») opens no pane.
+    const held = nousScore(input({ plans: [{ id: "clipboard:h", title: "Held", createdAt: at(2 * HOUR), working: false, stalled: null, progress: 40, pane: null, held: "waits on you: continue" }] }));
+    expect(held.levers.find((lever) => lever.id === "clipboard:h")!.action).toBe("it waits on you: continue: no pane to open or send; clear the wait (you: one ask; a third party: follow up; a date or another plan: nothing until then)");
+    const text = nousScoreLeversText(levers);
     expect(text.split("\n")[1]).toBe("- Plan [clipboard:a] \"Release\" 97% · −167 now → −205 tomorrow · complete it with its proof (space_plan_update), it removes all of it");
-    expect(text).toContain("No move removes Daily Nous errors −6: they leave the 7-day window by themselves; add no new ones.");
-    expect(nousScoreLeversText([], { tiles: [] })).toBe("## Score levers now (your first measure: take the top move first; points now → tomorrow if left · the move that cuts them)\n- none");
+    // 13/11: no cost is left to the window: the errors name their causes with counts for a code-fix pane.
+    expect(text).not.toContain("No move removes");
+    expect(text).toContain("- Daily Nous errors (2.6% of the negative) · −6 now → −6.9 tomorrow · open or brief a code-fix pane with these causes and counts: failed tools ×3 (−6)");
+    expect(tiles.find((tile) => tile.key === "dailyErrors")!.points).toBe(-6);
+    expect(nousScoreLeversText([])).toBe("## Score levers now (your first measure: take the top move first; points now → tomorrow if left · the move that cuts them)\n- none");
   });
 
   it("Score first (operator 5/11 12:32 BKK): the persona puts the Score right after Nous's identity, above the spend rule", () => {
@@ -130,18 +140,26 @@ describe("nousScore", () => {
     }));
     const points = Object.fromEntries(tiles.map((tile) => [tile.key, tile.points]));
     // autonomy +20 at weight 0.25 → +2.5 at 0.5 a point.
-    expect(points).toEqual({ plans: 0, requests: 0, approvedNotDone: 0, completed: 5, done: 3, utilization: -10, lostTokens: 0, panes: 0, browsers: 0, goals: 0, projects: 0, dailyTasks: 0, response: 0, dailyErrors: 0, scorecard: 2.5 });
+    expect(points).toEqual({ plans: 0, requests: 0, approvedNotDone: 0, completed: 5, done: 3, utilization: -10, lostTokens: 0, panes: 0, idlePanes: 0, browsers: 0, goals: 0, projects: 0, dailyTasks: 0, response: 0, dailyErrors: 0, scorecard: 2.5 });
     expect(score).toBe(0.5);
   });
 
-  it("charges every open pane and more only after an hour idle or finished", () => {
+  it("Idle open panes (operator 13/11 09:48 BKK): every started hour past 60 min doing nothing, the Mail Copilot and a pane under Idle open browsers excepted", () => {
     const result = nousScore(input({ panes: [
       { id: "pane:working", title: "Working", idleSince: null },
-      { id: "pane:hour", title: "Exactly one hour", idleSince: at(HOUR) },
-      { id: "pane:forgotten", title: "Done yesterday", idleSince: at(24 * HOUR) }
-    ] }));
-    expect(result.tiles.find((tile) => tile.key === "panes")).toMatchObject({ points: -5, detail: "3 open · 1 idle past 1 h" });
-    expect(result.score).toBe(-5);
+      { id: "pane:59", title: "59 min", idleSince: at(59 * 60_000) },
+      { id: "pane:61", title: "61 min", idleSince: at(61 * 60_000) },
+      { id: "pane:310", title: "3 h 10 min", idleSince: at(190 * 60_000) },
+      { id: "pane:mail", title: "Mail Copilot", idleSince: at(5 * HOUR), mode: "MAIL_COPILOT" },
+      { id: "pane:bob", title: "Bob (Browser 2)", idleSince: at(5 * HOUR) }
+    ], browsers: { idle: [{ id: "pane:bob", title: "Bob (Browser 2)", idleSince: at(5 * HOUR) }], reaped: [] } }));
+    const tile = result.tiles.find((entry) => entry.key === "idlePanes")!;
+    // 61 min: one started hour past 60 (−2); 3 h 10 min: three (−6); 59 min, the Mail Copilot and Bob (charged as a browser) nothing.
+    expect(tile.items.map((item) => [item.id, item.points])).toEqual([["pane:310", -6], ["pane:61", -2]]);
+    expect(tile).toMatchObject({ label: "Idle open panes", points: -8, detail: "2 panes idle past 60 min" });
+    expect(result.tiles.find((entry) => entry.key === "panes")).toMatchObject({ points: -6, detail: "6 open" });
+    expect(result.levers.find((lever) => lever.label.startsWith("2 panes idle past 60 min"))).toMatchObject({ points: -10, perDay: -96.4,
+      label: "2 panes idle past 60 min (3 h 10 min [pane:310] idle or finished 3 h, 61 min [pane:61] idle or finished 1 h)" });
   });
 
   it("Idle open browsers (operator 5/11 14:47 BKK): each started hour past 30 min unused, each one Space had to close, and a \"close it\" lever", () => {
@@ -232,11 +250,11 @@ describe("nousScore", () => {
       body: "Prediction: yes (90%)", options: [], recommendation: null, refs: {}, action: null, status: "DECLINED", answer: "No", outcome: null,
       createdAt: at(48 * HOUR), answeredAt: at(HOUR), couldHaveDecided: true });
     const dailyErrors = nousScoreErrors({ now: NOW, timeZone: "Asia/Bangkok", facts: [fact(at(HOUR)), fact(at(25 * HOUR)), fact(at(8 * 24 * HOUR)), fact(at(-HOUR))],
-      decisions: [decision], lessons: [{ key: "lessons-score", createdAt: at(HOUR), updatedAt: at(HOUR) }, { key: "other", createdAt: at(HOUR), updatedAt: at(HOUR) }] });
+      decisions: [decision], lessons: [{ key: "lessons-score", createdAt: at(2 * HOUR), updatedAt: at(2 * HOUR) }, { key: "other", createdAt: at(HOUR), updatedAt: at(HOUR) }] });
     expect(dailyErrors).toEqual([
       { day: "2026-11-02", calls: 8, failed: 2, refused: 2, corrections: 1, lessons: 0, declined: 0, predictionMisses: 0, couldHaveDecided: 0, chatErrors: 0, decisionsFailed: 0 },
       { day: "2026-11-03", calls: 8, failed: 2, refused: 2, corrections: 1, lessons: 1, declined: 1, predictionMisses: 1, couldHaveDecided: 1, chatErrors: 0, decisionsFailed: 0 }
-    ]);
+    ].map((day) => ({ ...day, tools: { read: 2 } })));
     const result = nousScore(input({ dailyErrors, timeZone: "Asia/Bangkok" }));
     expect(result.tiles.find((tile) => tile.key === "dailyErrors")).toMatchObject({ points: -34, detail: expect.stringContaining("Today: 7 · 7 days: 10") });
     // No second charge through the legacy Corrections / Asked, could decide tiles.
@@ -269,6 +287,16 @@ describe("nousScore", () => {
     expect(errors([{ key: "lessons-legacy", text: "Old.", createdAt: null, updatedAt: at(HOUR) }])).toEqual([]);
   });
 
+  it("does not charge a lesson again in a turn that already costs its cause: the daily REVIEW, or a turn with a correction (decision b6effe98 α)", () => {
+    const turn = (reason: string, from: number, to: number, correction: boolean) => nousTurnFactsSchema.parse({ turnId: `${reason}${from}`, ownerUserId: owner, reason,
+      status: "DONE", startedAt: at(from), endedAt: at(to), planPoints: 0, tools: {}, outcomes: correction ? [{ summary: "Wrong", outcome: "SELF", correction: true }] : [] });
+    const facts = [turn("REVIEW", 10 * HOUR, 9 * HOUR, false), turn("OPERATOR", 6 * HOUR, 5 * HOUR, true), turn("OPERATOR", 3 * HOUR, 2 * HOUR, false)];
+    const lessons = [{ key: "lessons-review", createdAt: at(9.5 * HOUR), updatedAt: at(9.5 * HOUR) }, { key: "lessons-corrected", createdAt: at(5.5 * HOUR), updatedAt: at(5.5 * HOUR),
+      text: "Base.\n\n--- Incident (" + at(2.5 * HOUR) + ", saved as lessons-again):\nSelf-found again." }, { key: "lessons-self", createdAt: at(2.5 * HOUR), updatedAt: at(2.5 * HOUR) }];
+    // The REVIEW's and the correction's lessons cost nothing; the self-found lesson and the self-found incident count.
+    expect(nousScoreErrors({ now: NOW, timeZone: "UTC", facts, decisions: [], lessons })).toMatchObject([{ day: "2026-11-03", corrections: 1, lessons: 2 }]);
+  });
+
   it("charges each judged day a DAILY task's text never reached its pane, and judges a day only after the scheduler's 12 h wait", () => {
     const task = { id: "task:daily01", title: "API check", createdAt: at(3 * 24 * HOUR), time: "01:00", timeZone: "UTC" };
     const result = nousScore(input({
@@ -289,6 +317,15 @@ describe("nousScore", () => {
     expect(result.tiles.find((tile) => tile.key === "dailyTasks")?.items).toEqual([expect.objectContaining({ points: -5, detail: "01:00 daily · ran 1 of 2 days · missed 2026-11-03" })]);
     // No run at all: every due day in the window is judged, as before.
     expect(nousScore(input({ dailyTasks: [task] })).tiles.find((tile) => tile.key === "dailyTasks")?.points).toBe(-35);
+  });
+
+  it("judges no day before a daily task's schedule began to apply, except the occurrence of the 12 h it still owes (paused 9/11, restored 12/11)", () => {
+    const task = { id: "task:paused", title: "Paused daily", createdAt: at(30 * 24 * HOUR), time: "01:00", timeZone: "UTC" };
+    const items = (scheduledSince: string) => nousScore(input({ dailyTasks: [{ ...task, scheduledSince }] })).tiles.find((tile) => tile.key === "dailyTasks")?.items;
+    // Restored 2/11 14:00: 2/11 01:00 is over 12 h before, never owed; only 3/11 is judged (and missed, no row).
+    expect(items("2026-11-02T14:00:00.000Z")).toEqual([expect.objectContaining({ points: -5, detail: "01:00 daily · ran 0 of 1 days · missed 2026-11-03" })]);
+    // Restored 2/11 12:00: 2/11 01:00 is within the 12 h the scheduler still owes, so it is judged too.
+    expect(items("2026-11-02T12:00:00.000Z")).toEqual([expect.objectContaining({ points: -10, detail: "01:00 daily · ran 0 of 2 days · missed 2026-11-02, 2026-11-03" })]);
   });
 
   it("charges each day's slow first answers (over 2 min, again over 20) and slow Done records (over 6 h, again over 24 h); an unanswered message counts its wait", () => {
@@ -339,6 +376,26 @@ describe("nousScore", () => {
     const more = nousScore(input({ projects: [{ name: "Job applications", succeeded: 0, tried: 10, what: "sent got an offer", since: at(90 * 24 * HOUR) }],
       plans: [{ id: "clipboard:p", title: "P", createdAt: at(HOUR), working: true, stalled: null }] }));
     expect(more.breakdown.map((entry) => [entry.label, entry.points, entry.share])).toEqual([["Job applications", -110, 98.2], ["Open plans", -2, 1.8]]);
+    // 13/11 (stable: Startup programs −185.6 in the breakdown, Big projects −1.6 on the Score screen): after a reset each project row counts from its
+    // own baseline, so the rows add up to the tile; a note stored before 13/11 (no project keys) shows one "Big projects" row equal to the tile.
+    const jobs = { name: "Job applications", succeeded: 0, tried: 10, what: "sent got an offer", since: at(90 * 24 * HOUR) };
+    const reset = { at: at(HOUR), offset: 0, tiles: { projects: -15, "project:Job applications": -15 } };
+    const after = nousScore(input({ reset, projects: [jobs] }));
+    // 100 % short × 0.2 with no day since the reset yet: −20 against −15 at the reset.
+    expect(after.tiles.find((tile) => tile.key === "projects")!.points).toBe(-5);
+    expect(after.breakdown).toEqual([expect.objectContaining({ label: "Job applications", points: -5 })]);
+    const old = nousScore(input({ reset: { ...reset, tiles: { projects: -15 } }, projects: [jobs] }));
+    expect(old.breakdown).toEqual([expect.objectContaining({ label: "Big projects", points: -5 })]);
+  });
+
+  it("13/11: while the Score is negative, a variable worth over 5 % of it that no pane works on is the top lever; a working pane covers it", () => {
+    const errors = [{ day: "2026-11-03", calls: 40, failed: 20, refused: 0, corrections: 0, lessons: 0, declined: 0, predictionMisses: 0, couldHaveDecided: 0, chatErrors: 0, decisionsFailed: 0, tools: { space_plan_update: 12 } }];
+    const plans = [{ id: "clipboard:a", title: "A", createdAt: at(2 * HOUR), working: true, stalled: null }];
+    const open = nousScore(input({ dailyErrors: errors, plans }));
+    expect(open.levers[0]).toMatchObject({ label: "Daily Nous errors (95.2% of the negative)", points: -40 });
+    expect(open.levers[0]!.action).toMatch(/^no pane works on it: open or brief a code-fix pane with these causes and counts: space_plan_update failed ×12 \(−24\), failed tools ×8 \(−16\)/);
+    const worked = nousScore(input({ dailyErrors: errors, plans, working: ["Fix the daily Nous errors"] }));
+    expect(worked.levers[0]!.action).toMatch(/^open or brief a code-fix pane/);
   });
 
   it("is zero with nothing open and nothing read", () => {
@@ -360,7 +417,7 @@ describe("the Score service", () => {
     const view = score.cached(owner)!;
     expect(view).toMatchObject({ score: -6, change24h: -4, change7d: -10 });
     expect(nousScoreLine(view)).toContain("Score: −6 (Δ24h −4, Δ7d −10), worst: Open plans −6 (Plan 0 −2)");
-    expect(nousScoreLine(view)).toContain("Open panes: 0 open · 0 idle past 1 h (0)");
+    expect(nousScoreLine(view)).toContain("Open panes: 0 open (0), Idle open panes: 0 panes idle past 60 min (0)");
     expect(nousScoreLine(view)).toContain("Daily Nous errors: Today: 0 · 7 days: 0 (0)");
     expect(nousScoreLine(view)).toContain("Unmet goals cost per day, more without progress or past deadline.");
     expect(nousScoreLine(view)).toContain("Negative by variable: Open plans −6 (100 %)");
@@ -442,6 +499,22 @@ describe("the Score service", () => {
     expect(builder).toHaveBeenCalledTimes(4);
   });
 
+  it("13/11 Score push: each snapshot hands Nous a held item per variable over 5 % of a negative Score that no pane works on", async () => {
+    const errors = [{ day: "2026-11-03", calls: 40, failed: 20, refused: 0, corrections: 0, lessons: 0, declined: 0, predictionMisses: 0, couldHaveDecided: 0, chatErrors: 0, decisionsFailed: 0, tools: { space_plan_update: 12 } }];
+    const plans = [{ id: "clipboard:a", title: "A", createdAt: at(2 * HOUR), working: true, stalled: null }];
+    let working: string[] = [];
+    const push = vi.fn(async () => undefined);
+    const service = createNousScore({ repository: new InMemoryNousRepository(), owners: async () => [owner], now: () => NOW, push,
+      input: async () => input({ now: NOW, dailyErrors: errors, plans, working }) });
+    await service.snapshot();
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0]).toEqual([owner, expect.objectContaining({ line: expect.stringContaining("open or brief a code-fix pane now"),
+      items: [expect.objectContaining({ key: "score:Daily Nous errors", kind: "PLAN", always: true, refs: ["Daily Nous errors"] })] })]);
+    working = ["Fix the daily Nous errors"];
+    await service.snapshot();
+    expect(push).toHaveBeenCalledTimes(1);
+  });
+
   it("never recomputes on a read: the view and every range come from memory, and the snapshots are read from the database once", async () => {
     let clock = NOW;
     const repository = new InMemoryNousRepository();
@@ -505,7 +578,7 @@ describe("the Score service", () => {
     // A new process (an API restart) reads the counts back from the stored snapshots.
     const restarted = createNousScore({ repository, owners: async () => [owner], input: panes, now: () => NOW + 60_000 });
     const tile = (await restarted.view(owner)).tiles.find((entry) => entry.key === "panes")!;
-    expect(tile).toMatchObject({ points: -5.8, detail: "2 open · 0 idle past 1 h · 9.5 open a day on average" });
+    expect(tile).toMatchObject({ points: -5.8, detail: "2 open · 9.5 open a day on average" });
     expect(tile.items.filter((item) => !item.id).map((item) => [item.label, item.points, item.detail])).toEqual([
       ["2026-11-02", -3, "15 open on average · peak 20 · -0.2 a pane a day"], ["2026-11-01", -0.8, "4 open on average · peak 4 · -0.2 a pane a day"]]);
   });

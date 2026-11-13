@@ -6,7 +6,7 @@ import {
   type SpaceRuntime
 } from "../src/runtime/SpaceRuntime.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
-import { openVoiceRealtimeSession, supportsDeferredVoiceCapture } from "../src/voice-realtime.js";
+import { openVoiceRealtimeSession, SENSEVOICE_STOPPED, supportsDeferredVoiceCapture } from "../src/voice-realtime.js";
 
 interface AudioStatsState {
   samplesSent?: number;
@@ -580,6 +580,54 @@ describe("Voice Realtime deferred microphone capture", () => {
     socket.onclose?.();
     expect(callbacks.onError).toHaveBeenCalledExactlyOnceWith("Local voice provider connection closed unexpectedly.");
     expect(harness.stopTrack).toHaveBeenCalled();
+  });
+
+  it("routes SenseVoice through the API proxy, sends the real sample rate and waits for its final transcript", async () => {
+    vi.useFakeTimers();
+    const harness = createSocketVoiceHarness();
+    vi.stubGlobal("AudioContext", class extends (globalThis.AudioContext as unknown as new () => object) { sampleRate = 48000; });
+    harness.createVoiceRealtimeCall.mockResolvedValueOnce({ websocketUrl: "/api/voice/ws-proxy/abc" });
+    const callbacks = { onTranscriptDelta: vi.fn(), onTranscriptComplete: vi.fn(), onError: vi.fn() };
+    const session = await openVoiceRealtimeSession({ provider: "local", model: "local-sensevoice-small", language: "en", delay: "low" }, callbacks, { deferCapture: true });
+    expect(harness.createLocalVoiceSession).not.toHaveBeenCalled();
+    expect(harness.createVoiceRealtimeCall).toHaveBeenCalledExactlyOnceWith({ provider: "local", model: "local-sensevoice-small", language: "en" });
+    const socket = harness.socket();
+    expect(socket.url).toBe(`ws://${window.location.host}/api/voice/ws-proxy/abc`);
+    socket.open();
+    await session.startCapture();
+    expect(socket.json()).toEqual([{ type: "start", sample_rate: 48000, language: "en" }]);
+    socket.receive({ type: "user_transcript", text: "The tribal" });
+    session.commit();
+    expect(socket.json().at(-1)).toEqual({ type: "stop" });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(callbacks.onTranscriptComplete).not.toHaveBeenCalled();
+    socket.receive({ type: "user_transcript", text: "The tribal chieftain.", final: true });
+    expect(callbacks.onTranscriptComplete).toHaveBeenCalledExactlyOnceWith("The tribal chieftain.");
+    socket.onclose?.({ code: 1000, reason: "completed" });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(callbacks.onTranscriptComplete).toHaveBeenCalledOnce();
+    expect(callbacks.onError).not.toHaveBeenCalled();
+  });
+
+  it("says plainly that SenseVoice is not running, at start and when it stops mid-recording", async () => {
+    vi.useFakeTimers();
+    const harness = createSocketVoiceHarness();
+    const down = "VOICE_REALTIME_CALL_FAILED: Local SenseVoice (offline) is not running on this server.";
+    harness.createVoiceRealtimeCall.mockRejectedValueOnce(new Error(down));
+    await expect(openVoiceRealtimeSession({ provider: "local", model: "local-sensevoice-small", language: "en", delay: "low" }, {}, { deferCapture: true }))
+      .rejects.toThrow(down);
+
+    harness.createVoiceRealtimeCall.mockResolvedValueOnce({ websocketUrl: "/api/voice/ws-proxy/abc" });
+    const callbacks = { onTranscriptDelta: vi.fn(), onTranscriptComplete: vi.fn(), onError: vi.fn() };
+    const session = await openVoiceRealtimeSession({ provider: "local", model: "local-sensevoice-small", language: "en", delay: "low" }, callbacks, { deferCapture: true });
+    const socket = harness.socket();
+    socket.open();
+    await session.startCapture();
+    session.commit();
+    socket.onclose?.({ code: 1011, reason: "sensevoice_closed" });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(callbacks.onError).toHaveBeenCalledExactlyOnceWith(SENSEVOICE_STOPPED);
+    expect(callbacks.onTranscriptComplete).not.toHaveBeenCalled();
   });
 
   it("refuses to pre-warm OpenAI because its WebRTC offer needs the microphone", async () => {

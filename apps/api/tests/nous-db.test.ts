@@ -3,7 +3,7 @@ import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { dbFailureLines } from "../src/nous/daily-review.js";
 import { createNousTools, nousDbFailureMeta, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
-import { nousDbCastQuery, nousDbTextCastQuery, nousDbCorrectedQuery, nousDbQualifiedQuery, createNousDb, NOUS_DB_COLUMN_NOTES, NOUS_DB_GUESSED_TABLES, NOUS_DB_TABLE_USE, nousDbFlagNote, NOUS_DB_COMMON_TABLES, nousDbColumnsText, nousDbNearestTables, nousDbRows, nousDbStatement, nousDbSyntaxLine } from "../src/nous/db.js";
+import { nousDbCastQuery, nousDbTextCastQuery, nousDbCorrectedQuery, nousDbQualifiedQuery, createNousDb, NOUS_DB_COLUMN_NOTES, NOUS_DB_GUESSED_TABLES, NOUS_DB_TABLE_USE, nousDbFlagNote, NOUS_DB_COMMON_TABLES, nousDbColumnsText, nousDbNearestTables, nousDbRows, nousDbStatement, nousDbSyntaxLine, nousDbPool } from "../src/nous/db.js";
 import { applyPendingMigrations } from "../../../packages/db/src/migration-runner.js";
 import { loadMigrations } from "../../../packages/db/src/migrations.js";
 import { disposablePostgresUnavailableReason, startDisposablePostgres, type DisposablePostgres } from "../../../packages/db/tests/support/disposable-postgres.js";
@@ -74,7 +74,8 @@ describe("space_db_query statements", () => {
     const columns = new Map([["nous_messages", ["id", "kind", "content", "meta"]], ["marketing_copilot_posts", ["id", "channel", "title", "body"]],
       ["space_gateway_request_logs", ["id", "status", "error_code", "error_message"]], ["space_gateway_accounts", ["account_id", "label", "email", "credentials_expires_at", "last_refresh_at"]],
       ["space_gateway_api_keys", ["key_id", "name", "is_active", "allowed_models", "enforced_model", "expires_at"]], ["vault_audit", ["id", "seq", "event", "created_at"]],
-      ["nous_followups", ["id", "note", "due_at"]], ["artifacts", ["id", "kind", "metadata"]], ["site_sign_ins", ["owner_user_id", "site", "account_label", "record"]]]);
+      ["nous_followups", ["id", "note", "due_at"]], ["artifacts", ["id", "kind", "metadata"]], ["site_sign_ins", ["owner_user_id", "site", "account_label", "record"]],
+      ["vault_items", ["id", "vault_id", "label", "origins", "fields", "status"]]]);
     for (const [sql, message, fixed] of [["SELECT body FROM nous_messages", 'column "body" does not exist', "SELECT content FROM nous_messages"],
       ["SELECT p.message FROM marketing_copilot_posts p", "column p.message does not exist", "SELECT p.body FROM marketing_copilot_posts p"],
       ["SELECT error FROM space_gateway_request_logs", 'column "error" does not exist', "SELECT error_message FROM space_gateway_request_logs"],
@@ -85,7 +86,9 @@ describe("space_db_query statements", () => {
       ["SELECT metadata FROM vault_audit", 'column "metadata" does not exist', "SELECT event FROM vault_audit"],
       ["SELECT text FROM nous_followups", 'column "text" does not exist', "SELECT note FROM nous_followups"],
       ["SELECT original_filename FROM artifacts", 'column "original_filename" does not exist', "SELECT (metadata->>'originalFilename') FROM artifacts"],
-      ["SELECT s.method FROM site_sign_ins s", "column s.method does not exist", "SELECT (s.record->>'method') FROM site_sign_ins s"]]) {
+      ["SELECT s.method FROM site_sign_ins s", "column s.method does not exist", "SELECT (s.record->>'method') FROM site_sign_ins s"],
+      // Daily Nous errors 13/11 01:30 UTC: a Vault item's title is its label.
+      ["SELECT title FROM vault_items", 'column "title" does not exist', "SELECT label FROM vault_items"]]) {
       expect(nousDbCorrectedQuery(sql!, message!, undefined, columns)?.sql).toBe(fixed);
     }
     // No column fits: no corrected run, a note naming where it is.
@@ -116,6 +119,7 @@ describe("space_db_query statements", () => {
     // R84 12/11: a shared generic prefix (space_) ranks below a shared rare part.
     expect(nousDbNearestTables("space_appointments", ["space_dots", "space_push_devices", "appointments", "space_agent_runs"])[0]).toBe("appointments");
     expect(NOUS_DB_TABLE_USE.space_appointments).toBe("appointments");
+    expect(NOUS_DB_GUESSED_TABLES).toContain("no freelance_copilot_proposals (freelance_copilot_messages with kind 'PROPOSAL')");
     expect(NOUS_DB_GUESSED_TABLES).toContain("no nous_memories (Space Memory is files: space_memory_recall)");
     expect(nousDbNearestTables("cli_sessions", ["panes", "pane_agent_sessions", "pane_cli_sessions", "session_revocations"])[0]).toBe("pane_cli_sessions");
   });
@@ -556,4 +560,13 @@ describe.skipIf(unavailable !== null)(`space_db_query on PostgreSQL${unavailable
       await schemaPool.end();
     }
   }, 120_000);
+});
+
+describe("nousDbPool", () => {
+  // API audit 12/11: an idle connection's 57P01 at a PostgreSQL shutdown (09:50:55) had no listener and shut the API down.
+  it("keeps an idle connection's error from becoming an uncaught exception", async () => {
+    const pool = nousDbPool("postgres://nobody@127.0.0.1:1/none");
+    expect(() => pool.emit("error", Object.assign(new Error("terminating connection due to administrator command"), { code: "57P01" }))).not.toThrow();
+    await pool.end();
+  });
 });

@@ -132,6 +132,7 @@ import {
 import { takeCliResumeIntent } from "./cli-resume-intent.js";
 import { useVoiceInput } from "../voice-input/VoiceInputProvider.js";
 import { VoiceInputButton } from "../voice-input/VoiceInputButton.js";
+import { VoiceModelQuickPick } from "../voice-input/VoiceModelQuickPick.js";
 import { formatRecordingClock, previewTail, useRecordingElapsed } from "../voice-input/recording-clock.js";
 import type { VoiceInsertMode } from "../../voice-settings.js";
 import {
@@ -9211,6 +9212,7 @@ export const TerminalPane = memo(function TerminalPane({
               {voiceInput.settings.terminalVoiceButton ? (
                 <VoiceInputButton label={pane.title.replace(/^Terminal\b/i, "CLI")} active={voiceOwned && voiceInput.status === "recording"} disabled={voiceDisabled} onClick={toggleTerminalVoiceCapture} onPrewarm={voiceInput.prewarm} />
               ) : null}
+              {voiceInput.settings.terminalVoiceButton && voiceInput.settings.engine === "relay" ? <VoiceModelQuickPick /> : null}
               {isCliModelSettingsSession && voiceInput.settings.terminalModelPicker ? modelSettings ? (
                 <Suspense fallback={modelPickerLoadingFallback}>
                   <LazyCodexModelPicker

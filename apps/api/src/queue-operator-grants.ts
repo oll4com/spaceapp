@@ -154,6 +154,8 @@ function noteOperatorLine(paneId: string, nowMs: number): void {
 // Operator 8/11 20:08 BKK: who prompted each pane last (Space's prompts: space-prompts.ts).
 /** Whether the operator in person sent this pane its newest prompt (the pane works or answered for them). */
 export const operatorPromptedLast = (paneId: string): boolean => (operatorLineAt.get(paneId) ?? -Infinity) > lastSpacePromptAt(paneId);
+/** When this pane last got a prompt from anyone (the operator in person or Space), -Infinity when none since the API started. */
+export const lastPromptAt = (paneId: string): number => Math.max(operatorLineAt.get(paneId) ?? -Infinity, lastSpacePromptAt(paneId));
 /** Called when a pane gets the operator's first line in a minute (Nous pushes the priority panes at once); returns the unsubscribe. */
 export function onOperatorLine(listener: () => void): () => void {
   operatorLineListeners.add(listener);

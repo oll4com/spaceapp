@@ -19,7 +19,7 @@ export const gatewayProviderSchema = z.enum([
   "INCEPTION", "JINA", "MIXEDBREAD", "AGENTROUTER",
   // Free.ai (7/11, Cleo's audit): free chat that answers even without a key (its startup program is in progress); a third party that sees prompts.
   "FREEAI",
-  // Azure OpenAI (7/11, nous_msg:32dc26ee): $200 Microsoft for Startups credit until 5 Feb 2027 on a pay-as-you-go plan with a card behind it.
+  // Azure OpenAI (7/11, nous_msg:32dc26ee): $200 Microsoft for Startups credit until 4 Aug 2027 04:44 UTC on a pay-as-you-go plan with a card behind it.
   "AZURE_OPENAI",
   // Free sign-ups (7/11, nous_msg:c1272a0c, new-signups.md): Z.AI's free GLM Flash models and SiliconFlow's $0 models (neither account has a card),
   // OVHcloud AI Endpoints' anonymous access (no key, 2 requests a minute per IP).
@@ -1002,7 +1002,7 @@ export const GATEWAY_FREE_GRANTS: Partial<Record<GatewayProvider, GatewayFreeGra
   ADAPTION: { amount: 1_500, unit: "usd", since: "2026-11-06", note: "1,500 credits (1 credit = $1), never expire" },
   AGENTROUTER: { amount: 149.78, unit: "usd", since: "2026-11-06", program: "agentrouter-free-credits", note: "third-party relay that sees prompts" },
   MIXEDBREAD: { amount: 5, unit: "usd", since: "2026-11-06", program: "mixedbread-starter-credits", note: "embeddings" },
-  AZURE_OPENAI: { amount: 200, unit: "usd", since: "2026-11-07", validUntil: "2027-02-05", note: "Azure credit; a card is behind it, the pool stops on 5 Feb 2027",
+  AZURE_OPENAI: { amount: 200, unit: "usd", since: "2026-11-07", validUntil: "2027-08-04", note: "Azure credit; a card is behind it, the pool stops on 4 Aug 2027 at 04:44 UTC",
     // Its one deployment, gpt-5-mini, at Azure's list price (Global Standard, 7/11).
     pricePerMillion: { input: 0.25, output: 2 } },
   AMD_TOKEN_LAB: { amount: null, unit: "usd", since: "2026-11-06", program: "amd-ventures-startups", note: "granted points (amount not stated)" }

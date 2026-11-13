@@ -22,9 +22,10 @@ import type { SetupVoiceCredentials } from "./setup-voice-credentials.js";
 import { buildVoiceTranscriptionSettings } from "./voice-settings.js";
 import {
   createVoiceAttachmentResponse, createVoiceDelegateResponse,
-  fetchOpenAiModels, getLiveAudioProvidersStatus, getLocalVoiceProviderStatus
+  fetchOpenAiModels, getLiveAudioProvidersStatus, getLocalVoiceProviderStatus, isLocalSenseVoiceUp
 } from "./voice-transcription.js";
 import { bridgeFishVoice } from "./fish-voice-bridge.js";
+import { bridgeSenseVoice } from "./sensevoice-voice-bridge.js";
 import { bridgeGrantVoice } from "./grant-voice-bridge.js";
 import { isGrantLiveProvider, type GrantVoicePlan } from "./voice-grants.js";
 import { relayVoiceSockets, voiceProxyLimits, VoiceProxyTickets } from "./voice-ws-proxy.js";
@@ -49,7 +50,7 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
   // Every voice delegation of the window (until 31/10 summed from the newest 500 audit events of any kind: the total ran short).
   const voiceDelegations = async (sinceMs: number) => store.listAuditEventsSince
     ? store.listAuditEventsSince({ actions: ["voice.realtime.delegate"], since: new Date(sinceMs - 1).toISOString() }) : store.listAuditEvents();
-  app.get("/api/voice/transcription/settings", defaultRouteRateLimitOptions, async () => buildVoiceTranscriptionSettings(config));
+  app.get("/api/voice/transcription/settings", defaultRouteRateLimitOptions, async () => buildVoiceTranscriptionSettings(config, await isLocalSenseVoiceUp(config)));
   app.get("/api/voice/local/status", defaultRouteRateLimitOptions, async () => getLocalVoiceProviderStatus(config));
   app.post("/api/voice/local/sessions", defaultRouteRateLimitOptions, async (request, reply) => {
     if (!request.user || request.user.automationScope || request.user.proofScope === "READ_ONLY") return sendApiError(reply, 403, "VOICE_OWNER_REQUIRED", "An authenticated interactive owner is required.");
@@ -133,7 +134,8 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
 
       // If the provider returned an external WebSocket URL (Google, Vercel, Amazon),
       // create a proxy session so the browser connects to Space API which relays to the provider.
-      if (result.websocketUrl && (provider === "google" || provider === "vercel" || provider === "amazon" || provider === "fish" || isGrantLiveProvider(provider))) {
+      const senseVoice = result.model === "local-sensevoice-small";
+      if (result.websocketUrl && (senseVoice || provider === "google" || provider === "vercel" || provider === "amazon" || provider === "fish" || isGrantLiveProvider(provider))) {
         const proxySessionId = pendingVoiceWsSessions.create({
           ownerId: request.user.id,
           // Bind the one-shot ticket to the browser's validated Origin.  On
@@ -144,7 +146,7 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
           wsUrl: result.websocketUrl,
           token: result.token,
           subprotocols: provider === "vercel" && result.token ? ["ai-gateway-realtime.v1", `ai-gateway-auth.${result.token}`] : undefined,
-          provider
+          provider: senseVoice ? "local-sensevoice" : provider
         });
         result.websocketUrl = `/api/voice/ws-proxy/${proxySessionId}`;
         // These credentials are only needed by the server-side relay.
@@ -269,6 +271,18 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
         request.log.info({ sessionId, provider: session.provider, ...metadata, event: "voice_ws_proxy_closed" }, "Voice relay closed");
       } });
       activeVoiceProxies.add(stop);
+      return;
+    }
+    if (session.provider === "local-sensevoice") {
+      try {
+        const stop = bridgeSenseVoice(clientSocket, { url: session.wsUrl, onClose: (metadata) => {
+          activeVoiceProxies.delete(stop);
+          request.log.info({ sessionId, provider: session.provider, ...metadata, event: "voice_ws_proxy_closed" }, "Voice relay closed");
+        } });
+        activeVoiceProxies.add(stop);
+      } catch {
+        clientSocket.close(1011, "voice_upstream_unavailable");
+      }
       return;
     }
     if (session.provider && isGrantLiveProvider(session.provider)) {

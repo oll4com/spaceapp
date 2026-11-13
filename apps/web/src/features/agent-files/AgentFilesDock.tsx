@@ -709,6 +709,7 @@ export function FilePreviewDialog({ filename, meta, kind, url, closeLabel, actio
   const t = useUiText();
   const readable = kind === "TEXT" && READABLE_TEXT.test(filename);
   const reading = readable && textView === "reading";
+  const previewOf = t("Preview of {name}", { name: filename });
   const returnFocus = useRef(document.activeElement as HTMLElement | null);
 
   useEffect(() => () => {
@@ -741,19 +742,19 @@ export function FilePreviewDialog({ filename, meta, kind, url, closeLabel, actio
 
   function previewBody() {
     if (kind === "IMAGE") {
-      return <img src={url} alt={`Preview of ${filename}`} />;
+      return <img src={url} alt={previewOf} />;
     }
     if (kind === "VIDEO") {
-      return <video src={url} controls playsInline preload="metadata" aria-label={`Preview of ${filename}`} />;
+      return <video src={url} controls playsInline preload="metadata" aria-label={previewOf} />;
     }
     if (kind === "AUDIO") {
-      return <audio src={url} controls preload="metadata" aria-label={`Preview of ${filename}`} />;
+      return <audio src={url} controls preload="metadata" aria-label={previewOf} />;
     }
     if (kind === "PDF") {
-      return <iframe src={url} title={`Preview of ${filename}`} />;
+      return <iframe src={url} title={previewOf} />;
     }
     if (kind === "DOCX") {
-      return <iframe src={url} title={`Preview of ${filename}`} sandbox="" />;
+      return <iframe src={url} title={previewOf} sandbox="" />;
     }
     if (kind === "TEXT") {
       if (previewError) return <div className="agent-files-preview-note is-error" role="alert">{previewError}</div>;
@@ -775,7 +776,7 @@ export function FilePreviewDialog({ filename, meta, kind, url, closeLabel, actio
       className={`attachment-modal agent-files-modal${fullscreen ? " is-fullscreen" : ""}`}
       role="dialog"
       aria-modal="true"
-      aria-label={`Preview ${filename}`}
+      aria-label={t("Preview {name}", { name: filename })}
       onClick={onClose}
       onKeyDown={(event) => {
         event.stopPropagation();

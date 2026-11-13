@@ -40,16 +40,19 @@ export function marketingPostScore(numbers: NousMarketingNumbers): number {
   const engaged = ratio(numbers.replies + numbers.likes + 2 * numbers.clicks + 3 * numbers.messages + 3 * numbers.followers, MARKETING_SCORE_TARGETS.engaged);
   return Math.round(100 * (numbers.views === null ? engaged : (ratio(numbers.views, MARKETING_SCORE_TARGETS.views) + engaged) / 2));
 }
+/** Read: the copilot recorded numbers; `not_measurable` (the site would not show them, e.g. a banned account's replies) is unknown, not zero reach. */
+export const marketingMeasured = (raw: Record<string, number>) => Object.keys(raw).length > 0 && !(raw.not_measurable! > 0);
 const mean = (values: number[]) => (values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null);
 const dayOf = (at: number) => new Date(at).toISOString().slice(0, 10);
 
 export function marketingPostRows(posts: MarketingPost[]): NousMarketingPostRow[] {
-  const listed = posts.filter((post) => LISTED.has(post.status)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  // Posts marked personal (step 1.1: the Hetzner/VPS threads) are not marketing: no row, so no metric counts them.
+  const listed = posts.filter((post) => LISTED.has(post.status) && post.evidence.topic !== "personal").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   return listed.map((post, index) => {
-    const measured = Object.keys(post.metrics).length > 0;
+    const measured = marketingMeasured(post.metrics);
     const numbers = marketingNumbers(post.metrics);
     const times = [post.evidence.statsAt, post.evidence.metricsAt].filter((value): value is string => typeof value === "string").sort();
-    return { number: index + 1, id: post.id, channel: post.channel, status: post.status, title: post.title, target: post.target, url: post.publishedUrl,
+    return { number: index + 1, id: post.id, channel: post.channel, kind: post.kind, status: post.status, title: post.title, target: post.target, url: post.publishedUrl,
       at: post.publishedAt ?? post.updatedAt, measuredAt: times.at(-1) ?? null, ...numbers,
       score: post.status === "FAILED" ? 0 : post.status === "PUBLISHED" && measured ? marketingPostScore(numbers) : null,
       failure: typeof post.evidence.failure === "string" ? post.evidence.failure.slice(0, 500) : null, raw: post.metrics };
@@ -65,11 +68,15 @@ function latest(metrics: MarketingMetric[], source: string, key: string, day: st
 /** 0-100 from what marketing brought by a day: GitHub stars gained in 30 days, npm's last week, active installs, GA4 users; null: none recorded. */
 export function marketingOutcomesScore(metrics: MarketingMetric[], day: string): number | null {
   const parts: number[] = [];
-  const stars = latest(metrics, "GITHUB", "stars", day);
+  // Real stars of the 30 days by their starred_at (the project's own accounts left out), where the traffic token records them.
+  const gained = latest(metrics, "GITHUB", "stars_gained_30d", day);
+  const stars = gained ? null : latest(metrics, "GITHUB", "stars", day);
+  if (gained) parts.push(ratio(gained.value, MARKETING_SCORE_TARGETS.starsGained30d));
   const before = latest(metrics, "GITHUB", "stars", dayOf(Date.parse(`${day}T00:00:00Z`) - MARKETING_WINDOW_DAYS * DAY_MS))
     ?? metrics.filter((metric) => metric.source === "GITHUB" && metric.key === "stars" && metric.day <= day).sort((a, b) => a.day.localeCompare(b.day))[0];
   if (stars && before && before.day < stars.day) parts.push(ratio(stars.value - before.value, MARKETING_SCORE_TARGETS.starsGained30d));
-  const npm = latest(metrics, "NPM", "downloads_week", day);
+  // The typical week (median day × 7) where recorded: a release day's ~200 mirror and scanner downloads are not marketing.
+  const npm = latest(metrics, "NPM", "downloads_week_typical", day) ?? latest(metrics, "NPM", "downloads_week", day);
   if (npm) parts.push(ratio(npm.value, MARKETING_SCORE_TARGETS.npmWeek));
   const installs = latest(metrics, "INSTALLS", "active_7d", day);
   if (installs) parts.push(ratio(installs.value, MARKETING_SCORE_TARGETS.activeInstalls));
@@ -78,9 +85,9 @@ export function marketingOutcomesScore(metrics: MarketingMetric[], day: string):
   return parts.length ? Math.round((100 * parts.reduce((sum, part) => sum + part, 0)) / parts.length) : null;
 }
 
-/** The overall score as of a moment: its posts of the 30 days before it (measured or failed) and the outcomes recorded by then. */
+/** The overall score as of a moment: its posts of the 30 days before it (measured or failed; replies are conversations, step 1.6) and the outcomes recorded by then. */
 export function marketingScoreAsOf(rows: NousMarketingPostRow[], metrics: MarketingMetric[], at: number) {
-  const scored = rows.filter((row) => row.score !== null && Date.parse(row.at) <= at && Date.parse(row.at) > at - MARKETING_WINDOW_DAYS * DAY_MS);
+  const scored = rows.filter((row) => row.score !== null && row.kind !== "REPLY" && Date.parse(row.at) <= at && Date.parse(row.at) > at - MARKETING_WINDOW_DAYS * DAY_MS);
   const postsScore = mean(scored.map((row) => row.score!));
   const outcomesScore = marketingOutcomesScore(metrics, dayOf(at));
   const score = postsScore === null ? outcomesScore : outcomesScore === null ? postsScore
@@ -119,7 +126,7 @@ export function buildMarketingReport(input: MarketingReportInput): NousMarketing
     likes: list.reduce((total, row) => total + row.likes, 0), clicks: list.reduce((total, row) => total + row.clicks, 0), followers: list.reduce((total, row) => total + row.followers, 0)
   });
   const count = (list: NousMarketingPostRow[]) => ({ posts: list.length, published: list.filter((row) => row.status === "PUBLISHED").length,
-    failed: list.filter((row) => row.status === "FAILED").length, measured: list.filter((row) => row.status === "PUBLISHED" && Object.keys(row.raw).length > 0).length });
+    failed: list.filter((row) => row.status === "FAILED").length, measured: list.filter((row) => row.status === "PUBLISHED" && marketingMeasured(row.raw)).length });
   // Referral visits: GA4's newest day (30 days) and GitHub's newest referrers (14 days), each host to its platform.
   const newestDay = (source: string) => metrics.filter((metric) => metric.source === source).reduce<string | null>((best, metric) => (!best || metric.day > best ? metric.day : best), null);
   const referrals = [["GA4", newestDay("GA4")], ["GITHUB_REFERRERS", newestDay("GITHUB_REFERRERS")]].flatMap(([source, day]) => metrics
@@ -135,9 +142,12 @@ export function buildMarketingReport(input: MarketingReportInput): NousMarketing
     const list = rows.filter((row) => row.channel === channel);
     return { channel, ...count(list), ...sum(list), visits: visitsOf(channel), score: mean(today.scored.filter((row) => row.channel === channel).map((row) => row.score!)) };
   }).sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || b.posts - a.posts);
+  // A post still waiting for its first read (the copilot reads it a day after publishing) is not "no result" yet.
   const daysWithoutResult = Array.from({ length: 7 }, (_, index) => dayOf(now - index * DAY_MS))
-    .filter((day) => !rows.some((row) => row.status === "PUBLISHED" && row.at.slice(0, 10) === day && (row.score ?? 0) > 0)).length;
-  const published = rows.filter((row) => row.status === "PUBLISHED");
+    .filter((day) => !rows.some((row) => row.status === "PUBLISHED" && row.at.slice(0, 10) === day
+      && ((row.score ?? 0) > 0 || (row.score === null && now - Date.parse(row.at) < 2 * DAY_MS)))).length;
+  const published = rows.filter((row) => row.status === "PUBLISHED" && row.kind !== "REPLY");
+  const replies = rows.filter((row) => row.kind === "REPLY");
   // Days in a row below the target, today backwards, each recomputed as of its end; it stops at the first day at or above it or with no score.
   const first = rows.length ? Math.min(...rows.map((row) => Date.parse(row.at))) : now;
   let daysBelowTarget = 0;
@@ -149,6 +159,7 @@ export function buildMarketingReport(input: MarketingReportInput): NousMarketing
   return {
     generatedAt: new Date(now).toISOString(), score: today.score, postsScore: today.postsScore, outcomesScore: today.outcomesScore, trend7: trend(7), trend30: trend(30), daysWithoutResult, target: MARKETING_SCORE_TARGET, daysBelowTarget,
     totals: { ...count(rows), ...sum(rows), zeroReach: published.filter((row) => row.score === 0).length },
+    conversations: { ...count(replies), ...sum(replies) },
     platforms, posts: rows, sources: marketingSources(input, rows), site: input.site ?? null
   };
 }
@@ -160,7 +171,7 @@ function marketingSources(input: MarketingReportInput, rows: NousMarketingPostRo
     return { day, values: Object.fromEntries(list.filter((metric) => metric.day === day).map((metric) => [metric.key, metric.value])) };
   };
   const posts = (channel: string) => rows.filter((row) => row.channel === channel && row.status === "PUBLISHED");
-  const refreshed = (channel: string) => posts(channel).filter((row) => Object.keys(row.raw).length > 0).length;
+  const refreshed = (channel: string) => posts(channel).filter((row) => marketingMeasured(row.raw)).length;
   const ga = newest("GA4", (key) => !key.includes(":ref:"));
   const traffic = newest("GITHUB_TRAFFIC");
   const readouts = rows.filter((row) => row.status === "PUBLISHED" && !["HACKER_NEWS", "DEVTO"].includes(row.channel));
@@ -178,7 +189,7 @@ function marketingSources(input: MarketingReportInput, rows: NousMarketingPostRo
     { id: "DEVTO", label: "dev.to", connected: true, day: null, values: { posts: posts("DEVTO").length, read: refreshed("DEVTO") },
       detail: `Public API every 3 hours: reactions and comments of each article; ${input.devtoConfigured ? "views with the account's API key." : "views need the dev.to account's API key (SPACE_DEVTO_API_KEY)."}` },
     { id: "READOUTS", label: "Copilot readouts (X, Reddit, LinkedIn, YouTube, Product Hunt)", connected: true, day: null,
-      values: { posts: readouts.length, read: readouts.filter((row) => Object.keys(row.raw).length > 0).length },
+      values: { posts: readouts.length, read: readouts.filter((row) => marketingMeasured(row.raw)).length },
       detail: "The Marketing Copilot reads each post in its browser a day and a week after publishing. Automatic reads would need: a Reddit API app (the public JSON answers 403 to this server), an X API paid plan, a YouTube Data API key." },
     { id: "MAIL", label: "Mail campaigns", connected: input.mail !== null, day: null,
       values: { campaigns: sent.length, sent: sent.reduce((total, campaign) => total + campaign.sent, 0), replied: sent.reduce((total, campaign) => total + campaign.replied, 0),
@@ -204,7 +215,8 @@ export function marketingLine(report: NousMarketingReport): string {
   return `Marketing (space_marketing_stats reads every post and source): score ${report.score ?? "–"}/100 (7 d ${signed(report.trend7)}, 30 d ${signed(report.trend30)}); `
     + `last 7 days ${recent.filter((row) => row.status === "PUBLISHED").length} published, ${recent.filter((row) => row.status === "FAILED").length} failed, `
     + `${report.daysWithoutResult} of 7 days without a post that brought anything; ${report.totals.zeroReach} published posts with no reach, `
-    + `${report.totals.published - report.totals.measured} never measured${best ? `; best platform ${best.channel} ${best.score}` : ""}.`;
+    + `${report.totals.published - report.totals.measured} never measured${best ? `; best platform ${best.channel} ${best.score}` : ""}`
+    + `${report.conversations?.posts ? `; conversations (replies, outside the posts score) ${report.conversations.published} published, ${report.conversations.measured} measured, ${numbers(report.conversations)}` : ""}.`;
 }
 
 export const MARKETING_TOOL_PAGE = 100; // technical: one tool result's size; `offset` reads the rest

@@ -148,6 +148,28 @@ describe("Nous's lesson memory (repeat-mistake upgrade 31/10)", () => {
     expect((await tools.execute("space_ask_operator", ask, ctx)).display).not.toMatch(/^Held once/);
   });
 
+  it("Score 13/11: an operator turn's first space_reply_now goes out at once with its lessons; a later done claim after a plain first answer, or an inbox turn's, is held once", async () => {
+    const match = (key: string) => ({ key, text: `${key} says check what the operator sees.`, updatedAt: "", similarity: 0.8, shared: [] });
+    const recall = vi.fn(async (_owner: string, text: string) => [match(text.includes("deploy") ? "lessons-1031-deployed-claim" : "lessons-1031-fixed-claim")]);
+    const replyNow = vi.fn(async () => "SENT" as const);
+    const tools = createNousTools({ lessons: { recall }, replyNow } as unknown as NousToolDeps);
+    const ctx = (turnId: string, reason = "OPERATOR") => ({ owner, turnId, callId: "call:s1", traceId: "trace:s1", turn: { reason, operatorMessage: null } }) as never;
+    const first = await tools.execute("space_reply_now", { text: "Fixed: the pane opens again." }, ctx("turn:s1"));
+    expect(first).toMatchObject({ ok: true, display: "Answered the operator now" });
+    expect(first.result).toContain("It says done or ready, and the operator corrected you on this before.");
+    expect(first.result).toContain("lessons-1031-fixed-claim says check what the operator sees.");
+    expect(replyNow).toHaveBeenCalledTimes(1);
+    // Its lessons were shown with it: a later claim in that turn passes, as after a hold (R42).
+    expect(await tools.execute("space_reply_now", { text: "Deployed to dev, done." }, ctx("turn:s1"))).toMatchObject({ ok: true });
+    // A turn whose first answer claimed nothing: its later done claim meets its lessons first, as before.
+    expect(await tools.execute("space_reply_now", { text: "Looking at it now." }, ctx("turn:s3"))).toMatchObject({ ok: true });
+    expect(await tools.execute("space_reply_now", { text: "Deployed to dev, done." }, ctx("turn:s3"))).toMatchObject({ ok: false, refused: true, display: "Held once: a lesson is about this" });
+    expect(replyNow).toHaveBeenCalledTimes(3);
+    // An inbox turn's reply answers no waiting operator: held once, as before.
+    expect(await tools.execute("space_reply_now", { text: "Fixed: the pane opens again." }, ctx("turn:s2", "INBOX"))).toMatchObject({ ok: false, refused: true });
+    expect(replyNow).toHaveBeenCalledTimes(3);
+  });
+
   it("holds a call once per turn and subject, even when its rewrite matches other lessons (R42)", async () => {
     // 2/11 02:10:14 then 02:10:35: one ask held with lessons-1028-bounty-money, rewritten, then held again with lessons-1031-country-per-case.
     const match = (key: string) => ({ key, text: `${key} says what to do.`, updatedAt: "", similarity: 0.8, shared: [] });

@@ -49,7 +49,7 @@ export interface KeyPoolProvider {
   hidesDeadModels?: boolean;
   /** The header that carries the key instead of `authorization: Bearer` (Azure's `api-key`). */
   keyHeader?: string;
-  /** The last day (UTC) of a granted credit with a card behind it: past it the pool answers 402 and auto moves on (Azure). */
+  /** The moment (ISO, UTC) a granted credit with a card behind it ends: from then the pool answers 402 and auto moves on (Azure). */
   creditUntil?: string;
   /** The stored key from what was pasted or kept in the Vault, when that holds more than the key (Azure: endpoint and key); null: none found. */
   keyFrom?: (pasted: string) => string | null;
@@ -152,7 +152,9 @@ export const keyPoolProviders: Record<"openai" | "openrouter" | "deepseek" | "gr
   // Azure OpenAI (7/11, nous_msg:32dc26ee): `<resource>:<key>`, the v1 API at the resource's own host with its `api-key` header. A model is a
   // deployment name, so the list is the resource's deployments (v1's /models lists every base model it could deploy).
   azure: { provider: "AZURE_OPENAI", label: "Azure OpenAI", baseUrl: "https://{account}.openai.azure.com/openai/v1",
-    keyPattern: /^[a-z0-9][a-z0-9-]{1,62}:[A-Za-z0-9]{32,100}$/, keyHeader: "api-key", creditUntil: "2027-02-05", cooldownSeconds: 60,
+    keyPattern: /^[a-z0-9][a-z0-9-]{1,62}:[A-Za-z0-9]{32,100}$/, keyHeader: "api-key",
+    // Microsoft for Startups credit ends 4/8/2027 04:44 UTC (plan clipboard:dkmX-VVYx-SX T3a); the rest of that day a card would pay.
+    creditUntil: "2027-08-04T04:44:00Z", cooldownSeconds: 60,
     checkUrl: "https://{account}.openai.azure.com/openai/v1/models",
     models: { url: "https://{account}.openai.azure.com/openai/deployments?api-version=2022-12-01", ids: (payload) => stringsOf(rows(field(payload, "data")), "id") },
     keyFrom: azureKeyFrom },
@@ -371,7 +373,7 @@ export function registerKeyPoolRoutes(app: FastifyInstance, helpers: GatewayRout
     if (entry.spendsGrant && isClaudeCodeRequest(request.headers)) {
       return reply.code(403).send(gatewayError("client_not_allowed", `${entry.label} does not serve Claude Code; Claude Code runs on the Claude subscriptions.`, "invalid_request_error"));
     }
-    if (entry.creditUntil && new Date(now()).toISOString().slice(0, 10) > entry.creditUntil) {
+    if (entry.creditUntil && now() >= Date.parse(entry.creditUntil)) {
       return reply.code(402).send(gatewayError("credit_expired", `${entry.label}'s credit ended on ${entry.creditUntil}; past it a card pays, so Space Gateway stopped using it.`));
     }
     const key = request.gatewayApiKey!;

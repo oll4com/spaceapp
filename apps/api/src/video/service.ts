@@ -214,7 +214,7 @@ export function createVideoService(options: VideoServiceOptions) {
     };
     const stem = `video-${(format?.id ?? input.kind.toLowerCase()).replace(/[^A-Za-z0-9_-]/g, "_")}`;
     const artifact = input.artifact ?? await put(input.path, mimeType, mimeType.startsWith("video/") ? "VIDEO" : mimeType === "image/png" ? "IMAGE" : "AUDIO", input.filename ?? `${stem}.${EXTENSIONS[mimeType]}`,
-      { kind: input.kind, formatId: format?.id ?? null, width: input.width ?? null, height: input.height ?? null, durationSec: input.durationSec ?? null, description });
+      { kind: input.kind, formatId: format?.id ?? null, width: input.width ?? null, height: input.height ?? null, durationSec: input.durationSec ?? null, description, requestId: input.requestId ?? null });
     const thumbnail = input.thumbnailPath ? await put(input.thumbnailPath, "image/png", "IMAGE", `${stem}-poster.png`, { kind: "THUMBNAIL", of: artifact.id, formatId: format?.id ?? null }).catch(() => null) : null;
     const asset = await repository.createAsset({ ownerUserId: owner, paneId: pane.id, requestId: input.requestId ?? null, artifactId: artifact.id, thumbnailArtifactId: thumbnail?.id ?? null,
       formatId: format?.id ?? null, width: input.width ?? format?.width ?? null, height: input.height ?? format?.height ?? null, durationSec: input.durationSec ?? null, mimeType, kind: input.kind,

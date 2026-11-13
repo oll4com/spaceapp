@@ -41,6 +41,12 @@ export function verifyNousToken(secret: string, token: string | undefined, now =
   }
 }
 
+/**
+ * Claude Code ends an MCP request at 60 s with a bare "The operation timed out." (71 calls 12-13/11, all in Space's database stalls,
+ * none in the failed-call rows): a tool call still running at 55 s is answered with what happened and what to do next.
+ */
+export const NOUS_MCP_ANSWER_MS = 55_000;
+
 const rpcSchema = z.object({ jsonrpc: z.literal("2.0"), id: z.union([z.string(), z.number()]).optional(), method: z.string().max(100), params: z.unknown().optional() });
 const callSchema = z.object({ name: z.string().max(100), arguments: z.record(z.string(), z.unknown()).optional(), _meta: z.record(z.string(), z.unknown()).optional() });
 
@@ -50,6 +56,7 @@ export function registerNousMcpRoute(app: FastifyInstance, deps: {
   attachments?: Pick<NousAttachments, "tools" | "handles" | "callTool">;
   /** The turn's helpers: a helper's token works only while it and its parent turn run, with the helpers' tools only. */
   subagents?: Pick<NousSubagents, "running" | "countCall">;
+  answerMs?: number;
 }): void {
   // Claude Code may open a server-to-client stream first; this server only answers requests.
   app.get(NOUS_MCP_PATH, deps.routeOptions, async (_request, reply) => reply.code(405).header("allow", "POST").send());
@@ -85,9 +92,19 @@ export function registerNousMcpRoute(app: FastifyInstance, deps: {
         return answer({ content: [{ type: "text", text: result.text }, ...result.images.map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }))], isError: !result.ok });
       }
       const callId = typeof call.data._meta?.["claudecode/toolUseId"] === "string" ? String(call.data._meta["claudecode/toolUseId"]).slice(0, 80) : `${Date.now()}`;
-      const outcome = helper
-        ? await deps.service.callTool(claims.owner, helper.parentTurnId, call.data.name, call.data.arguments ?? {}, callId, { subagentId: claims.turnId, title: helper.title, modelChoice: helper.modelChoice })
-        : await deps.service.callTool(claims.owner, claims.turnId, call.data.name, call.data.arguments ?? {}, callId);
+      const running = helper
+        ? deps.service.callTool(claims.owner, helper.parentTurnId, call.data.name, call.data.arguments ?? {}, callId, { subagentId: claims.turnId, title: helper.title, modelChoice: helper.modelChoice })
+        : deps.service.callTool(claims.owner, claims.turnId, call.data.name, call.data.arguments ?? {}, callId);
+      const answerMs = deps.answerMs ?? NOUS_MCP_ANSWER_MS;
+      let timer: NodeJS.Timeout | undefined;
+      const outcome = await Promise.race([running, new Promise<null>((resolve) => { timer = setTimeout(resolve, answerMs, null); })]).finally(() => clearTimeout(timer));
+      if (!outcome) {
+        request.log.warn({ owner: claims.owner, tool: call.data.name }, "Nous MCP call still running at its answer deadline.");
+        running.catch((error: unknown) => request.log.warn({ err: error, tool: call.data.name }, "Nous MCP call failed after its deadline answer."));
+        return answer({ content: [{ type: "text", text: `${call.data.name} did not finish within ${Math.round(answerMs / 1_000)} s: Space (most often its database) is slow right now `
+          + "(Space's own stall, not your call). It keeps running and may still take effect: check its effect before you call it again "
+          + "(space_read_pane after a send, the chat after space_reply_now), and call it again in a minute if it had none." }], isError: true });
+      }
       // space_look answers with image blocks too (operator decision 2026-10-24: the image is shown to the model, never stored).
       return answer({ content: [{ type: "text", text: outcome.result || outcome.display }, ...(outcome.images ?? []).map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }))], isError: !outcome.ok });
     }

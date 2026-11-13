@@ -4,6 +4,7 @@ import { CheckCircle2, Shield, Link2, Eye, EyeOff } from "../ui-theme/app-icons.
 import { api } from "../../api.js";
 import { GoogleAccountsManager } from "./GoogleAccountsManager.js";
 import { AppDevicesManager } from "./AppDevicesManager.js";
+import { InstanceLinksManager } from "./InstanceLinksManager.js";
 import { MobileAppManager } from "./MobileAppManager.js";
 
 export function maskEmail(email: string): string {
@@ -334,6 +335,7 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
       <GoogleAccountsManager enabled={googleAuthEnabled} onAuthRefresh={onAuthRefresh} />
       <AppDevicesManager />
       <MobileAppManager />
+      <InstanceLinksManager />
 
       {error ? (
         <div className="validation-result bad" role="alert" style={{ marginTop: "0.5rem" }}>

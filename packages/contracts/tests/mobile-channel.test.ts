@@ -3,7 +3,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it } from "vitest";
 import {
   MOBILE_FRAME_MAX_PLAINTEXT, MOBILE_PAIR_PREFIX, MOBILE_ROUTE_SCOPES, NOUS_APP_MIN_VERSION, decodeMobileFrame, decodeMobilePairQr, encodeMobileFrame, encodeMobilePairQr,
-  mobileAnswerSigningInput, mobileAppUpdateRequired, mobileAppVersionCode, mobileAskContentHash, mobileIntegrityRequestHash, mobilePairRequestSchema, mobileBodyProblem, mobileDecisionContentHash, mobileFrames, mobileHandshakePrologue, mobileRouteAllows, signMobileRotation,
+  LINK_APP, LINK_INSPECT_SECTIONS, LINK_ROUTE_SCOPES, mobileAnswerSigningInput, mobileAppUpdateRequired, mobileAppVersionCode, mobileAskContentHash, mobileIntegrityRequestHash, mobilePairRequestSchema, mobileBodyProblem, mobileDecisionContentHash, mobileFrames, mobileHandshakePrologue, mobileRouteAllows, signMobileRotation,
   verifyMobileRotation, type MobilePairQr, type MobileRotationStatement
 } from "../src/mobile-channel.js";
 import { MobileNoiseHandshake, noiseKeyPair } from "../src/mobile-noise.js";
@@ -84,6 +84,50 @@ describe("frames", () => {
     for (const frame of frames) expect(encodeMobileFrame(frame).length).toBeLessThanOrEqual(MOBILE_FRAME_MAX_PLAINTEXT);
     expect(Buffer.concat(frames.map((frame) => frame.body))).toEqual(Buffer.from(body));
     expect(mobileFrames("req", { id: 2, m: "GET", p: "/api/nous" }, new Uint8Array(10))).toHaveLength(1);
+  });
+});
+
+// Space Link (ADR-014): another SpaceApp's Nous pairs as a device of app spaceapp-link and reaches only LINK_ROUTE_SCOPES.
+describe("what a SpaceApp link may reach", () => {
+  it("uses its own table: each listed route with its scope, nothing of the phone's", () => {
+    for (const [key, rule] of Object.entries(LINK_ROUTE_SCOPES)) {
+      const [method, pattern] = key.split(" ") as [string, string];
+      expect(mobileRouteAllows([rule.scope], method, pattern, {}, LINK_APP), key).toBe(rule);
+      expect(mobileRouteAllows(["read", "act", "decide"].filter((scope) => scope !== rule.scope), method, pattern, {}, LINK_APP), key).toBeNull();
+    }
+    const all = ["read", "act", "decide", "admin"];
+    for (const [method, pattern] of [["GET", "/api/nous"], ["GET", "/api/space-vault/items"], ["GET", "/api/nous/messages/:id"], ["POST", "/api/nous/decisions/:id/answer"],
+      ["PUT", "/api/user-settings"], ["POST", "/api/mobile/pairing"], ["GET", "/api/clipboard-items"], ["POST", "/api/control/v1/schedules"], ["POST", "/api/control/v1/screenshot"]] as const) {
+      expect(mobileRouteAllows(all, method, pattern, { source: "PLAN" }, LINK_APP), `${method} ${pattern}`).toBeNull();
+    }
+    // The phone never gets the link's routes.
+    expect(mobileRouteAllows(all, "POST", "/api/control/v1/commands")).toBeNull();
+  });
+  it("reads state and capacity, never screens or private sections", () => {
+    for (const section of [undefined, ...LINK_INSPECT_SECTIONS]) expect(mobileBodyProblem("linkInspect", { roomId: "room:a", section }), section).toBeNull();
+    for (const section of ["CONTENT", "TERMINAL_RENDER", "CLIPBOARD", "FILES", "AUDIT", "SETTINGS", "VPN", "MEDIA", "VOICE", "LINKS"]) {
+      expect(mobileBodyProblem("linkInspect", { section }), section).toMatch(/reads only/);
+    }
+  });
+  it("runs rooms, panes and tasks, never the rest, a screenshot or an approval", () => {
+    const run = (...actions: unknown[]) => mobileBodyProblem("linkExecute", { roomId: "room:a", requestId: "r1", actions });
+    expect(run({ kind: "pane", operation: "prompt", target: { paneIds: ["pane:a"] }, text: "go" }, { kind: "configure", target: {}, modelId: "m" },
+      { operation: "stop", paneId: "pane:a" }, { kind: "resource", operation: "tasks.create" }, { kind: "room", operation: "create" })).toBeNull();
+    for (const action of [{ kind: "cli", runtimeId: "x", enabled: false }, { kind: "vpn", operation: "rotate" }, { kind: "clipboard", operation: "delete" },
+      { kind: "screenshot" }, { kind: "playback", operation: "play" }, { kind: "native_command", command: "/clear" }, { kind: "resource", operation: "ops.deploy" },
+      { kind: "resource", operation: "files.delete" }, { kind: "resource", operation: "settings.update" }, { kind: "resource", operation: "tasks.delete" },
+      { kind: "pane", operation: "visual_audit" }, { kind: "pane", operation: "focus", captureScreenshot: true }, null]) {
+      expect(run(action), JSON.stringify(action)).toMatch(/runs rooms, panes/);
+    }
+    expect(mobileBodyProblem("linkExecute", { roomId: "room:a", requestId: "r1", userExplicitlyAuthorized: true, actions: [{ kind: "pane", operation: "close" }] })).toMatch(/approve here/);
+    expect(run({ kind: "resource", operation: "tasks.update", confirm: true })).toMatch(/approve here/);
+    expect(run({ kind: "resource", operation: "tasks.update", input: { confirmed: true } })).toMatch(/approve here/);
+    expect(mobileBodyProblem("linkExecute", { roomId: "room:a" })).toMatch(/actions/);
+  });
+  it("pairs as a server and never asks for decide", () => {
+    const link = { deviceName: "SpaceApp vm207", app: LINK_APP, appVersion: "1.3.0", platform: "server", wantScopes: ["read", "act"] };
+    expect(mobilePairRequestSchema.parse(link).app).toBe(LINK_APP);
+    expect(() => mobilePairRequestSchema.parse({ ...link, wantScopes: ["read", "decide"] })).toThrow(/never asks for decide/);
   });
 });
 

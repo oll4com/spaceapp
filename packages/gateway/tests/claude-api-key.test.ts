@@ -267,6 +267,12 @@ describe("Claude API key fallback", () => {
     await logs.flush();
     const [log] = await repository.listRequestLogs({ limit: 1 });
     expect(log).toMatchObject({ accountId: keyAccount, clientName: "Oh My Pi", project: "pane:omp00001" });
+    // Hermes speaks with the Anthropic SDK's user agent, so its provider block names it (space-gateway-cli-clients.mjs).
+    await post(body, { "user-agent": "Anthropic/Python 0.75.0", "x-client": "Hermes" });
+    expect(calls.at(-1)!.auth).toBe(`key:${apiKey}`);
+    expect(calls.at(-1)!.headers).not.toHaveProperty("x-client");
+    await logs.flush();
+    expect((await repository.listRequestLogs({ limit: 1 }))[0]).toMatchObject({ clientName: "Hermes", project: null });
   });
 
   it("takes the key out of routing when Anthropic reports used-up credits, and passes the answer on", async () => {

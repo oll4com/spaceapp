@@ -777,12 +777,14 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       }
       try {
         let nextResponse = await api.browserSession(pane.id);
-        if (!observerOnly && (nextResponse.session.status === "CLOSED" || nextResponse.session.status === "ERROR")) {
+        // A closed browser (its last tab, Stop, the 30-minute reaper) stays closed on reload, as the API's session route says:
+        // +, an address or Start browser starts it (F6, 13/11). Its viewport waits too: the viewport route 404s on it.
+        if (!observerOnly && nextResponse.session.status === "ERROR") {
           nextResponse = await api.startBrowserSession(pane.id, {
             viewport: mobile ? "mobile" : defaultViewport, targetUrl: homeUrl, ownerAgentId: `agent:${agentNumber}`
           });
         }
-        if (mobile && !observerOnly && nextResponse.session.viewport !== "mobile") {
+        if (mobile && !observerOnly && nextResponse.session.status !== "CLOSED" && nextResponse.session.viewport !== "mobile") {
           nextResponse = await api.setBrowserViewport(pane.id, "mobile");
         }
         applyResponse(nextResponse);

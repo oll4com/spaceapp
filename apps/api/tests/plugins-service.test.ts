@@ -197,6 +197,22 @@ describe("PluginsService & MCP Ecosystem", () => {
     }
   });
 
+  it("ships the marketingskills subset with the Space drafting rules in its index", async () => {
+    const plugins = await pluginsService.getPlugins();
+    const marketing = plugins.find((p) => p.id === "marketingskills");
+    expect(marketing?.githubUrl).toBe("https://github.com/coreyhaines31/marketingskills");
+    expect(marketing?.connection.toolCount).toBe(6);
+    expect(await pluginsService.isSkillEnabled("space-marketingskills")).toBe(true);
+    const root = new URL("../../../agent-skills/space-marketingskills/", import.meta.url);
+    const index = await readFile(new URL("SKILL.md", root), "utf8");
+    expect(index).toContain("space-no-ai-slop");
+    const routed = [...index.matchAll(/\]\(([a-z-]+)\/SKILL\.md\)/g)].map((match) => match[1]);
+    expect(routed).toEqual(["copywriting", "launch", "community-marketing", "directory-submissions", "ai-seo", "competitors"]);
+    for (const skill of routed) {
+      expect((await readFile(new URL(`${skill}/SKILL.md`, root), "utf8")).startsWith(`---\nname: ${skill}\n`)).toBe(true);
+    }
+  });
+
   it("ships the wshobson skills only, with every routed skill present", async () => {
     const plugins = await pluginsService.getPlugins();
     const wshobson = plugins.find((p) => p.id === "wshobson-skills");

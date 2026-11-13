@@ -19,6 +19,8 @@ hCaptcha (including grocery lists, quantities and post-submit full-screen challe
 
 Microsoft Azure / Microsoft account text-image CAPTCHA (Type the letters): use space_browser_text_captcha with targetPaneId and action inspect. Read every letter/digit in order with native vision, including both lines; answer with action answer, answer text and the returned checkpoint. A stale image needs a fresh reading. The CAPTCHA Submit may continue tenant/account creation, so the original operation must already be authorized. SUBMITTED is not success: inspect again for rejection/new images and verify the site result separately. This fixed handler also works for the existing masked-screenshot viewer of a Vault-fenced page; it reveals no field values. On refusal report the exact blocker; never reload or change routes to bypass it.
 
+Alibaba Cloud / Aliyun slider ("Please slide to verify"): call space_browser_slider_captcha on space_browser once with targetPaneId from space_browser_context and optionally its active pageId. It drags only the provider's slider, at most 3 slides, clicking only the provider's own retry between them, and returns a status. CLEARED covers the slider only: re-snapshot and verify the site's next step. On REJECTED or UNSUPPORTED_CHALLENGE hand off to the operator; never reload, change routes or run it again on that page to retry.
+
 The CLI agent of an **App Studio pane** (pane mode `APP_STUDIO`) builds one mobile app per pane for Android and iOS
 from one Expo codebase. The operator and Nous give briefs in the pane's rail; the pane shows the app in phone frames
 from the previews you capture. Other panes never call these tools.

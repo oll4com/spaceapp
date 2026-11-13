@@ -111,21 +111,37 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
       : { requests: [], hasMore: false, counts: {} };
   });
 
+  // An outbox id seen before (stored, or still being stored by an earlier try) answers that message: the app's retry never sends twice.
+  const sending = new Map<string, Promise<unknown>>();
   app.post("/api/nous/messages", routeOptions, async (request, reply) => {
     const owner = await deps.owner(request);
     const input = parseBody(nousSendInputSchema, request.body);
+    if (input.attachmentIds?.length && !deps.attachments) return reply.code(422).send({ error: { code: "ATTACHMENTS_UNAVAILABLE", message: "Files cannot be sent to Nous here." } });
+    if (!input.clientId) return reply.code(202).send(await sendMessage(request, owner, input));
+    const key = `${owner} ${input.clientId}`;
+    const earlier = sending.get(key);
+    // Registered before any await, so a concurrent try with the same id always waits for this one.
+    const work = (async () => {
+      await earlier?.catch(() => undefined);
+      const known = await service.operatorMessageByClientId(owner, input.clientId!);
+      if (!known) return sendMessage(request, owner, input);
+      return { message: known, attachments: deps.attachments ? (await deps.attachments.forMessages(owner, [known.id]))[known.id] ?? [] : [] };
+    })();
+    sending.set(key, work);
+    try { return reply.code(202).send(await work); } finally { if (sending.get(key) === work) sending.delete(key); }
+  });
+  async function sendMessage(request: FastifyRequest, owner: string, input: z.infer<typeof nousSendInputSchema>) {
     const ids = input.attachmentIds ?? [];
-    if (ids.length && !deps.attachments) return reply.code(422).send({ error: { code: "ATTACHMENTS_UNAVAILABLE", message: "Files cannot be sent to Nous here." } });
     // The files' block rides on the operator's message, so every turn that sees the message sees its files.
     const prepared = ids.length ? await deps.attachments!.prepare(owner, ids) : null;
     // Only a person at the dock (never a proof or automation session) can start Away from the chat.
     let person = true;
     try { deps.assertPerson(request); } catch { person = false; }
     const message = await service.send(owner, [input.content, prepared?.block].filter(Boolean).join("\n\n"), { person, client: requestNousClient(request),
-      ...(request.mobileDevice ? { mobile: { device: request.mobileDevice.id, scopes: request.mobileDevice.scopes } } : {}) });
+      ...(request.mobileDevice ? { mobile: { device: request.mobileDevice.id, scopes: request.mobileDevice.scopes } } : {}), ...(input.clientId ? { clientId: input.clientId } : {}) });
     if (prepared) await deps.attachments!.link(owner, message.id, prepared.attachments.map((attachment) => attachment.id));
-    return reply.code(202).send({ message, attachments: prepared?.attachments ?? [] });
-  });
+    return { message, attachments: prepared?.attachments ?? [] };
+  }
 
   // Operator 31/10: clears what the dock shows, never the database: a mark the latest page starts after; rows and files stay.
   app.delete("/api/nous/messages", routeOptions, async (request) => ({ cleared: await service.clear(await deps.owner(request)) }));

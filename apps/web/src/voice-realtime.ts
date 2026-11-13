@@ -452,6 +452,10 @@ async function openGoogleVoiceSession(
 }
 
 /** Local PC Qwen3 Greek voice transcription session */
+// Technical bound: SenseVoice's final segment (at most 10 s) decodes in under a second (13/11); past this the last partial is used.
+const SENSEVOICE_FINAL_WAIT_MS = 5_000;
+export const SENSEVOICE_STOPPED = "Local SenseVoice (offline) stopped running on this server. Choose Gemini or Whisper in Settings → Voice input, or start space-local-voice-transcribe.service.";
+
 async function openLocalVoiceSession(
   options: VoiceRealtimeSessionOptions,
   callbacks: VoiceRealtimeSessionCallbacks,
@@ -493,11 +497,23 @@ async function openLocalVoiceSession(
     stopCapture();
   };
 
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    close();
+    if (transcript.trim()) {
+      void callbacks.onTranscriptComplete?.(transcript.trim());
+    } else {
+      callbacks.onError?.("No speech was recognized. Start the microphone, speak, then stop it.");
+    }
+  };
+
   // The provider starts recognizing on "start", so it is sent only once the microphone is open.
   const sendStart = () => {
     if (startSent || !capture || !socket || socket.readyState !== WebSocket.OPEN) return;
     startSent = true;
-    socket.send(JSON.stringify({ type: "start", sample_rate: 16000, language: options.language ?? "auto" }));
+    socket.send(JSON.stringify({ type: "start", sample_rate: capture.audioContext.sampleRate, language: options.language ?? "auto" }));
   };
 
   const startCapture = async () => {
@@ -532,20 +548,26 @@ async function openLocalVoiceSession(
 
   if (!openOptions.deferCapture) await startCapture();
 
+  // SenseVoice runs on this server and is reached through the API's one-shot proxy; the Local PC provider gives its own URL.
+  const senseVoice = options.model === "local-sensevoice-small";
   let session: Awaited<ReturnType<typeof api.createLocalVoiceSession>>;
   try {
-    session = await api.createLocalVoiceSession({
-      paneId: "voice-input",
-      language: options.language === "en" ? "en-US" : "el-GR",
-      opening: options.opening,
-      prompt: options.prompt
-    });
+    session = senseVoice
+      ? await api.createVoiceRealtimeCall({ provider: "local", model: options.model, language: options.language ?? "auto" })
+      : await api.createLocalVoiceSession({
+          paneId: "voice-input",
+          language: options.language === "en" ? "en-US" : "el-GR",
+          opening: options.opening,
+          prompt: options.prompt
+        });
   } catch (error) {
     close();
     throw error;
   }
-  const wsUrl =
-    typeof session.websocket_url === "string"
+  const relative = typeof session.websocketUrl === "string" && session.websocketUrl.startsWith("/") ? session.websocketUrl : "";
+  const wsUrl = relative
+    ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}${relative}`
+    : typeof session.websocket_url === "string"
       ? session.websocket_url
       : typeof session.ws_url === "string"
         ? session.ws_url
@@ -565,10 +587,11 @@ async function openLocalVoiceSession(
   openSocket.onmessage = (event) => {
     if (closed) return;
     try {
-      const msg = JSON.parse(String(event.data)) as { type?: string; text?: string };
+      const msg = JSON.parse(String(event.data)) as { type?: string; text?: string; final?: boolean };
       if (msg.type === "user_transcript" && typeof msg.text === "string" && capture) {
         transcript = msg.text;
         callbacks.onTranscriptDelta?.(transcript);
+        if (msg.final && committed) finish();
       }
     } catch {}
   };
@@ -580,7 +603,15 @@ async function openLocalVoiceSession(
     }
   };
 
-  openSocket.onclose = () => {
+  openSocket.onclose = (event) => {
+    // The API bridge closes with a sensevoice_* reason when the daemon stops mid-recording; say so instead of "no speech".
+    if (senseVoice && event.reason.startsWith("sensevoice_") && !finished && !(committed && transcript.trim())) {
+      finished = true;
+      close();
+      callbacks.onError?.(SENSEVOICE_STOPPED);
+      return;
+    }
+    if (senseVoice && committed) finish();
     if (!closed && !committed) {
       callbacks.onError?.("Local voice provider connection closed unexpectedly.");
       close();
@@ -598,14 +629,11 @@ async function openLocalVoiceSession(
         } catch {}
         capture.stream.getTracks().forEach((t) => t.stop());
       }
-      window.setTimeout(() => {
-        close();
-        if (transcript.trim()) {
-          void callbacks.onTranscriptComplete?.(transcript.trim());
-        } else {
-          callbacks.onError?.("No speech was recognized. Start the microphone, speak, then stop it.");
-        }
-      }, 400);
+      // SenseVoice decodes the last segment on "stop" and answers with a final transcript; the Local PC provider streams it.
+      if (senseVoice && socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "stop" }));
+        window.setTimeout(finish, SENSEVOICE_FINAL_WAIT_MS);
+      } else window.setTimeout(finish, 400);
     },
     close
   };

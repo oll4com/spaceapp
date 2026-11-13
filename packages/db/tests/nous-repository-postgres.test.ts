@@ -136,7 +136,10 @@ async function expectRequestReads(store: NousRepository, user: string) {
   await add("ANSWER", "interim", { interim: true, reason: "OPERATOR", replyTo: [first.id] }, "nous_turn:r1");
   await add("ANSWER", "inbox", { reason: "INBOX" }, "nous_turn:r2");
   await add("ANSWER", "goal reply", { startedAt: first.createdAt, replyTo: [first.id] });
-  const second = await add("OPERATOR", "two");
+  const second = await add("OPERATOR", "two", { clientId: "outbox-reads-01" });
+  expect((await store.operatorMessageByClientId(user, "outbox-reads-01"))?.id).toBe(second.id);
+  expect(await store.operatorMessageByClientId(user, "outbox-reads-02")).toBeNull();
+  expect(await store.operatorMessageByClientId("user:someone-else", "outbox-reads-01")).toBeNull();
   await store.clearMessages(user);
   expect((await store.listOperatorMessages(user, { limit: 5 })).map((row) => row.id)).toEqual([second.id, first.id]);
   expect((await store.listOperatorMessages(user, { limit: 1 })).map((row) => row.id)).toEqual([second.id]);

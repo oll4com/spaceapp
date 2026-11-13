@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { loadavg } from "node:os";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { NOUS_LOAD_TARGET, nousLoadRangeSchema, type NousLoad, type NousLoadAverage, type NousLoadPart, type NousLoadPartKey, type NousLoadRange } from "@space/contracts";
+import { NOUS_LOAD_TARGET, nousLoadRangeSchema, type NousLoad, type NousLoadAverage, type NousLoadPart, type NousLoadPartKey, type NousLoadRange, type NousSpendMode } from "@space/contracts";
 import type { NousLoadBucket, NousRepository } from "@space/db";
 import type { HealthCollectorSample } from "../system-health-collector.js";
 import { classifyLoad, hostSwapText, type HostSwap, type HostSwapReader, type NousLoadLevel } from "./server-load.js";
@@ -24,7 +24,10 @@ export interface NousUtilizationInput {
   panes: { working: number; open: number } | null;
   helpers: { live: number; max: number } | null;
 }
-export type NousOwnerParts = Pick<NousUtilizationInput, "tokens" | "panes" | "helpers">;
+export type NousOwnerParts = Pick<NousUtilizationInput, "tokens" | "panes" | "helpers"> & {
+  /** The owner's Load target for its spend mode now (Settings → Nous → Low-spend mode); NOUS_LOAD_TARGET without one. */
+  target?: { percent: number; mode: NousSpendMode };
+};
 export interface NousUtilization { overall: number; level: NousLoadLevel; limit: string | null; parts: NousLoadPart[]; host: string | null }
 
 /**
@@ -103,10 +106,20 @@ export function renderNousUtilization(summary: NousLoadSummary): string {
   const what = summary.limit ? `: at a limit (${summary.limit}); start nothing new until it clears.`
     : overall >= target ? ": at the target; keep the work going, never past OVERLOADED or a pool's room."
       : `: headroom ${Math.round(target - overall)}% → start more parallel work now: idle panes, helpers (space_subagents), stalled plans, waiting requests${advice.length ? `; ${advice.join("; ")}` : ""}.`;
-  return `${head}${what} Parts: ${partText(summary)}. Raise the average: it is a standing objective.`;
+  return `${head}${what} Parts: ${partText(summary)}.${target ? " Raise the average: it is a standing objective." : ""}`;
 }
 
-/** The standing orders' inbox line (at most hourly) when the capacity stayed idle while work waits. */
+/**
+ * Whether the 90 % push may run: under the target for 10 minutes on a CALM server, CLI panes under 90 % working (operator 3/11 23:11 BKK) and a
+ * pool with room. Operator 13/11 07:09 BKK (nous_msg:5c0e7a6e): LOW (Nous's own pool ahead of its pace) is no stop, it silenced the push 13 h on
+ * 11/11 while Codex and Gemini had room; only CRITICAL, no account with room (`limit`) or every pool at its pace (the tokens part at 100) stop it.
+ */
+export function utilizationPushOn(summary: NousLoadSummary, mode: NousSpendMode): boolean {
+  const part = (key: NousLoadPartKey) => summary.parts.find((entry) => entry.key === key)?.percent ?? null;
+  return summary.underForMs >= 10 * 60_000 && summary.level === "CALM" && !summary.limit && mode !== "CRITICAL" && (part("tokens") ?? 0) < 100 && (part("panes") ?? 0) < 90;
+}
+
+/** The standing orders' inbox line (every 10 minutes, or at once for a pane that just finished) when the capacity stayed idle while work waits. */
 export function renderUtilizationLow(summary: NousLoadSummary, waiting: { plans: number; requests: number }): string {
   return `Utilization stayed under the ${summary.target}% target for ${Math.round(summary.underForMs / 60_000)} min (now ${Math.round(summary.overall)}%, avg today ${avgText(summary.averages.today.value)}) `
     + `while the server is CALM and the tokens have room. Idle capacity: ${partText(summary)}. Waiting: ${waiting.plans} open plan${waiting.plans === 1 ? "" : "s"}, `
@@ -150,6 +163,7 @@ export function createNousLoad(deps: NousLoadDeps) {
   const now = deps.now ?? Date.now;
   const read = deps.read ?? ((path: string) => readFile(path, "utf8"));
   const states = new Map<string, OwnerState>();
+  const targetOf = (entry: OwnerState) => entry.parts?.target ?? { percent: NOUS_LOAD_TARGET, mode: null };
   let ownersMinute = -1;
   let ticking = false;
 
@@ -275,9 +289,11 @@ export function createNousLoad(deps: NousLoadDeps) {
       if (!entry?.last) return null;
       const kept = await history(owner, entry);
       // How long the 10 s points stayed under the target, newest first (an hour at most: the ring's length).
+      // Target 0 never pushes: nothing is under it.
+      const target = targetOf(entry).percent;
       let since = entry.last.at;
-      for (let index = entry.ring.length - 1; index >= 0 && entry.ring[index]!.value < NOUS_LOAD_TARGET; index -= 1) since = entry.ring[index]!.at;
-      return { ...entry.last, target: NOUS_LOAD_TARGET, averages: averages(entry, kept, now()), underForMs: entry.last.overall < NOUS_LOAD_TARGET ? entry.last.at - since : 0 };
+      for (let index = entry.ring.length - 1; index >= 0 && entry.ring[index]!.value < target; index -= 1) since = entry.ring[index]!.at;
+      return { ...entry.last, target, averages: averages(entry, kept, now()), underForMs: entry.last.overall < target ? entry.last.at - since : 0 };
     },
     /** The daily REVIEW's line: yesterday's average (the reviewed day) against the day before, from the stored day sums. */
     async reviewLine(owner: string): Promise<string | null> {
@@ -287,7 +303,7 @@ export function createNousLoad(deps: NousLoadDeps) {
       const [day, before] = [localDay(at - DAY_MS, entry.zone), localDay(at - 2 * DAY_MS, entry.zone)].map((key) => kept.days.get(key));
       if (!day) return null;
       const value = bucketAvg(day)!, previous = bucketAvg(before);
-      return `## Utilization\n${day.bucket}: average ${Math.round(value)}% of capacity in use (target ${NOUS_LOAD_TARGET}%, peak ${Math.round(day.peak)}%)`
+      return `## Utilization\n${day.bucket}: average ${Math.round(value)}% of capacity in use (target ${targetOf(entry).percent}%, peak ${Math.round(day.peak)}%)`
         + `${previous === null ? "" : `, ${value >= previous ? "up" : "down"} ${Math.abs(Math.round(value - previous))} points from ${before!.bucket} (${Math.round(previous)}%)`}. `
         + "Raising it is a standing objective: name what kept capacity idle and what you will start in parallel (queue it in nous/upgrades/queue.md when it needs code).";
     },
@@ -297,7 +313,8 @@ export function createNousLoad(deps: NousLoadDeps) {
       const kept = await history(owner, entry);
       const at = now();
       const last = entry.last;
-      return { at: last ? new Date(last.at).toISOString() : null, overall: last?.overall ?? null, target: NOUS_LOAD_TARGET, level: last?.level ?? null,
+      const { percent: target, mode: targetMode } = targetOf(entry);
+      return { at: last ? new Date(last.at).toISOString() : null, overall: last?.overall ?? null, target, targetMode, level: last?.level ?? null,
         limit: last?.limit ?? null, host: last?.host ?? null, parts: last?.parts ?? [], range, series: series(entry, kept, range, at), averages: averages(entry, kept, at) };
     }
   };

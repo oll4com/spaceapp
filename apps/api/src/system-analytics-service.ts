@@ -70,6 +70,10 @@ const cleanupGraceMs = 5 * 60_000;
 const modelIngestIntervalMs = 30_000;
 const metadataCacheMs = 10_000;
 const historyCacheMs = 30_000;
+// The API's timer asks for a sample every 10 s. With no analytics read in the last minute (the views poll every 10-30 s) it
+// samples every third tick, 30 s; 25 s leaves half a tick for the collection time. The rollup is per minute (CPU phase 5).
+const readerWindowMs = 60_000;
+const idleSampleAgeMs = 25_000;
 const modelErrorsMax = 20;
 
 const rangeSettings: Record<SystemAnalyticsRange, { durationMs: number; resolutionSeconds: 10 | 60 | 900 }> = {
@@ -610,6 +614,7 @@ export class SystemAnalyticsService {
   private historyCache: { sessions: PaneCliSession[]; rooms: Map<string, Room>; panes: Map<string, Pane>; expiresAt: number } | null = null;
   private current: CurrentSnapshot | null = null;
   private previousCpu: ProcCpuSample | null = null;
+  private lastReadAt = 0;
   private lastModelIngestAt = 0;
   private disposed = false;
   private readonly tokenSources: TokenUsageSourceOptions | null;
@@ -648,8 +653,12 @@ export class SystemAnalyticsService {
     } : null;
   }
 
-  async sample(): Promise<void> {
+  /** `timer`: the 10 s timer's tick, skipped while nobody reads analytics and the current sample is younger than 25 s. */
+  async sample(options: { timer?: boolean } = {}): Promise<void> {
     if (this.disposed) return;
+    const nowMs = this.now().getTime();
+    if (options.timer && this.current && nowMs - this.lastReadAt > readerWindowMs
+      && nowMs - Date.parse(this.current.sampledAt) < idleSampleAgeMs) return;
     if (this.sampleInFlight) return this.sampleInFlight;
     const request = this.collectSample();
     this.sampleInFlight = request;
@@ -1575,6 +1584,7 @@ export class SystemAnalyticsService {
   }
 
   private async ensureFresh(): Promise<CurrentSnapshot> {
+    this.lastReadAt = this.now().getTime();
     if (!this.current || this.now().getTime() - Date.parse(this.current.sampledAt) > 15_000) await this.sample();
     if (!this.current) throw new Error("System analytics have not produced a host sample yet.");
     return this.current;

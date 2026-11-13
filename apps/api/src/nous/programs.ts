@@ -41,7 +41,7 @@ export const programsToolArgsSchema = z.object({
     + "the process is moving (forms, calls, reviews); REJECTED, DRAFT, NOT_APPLIED, EXPIRED, CANCELLED), statusReason, appliedAt, decidedAt, expectedReplyBy, validUntil (ISO dates), amount {text, value, currency}, "
     + "commitments, account, contacts [addresses], mails [{date, direction SENT|RECEIVED, from, to [..], subject, gmailAccount, threadId}], nextAction, "
     + "reapply {needed, why, when}, sources [space_memory:…, clipboard:…, paths], notes, givesMoney (true: cash, investment or spendable credits "
-    + "with a value such as API usage, cloud, GPU or storage credits; false: courses, memberships, free tiers or services, seats only; mixed with money = true), tags [ai-tokens, server-access, cash-grants, dev-tools, perks: the pages' tag chips], "
+    + "with a value such as API usage, cloud, GPU or storage credits; false: courses, memberships, free tiers or services, seats only; mixed with money = true), tags [ai-tokens, server-access, cash-grants, dev-tools, perks: the pages' tag chips; choose: worth joining (AI tokens or servers SpaceApp uses, over $1,000, nothing to pay), with the reason in notes], "
     + "whatItIs (what the service or program is, one line) and howWeUse (how SpaceApp/oll4 uses it and what that needs: a card, a paid plan, setup such as a DSN, "
     + "a deadline), both in the operator's language: write them with every approval (an approval without them is still saved as APPROVED and counted, the answer warns and his report waits for them). A new program needs parent, program and status, and is refused "
     + "when the same parent, program and project is already recorded (the answer names that id: update it). A field "

@@ -2,8 +2,8 @@ import type {} from "../request-context.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
-  marketingBookmarkCreateSchema, marketingBookmarkIdSchema, marketingBriefSchema, marketingCampaignCreateSchema, marketingCampaignDecisionSchema, marketingCampaignIdSchema, marketingChannelSchema, marketingCopilotPaneMetadataSchema, marketingEventListQuerySchema,
-  marketingMemoryCreateSchema, marketingMemoryIdSchema, marketingMemoryKindSchema, marketingMemoryQuerySchema, marketingMemoryUpdateSchema, marketingPostIdSchema, marketingPostReviewDecisionSchema,
+  marketingBookmarkCreateSchema, marketingBookmarkIdSchema, marketingBriefSchema, marketingCampaignCreateSchema, marketingCampaignDecisionSchema, marketingCampaignIdSchema, marketingCampaignMetricSchema, marketingChannelSchema, marketingCopilotPaneMetadataSchema, marketingEventListQuerySchema,
+  marketingMemoryCreateSchema, marketingMemoryIdSchema, marketingMemoryKindSchema, marketingMemoryQuerySchema, marketingMemoryUpdateSchema, marketingPostIdSchema, marketingPostReviewDecisionSchema, marketingPostTopicSchema,
   marketingPostStatusSchema, marketingQuestionAnswerSchema, marketingRuleDecisionSchema, marketingRuleIdSchema, marketingRuleProposalSchema, MARKETING_RULE_STATUSES, resolveMarketingCopilotPaneMetadata,
   type MarketingRun, type Pane
 } from "@space/contracts";
@@ -115,6 +115,13 @@ export function registerMarketingCopilotRoutes(app: FastifyInstance, service: Ma
     const raw = parseQuery(z.object({ status: z.string().max(200).optional(), channel: marketingChannelSchema.optional(), campaignId: marketingCampaignIdSchema.optional(), limit: z.coerce.number().int().min(1).max(500).default(200) }).strict(), request.query ?? {});
     return { posts: await service.listPosts(owner, { status: list(raw.status)?.map((entry) => marketingPostStatusSchema.parse(entry)), channel: raw.channel, campaignId: raw.campaignId, limit: raw.limit }) };
   });
+  app.post("/api/marketing-copilot/posts/topic", routeOptions, async (request) => {
+    const owner = await deps.authenticatedOwner(request);
+    const input = parseBody(marketingPostTopicSchema, request.body ?? {});
+    const changed = await service.setPostTopic(owner, input.ids, input.topic);
+    await deps.audit(request, "marketing_copilot.post.topic", null, { topic: input.topic, changed: changed.length });
+    return { changed };
+  });
   app.post("/api/panes/:id/marketing-copilot/posts/:postId/review", routeOptions, async (request) => {
     const params = parseQuery(postParamsSchema, request.params);
     const pane = await paneOf(request);
@@ -127,7 +134,8 @@ export function registerMarketingCopilotRoutes(app: FastifyInstance, service: Ma
   app.post("/api/panes/:id/marketing-copilot/posts/:postId/retry", routeOptions, async (request) => {
     const params = parseQuery(postParamsSchema, request.params);
     const pane = await paneOf(request);
-    const post = await service.retryPost(await deps.authenticatedOwner(request), pane, params.postId);
+    const { scheduledAt } = parseBody(z.object({ scheduledAt: z.string().datetime({ offset: true }).optional() }).strict(), request.body ?? {});
+    const post = await service.retryPost(await deps.authenticatedOwner(request), pane, params.postId, scheduledAt);
     await deps.audit(request, "marketing_copilot.post.retry", post.id, { channel: post.channel });
     return { post };
   });
@@ -151,6 +159,14 @@ export function registerMarketingCopilotRoutes(app: FastifyInstance, service: Ma
     const input = parseBody(marketingCampaignDecisionSchema, request.body ?? {});
     const campaign = await service.decideCampaign(owner, pane?.mode === "MARKETING_COPILOT" ? pane : null, params.id, input.decision);
     await deps.audit(request, "marketing_copilot.campaign.decide", campaign.id, { decision: input.decision });
+    return { campaign };
+  });
+  app.patch("/api/marketing-copilot/campaigns/:id", routeOptions, async (request) => {
+    const owner = await deps.authenticatedOwner(request);
+    const params = parseQuery(z.object({ id: marketingCampaignIdSchema }).strict(), request.params);
+    const input = parseBody(marketingCampaignMetricSchema, request.body ?? {});
+    const campaign = await service.setCampaignMetric(owner, params.id, input.metric);
+    await deps.audit(request, "marketing_copilot.campaign.metric", campaign.id, { metric: input.metric });
     return { campaign };
   });
   app.get("/api/marketing-copilot/rules", routeOptions, async (request) => {

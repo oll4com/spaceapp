@@ -171,9 +171,16 @@ function errorText(error: unknown): string {
   return error instanceof Error ? `${error.message.slice(0, 1_000)}${errorCause(error.message)}` : "The action failed.";
 }
 
+/** PostgreSQL not answering or its pool full: Space's own outage (Nous turns stopped by it are no Daily Nous error, service.ts). */
+export const SPACE_DATABASE_DOWN = /timeout exceeded when trying to connect|Connection terminated|ECONNREFUSED|database system is (?:starting up|shutting down|in recovery)|too many clients|statement timeout|\b(?:57P0[13]|53300)\b/i;
+
 /** 12/11 (8 min after a boot every Nous pane tool failed with a bare pool timeout): a tool error's cause, and when to retry it. */
 export function errorCause(message: string): string {
-  if (/timeout exceeded when trying to connect|Connection terminated|ECONNREFUSED|database system is (?:starting up|shutting down|in recovery)|too many clients|statement timeout|\b(?:57P0[13]|53300)\b/i.test(message)) {
+  // 13/11 Score lever (57014 on 13/11 02:08 read as "database unavailable"): the database answered; the query ran past its limit.
+  if (/statement timeout|\b57014\b/i.test(message)) {
+    return " (Cause: query too slow: it ran past its time limit and was cancelled. Narrow it (a WHERE on an indexed or time column, fewer joins, a LIMIT) and run it again.)";
+  }
+  if (SPACE_DATABASE_DOWN.test(message)) {
     return " (Cause: database unavailable: PostgreSQL is not answering or the connection pool is full, as just after a boot. Space reconnects by itself: retry in 1 minute; "
       + "read the pane first if this was a send.)";
   }

@@ -65,21 +65,23 @@ export function mobileHandshakePrologue(mode: "pair" | "ik", offerId: Uint8Array
   return out;
 }
 
+/** Space Link (ADR-014): a SpaceApp whose Nous manages this one pairs as a device of this app, and reaches only LINK_ROUTE_SCOPES. */
+export const LINK_APP = "spaceapp-link";
 const deviceNameSchema = z.string().trim().min(1).max(80);
 /** A Play Integrity token as the app gets it: a compact JWE (five base64url parts). */
 const integrityTokenSchema = z.string().regex(/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){4}$/).max(12_000);
 export const mobilePairRequestSchema = z.object({
   deviceName: deviceNameSchema,
-  app: z.enum(["nous", "spaceapp"]),
+  app: z.enum(["nous", "spaceapp", "spaceapp-link"]),
   appVersion: z.string().min(1).max(40),
-  platform: z.enum(["android", "ios"]),
+  platform: z.enum(["android", "ios", "server"]),
   decidePubSpki: z.string().regex(/^[A-Za-z0-9_-]{80,200}$/).optional(),
   /** The decide key's Android Key Attestation chain, leaf first, DER as base64url (review P2-6). */
   decideAttestation: z.array(z.string().regex(/^[A-Za-z0-9_-]{100,8000}$/)).min(2).max(8).optional(),
   /** A Play Integrity token whose requestHash is mobileIntegrityRequestHash("pair", the handshake hash) (MASVS L2 RESILIENCE-1/2/4). */
   integrityToken: integrityTokenSchema.optional(),
   wantScopes: z.array(mobileScopeSchema.exclude(["admin"])).min(1).max(3)
-}).strict();
+}).strict().refine((request) => request.app !== LINK_APP || !request.wantScopes.includes("decide"), "A SpaceApp link never asks for decide.");
 export const mobilePairedSchema = z.object({
   deviceId: z.string().min(1).max(80),
   scopes: z.array(mobileScopeSchema),
@@ -163,7 +165,7 @@ export function mobileFrames(type: "req" | "res", header: Record<string, unknown
 
 // ---- What a phone may reach (design §6.2): the router's matched pattern, exactly. A route not listed is refused. ----
 
-export type MobileBodyRule = "settingsEnabledAndTabs" | "awayNoGrant" | "noAlways";
+export type MobileBodyRule = "settingsEnabledAndTabs" | "awayNoGrant" | "noAlways" | "linkInspect" | "linkExecute";
 export type MobileRouteRule = {
   scope: Exclude<MobileScope, "admin">;
   /** The route's own person check passes for a phone (review P0-1); everywhere else a phone is not the operator in person. */
@@ -228,13 +230,32 @@ export const MOBILE_ROUTE_SCOPES: Readonly<Record<string, MobileRouteRule>> = {
   "POST /api/admin/releases/promote": { scope: "decide", person: true, adminSignature: true }
 };
 
+// ---- What a SpaceApp link may reach (ADR-014): another SpaceApp's Nous reads this one and runs Space Control here, nothing more. No
+// Vault, auth, settings, admin, mobile, Nous messages or releases; this instance's own gates stay its own. Screens (CONTENT,
+// TERMINAL_RENDER, screenshots) stay off. ----
+
+/** Inspect sections a link reads: state and capacity, never screen text, the clipboard, files, audit, settings or the VPN. */
+export const LINK_INSPECT_SECTIONS: readonly string[] = ["STATE", "MODELS", "QUOTA", "RUNTIMES", "ROOMS", "SYSTEM_HEALTH", "TASKS", "SKILLS", "PLUGINS", "MODULES"];
+/** Space Control actions a link runs: rooms, panes, their models, layout, and these resource operations. */
+export const LINK_EXECUTE_KINDS: readonly string[] = ["room", "pane", "configure", "layout", "resource"];
+export const LINK_RESOURCE_OPERATIONS: readonly string[] = ["panes.open", "panes.move", "panes.split", "panes.update", "rooms.reorder", "links.list",
+  "skills.list", "skills.read", "tasks.list", "tasks.get", "tasks.create", "tasks.update", "models.list", "ops.status"];
+export const LINK_ROUTE_SCOPES: Readonly<Record<string, MobileRouteRule>> = {
+  "GET /api/auth/me": read, "GET /api/rooms": read,
+  "GET /api/control/v1/capabilities": read, "GET /api/control/v1/layout/:roomId": read, "GET /api/control/v1/pane-types": read,
+  "POST /api/control/v1/inspect": { scope: "read", body: "linkInspect" },
+  "GET /api/nous/overview": read, "GET /api/nous/score": read, "GET /api/nous/pane-board": read, "GET /api/nous/progress": read,
+  "POST /api/control/v1/commands": { scope: "act", body: "linkExecute" }, "POST /api/control/v1/operations": act
+};
+
 /**
  * The phone's reach on one request: the matched route pattern and the parsed query. Null means 403 MOBILE_SCOPE_DENIED. A query
  * value repeated or given as an array never matches (review P2-3).
  */
-export function mobileRouteAllows(scopes: readonly string[], method: string, routePattern: string | undefined, query: Record<string, unknown> = {}): MobileRouteRule | null {
+export function mobileRouteAllows(scopes: readonly string[], method: string, routePattern: string | undefined, query: Record<string, unknown> = {}, app?: string): MobileRouteRule | null {
   if (!routePattern) return null;
-  const rule = Object.hasOwn(MOBILE_ROUTE_SCOPES, `${method.toUpperCase()} ${routePattern}`) ? MOBILE_ROUTE_SCOPES[`${method.toUpperCase()} ${routePattern}`]! : null;
+  const table = app === LINK_APP ? LINK_ROUTE_SCOPES : MOBILE_ROUTE_SCOPES;
+  const rule = Object.hasOwn(table, `${method.toUpperCase()} ${routePattern}`) ? table[`${method.toUpperCase()} ${routePattern}`]! : null;
   if (!rule || !scopes.includes(rule.scope)) return null;
   return Object.entries(rule.query ?? {}).every(([key, value]) => query[key] === value) ? rule : null;
 }
@@ -246,6 +267,18 @@ export function mobileBodyProblem(rule: MobileBodyRule, body: unknown): string |
   // dockTabs only shows or hides the dock's tabs (operator nous_msg:5b21060a: the Nous app's Settings › Tabs); the route's schema checks its values.
   if (rule === "settingsEnabledAndTabs") return Object.keys(object).every((key) => key === "enabled" || key === "dockTabs") ? null : "From a phone, Nous's settings take only enabled and dockTabs.";
   if (rule === "awayNoGrant") return "grant" in object ? "A grant widens what Nous may do; set it on a computer." : null;
+  if (rule === "linkInspect") return object.section === undefined || LINK_INSPECT_SECTIONS.includes(object.section as string) ? null : `A SpaceApp link reads only ${LINK_INSPECT_SECTIONS.join(", ")}.`;
+  if (rule === "linkExecute") {
+    const actions = Array.isArray(object.actions) ? object.actions as Array<Record<string, unknown> | null> : null;
+    if (!actions) return "actions is required.";
+    // This SpaceApp's own operator approves its destructive actions: a remote Nous never claims that approval.
+    const approval = (action: Record<string, unknown>) => "confirm" in action || "approvalReason" in action || (typeof action.input === "object" && action.input !== null && ("confirm" in action.input || "confirmed" in action.input));
+    if ("userExplicitlyAuthorized" in object || actions.some((action) => action && typeof action === "object" && approval(action))) return "A SpaceApp link cannot approve for this SpaceApp's operator; they approve here.";
+    // A missing kind is a pane action (sanitizeControlExecute) or refused by the schema.
+    const refused = actions.find((action) => !action || typeof action !== "object" || (action.kind !== undefined && !LINK_EXECUTE_KINDS.includes(action.kind as string))
+      || (action.kind === "resource" && !LINK_RESOURCE_OPERATIONS.includes(action.operation as string)) || "captureScreenshot" in action || action.operation === "visual_audit");
+    return refused === undefined ? null : "A SpaceApp link runs rooms, panes, their models, layout and tasks only, without screenshots; the rest is set on this SpaceApp.";
+  }
   return "always" in object ? "Always answers are set on a computer." : null;
 }
 

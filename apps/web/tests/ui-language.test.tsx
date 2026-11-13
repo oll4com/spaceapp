@@ -51,7 +51,7 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
     render(<NousNeedsYou requests={[review]} />);
     // Plan clipboard:ytwWl09xNH0Z: closed, a review is its title and «Δες και ενέκρινε»; answered here, its pane is only a link under Details.
     fireEvent.click(await screen.findByRole("button", { name: "Δες και ενέκρινε" }));
-    const approve = screen.getByRole("button", { name: "Έγκριση (Προτείνεται)" });
+    const approve = screen.getByRole("button", { name: "Έγκριση Προτείνεται" });
     expect(screen.getByRole("button", { name: "Πήγαινε στο pane" }).closest(".ny-footer")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Απόρριψη" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Να σταλεί η απάντηση;" })).toBeTruthy();
@@ -69,7 +69,7 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
       body: "Το αντίγραφο ελευθερώνει 40 GB για απόψε.\n1. Άνοιξε https://pve.example.com/#v1\n2. Ενέκρινε τη διαγραφή", question: "Να διαγραφούν δεδομένα στο qm:105;",
       options: ["Ενέκρινε", "Απόρριψε"] } } } as unknown as SpaceNotification;
     render(<NousNeedsYou requests={[card]} />);
-    // Space's ids read as what they name (qm:105 is VM 105); the original keeps them as written.
+    // Space's ids read as what they name (qm:105 is VM 105), in the original too: it changes the language only (plan clipboard:T2uboz26Oh3q S6).
     expect(await screen.findByRole("heading", { name: "Να διαγραφούν δεδομένα στο VM 105;" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Λεπτομέρειες" }));
     expect(screen.getByText("Τι χρειάζεται")).toBeTruthy();
@@ -78,10 +78,11 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
     expect(screen.getByText("Το αντίγραφο ελευθερώνει 40 GB για απόψε.")).toBeTruthy();
     expect(screen.queryByText(/Approve the delete/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Δες το πρωτότυπο" }));
-    expect(screen.getByRole("heading", { name: "Approve data delete on qm:105?" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Approve data delete on VM 105?" })).toBeTruthy();
+    expect(screen.getByText("Πρωτότυπο", { exact: false }).closest(".ny-translated")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Δες τη μετάφραση" }));
     // Space's own answer words read from its table, not the model's (12/11).
-    fireEvent.click(screen.getByRole("button", { name: "Έγκριση (Προτείνεται)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Έγκριση Προτείνεται" }));
     await waitFor(() => expect(calls.find((call) => call.url.endsWith("/answer"))?.body).toEqual({ option: "Approve" }));
     // A copilot's card asks its body's first line, clipped: the line shows once, as the heading, and the why is the rest (stable 1/11: Security Copilot card).
     cleanup();
@@ -201,10 +202,8 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
       expect(screen.queryByText(/Moved on to Contra/)).toBeNull();
       const why = screen.getByText("Τι χρειάζεται").nextElementSibling?.textContent ?? "";
       expect(why).toBe("Freelancer.com asks for a birth date (ερώτηση freelance); Guru wants phone verification for plan.");
-      // The ids stay one click away.
-      fireEvent.click(screen.getByRole("button", { name: "Δες το πρωτότυπο" }));
-      expect(screen.getByText("Τι χρειάζεται").nextElementSibling?.textContent).toContain("flq:U-Ji6bd-RQ2e");
-      expect(screen.getByText(/Moved on to Contra/)).toBeTruthy();
+      // No translation, no "Show original": it changes the language only, the ids were never what it undid (plan clipboard:T2uboz26Oh3q S6).
+      expect(screen.queryByRole("button", { name: "Δες το πρωτότυπο" })).toBeNull();
       cleanup();
       // A toast of a translated needs-you card reads in Greek.
       const card = { ...agent, payload: { ...agent.payload, translated: { language: "el", from: needsYouCardTexts(agent).from, title: "Η Dana σε χρειάζεται",
@@ -306,11 +305,11 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
       fireEvent.change(ui, { target: { value: "en" } });
       await waitFor(() => expect(calls.find((call) => call.method === "PATCH")?.body).toEqual({ uiLanguage: "en", agentLanguage: "el" }));
       fireEvent.click(await screen.findByRole("button", { name: "Review and approve" }));
-      expect(screen.getByRole("button", { name: "Έγκριση (Recommended)" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Έγκριση Recommended" })).toBeTruthy();
       expect(screen.getByRole("heading", { name: "Να σταλεί η απάντηση;" })).toBeTruthy();
       fireEvent.change(screen.getByRole("combobox", { name: "Agent language" }), { target: { value: "en" } });
       await waitFor(() => expect(calls.filter((call) => call.method === "PATCH").at(-1)?.body).toEqual({ agentLanguage: "en" }));
-      expect(await screen.findByRole("button", { name: "Approve (Recommended)" })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: "Approve Recommended" })).toBeTruthy();
     } finally { announceUiLanguage("en"); announceAgentLanguage("en"); }
   });
 });

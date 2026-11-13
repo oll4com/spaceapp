@@ -151,6 +151,10 @@ export const marketingCampaignCreateSchema = z.object({
 }).strict();
 export type MarketingCampaignCreate = z.infer<typeof marketingCampaignCreateSchema>;
 export const marketingCampaignDecisionSchema = z.object({ decision: z.enum(["approve", "complete", "cancel"]) }).strict();
+/** The one number a campaign moves (plan clipboard:UoygRDurSshE step 5.5), kept in its payload; null clears it. */
+export const marketingCampaignMetricSchema = z.object({ metric: z.enum(["stars", "installs", "visits"]).nullable() }).strict();
+/** "personal" keeps posts out of every Marketing metric (plan clipboard:UoygRDurSshE step 1.1); null puts them back. Kept in evidence.topic. */
+export const marketingPostTopicSchema = z.object({ ids: z.array(marketingPostIdSchema).min(1), topic: z.literal("personal").nullable() }).strict();
 
 export const MARKETING_POST_KINDS = ["POST", "THREAD", "ARTICLE", "VIDEO", "LAUNCH", "REPLY", "RELEASE_NOTE"] as const;
 export const marketingPostKindSchema = z.enum(MARKETING_POST_KINDS);

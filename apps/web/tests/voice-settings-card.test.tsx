@@ -45,6 +45,18 @@ describe("Voice settings card", () => {
     });
   });
 
+  it("marks SenseVoice offline and recommends Gemini or Whisper when the language is Greek", () => {
+    const sense = { ...defaultVoiceComposerSettings, engine: "relay" as const, provider: "local" as const, model: "local-sensevoice-small" as const };
+    vi.mocked(useVoiceInput).mockReturnValue({ ...useVoiceInput(), settings: { ...sense, language: "el" } });
+    const { unmount } = render(<VoiceSettingsCard />);
+    expect(within(screen.getByRole("combobox", { name: /Voice model/ })).getByRole("option", { name: "local-sensevoice-small · Offline" })).toBeTruthy();
+    expect(screen.getByRole("note").textContent).toMatch(/does not know Greek\. For Greek, choose Gemini or Whisper\./);
+    unmount();
+    vi.mocked(useVoiceInput).mockReturnValue({ ...useVoiceInput(), settings: { ...sense, language: "en" } });
+    render(<VoiceSettingsCard />);
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
   it("changes insertion mode without losing provider or terminal preferences", () => {
     render(<VoiceSettingsCard />);
     fireEvent.change(screen.getByRole("combobox", { name: /Insert mode/ }), { target: { value: "replace" } });

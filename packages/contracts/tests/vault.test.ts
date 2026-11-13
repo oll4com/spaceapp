@@ -121,6 +121,7 @@ describe("Vault exact origins", () => {
     expect(vaultItemMetadataSchema.safeParse({ ...item, origins: ["http://example.com"] }).success).toBe(false);
     expect(vaultItemMetadataSchema.safeParse({ ...item, origins: ["http://example.com"], policy: { ...item.policy, acceptedOriginRisks: ["http://example.com"] } }).success).toBe(true);
     expect(vaultItemMetadataSchema.safeParse({ ...item, fieldRoles: ["PASSWORD", "PASSWORD"] }).success).toBe(false);
+    expect(vaultItemMetadataSchema.safeParse({ ...item, label: "L".repeat(81) }).success).toBe(false);
   });
 
   it("fills a login on any clean https origin of its registrable domain, never across domains (operator 2026-10-30)", () => {
@@ -191,7 +192,7 @@ describe("Vault logins agents save (operator decision 2026-10-18)", () => {
     expect(vaultAgentSaveRequestSchema.parse(login)).toEqual(login);
     const { password: _password, ...usernameOnly } = login;
     expect(vaultAgentSaveRequestSchema.safeParse(usernameOnly).success).toBe(true);
-    for (const bad of [{ ...login, site: "http://shop.example" }, { ...login, password: "" }, { ...login, otp: "123456" }, { ...login, label: "" }]) {
+    for (const bad of [{ ...login, site: "http://shop.example" }, { ...login, password: "" }, { ...login, otp: "123456" }, { ...login, label: "" }, { ...login, label: "L".repeat(81) }]) {
       expect(vaultAgentSaveRequestSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
     }
   });

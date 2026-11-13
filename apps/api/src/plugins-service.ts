@@ -254,6 +254,26 @@ export const DEFAULT_PLUGIN_CATALOG: PluginCatalogItem[] = [
     mcpArgs: []
   },
   {
+    id: "marketingskills",
+    displayName: "Marketing Skills",
+    description: "Corey Haines' copywriting, launch, community, directory, AI search and comparison-page skills.",
+    overview: "Six skills from coreyhaines31/marketingskills: copywriting, launch, community-marketing, directory-submissions, ai-seo and competitors. Space takes the product context from public SpaceApp facts and the Marketing Copilot memory, runs every draft through No AI Slop, and posts or submits nothing on its own.",
+    category: "creative",
+    icon: "Globe",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://github.com/coreyhaines31/marketingskills",
+    docsUrl: "https://github.com/coreyhaines31/marketingskills#readme",
+    githubUrl: "https://github.com/coreyhaines31/marketingskills",
+    installedVersion: "1f83744",
+    latestVersion: "1f83744",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
+  },
+  {
     id: "wshobson-skills",
     displayName: "wshobson Skills",
     description: "Specialist skills for TypeScript and Node.js, threat modeling and SAST, incident runbooks and postmortems, and observability.",
@@ -484,6 +504,10 @@ export const BUILTIN_SKILLS_MAP: Record<string, { folder: string; aliases: strin
     aliases: ["space-gstack"],
     retiredAliases: ["gstack"]
   },
+  marketingskills: {
+    folder: "space-marketingskills",
+    aliases: ["space-marketingskills"]
+  },
   "wshobson-skills": {
     folder: "space-wshobson-skills",
     aliases: ["space-wshobson-skills"],
@@ -645,6 +669,7 @@ export class PluginsService {
     "planning-with-files": 1,
     "anthropic-skills": 2,
     gstack: 6,
+    marketingskills: 6,
     "wshobson-skills": 17,
     "huashu-design": 1,
     impeccable: 1,

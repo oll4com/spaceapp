@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryControlRepository } from "@space/db";
-import { createHeldDispatch, holdCalmPrompts, holdUnlessAllowed, mayDeliver, type HeldDelivery, type NousLoadLevel } from "../src/nous/held-dispatch.js";
+import { createHeldDispatch, heldModelRunning, holdCalmPrompts, holdUnlessAllowed, mayDeliver, type HeldDelivery, type NousLoadLevel } from "../src/nous/held-dispatch.js";
 
 const owner = "user:operator";
 const andy = { roomId: "room:dino0001", roomName: "Dino", paneId: "pane:andy0001", paneName: "Andy" };
@@ -154,4 +154,15 @@ describe("Nous's held dispatch", () => {
     expect((await holdCalmPrompts(nous, owner, room, panes, [calm])).actions)
       .toEqual([{ kind: "pane", operation: "prompt", target: { paneIds: [andy.paneId] }, text: "Step 3.", when: "AFTER_TURN" }]);
   });
+});
+
+it("finds a held model change already in force from the pane's last native turn (13/11 Felix/Iris ran xhigh while it waited)", () => {
+  const seen = (modelId: string, reasoningEffort: string | null) => ({ tasks: [{ modelsUsed: [{ modelId: "claude-sonnet-5-5", reasoningEffort: "low" }] }, { modelsUsed: [{ modelId, reasoningEffort }] }] });
+  expect(heldModelRunning({ modelId: "claude-opus-5-5", reasoningEffort: "xhigh" }, seen("claude-opus-5-5", "xhigh"))?.reasoningEffort).toBe("xhigh");
+  expect(heldModelRunning({ modelId: "claude-opus-5-5", reasoningEffort: "xhigh" }, seen("claude-opus-5-5[1m]", "xhigh"))).not.toBeNull();
+  expect(heldModelRunning({ modelId: "claude-opus-5-5" }, seen("claude-opus-5-5", null))).not.toBeNull();
+  expect(heldModelRunning({ modelId: "claude-opus-5-5", reasoningEffort: "xhigh" }, seen("claude-opus-5-5", "medium"))).toBeNull();
+  expect(heldModelRunning({ modelId: "claude-opus-5-5", reasoningEffort: "xhigh" }, seen("claude-sonnet-5-5", "xhigh"))).toBeNull();
+  expect(heldModelRunning({ modelId: "claude-opus-5-5" }, { tasks: [] })).toBeNull();
+  expect(heldModelRunning({ modelId: "claude-opus-5-5" }, null)).toBeNull();
 });

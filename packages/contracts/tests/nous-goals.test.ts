@@ -37,6 +37,10 @@ describe("Nous goals contracts", () => {
     expect(nousGoalEditInputSchema.parse({ status: "PAUSED" })).toEqual({ status: "PAUSED" });
     expect(nousGoalUpdateArgsSchema.safeParse({ goal: "nous_goal:abcdef123456", achieved: { evidence: "short" } }).success).toBe(false);
     expect(nousGoalUpdateArgsSchema.safeParse({ goal: "nous_goal:abcdef123456", text: "new words" }).success).toBe(false);
+    // Pause or resume only with the operator's order (a message id); never ACHIEVED/DROPPED through status.
+    expect(nousGoalUpdateArgsSchema.parse({ goal: "nous_goal:abcdef123456", status: "PAUSED", order: "nous_msg:c77724f4abcd" }).status).toBe("PAUSED");
+    expect(nousGoalUpdateArgsSchema.safeParse({ goal: "nous_goal:abcdef123456", status: "DROPPED", order: "nous_msg:c77724f4abcd" }).success).toBe(false);
+    expect(nousGoalUpdateArgsSchema.safeParse({ goal: "nous_goal:abcdef123456", status: "ACTIVE", order: "the operator said so" }).success).toBe(false);
     expect(nousGoalUpdateArgsSchema.parse({ goal: "nous_goal:abcdef123456", progress: 30, waitsOn: { kind: "OPERATOR", what: "the Stripe sign-in" } }).waitsOn).toEqual({ kind: "OPERATOR", what: "the Stripe sign-in", until: null });
     // A limit (plan clipboard:ESIzQb7rHGQM): a deadline or a measurable target; null clears it; nothing else.
     expect(nousGoalUpdateArgsSchema.parse({ goal: "nous_goal:abcdef123456", limit: { kind: "DATE", until: "2026-12-31T23:59:00+07:00" } }).limit).toEqual({ kind: "DATE", until: "2026-12-31T23:59:00+07:00" });

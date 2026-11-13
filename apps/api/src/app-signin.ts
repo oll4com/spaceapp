@@ -18,6 +18,8 @@ import { setMobileChecks } from "./mobile/gate.js";
 import { registerMobileRoutes } from "./mobile/routes.js";
 import { createMobileWake } from "./mobile/wake.js";
 import type { MobileWake } from "./notifications/service.js";
+import { linkLease } from "./instance-link/lease.js";
+import { registerInstanceLinks } from "./instance-link/routes.js";
 import { recordAudit } from "./request-audit.js";
 
 // Sign-in for Space's own mobile apps (plan clipboard:VLBu2ge110ho step 4; design step4-mobile-signin-design.md): RFC 8252 with
@@ -83,6 +85,8 @@ export type AppSignIn = ReturnType<typeof createAppSignIn>;
 
 /** The composition root's one call: the repository (PostgreSQL when the store is), the module and its routes. */
 export function registerAppSignIn(app: FastifyInstance, options: Omit<AppSignInOptions, "repository"> & { databaseUrl: string | null | undefined; crypto?: ConnectorCrypto;
+  /** This SpaceApp's version, sent as a link's appVersion to the SpaceApps it manages (Space Link, ADR-014). */
+  version?: string;
   events?: Parameters<typeof registerMobileChannel>[1]["events"] } & Pick<Parameters<typeof registerMobileChannel>[1], "google" | "gmailFetch">): AppSignIn {
   const repository = options.databaseUrl ? PostgresAppDeviceSessionRepository.fromConnectionString(options.databaseUrl) : new InMemoryAppDeviceSessionRepository();
   const signIn = createAppSignIn({ ...options, repository });
@@ -100,10 +104,37 @@ export function registerAppSignIn(app: FastifyInstance, options: Omit<AppSignInO
     channel = registerMobileChannel(app, { keys: mobile.keys, keyRepository: mobile.repository, offers: mobile.offers, devices: repository, store: options.store, notifications: options.notifications,
       sessionSecret: options.sessionSecret, routeOptions: options.routeOptions, events: options.events, expireHeld: signIn.expireHeld, revokeDevice: signIn.revokeDevice, now: options.now,
       google: options.google, gmailFetch: options.gmailFetch, relayUrl: options.mobileRelayUrl, integrity });
+    // Space Link's Remote mark (ADR-014): the sessions open on this SpaceApp now, its linked SpaceApps' Nous and its phones. A person on a
+    // computer only: a phone or a link never reads another device's address.
+    // Lease (lease.ts): which link manages this SpaceApp now; Take back holds every link at reading until Give back.
+    const lease = linkLease(options.store, options.now);
+    const liveOwner = (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) return void sendApiError(reply, 401, "UNAUTHORIZED", "Sign in to see your devices.");
+      signIn.assertPerson(request);
+      if (request.appSession) return void sendApiError(reply, 403, "MOBILE_ALLOW_FROM_COMPUTER", "Open SpaceApp on a computer to see who is connected.");
+      return request.user.id;
+    };
+    const liveAnswer = (owner: string) => ({ sessions: channel!.live(owner), lease: lease.holder(owner), takenBackAt: lease.takenBackAt(owner) });
+    app.get("/api/auth/devices/live", options.routeOptions, async (request, reply) => {
+      const owner = liveOwner(request, reply);
+      return owner ? liveAnswer(owner) : reply;
+    });
+    for (const [path, action] of [["take-back", "instance_link.taken_back"], ["give-back", "instance_link.given_back"]] as const) {
+      app.post(`/api/auth/devices/live/${path}`, options.routeOptions, async (request, reply) => {
+        const owner = liveOwner(request, reply);
+        if (!owner) return reply;
+        if (path === "take-back") lease.takeBack(owner); else lease.giveBack(owner);
+        await recordAudit(options.store, request, { action, targetType: "user", targetId: owner });
+        return liveAnswer(owner);
+      });
+    }
     if (options.mobilePushUrl) options.notifications?.setWake?.(createMobileWake({ url: options.mobilePushUrl, devices: repository, log: app.log }));
     setMobileChecks(app, createMobileChecks({ devices: repository, artifact: async (id) => options.store.getArtifact(id),
       notification: async (owner, id) => (await options.notifications?.get(owner, id)) ?? null, decision: options.decision ?? (async () => null),
       goal: options.goal ?? (async () => null), integrity }));
+    // Space Link (ADR-014): the other SpaceApps this one manages, each paired as a spaceapp-link device of it.
+    registerInstanceLinks(app, { store: options.store, crypto: options.crypto, databaseUrl: options.databaseUrl, routeOptions: options.routeOptions,
+      assertPerson: signIn.assertPerson, version: options.version ?? "0.0.0" });
   }
   return signIn;
 }

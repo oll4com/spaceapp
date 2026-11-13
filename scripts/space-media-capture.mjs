@@ -163,6 +163,13 @@ export function validateStep(raw, instance) {
     step.program = raw.program;
   }
   if (raw["focus-search"] === true) step.focusSearch = true;
+  // A Settings row below the fold (13/11: the Load target rows sit under the Low-spend models), scrolled to the top as the operator would.
+  if (raw["settings-row"] !== undefined) {
+    if (!step.settings || typeof raw["settings-row"] !== "string" || !/^[A-Za-z0-9][A-Za-z0-9 ,.()%&'-]{0,59}$/.test(raw["settings-row"])) {
+      throw new Error("--settings-row is a row's heading as Settings shows it (such as \"Load target\"), with --settings.");
+    }
+    step.settingsRow = raw["settings-row"];
+  }
   // One key pool account's detail (7/11: its supported models), always cropped to it, so the Accounts list (e-mails, other accounts) stays out.
   if (raw["gateway-account"] !== undefined) {
     if (step.gateway !== undefined || typeof raw["gateway-account"] !== "string" || !/^[A-Za-z0-9][A-Za-z0-9 .()-]{1,39}$/.test(raw["gateway-account"])) {
@@ -644,6 +651,8 @@ async function applyStep(page, step) {
       // A section that reads the server first says so ("Checking the providers…", "(checking…)", "Loading…"): shoot what it loads.
       await page.until(`!/checking…|Loading…/i.test(document.querySelector(${selector})?.closest(".settings-disclosure")?.textContent ?? "")`, "The Settings section's data", 30_000)
         .catch(() => skipped.push(`settings:${step.settings}:loading`));
+      if (step.settingsRow && !await page.evaluate(`(() => { const row = [...document.querySelector(${selector}).closest(".settings-disclosure").querySelectorAll("*")]
+        .find((e) => !e.children.length && e.textContent.trim() === ${JSON.stringify(step.settingsRow)}); row?.scrollIntoView({ block: "start" }); return Boolean(row); })()`)) skipped.push(`settings-row:${step.settingsRow}`);
     } catch { skipped.push(`settings:${step.settings}`); }
   }
   if (step.health) await page.evaluate(`window.dispatchEvent(new CustomEvent("space:system-health", { detail: { section: ${JSON.stringify(step.health.replace(/^ai-.*/, "ai"))} } })), true`);
@@ -989,7 +998,7 @@ const options = {
   tint: { type: "string" }, "room-theme": { type: "string" }, language: { type: "string" }, rail: { type: "string" }, appointments: { type: "string" }, "appointments-wheel": { type: "string" }, "token-usage": { type: "string" }, "requests-status": { type: "string" }, "requests-search": { type: "string" }, zoom: { type: "string" }, unmasked: { type: "boolean" }, format: { type: "string" },
   quality: { type: "string" }, frame: { type: "string" }, headline: { type: "string" }, subline: { type: "string" }, video: { type: "string" },
   gif: { type: "boolean" }, stdin: { type: "boolean" }, outage: { type: "string" }, program: { type: "string" }, approved: { type: "boolean" }, waiting: { type: "boolean" },
-  "focus-search": { type: "boolean" }
+  "focus-search": { type: "boolean" }, "settings-row": { type: "string" }
 };
 
 /**

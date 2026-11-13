@@ -119,6 +119,20 @@ describe("scheduled tasks", () => {
     expect(answer).toHaveBeenCalledTimes(2);
   });
 
+  it("a task held by the stagger at its grace end still types a minute later, never skipped (12/11 post-reboot burst, Score daily tasks)", async () => {
+    const { runner, answer, add, get } = fixture();
+    add("First.", every2h);
+    const second = add("Second.", every2h);
+    vi.setSystemTime(Date.parse("2026-10-15T11:59:50.000Z"));
+    expect(await runner.tick()).toMatchObject({ RAN: 1, WAITING: 1 });
+    vi.setSystemTime(Date.parse("2026-10-15T12:00:20.000Z"));
+    expect(await runner.tick()).toMatchObject({ RAN: 0, SKIPPED: 0, WAITING: 1 });
+    vi.setSystemTime(Date.parse("2026-10-15T12:00:55.000Z"));
+    expect(await runner.tick()).toMatchObject({ RAN: 1 });
+    expect(answer).toHaveBeenCalledTimes(2);
+    expect(get(second.id).schedule).toMatchObject({ lastRunAt: "2026-10-15T12:00:55.000Z" });
+  });
+
   it("types into an idle Codex whose composer shows its placeholder (R15-1: task:tC05_57xRiBO waited on Alex/Kate)", async () => {
     const { runner, answer, add } = fixture({ ...emptyPrompt, text: "• Sent.\n\n› Ask Codex to do anything\n\n  gpt-6.1-sol xhigh · /opt/spaceapp\n" });
     add("Send the kits.", every2h);
@@ -368,6 +382,34 @@ describe("scheduled tasks", () => {
     expect(await stopped.runner.tick()).toMatchObject({ SKIPPED: 1 });
     expect(stopped.answer).not.toHaveBeenCalled();
     expect(stopped.get(task.id).schedule!.lastOutcome).toMatch(/the pane has no running CLI/);
+  });
+
+  it("starts the CLI of an open pane that has none, once each 10 minutes, and types the task once it runs (11-12/11 post-move and post-reboot misses)", async () => {
+    const { runner, answer, inspect, reopen, add, get } = fixture({ state: "UNKNOWN", sessionId: null }, { reopen: true });
+    const task = add("Run the daily self-review.", every2h);
+    vi.setSystemTime(Date.parse("2026-10-15T10:00:10.000Z"));
+    expect(await runner.tick()).toMatchObject({ WAITING: 1 });
+    expect(reopen).toHaveBeenCalledWith(expect.objectContaining({ id: cliPane.id }), owner);
+    vi.setSystemTime(Date.parse("2026-10-15T10:05:00.000Z"));
+    expect(await runner.tick()).toMatchObject({ WAITING: 1 });
+    expect(reopen).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.parse("2026-10-15T10:10:10.000Z"));
+    expect(await runner.tick()).toMatchObject({ WAITING: 1 });
+    expect(reopen).toHaveBeenCalledTimes(2);
+    expect(answer).not.toHaveBeenCalled();
+    inspect.mockResolvedValue(emptyPrompt as never);
+    vi.setSystemTime(Date.parse("2026-10-15T10:10:40.000Z"));
+    expect(await runner.tick()).toMatchObject({ RAN: 1 });
+    expect(get(task.id).schedule?.lastOutcome).toMatch(/^Sent to the CLI/);
+  });
+
+  it("a pane whose CLI could not be started skips at its grace end as a failed run with the error", async () => {
+    const { runner, reopen, add, get } = fixture({ state: "EXITED", sessionId: "cli_session:1" }, { reopen: true });
+    reopen.mockRejectedValue(new Error("pane host unavailable"));
+    const task = add("Run the daily self-review.", every2h);
+    vi.setSystemTime(Date.parse("2026-10-15T12:00:01.000Z"));
+    expect(await runner.tick()).toMatchObject({ SKIPPED: 1 });
+    expect(get(task.id).schedule!.lastOutcome).toBe("Failed 2026-10-15T10:00:00.000Z: the pane had no running CLI and Space could not start it (pane host unavailable).");
   });
 
   it("logs every handled occurrence as a task run, and only the pane's own report decides a typed one (plan clipboard:GA__W4qBxSPR)", async () => {

@@ -27,7 +27,7 @@ const FILTERS: Array<[Filter, string, (program: NousProgram) => boolean]> = [
 ];
 // Grouped tags (operator 6/11 21:42 BKK, nous_msg:f0287998) as type chips and a badge on each line; 7/11 (nous_msg:02ad746e): these five
 // only, each program's categories by nousProgramCategories.
-const TAG_LABELS: Record<NousProgramTag, string> = { "cash-grants": "Cash", "ai-tokens": "AI tokens", "server-access": "Servers/Cloud", "dev-tools": "Dev tools", perks: "Perks" };
+const TAG_LABELS: Record<NousProgramTag, string> = { "cash-grants": "Cash", "ai-tokens": "AI tokens", "server-access": "Servers/Cloud", "dev-tools": "Dev tools", perks: "Perks", choose: "Choose" };
 export const programTags = nousProgramCategories;
 const messageOf = (error: unknown, fallback: string) => (error instanceof Error && error.message ? error.message : fallback);
 const day = (value: string | null | undefined) => value ? formatAppDate(value) : null;

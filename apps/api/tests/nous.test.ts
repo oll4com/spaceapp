@@ -9,7 +9,7 @@ import { getApiConfig } from "../src/config.js";
 import { OPERATOR_ORDERS_RULE } from "../src/agent-bootstrap.js";
 import { createNotificationService } from "../src/notifications/service.js";
 import Fastify from "fastify";
-import { postToWorkerWhenUp, registerNousMcpRoute, signNousToken, verifyNousToken } from "../src/nous/mcp.js";
+import { NOUS_MCP_ANSWER_MS, postToWorkerWhenUp, registerNousMcpRoute, signNousToken, verifyNousToken } from "../src/nous/mcp.js";
 import { createServer } from "node:http";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -682,6 +682,22 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
     } finally { await f.app.close(); }
   });
 
+  it("Score 13/11: an operator turn waits at most 10 s for a stuck room read and shows the room as unread", async () => {
+    // d4c1da08, 74b878c2, 50ada07c: the first answer waited 97-577 s while one room's pane read hung.
+    const f = await wired({ readActivity: () => new Promise(() => {}) });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let done = false;
+      const run = f.run().then(() => { done = true; });
+      for (let second = 0; second < 30 && !done; second += 1) await vi.advanceTimersByTimeAsync(1_000);
+      await run;
+      expect(f.requests.find((request) => request.reason === "OPERATOR")!.prompt).toContain("(the room's panes could not be read now)");
+    } finally {
+      vi.useRealTimers();
+      await f.app.close();
+    }
+  });
+
   it("lists its rooms' browser tabs and closes only a tab no fence, handoff or lease holds (queue 28/10 01:03)", async () => {
     const closePage = vi.fn(async () => {});
     const f = await wired({ browser: { closePage } as never });
@@ -1205,9 +1221,38 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
     }
   });
 
+  it("reads a pane named by its id with no room, and a room id written without room: (12-13/11: 3 failed calls)", async () => {
+    const f = await wired();
+    try {
+      const [byId, bareRoom] = await f.run(["space_read_pane", { pane: f.bob.id }], ["space_read_pane", { room: f.room.id.slice("room:".length), pane: "Bob" }]);
+      expect(byId).toMatchObject({ ok: true });
+      expect(bareRoom).toMatchObject({ ok: true });
+      const [nowhere] = await f.run(["space_read_pane", { pane: "pane:nowhere12345" }]);
+      expect(nowhere).toMatchObject({ ok: false, result: expect.stringContaining("room") });
+    } finally {
+      await f.app.close();
+    }
+  });
+
   it("reads a pane id that ends in a dash whole", () => {
     expect(paneIdIn("Bob (pane:mKVw4mfJ0JK-)")).toBe("pane:mKVw4mfJ0JK-");
     expect(paneIdIn("pane:-abc-d-")).toBe("pane:-abc-d-");
+  });
+
+  it("reads and checks a pane closed in the named room by its name while other rooms hold open panes of that name (13/11: 3 failed calls)", async () => {
+    const f = await wired();
+    try {
+      for (const name of ["Dino", "Felix"]) {
+        const other = await f.store.createRoom({ name, initialPaneCount: 0 }, "trace:t", owner);
+        await f.store.createPane({ roomId: other.id, title: "Bob", paneName: "Bob", mode: "TERMINAL", terminalRuntimeId: "cli:claude" } as never);
+      }
+      await f.store.updatePane(f.bob.id, { isClosed: true, status: "CLOSED" });
+      const [read, checked] = await f.run(["space_read_pane", { room: "Main", pane: "Bob" }], ["space_pane_checked", { room: "Main", pane: "Bob", verdict: "OK_WORKING", note: "Closed after its save." }]);
+      expect(read).toMatchObject({ ok: true, display: "Bob is closed" });
+      expect(checked).toMatchObject({ ok: true });
+    } finally {
+      await f.app.close();
+    }
   });
 
   it("reads, links and refuses a closed pane by its id through the real store (R10-7: stable answered \"Could not find pane:quBCJUzYLfQu\")", async () => {
@@ -1380,8 +1425,20 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
       // 13/11 review ("Task item task:nth-… was not found" ×3): an unknown id answers with the real ids, for a change or a move.
       const [status, move] = await f.run(["space_task_update", { task: "task:nth-2", status: "DONE" }], ["space_task_update", { task: "task:nth-2", bind: { room: "Main", pane: "Bob" } }]);
       for (const outcome of [status, move]) expect(outcome).toMatchObject({ ok: false, display: "No such task", result: expect.stringContaining(`[${task!.id}] "Nightly check"`) });
+      // 13/11 02:42Z: the id without its "task:" prefix finds the task.
+      const [bare] = await f.run(["space_task_update", { task: task!.id.slice("task:".length), title: "Nightly checks" }]);
+      expect(bare).toMatchObject({ ok: true, display: expect.stringContaining("Nightly checks") });
+      // 13/11 Temu: a changed objective kept its old key, so a later bind (Nous's or the scheduler's new pane) made an unscheduled copy and left the task on its pane.
+      await f.run(["space_task_update", { task: task!.id, objective: "Run the nightly checks and report." }]);
+      await f.run(["space_task_update", { task: task!.id, bind: { room: "Main", pane: "Andy" } }]);
+      expect((await f.store.listTaskItems(owner, { page: 1, pageSize: 5 })).items).toEqual([expect.objectContaining({ id: task!.id, paneId: f.andy.id,
+        schedule: expect.objectContaining({ recurrence: { kind: "DAILY", time: "09:00" } }) })]);
       await f.run(["space_task_update", { task: task!.id, bind: null, schedule: null, status: "DONE" }]);
       expect(await f.store.getTaskItem(owner, task!.id)).toMatchObject({ paneId: null, schedule: null, status: "DONE" });
+      // Nous's schedule changes leave the audit a pane's PATCH leaves (0326 found no clear for its 9/11 pause of Temporal rustls).
+      const audited = (await f.store.listAuditEvents()).filter((event) => event.action === "task.agent.update" && event.targetId === task!.id);
+      expect(audited.map((event) => event.metadata?.schedule).sort()).toEqual([false, true, undefined, undefined]);
+      expect(audited.every((event) => event.targetType === "task_item" && event.metadata?.by === "nous")).toBe(true);
     } finally {
       await f.app.close();
     }
@@ -1764,7 +1821,28 @@ describe("Nous's turns", () => {
       const idle: NousTurnItem = { key: "utilization", kind: "UTILIZATION", line: "Utilization stayed under the 90% target" };
       expect(itemActed(idle, [act("space_open_panes", { room: "Main", panes: [{ runtime: "cli:claude" }] })])).toBe(true);
       expect(itemActed(idle, [act("space_execute", { room: "Main", actions: [{ kind: "pane", operation: "close", target: { paneIds: ["pane:x"] } }] })])).toBe(false);
+      // 13/11: helpers started or what blocks the work recorded move idle capacity too; a follow-up list does not.
+      expect(itemActed(idle, [act("space_subagents", { tasks: [{ prompt: "check the plan's tests" }] })])).toBe(true);
+      expect(itemActed(idle, [act("space_nous_followup", { op: "add", note: "every open plan waits on the operator's sign-in", inMinutes: 60 })])).toBe(true);
+      expect(itemActed(idle, [act("space_nous_followup", { op: "list" })])).toBe(false);
     });
+
+    it("13/11: the 90 % push comes back after a turn that answered it in words without starting work or recording what blocks it", async () => {
+      // 9-12/11: 121 of 224 utilization-low pushes got an answer in words and no tool call, and Space took the line.
+      const idle: NousTurnItem = { key: "utilization", kind: "UTILIZATION", line: "Utilization stayed under the 90% target for 20 min", always: true };
+      const f = serviceFixture([async () => ({ text: "Capacity is low; the plans are mostly waiting.", isError: false }), async (input, service) => {
+        await service.callTool(owner, input.turnId, "space_open_panes", { room: "Main", panes: [{ runtime: "cli:claude" }] }, "toolu_idle");
+        return { text: "NOTHING_NEW", isError: false };
+      }]);
+      const done = vi.fn(async () => {});
+      await f.service.notice(owner, "utilization-low", idle.line, done, { items: [idle] });
+      await vi.waitFor(() => expect(f.requests).toHaveLength(2), { timeout: 15_000 });
+      await f.service.idle(owner);
+      expect(f.requests[1]!.prompt).toContain("Held: your INBOX turn ended while an item below had no act");
+      expect(f.requests[1]!.prompt).toContain("Utilization stayed under the 90% target for 20 min");
+      expect(done).toHaveBeenCalledTimes(1);
+      expect(f.requests).toHaveLength(2);
+    }, 30_000);
   });
 
   it("posts nothing for a background turn with nothing new, and always answers the operator (operator 28/10 20:57 BKK)", async () => {
@@ -2027,7 +2105,7 @@ describe("Nous's turns", () => {
     expect(operatorMessagesToAnswer(messages)).toEqual([]);
 
     // Beside: no tool answer took it within deliverMs, so it gets its own turn at once; that turn answers only it, and its answer
-    // never covers the first message (the first turn fails here, so the first message still waits).
+    // never covers the first message (the first turn fails here; Score 13/11: before any answer, so it runs again at once and answers it).
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const g = serviceFixture([
@@ -2045,9 +2123,49 @@ describe("Nous's turns", () => {
     await g.service.send(owner, "second");
     await vi.waitFor(async () => expect((await g.repository.listMessages(owner, 20)).some((message) => message.kind === "ANSWER")).toBe(true));
     expect(g.requests.map((request) => request.reason)).toEqual(["OPERATOR", "OPERATOR"]);
-    release();
-    await g.service.idle(owner);
     expect(operatorMessagesToAnswer(await g.repository.listMessages(owner, 20)).map((message) => message.content)).toEqual(["first"]);
+    release();
+    await vi.waitFor(() => expect(g.requests).toHaveLength(3), { timeout: 3_000 });
+    await g.service.idle(owner);
+    expect(operatorMessagesToAnswer(await g.repository.listMessages(owner, 20))).toEqual([]);
+  });
+
+  it("Score 13/11: an operator turn that failed before any answer retries at once; one that answered waits retryMs", async () => {
+    const f = serviceFixture([async () => { throw new Error("socket hang up"); }, async () => ({ text: "Εδώ είναι.", isError: false })],
+      { limits: { inboxDebounceMs: 10, retryMs: 60_000 } });
+    await f.service.send(owner, "πού είμαστε;");
+    await vi.waitFor(() => expect(f.requests).toHaveLength(2), { timeout: 3_000 });
+    await f.service.idle(owner);
+    expect(operatorMessagesToAnswer(await f.repository.listMessages(owner, 10))).toEqual([]);
+
+    const g = serviceFixture([async (input, service) => {
+      await service.callTool(owner, input.turnId, "space_reply_now", { text: "Το κοιτάζω." }, "call-r1");
+      throw new Error("socket hang up");
+    }], { limits: { inboxDebounceMs: 10, retryMs: 60_000 } });
+    await g.service.send(owner, "και η Hetzner;");
+    await g.service.idle(owner);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(g.requests).toHaveLength(1);
+    g.service.stop(owner);
+  });
+
+  it("Score 13/11: past a minute with no answer, an operator turn's tool answers remind it to reply now, until it does", async () => {
+    let clock = Date.parse("2026-11-13T01:00:00.000Z");
+    const results: string[] = [];
+    const f = serviceFixture([async (input, service) => {
+      results.push((await service.callTool(owner, input.turnId, "space_world", {}, "call-1")).result);
+      clock += 61_000;
+      results.push((await service.callTool(owner, input.turnId, "space_world", {}, "call-2")).result);
+      results.push((await service.callTool(owner, input.turnId, "space_reply_now", { text: "Το κοιτάζω τώρα." }, "call-3")).result);
+      results.push((await service.callTool(owner, input.turnId, "space_world", {}, "call-4")).result);
+      return { text: "Έγινε.", isError: false };
+    }], { now: () => clock });
+    await f.service.send(owner, "τι τρέχει;");
+    await f.service.idle(owner);
+    expect(results[0]).toBe("result of space_world");
+    expect(results[1]).toBe("result of space_world\n\nThe operator has waited 61 s with no answer: call space_reply_now now with the short answer (what you found or will do), then go on with the work.");
+    expect(results[2]).not.toContain("has waited");
+    expect(results[3]).toBe("result of space_world");
   });
 
   it("runs one Claude Code turn whose tool calls come back through the turn's MCP calls", async () => {
@@ -2259,6 +2377,25 @@ describe("Nous's turns", () => {
     const [fact] = await f.repository.listTurnFacts(owner, "2000-01-01T00:00:00.000Z");
     expect(fact).toMatchObject({ reason: "INBOX", status: "STOPPED" });
     expect(fact!.error).toMatch(/^Held by Space Gateway's pace cap: /);
+  });
+
+  it("12/11: a background turn Space's restart killed or whose database stopped answering is STOPPED and posts nothing red", async () => {
+    for (const cause of ["Claude Opus 5.5 · Claude: The CLI was stopped by SIGTERM (likely a server restart) before it returned a result.",
+      "timeout exceeded when trying to connect", "Claude: API Error: 500 timeout exceeded when trying to connect. This is a server-side issue, usually temporary"]) {
+      const f = serviceFixture([async () => { throw new Error(cause); }], { limits: { inboxDebounceMs: 10, retryMs: 30 } });
+      await f.service.notice(owner, "monitor:a", "Room Main pane Andy: FINISHED");
+      await vi.waitFor(() => expect(f.requests).toHaveLength(1), { timeout: 5_000 });
+      await f.service.idle(owner);
+      expect((await f.repository.listMessages(owner, 50)).filter((message) => message.kind === "ERROR")).toEqual([]);
+      const facts = await f.repository.listTurnFacts(owner, "2000-01-01T00:00:00.000Z");
+      expect(facts.find((fact) => fact.status !== "DONE")).toMatchObject({ reason: "INBOX", status: "STOPPED", error: `Space failed under the turn (restart or database): ${cause}` });
+    }
+    // A failure of Nous's own stays a Daily Nous error.
+    const f = serviceFixture([async () => { throw new Error("Claude: tool input was not valid JSON"); }], { limits: { inboxDebounceMs: 10, retryMs: 30 } });
+    await f.service.notice(owner, "monitor:a", "Room Main pane Andy: FINISHED");
+    await vi.waitFor(() => expect(f.requests.length).toBeGreaterThanOrEqual(1), { timeout: 5_000 });
+    await f.service.idle(owner);
+    expect((await f.repository.listTurnFacts(owner, "2000-01-01T00:00:00.000Z")).find((fact) => fact.status !== "DONE")).toMatchObject({ status: "FAILED" });
   });
 
   it("2/11 REVIEW: in CRITICAL the last room of the pool is the operator's and decisions'; inbox and standing turns wait for an account with room", async () => {
@@ -2853,6 +2990,26 @@ describe("Nous's MCP endpoint", () => {
       await over.app.close();
     }
     expect(verifyNousToken(secret, signNousToken(secret, { owner, turnId: "nous_turn:t1", expiresAt: Date.now() - 1 }))).toBeNull();
+  });
+
+  it("answers a call still running at its deadline with what to do next, before Claude Code's bare 60 s timeout (12-13/11)", async () => {
+    const app = Fastify();
+    let finish: (value: { ok: boolean; display: string; result: string }) => void = () => {};
+    const callTool = vi.fn(() => new Promise<{ ok: boolean; display: string; result: string }>((resolve) => { finish = resolve; }));
+    registerNousMcpRoute(app, { secret, service: { turnRunning: () => true, callTool }, routeOptions: {}, tools: nousToolDefinitions({ copilots: false }), answerMs: 20 });
+    await app.ready();
+    try {
+      const token = signNousToken(secret, { owner, turnId: "nous_turn:t1", expiresAt: Date.now() + 60_000 });
+      const called = await app.inject({ method: "POST", url: "/api/cli/nous/mcp", headers: { authorization: `Bearer ${token}` },
+        payload: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "space_reply_now", arguments: { text: "On it." } } } });
+      const result = called.json().result as { content: Array<{ text: string }>; isError: boolean };
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toMatch(/^space_reply_now did not finish within 0 s: .*check its effect before you call it again/);
+      finish({ ok: true, display: "Sent", result: "Sent" });
+      expect(NOUS_MCP_ANSWER_MS).toBeLessThan(60_000);
+    } finally {
+      await app.close();
+    }
   });
 });
 

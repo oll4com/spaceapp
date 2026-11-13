@@ -50,6 +50,16 @@ describe("native read server", () => {
     reader.stop();
   });
 
+  it("answers the other reads in flight null when one times out, not undefined (no one-shot launcher each)", async () => {
+    const reader = server(fakeServer.replace(`request.paneId === "hang"`, `request.paneId.startsWith("hang")`));
+    await reader.read({ paneId: "pane:a" });
+    const first = reader.read({ paneId: "hang" });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(await Promise.all([first, reader.read({ paneId: "hang2" })])).toEqual([null, null]);
+    expect((await reader.read({ paneId: "pane:b" }))?.pane).toBe("pane:b");
+    reader.stop();
+  });
+
   it("leaves a server that will not start alone for a minute", async () => {
     const starts = join(await mkdtemp(join(tmpdir(), "native-read-server-")), "starts");
     let time = 0;

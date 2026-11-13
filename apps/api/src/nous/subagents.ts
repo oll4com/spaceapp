@@ -43,7 +43,19 @@ export const NOUS_SUBAGENT_EXCLUDED: ReadonlySet<string> = new Set([
   "space_subagents"
 ]);
 
-export const nousSubagentTools = <T extends { name: string }>(tools: readonly T[]): T[] => tools.filter((tool) => !NOUS_SUBAGENT_EXCLUDED.has(tool.name));
+/**
+ * Tools a helper keeps for their reads only (their writes answer "Nous's own"): the helper's description says so, so it reports
+ * the change instead of trying it (11/11 02:56Z: one helper sent 19 space_programs upserts, all refused as failures).
+ */
+export const NOUS_HELPER_READS_ONLY: Readonly<Record<string, string>> = {
+  space_programs: "As a helper you may only list and read: say in your report which program to change and how, and Nous writes it.",
+  space_lessons: "As a helper you may only read lessons: say in your report which to merge, and Nous merges them.",
+  space_open_requests: "As a helper you may only read open requests: say in your report which to close or reopen, and Nous does it."
+};
+
+export const nousSubagentTools = <T extends { name: string; description?: string }>(tools: readonly T[]): T[] => tools
+  .filter((tool) => !NOUS_SUBAGENT_EXCLUDED.has(tool.name))
+  .map((tool) => NOUS_HELPER_READS_ONLY[tool.name] && tool.description !== undefined ? { ...tool, description: `${NOUS_HELPER_READS_ONLY[tool.name]} ${tool.description}` } : tool);
 
 export const NOUS_HELPER_PERSONA = [
   "You are a helper of Nous, the mind of SpaceApp: Nous gave you one task and runs other helpers beside you. Do only that task, with the tools you have (the space_nous MCP server: reads, the web, network checks, git and pane work; no shell, no file writes).",

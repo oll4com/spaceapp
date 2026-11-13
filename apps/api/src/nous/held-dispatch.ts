@@ -22,6 +22,13 @@ export interface HeldDelivery { owner: string; roomId: string; paneId: string; p
 /** Safety: a pane that is never ready gets 3 tries, then the text goes back to Nous with a line (R18-6), never lost. */
 export const HELD_MAX_ATTEMPTS = 3;
 
+/** The pane's last native turn when it already runs the held model (and effort, when one is asked), else null: such an item is dropped. */
+export function heldModelRunning(model: HeldModel, seen: { tasks?: Array<{ modelsUsed: Array<{ modelId: string; reasoningEffort: string | null }> }> } | null) {
+  const last = seen?.tasks?.at(-1)?.modelsUsed.at(-1);
+  if (!last || last.modelId.replace(/\[[^\]]*\]$/, "") !== model.modelId) return null;
+  return !model.reasoningEffort || last.reasoningEffort === model.reasoningEffort ? last : null;
+}
+
 export function mayDeliver(level: NousLoadLevel, priority: HeldPriority): boolean {
   return level === "CALM" || (level === "BUSY" && priority === "light");
 }

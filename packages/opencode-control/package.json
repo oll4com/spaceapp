@@ -16,7 +16,9 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@space/contracts": "0.2.5"
+  },
   "devDependencies": {
     "typescript": "^7.0.2",
     "vitest": "^4.1.12"

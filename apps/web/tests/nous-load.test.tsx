@@ -51,6 +51,13 @@ it("shows the cached answer at once, then the fresh one with its parts, averages
   expect(document.querySelector(".nous-load-graph canvas")).toBeTruthy();
 });
 
+it("shows the Load target of the spend mode in force (Settings → Nous → Low-spend mode, 13/11)", async () => {
+  serve(() => view(42, { target: 80, targetMode: "NORMAL" }));
+  render(<NousLoad active />);
+  expect(await screen.findByText("of capacity in use · target 80% · NORMAL")).toBeTruthy();
+  expect(screen.getByText("38% headroom to use")).toBeTruthy();
+});
+
 it("names the hard limit instead of the headroom", async () => {
   serve(() => view(100, { level: "OVERLOADED", limit: "server OVERLOADED (CPU 95%)" }));
   render(<NousLoad active />);

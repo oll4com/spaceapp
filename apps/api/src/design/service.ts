@@ -186,7 +186,7 @@ export function createDesignService(options: DesignServiceOptions) {
     try {
       created = await store.createArtifact({ roomId: pane.roomId, paneId: pane.id, kind: mimeType === "video/mp4" ? "VIDEO" : "IMAGE", mimeType, storageUri: storage.storageUri,
         sha256: createHash("sha256").update(bytes).digest("hex"), byteSize: bytes.length, pinnedAt: iso(), expiresAt: null,
-        metadata: { source: "DESIGN", originalFilename: filename, storedFilename: storage.storedFilename, formatId: format.id, width: size.width, height: size.height, engine: input.engine } });
+        metadata: { source: "DESIGN", originalFilename: filename, storedFilename: storage.storedFilename, formatId: format.id, width: size.width, height: size.height, engine: input.engine, requestId: input.requestId ?? null } });
     } catch (error) {
       await unlink(storage.filePath).catch(() => undefined);
       throw error;

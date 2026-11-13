@@ -38,12 +38,14 @@ async function setup() {
   });
   const messages: NousMessage[] = [];
   const service = {
-    send: vi.fn(async (who: string, content: string) => {
+    send: vi.fn(async (who: string, content: string, options: { clientId?: string } = {}) => {
       const at = new Date().toISOString();
-      const message = { id: `nous_msg:m${messages.length + 1}aaaaaa`, ownerUserId: who, turnId: null, kind: "OPERATOR", status: "DONE", content, meta: {}, createdAt: at, updatedAt: at } as NousMessage;
+      const message = { id: `nous_msg:m${messages.length + 1}aaaaaa`, ownerUserId: who, turnId: null, kind: "OPERATOR", status: "DONE", content,
+        meta: options.clientId ? { clientId: options.clientId } : {}, createdAt: at, updatedAt: at } as NousMessage;
       messages.push(message);
       return message;
     }),
+    operatorMessageByClientId: vi.fn(async (who: string, id: string) => messages.find((message) => message.ownerUserId === who && message.meta.clientId === id) ?? null),
     messages: vi.fn(async (who: string) => messages.filter((message) => message.ownerUserId === who)),
     messagePage: vi.fn(async (who: string) => ({ messages: messages.filter((message) => message.ownerUserId === who), hasMore: false })),
     clear: vi.fn(async () => { const count = messages.length; messages.length = 0; return count; }),
@@ -124,6 +126,25 @@ describe("Nous attachments", () => {
     const foreign = (await app.inject({ method: "POST", url: "/api/cli/nous/mcp", headers: { authorization: `Bearer ${otherToken}` },
       payload: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "space_nous_attachment_view", arguments: { id: image!.id } } } })).json().result;
     expect(foreign).toMatchObject({ isError: true });
+  });
+
+  it("answers a retry of an outbox id with the stored message: concurrent or later, with its files, never a second message (nous_msg:acccb43f)", async () => {
+    const { app, service } = await setup();
+    const upload = await app.inject({ method: "POST", url: "/api/nous/attachments", ...form([{ name: "shot.png", type: "image/png", data: png }]) });
+    const [image] = upload.json().attachments as Array<{ id: string }>;
+    const payload = { content: "From the phone", attachmentIds: [image!.id], clientId: "outbox-0001-abcdef" };
+    const tries = await Promise.all([1, 2, 3].map(() => app.inject({ method: "POST", url: "/api/nous/messages", payload })));
+    // A retry after the phone lost the answer: the file is already sent, yet it answers 202 with the same message, not a 422.
+    tries.push(await app.inject({ method: "POST", url: "/api/nous/messages", payload }));
+    expect(tries.map((answer) => [answer.statusCode, answer.statusCode === 202 ? "" : answer.body])).toEqual([[202, ""], [202, ""], [202, ""], [202, ""]]);
+    expect(new Set(tries.map((answer) => answer.json().message.id)).size).toBe(1);
+    expect(tries[3]!.json().attachments.map((file: { id: string }) => file.id)).toEqual([image!.id]);
+    expect(service.send).toHaveBeenCalledTimes(1);
+    // The id is the owner's own: another owner's message with it, and a new id, are new messages.
+    expect((await app.inject({ method: "POST", url: "/api/nous/messages", headers: { "x-owner": other }, payload: { content: "Mine", clientId: payload.clientId } })).statusCode).toBe(202);
+    expect((await app.inject({ method: "POST", url: "/api/nous/messages", payload: { content: "Next", clientId: "outbox-0002-abcdef" } })).statusCode).toBe(202);
+    expect(service.send).toHaveBeenCalledTimes(3);
+    expect((await app.inject({ method: "POST", url: "/api/nous/messages", payload: { content: "Bad", clientId: "x" } })).statusCode).toBe(500);
   });
 
   it("serves files to their owner only, with ranges, previews and downloads", async () => {

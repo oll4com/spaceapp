@@ -533,7 +533,7 @@ export function AgentSettingsDock({
 
         <SettingsDisclosure sectionKey="account" title="Account & Google" description="Sign in with your Google account." scope="Your account" icon={Users}
           help="Link your Google account to sign in with one click. Your rooms and settings stay the same. Admins can also turn on Google sign-in for everyone here."
-          keywords="google sign in login sso account email devices phone mobile app nous revoke">
+          keywords="google sign in login sso account email devices phone mobile app nous revoke linked spaceapp link remote">
           <RecoverableSurface fallback={settingsCardLoadingFallback}>
             <LazyGoogleAccountSettingsCard auth={auth ?? null} onAuthRefresh={onAuthRefresh ?? (async () => {})} />
           </RecoverableSurface>

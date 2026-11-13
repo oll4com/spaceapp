@@ -3,7 +3,7 @@ import { MOBILE_PAIRING_CONFIRM_MS, type AppDeviceSession } from "@space/contrac
 import { api } from "../../api.js";
 import { NOTIFICATION_STREAM_EVENT } from "../notifications/useNotifications.js";
 
-const APP_LABELS: Record<string, string> = { nous: "Nous app", spaceapp: "SpaceApp app" };
+const APP_LABELS: Record<string, string> = { nous: "Nous app", spaceapp: "SpaceApp app", "spaceapp-link": "SpaceApp link" };
 const day = (value: string) => new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 
 /**

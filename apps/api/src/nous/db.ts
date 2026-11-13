@@ -38,7 +38,9 @@ export const NOUS_DB_TABLE_USE: Record<string, string> = {
   pg_stat_statements: "the extension is not installed: pg_stat_activity and pg_stat_user_tables are readable",
   // R84 12/11 (42P01 7 d: nous_memories ×3, space_memories, space_memory, space_appointments, settings).
   nous_memories: "Space Memory is files: space_memory_recall", space_memories: "Space Memory is files: space_memory_recall",
-  space_memory: "Space Memory is files: space_memory_recall", space_appointments: "appointments", settings: "user_settings"
+  space_memory: "Space Memory is files: space_memory_recall", space_appointments: "appointments", settings: "user_settings",
+  // Daily Nous errors 13/11 (42P01 02:44 UTC): a Freelance proposal is a message row.
+  freelance_copilot_proposals: "freelance_copilot_messages with kind 'PROPOSAL'"
 };
 const guessed = Object.entries(NOUS_DB_TABLE_USE).map(([table, use]) => `no ${table} (${use})`);
 /** The description's sentence: "no cli_sessions (pane_cli_sessions), … and no pane_prompt_queue (…)". */
@@ -224,7 +226,7 @@ function tableRefs(sql: string): Array<{ table: string; alias: string | null }> 
 export const NOUS_DB_COLUMN_SYNONYMS: Record<string, string[]> = {
   created_at: ["started_at", "requested_at", "at", "recorded_at", "occurred_at", "shared_at", "checked_at"], updated_at: ["at", "finished_at", "ended_at", "generated_at"],
   id: ["session_id", "handoff_request_id", "event_id", "turn_id", "key_id", "account_id", "record_key", "task_id"], kind: ["type", "reason"], value: ["text", "settings"],
-  title: ["name", "subject", "summary", "role", "text"], actor_id: ["actor_user_id"], next: ["next_step"], role: ["kind"], action_json: ["action"],
+  title: ["name", "subject", "summary", "role", "text", "label"], actor_id: ["actor_user_id"], next: ["next_step"], role: ["kind"], action_json: ["action"],
   closed_at: ["ended_at", "completed_at"],
   // R20-2 (48 h to 30/10: nous_followups.at and .fire_at; its time is due_at, a task's next_run_at).
   fire_at: ["due_at", "next_run_at", "at"], at: ["due_at", "next_run_at", "created_at"],
@@ -569,5 +571,9 @@ export function createNousDb(deps: { pool: pg.Pool }) {
 export type NousDb = ReturnType<typeof createNousDb>;
 
 export function nousDbPool(connectionString: string): pg.Pool {
-  return new pg.Pool({ connectionString, max: 2, idleTimeoutMillis: 30_000, application_name: "space-nous-db" });
+  const pool = new pg.Pool({ connectionString, max: 2, idleTimeoutMillis: 30_000, application_name: "space-nous-db" });
+  // API audit 12/11: an idle client's error (57P01 at a PostgreSQL shutdown) had no listener and shut the API down.
+  pool.on("error", (error: Error) => console.error("[nous-db] Idle PostgreSQL connection error:", error.message));
+  pool.on("connect", (client) => client.on("error", () => { /* reported by the pending query or the pool */ }));
+  return pool;
 }

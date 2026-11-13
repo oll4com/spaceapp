@@ -659,6 +659,14 @@ describe("Nous reliability fixes (workbench review 2026-10-21)", () => {
     expect(await cards.execute("space_copilot_answer", { copilot: "JOB", question: card.id, answer: "Yes" }, ctx))
       .toMatchObject({ ok: true, display: "ALREADY_CLOSED", result: expect.stringContaining("was closed 2026-11-12T10:00:00.000Z by USER") });
     expect(await cards.execute("space_copilot_answer", { copilot: "JOB", question: "notification:never01", answer: "Yes" }, ctx)).toMatchObject({ ok: false, display: "No such question" });
+    // 13/11 Score lever (Alibaba 02:11Z): a just-closed question named in Nous's own words is named back with its card id; still a failure.
+    const alibaba = { ...card, id: "notification:ali01", source: "MAIL_COPILOT", title: "Mail Copilot has a question", body: "", payload: { ask: { question: "Alibaba Cloud AI Catalyst welcome: reply with our UID?" } } };
+    const closedQuestions = vi.fn(async () => [alibaba, { ...alibaba, id: "notification:other01", payload: { ask: { question: "PayPal: which card?" } } }]);
+    const words2 = nousFor({ copilots: { items, answerQuestion: byId } as never, notifications: { list: async () => [], resolve: async () => false, closedQuestions } as never });
+    const named = await words2.execute("space_copilot_answer", { copilot: "MAIL", question: "Alibaba Cloud AI Catalyst: welcome mail, $200 credits need an account and the UID", answer: "Star it" }, ctx);
+    expect(named).toMatchObject({ ok: false, display: "No such question", result: expect.stringContaining("[notification:ali01] \"Mail Copilot has a question\" closed 2026-11-12T10:00:00.000Z") });
+    expect(named.result).not.toContain("other01");
+    expect(closedQuestions).toHaveBeenCalledWith(owner, "MAIL_COPILOT");
     const calls: Array<[string, Record<string, unknown>]> = [];
     const roomTool = vi.fn(async (name: string, args: Record<string, unknown>) => {
       calls.push([name, args]);

@@ -193,16 +193,16 @@ it("counts the type chips among the selected status, dims the empty ones and kee
   const types = screen.getByRole("group", { name: "Program types" });
   const chips = () => [...types.querySelectorAll("button")].map((button) => `${button.textContent}${button.disabled ? " (dimmed)" : ""}`);
   expect(screen.queryByText(/money/i)).toBeNull();
-  expect(chips()).toEqual(["Cash1", "AI tokens0 (dimmed)", "Servers/Cloud2", "Dev tools0 (dimmed)", "Perks2"]);
+  expect(chips()).toEqual(["Cash1", "AI tokens0 (dimmed)", "Servers/Cloud2", "Dev tools0 (dimmed)", "Perks2", "Choose0 (dimmed)"]);
   fireEvent.click(within(counts).getByRole("button", { name: /^Approved/ }));
-  expect(chips()).toEqual(["Cash1", "AI tokens0 (dimmed)", "Servers/Cloud1", "Dev tools0 (dimmed)", "Perks0 (dimmed)"]);
+  expect(chips()).toEqual(["Cash1", "AI tokens0 (dimmed)", "Servers/Cloud1", "Dev tools0 (dimmed)", "Perks0 (dimmed)", "Choose0 (dimmed)"]);
   fireEvent.click(within(types).getByRole("button", { name: /^Servers\/Cloud/ }));
   expect(screen.getAllByRole("region").map((group) => group.getAttribute("aria-label"))).toEqual(["NVIDIA"]);
   fireEvent.click(within(counts).getByRole("button", { name: /^Rejected/ }));
   // The type stays chosen; the list is both, the status counts follow the type.
   expect(within(types).getByRole("button", { name: /^Servers\/Cloud/ }).getAttribute("aria-pressed")).toBe("true");
   expect(screen.getAllByRole("region").map((group) => group.getAttribute("aria-label"))).toEqual(["Google"]);
-  expect(chips()).toEqual(["Cash0 (dimmed)", "AI tokens0 (dimmed)", "Servers/Cloud1", "Dev tools0 (dimmed)", "Perks0 (dimmed)"]);
+  expect(chips()).toEqual(["Cash0 (dimmed)", "AI tokens0 (dimmed)", "Servers/Cloud1", "Dev tools0 (dimmed)", "Perks0 (dimmed)", "Choose0 (dimmed)"]);
   expect(within(counts).getByRole("button", { name: /^Approved/ }).textContent).toBe("Approved1");
 });
 
@@ -263,6 +263,21 @@ it("filters by a grouped tag with the status chips, and badges each line (operat
   expect(programTags({ ...base, program: "Cybersecurity Grant Program", tags: ["cash-grants"], amount: { text: "$10,000 in API credits", value: 10000, currency: "USD" } })).toEqual(["perks"]);
   expect(programTags({ ...base, program: "GenAI Bug Bounty", tags: ["ai-tokens", "cash-grants"], amount: { text: "Low $500, Severe $15,000", value: 15000, currency: "USD" } }))
     .toEqual(["ai-tokens", "cash-grants"]);
+});
+
+it("marks the programs worth joining with Choose on top of their type, and the totals follow its chip (operator 13/11, plan clipboard:mmmeF0-e3x4G)", async () => {
+  // choose rides along the type paths that ignore stored tags (a cloud provider, the AI-token programs) and never replaces a type.
+  expect(programTags({ ...base, parent: "UpCloud", program: "UpCloud for Startups", tags: ["server-access", "perks", "choose"] })).toEqual(["server-access", "choose"]);
+  expect(programTags({ ...base, id: "codex-x", parent: "OpenAI", program: "Codex", tags: ["choose"] })).toEqual(["ai-tokens", "choose"]);
+  expect(programTags({ ...base, program: "Sentry for Startups", whatItIs: "Error monitoring SaaS", tags: ["choose"] })).toEqual(["dev-tools", "choose"]);
+  const pick = (id: string, value: number, tags: string[]) => ({ ...base, id, parent: id, program: `${id} credits`, status: "APPROVED" as const, tags,
+    amount: { text: `$${value} credits`, value, currency: "USD" } });
+  serve([pick("chosen", 4000, ["ai-tokens", "choose"]), pick("other", 6000, ["dev-tools"])]);
+  render(<NousPrograms page="startup" active />);
+  fireEvent.click(await screen.findByRole("button", { name: /^Choose1/ }));
+  expect(screen.getAllByRole("region").map((group) => group.getAttribute("aria-label"))).toEqual(["chosen"]);
+  expect([...screen.getByRole("button", { name: /chosen credits/ }).querySelectorAll(".nous-program-tag")].map((badge) => badge.textContent)).toEqual(["AI tokens", "Choose"]);
+  expect(document.querySelector(".nous-programs-total")!.textContent).toMatch(/\$4,000$/);
 });
 
 it("shows on an AI-token program's line the Space Gateway pool its credits feed, and that pool's supported models once opened (7/11)", async () => {

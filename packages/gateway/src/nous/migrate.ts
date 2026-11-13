@@ -23,7 +23,8 @@ export const SPACE_GATEWAY_MIGRATIONS = [
   "0309_gateway_inception_jina_pools.sql", "0310_gateway_freeai_pool.sql", "0311_gateway_azure_openai_pool.sql",
   "0312_gateway_zai_siliconflow_ovh_pools.sql",
   "0313_gateway_mistral_pool.sql",
-  "0314_gateway_cloud_claude_pools.sql"
+  "0314_gateway_cloud_claude_pools.sql",
+  "0321_cpu_report_indexes.sql"
 ] as const;
 
 /** Space files that also change Space's own tables: only their gateway statements are applied (each must still match the file). */
@@ -31,7 +32,9 @@ export const GATEWAY_PARTS: Record<string, string> = {
   "0204_token_usage_routes.sql": `ALTER TABLE space_gateway_request_logs
   ADD COLUMN IF NOT EXISTS upstream_request_id text CHECK (upstream_request_id IS NULL OR char_length(upstream_request_id) <= 120);
 CREATE INDEX IF NOT EXISTS space_gateway_request_logs_upstream_request_idx
-  ON space_gateway_request_logs(upstream_request_id) WHERE upstream_request_id IS NOT NULL;`
+  ON space_gateway_request_logs(upstream_request_id) WHERE upstream_request_id IS NOT NULL;`,
+  "0321_cpu_report_indexes.sql": `CREATE INDEX IF NOT EXISTS space_gateway_usage_history_secondary_reset_idx ON space_gateway_usage_history (reset_at)
+  INCLUDE (account_id, quota_key, used_percent, recorded_at) WHERE usage_window = 'SECONDARY' AND reset_at IS NOT NULL;`
 };
 
 export async function loadNgwMigrations() {

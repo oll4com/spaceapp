@@ -52,6 +52,6 @@ export function readNeedsYouCards(words, root = document) {
       headingOnce: stem.length < 12 || times(text, stem) === 1,
       whyOnce: labels.filter((label) => label === words.why).length <= 1 && (why.length < 12 || times(text, why.slice(0, 40)) === 1),
       factLabelsOnce: new Set(labels).size === labels.length,
-      translated: [...article.querySelectorAll(".ny-footer button")].some((button) => norm(button.textContent) === words.original) };
+      translated: [...article.querySelectorAll(".ny-translated button")].some((button) => norm(button.textContent) === words.original) };
   });
 }

@@ -8,8 +8,9 @@
 //
 //   node scripts/space-dots-home-check.mjs [--dot-slot 6] [--skip-approval] [--skip-browser]
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { devToolsEndpoint } from "./lib/space-chrome-render.mjs";
 
 const origin = "http://127.0.0.1:4911";
 const scratchRoot = "/var/lib/spaceapp-user/agent-workspace/active";
@@ -98,13 +99,7 @@ async function startChrome(profileDir) {
   const chrome = spawn("/usr/bin/google-chrome", ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profileDir}`, "--no-first-run",
     "--no-default-browser-check", "--disable-extensions", "--window-size=1440,900", "about:blank"],
   { env: { ...process.env, TMPDIR: "/tmp" }, stdio: "ignore" });
-  let endpoint = null;
-  for (let i = 0; i < 100 && !endpoint; i++) {
-    await sleep(100);
-    const lines = (await readFile(join(profileDir, "DevToolsActivePort"), "utf8").catch(() => "")).split("\n");
-    if (lines[0] && lines[1]) endpoint = `ws://127.0.0.1:${lines[0].trim()}${lines[1].trim()}`;
-  }
-  if (!endpoint) { chrome.kill("SIGKILL"); throw new Error("Chrome did not start."); }
+  const endpoint = await devToolsEndpoint(chrome, profileDir);
   const socket = new WebSocket(endpoint);
   await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = () => reject(new Error("The DevTools connection failed.")); });
   let next = 0;

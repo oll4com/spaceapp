@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { needsYouGroup, needsYouPlace, type SpaceNotification } from "../src/index.js";
+import { needsYouGroup, needsYouLayout, needsYouPlace, type SpaceNotification } from "../src/index.js";
 
 type Card = Parameters<typeof needsYouPlace>[0];
 const card = (over: Partial<Pick<SpaceNotification, "source" | "kind" | "link" | "payload">>): Card => ({
@@ -43,5 +43,32 @@ describe("needsYouPlace", () => {
     expect(needsYouPlace(card({ payload: { paneMode: "TERMINAL", ask: colour } }))).toBe("HERE");
     expect(needsYouGroup(card({ link: { roomId: "room:a", paneId: "pane:iris", target: "url:https://example.com" }, payload: { paneMode: "BROWSER", ask: colour } }))).toBe("QUESTIONS");
     expect(needsYouPlace(card({ source: "NOUS", kind: "NEEDS_HANDS", link: { target: "thread:me@x.com:1a" }, payload: { ask: ask({ options: ["Done", "Need links/steps"], recommended: "Done" }) } }))).toBe("HERE");
+  });
+});
+
+// Plan clipboard:T2uboz26Oh3q §6 / S8: one layout per pane kind, from the record alone.
+describe("needsYouLayout", () => {
+  const decide = { question: "Send it?", options: ["Approve", "Decline"], answer: { kind: "COPILOT_DECISION" } };
+  it("gives hands cards HANDS, wherever their pane is", () => {
+    expect(needsYouLayout(card({ source: "BROWSER_HANDOFF", kind: "BROWSER_HANDOFF_REQUESTED" }))).toBe("HANDS");
+    expect(needsYouLayout(card({ payload: { paneMode: "TERMINAL", ask: ask() } }))).toBe("HANDS");
+    // A design pane's sign-in is hands, not a visual card.
+    expect(needsYouLayout(card({ source: "DESIGN", kind: "SIGN_IN" }))).toBe("HANDS");
+  });
+  it("gives Security and Monitoring cards SECURITY, their reviews too", () => {
+    expect(needsYouLayout(card({ source: "SECURITY_COPILOT", kind: "SECURITY_REVIEW", payload: { ask: decide } }))).toBe("SECURITY");
+    expect(needsYouLayout(card({ source: "MONITORING_COPILOT", kind: "MONITORING_QUESTION", payload: { ask: { question: "Mute it?", answer: { kind: "COPILOT_QUESTION" } } } }))).toBe("SECURITY");
+  });
+  it("gives a studio's card, or options naming files, VISUAL", () => {
+    expect(needsYouLayout(card({ source: "DESIGN", kind: "DESIGN_APPROVAL" }))).toBe("VISUAL");
+    expect(needsYouLayout(card({ source: "VIDEO", kind: "VIDEO_QUESTION", payload: { ask: { question: "Which cut?", answer: { kind: "COPILOT_QUESTION" } } } }))).toBe("VISUAL");
+    const variants = { question: "Which logo?", options: ["A: artifact:varA000001", "B: artifact:varB000001"], answer: { kind: "NOUS" } };
+    expect(needsYouLayout(card({ source: "NOUS", kind: "NEEDS_HANDS", payload: { paneMode: "TERMINAL", ask: variants } }))).toBe("VISUAL");
+  });
+  it("gives approvals REVIEW and every other card QUESTION", () => {
+    expect(needsYouLayout(card({ source: "MARKETING_COPILOT", kind: "REVIEW_REQUESTED", payload: { ask: decide, review: { id: "post:1", channel: "X", text: "Hi" } } }))).toBe("REVIEW");
+    expect(needsYouLayout(card({ source: "MAIL_COPILOT", kind: "REVIEW_REQUESTED", payload: { ask: decide } }))).toBe("REVIEW");
+    expect(needsYouLayout(card({ source: "JOB_COPILOT", kind: "QUESTION", payload: { ask: { question: "Grade?", answer: { kind: "COPILOT_QUESTION" } } } }))).toBe("QUESTION");
+    expect(needsYouLayout(card({ source: "NOUS", kind: "NEEDS_HANDS", payload: { ask: { question: "Tonight?", options: ["Tonight", "Tomorrow"], answer: { kind: "NOUS" } } } }))).toBe("QUESTION");
   });
 });

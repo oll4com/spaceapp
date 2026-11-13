@@ -2,7 +2,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from "fastify";
 import type { WebSocket } from "ws";
 import {
-  MOBILE_PAIRING_CONFIRM_MS, MOBILE_UPDATE_REQUIRED_CLOSE, MobileNoiseHandshake, decodeMobileFrame, encodeMobileFrame, mobileAppUpdateRequired, mobileFrames, mobileHandshakePrologue, mobileHelloSchema,
+  LINK_APP, MOBILE_PAIRING_CONFIRM_MS, MOBILE_UPDATE_REQUIRED_CLOSE, MobileNoiseHandshake, decodeMobileFrame, encodeMobileFrame, mobileAppUpdateRequired, mobileFrames, mobileHandshakePrologue, mobileHelloSchema,
   mobileIntegrityRequestHash, mobilePairRequestSchema, mobilePairingPsk, vaultBase64url, type MobileUpdateRequired, type MobileFrame, type MobileNoiseTransport, type NotificationRaiseInput
 } from "@space/contracts";
 import type { AppDeviceSessionRecord, AppDeviceSessionRepository, MobileDeviceScope, MobileInstanceKeyRepository } from "@space/db";
@@ -10,6 +10,8 @@ import { makeSpaceId, type SpaceEventBus, type SpaceStore } from "@space/runtime
 import { cookieName, createCsrfToken, csrfHeaderName, sessionIdHash, signMobileSession } from "../auth.js";
 import { recordAudit } from "../request-audit.js";
 import { requestIpForLog } from "../request-helpers.js";
+import { linkLease } from "../instance-link/lease.js";
+import { linkRoute } from "../instance-link/routes.js";
 import { attestationSerials, createAttestationStatusList, recheckDecideKeys, verifyDecideKeyAttestation, type AttestationStatusList } from "./attestation.js";
 import { mailPairingNotice } from "./pairing-mail.js";
 import type { MailCopilotGoogleAccess } from "../mail-copilot/service.js";
@@ -61,6 +63,12 @@ const pathProblem = (path: string) => !path.startsWith("/api/") || path.length >
 type Begin = (transport: MobileNoiseTransport, row: AppDeviceSessionRecord) => void;
 /** The socket's peer: the upgrade request on the direct route; none through the relay, whose sessions log their peer as "relay". */
 type Peer = { request: FastifyRequest | null; ip: string };
+/**
+ * An open session as its owner sees it (Space Link's Remote mark, ADR-014): who, from which address ("relay" through the relay), since
+ * when, what it may do, its last request (method and path, never the query or body) and the last ping's round trip.
+ */
+export type LiveChannel = { deviceId: string; app: string; name: string; ip: string; since: string; scopes: string[];
+  last: { method: string; path: string; at: string } | null; rttMs: number | null };
 
 export function registerMobileChannel(app: FastifyInstance, options: {
   keys: MobileInstanceKeys; keyRepository: MobileInstanceKeyRepository; offers: MobileOffers; devices: AppDeviceSessionRepository;
@@ -86,7 +94,8 @@ export function registerMobileChannel(app: FastifyInstance, options: {
   const attestationStatus = options.attestationStatus ?? createAttestationStatusList();
   const sidHashOf = (deviceId: string) => sessionIdHash(mobileDeviceSid(options.sessionSecret, deviceId));
   const live = (row: AppDeviceSessionRecord | null): row is AppDeviceSessionRecord => Boolean(row && !row.revokedAt && row.expiresAt > iso() && row.sidSha256 === sidHashOf(row.id));
-  const channels = new Set<{ socket: WebSocket; inbound: () => number; deviceId: string }>();
+  const channels = new Set<{ socket: WebSocket; inbound: () => number; deviceId: string; owner: string; live: LiveChannel }>();
+  const lease = linkLease(options.store, now);
   const buffered = () => [...channels].reduce((sum, channel) => sum + channel.socket.bufferedAmount + channel.inbound(), 0);
   const overdue = (row: AppDeviceSessionRecord) => !row.confirmedAt && Date.parse(row.createdAt) + MOBILE_PAIRING_CONFIRM_MS <= now();
 
@@ -196,7 +205,7 @@ export function registerMobileChannel(app: FastifyInstance, options: {
         integrity: integrity ? (integrity.ok ? "ok" : `refused ${integrity.reason}`) : options.integrity ? "none" : "not configured", ...(demo ? { demo: true } : {}) });
       if (demo) return begin(transport, row);
       await options.notifications?.raise({ ownerUserId: owner, roomId: null, paneId: null, source: "SYSTEM", kind: "MOBILE_PAIRED", severity: "URGENT",
-        title: `New device paired: ${row.deviceName}`, body: "Allow it in Settings > Account > Devices within 10 minutes, or Revoke it. Until then it can only read.",
+        title: row.app === LINK_APP ? `New SpaceApp link: ${row.deviceName}` : `New device paired: ${row.deviceName}`, body: "Allow it in Settings > Account > Devices within 10 minutes, or Revoke it. Until then it can only read.",
         link: { surface: "settings", target: "devices" }, dedupeKey: `mobile:paired:${row.id}`, payload: { deviceId: row.id }, telegram: null }).catch(() => undefined);
       void (async () => {
         const to = (await Promise.resolve(options.store.getControlActor(owner)).catch(() => null))?.email;
@@ -242,7 +251,7 @@ export function registerMobileChannel(app: FastifyInstance, options: {
 
   /** The session: control frames, and requests into this API as the device (design §3.2, §6.1). */
   function serve(socket: WebSocket, peer: Peer, transport: MobileNoiseTransport, first: AppDeviceSessionRecord) {
-    let device = first, checkedAt = now(), heard = now(), rekeyedAt = now(), inFlight = 0;
+    let device = first, checkedAt = now(), heard = now(), rekeyedAt = now(), inFlight = 0, pingAt = 0;
     let token = { value: "", scopes: "", at: 0 };
     let unsubscribe: (() => void) | null = null;
     // Uploads in chunk frames, by request id, until their last chunk.
@@ -256,7 +265,8 @@ export function registerMobileChannel(app: FastifyInstance, options: {
       if (more) { if (dropped.size >= IN_FLIGHT_MAX) return void socket.close(4400); dropped.add(id); }
       answer();
     };
-    const channel = { socket, inbound, deviceId: first.id };
+    const channel = { socket, inbound, deviceId: first.id, owner: first.ownerUserId, live: { deviceId: first.id, app: first.app, name: first.deviceName, ip: peer.ip,
+      since: iso(), scopes: first.scopes ?? ["read"], last: null, rttMs: null } as LiveChannel };
     channels.add(channel);
     const opened = now();
     const send = (frame: MobileFrame) => { if (socket.readyState === socket.OPEN) socket.send(transport.encrypt(encodeMobileFrame(frame))); };
@@ -269,10 +279,11 @@ export function registerMobileChannel(app: FastifyInstance, options: {
       if (now() - heard > SILENCE_MS) return socket.close(4408);
       if (now() - opened > SESSION_MS) return socket.close(4410);
       control({ op: "ping" });
+      pingAt = now();
       if (now() - rekeyedAt >= REKEY_MS) { control({ op: "rekey" }); transport.rekeySend(); rekeyedAt = now(); }
     }, PING_MS);
     ticker.unref();
-    socket.on("close", () => { clearInterval(ticker); unsubscribe?.(); channels.delete(channel); });
+    socket.on("close", () => { clearInterval(ticker); unsubscribe?.(); channels.delete(channel); lease.release(channel.owner, channel.deviceId); });
 
     /** Events as ids only, like /api/events/stream (design §6.1): a record of another owner never reaches this phone. */
     async function subscribe() {
@@ -293,6 +304,7 @@ export function registerMobileChannel(app: FastifyInstance, options: {
       const row = await options.devices.byNoisePublic(device.noisePublic!);
       if (!live(row) || row.id !== device.id) return null;
       if (String(row.scopes) !== String(device.scopes)) control({ op: "scopes", scopes: row.scopes });
+      channel.live.scopes = row.scopes ?? ["read"];
       return device = row;
     }
     async function dispatch(header: { id: number; m: string; p: string; h?: Record<string, string>; more?: true; sig?: string; int?: string }, body: Uint8Array) {
@@ -301,6 +313,10 @@ export function registerMobileChannel(app: FastifyInstance, options: {
       const user = row ? await options.store.getControlActor(row.ownerUserId) : null;
       if (!row || !user) return void socket.close(4403);
       const scopes = row.scopes ?? ["read"];
+      channel.live.last = { method: header.m, path: header.p.split("?")[0]!, at: iso() };
+      // One linked SpaceApp acts here at a time, and never once this SpaceApp's person took management back (lease.ts).
+      const refused = row.app === LINK_APP && scopes.includes("act") && linkRoute(header.m, header.p)?.scope === "act" ? lease.claim(row.ownerUserId, row.id, row.deviceName) : null;
+      if (refused) return refuse(header.id, 409, refused.code, refused.message);
       if (token.scopes !== String(scopes) || now() - token.at > TOKEN_RENEW_MS) {
         token = { value: signMobileSession(user, options.sessionSecret, { sid: mobileDeviceSid(options.sessionSecret, row.id), app: row.app, device: row.id, scopes }, now()),
           scopes: String(scopes), at: now() };
@@ -327,6 +343,7 @@ export function registerMobileChannel(app: FastifyInstance, options: {
       if (frame.type === "ctl") {
         const op = frame.header.op;
         if (op === "ping") control({ op: "pong" });
+        else if (op === "pong" && pingAt) { channel.live.rttMs = now() - pingAt; pingAt = 0; }
         else if (op === "rekey") transport.rekeyReceive();
         else if (op === "sub" && frame.header.topic === "events") void subscribe().catch(() => undefined);
         else if (op === "unsub") { unsubscribe?.(); unsubscribe = null; }
@@ -402,6 +419,8 @@ export function registerMobileChannel(app: FastifyInstance, options: {
   return {
     /** Ends these devices' live sessions at once (a compromised rotation, C3); an idle channel would otherwise keep its events. */
     closeDevices(ids: ReadonlySet<string>) { for (const channel of channels) if (ids.has(channel.deviceId)) channel.socket.close(4403); },
+    /** The owner's open sessions, oldest first. */
+    live(owner: string): LiveChannel[] { return [...channels].filter((channel) => channel.owner === owner).map((channel) => ({ ...channel.live })); },
     /** A new RELAY offer: the relay client listens on its rid now, not at the next minute's sync. */
     relayOffered() { relay?.refresh(); }
   };

@@ -1,6 +1,7 @@
 import type {} from "./request-context.js";
 import type { FastifyRequest } from "fastify";
 import type { SpaceStore } from "@space/runtime";
+import { LINK_APP } from "@space/contracts";
 
 export async function recordAudit(
   store: Pick<SpaceStore, "upsertUser" | "recordAuditEvent">,
@@ -29,7 +30,7 @@ export async function recordAudit(
     // An agent's broker session acts as the operator; the row keeps who really called (hardening plan step 17).
     metadata: request.sessionPrincipal
       ? { ...input.metadata, sessionPrincipal: request.sessionPrincipal, ...(request.user?.brokerScope ? { brokerScope: request.user.brokerScope } : {}) }
-      : request.mobileDevice ? { ...input.metadata, via: "mobile", device: request.mobileDevice.id, peer: request.ip } : input.metadata ?? {}
+      : request.mobileDevice ? { ...input.metadata, via: request.appSession === LINK_APP ? "link" : "mobile", device: request.mobileDevice.id, peer: request.ip } : input.metadata ?? {}
   });
 }
 

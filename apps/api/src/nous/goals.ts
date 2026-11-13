@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { NOUS_GOAL_EVIDENCE_MIN_CHARS, type ClipboardItem, type NousGoal, type NousGoalEditInput, type NousGoalLimit, type NousGoalsSettings, type NousGoalsView, type NousGoalUpdateArgs, type NousTurnFacts } from "@space/contracts";
+import { NOUS_GOAL_EVIDENCE_MIN_CHARS, type ClipboardItem, type NousScore, type NousGoal, type NousGoalEditInput, type NousGoalLimit, type NousGoalsSettings, type NousGoalsView, type NousGoalUpdateArgs, type NousTurnFacts } from "@space/contracts";
 import type { NewNousGoalEvent, NousGoalsRepository } from "@space/db";
 import { localDayHour } from "./daily-review.js";
 import { durationText } from "./digest.js";
@@ -79,6 +79,16 @@ export function costliestGoal(goals: NousGoal[], points: ReadonlyMap<string, num
   return goals.filter((goal) => !(goal.waitsOn && WAITS_ON_OTHERS.has(goal.waitsOn.kind)) && cost(goal) < 0).sort((a, b) => cost(a) - cost(b))[0] ?? null;
 }
 
+/**
+ * Score first's points (wiring scorePoints): each plan's and goal's from the newest Score, and a goal whose measure is the Score itself takes the
+ * whole negative Score while it is below 0 (13/11, goal 84ba917a «παντα θετικο … score» cost only its own −27 and backed off to 23 h while the Score was −493).
+ * shortcut: a goal is the Score's when its words name it (score, σκορ, βαθμολογ); give goals a measure field if one is missed.
+ */
+export function goalScorePoints(score: Pick<NousScore, "score" | "tiles">): Map<string, number> {
+  return new Map(score.tiles.filter((tile) => tile.key === "plans" || tile.key === "goals").flatMap((tile) => tile.items.flatMap((item) => !item.id ? []
+    : [[item.id, tile.key === "goals" && score.score < 0 && /score|σκορ|βαθμολογ/i.test(item.label) ? Math.min(item.points, score.score) : item.points] as const])));
+}
+
 export function createNousGoals(deps: NousGoalsDeps) {
   const now = deps.now ?? Date.now;
   const readyFor = async (goal: NousGoal) => goal.waitsOn?.kind === "OPERATOR" && deps.readyRuntimes ? deps.readyRuntimes().catch(() => undefined) : undefined;
@@ -94,14 +104,24 @@ export function createNousGoals(deps: NousGoalsDeps) {
    * (Space counts it unchanged and sleeps it again), and any other goal at most GOAL_TURNS_PER_DAY turns since its last change in 24 h.
    * shortcut: a third party's answer reaches a waiting goal only when an inbox turn updates its wait (recordUpdate wakes it); wake it from mail if that proves slow.
    */
+  // The costliest goal is due a gap after its last turn whatever back-off or day cap its nextTurnAt holds (13/11: it showed "next turn in 23.1 h").
+  const dueAt = (goal: NousGoal, first: NousGoal | null, settings?: NousGoalsSettings) => {
+    const next = goal.nextTurnAt ? Date.parse(goal.nextTurnAt) : 0;
+    return goal.id === first?.id && settings ? Math.min(next, goal.lastWorkedAt ? Date.parse(goal.lastWorkedAt) + settings.gapSeconds * 1_000 : 0) : next;
+  };
   async function pick(owner: string, at = now(), settings?: NousGoalsSettings): Promise<NousGoal | null> {
-    const due = (await active(owner)).filter((goal) => !goal.nextTurnAt || Date.parse(goal.nextTurnAt) <= at)
+    const all = await active(owner);
+    const points = deps.scorePoints?.(owner);
+    const first = costliestGoal(all, points);
+    const due = all.filter((goal) => dueAt(goal, first, settings) <= at)
       .sort((left, right) => (left.lastWorkedAt ?? "").localeCompare(right.lastWorkedAt ?? "") || left.priority - right.priority);
-    const first = costliestGoal(due, deps.scorePoints?.(owner));
-    if (first) due.unshift(...due.splice(due.indexOf(first), 1));
+    const lead = first && due.includes(first) ? first : costliestGoal(due, points);
+    if (lead) due.unshift(...due.splice(due.indexOf(lead), 1));
     let plans: ClipboardItem[] | null = null;
     let facts: NousTurnFacts[] | null = null;
     for (const goal of due) {
+      // The goal costing the most Score never backs off nor meets the day cap: each gap it gets a turn.
+      if (goal === first) return goal;
       const wait = goal.waitsOn;
       const dateReached = wait?.until && Date.parse(wait.until) <= at && (!goal.lastWorkedAt || goal.lastWorkedAt < wait.until);
       if (!settings || !goal.nextTurnAt || !goal.fingerprint || dateReached
@@ -121,8 +141,10 @@ export function createNousGoals(deps: NousGoalsDeps) {
   }
 
   /** The earliest time an ACTIVE goal becomes due, null with no ACTIVE goal. */
-  async function nextDue(owner: string, at = now()): Promise<number | null> {
-    const times = (await active(owner)).map((goal) => goal.nextTurnAt ? Math.max(at, Date.parse(goal.nextTurnAt)) : at);
+  async function nextDue(owner: string, at = now(), settings?: NousGoalsSettings): Promise<number | null> {
+    const all = await active(owner);
+    const first = settings ? costliestGoal(all, deps.scorePoints?.(owner)) : null;
+    const times = all.map((goal) => Math.max(at, dueAt(goal, first, settings)));
     return times.length ? Math.min(...times) : null;
   }
 
@@ -160,7 +182,7 @@ export function createNousGoals(deps: NousGoalsDeps) {
     /** The operator's explicit delete (the only way a goal row goes). */
     remove: (owner: string, id: string) => deps.repository.remove(owner, id),
 
-    /** Nous's update from its tool: progress, criteria, linked plans, what it waits on, its note, ACHIEVED with evidence. */
+    /** Nous's update from its tool: progress, criteria, linked plans, what it waits on, its note, pause/resume on the operator's order, ACHIEVED with evidence. */
     async recordUpdate(owner: string, args: NousGoalUpdateArgs, turnId: string | null): Promise<{ goal: NousGoal; changed: string[] } | { problem: string }> {
       const before = await deps.repository.get(owner, args.goal);
       if (!before) return { problem: `No goal ${args.goal}. The world's "## Goals" section lists the ids.` };
@@ -188,13 +210,20 @@ export function createNousGoals(deps: NousGoalsDeps) {
         events.push({ goalId: before.id, kind: "WAITS", text: args.waitsOn ? `${args.waitsOn.kind}: ${args.waitsOn.what}${args.waitsOn.until ? ` until ${args.waitsOn.until}` : ""}` : "Waits on nothing now", turnId });
       }
       if (args.note !== undefined && args.note !== before.note) { patch.note = args.note; changed.push("note"); events.push({ goalId: before.id, kind: "NOTE", text: args.note, turnId }); }
+      // The tool checked `order` is the operator's own message; a resumed goal is due now, like the Goals view's Resume.
+      if (args.status && args.status !== before.status) {
+        const kind = args.status === "PAUSED" ? "PAUSED" : "RESUMED";
+        Object.assign(patch, { status: args.status }, kind === "RESUMED" ? { nextTurnAt: null, unchangedTurns: 0 } : {});
+        changed.push(kind);
+        events.push({ goalId: before.id, kind, text: `${kind === "PAUSED" ? "Paused" : "Resumed"} by Nous on the operator's order ${args.order}`, turnId });
+      }
       if (args.achieved) {
         if (args.achieved.evidence.trim().length < NOUS_GOAL_EVIDENCE_MIN_CHARS) return { problem: "ACHIEVED needs evidence the operator can check." };
         Object.assign(patch, { status: "ACHIEVED", progress: 100, evidence: args.achieved.evidence, achievedAt: iso(now()), waitsOn: null, nextTurnAt: null });
         changed.push("ACHIEVED");
         events.push({ goalId: before.id, kind: "ACHIEVED", text: args.achieved.evidence, turnId });
       }
-      if (!changed.length) return { problem: ignored.length ? `Not kept: ${ignored.join("; ")}.` : "Nothing changed: give progress, criteria, planIds, waitsOn, limit, a note, or achieved with evidence." };
+      if (!changed.length) return { problem: ignored.length ? `Not kept: ${ignored.join("; ")}.` : "Nothing changed: give progress, criteria, planIds, waitsOn, limit, a note, status with the operator's order, or achieved with evidence." };
       const goal = (await deps.repository.update(owner, before.id, patch))!;
       for (const entry of events) await event(owner, entry);
       return { goal, changed: ignored.length ? [...changed, `not kept: ${ignored.join("; ")}`] : changed };

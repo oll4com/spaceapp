@@ -5,8 +5,8 @@ import { orderedRange } from "./range-rules.js";
 /**
  * Nous Goals (operator request 2026-10-27, plan clipboard:DR51jZJEB0j1): the operator's standing objectives, above plans. A goal is
  * the operator's exact words; Nous breaks it into plans, panes, tasks and helpers and works it in GOAL turns of its own until it is
- * ACHIEVED (with evidence). Only a person creates, edits, pauses, drops or deletes a goal; Nous records progress, criteria, links,
- * what it waits on and its note. A leaf module like plan-map.ts (nous.ts imports it).
+ * ACHIEVED (with evidence). Only a person creates, edits, drops or deletes a goal; Nous records progress, criteria, links,
+ * what it waits on and its note, and pauses or resumes one only on the operator's own message ordering it. A leaf module like plan-map.ts (nous.ts imports it).
  */
 export const NOUS_GOAL_STATUSES = ["ACTIVE", "PAUSED", "ACHIEVED", "DROPPED"] as const;
 export const nousGoalStatusSchema = z.enum(NOUS_GOAL_STATUSES);
@@ -90,7 +90,10 @@ export const nousGoalUpdateArgsSchema = z.object({
   waitsOn: planWaitsOnSchema.nullable().optional().describe("What the goal waits on now (OPERATOR, DATE with until, PROMOTE, THIRD_PARTY, NOUS, SERVER); null clears it."),
   note: z.string().trim().min(1).optional().describe("The last thing you did for it and what comes next (the operator reads it in the Goals view)."),
   achieved: z.object({ evidence: z.string().trim().min(NOUS_GOAL_EVIDENCE_MIN_CHARS) }).strict().optional()
-    .describe("Mark the goal ACHIEVED with the evidence that proves it (what the operator can check); never without it.")
+    .describe("Mark the goal ACHIEVED with the evidence that proves it (what the operator can check); never without it."),
+  // Operator 9/11 «Pause Ολα τα goals» and 12/11 «ενεργοποίησε ξανά τα πάντα»: Nous could do neither, the loop stayed off until they clicked Resume.
+  status: z.enum(["PAUSED", "ACTIVE"]).optional().describe("Pause or resume the goal, only when the operator's own message orders it: give that message's id in order."),
+  order: z.string().regex(/^nous_msg:[A-Za-z0-9_-]{6,80}$/).optional().describe("With status: the id of the operator's message that orders the pause or resume (space_conversation lists it).")
 }).strict();
 export type NousGoalUpdateArgs = z.infer<typeof nousGoalUpdateArgsSchema>;
 

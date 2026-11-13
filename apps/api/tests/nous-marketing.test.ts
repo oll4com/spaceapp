@@ -55,7 +55,8 @@ describe("marketing scoring", () => {
     expect(report.outcomesScore).toBe(100);
     expect(report.score).toBe(Math.round(0.6 * report.postsScore! + 0.4 * 100));
     expect(report.trend7).toBe(report.score! - 20);
-    expect(report.daysWithoutResult).toBe(6);
+    // 4/11 brought a result; 5/11's Hacker News post waits for its first read: 5 of 7 days without one.
+    expect(report.daysWithoutResult).toBe(5);
     expect(report).toMatchObject({ target: 50, daysBelowTarget: report.score! < 50 ? expect.any(Number) : 0 });
     expect(report.sources.find((source) => source.id === "GA4")).toMatchObject({ connected: false, detail: `Not connected: needs ${GA4_NEEDS}.` });
     expect(report.sources.find((source) => source.id === "MAIL")?.values).toMatchObject({ campaigns: 1, sent: 40, replied: 3 });
@@ -64,6 +65,36 @@ describe("marketing scoring", () => {
     expect(page).toMatch(/^2 posts on REDDIT/);
     expect(page).toContain("#4 2026-11-04T11:00 REDDIT PUBLISHED score 0");
     expect(marketingToolText(report, {})).toContain("Sources not connected: Google Analytics 4, GitHub traffic");
+  });
+  it("counts an unreadable post as not measured, waits for a new post's first read, and scores npm's typical week", () => {
+    n = 0;
+    // Plan ~/agent-workspace/active/20261113-marketing-90 step 1.2-1.4: a banned account's reply read as not_measurable was a 0 and a −0.5.
+    const posts = [post("REDDIT", "PUBLISHED", "2026-11-03T10:00:00.000Z", { comments: 0, not_measurable: 1 }), post("X", "PUBLISHED", "2026-11-05T09:00:00.000Z")];
+    const metrics = [metric("2026-11-05", "NPM", "downloads_week", 300), metric("2026-11-05", "NPM", "downloads_week_typical", 70)];
+    const report = buildMarketingReport({ posts, metrics, mail: null, ga4Configured: false, trafficConfigured: false, now: NOW });
+    expect(report.posts.find((row) => row.channel === "REDDIT")?.score).toBeNull();
+    expect(report.totals).toMatchObject({ published: 2, measured: 0, zeroReach: 0 });
+    // Today's unread X post is not "no result"; 3/11 (unreadable) and the five empty days are.
+    expect(report.daysWithoutResult).toBe(6);
+    expect(report.outcomesScore).toBe(Math.round(100 * Math.log10(71) / Math.log10(201)));
+  });
+  // Plan clipboard:UoygRDurSshE steps 1.1, 1.5, 1.6: personal posts are no marketing, replies are conversations, stars are the real ones of 30 days.
+  it("leaves personal posts out, keeps replies outside the posts score, and counts real stars by starred_at", () => {
+    n = 0;
+    const posts = [
+      post("X", "PUBLISHED", "2026-11-04T10:00:00.000Z", { views: 1000, replies: 50 }),
+      post("X", "PUBLISHED", "2026-11-04T11:00:00.000Z", { views: 0 }, { kind: "REPLY" }),
+      post("X", "PUBLISHED", "2026-11-04T12:00:00.000Z", { views: 0 }, { evidence: { topic: "personal" } })
+    ];
+    const metrics = [metric("2026-10-01", "GITHUB", "stars", 0), metric("2026-11-05", "GITHUB", "stars", 50), metric("2026-11-05", "GITHUB", "stars_gained_30d", 0)];
+    const report = buildMarketingReport({ posts, metrics, mail: null, ga4Configured: false, trafficConfigured: false, now: NOW });
+    expect(report.posts.map((row) => row.kind)).toEqual(["REPLY", "POST"]);
+    expect(report.postsScore).toBe(100);
+    expect(report.totals).toMatchObject({ posts: 2, zeroReach: 0 });
+    expect(report.conversations).toMatchObject({ posts: 1, published: 1, measured: 1, views: 0 });
+    expect(marketingToolText(report, {})).toContain("conversations (replies, outside the posts score) 1 published");
+    // 50 stars more on the counter, none real in 30 days: outcomes 0.
+    expect(report.outcomesScore).toBe(0);
   });
 });
 

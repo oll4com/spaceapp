@@ -3,7 +3,7 @@ import Fastify from "fastify";
 import { InMemoryNousRepository } from "@space/db";
 import { registerNousMcpRoute, signNousToken } from "../src/nous/mcp.js";
 import { createNousService, NOUS_PERSONA, type NousRunner } from "../src/nous/service.js";
-import { createNousSubagents, NOUS_SUBAGENT_EXCLUDED, nousSubagentTools, type NousSubagentDeps } from "../src/nous/subagents.js";
+import { createNousSubagents, NOUS_HELPER_READS_ONLY, NOUS_SUBAGENT_EXCLUDED, nousSubagentTools, type NousSubagentDeps } from "../src/nous/subagents.js";
 import { createNousTools, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
 
 // Plan clipboard:BeaSM1Sle5du (operator request 2026-10-20): Nous runs up to 5 helpers at once through space_subagents.
@@ -68,6 +68,12 @@ describe("Nous's helpers (space_subagents)", () => {
     const names = new Set(all.map((tool) => tool.name));
     expect([...NOUS_SUBAGENT_EXCLUDED].filter((name) => !names.has(name) && !name.startsWith("space_vault_"))).toEqual([]);
     expect(names.has("space_subagents")).toBe(true);
+    // A tool helpers keep for reads says so in their list, so a helper never tries its writes (11/11: 19 refused programs upserts).
+    for (const name of Object.keys(NOUS_HELPER_READS_ONLY)) {
+      expect(names.has(name), name).toBe(true);
+      expect(nousSubagentTools(all).find((tool) => tool.name === name)?.description).toMatch(/^As a helper you may only/);
+      expect(all.find((tool) => tool.name === name)?.description).not.toMatch(/As a helper/);
+    }
   });
 
   it("tells Nous when to use helpers and that it keeps the decisions and the final answer", () => {

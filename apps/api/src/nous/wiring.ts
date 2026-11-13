@@ -3,6 +3,8 @@ import { sentryReleaseLines, sentryReleasesDeployedSince, sentryToken } from "..
 import { renderTokenReview } from "./token-review.js";
 import { siteSigninsFor } from "../site-signins.js";
 import { appointmentsFor } from "../appointments.js";
+import { linkLease } from "../instance-link/lease.js";
+import { instanceLinksFor } from "../instance-link/routes.js";
 import { createNousRequestDone, openRequestsOf, priorityPanesOf, quietRequestsOf, REQUEST_DONE_NOTE_PREFIX } from "./request-done.js";
 import { activePaceCapEmergency, createPaceCapEmergency, emergencyReleases, PACE_CAP_EMERGENCY_NOTE, paceCapEmergencyText, parsePaceCapEmergency } from "./pace-cap-emergency.js";
 import { createNousRequests } from "./requests.js";
@@ -13,12 +15,12 @@ import { onCodexTurnInterrupted } from "../codex-rollout-diagnostics.js";
 import { onNeedsYouEnded, type NotificationService } from "../notifications/service.js";
 import { createNeedsYouBrowserPages, createNeedsYouPlaces } from "../needs-you-browser-page.js";
 import { browserAgentOf, type BrowserControlActivity } from "../browser-control-activity.js";
-import { BROWSER_REAPED_ACTION, scheduledPanes, unusedBrowsers } from "../browser-reaper.js";
+import { BROWSER_REAPED_ACTION, browserInUse, browserLastUse, scheduledPanes, unusedBrowsers } from "../browser-reaper.js";
 import { dirname, join } from "node:path";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
-  eventSchema, notificationIdSchema, freelanceLeadDecisionSchema, listMemoryQuerySchema, freelanceMessageReviewDecisionSchema, jobApplyReviewDecideSchema, mailCopilotReviewDecideSchema,
+  eventSchema, reasoningEffortSchema, notificationIdSchema, freelanceLeadDecisionSchema, listMemoryQuerySchema, freelanceMessageReviewDecisionSchema, jobApplyReviewDecideSchema, mailCopilotReviewDecideSchema,
   COPILOT_QUESTION_SOURCES, NOUS_FIRST_SOURCES, mergeNousSettings, copilotQuestionItemId, heldForNous, heldUnderAllowance, isCopilotQuestion, isNousApproval, isNousFirstCard, mailRuleDecisionSchema, marketingPostReviewDecisionSchema, needsYou, NOUS_CLAUDE_MODELS, nousDecisionRunsWhen, nousModelLabel, nousProvider, nousModelMatchesProvider, nousSettingsWithProvider, nousSettingsSchema, ownerWorkingTimeZone, withNousPublicDefaults,
   NOUS_PROMPT_MAX_CHARS, NOUS_SPACE_ROUTES, nousFreeRouteAllowed, nousSpaceModel, type NousRunProvider, type ApiProviderAccountList, type AuthUser, type ClaudeUsageAccountList, type ClipboardItem, type ManagedPlanExecution, type NousCopilot, type NousGlobalHold, type PaneCliSession, type NousDecision, type NousOverview, type NousSettings,
   historySince, nousTestTargetSchema, agentLanguageOf, type GatewayAccount, type DeployQueueReport, type DeployQueueTicket, type FreelanceEgressRoute, type NousTurnReason, type Pane, type TokenUsagePeriod, type RoomAgentEvent, type SpaceNotification, type NotificationListQuery, type Artifact, type MonitoringCollectorConfig, type NeedsYouBrowserPage, type NotificationRaiseInput
@@ -27,7 +29,7 @@ import type { LiveHistoryRepository, NousNote, RailAnswerBy } from "@space/db";
 import { InMemoryNousGoalsRepository, PostgresNousGoalsRepository, InMemoryNousProgramsRepository, PostgresNousProgramsRepository, InMemoryNousPaneSummariesRepository, PostgresNousPaneSummariesRepository, InMemoryNousAwayRepository, InMemoryPaneReportsRepository, PostgresNousAwayRepository, PostgresPaneReportsRepository, InMemoryNousFollowupsRepository, InMemoryNousPaneChecksRepository, InMemoryNousPaneCloseoutsRepository, InMemoryNousPlanMarksRepository, InMemoryNousRepository, PostgresNousFollowupsRepository, PostgresNousPaneChecksRepository, PostgresNousPaneCloseoutsRepository, PostgresNousPlanMarksRepository, PostgresNousRepository, PostgresSpaceStore, type ControlRepository, type NousRepository, type PaneReport, type RoomAgentMonitorRepository } from "@space/db";
 import { createNousFollowups, readTicket } from "./followups.js";
 import type { NousDeferral } from "./daily-review.js";
-import { createNousGoals } from "./goals.js";
+import { createNousGoals, goalScorePoints } from "./goals.js";
 import { createGoalHistory } from "./goal-history.js";
 import { allNotifications, baseRateRecommendation, cardStems, createNousPaneNotices } from "./pane-notices.js";
 import type { BrowserTabsRow } from "./tools.js";
@@ -41,7 +43,7 @@ import { NOUS_TOKEN_NOTE_PREFIX, nousLosingWeeks, type NousLostRow } from "./los
 import { createNousTokenMonitor, type NousHeldMode, nousPoolUtilization, nousProviderAdvice, nousProviderRooms, nousProviderRoomText, nousTokenModel, poolBackAt, readNousTokens, renderNousTokens, renderNousTokenSummary } from "./tokens.js";
 import type { VaultModule } from "../vault/wiring.js";
 import { nousPlanActivity, renderNousPlanActivity } from "./stalled-plans.js";
-import { buildPlanMap, createPlanHoldsMonitor, HARD_HOLDS, planMapParts, renderPlanMap, stalledHold, type PlanMap } from "./plan-map.js";
+import { buildPlanMap, createPlanHoldsMonitor, HARD_HOLDS, planMapParts, renderPlanMap, planHoldText, stalledHold, type PlanMap } from "./plan-map.js";
 import { createStandingOrders, type CloseoutBrowser, type NousStandingOrders } from "./standing-orders.js";
 import { vaultFencedTargets } from "../vault/fence-hooks.js";
 import { createCanonicalSpaceMemoryBridge, makeSpaceId, SpaceNotFoundError, type CanonicalMemoryBridge, type SpaceEventBus, type SpaceStore } from "@space/runtime";
@@ -67,17 +69,17 @@ import { CHESS_MOVE_SOCKET, createWorkerCliMoveRunner, startWorkerCallSpan, work
 import { NOUS_MCP_PATH, postToWorkerWhenUp, registerNousMcpRoute, signNousToken } from "./mcp.js";
 import { nextPlanStep, paneLabel, renderNousWorldSections } from "./digest.js";
 import { promptSection, type PromptPart } from "./retrieval.js";
-import { createRequestWaitAlerts, queuedTexts, renderRequestsWaiting, waitingRequestsOf, type QueuedText, type RequestWaits, type WaitingPane, type WaitingRequest } from "./requests-waiting.js";
+import { createRequestWaitAlerts, promptsComing, queuedTexts, renderRequestsWaiting, waitingRequestsOf, type QueuedText, type RequestWaits, type WaitingPane, type WaitingRequest } from "./requests-waiting.js";
 import { createStuckPanes } from "./stuck-panes.js";
 import { createHostSwap, createServerLoad, paneRootsFrom, renderServerLoad, type HostSwapReader, type NousLoadState, type ServerLoadDeps } from "./server-load.js";
-import { createHeldDispatch } from "./held-dispatch.js";
+import { createHeldDispatch, heldModelRunning, type HeldModel } from "./held-dispatch.js";
 import { createNousMailContext } from "./mail-context.js";
 import { stableQueueIdle, TEST_RESOURCE_CREATED } from "./allowances.js";
 import { overtakenEvidence, type OvertakenFacts } from "./overtaken.js";
 import { mirrorLedger, syncRailLedger } from "./rail-ledger.js";
 import { onModelUnavailable } from "../model-unavailable.js";
 import { createMcpStaleWatch, mcpServersChangedAt, type McpStalePane } from "./mcp-stale.js";
-import { createNousLessons } from "./lessons.js";
+import { createNousLessons, within } from "./lessons.js";
 import { createMemoryEmbeddings } from "../memory-embedding-smoke.js";
 import type { SpaceApiConfig } from "../config.js";
 import { createNousAppParityWatch } from "./app-parity.js";
@@ -100,17 +102,18 @@ import type { NousSelectedModel } from "./model-choice.js";
 import { createNousProviderCatalog } from "./providers.js";
 import { classifySpaceFailure, createSpaceRouter, SpaceRouteError, type SpaceAttempt, type SpaceRouter } from "./space-provider.js";
 import { createNousSubagents, NOUS_HELPER_SLOTS_SCALE, type NousSubagentDeps } from "./subagents.js";
-import { createNousLoad, registerNousLoadRoute, renderNousUtilization, renderUtilizationLow } from "./utilization.js";
+import { createNousLoad, registerNousLoadRoute, renderNousUtilization, renderUtilizationLow, utilizationPushOn } from "./utilization.js";
 import { cachedTokenUsage, registerTokenUsageRoute, tokenUsageBreakdown, tokenUsageWorldLines } from "./token-usage.js";
 import { createNousScore, nousScoreErrors, scoreDay, nousScoreLine, NOUS_SCORE_RESET_NOTE, NOUS_SCORE_WINDOW_DAYS, parseScoreReset, registerNousScoreRoutes } from "./score.js";
 import { approvalStates } from "./approvals.js";
 import type { HealthCollectorSample } from "../system-health-collector.js";
-import { accountHold, botCheckHold, physicalAskHold, vaultReadBackHold, workingSigninHold, confirmedControlBatch, createNousTools, NOUS_MEMORY_PAGE, nousToolDefinitions, pendingNousBriefOf, type CopilotBriefEvent, type NousCopilotDeps, type NousCopilotItem, type NousToolDeps } from "./tools.js";
+import { accountHold, botCheckHold, cardEntryStepsHold, physicalAskHold, vaultReadBackHold, workingSigninHold, confirmedControlBatch, createNousTools, NOUS_MEMORY_PAGE, nousToolDefinitions, pendingNousBriefOf, type CopilotBriefEvent, type NousCopilotDeps, type NousCopilotItem, type NousToolDeps } from "./tools.js";
 import { createNousFiles, NOUS_OWN_LINK } from "./files.js";
 import { createFileMentions, type FileMentions } from "./file-mentions.js";
 import { unknownRefs } from "./named-refs.js";
 import { createNousSharedFiles, registerNousSharedFileRoutes } from "./shared-files.js";
 import { createNousPrograms, NOUS_PROGRAMS_IMPORT_DIR, NOUS_PROGRAMS_IMPORT_OWNER, registerNousProgramRoutes } from "./programs.js";
+import { createProgramMeters } from "./program-meters.js";
 import { createOperatorUpdates } from "./operator-updates.js";
 import { NOUS_CRYPTO_DIR, readCryptoReport, registerNousReportRoutes, startedOf } from "./reports.js";
 import { createNousMarketing } from "./marketing.js";
@@ -158,6 +161,8 @@ export function nousLiveCounts(samples: Array<{ sample: DashboardAgentsSample | 
 }
 
 const SETTINGS_CACHE_MS = 15_000;
+/** An operator turn waits at most this long for a room's panes, then shows the room as unread (Score 13/11: three first answers waited 97-577 s on one stuck room read). */
+const NOUS_OPERATOR_ACTIVITY_WAIT_MS = 10_000;
 /** R65 (goal ee5a573e β): a lesson about asking the operator what Space already held (3/11: lessons-1103-predict-from-known-rules, lessons-predict-prerequisite). */
 const NOUS_ASK_LAST_LESSON = /predict-from-known|prerequisite|could have (?:found|decided|known)|ask[- ]last|ee5a573e|already (?:held|had|knew|answered)|before (?:you )?ask|θα μπορούσες να το βρεις|ρωτ[άα]ς πριν/i;
 /** A page of each list in space_copilot_state (paging, not a cap: `offset` reads the older rows). */
@@ -828,8 +833,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     turnFacts: (owner, since) => repository.listTurnFacts(owner, since),
     timeZone: async (owner) => ownerWorkingTimeZone(await store.getUserSettings(owner)), ...(options.readyCliRuntimes ? { readyRuntimes: options.readyCliRuntimes } : {}),
     // Score first (operator 5/11 12:32 BKK): the newest Score's points per plan and goal, so the goal costing the most goes first.
-    scorePoints: (owner) => { const latest = score.cached(owner);
-      return latest ? new Map(latest.tiles.filter((tile) => tile.key === "plans" || tile.key === "goals").flatMap((tile) => tile.items).flatMap((item) => item.id ? [[item.id, item.points] as const] : [])) : null; } });
+    scorePoints: (owner) => { const latest = score.cached(owner); return latest ? goalScorePoints(latest) : null; } });
   // Away mode (plan clipboard:B7eTUHTJYg3X): the operator's away sessions and what Nous did meanwhile.
   const awayRepository = databaseUrl ? PostgresNousAwayRepository.fromConnectionString(databaseUrl) : new InMemoryNousAwayRepository();
   // Operator 2/11 13:15 BKK: a card a CLI pane raises about a page opens the browser pane holding it (needs-you-browser-page.ts).
@@ -854,6 +858,9 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     if (formFirst) return formFirst;
     const physical = physicalAskHold(card);
     if (physical) return physical;
+    // The card carries the agent's report file too (13/11: Jack's Cartesia steps were in it).
+    const cardSteps = cardEntryStepsHold({ text: card.text, ...(typeof input.payload?.report === "string" ? { report: input.payload.report } : {}) });
+    if (cardSteps) return cardSteps;
     // 7/11 Oracle: a sign-in the Vault holds waits for the agent's fill and masked readout.
     // nous_msg:fe72e061: no reset or recovery card while the stored sign-in works (the operator's order in `checked` overrides).
     const working = await workingSigninHold(siteSigninsFor(store), input.ownerUserId, card);
@@ -1155,11 +1162,13 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     try { const value = JSON.parse(notes.find((note) => note.key === SWEEP_PROGRESS_NOTE)?.text ?? "[]") as unknown; return Array.isArray(value) ? value : []; } catch { return []; }
   };
   /** The oldest text waiting for each of the owner's panes: Nous's held queue and Space Control's after-turn prompts. */
-  async function queuedOf(owner: string): Promise<Map<string, QueuedText>> {
+  const queueRecords = async (owner: string) => {
     const control = options.controlRepository;
-    const records = control ? (await Promise.all([["schedule", ["SCHEDULED"]], ["nous_held", ["HELD"]]].map(([kind, statuses]) =>
+    return control ? (await Promise.all([["schedule", ["SCHEDULED", "RUNNING"]], ["nous_held", ["HELD"]]].map(([kind, statuses]) =>
       control.listActive ? control.listActive(kind as "schedule", statuses as string[]) : control.list(kind as "schedule", owner)))).flat() : [];
-    return queuedTexts(records, owner);
+  };
+  async function queuedOf(owner: string): Promise<Map<string, QueuedText>> {
+    return queuedTexts(await queueRecords(owner), owner);
   }
   /** R35-1: CLI panes whose screen and CLI state stood still 30 minutes on a spinner or with a text waiting (paneHeartbeats samples them). */
   const stuckPanes = createStuckPanes();
@@ -1189,7 +1198,10 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     void lessons.sync(owner);
     const rooms = await liveRooms(owner);
     const [samples, notifications, plans, open, running, trains, decisions, notes, server, clock, heldLine, reports, planReports, allowed, tokenState, goalsText, utilization] = await Promise.all([
-      Promise.all(rooms.map(async (room) => ({ room, sample: await options.readActivity(room.id).catch(() => null) }))),
+      Promise.all(rooms.map(async (room) => {
+        const read = options.readActivity(room.id);
+        return { room, sample: await (reason === "OPERATOR" ? within(read, NOUS_OPERATOR_ACTIVITY_WAIT_MS) : read).catch(() => null) };
+      })),
       allNotifications(options.notifications.list, owner, { status: "OPEN" }).then((items) => items.filter((item) => item.source !== "NOUS" && item.severity !== "INFO")),
       allPages((page) => store.listClipboardItems(owner, { source: "PLAN", includeCompleted: false, page, pageSize: 100 })),
       allPages((page) => store.listTaskItems(owner, { status: "OPEN", page, pageSize: 100 })),
@@ -1385,7 +1397,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
         break;
       case "MARKETING:REVIEW":
         if (!marketing) throw new Error("Marketing Copilot is not available.");
-        await marketing.decideReview(owner, pane, action.itemId, marketingPostReviewDecisionSchema.parse({ decision: action.decision, ...(action.text ? { body: action.text } : {}), ...note }), by);
+        await marketing.decideReview(owner, pane, action.itemId, marketingPostReviewDecisionSchema.parse({ decision: action.decision, ...(action.text ? { body: action.text } : {}), ...(action.scheduledAt ? { scheduledAt: action.scheduledAt } : {}), ...note }), by);
         break;
       case "MARKETING:CAMPAIGN":
         if (!marketing || !["approve", "complete", "cancel"].includes(action.decision)) throw new Error("Unknown campaign decision.");
@@ -1496,12 +1508,32 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     thread: (owner, account, threadId) => options.copilots.mail!.thread(owner, null, account, threadId),
     accounts: async (owner) => (await options.copilots.mail!.accounts(owner, null)).map((account) => account.email) }) : null;
   // 5/11 Bruno/Bob: a held model change sent to a busy pane was only scheduled after its turn (PENDING read as delivered), then failed unseen.
-  const paneRunning = async (paneId: string) => { try { return (await options.inspectPane(await store.getPane(paneId))).state === "RUNNING"; } catch { return false; } };
+  // 13/11 Felix/Iris: a model change already in force waited behind a busy pane forever (the wait below keeps it, uncounted); it is dropped
+  // and the stored effort set to the real one.
+  const heldModelReady = async (paneId: string, model: HeldModel) => {
+    try {
+      const pane = await store.getPane(paneId);
+      const seen = await options.inspectPane(pane);
+      const running = heldModelRunning(model, seen);
+      const effort = reasoningEffortSchema.safeParse(running?.reasoningEffort);
+      if (running && effort.success && pane.reasoningEffort !== effort.data) {
+        const traceId = makeSpaceId("trace");
+        await store.updatePane(paneId, { reasoningEffort: effort.data }, traceId);
+        const session = await Promise.resolve(store.getActivePaneCliSession(paneId)).catch(() => null);
+        if (session?.isActive) await store.updatePaneCliSession(session.sessionId, { reasoningEffort: effort.data }, traceId);
+      }
+      return running ? "RUNNING_IT" : seen.state === "RUNNING" ? "BUSY" : "READY";
+    } catch { return "READY"; }
+  };
   const held = options.controlRepository && serverLoad ? createHeldDispatch({ repository: options.controlRepository, level: async () => (await serverLoad.read()).level,
-    deliver: async (item) => item.model && await paneRunning(item.paneId) ? { ok: false, result: "Wait for this CLI turn to finish before changing models." }
-      : options.roomTools.execute(item.model ? "set_pane_model" : item.configure ? "space_control" : "send_to_pane", item.model ? { pane: item.paneId, ...item.model, when: "after_turn" }
+    deliver: async (item) => {
+      const ready = item.model ? await heldModelReady(item.paneId, item.model) : "READY";
+      if (ready === "RUNNING_IT") return { ok: true, result: `${item.paneName} already runs ${item.model!.modelId}.` };
+      if (ready === "BUSY") return { ok: false, result: "Wait for this CLI turn to finish before changing models." };
+      return options.roomTools.execute(item.model ? "set_pane_model" : item.configure ? "space_control" : "send_to_pane", item.model ? { pane: item.paneId, ...item.model, when: "after_turn" }
       : item.configure ? { tool: "space_execute", arguments: { actions: [{ ...item.configure, target: { paneIds: [item.paneId] } }] } }
-      : { panes: [item.paneId], text: item.text, when: "after_turn" }, { roomId: item.roomId, agentPaneId: "", actorId: item.owner, requestId: makeSpaceId("nous_held"), traceId: makeSpaceId("trace") }),
+      : { panes: [item.paneId], text: item.text, when: "after_turn" }, { roomId: item.roomId, agentPaneId: "", actorId: item.owner, requestId: makeSpaceId("nous_held"), traceId: makeSpaceId("trace") });
+    },
     notice: async (owner, key, line) => { await late.service?.notice(owner, key, line); } }) : null;
   const copilots = copilotDeps(options, ownerPanes);
   const subagents = createNousSubagents({ run: options.helperRunner ?? helperRunner(options, backend, pickModel, spaceRouter), ...(options.config.publicDistribution ? { maxLive: 1 } : {}),
@@ -1533,10 +1565,11 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   const load = createNousLoad({ repository, hostSwap, owners: async () => [...new Set((await store.listRooms()).map(ownerOf))],
     zone: async (owner) => ownerWorkingTimeZone(await store.getUserSettings(owner)),
     async ownerParts(owner) {
-      const [token, rooms] = await Promise.all([tokens(owner), liveRooms(owner)]);
+      const [token, rooms, saved] = await Promise.all([tokens(owner), liveRooms(owner), settings(owner)]);
       const live = nousLiveCounts(await Promise.all(rooms.map(async (room) => ({ sample: await options.readActivity(room.id).catch(() => null) }))));
       const noRoom = token.max && token.max.total > 0 && token.max.withRoom === 0 ? `no ${token.provider ?? "claude"} account of Nous has room` : null;
-      return { tokens: token.accounts === null ? null : { ...nousPoolUtilization(token.accounts, Date.now()), noRoom },
+      return { target: { percent: saved.lowSpend.loadTargets[token.mode], mode: token.mode },
+        tokens: token.accounts === null ? null : { ...nousPoolUtilization(token.accounts, Date.now()), noRoom },
         panes: { working: live.agents.running, open: live.agents.total }, helpers: { live: subagents.liveCount(owner), max: options.config.publicDistribution ? 1 : NOUS_HELPER_SLOTS_SCALE } };
     },
     liveHelpers: (owner) => subagents.liveCount(owner),
@@ -1551,6 +1584,10 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       scheduled: await scheduledPanes(store).catch(() => new Set<string>()) }) : [];
     const reaped = await Promise.resolve(store.listAuditEventsSince?.({ actions: [BROWSER_REAPED_ACTION], since: new Date(since).toISOString() }) ?? []).catch(() => []);
     return { idle: idle.map((browser) => ({ id: browser.paneId, title: browser.title, idleSince: browser.idleSince })),
+      // Each open pane's live browser: null while in use (an agent, a lease), else its last use; one kept for a task, a handoff or a sign-in waits,
+      // so its pane is idle from that use (operator 13/11 09:48 BKK: waiting gives no exemption).
+      live: new Map(census?.sessions.filter((row) => row.paneClosed === false).map((row) => [row.paneId,
+        browserInUse(row) ? null : new Date(browserLastUse(row, (paneId) => agents?.usedAt(paneId) ?? null)).toISOString()] as const) ?? []),
       reaped: reaped.filter((event) => event.metadata.ownerUserId === owner).map((event) => ({ id: event.targetId, title: String(event.metadata.title ?? event.targetId), at: event.createdAt })) };
   };
   /** Score's "Approved but not done" (operator 5/11 20:36 and 20:44 BKK: no tokens, no Gmail reads; goal 84ba917a): copilot items and the mail store, only when the snapshot runs. */
@@ -1560,6 +1597,8 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     return [...new Set([...users.map((user) => user.id), ...rooms.map(ownerOf)])];
   },
     warn: (error) => app.log.warn({ err: error }, "Nous score snapshot failed."),
+    // Score push (score-push.ts): each unworked variable over 5 % of a negative Score is a hold A item until a pane is opened or briefed on it.
+    push: (owner, { line, items }) => late.service?.notice(owner, "score-push", line, undefined, { items }) ?? Promise.resolve(),
     async saveReset(owner, reset) {
       await repository.setNote(owner, NOUS_SCORE_RESET_NOTE, JSON.stringify(reset));
       await Promise.resolve(store.recordAuditEvent({ actorUserId: owner, traceId: makeSpaceId("trace"), action: "nous.score_reset", targetType: "nous_score", targetId: owner,
@@ -1615,9 +1654,11 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       const average = utilization?.averages.today.value ?? utilization?.averages.hour.value ?? utilization?.overall ?? null;
       const goalEvents = await goalsRepository.listEvents(owner, activeGoals.map((goal) => goal.id), Number.MAX_SAFE_INTEGER);
       const reset = parseScoreReset(notes.find((note) => note.key === NOUS_SCORE_RESET_NOTE)?.text);
+      const { live, ...browsers } = await idleBrowsersOf(owner, new Set(rooms.map((room) => room.id)), now, since);
       return { now, timeZone: zone, reset,
         dailyTasks: tasks.flatMap((task) => task.schedule?.recurrence.kind === "DAILY"
-          ? [{ id: task.id, title: task.title, createdAt: task.createdAt, time: task.schedule.recurrence.time, timeZone: task.schedule.timeZone }] : []),
+          ? [{ id: task.id, title: task.title, createdAt: task.createdAt, time: task.schedule.recurrence.time, timeZone: task.schedule.timeZone,
+            scheduledSince: task.schedule.scheduledSince }] : []),
         taskRuns: runs.map((run) => ({ taskId: run.taskId, dueAt: run.dueAt, typed: run.typed })),
         messages: messages.map((message) => ({ id: message.messageId, at: message.createdAt, answeredAt: message.repliedAt ?? message.answeredAt ?? null, doneAt: message.doneAt ?? null })),
         programs: projects,
@@ -1630,21 +1671,31 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
             since: firstDay(tested.map((row) => startedOf(row.registry?.started, now))) }] : []),
           ...(freelance?.proposals.length ? [{ name: "Freelance", succeeded: freelance.won, tried: freelance.proposals.length, what: "proposals won a contract",
             since: firstDay(freelance.proposals.map((message) => message.sentAt ?? message.createdAt)) }] : [])],
+        // Idle (operator 13/11 09:48 BKK): every pane not in a turn and with no browser in use: done, idle, waiting on the operator or a date, a CLI
+        // not running, a non-CLI pane. A CLI pane whose state could not be read counts only from a finished report (it may be in a turn).
         panes: panes.map((pane) => {
           const sample = samples.find(({ room }) => room.id === pane.roomId)?.sample;
           const state = sample?.activity[pane.id];
           const report = reports.find((entry) => entry.paneId === pane.id);
-          const idle = state === "idle" || state === "done";
-          const finished = report && ["done", "failed"].includes(report.status);
-          return { id: pane.id, title: pane.paneName ?? pane.title,
-            idleSince: idle ? sample?.details[pane.id]?.since ?? (finished ? report.at : null) : !state && finished ? report.at : null };
+          const finished = report && ["done", "failed"].includes(report.status) ? report.at : null;
+          const browserUse = live.get(pane.id);
+          const working = state === "working" || browserUse === null;
+          // shortcut: with no status time (a CLI not running, a non-CLI pane) it is idle since its last report or update; read the session's end if this charges early.
+          const idleFrom = state ? sample?.details[pane.id]?.since ?? report?.at ?? pane.updatedAt : isCliPane(pane) ? finished : report?.at ?? pane.updatedAt;
+          // A browser used after the pane went idle moves its idle start to that use.
+          const since = idleFrom && browserUse && Date.parse(browserUse) > Date.parse(idleFrom) ? browserUse : idleFrom;
+          return { id: pane.id, title: pane.paneName ?? pane.title, mode: pane.mode, idleSince: working ? null : since };
         }),
         dailyErrors: nousScoreErrors({ now, timeZone: zone, facts, decisions, lessons: notes, ...(reset ? { resetAt: Date.parse(reset.at) } : {}) }),
         goals: activeGoals.map((goal) => ({ ...goal, progressDays: goalEvents.filter((event) => event.goalId === goal.id && ["PROGRESS", "NOTE"].includes(event.kind))
           .map((event) => scoreDay(Date.parse(event.at), zone)) })),
         plans: open.map((plan) => ({ id: plan.id, title: plan.title ?? plan.text.slice(0, 80), createdAt: plan.createdAt,
           working: activity.get(plan.id)?.pane?.state === "working", stalled: activity.get(plan.id)?.reason ?? null,
-          progress: plan.progressPercentage, pane: activity.get(plan.id)?.pane?.label ?? null })),
+          progress: plan.progressPercentage, pane: activity.get(plan.id)?.pane?.label ?? null,
+          waits: activity.get(plan.id) && !activity.get(plan.id)!.openStep ? activity.get(plan.id)!.nextStep ?? "no open step" : null, held: planHoldText(map, plan.id, zone) })),
+        // What the working panes are on, so a costly variable no pane works on is named first (score.ts covered).
+        working: [...open.filter((plan) => activity.get(plan.id)?.pane?.state === "working").map((plan) => plan.title ?? plan.text.slice(0, 200)),
+          ...reports.filter((report) => ["started", "progress", "HEARTBEAT"].includes(report.status)).map((report) => `${report.summary} ${report.next ?? ""}`)],
         completedPlans: plans.filter((plan) => plan.isCompleted).map((plan) => ({ id: plan.id, title: plan.title ?? plan.text.slice(0, 80), at: plan.lastProgressAt ?? plan.lastUsedAt })),
         // Not done counts as open (operator 6/11 nous_msg:2c610048), once per message.
         requests: ((open) => [...open.map((request) => ({ id: request.messageId, summary: request.summary, openedAt: request.openedAt })),
@@ -1653,7 +1704,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
         done: done.map((record) => ({ id: record.id, title: record.title, at: record.createdAt })),
         utilization: average === null ? null : { value: average, target: utilization!.target, what: utilization!.averages.today.value !== null ? "Today's average" : "Now" },
         lostAtResets: (await readLost()) ?? [],
-        browsers: await idleBrowsersOf(owner, new Set(rooms.map((room) => room.id)), now, since),
+        browsers,
         approvals: await approvalsOf(owner, decisions, since),
         scorecard: card };
     } });
@@ -1726,6 +1777,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     sharedMemory,
     siteSignins: siteSigninsFor(store),
     appointments: () => appointmentsFor(store),
+    instanceLinks: () => instanceLinksFor(store),
     claudeAccount,
     ...(mailContext ? { mailContext: (owner: string, refs: NousDecision["refs"], named?: string[]) => mailContext.lines(owner, refs, named) } : {}),
     ...(options.controlRepository ? { liveTrains: async () => (await listReleaseTrains(options.controlRepository!)).filter(isLiveTrain) } : {}),
@@ -1782,7 +1834,14 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       ],
       add: async (owner, input) => store.upsertTaskItem({ ownerUserId: owner, title: input.title, objective: input.objective, status: "OPEN", source: "AGENT",
         roomId: input.roomId, paneId: input.paneId, paneTitle: input.paneTitle, schedule: input.schedule }),
-      update: async (owner, id, input) => store.updateTaskItem(owner, id, input),
+      async update(owner, id, input) {
+        const task = await store.updateTaskItem(owner, id, input);
+        // The same record a pane's PATCH writes (task-agent-routes.ts): 0326 found no clear for Nous's 9/11 pause of Temporal rustls without it.
+        await Promise.resolve(store.recordAuditEvent({ actorUserId: owner, traceId: makeSpaceId("trace"), action: "task.agent.update", targetType: "task_item", targetId: id,
+          metadata: { status: input.status, schedule: input.schedule === undefined ? undefined : Boolean(input.schedule), by: "nous" } }))
+          .catch((error) => app.log.warn({ err: error }, "Nous task update audit failed."));
+        return task;
+      },
       async rebind(owner, id, binding) {
         const task = await store.getTaskItem(owner, id);
         if (!task) throw new Error(`No task ${id}.`);
@@ -1808,6 +1867,8 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       list: async (owner) => (await allNotifications(options.notifications.list, owner, { status: "OPEN" })).filter((item) => item.source !== "NOUS"),
       resolve: async (owner, id) => Boolean(await options.notifications.setStatus(owner, id, "RESOLVED")),
       get: (owner, id) => options.notifications.get(owner, id),
+      closedQuestions: async (owner, source) => (await allNotifications(options.notifications.list, owner, { status: "ALL", source }))
+        .filter((item) => isCopilotQuestion(item) && (item.status === "RESOLVED" || item.status === "ACKED")),
       ...(nousDb ? { elsewhere: nousDb.notificationElsewhere } : {})
     },
     releaseTrain: (input, by) => options.releaseTrain(input, by),
@@ -1981,6 +2042,11 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((card) => ({ card })),
     autonomous: options.autonomous,
     unavailable: () => backend.unavailable(),
+    // Space Link (lease.ts): the operator's and decision turns run; Nous's own wait while another SpaceApp's Nous manages this one.
+    managed(owner) {
+      const held = linkLease(store).holder(owner);
+      return held ? `${held.name} (a linked SpaceApp's Nous) manages this SpaceApp since ${held.since.slice(0, 16).replace("T", " ")} UTC: Nous's own turns wait; Take back under Nous's status ends it.` : null;
+    },
     // The one switch on a self-hosted install: "Work on my behalf" turns on only once Claude Code is connected.
     enableNeedsRunner: options.config.publicDistribution === true,
     away,
@@ -2116,7 +2182,9 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       return { ...snapshot, tasks: snapshot.tasks ?? [], executions: await Promise.resolve(store.planExecutions.listActive()).catch(() => []), summaries: (await summaries.latest(owner).catch(() => ({ any: [] }))).any,
         browsers: await closeoutBrowsers(new Set(panes.map((pane) => pane.id))), usedAt: await closeoutUsedAt(panes),
         // Marketing Copilot panes with an approved post still scheduled are never finished (operator rule 9/11); a failed read keeps them all.
-        scheduled: options.copilots.marketing ? await options.copilots.marketing.scheduledPosts(owner).then((posts) => new Set(posts.flatMap((post) => post.paneId ? [post.paneId] : []))).catch(() => null) : undefined };
+        scheduled: options.copilots.marketing ? await options.copilots.marketing.scheduledPosts(owner).then((posts) => new Set(posts.flatMap((post) => post.paneId ? [post.paneId] : []))).catch(() => null) : undefined,
+        // A pane with a prompt held or scheduled for it is not finished (13/11 Eva/Andy); a failed read closes no pane this tick.
+        prompts: await queueRecords(owner).then((records) => promptsComing(records, owner)).catch(() => null) };
     },
     reportsSince: async (owner, paneId, since) => (await paneReports.list(owner, paneId, 10)).filter((report) => report.at >= since),
     planMap: (owner, plans) => planMapOf(owner, plans),
@@ -2213,10 +2281,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     // Load (plan clipboard:f4SH36t3fJ6c step 3): idle capacity for 10 minutes (operator 31/10 17:22 BKK) while work waits, on a CALM server with tokens to spare.
     async utilizationLow(owner, plans) {
       const summary = await load.summary(owner);
-      if (!summary || summary.underForMs < 10 * 60_000 || summary.level !== "CALM" || summary.limit || (await tokens(owner)).mode !== "NORMAL") return null;
-      // Operator 3/11 23:11 BKK: the push runs while working CLI panes are under 90 % of the open ones (18 of 20); past that no pane is free.
-      const panes = summary.parts.find((part) => part.key === "panes")?.percent;
-      if (panes !== null && panes !== undefined && panes >= 90) return null;
+      if (!summary || !utilizationPushOn(summary, (await tokens(owner)).mode)) return null;
       const requests = openRequestsOf(await repository.listNotes(owner)).length;
       return plans || requests ? renderUtilizationLow(summary, { plans, requests }) : null;
     },
@@ -2350,9 +2415,13 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     for (const user of await store.listUsersWithRoomCounts?.() ?? []) await sharedMemory.ready(user.id);
     (paneBeat = setInterval(() => void paneHeartbeats().catch((error) => warn(error, "Pane heartbeats failed.")), 60_000)).unref?.();
     // The data panes' program files, imported when they change (dev too, so its pages show them).
-    const importPrograms = () => void programs.importFiles(NOUS_PROGRAMS_IMPORT_OWNER).catch((error) => warn(error, "Programs import failed."));
+    // The measured Used of the programs Space spends outside the Gateway's logs (Azure, Murf), laid on after each import (program-meters.ts).
+    // SPACE_PROGRAM_METERS=off: the API tests' (tests/support/isolate-programs.ts), never a provider call from a test app.
+    const layMeters = process.env.SPACE_PROGRAM_METERS === "off" ? async () => undefined
+      : createProgramMeters({ importUsage: (document) => programs.importUsage(NOUS_PROGRAMS_IMPORT_OWNER, document), warn });
+    const importPrograms = () => void programs.importFiles(NOUS_PROGRAMS_IMPORT_OWNER).then(layMeters).catch((error) => warn(error, "Programs import failed."));
     // The first import, then the decisions of the last 7 days the operator has no update for yet (R73 backfill).
-    void programs.importFiles(NOUS_PROGRAMS_IMPORT_OWNER).then(async () => operatorUpdates.sweep(NOUS_PROGRAMS_IMPORT_OWNER, await programs.list(NOUS_PROGRAMS_IMPORT_OWNER)))
+    void programs.importFiles(NOUS_PROGRAMS_IMPORT_OWNER).then(layMeters).then(async () => operatorUpdates.sweep(NOUS_PROGRAMS_IMPORT_OWNER, await programs.list(NOUS_PROGRAMS_IMPORT_OWNER)))
       .catch((error) => warn(error, "Programs import failed."));
     (programsImport = setInterval(importPrograms, 60_000)).unref?.();
     score.start();

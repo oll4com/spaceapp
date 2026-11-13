@@ -14,7 +14,7 @@
     "streaming": "Streaming bot, chat, moderation, overlay, OAuth and platform state",
     "vault": "Vault items, delegations, audit, nonces and protected state (server-blind ciphertext and metadata)",
     "notifications": "Space notifications, push, Telegram and the Slack/Teams channels",
-    "identity": "Users, invites, sessions, device sessions and paired devices with the mobile channel's keys, linked accounts, connectors, settings and the audit trail",
+    "identity": "Users, invites, sessions, device sessions and paired devices with the mobile channel's keys, linked SpaceApps, linked accounts, connectors, settings and the audit trail",
     "operations": "Admin operations, diagnostics, analytics, health, Space Control, setup, imports, releases, reviews, source control, demo and test fixtures"
   },
   "rules": [
@@ -64,7 +64,7 @@
     },
     {
       "domain": "identity",
-      "pattern": "^(users$|user_|session_revocations$|app_device_|mobile_|google_accounts$|connector_accounts$|space_owner|audit_)"
+      "pattern": "^(users$|user_|session_revocations$|app_device_|mobile_|instance_links$|google_accounts$|connector_accounts$|space_owner|audit_)"
     },
     {
       "domain": "workspace",

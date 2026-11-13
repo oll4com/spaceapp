@@ -25,6 +25,7 @@ import { uploadablePaths, uploadBrowserFiles } from "./browser-file-upload.js";
 import { mailCodeHandoff, pageChallenge, pageReadout } from "./browser-page-readout.js";
 import { markSignin, OPERATOR_HANDS, RESET_ASK, RESET_URL, resetRefusal, VAULT_SIGNIN_ASK, vaultSigninHold } from "./signin-readback.js";
 import { createTextCaptchaService } from "./browser-text-captcha.js";
+import { createSliderCaptchaService } from "./browser-slider-captcha.js";
 import { NOUS_FILES_ROOT } from "./nous/files.js";
 import { handoffHeldFrom } from "./cli-browser-cdp.js";
 import {
@@ -117,6 +118,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
   const { options, config, store, eventBus, browserSessionManager, cliRuntimeVisibility, controlActivity,
     routeOptions: defaultRouteRateLimitOptions, paneBrowserAccounts } = deps;
   const textCaptcha = createTextCaptchaService();
+  const sliderCaptcha = createSliderCaptchaService();
   // While another agent's handoff waits, the operator's tab stays as they were sent to it: an agent may only read (handoffHeldFrom).
   const handoffReadCommands = new Set(["DEVTOOLS", "LIST_PAGES", "LIST_ACCOUNTS", "CAPTURE_STATUS", "LIST_ARTIFACTS", "PIN_ARTIFACT", "UNPIN_ARTIFACT", "HANDOFF_STATUS", "CANCEL_HANDOFF"]);
   async function assertNoForeignHandoff(paneId: string, cliSessionId: string) {
@@ -732,6 +734,13 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
     const session = await getActiveBrowserSessionForPane(store, pane);
     controlActivity?.noteAgent(pane.id, bridge.claims.paneId);
     const actorId = `cli:${bridge.claims.cliSessionId}`;
+    const captchaControl = async () => {
+      const current = await store.getActivePaneBrowserSession(pane.id);
+      if (!current || current.sessionId !== session.sessionId || current.activePageId !== session.activePageId) {
+        throw new SpaceConflictError("The active browser tab/session changed; inspect the CAPTCHA again.");
+      }
+      if (await store.getActiveBrowserControlLease(session.sessionId)) throw new SpaceConflictError("An operator holds browser control; wait for the handoff to finish.");
+    };
     let result: unknown;
 
     switch (input.command.type) {
@@ -986,13 +995,11 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         break;
       }
       case "TEXT_CAPTCHA": {
-        result = await textCaptcha({ config, pane, session, actor: actorId, command: input.command, checkControl: async () => {
-          const current = await store.getActivePaneBrowserSession(pane.id);
-          if (!current || current.sessionId !== session.sessionId || current.activePageId !== session.activePageId) {
-            throw new SpaceConflictError("The active browser tab/session changed; inspect the CAPTCHA again.");
-          }
-          if (await store.getActiveBrowserControlLease(session.sessionId)) throw new SpaceConflictError("An operator holds browser control; wait for the handoff to finish.");
-        } });
+        result = await textCaptcha({ config, pane, session, actor: actorId, command: input.command, checkControl: captchaControl });
+        break;
+      }
+      case "SLIDER_CAPTCHA": {
+        result = await sliderCaptcha({ config, pane, session, command: input.command, checkControl: captchaControl });
         break;
       }
       case "UPLOAD_FILE": {

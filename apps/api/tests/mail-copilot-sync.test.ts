@@ -293,6 +293,20 @@ describe("mail copilot learns from Gmail history", () => {
       await app.close();
     }
   });
+
+  it("a reply sent from a send-as alias logs the correspondent, not the alias (13/11 cbc40ebc: the Vultr reply from ntheo@ never reached the Score's sentTo)", async () => {
+    const { app, gmail, sync, repository, owner } = await fixture();
+    try {
+      await sync.tick();
+      gmail.receive({ id: "v1", threadId: "tv", from: "Aydyn <aydyn@vultr.example>", subject: "Start Up + Migration", labelIds: ["INBOX"], plain: "Hi" });
+      await sync.tick();
+      gmail.receive({ id: "v2", threadId: "tv", from: "Office <Office@MyShop.example>", subject: "Re: Start Up + Migration", labelIds: ["SENT"], plain: "Thanks" });
+      await sync.tick();
+      expect((await repository.listActions(owner, { actions: ["REPLY"], limit: 5 }))[0]).toMatchObject({ threadId: "tv", messageId: "v2", fromAddress: "aydyn@vultr.example" });
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 describe("mail copilot new-mail sync", () => {

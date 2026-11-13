@@ -1858,6 +1858,36 @@ async function stopChromeBestEffort(process: ChildProcessWithoutNullStreams, cli
   }
 }
 
+/**
+ * Stops Chrome, then its Xvfb and display. A Chrome that outlives the stop keeps them until it exits, then frees them
+ * (13/11, load 120 on 12 cores: Chromes killed late left 5 of 10 displays to orphan Xvfbs, so headed launches failed
+ * "No Xvfb display is available").
+ */
+const displayFrees = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
+export async function stopChromeAndDisplay(
+  chrome: ChildProcessWithoutNullStreams, client: Pick<CdpClient, "send" | "close"> | undefined,
+  xvfb?: ChildProcessWithoutNullStreams, display?: number | null, afterFree: () => void = () => undefined
+): Promise<void> {
+  // Once per Chrome: a later close of the same dead profile must not release a display another launch took meanwhile.
+  const free = () => {
+    let freeing = displayFrees.get(chrome);
+    if (!freeing) displayFrees.set(chrome, freeing = (async () => {
+      if (xvfb) await stopXvfbBestEffort(xvfb);
+      if (display !== undefined && display !== null) releaseDisplay(display);
+      afterFree();
+    })());
+    return freeing;
+  };
+  try {
+    await stopChromeBestEffort(chrome, client);
+  } catch (error) {
+    if (chrome.exitCode !== null || chrome.signalCode !== null) await free();
+    else chrome.once("exit", () => void free().catch(() => undefined));
+    throw error;
+  }
+  await free();
+}
+
 function readRuntimeValue<T>(result: { result?: { value?: T } }): T | null {
   return result.result && "value" in result.result ? (result.result.value ?? null) : null;
 }
@@ -2139,7 +2169,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     if (!Number.isInteger(pid) || pid <= 0) return false;
     // A recycled pid must not block forever: require that process to be Chrome on this directory.
     const commandLine = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "");
-    return commandLine.split("\0").includes(`--user-data-dir=${path}`);
+    // Some Chrome builds (156) retitle the browser process: its cmdline is one space-joined string.
+    return commandLine.split(/[\0 ]/).includes(`--user-data-dir=${path}`);
   }
 
   // Moves a pane's own profile into the account's shared profile after Google
@@ -2634,9 +2665,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       profiles.set(session.profilePath, profile);
       return profile;
     } catch (error) {
-      await stopChromeBestEffort(chrome, client);
-      if (xvfb) await stopXvfbBestEffort(xvfb);
-      if (display !== null) releaseDisplay(display);
+      // The launch's own error is the answer; a Chrome that will not stop frees its display when it exits.
+      await stopChromeAndDisplay(chrome, client, xvfb, display).catch(() => undefined);
       throw error;
     }
   }
@@ -2861,10 +2891,9 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
 
   async function closeProfile(profile: BrowserProfileRuntime, path: string): Promise<void> {
     profile.detach();
-    await stopChromeBestEffort(profile.process, profile.client);
-    if (profile.xvfb) await stopXvfbBestEffort(profile.xvfb);
-    if (profile.display !== undefined) releaseDisplay(profile.display);
-    if (profiles.get(path) === profile) profiles.delete(path);
+    await stopChromeAndDisplay(profile.process, profile.client, profile.xvfb, profile.display, () => {
+      if (profiles.get(path) === profile) profiles.delete(path);
+    });
   }
 
   /** Closes a pane's tabs in other accounts and leaves those Chromes; never inside the pane's own profile lock. */

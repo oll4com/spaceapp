@@ -71,7 +71,8 @@ export function registerArtifactReadRoutes(app: FastifyInstance, options: {
       return await sendBytes(request, reply, handle, fileStat.size);
     } catch (error) { await handle.close(); throw error; }
   });
-  // What the Details dialog shows (Agent Files and the Design pane): the record, an image's measured size and the metadata a
+  // What the Details dialog shows (Agent Files and the Design pane) and a Needs you card's studio link (its pane; the owned-resource guard
+  // already limits a USER to the artifact's room): the record, an image's measured size and the metadata a
   // PNG carries inside (a design's description and who made it, `spaceapp:design`).
   app.get("/api/artifacts/:id/metadata", routeOptions, async (request) => {
     const params = idParamSchema.parse(request.params);
@@ -96,7 +97,7 @@ export function registerArtifactReadRoutes(app: FastifyInstance, options: {
     } catch { design = null; }
     return {
       artifact: { id: artifact.id, filename: artifactFilename(artifact), mimeType: artifact.mimeType, byteSize: artifact.byteSize, sha256: artifact.sha256,
-        createdAt: artifact.createdAt, roomId: artifact.roomId, metadata: artifact.metadata },
+        createdAt: artifact.createdAt, roomId: artifact.roomId, paneId: artifact.paneId, metadata: artifact.metadata },
       image, embedded, design
     };
   });

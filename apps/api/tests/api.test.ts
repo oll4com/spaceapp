@@ -1651,6 +1651,8 @@ describe("Space API", () => {
   });
 
   it("exposes fail-closed voice transcription settings", async () => {
+    // No local SenseVoice daemon answers here (port 9 is closed), whatever runs on this host.
+    vi.stubEnv("SPACE_LOCAL_SENSEVOICE_URL", "ws://127.0.0.1:9");
     const { app, cookie } = await authedApp();
 
     const settings = await app.inject({
@@ -1678,13 +1680,16 @@ describe("Space API", () => {
         "gpt-4o-mini-transcribe",
         "whisper-1",
         "gpt-realtime-whisper",
-        "local-qwen3-greek"
+        "local-qwen3-greek",
+        "local-sensevoice-small"
       ],
       languageOptions: ["auto", "el", "en"],
       defaultDelay: "minimal",
       delayOptions: ["minimal", "low", "medium", "high", "xhigh"]
     });
     expect(settings.json().statusReason).toContain("SPACE_VOICE_TRANSCRIPTION_ENABLED");
+    expect(settings.json().statusReason).toContain("Local SenseVoice (offline) is not running.");
+    vi.unstubAllEnvs();
   });
 
   it("creates an OpenAI Realtime voice call from an SDP offer", async () => {

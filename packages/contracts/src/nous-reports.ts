@@ -127,6 +127,8 @@ export interface NousMarketingPostRow extends NousMarketingNumbers {
   number: number;
   id: string;
   channel: string;
+  /** POST, THREAD, ... REPLY: a reply is a conversation, outside the posts score. */
+  kind: string;
   status: string;
   title: string | null;
   target: string | null;
@@ -175,6 +177,8 @@ export interface NousMarketingReport {
   target: number;
   daysBelowTarget: number;
   totals: NousMarketingNumbers & { posts: number; published: number; failed: number; measured: number; zeroReach: number };
+  /** Replies to others' posts (plan clipboard:UoygRDurSshE step 1.6): their own line, outside the posts score and the no-reach count. */
+  conversations?: NousMarketingNumbers & { posts: number; published: number; failed: number; measured: number };
   platforms: NousMarketingPlatform[];
   /** Every post, newest first. */
   posts: NousMarketingPostRow[];

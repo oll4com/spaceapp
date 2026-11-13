@@ -106,7 +106,8 @@ describe("sign-in routes wiring", () => {
     vi.stubEnv("SPACE_MICROSOFT_REDIRECT_URI", "https://fixed.test/ms");
     expect(tools.redirectUri(request(), "MICROSOFT")).toBe("https://fixed.test/ms");
     const configured = signIn({ auth: { googleRedirectUri: "https://fixed.test/google", secureCookies: false } }).result.connectorStateTools;
-    expect(configured.redirectUri(request(), "GOOGLE")).toBe("https://fixed.test/google");
+    // The configured Google URI holds on its own host; another host is google-redirect-uri.test.ts's case (b1f239acb9).
+    expect(configured.redirectUri(request({ headers: { host: "fixed.test" } }), "GOOGLE")).toBe("https://fixed.test/google");
     expect(configured.redirectUri(request(), "MICROSOFT")).toBe("https://fixed.test/ms");
   });
 

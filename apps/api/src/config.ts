@@ -159,6 +159,8 @@ export interface SpaceApiConfig {
   awsRegion: string;
   localVoiceProviderUrl: string;
   localVoiceProviderToken: string | null;
+  /** Local SenseVoice-Small daemon (deploy/space-local-voice-transcribe.service), reached only by the API's bridge. */
+  localSenseVoiceUrl: string;
   vercelVoiceKeyFile: string | null;
   vercelVoiceApiKey: string | null;
   vercelVoiceBaseUrl: string;
@@ -486,6 +488,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     awsRegion: env.AWS_REGION || env.AWS_DEFAULT_REGION || "us-east-1",
     localVoiceProviderUrl: env.SPACE_LOCAL_VOICE_PROVIDER_URL || "http://192.168.10.213:8765",
     localVoiceProviderToken: env.SPACE_LOCAL_VOICE_PROVIDER_TOKEN || null,
+    localSenseVoiceUrl: env.SPACE_LOCAL_SENSEVOICE_URL || "ws://127.0.0.1:54330",
     vercelVoiceKeyFile: env.SPACE_VERCEL_VOICE_KEY_FILE || env.SPACE_VERCEL_AI_GATEWAY_KEY_FILE || null,
     vercelVoiceApiKey: env.AI_GATEWAY_API_KEY || env.VERCEL_AI_GATEWAY_API_KEY || null,
     vercelVoiceBaseUrl: env.SPACE_VERCEL_VOICE_BASE_URL || "https://ai-gateway.vercel.sh",

@@ -315,6 +315,20 @@ describe("Nous goals: /goal and the goal turn", () => {
     }
     expect((await repository.get(owner, scoreGoal.id))!.nextTurnAt).toBe(new Date(at + settings.gapSeconds * 1_000).toISOString());
     expect(Date.parse((await repository.get(owner, first.id))!.nextTurnAt!)).toBeGreaterThan(at + settings.gapSeconds * 1_000);
+    // 13/11 (stable showed "next turn in 23.1 h"): a back-off stored earlier and the 3-a-day cap never hold the costliest goal past its gap.
+    await repository.update(owner, scoreGoal.id, { nextTurnAt: new Date(at + 23 * 3_600_000).toISOString() });
+    const gapLater = Date.parse((await repository.get(owner, scoreGoal.id))!.lastWorkedAt!) + settings.gapSeconds * 1_000;
+    expect(await goals.nextDue(owner, at, settings)).toBeLessThanOrEqual(gapLater);
+    expect((await goals.pick(owner, gapLater, settings))?.id).toBe(scoreGoal.id);
+  });
+
+  it("13/11: the goal on the Score itself carries the whole negative Score while it is below 0", async () => {
+    const { goalScorePoints } = await import("../src/nous/goals.js");
+    const tile = (key: string, items: { id: string; label: string; points: number }[]) => ({ key, items });
+    const score = { score: -493, tiles: [tile("plans", [{ id: "clipboard:p", label: "P", points: -40 }]),
+      tile("goals", [{ id: "nous_goal:s", label: "θελω να τρεχεις στο 80% load και να εχεις παντα θετικο προσιμο στο score", points: -6 }, { id: "nous_goal:o", label: "Ship", points: -9 }])] };
+    expect([...goalScorePoints(score as never)]).toEqual([["clipboard:p", -40], ["nous_goal:s", -493], ["nous_goal:o", -9]]);
+    expect(goalScorePoints({ ...score, score: 5 } as never).get("nous_goal:s")).toBe(-6);
   });
 
   it("runs only while Nous is on, the loop is on, the model is not paused and the spend mode is not CRITICAL; LOW runs it on the goal model; a reset resumes it", async () => {

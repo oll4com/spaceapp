@@ -6,7 +6,7 @@ import type { GatewayAccount } from "@space/contracts";
 import { InMemoryNousRepository } from "@space/db";
 import type { HealthCollectorSample } from "../src/system-health-collector.js";
 import { nousPoolUtilization } from "../src/nous/tokens.js";
-import { createNousLoad, localDay, nousUtilization, parsePsi, registerNousLoadRoute, renderNousUtilization, renderUtilizationLow, type NousUtilizationInput } from "../src/nous/utilization.js";
+import { createNousLoad, localDay, nousUtilization, parsePsi, registerNousLoadRoute, renderNousUtilization, renderUtilizationLow, utilizationPushOn, type NousOwnerParts, type NousUtilizationInput } from "../src/nous/utilization.js";
 
 const GiB = 1024 ** 3;
 const owner = "user:operator";
@@ -88,12 +88,12 @@ describe("the Load monitor", () => {
   const sample = (at: number, cpu: number): HealthCollectorSample => ({ sampledAt: new Date(at).toISOString(), coreCount: 16, uptimeSeconds: 1, metrics: [
     { id: "cpu", value: cpu }, { id: "memory-used", value: 32 * GiB, total: 64 * GiB }, { id: "memory-available", value: 32 * GiB }, { id: "swap", value: 0 }
   ] as HealthCollectorSample["metrics"] });
-  const fixture = () => {
+  const fixture = (target?: NousOwnerParts["target"]) => {
     let clock = start;
     const repository = new InMemoryNousRepository();
     const load = createNousLoad({ repository, owners: async () => [owner], zone: async () => "Asia/Bangkok", now: () => clock, loadavg: () => [0, 0, 0],
       read: async () => { throw new Error("no PSI here"); },
-      ownerParts: async () => ({ tokens: null, panes: { working: 1, open: 2 }, helpers: { live: 0, max: 5 } }) });
+      ownerParts: async () => ({ target, tokens: null, panes: { working: 1, open: 2 }, helpers: { live: 0, max: 5 } }) });
     // cpu c, memory 50, load 0, pressure 0 (swap 0), panes 50, helpers 0 → (0.25c + 7.5 + 5) / 0.75
     const run = async (cpu: (minute: number) => number, minutes: number) => {
       for (let step = 0; step < minutes * 6; step += 1) { clock = start + step * 10_000; await load.tick(sample(clock, cpu(Math.floor(step / 6)))); }
@@ -153,6 +153,31 @@ describe("the Load monitor", () => {
     await app.close();
   });
 
+  it("holds the owner's Load target for its spend mode (Settings → Nous, 13/11): the summary, the view, the world line and the push follow it; 0 never pushes", async () => {
+    const at = async (target: NousOwnerParts["target"]) => {
+      const { load, run } = fixture(target);
+      await run(() => 40, 11); // overall 30 for 11 minutes
+      return { summary: (await load.summary(owner))!, view: await load.view(owner, "1h") };
+    };
+    const normal = await at({ percent: 40, mode: "NORMAL" });
+    expect(normal.summary).toMatchObject({ target: 40, underForMs: 650_000 });
+    expect(normal.view).toMatchObject({ target: 40, targetMode: "NORMAL" });
+    expect(renderNousUtilization(normal.summary)).toMatch(/^Utilization 30% \(target 40%;.*headroom 10% →/);
+    expect(utilizationPushOn(normal.summary, "NORMAL")).toBe(true);
+    const low = await at({ percent: 25, mode: "LOW" });
+    expect(low.summary).toMatchObject({ target: 25, underForMs: 0 });
+    expect(low.view.targetMode).toBe("LOW");
+    expect(renderNousUtilization(low.summary)).toContain(": at the target; keep the work going");
+    expect(utilizationPushOn(low.summary, "LOW")).toBe(false);
+    const off = await at({ percent: 0, mode: "CRITICAL" });
+    expect(off.summary).toMatchObject({ target: 0, underForMs: 0 });
+    expect(renderNousUtilization(off.summary)).not.toContain("Raise the average");
+    // No setting read (older owners, tests): today's 90.
+    const none = await at(undefined);
+    expect(none.summary).toMatchObject({ target: 90, underForMs: 650_000 });
+    expect(none.view).toMatchObject({ target: 90, targetMode: null });
+  });
+
   it("names local days in the owner's zone", () => {
     expect(localDay(Date.parse("2026-10-31T18:00:00Z"), "Asia/Bangkok")).toBe("2026-11-01");
   });
@@ -180,5 +205,24 @@ describe("the Load monitor", () => {
     expect(renderNousUtilization(summary({ cpuPercent: 80, tokens: { claude: 10, codex: 20, noRoom: null } }))).toContain("the token pools have room but the server is busy");
     expect(renderNousUtilization(summary({ cpuPercent: 89, memAvailableBytes: 5 * GiB, load5: 15, psi: { cpu: 40, memory: 0, io: 0 }, tokens: { claude: 99, codex: 99, noRoom: null }, panes: { working: 6, open: 6 }, helpers: { live: 5, max: 5 } })))
       .toContain(": at the target; keep the work going");
+  });
+});
+
+describe("utilizationPushOn", () => {
+  const summary = (input: Partial<NousUtilizationInput> = {}, underForMs = 15 * 60_000) => ({ ...nousUtilization(server(input)), at: 0, target: 90, underForMs,
+    averages: { hour: { value: null, previous: null }, today: { value: 50, previous: 40 }, week: { value: 45, previous: null }, month: { value: null, previous: null }, bestDay: null } });
+
+  it("runs in LOW while another pool has room (13/11: LOW of Nous's own pool silenced the push 13 h on 11/11 while Codex had room)", () => {
+    expect(utilizationPushOn(summary({ tokens: { claude: 100, codex: 40, noRoom: null } }), "LOW")).toBe(true);
+    expect(utilizationPushOn(summary(), "NORMAL")).toBe(true);
+  });
+
+  it("stays silent on CRITICAL, every pool at its pace, no account with room, an OVERLOADED server, busy panes or a short dip", () => {
+    expect(utilizationPushOn(summary(), "CRITICAL")).toBe(false);
+    expect(utilizationPushOn(summary({ tokens: { claude: 100, codex: 100, noRoom: null } }), "LOW")).toBe(false);
+    expect(utilizationPushOn(summary({ tokens: { claude: 100, codex: 100, noRoom: "no account with room" } }), "LOW")).toBe(false);
+    expect(utilizationPushOn(summary({ host: { percent: 95, host: "pve", at: null, error: null } }), "NORMAL")).toBe(false);
+    expect(utilizationPushOn(summary({ panes: { working: 6, open: 6 } }), "NORMAL")).toBe(false);
+    expect(utilizationPushOn(summary({}, 9 * 60_000), "NORMAL")).toBe(false);
   });
 });

@@ -10,8 +10,8 @@ import type { NousTurnItem } from "./turn-items.js";
  */
 export type WaitingRequest = Pick<NousOpenRequest, "key" | "messageId" | "summary" | "pane" | "openedAt">;
 export interface WaitingPane { label: string; status: string; since: string | null }
-/** The oldest text waiting for a pane, and the after-turn schedule holding it when Space Control does. */
-export interface QueuedText { at: string; scheduleId?: string }
+/** The oldest text waiting for a pane, and every after-turn schedule holding a text for it (its id, prompt text and source request). */
+export interface QueuedText { at: string; schedules?: Array<{ id: string; text: string }> }
 export interface RequestWaits { words(messageId: string): string | null; pane(paneId: string): WaitingPane | null; queued(paneId: string): QueuedText | null }
 
 /** The longest an operator request (or its next step) waits behind a busy pane before Nous opens a new pane for it. */
@@ -25,17 +25,39 @@ export function waitingRequestsOf(notes: Array<{ key: string; text: string }>, _
 /** Texts waiting for each pane: Nous's held queue (nous_held) and Space Control's after-turn prompts still SCHEDULED; the oldest per pane. */
 export function queuedTexts(records: Array<{ kind: string; actorId: string; key: string; value: unknown }>, owner: string): Map<string, QueuedText> {
   const queued = new Map<string, QueuedText>();
-  const keep = (paneId: string, text: QueuedText) => { if (!queued.has(paneId) || text.at < queued.get(paneId)!.at) queued.set(paneId, text); };
+  const keep = (paneId: string, at: string) => {
+    const entry = queued.get(paneId) ?? { at };
+    if (at < entry.at) entry.at = at;
+    queued.set(paneId, entry);
+    return entry;
+  };
   for (const record of records.filter((entry) => entry.actorId === owner)) {
-    const value = record.value as { status?: string; items?: Array<{ heldAt?: string }>; id?: string; condition?: string; createdAt?: string;
-      command?: { actions?: Array<{ kind?: string; operation?: string; target?: { paneIds?: string[] } }> } };
-    if (record.kind === "nous_held" && value.status === "HELD" && value.items?.[0]?.heldAt) keep(record.key, { at: value.items[0].heldAt });
+    const value = record.value as { status?: string; items?: Array<{ heldAt?: string; model?: unknown; configure?: unknown }>; id?: string; condition?: string; createdAt?: string;
+      sourceRequestId?: string; command?: { actions?: Array<{ kind?: string; operation?: string; text?: string; target?: { paneIds?: string[] } }> } };
+    // A held model or configure change (13/11 nous_held:aqAaIJEF5B8q, Felix/Iris's model) is never a request's queued text.
+    const heldText = value.items?.find((item) => !item.model && !item.configure);
+    if (record.kind === "nous_held" && value.status === "HELD" && heldText?.heldAt) keep(record.key, heldText.heldAt);
     if (record.kind !== "schedule" || value.status !== "SCHEDULED" || value.condition !== "AFTER_TURN" || !value.createdAt) continue;
     for (const action of value.command?.actions ?? []) {
-      if (action.kind === "pane" && action.operation === "prompt") for (const paneId of action.target?.paneIds ?? []) keep(paneId, { at: value.createdAt, ...(value.id ? { scheduleId: value.id } : {}) });
+      if (action.kind !== "pane" || action.operation !== "prompt") continue;
+      for (const paneId of action.target?.paneIds ?? []) {
+        const entry = keep(paneId, value.createdAt);
+        if (value.id) (entry.schedules ??= []).push({ id: value.id, text: [action.text, value.sourceRequestId].filter(Boolean).join("\n") });
+      }
     }
   }
   return queued;
+}
+
+/** Panes a prompt is still to reach (standing orders never close them): Nous's held queue and every Space Control schedule still to run. */
+export function promptsComing(records: Array<{ kind: string; actorId: string; key: string; value: unknown }>, owner: string): Set<string> {
+  const panes = new Set<string>();
+  for (const record of records.filter((entry) => entry.actorId === owner)) {
+    const value = record.value as { status?: string; command?: { actions?: Array<{ target?: { paneIds?: string[] } }> } };
+    if (record.kind === "nous_held" && value.status === "HELD") panes.add(record.key);
+    if (record.kind === "schedule" && (value.status === "SCHEDULED" || value.status === "RUNNING")) for (const action of value.command?.actions ?? []) for (const paneId of action.target?.paneIds ?? []) panes.add(paneId);
+  }
+  return panes;
 }
 
 /** A text for the request's pane has waited 3 minutes while that pane works on (or waits at) something else. */
@@ -48,13 +70,23 @@ const wordsOf = (request: WaitingRequest, waits: RequestWaits) => quote((request
 /** The operator's words as a one-line quote of 160 characters; a longer one ends with "…" (space_open_requests reads it whole). */
 export const quote = (words: string) => { const line = words.replace(/\s+/g, " ").trim(); return line.length > 160 ? `${line.slice(0, 159)}…` : line; };
 
-/** The urgent inbox line for a request waiting behind a busy pane. */
+/**
+ * The request's own queued text: a schedule whose prompt text or source carries the request's id (nous_msg:ab12cd34… or its first 8 characters).
+ * Any other text queued for that pane is someone else's (13/11: a HOLD note to Bruno/Jack was named as two requests' text and cancelled).
+ */
+export function requestScheduleOf(request: Pick<WaitingRequest, "messageId">, queued: QueuedText | null): string | null {
+  const short = request.messageId?.replace(/^nous_msg:/, "").slice(0, 8);
+  return (short && short.length === 8 && queued?.schedules?.find((schedule) => schedule.text.includes(short))?.id) || null;
+}
+
+/** The urgent inbox line for a request waiting behind a busy pane; it advises cancelling only the request's own queued text. */
 export function requestWaitLine(request: WaitingRequest, waits: RequestWaits): string {
   const pane = waits.pane(request.pane!)!;
   const queued = waits.queued(request.pane!)!;
+  const scheduleId = requestScheduleOf(request, queued);
   return `Operator request ${request.messageId ? `[${request.messageId}] ` : ""}«${wordsOf(request, waits)}» has waited 3+ min behind ${pane.label} (${pane.status}`
     + `${pane.since ? ` since ${pane.since.slice(11, 16)} UTC` : ""}; its text waits since ${queued.at.slice(11, 16)} UTC): open a new pane for it now (space_open_panes) and send it there with alsoTo: true`
-    + `${queued.scheduleId ? `, then cancel the text queued for ${pane.label} (space_execute {"kind":"watch","operation":"cancel","id":"${queued.scheduleId}"})` : ""}`
+    + `${scheduleId ? `, then cancel the text queued for ${pane.label} (space_execute {"kind":"watch","operation":"cancel","id":"${scheduleId}"})` : ""}`
     + ". Never wait for a busy agent more than 3 minutes (operator 31/10).";
 }
 

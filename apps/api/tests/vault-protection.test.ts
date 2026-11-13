@@ -134,6 +134,8 @@ describe("Vault protected browser", () => {
     // The masked readout (7/11 Oracle: no blind Sign In after a fill): the pane holding the fence only.
     expect((await command(PROTECTED, "PAGE_READOUT")).statusCode).toBe(200);
     expect((await command(OTHER, "PAGE_READOUT")).json().error.code).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+    // The Alibaba slider answers a status only, like a click (13/11): open to every pane that may act.
+    for (const pane of [PROTECTED, OTHER]) expect((await command(pane, "SLIDER_CAPTCHA")).statusCode, pane).toBe(200);
     // Every read stays refused for the pane holding the fence too, and the fence is still there.
     for (const type of ["LIST_PAGES", "DEVTOOLS", "START_CAPTURE"]) expect((await command(PROTECTED, type)).json().error.code, type).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
     expect((await app.inject({ url: "/api/cli/browser/cdp/status", headers: { [cliBrowserBridgeTokenHeader]: agentToken(PROTECTED) } })).statusCode).toBe(409);

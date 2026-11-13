@@ -151,8 +151,8 @@ describe("marketing copilot scheduler", () => {
     clock += 2 * 3_600_000; // 25 hours after the approval
     expect(await service.duePosts(owner, target)).toEqual([]);
     expect((await repository.getPost(owner, fresh.id))!.status).toBe("IN_REVIEW");
-    const [back] = await repository.listEvents(owner, { postId: fresh.id, types: ["REVIEW_REQUESTED"], limit: 1 });
-    expect(back!.payload.staleApproval).toBe("it was approved 2026-10-26 09:00 UTC, more than 24 hours ago");
+    const [back] = await repository.listEvents(owner, { postId: fresh.id, types: ["NOTE"], limit: 1 });
+    expect(back!.payload.stale).toMatchObject({ scheduledAt: null, status: "APPROVED" });
     expect((await service.pendingItems(owner, null)).map((item) => [item.kind, item.id])).toEqual([["REVIEW", fresh.id]]);
     // Approved again, it is due again; the publish gate sends a post changed after its approval back too.
     await service.decideReview(owner, target, fresh.id, { decision: "approve" });
@@ -161,10 +161,42 @@ describe("marketing copilot scheduler", () => {
     await repository.updatePost(owner, fresh.id, { assets: [{ path: "/tmp/card.png", label: "Card", kind: "IMAGE" }] }, ["APPROVED"]);
     await expect(service.beginPublish(owner, target, fresh.id)).rejects.toThrow(/MARKETING_NEEDS_REVIEW/);
     expect((await repository.getPost(owner, fresh.id))!.status).toBe("IN_REVIEW");
-    // A scheduled approval keeps its slot, however old.
+    // A scheduled approval keeps its slot up to 24 hours after its time (operator 13/11: never later).
     const scheduled = await approvedPost(service, target, new Date(clock + 3_600_000).toISOString());
-    clock += 50 * 3_600_000;
+    clock += 24 * 3_600_000;
     expect((await service.duePosts(owner, target)).map((post) => post.id)).toEqual([scheduled.id]);
+  });
+
+  // Operator 13/11 07:33 BKK: the X post "Hetzner update 5" failed on 6/11 and stayed FAILED, ready to be retried a week late.
+  it("never lets a post out 24 hours after its time: it goes to Nous once, and only a new future time retries it", async () => {
+    let clock = Date.parse("2026-11-06T09:00:00.000Z");
+    const now = () => new Date(clock).toISOString();
+    const repository = new InMemoryMarketingCopilotRepository(now);
+    const notices: Array<[string, string]> = [];
+    const service = createMarketingCopilotService({ repository, now, notice: (_owner, key, line) => { notices.push([key, line]); } });
+    const target = pane("pane:mkt000001");
+    const failed = await approvedPost(service, target, "2026-11-06T09:00:00.000Z");
+    await service.beginPublish(owner, target, failed.id);
+    await service.failPublish(owner, target, { postId: failed.id, reason: "X said: something went wrong" });
+    const late = await approvedPost(service, target, "2026-11-06T10:00:00.000Z");
+    clock += 23 * 3_600_000;
+    await expect(service.retryPost(owner, target, failed.id, "2026-11-06T08:00:00.000Z")).rejects.toThrow(/MARKETING_STALE: a retry's new time must be in the future/);
+    expect((await service.duePosts(owner, target)).map((post) => post.id)).toEqual([late.id]);
+    clock += 3 * 3_600_000;
+    await expect(service.retryPost(owner, target, failed.id)).rejects.toThrow(/MARKETING_STALE/);
+    expect(await service.duePosts(owner, target)).toEqual([]);
+    expect(await service.duePosts(owner, target)).toEqual([]);
+    expect(notices.map(([key]) => key)).toEqual([`marketing-stale:${failed.id}`, `marketing-stale:${late.id}`]);
+    expect(notices[0]![1]).toContain("failed: X said: something went wrong");
+    for (const post of [failed, late]) expect((await repository.getPost(owner, post.id))!.status).toBe("IN_REVIEW");
+    await expect(service.beginPublish(owner, target, late.id)).rejects.toThrow(/cannot be published now/);
+    // Nous's three answers: an approval at the old time is refused; a new future time retries it; reject closes it.
+    await expect(service.decideReview(owner, target, failed.id, { decision: "approve" })).rejects.toThrow(/MARKETING_STALE/);
+    const retried = await service.decideReview(owner, target, failed.id, { decision: "approve", scheduledAt: new Date(clock + 3_600_000).toISOString() });
+    expect(retried).toMatchObject({ status: "APPROVED" });
+    expect(await service.decideReview(owner, target, late.id, { decision: "reject", note: "Not fresh any more" })).toMatchObject({ status: "REJECTED" });
+    clock += 2 * 3_600_000;
+    expect((await service.duePosts(owner, target)).map((post) => post.id)).toEqual([failed.id]);
   });
 
   it("does nothing while nothing is due", async () => {

@@ -20,7 +20,7 @@ vi.mock('node:fs', async importOriginal => {
       : (actual.readFileSync as (...args: unknown[]) => unknown)(path, ...rest)) as typeof actual.readFileSync
   };
 });
-import { allocateDisplay, createBrowserSessionManager, releaseDisplay } from '../src/browser-sessions.js';
+import { allocateDisplay, createBrowserSessionManager, releaseDisplay, stopChromeAndDisplay } from '../src/browser-sessions.js';
 import { getApiConfig } from '../src/config.js';
 
 async function fixture(mode: 'BROWSER' | 'YOUTUBE' | 'FREELANCE_COPILOT' = 'YOUTUBE') {
@@ -102,6 +102,27 @@ describe('managed browser runtime lifecycle', () => {
       expect(displays.every(display => display !== null)).toBe(true);
       displays.forEach(display => { if (display !== null) releaseDisplay(display); });
     } finally { await f.cleanup(); }
+  });
+  it('a Chrome that outlives its stop keeps its display and Xvfb until it exits, then frees them once', async () => {
+    const fake = (dies: boolean) => {
+      const child = Object.assign(new EventEmitter(), { exitCode: null as number | null, signalCode: null as string | null,
+        kill(signal: string) { if (dies) { child.signalCode = signal; child.emit('exit', null, signal); } return true; } });
+      return child as unknown as import('node:child_process').ChildProcessWithoutNullStreams & typeof child;
+    };
+    const free = () => { const all: number[] = []; for (let d = allocateDisplay(); d !== null; d = allocateDisplay()) all.push(d); all.forEach(releaseDisplay); return all; };
+    const chrome = fake(false), xvfb = fake(true), display = allocateDisplay()!;
+    let freed = 0;
+    await expect(stopChromeAndDisplay(chrome, undefined, xvfb, display, () => { freed += 1; })).rejects.toThrow(/Chrome did not exit/);
+    expect(free()).not.toContain(display);
+    expect(xvfb.signalCode).toBeNull();
+    chrome.signalCode = 'SIGKILL';
+    chrome.emit('exit', null, 'SIGKILL');
+    await vi.waitFor(() => expect(freed).toBe(1));
+    expect(xvfb.signalCode).toBe('SIGTERM');
+    expect(free()).toContain(display);
+    // A later close of the same dead profile frees nothing twice.
+    await stopChromeAndDisplay(chrome, undefined, xvfb, display, () => { freed += 1; });
+    expect(freed).toBe(1);
   });
   it('removes the logins Chrome saved in the profile before launching it, and nothing else', async () => {
     const f = await fixture('FREELANCE_COPILOT');

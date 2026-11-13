@@ -4,10 +4,30 @@ import { childProcessEnv } from "../../packages/runtime/dist/child-process-env.j
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { availableParallelism, loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * How long Chrome may take to open DevTools: 10 s on a calm host, stretched by the run queue per core (13/11: at load 123 on 12 cores
+ * Chrome needed longer and every Media Studio capture failed). It stays bounded so a hung Chrome cannot hold its caller forever.
+ */
+export const chromeStartLimitMs = (load = loadavg()[0], cores = availableParallelism()) => Math.round(10_000 * Math.max(1, load / cores));
+
+/** Waits for the DevTools endpoint of a just-spawned Chrome; fails at once if Chrome exits, and names the load when it runs out of time. */
+export async function devToolsEndpoint(chrome, profileDir, limitMs = chromeStartLimitMs()) {
+  let exit = null;
+  chrome.once("exit", (code, signal) => { exit = signal ?? `code ${code}`; });
+  for (const end = Date.now() + limitMs; Date.now() < end && exit === null;) {
+    await sleep(100);
+    const lines = (await readFile(join(profileDir, "DevToolsActivePort"), "utf8").catch(() => "")).split("\n");
+    if (lines[0] && lines[1]) return `ws://127.0.0.1:${lines[0].trim()}${lines[1].trim()}`;
+  }
+  chrome.kill("SIGKILL");
+  if (exit !== null) throw new Error(`Chrome exited (${exit}) before it opened DevTools.`);
+  throw new Error(`Chrome did not start within ${Math.round(limitMs / 1000)} s (load ${loadavg()[0].toFixed(0)} on ${availableParallelism()} cores).`);
+}
 
 /**
  * A minimal Chrome DevTools Protocol client (the space-dots-home-check pattern). `scale`: the window's real device scale,
@@ -20,13 +40,7 @@ export async function startChrome(profileDir, { scale } = {}) {
     "--no-default-browser-check", "--disable-extensions", "--hide-scrollbars", "--mute-audio", "--force-color-profile=srgb", "--window-size=1920,1080", ...(scale ? [`--force-device-scale-factor=${scale}`] : []), "about:blank"];
   const options = { env: { ...childProcessEnv(), TMPDIR: tmpdir() }, stdio: "ignore" };
   const chrome = existsSync("/usr/bin/setpriv") ? spawn("/usr/bin/setpriv", ["--pdeathsig", "KILL", "--", ...command], options) : spawn(command[0], command.slice(1), options);
-  let endpoint = null;
-  for (let i = 0; i < 100 && !endpoint; i++) {
-    await sleep(100);
-    const lines = (await readFile(join(profileDir, "DevToolsActivePort"), "utf8").catch(() => "")).split("\n");
-    if (lines[0] && lines[1]) endpoint = `ws://127.0.0.1:${lines[0].trim()}${lines[1].trim()}`;
-  }
-  if (!endpoint) { chrome.kill("SIGKILL"); throw new Error("Chrome did not start."); }
+  const endpoint = await devToolsEndpoint(chrome, profileDir);
   const socket = new WebSocket(endpoint);
   await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = () => reject(new Error("The DevTools connection failed.")); });
   let next = 0;

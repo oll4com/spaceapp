@@ -16,6 +16,7 @@ vi.mock("../src/release-routes.js", async (orig) => ({ ...await orig<object>(), 
 vi.mock("../src/source-control-connection-routes.js", async (orig) => ({ ...await orig<object>(), registerSourceControlConnectionRoutes: rec("sourceControl") }));
 vi.mock("../src/settings-routes.js", async (orig) => ({ ...await orig<object>(), registerSettingsRoutes: rec("settings") }));
 vi.mock("../src/configuration-routes.js", async (orig) => ({ ...await orig<object>(), registerConfigurationRoutes: rec("configuration") }));
+vi.mock("../src/transfer-routes.js", async (orig) => ({ ...await orig<object>(), registerTransferRoutes: rec("transfer") }));
 vi.mock("../src/provider-routes.js", async (orig) => ({ ...await orig<object>(), registerProviderRoutes: rec("provider") }));
 vi.mock("../src/mcp-tool-executor.js", async (orig) => ({ ...await orig<object>(), createMcpToolExecutor: (deps: unknown) => {
   captured.order.push("mcpExecutor"); captured.executorDeps = deps;
@@ -52,7 +53,7 @@ describe("admin and platform routes wiring", () => {
   it("registers every route group in app.ts's order, Telegram only with its module", () => {
     wire();
     const withoutTelegram = ["streamingAdmin", "streamingBot", "systemAnalytics", "adminToolbar", "adminCleanup", "codexHistoryPurge", "providerSwitch",
-      "cliMaintenance", "maintenanceAutopilot", "cliAuthHandoff", "panePrune", "release", "sourceControl", "settings", "configuration", "provider",
+      "cliMaintenance", "maintenanceAutopilot", "cliAuthHandoff", "panePrune", "release", "sourceControl", "settings", "configuration", "transfer", "provider",
       "GET /api/models", "mcpExecutor", "mcp", "memory", "sharedTask", "artifactRead", "artifact", "browserEvidence", "review"];
     expect(captured.order).toEqual(withoutTelegram);
     captured.order = [];

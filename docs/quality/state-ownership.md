@@ -35,6 +35,8 @@ Within a domain, `tables` in the same file lists the tables that recover differe
 
 2026-10-31: `mobile_instance_keys` (identity) holds the mobile channel's keys sealed with the connector key file; a restore needs both,
 else paired phones show the red screen and pair again (ADR-013).
+2026-11-13: `instance_links` (identity) holds this SpaceApp's links to other SpaceApps, each device key sealed with the connector key
+file like `mobile_instance_keys` (ADR-014); a restore needs both, else each link is removed and paired again from a new code.
 
 Also 2026-10-30: `disposable` tables are routine-expiring caches or attempts (`space_gateway_sticky_bindings`, `streaming_oauth_attempts`, `memory_embedding_smoke_checks`). `single-use-ledger` tables (`session_revocations`, `user_invites`, `vault_nonces`) record a credential as used or revoked, so a restore older than a row makes that credential usable again until it expires; after a restore, re-revoke what was revoked after the backup and void invites issued, used or revoked after it.
 

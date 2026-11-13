@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderNousWorld } from "../src/nous/digest.js";
-import { createRequestWaitAlerts, NOUS_OPERATOR_WAIT_MS, queuedTexts, renderRequestsWaiting, requestWaitLine, waitingRequestsOf, waitsBehindBusyPane,
+import { createRequestWaitAlerts, NOUS_OPERATOR_WAIT_MS, queuedTexts, renderRequestsWaiting, requestScheduleOf, requestWaitLine, waitingRequestsOf, waitsBehindBusyPane,
   type QueuedText, type RequestWaits, type WaitingPane } from "../src/nous/requests-waiting.js";
 
 const now = Date.parse("2026-10-31T04:00:00.000Z");
@@ -22,15 +22,37 @@ describe("Operator requests waiting (operator 31/10 «Αργείς», «το π�
 
   it("finds the oldest text waiting for each pane: Nous's held queue and Space Control's after-turn prompts", () => {
     const schedule = (id: string, paneIds: string[], createdAt: string, extra: Record<string, unknown> = {}) => ({ kind: "schedule", actorId: owner, key: id,
-      value: { id, status: "SCHEDULED", condition: "AFTER_TURN", createdAt, command: { actions: [{ kind: "pane", operation: "prompt", target: { paneIds } }] }, ...extra } });
+      value: { id, status: "SCHEDULED", condition: "AFTER_TURN", createdAt, command: { actions: [{ kind: "pane", operation: "prompt", text: `text of ${id}`, target: { paneIds } }] }, ...extra } });
     const queued = queuedTexts([
-      schedule("control_schedule:a", ["pane:max00001"], minutesAgo(4)),
+      schedule("control_schedule:a", ["pane:max00001"], minutesAgo(4), { sourceRequestId: "req-1" }),
+      schedule("control_schedule:e", ["pane:max00001"], minutesAgo(5)),
       schedule("control_schedule:b", ["pane:max00001"], minutesAgo(9), { status: "COMPLETED" }),
       schedule("control_schedule:c", ["pane:emma0001"], minutesAgo(9), { condition: "AT_TIME" }),
       { kind: "nous_held", actorId: owner, key: "pane:emma0001", value: { status: "HELD", items: [{ heldAt: minutesAgo(6) }, { heldAt: minutesAgo(1) }] } },
+      // A held model or configure change is not a queued text (13/11 nous_held:aqAaIJEF5B8q, Felix/Iris): only the text after it counts.
+      { kind: "nous_held", actorId: owner, key: "pane:iris0001", value: { status: "HELD", items: [{ heldAt: minutesAgo(40), model: { modelId: "claude-opus-5-5" } }, { heldAt: minutesAgo(2) }] } },
+      { kind: "nous_held", actorId: owner, key: "pane:felix001", value: { status: "HELD", items: [{ heldAt: minutesAgo(40), configure: { kind: "configure" } }] } },
       { ...schedule("control_schedule:d", ["pane:emma0001"], minutesAgo(20)), actorId: "user:other" }
     ], owner);
-    expect(Object.fromEntries(queued)).toEqual({ "pane:max00001": { at: minutesAgo(4), scheduleId: "control_schedule:a" }, "pane:emma0001": { at: minutesAgo(6) } });
+    expect(Object.fromEntries(queued)).toEqual({
+      "pane:max00001": { at: minutesAgo(5), schedules: [{ id: "control_schedule:a", text: "text of control_schedule:a\nreq-1" }, { id: "control_schedule:e", text: "text of control_schedule:e" }] },
+      "pane:emma0001": { at: minutesAgo(6) },
+      "pane:iris0001": { at: minutesAgo(2) }
+    });
+  });
+
+  it("advises cancelling only the request's own queued text: a schedule whose text or source carries the request's id (13/11: an unrelated HOLD note was named)", () => {
+    const pane: WaitingPane = { label: "Andy/Bruno", status: "working", since: minutesAgo(30) };
+    const request = { key: "request-done:open:af4", messageId: "nous_msg:af451f63aa0011223344556677889900", summary: "Ship it", pane: "pane:bruno001", openedAt: minutesAgo(20) };
+    const hold = { id: "control_schedule:m2rFytm74rnd", text: "HOLD: the AWS case waits for Jack (nous_msg:0badc0de)" };
+    const waitsWith = (queued: QueuedText): RequestWaits => ({ words: () => null, pane: () => pane, queued: () => queued });
+    const unrelated = requestWaitLine(request, waitsWith({ at: minutesAgo(5), schedules: [hold] }));
+    expect(unrelated).toContain("open a new pane for it now (space_open_panes) and send it there with alsoTo: true. Never wait");
+    expect(unrelated).not.toContain("cancel");
+    expect(requestScheduleOf(request, { at: minutesAgo(5), schedules: [hold, { id: "control_schedule:own", text: "Do nous_msg:af451f63 now" }] })).toBe("control_schedule:own");
+    expect(requestScheduleOf(request, { at: minutesAgo(5), schedules: [hold, { id: "control_schedule:src", text: "Ship\nnous_msg:af451f63aa0011223344556677889900" }] })).toBe("control_schedule:src");
+    expect(requestScheduleOf({ messageId: null }, { at: minutesAgo(5), schedules: [hold] })).toBeNull();
+    expect(requestScheduleOf(request, null)).toBeNull();
   });
 
   it("lists every PENDING request still open (any age since 31/10) with the operator's words, age, pane and state, and brings ONE urgent line's text for a request behind a busy pane", () => {
@@ -51,7 +73,7 @@ describe("Operator requests waiting (operator 31/10 «Αργείς», «το π�
       ["pane:max00001", { label: "Alex/Max", status: "working", since: "2026-10-31T03:50:00.000Z" }]
     ]);
     // Emma's text has waited 4 minutes behind her turn; Max works on his request with nothing queued.
-    const queued = new Map<string, QueuedText>([["pane:emma0001", { at: "2026-10-31T03:56:00.000Z", scheduleId: "control_schedule:a" }]]);
+    const queued = new Map<string, QueuedText>([["pane:emma0001", { at: "2026-10-31T03:56:00.000Z", schedules: [{ id: "control_schedule:a", text: "Κάνε το brief πιο γρήγορο (nous_msg:emma0001)" }] }]]);
     const words = new Map([["nous_msg:emma0001", "Κάνε το brief  πιο γρήγορο"]]);
     const waits: RequestWaits = { words: (id) => words.get(id) ?? null, pane: (id) => panes.get(id) ?? null, queued: (id) => queued.get(id) ?? null };
     expect(renderRequestsWaiting(requests, waits, now).split("\n")).toEqual([

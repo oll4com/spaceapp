@@ -24,6 +24,8 @@ export interface MarketingCopilotServiceOptions {
   resolveArtifactAsset?(owner: string, artifactId: string): Promise<{ path: string; kind: "IMAGE" | "VIDEO" }>;
   /** The operator's messages to Nous: a review's operatorOrder is checked against them. */
   operatorMessages?: OperatorMessageRefs;
+  /** Nous's inbox: a stale post goes there once (marketingPostStale). */
+  notice?(owner: string, key: string, line: string): Promise<void> | void;
   now?(): string;
 }
 
@@ -32,8 +34,13 @@ const NEXT_MAX_WAIT_MS = 120_000;
 /** A brief nobody reported for this long goes back to the queue (a crashed CLI). */
 const TAKEN_STALE_MS = 30 * 60_000;
 const DAY_MS = 86_400_000;
-/** How long an approval stays good for an unscheduled post (sendStaleApprovalBack). */
-const APPROVAL_FRESH_MS = DAY_MS;
+
+/**
+ * Operator 13/11 07:33 BKK (nous_msg:1b054fa1): a post that has not gone out 24 hours after its time (its approval's without a schedule,
+ * else its last change) never goes out on its own: it waits for Nous to reject it, edit it or approve it with a new time.
+ */
+export const marketingPostStale = (post: Pick<MarketingPost, "scheduledAt" | "publishedAt" | "updatedAt">, approvedAt: string | null, at: string) =>
+  !post.publishedAt && Date.parse(post.scheduledAt ?? approvedAt ?? post.updatedAt) + DAY_MS < Date.parse(at);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface EventInput { paneId?: string | null; runId?: string | null; postId?: string | null; campaignId?: string | null; type: MarketingEventType; status?: "PENDING" | "TAKEN" | "DONE" | null; message: string; payload?: Record<string, unknown> }
@@ -100,6 +107,29 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     return oldest ? new Date(Date.parse(oldest) + channel.perDays * DAY_MS).toISOString() : now();
   }
 
+  const approvalOf = async (owner: string, postId: string) => (await repository.listEvents(owner, { postId, types: ["REVIEW_DECIDED"] }))
+    .find((event) => event.payload.decision === "approve" || event.payload.decision === "edit") ?? null;
+  const isStale = async (owner: string, post: MarketingPost) =>
+    marketingPostStale(post, post.scheduledAt ? null : (await approvalOf(owner, post.id))?.createdAt ?? null, now());
+
+  /** A stale post (marketingPostStale) goes back to review and to Nous's inbox, once: the move out of its status is the dedupe. True when it is stale. */
+  async function sendStaleToNous(owner: string, pane: Pane | null, post: MarketingPost): Promise<boolean> {
+    if (!["DRAFT", "APPROVED", "FAILED"].includes(post.status) || !await isStale(owner, post)) return false;
+    const back = await repository.updatePost(owner, post.id, { status: "IN_REVIEW" }, [post.status]);
+    if (!back) return true;
+    const label = MARKETING_CHANNEL_LABELS[back.channel];
+    const failure = typeof post.evidence.failure === "string" ? post.evidence.failure : null;
+    const when = post.scheduledAt ? `scheduled ${post.scheduledAt}` : `unscheduled, last approved or changed more than 24 hours ago`;
+    await record(owner, { paneId: pane?.id ?? back.paneId, postId: back.id, campaignId: back.campaignId, type: "NOTE",
+      message: `The ${label} post did not go out within 24 hours of its time (${when}); it never goes out on its own now and waits for Nous`,
+      payload: { stale: { scheduledAt: post.scheduledAt, status: post.status, failure } } });
+    const action = { type: "COPILOT", copilot: "MARKETING", item: "REVIEW", itemId: back.id, paneId: back.paneId, decision: "reject" };
+    await options.notice?.(owner, `marketing-stale:${back.id}`, `Marketing ${label} post ${back.id} is stale: ${when}, ${post.status === "FAILED" ? `failed: ${failure ?? "no reason recorded"}` : `never published (${post.status.toLowerCase()})`}. `
+      + `Text: "${back.body.replace(/\s+/g, " ").trim()}". Operator 13/11: it goes out only if you decide so. Decide with space_ask_operator category EXTERNAL, action ${JSON.stringify(action)} `
+      + `(reject), or decision "edit" with text and scheduledAt (your version, back through review), or decision "approve" with a new future scheduledAt (a retry at a fresh time).`);
+    return true;
+  }
+
   /**
    * An unscheduled approved post publishes at once only on a fresh approval: given in the last 24 hours, the post unchanged since
    * (27/10: approvals from 26/10, an old licence text and placeholders, would have gone out). An older one goes back to review with
@@ -107,12 +137,9 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
    */
   async function sendStaleApprovalBack(owner: string, pane: Pane | null, post: MarketingPost): Promise<boolean> {
     if (post.status !== "APPROVED" || post.scheduledAt) return false;
-    const approval = (await repository.listEvents(owner, { postId: post.id, types: ["REVIEW_DECIDED"] }))
-      .find((event) => event.payload.decision === "approve" || event.payload.decision === "edit");
-    const approvedAt = approval ? Date.parse(approval.createdAt) : Number.NaN;
-    const reason = !approval ? "it has no recorded approval"
-      : Date.parse(now()) - approvedAt > APPROVAL_FRESH_MS ? `it was approved ${approval.createdAt.slice(0, 16).replace("T", " ")} UTC, more than 24 hours ago`
-        : Date.parse(post.updatedAt) > approvedAt + 1_000 ? "it changed after the approval" : null;
+    const approval = await approvalOf(owner, post.id);
+    // An approval older than 24 hours is stale and went to Nous before this (sendStaleToNous).
+    const reason = !approval ? "it has no recorded approval" : Date.parse(post.updatedAt) > Date.parse(approval.createdAt) + 1_000 ? "it changed after the approval" : null;
     if (!reason) return false;
     const back = await repository.updatePost(owner, post.id, { status: "IN_REVIEW" }, ["APPROVED"]);
     if (!back) return false;
@@ -131,11 +158,20 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     // Stable 2026-10-19: an approved X post slotted for 10-21 13:10 UTC went out two days early when the CLI began it itself.
     if (post.scheduledAt && Date.parse(post.scheduledAt) > Date.parse(now())) {
       throw new SpaceConflictError(`MARKETING_NOT_DUE: this post is scheduled for ${post.scheduledAt}; it publishes then, not before (it comes back as a PUBLISH item when due).`);
+    if (await sendStaleToNous(owner, pane, post)) throw new SpaceConflictError("MARKETING_STALE: this post did not go out within 24 hours of its time; it went to Nous, who rejects it, edits it or approves it with a new time.");
     }
     const slot = await nextSlot(owner, pane, post);
     if (slot) throw new SpaceConflictError(`MARKETING_LIMIT: ${label} allows ${settings.channels[post.channel].posts} post(s) per ${settings.channels[post.channel].perDays} day(s); the next slot opens at ${slot}.`);
     if (await sendStaleApprovalBack(owner, pane, post)) throw new SpaceConflictError("MARKETING_NEEDS_REVIEW: the approval is older than 24 hours or the post changed since; it went back to review.");
     if (post.status === "APPROVED") return { ruleId: null };
+    // Plan 20261113-marketing-90 step 5.6 (Reddit removals 26-28/10, then a shadow limit 2/11): after a removal the account may be limited, so only the operator publishes there for 7 days.
+    const since = Date.parse(now()) - 7 * DAY_MS;
+    // A site that removes the post at submit ("removed by Reddit filters", 6/11) leaves a FAILED post, not a PUBLISHED one.
+    const removed = (await repository.listPosts(owner, { status: ["PUBLISHED", "FAILED"], channel: post.channel }))
+      .find((entry) => entry.status === "PUBLISHED"
+        ? entry.metrics.removed! > 0 && Date.parse(entry.publishedAt ?? entry.updatedAt) > since
+        : /\bremoved by\b/i.test(String(entry.evidence.failure ?? "")) && Date.parse(String(entry.evidence.failedAt ?? entry.updatedAt)) > since);
+    if (removed) throw new SpaceConflictError(`MARKETING_NEEDS_REVIEW: ${label} removed ${removed.id} in the last 7 days, so the account may be limited; until then every ${label} post needs the operator's review.`);
     const issues = marketingWordingIssues(`${post.title ?? ""}\n${post.body}`);
     if (issues.length) throw new SpaceConflictError(`MARKETING_NEEDS_REVIEW: the post makes unqualified claims (${issues.join(", ")}); rephrase it or ask for a review.`);
     const autonomy = effectiveMarketingAutonomy(settings, post.channel);
@@ -172,12 +208,20 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     async decideCampaign(owner: string, pane: Pane | null, id: string, decision: "approve" | "complete" | "cancel", by?: RailAnswerBy) {
       const campaign = await repository.getCampaign(owner, id);
       if (!campaign) throw new SpaceNotFoundError("The campaign was not found.");
-      if (decision === "approve" && campaign.status !== "PROPOSED") throw new SpaceConflictError("Only a proposed campaign can be approved.");
+      // Approving a done or cancelled campaign reopens it (step 5.5: closing a campaign is its archive, never a delete).
+      if (decision === "approve" && campaign.status === "ACTIVE") throw new SpaceConflictError("The campaign is already active.");
       const status = ({ approve: "ACTIVE", complete: "DONE", cancel: "CANCELLED" } as const)[decision];
       const updated = (await repository.updateCampaign(owner, id, { status }))!;
       await record(owner, { paneId: pane?.id ?? null, campaignId: id, type: "CAMPAIGN_DECIDED", message: `You ${decision === "approve" ? "approved" : decision === "complete" ? "completed" : "cancelled"} the campaign: ${campaign.name}`, payload: { decision, ...(by ? { by } : {}) } });
       if (decision === "approve") await service.createBrief(owner, pane, { text: campaignBrief(campaign), campaignId: id, channels: campaign.channels });
       return updated;
+    },
+    /** The one number a campaign moves (step 5.5): stars, installs or visits; null clears it. */
+    async setCampaignMetric(owner: string, id: string, metric: "stars" | "installs" | "visits" | null) {
+      const campaign = await repository.getCampaign(owner, id);
+      if (!campaign) throw new SpaceNotFoundError("The campaign was not found.");
+      const { metric: _old, ...payload } = campaign.payload;
+      return (await repository.updateCampaign(owner, id, { payload: metric ? { ...payload, metric } : payload }))!;
     },
     // ---- briefs (the operator's requests, the agent's work items) -----------------------------
     async createBrief(owner: string, pane: Pane | null, input: { text: string; campaignId?: string | null; channels?: MarketingPost["channel"][]; postId?: string | null; /** R10-13: a brief Nous wrote. */ from?: "NOUS" }) {
@@ -187,6 +231,18 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     },
     // ---- posts --------------------------------------------------------------------------------
     listPosts: (owner: string, filter: MarketingPostFilter) => repository.listPosts(owner, filter),
+    /** Marks posts of any status personal (step 1.1: out of every Marketing metric) or back; returns the ids it changed. */
+    async setPostTopic(owner: string, ids: string[], topic: "personal" | null) {
+      const changed: string[] = [];
+      for (const id of new Set(ids)) {
+        const post = await postOf(owner, id);
+        const { topic: _old, ...evidence } = post.evidence;
+        if ((post.evidence.topic ?? null) === topic) continue;
+        await repository.updatePost(owner, id, { evidence: topic ? { ...evidence, topic } : evidence });
+        changed.push(id);
+      }
+      return changed;
+    },
     getPost: postOf,
     async createPost(owner: string, pane: Pane | null, input: MarketingPostCreate) {
       if (input.campaignId && !await repository.getCampaign(owner, input.campaignId)) throw new SpaceNotFoundError("The campaign was not found.");
@@ -252,6 +308,10 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     /** The operator decides a post: approve, edit (their version is approved and learned), revise (back to the agent) or reject. */
     async decideReview(owner: string, pane: Pane | null, postId: string, input: MarketingPostReviewDecision, by?: RailAnswerBy) {
       const current = await postOf(owner, postId);
+      const scheduledAt = input.scheduledAt !== undefined ? input.scheduledAt : current.scheduledAt;
+      if ((input.decision === "approve" || input.decision === "edit") && scheduledAt && marketingPostStale({ ...current, scheduledAt }, null, now())) {
+        throw new SpaceConflictError(`MARKETING_STALE: this post's time ${scheduledAt} is more than 24 hours past; approve it with a new future scheduledAt (or null to publish now).`);
+      }
       const patch = input.decision === "approve" || input.decision === "edit"
         ? { status: "APPROVED" as const, reviewNote: input.note ?? null, ...(input.decision === "edit" ? { ...(input.body !== undefined ? { body: input.body } : {}), ...(input.title !== undefined ? { title: input.title } : {}) } : {}),
           ...(input.scheduledAt !== undefined ? { scheduledAt: input.scheduledAt } : {}) }
@@ -332,9 +392,13 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       await record(owner, { paneId: pane.id, runId, postId: post.id, campaignId: post.campaignId, type: "PUBLISH_FAILED", message: `Publishing on ${MARKETING_CHANNEL_LABELS[post.channel]} failed: ${input.reason}`, payload: { reason: input.reason } });
       return post;
     },
-    /** The operator retries a failed post: approved again, so the next run publishes it. */
-    async retryPost(owner: string, pane: Pane | null, postId: string) {
-      const post = await repository.updatePost(owner, postId, { status: "APPROVED" }, ["FAILED"]);
+    /** The operator retries a failed post: approved again, so the next run publishes it. A stale one (marketingPostStale) only with a new future time. */
+    async retryPost(owner: string, pane: Pane | null, postId: string, scheduledAt?: string) {
+      if (scheduledAt !== undefined && Date.parse(scheduledAt) <= Date.parse(now())) throw new SpaceConflictError("MARKETING_STALE: a retry's new time must be in the future.");
+      if (scheduledAt === undefined && await isStale(owner, await postOf(owner, postId))) {
+        throw new SpaceConflictError("MARKETING_STALE: this post did not go out within 24 hours of its time; retry it with a new future scheduledAt.");
+      }
+      const post = await repository.updatePost(owner, postId, { status: "APPROVED", ...(scheduledAt ? { scheduledAt } : {}) }, ["FAILED"]);
       if (!post) throw new SpaceConflictError("Only a failed post can be retried.");
       await record(owner, { paneId: pane?.id ?? post.paneId, postId, type: "REVIEW_DECIDED", message: `You approved a retry of the ${MARKETING_CHANNEL_LABELS[post.channel]} post`, payload: { decision: "approve" } });
       return post;
@@ -442,7 +506,10 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     async duePosts(owner: string, pane: Pane | null) {
       const settings = settingsOf(pane);
       const at = now();
-      const due = (await repository.listPosts(owner, { status: ["APPROVED"] })).filter((post) => settings.channels[post.channel].enabled && (!post.scheduledAt || post.scheduledAt <= at))
+      // Failed posts are listed too: a stale one (marketingPostStale) goes to Nous like an approved one, and neither is due.
+      const fresh: MarketingPost[] = [];
+      for (const post of await repository.listPosts(owner, { status: ["APPROVED", "FAILED"] })) if (!await sendStaleToNous(owner, pane, post) && post.status === "APPROVED") fresh.push(post);
+      const due = fresh.filter((post) => settings.channels[post.channel].enabled && (!post.scheduledAt || post.scheduledAt <= at))
         .sort((left, right) => (left.scheduledAt ?? left.updatedAt).localeCompare(right.scheduledAt ?? right.updatedAt));
       const open: MarketingPost[] = [];
       for (const post of due) if (!await sendStaleApprovalBack(owner, pane, post) && !await nextSlot(owner, pane, post)) open.push(post);

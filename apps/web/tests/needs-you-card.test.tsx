@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SpaceNotification } from "@space/contracts";
-import { NeedsYouCard } from "../src/features/needs-you/NeedsYouCard.js";
+import { needsYouHasPlace, type SpaceNotification } from "@space/contracts";
+import { NeedsYouCard, type NeedsYouBoardPane } from "../src/features/needs-you/NeedsYouCard.js";
 import { NOUS_FOCUS_EVENT } from "../src/features/nous-focus/nous-focus-events.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
@@ -167,6 +167,148 @@ describe("NeedsYouCard", () => {
     } finally {
       window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
     }
+  });
+
+  it("operator 13/11 07:12 BKK (plan clipboard:T2uboz26Oh3q S2): a Nous card about a CLI pane names that pane in Details, its click opens it, and the closed card still has no Go", () => {
+    const seen: unknown[] = [];
+    const onFocus = (event: Event) => seen.push((event as CustomEvent).detail);
+    window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
+    try {
+      const relay = card({ source: "NOUS", kind: "NEEDS_HANDS", title: "Bruno: pick a logo", body: "• Bruno asks which logo to keep (answers the Agent's question)",
+        payload: { paneMode: "TERMINAL", ask: { question: "Which logo?", options: ["Logo A", "Logo B"], recommended: "Logo B", answer: { kind: "NOUS" } } } });
+      const pane = { paneId: "pane:iris0000001", name: "Bruno", mode: "TERMINAL", roomName: "Work", lineLanguage: "en" } as NeedsYouBoardPane;
+      render(<NeedsYouCard variant="row" item={relay} pane={pane} />);
+      expect(screen.getByRole("article").dataset.needsYouPlace).toBe("HERE");
+      expect(closedButtons()).toEqual(["Details", "Logo B"]);
+      fireEvent.click(screen.getByRole("button", { name: "Details" }));
+      expect(screen.queryByRole("button", { name: /Go/ })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Open Bruno" }));
+      expect(seen).toEqual([expect.objectContaining({ roomId: "room:work000001", paneId: "pane:iris0000001", immediate: true })]);
+      // NousFocus goes only where the card has a place: without a target a Nous card about a CLI pane had none, and the click only showed the peek.
+      const sent = (seen[0] as { notification: SpaceNotification }).notification;
+      expect(sent.link.target).toBe("activity");
+      expect(needsYouHasPlace(sent, "TERMINAL")).toBe(true);
+      expect(answers).toEqual([]);
+    } finally {
+      window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
+    }
+  });
+
+  it("operator 13/11 07:12 BKK (plan clipboard:T2uboz26Oh3q S3/S4): design variants are tiles; a picture opens a preview with Choose this, ←/→ and Download, Open in Design opens the request, and no id shows", async () => {
+    const seen: Array<{ roomId: string; paneId: string; notification: SpaceNotification }> = [];
+    const onFocus = (event: Event) => seen.push((event as CustomEvent).detail);
+    window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
+    vi.spyOn(liveRuntime.api, "artifactMetadata").mockImplementation(async (id: string) => {
+      if (id === "artifact:gone000001") throw new Error("Artifact artifact:gone000001 was not found.");
+      return { artifact: { id, filename: `${id.slice(9)}.${id.includes("cut") ? "mp4" : "png"}`, mimeType: id.includes("cut") ? "video/mp4" : "image/png", byteSize: 1, sha256: "a".repeat(64), createdAt: at,
+        roomId: "room:studio00001", paneId: "pane:design00001", metadata: { source: "DESIGN", requestId: "dreq:banner0001" } }, image: null, embedded: {}, design: null };
+    });
+    try {
+      const pick = card({ source: "NOUS", kind: "NEEDS_HANDS", title: "Pick a banner", body: "Two banners are ready; last week's was artifact:gone000001.",
+        payload: { paneMode: "TERMINAL", ask: { question: "Which banner?", options: ["Variant A (artifact:varA000001)", "Variant B: artifact:cutB000001", "Neither"],
+          recommended: "Variant B: artifact:cutB000001", answer: { kind: "NOUS" } } } });
+      render(<NeedsYouCard variant="row" item={pick} pane={{ paneId: "pane:iris0000001", name: "Bruno", mode: "TERMINAL", roomName: "Work", lineLanguage: "en" } as NeedsYouBoardPane} />);
+      expect(closedButtons()).toEqual(["Details", "Variant B"]);
+      fireEvent.click(screen.getByRole("button", { name: "Details" }));
+      const previewA = await screen.findByRole("button", { name: "Preview Variant A" });
+      expect((await screen.findByRole("button", { name: "Preview Variant B" })).querySelector("video")).toBeTruthy();
+      expect(await screen.findByText("No longer available")).toBeTruthy();
+      expect(screen.getByRole("article").textContent).not.toMatch(/artifact:/);
+      expect(screen.getAllByRole("button", { name: /^(?:Variant [AB]|Neither)/ }).map((button) => button.textContent)).toEqual(["Variant A", "Variant B Recommended", "Neither"]);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Open in Design" }));
+      expect(seen.at(-1)).toMatchObject({ roomId: "room:studio00001", paneId: "pane:design00001", notification: { link: { target: "request:dreq:banner0001" } } });
+      expect(screen.getByRole("button", { name: "Open Bruno" })).toBeTruthy();
+
+      previewA.focus();
+      fireEvent.click(previewA);
+      let dialog = await screen.findByRole("dialog", { name: "Preview Variant A" });
+      expect(within(dialog).getByText("1 / 2 · varA000001.png")).toBeTruthy();
+      expect(within(dialog).getByRole("link", { name: "Download varA000001.png" }).getAttribute("download")).toBe("varA000001.png");
+      fireEvent.keyDown(dialog, { key: "ArrowRight" });
+      dialog = await screen.findByRole("dialog", { name: "Preview Variant B" });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Previous" }));
+      dialog = await screen.findByRole("dialog", { name: "Preview Variant A" });
+      fireEvent.keyDown(dialog, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(document.activeElement).toBe(previewA);
+
+      fireEvent.click(screen.getByRole("button", { name: "Preview Variant B" }));
+      fireEvent.click(within(await screen.findByRole("dialog", { name: "Preview Variant B" })).getByRole("button", { name: "Choose this" }));
+      await waitFor(() => expect(answers).toEqual([{ option: "Variant B: artifact:cutB000001" }]));
+    } finally {
+      window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
+    }
+  });
+
+  it("plan clipboard:T2uboz26Oh3q S9: an open card tabs header → tiles → answers → footer; the preview opens on Choose this, a held Enter does not answer, ←/→ is announced", async () => {
+    vi.spyOn(liveRuntime.api, "artifactMetadata").mockImplementation(async (id: string) => ({ artifact: { id, filename: `${id.slice(9)}.png`, mimeType: "image/png", byteSize: 1,
+      sha256: "a".repeat(64), createdAt: at, roomId: null, paneId: null, metadata: {} }, image: null, embedded: {}, design: null }));
+    const pick = card({ source: "NOUS", kind: "NEEDS_HANDS", title: "Pick a banner", body: "Two banners are ready.",
+      payload: { paneMode: "TERMINAL", ask: { question: "Which banner?", options: ["Variant A (artifact:varA000001)", "Variant B (artifact:varB000001)", "Neither"],
+        recommended: "Variant B (artifact:varB000001)", answer: { kind: "NOUS" } } } });
+    render(<NeedsYouCard variant="row" item={pick} />);
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    const previewA = await screen.findByRole("button", { name: "Preview Variant A" });
+    await screen.findByRole("button", { name: "Preview Variant B" });
+    // Document order (jsdom answers a selector list grouped by selector): the order Tab walks.
+    const order = [...screen.getByRole("article").querySelectorAll<HTMLElement>("*")].filter((node) => node.matches("button:not(:disabled), a[href], input, textarea, summary"))
+      .map((control) => control.getAttribute("aria-label") ?? control.textContent);
+    expect(order).toEqual(["Less", "Preview Variant A", "Variant A", "Preview Variant B", "Variant B Recommended", "Neither", "Your answer", "It no longer needs me"]);
+
+    previewA.focus();
+    fireEvent.click(previewA);
+    const dialog = await screen.findByRole("dialog", { name: "Preview Variant A" });
+    const choose = within(dialog).getByRole("button", { name: "Choose this" });
+    await waitFor(() => expect(document.activeElement).toBe(choose));
+    expect(fireEvent.keyDown(choose, { key: "Enter", repeat: true })).toBe(false);
+    expect(fireEvent.keyDown(choose, { key: "Enter" })).toBe(true);
+    fireEvent.keyDown(choose, { key: "ArrowRight" });
+    await screen.findByRole("dialog", { name: "Preview Variant B" });
+    expect(dialog.querySelector("[aria-live='polite']")?.textContent).toBe("2 / 2 · Variant B");
+    expect(document.activeElement).toBe(choose);
+    fireEvent.keyDown(choose, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(previewA);
+    expect(answers).toEqual([]);
+  });
+
+  it("plan clipboard:T2uboz26Oh3q S7: the recommended answer comes first on a row of its own with a Recommended badge in its name, no suffix", () => {
+    const ask = card({ source: "NOUS", kind: "NEEDS_HANDS", title: "Release window", body: "The queue is empty.",
+      payload: { paneMode: "TERMINAL", ask: { question: "Release tonight or tomorrow?", options: ["Tomorrow", "Tonight", "Never"], recommended: "Tonight", answer: { kind: "NOUS" } } } });
+    render(<NeedsYouCard variant="row" item={ask} />);
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    const buttons = [...screen.getByRole("article").querySelectorAll(".ny-answers > button")].filter((button) => button.textContent !== "Always answer like this");
+    expect(buttons.map((button) => button.textContent)).toEqual(["Tonight Recommended", "Tomorrow", "Never"]);
+    expect([buttons[0]!.classList.contains("is-recommended"), buttons[0]!.classList.contains("is-primary"), Boolean(buttons[0]!.querySelector(".ny-badge svg"))]).toEqual([true, true, true]);
+    expect(screen.getByRole("button", { name: "Tonight Recommended" })).toBe(buttons[0]);
+    expect(screen.getByRole("article").textContent).not.toContain("(Recommended)");
+  });
+
+  it("plan clipboard:T2uboz26Oh3q S8: a review shows its draft with the channel, an urgent card says so, and a closed card's files fold to a count", () => {
+    const decide = { question: "Post it?", options: ["Approve", "Decline"], answer: { kind: "COPILOT_DECISION", copilot: "MARKETING", item: "REVIEW", itemId: "mkrev:post000001" } };
+    render(<NeedsYouCard variant="row" open item={card({ source: "MARKETING_COPILOT", kind: "REVIEW_REQUESTED", title: "Post for LinkedIn", body: "Ready.",
+      payload: { ask: decide, review: { id: "mkrev:post000001", channel: "LINKEDIN", text: "SpaceApp 1.0 is out." } } })} />);
+    const review = screen.getByRole("article");
+    expect(review.getAttribute("data-needs-you-layout")).toBe("REVIEW");
+    expect(within(screen.getByRole("region", { name: "Draft" })).getByRole("heading").textContent).toBe("Draft · LinkedIn");
+    expect(screen.getByRole("region", { name: "Draft" }).textContent).toContain("SpaceApp 1.0 is out.");
+    cleanup();
+
+    const files = ["a.png", "b.png", "c.png"].map((name, index) => ({ artifactId: `artifact:file0000000${index}`, name, folder: "Images", mime: "image/png" }));
+    render(<NeedsYouCard variant="row" item={card({ source: "SECURITY_COPILOT", kind: "SECURITY_REVIEW", severity: "URGENT", title: "Patch openssl on pve1",
+      payload: { ask: { ...decide, answer: { kind: "COPILOT_QUESTION" } }, files } })} />);
+    const urgent = screen.getByRole("article");
+    expect([urgent.getAttribute("data-needs-you-layout"), urgent.classList.contains("layout-security"), urgent.querySelector(".ny-urgent")?.textContent]).toEqual(["SECURITY", true, "Urgent"]);
+    fireEvent.click(screen.getByRole("button", { name: "3 files" }));
+    expect(["a.png", "b.png", "c.png"].map((name) => Boolean(screen.getByRole("button", { name: new RegExp(name.replace(".", "\\.")) })))).toEqual([true, true, true]);
+  });
+
+  it("plan clipboard:T2uboz26Oh3q S5: what changed since the operator's earlier answer is the card's Since then, not words in its text", () => {
+    render(<NeedsYouCard variant="row" open item={card({ source: "NOUS", kind: "NEEDS_HANDS", title: "Allowances", body: "• The allowance switches.\n\nChecked first:\n• Settings: two are off",
+      payload: { items: [{ text: "The allowance switches.", since: "two switches are still off after the reload" }],
+        ask: { question: "Turn them on now?", options: ["Yes", "No"], recommended: "Yes", answer: { kind: "NOUS" } } } })} />);
+    expect(screen.getByText("Since then").nextElementSibling?.textContent).toBe("two switches are still off after the reload");
   });
 
   it("operator 12/11 23:19 BKK: a card naming a Mail review shows that mail (the review's reply) and its Go opens the review, though Nous set no target", async () => {

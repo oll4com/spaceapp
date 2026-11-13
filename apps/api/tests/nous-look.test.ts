@@ -17,6 +17,7 @@ const room = { id: "room:look00001", name: "Main", kind: "WORKSPACE" } as Room;
 const pane = (id: string, mode: Pane["mode"], title: string) => ({ id, roomId: room.id, mode, title, isClosed: false, isMinimized: false } as unknown as Pane);
 const browserPane = pane("pane:marketing1", "MARKETING_COPILOT", "Marketing");
 const cliPane = pane("pane:andy00001", "TERMINAL", "Andy");
+const webPane = pane("pane:web000001", "BROWSER", "Web");
 const base = mkdtempSync(join(tmpdir(), "nous-look-"));
 afterAll(() => rmSync(base, { recursive: true, force: true }));
 // A real PNG header: the image block carries the file's bytes as base64.
@@ -27,7 +28,7 @@ writeFileSync(shotPath, png);
 function tools(extra: Partial<NousToolDeps> = {}, fenced = false) {
   const action = vi.fn(async () => ({ text: JSON.stringify({ artifactId: "artifact:shot0001", path: shotPath, masked: true }), session: { currentUrl: "https://x.com/compose" } }));
   const vaultProtection = { ownerOf: vi.fn(async () => fenced ? "pane:marketing1" : null), release: vi.fn(async () => false) };
-  const nous = createNousTools({ rooms: async () => [room], listPanes: async () => [browserPane, cliPane], browser: { getActive: async (target) => target.id === browserPane.id ? {} : null, action },
+  const nous = createNousTools({ rooms: async () => [room], listPanes: async () => [browserPane, cliPane, webPane], browser: { getActive: async (target) => target.id === browserPane.id ? {} : null, action },
     vaultProtection, ...extra } as unknown as NousToolDeps);
   return { nous, action, vaultProtection };
 }
@@ -69,7 +70,15 @@ describe("space_look", () => {
     expect(await nous.execute("space_look", { room: "Main", pane: "Andy" }, ctx)).toMatchObject({ ok: true, result: expect.stringContaining("without a browser, so its screen was read as text") });
     expect((await nous.execute("space_look", { room: "Main", pane: "Nobody" }, ctx)).ok).toBe(false);
     const closed = tools({ browser: { getActive: async () => null, action } });
-    expect(await closed.nous.execute("space_look", { room: "Main", pane: "Marketing" }, ctx)).toMatchObject({ ok: false, display: "Marketing's browser is not open" });
+    expect(await closed.nous.execute("space_look", { room: "Main", pane: "Web" }, ctx)).toMatchObject({ ok: false, display: "Web's browser is not open" });
+    // 13/11 Score errors: a copilot pane with no browser to see (closed, or the Browser Host down) has its CLI screen read as text.
+    const roomTool = async () => ({ ok: true, display: "Read Marketing", result: "copilot screen" });
+    expect(await tools({ roomTool, browser: { getActive: async () => null, action } }).nous.execute("space_look", { room: "Main", pane: "Marketing" }, ctx))
+      .toMatchObject({ ok: true, result: expect.stringMatching(/no live browser session\), so its CLI screen was read as text[\s\S]*copilot screen/) });
+    const down = { getActive: async () => { throw new Error("The Browser Host is unavailable."); }, action };
+    expect(await tools({ roomTool, browser: down }).nous.execute("space_look", { room: "Main", pane: "Marketing" }, ctx))
+      .toMatchObject({ ok: true, result: expect.stringContaining("(The Browser Host is unavailable.), so its CLI screen was read as text") });
+    expect(await tools({ browser: down }).nous.execute("space_look", { room: "Main", pane: "Web" }, ctx)).toMatchObject({ ok: false, result: "The Browser Host is unavailable." });
     const bigPath = join(base, "big.png");
     writeFileSync(bigPath, Buffer.alloc(NOUS_LOOK_MAX_BYTES + 1));
     const big = tools({ browser: { getActive: async () => ({}), action: async () => ({ text: JSON.stringify({ artifactId: "artifact:big", path: bigPath, masked: true }) }) } });

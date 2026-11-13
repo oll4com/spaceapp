@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { scoreQuery, scoreHistoryQuery } from "./nous-score-query.js";
 import { nousModelLabel, withoutNothingNew } from "@space/contracts";
 import { openSettingsSection } from "../settings/settings-section-request.js";
+import { NousRemoteMark } from "./NousRemoteMark.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { NEEDS_YOU_CHECKED_HEADER, nousDecisionKind, parseNousGoalCommand, type ClipboardItem, type NousAttachment, type NousDecision, type NousMessage, type NousOverview, type NousPlanHold, type NousState,
   type SpaceNotification, type UiLanguage } from "@space/contracts";
@@ -9,11 +10,11 @@ import { api } from "../../api.js";
 import { ChatMarkdown } from "../agent-pane/ChatMarkdown.js";
 import { AgentFileMentions } from "../terminal-pane/AgentFileLinks.js";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
-import { DockButton, DockChips, DockFullscreenButton, DockIconButton, DockNotice, DockState, useDockConfirm, type DockChipOption } from "../dock-kit/DockKit.js";
+import { DockButton, DockChips, DockFullscreenButton, DockIconButton, DockNotice, DockSearch, DockState, useDockConfirm, type DockChipOption } from "../dock-kit/DockKit.js";
 import { useIsDockActive } from "../docks/dock-active-context.js";
 import { requestNousFocus, useLeaveDuringNousFocus } from "../nous-focus/nous-focus-events.js";
 import { NousAppointments } from "./NousAppointments.js";
-import { clearConversationMatches, findConversationText, paintConversationMatches } from "./nous-search.js";
+import { clearConversationMatches, findConversationText, paintConversationMatches, searchPlans } from "./nous-search.js";
 import { Activity, ArrowLeft, CalendarCheck, ChartSpline, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, ChevronsDown, ChevronsUp, CircleStop, ClipboardList, FileSymlink, Gauge, Gavel, Briefcase, TrendingUp, LayoutGrid, ListChecks, Maximize2, Megaphone, MessageSquare, Minimize2, Nous, Paperclip, Rocket, Search, Send, Star, Target, Trash2, UserCheck, X } from "../ui-theme/app-icons.js";
 import { NousBrain3D } from "./NousBrain3D.js";
 import { NousLiveStats } from "./NousLiveStats.js";
@@ -527,6 +528,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
   ];
   const shownTabs = tabs.filter(({ id }) => id === "conversation" || state?.settings.dockTabs?.[id] !== false).map((option) => ({ ...option, label: t(option.label) }));
   const goTo = (next: Tab) => { setPlanView(null); setTab(next); };
+  const openLoad = shownTabs.some((option) => option.id === "load") ? () => goTo("load") : undefined;
   const views = <DockChips label={t("Nous views")} className="nous-views" value={tab} onChange={goTo} options={shownTabs} />;
   const railViews = <DockChips label={t("Nous views")} className="nous-views" value={tab} onChange={goTo}
     options={RAIL_SECTIONS.flatMap(([section, ids]) => ids.flatMap((id) => shownTabs.filter((option) => option.id === id)).map((option) => ({ ...option, section: t(section) })))} />;
@@ -654,7 +656,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
   ) : (
     tab === "panes" ? <NousPaneBoard active={isActive} decisions={decisions} overview={overview} onSent={() => void refresh().catch(() => undefined)}
       renderDecision={(decision) => <NousDecisionCard inline decision={decision} onAnswer={answerDecision(decision)} />} />
-      : <NousOverviewView overview={overview} active={isActive} />
+      : <NousOverviewView overview={overview} active={isActive} onOpenLoad={openLoad} />
   );
 
   // Only the dialogue stays open (operator request 2026-10-21, every dock size): each run of tool steps, its helpers' included,
@@ -710,7 +712,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
         </div>
         {/* The dock's own controls sit at its far right edge (operator request 2026-10-17, plan clipboard:wr9yNPJwkDrp). */}
         <div className="nous-workspace-tools">{actions}</div>
-        <NousBoard overview={overview} open={open} onShowDecision={showDecision} openPlan={openPlan} live={isActive} />
+        <NousBoard overview={overview} open={open} onShowDecision={showDecision} openPlan={openPlan} live={isActive} onOpenLoad={openLoad} />
         {confirmDialog}
         </AgentFileMentions>
       </section>
@@ -727,6 +729,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
           <h2>Nous</h2>
           <p className="nous-tagline">{modelLink}</p>
           {statusLine}
+          <NousRemoteMark active={isActive && canRun} />
         </div>
         {/* The dock's buttons sit under the switch so the views get a full row of their own in a narrow dock. */}
         <div className="nous-hero-side">{power}<div className="nous-hero-actions">{actions}</div></div>
@@ -789,16 +792,18 @@ function NousElapsed({ since }: { since: string }) {
 }
 
 /** The maximized view's right column: what waits for the operator and where every plan stands, always in sight. */
-function NousBoard({ overview, open, onShowDecision, openPlan, live }: {
-  overview: NousOverview | null; open: NousDecision[]; onShowDecision(id: string): void; openPlan(id: string): void; live: boolean;
+function NousBoard({ overview, open, onShowDecision, openPlan, live, onOpenLoad }: {
+  overview: NousOverview | null; open: NousDecision[]; onShowDecision(id: string): void; openPlan(id: string): void; live: boolean; onOpenLoad?(): void;
 }) {
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
+  const [query, setQuery] = useState("");
+  const plans = searchPlans(overview?.plans ?? [], query);
   return (
     <aside className="nous-board" aria-label={t("Needs you and the plans")}>
       {/* Appointments at the very top (operator 2/11 15:22 BKK), then Live stats, in sight without scrolling; they replace the raw release-train text (releases reach the operator as RELEASE decisions). */}
       <NousAppointments />
-      <NousLiveStats overview={overview} active={live} />
+      <NousLiveStats overview={overview} active={live} onOpenLoad={onOpenLoad} />
       <section aria-label={t("Needs you")}>
         <h3>{t("Needs you")}{open.length ? <span className="nous-board-count is-attention">{open.length}</span> : null}</h3>
         {open.length === 0 ? <p className="nous-muted">{t("Nothing waits for you. Nous brings releases, irreversible actions, third parties or money, and direction here.")}</p> : null}
@@ -812,9 +817,15 @@ function NousBoard({ overview, open, onShowDecision, openPlan, live }: {
         ))}
       </section>
       <section aria-label={t("Plans")}>
-        <h3>{t("Plans")}{overview?.plans.length ? <span className="nous-board-count">{overview.plans.length}</span> : null}</h3>
-        {!overview ? <p className="nous-muted">{t("Loading the plans…")}</p> : overview.plans.length === 0 ? <p className="nous-muted">{t("No open plans.")}</p> : null}
-        {overview?.plans.map((plan) => (
+        <h3>{t("Plans")}{overview?.plans.length ? <span className="nous-board-count">{plans.length}</span> : null}</h3>
+        {overview?.plans.length ? (
+          <div className="nous-board-search" onKeyDown={(event) => { if (event.key === "Escape" && query) { event.stopPropagation(); setQuery(""); } }}>
+            <DockSearch value={query} onChange={setQuery} label={t("Search plans")} name="nous-plans-search" />
+          </div>
+        ) : null}
+        {!overview ? <p className="nous-muted">{t("Loading the plans…")}</p> : overview.plans.length === 0 ? <p className="nous-muted">{t("No open plans.")}</p>
+          : plans.length === 0 ? <p className="nous-muted">{t("No plan matches.")}</p> : null}
+        {plans.map((plan) => (
           <button key={plan.id} type="button" className={`nous-board-plan is-${plan.status.toLowerCase()}`} onClick={() => openPlan(plan.id)}
             aria-label={`Open the plan ${plan.title}, ${plan.progress}%`}>
             <span className="nous-plan-head"><strong>{plan.title}</strong><span>{plan.progress}%</span></span>
@@ -1088,7 +1099,7 @@ function describeAction(language: UiLanguage, action: NonNullable<NousDecision["
   return t("{decision} the {copilot} copilot's {item}", { decision: action.decision, copilot: action.copilot.toLowerCase(), item: action.item.toLowerCase() });
 }
 
-function NousOverviewView({ overview, active }: { overview: NousOverview | null; active: boolean }) {
+function NousOverviewView({ overview, active, onOpenLoad }: { overview: NousOverview | null; active: boolean; onOpenLoad?(): void }) {
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [liveStats, setLiveStats] = useNousUiState("overview.liveStats", true, isFlag);
@@ -1097,7 +1108,7 @@ function NousOverviewView({ overview, active }: { overview: NousOverview | null;
     <div className="nous-overview">
       <details className="nous-live-collapsible" open={liveStats} onToggle={(event) => setLiveStats(event.currentTarget.open)}>
         <summary>{t("Live stats")}</summary>
-        <NousLiveStats overview={overview} active={active} />
+        <NousLiveStats overview={overview} active={active} onOpenLoad={onOpenLoad} />
       </details>
       <section aria-label={t("Open plans")}>
         <h3>{t("Open plans")}</h3>

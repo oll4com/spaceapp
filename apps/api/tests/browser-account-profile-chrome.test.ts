@@ -159,7 +159,8 @@ describe.skipIf(missingBrowser)('tabs in another Google account inside one pane,
     // The pane's own Chrome crashes while its tab in the other account stays open: both come back, that tab once.
     const chromeMains = (profile: string) => readdirSync('/proc').filter(entry => /^\d+$/.test(entry)).flatMap(entry => {
       try {
-        const args = readFileSync(`/proc/${entry}/cmdline`, 'utf8').split('\0');
+        // Some Chrome builds (156) retitle the browser process: its cmdline is one space-joined string, not NUL-separated args.
+        const args = readFileSync(`/proc/${entry}/cmdline`, 'utf8').split(/[\0 ]/);
         return args.includes(`--user-data-dir=${profile}`) && !args.some(arg => arg.startsWith('--type=')) ? [Number(entry)] : [];
       } catch { return []; }
     });

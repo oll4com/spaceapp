@@ -1033,7 +1033,7 @@ describe("AgentFilesDock", () => {
     vi.spyOn(liveRuntime.api, "artifacts").mockResolvedValue(paginated(files));
     const metadata = vi.spyOn(liveRuntime.api, "artifactMetadata").mockResolvedValue({
       artifact: { id: "artifact:design", filename: "design-linkedin.png", mimeType: "image/png", byteSize: 206184, sha256: "c".repeat(64), createdAt: "2026-10-19T05:02:21.000Z",
-        roomId: room.id, metadata: { source: "USER_UPLOAD", folder: "GRAPHICS/Design" } },
+        roomId: room.id, paneId: null, metadata: { source: "USER_UPLOAD", folder: "GRAPHICS/Design" } },
       image: { width: 1200, height: 627 },
       embedded: { Description: "6 AI models played chess. Zero checkmates.", Software: "SpaceApp Design", "spaceapp:design": "{}" },
       design: { formatId: "linkedin", description: "6 AI models played chess. Zero checkmates.", madeBy: { by: "AGENT", runtimeId: "cli:claude", model: "claude-opus-5-5" }, engine: "UPLOAD" }

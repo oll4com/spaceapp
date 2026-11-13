@@ -46,6 +46,8 @@
   "POST /api/auth/invites/accept",
   "POST /api/auth/login",
   "POST /api/auth/logout",
+  "POST /api/auth/password-reset/complete",
+  "POST /api/auth/password-reset/request",
   "POST /api/channels/slack/events",
   "POST /api/channels/teams/messages",
   "POST /api/demo-projects/preview/:runId/:token",

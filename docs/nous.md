@@ -62,6 +62,17 @@ a kind again under **Ask me again** in the settings.
 A sign-in, a code or a CAPTCHA is not a decision: it reaches you as a Needs
 you request on the pane that needs your hands.
 
+## Needs you cards
+
+A closed card is its title, one answer and **Details**; open, it says what is
+needed, the steps and what was checked, then the answers, with the recommended
+one first and marked **Recommended**. When the choice is between pictures or
+videos, each one is a tile: click it to see it full size, step with ← / →, and
+press **Choose this** (or Enter) to answer with it. **Open in Design** or
+**Open in Video** takes you to the request that made them, and **Open
+<pane>** to the pane the card is about. A translated card has one line,
+**Translated · Show original**, that switches only the language.
+
 ## Allowances
 
 Allowances let Nous do more alone. Every one is **off** by default, and only

@@ -525,6 +525,11 @@ describe("Nous's gates", () => {
     expect(ask).toHaveBeenLastCalledWith(expect.objectContaining({ refs: { prediction: { answer: "yes", confidence: 90 } } }), expect.anything());
     await tools.execute("space_ask_operator", { ...base, recommendation: "The lab.", prediction: "(β) Shop 65%" }, ctx);
     expect(ask).toHaveBeenLastCalledWith(expect.objectContaining({ refs: { prediction: { answer: "(β) Shop", confidence: 65 } } }), expect.anything());
+    // 13/11 02:49 ("γ" refused against "γ: μένουμε …"): an option's letter names that option.
+    await tools.execute("space_ask_operator", { ...base, options: ["α: Lab", "β: Shop"], recommendation: "The shop.", prediction: { answer: "β", confidence: 60 } }, ctx);
+    expect(ask).toHaveBeenLastCalledWith(expect.objectContaining({ refs: { prediction: { answer: "β: Shop", confidence: 60 } } }), expect.anything());
+    await tools.execute("space_ask_operator", { ...base, recommendation: "The lab.", prediction: { answer: "α", confidence: 60 } }, ctx);
+    expect(ask).toHaveBeenLastCalledWith(expect.objectContaining({ refs: { prediction: { answer: "(α) Lab", confidence: 60 } } }), expect.anything());
 
     const repository = new InMemoryNousRepository();
     const service = createNousService({ repository, runner: async () => ({ text: "ok", isError: false }), world: async () => ({ text: "world", overview: {} }),
@@ -986,6 +991,7 @@ describe("Nous's gates", () => {
     it("(2) refuses a sign-in item for a site with a Vault login or a sign-in record unless triedStored says the stored method failed (4/11 X @oll4com)", async () => {
       const siteSignins = new InMemorySiteSigninsRepository();
       await siteSignins.record("user:operator", { site: "claude.ai", method: "GOOGLE", googleAccountEmail: "ntheogr@gmail.com", outcome: "SUCCESS" }, "test");
+      await siteSignins.record("user:operator", { site: "example.org", method: "OTHER", outcome: "FAILURE", reason: "test" }, "test");
       const call = vi.fn(async (input: { body: { site?: string } }) => ({ status: "LISTED", auditId: null,
         items: !input.body.site || input.body.site === "x.com" ? [{ handle: "vault:x1", label: "X @oll4com", origins: ["https://x.com"] }] : [] }));
       const { card, notify, tools } = setup({ siteSignins, vault: { agent: { call } } } as unknown as Partial<NousToolDeps>);
@@ -1003,6 +1009,11 @@ describe("Nous's gates", () => {
       expect((await card("Dana", { text: "Άνοιξε τον σύνδεσμο του X για το post", steps: ["Open the post's link in the Main room", "Read the post"] })).ok).toBe(true);
       expect((await card("Dana", { text: "Sign in to skroutz.gr for the return", steps: ["Open https://www.skroutz.gr/login", "Sign in"] })).ok).toBe(true);
       expect((await card("Dana", { text: x.text, ruleDiffers: "This is the second X account, not the Vault's", steps: ["Open the X app", "Sign in as @oll4news"] })).ok).toBe(true);
+      // 13/11: an account's name («login Mach 301») in an office ERP card for example.org's orders asks no sign-in; asking to enter the password does.
+      expect((await card("Dana", { text: "Το γραφείο (login Mach 301) κόβει στο ERP τα τιμολόγια των δεμάτων του example.org", question: "Το έδωσες στο γραφείο;",
+        steps: ["Open the ERP on the office PC", "Cut the invoices"] })).ok).toBe(true);
+      expect(await card("Dana", { text: "example.org admin: enter your password on the orders page", steps: ["Open https://example.org/admin", "Enter the password"] }))
+        .toMatchObject({ refused: true, display: "Space holds a sign-in for this site", result: expect.stringContaining("site sign-in record example.org") });
     });
 
     it("(2) matches only the host of the card's link: 11/11 03:08Z an npmjs.com card was refused for spaceapp.dev, web.app and 192.0.2.x logins", async () => {
@@ -1120,7 +1131,10 @@ describe("Nous's gates", () => {
       expect((await card("Dana", { text: "Approve the payout details", steps: ["Open https://wise.com/payouts", "Approve"], target: "url:https://wise.com/payouts" })).ok).toBe(true);
       expect((await card("Dana", { text: "Approve the payout details", target: "url:https://meridial.com/payouts", ruleDiffers: "A second Meridial account, for the lab",
         steps: ["Open https://meridial.com/payouts", "Approve"] })).ok).toBe(true);
-      expect(notify).toHaveBeenCalledTimes(4);
+      // 13/11: a site's bare home page names its host, not a subject (a QR pairing card and a root install card both on Space's own page).
+      expect((await card("Dana", { text: "Pair the phone app: scan the QR", target: "url:http://127.0.0.1:4911", steps: ["Open the pairing page", "Scan"] })).ok).toBe(true);
+      expect((await card("Max", { text: "Install the backup agent as root", target: "url:http://127.0.0.1:4911/", steps: ["Run the install", "Enable the service"] })).ok).toBe(true);
+      expect(notify).toHaveBeenCalledTimes(6);
     });
 
     it("(6) a draft's send that an ON maySend covers is held for space_ask_operator; with it OFF it passes; a sign-in item never (plan clipboard:USQ6ktIIN_1D last step)", async () => {
@@ -1160,9 +1174,11 @@ describe("Nous's gates", () => {
       expect(await card("Dana", { text: "Enter card details for payment" }, ["Verified amount: $15.00 for 80 Connects"]))
         .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("final card-input form") });
       expect(notify).not.toHaveBeenCalled();
-      // Passes with both confirmed in checked and no intermediate steps in steps
-      expect((await card("Dana", { text: "Enter card details for payment", steps: ["Enter card details on form"] },
-        ["At the final card-input form", "Verified amount: $15.00 for 80 Connects package"])).ok).toBe(true);
+      // 13/11 Cartesia card: even at the form with the amount verified, steps are refused; focus on the field with no steps passes.
+      expect(await card("Dana", { text: "Enter card details for payment", steps: ["Enter card details on form"] },
+        ["At the final card-input form", "Verified amount: $15.00 for 80 Connects package"]))
+        .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("never a list of steps") });
+      expect((await card("Dana", { text: "Enter card details for payment" }, ["At the final card-input form", "Verified amount: $15.00 for 80 Connects package"])).ok).toBe(true);
       expect((await tools.execute("space_focus_pane", { room: "Alex", pane: "Dana", reason: "Enter CVV for billing",
         checked: ["At the final card-input form", "Verified total: $20/month tier"] }, ctx)).ok).toBe(true);
       expect(notify).toHaveBeenCalledTimes(2);
@@ -1183,6 +1199,41 @@ describe("Nous's gates", () => {
       expect(await card("Dana", { text: "Namecheap: renew spaceapp.dev", steps: ["Open https://www.namecheap.com/cart/checkout", "Add payment method", "Enter the card number"] }))
         .toMatchObject({ ok: false, refused: true, display: "Premature checkout card", result: expect.stringContaining("final card-input form") });
       expect(notify).toHaveBeenCalledTimes(3);
+    });
+
+    it("(10) the 13/11 Cartesia card: a card entry as steps is refused, a 3-D Secure approval passes (operator rule 7/11 nous_msg:866da6d6)", async () => {
+      const { card, tools, notify } = setup();
+      const checked = ["Stripe checkout: at the card fields, card details empty", "Verified total due today $0.00, Scale tier $299/mo after 12 months"];
+      expect(await card("Dana", { text: "Cartesia free year: card needed", question: "Enter a card on Cartesia checkout (due today $0.00; $299/mo after 12 months)?",
+        steps: ["Open the card's page in Jack's browser (a new tab if it expired)", "Check the total is $0.00", "Enter the card number, MM/YY and CVC", "Press Pay and subscribe", "3-D Secure if asked"] }, checked))
+        .toMatchObject({ ok: false, refused: true, display: "Premature checkout card", result: expect.stringContaining("hands them focus on that field") });
+      expect(await card("Dana", { text: "Cartesia checkout: enter it yourself: 1. Open the card's page 2. Enter the card number 3. Press Pay" }, checked))
+        .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("never a list of steps") });
+      expect(await tools.execute("space_focus_pane", { room: "Alex", pane: "Dana", reason: "Enter the card number on Cartesia checkout", steps: ["Press Pay and subscribe"], checked }, ctx))
+        .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("never a list of steps") });
+      expect(notify).not.toHaveBeenCalled();
+      expect((await tools.execute("space_focus_pane", { room: "Alex", pane: "Dana", reason: "Enter the card number on Cartesia checkout", checked }, ctx)).ok).toBe(true);
+      expect((await card("Max", { text: "Approve the 3-D Secure prompt in your bank app", steps: ["Open the bank app", "Tap Approve"] })).ok).toBe(true);
+      expect(notify).toHaveBeenCalledTimes(2);
+    });
+
+    it("(11) one pane, one ask: the pane agent's open needs-you card holds Nous's card there; its answered card holds the same subject (13/11 Cartesia card)", async () => {
+      const jack = { id: "notification:64a827de", paneId: "pane:dana0001", source: "AGENT", title: "Dana needs you", status: "OPEN",
+        body: "Cartesia Scale: enter the card ($0.00 today) on Stripe checkout at https://play.cartesia.ai/subscription/scale", payload: { checked: [] } };
+      const open = setup({ open: async () => [jack] });
+      expect(await open.card("Dana", { text: "Cartesia free year: card needed", question: "Enter a card on Cartesia checkout?" }))
+        .toMatchObject({ ok: false, refused: true, display: "The pane's own card is open", result: expect.stringContaining("Card notification:64a827de") });
+      // Whatever its words, and focus too: the pane's card is the one ask.
+      expect(await open.tools.execute("space_focus_pane", { room: "Alex", pane: "Dana", reason: "Sign the W-8BEN", checked: ["Dana: the form is open"] }, ctx))
+        .toMatchObject({ refused: true, display: "The pane's own card is open" });
+      expect(open.notify).not.toHaveBeenCalled();
+      // Another pane, another subject: it passes.
+      expect((await open.card("Max", { text: "Sign the W-8BEN tax form for Meridial" })).ok).toBe(true);
+      // Answered (closed) in the last 2 hours: the same subject from any pane is not asked again.
+      const closed = setup({ closedSince: async () => [{ ...jack, status: "ACKED", ackedAt: "2026-11-13T04:09:40.000Z", updatedAt: "2026-11-13T04:09:40.000Z" }] });
+      expect(await closed.card("Max", { text: "Enter the card on Cartesia checkout", target: "url:https://play.cartesia.ai/subscription/scale" }))
+        .toMatchObject({ refused: true, display: "A card asked this in the last 2 hours", result: expect.stringContaining("acked at 04:09 UTC") });
+      expect(closed.notify).not.toHaveBeenCalled();
     });
 
     it("(9) passes an identity check under a payments URL, an ID card, a 2FA login and a phone pairing card; a checkout URL still holds (13/11 review)", async () => {

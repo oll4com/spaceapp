@@ -270,7 +270,7 @@ const apiKeyProviders = {
   MIXEDBREAD: { title: "Add a Mixedbread API key", placeholder: "Mixedbread API key",
     note: "Granted credits. Mixedbread keys form a key pool for embeddings at /pools/mixedbread/v1/embeddings (no chat). The key is checked with a free request and stored encrypted." },
   AZURE_OPENAI: { title: "Add an Azure OpenAI resource", placeholder: "<resource>:<key>, or the Endpoint and Key",
-    note: "A $200 Azure credit until 5 Feb 2027 with a card behind it: the pool stops after that date. Paste <resource>:<key> or the Endpoint URL and Key; its keys form a key pool at /pools/azure/v1 (and azure: models of /pools/space/v1), where the model is the deployment name. The key is checked with a free request and stored encrypted." },
+    note: "A $200 Azure credit until 4 Aug 2027 04:44 UTC with a card behind it: the pool stops at that moment. Paste <resource>:<key> or the Endpoint URL and Key; its keys form a key pool at /pools/azure/v1 (and azure: models of /pools/space/v1), where the model is the deployment name. The key is checked with a free request and stored encrypted." },
   ZAI: { title: "Add a Z.AI API key", placeholder: "Z.AI API key",
     note: "Free GLM Flash models on an account with no card: its keys form a key pool at /pools/zai/v1 (and zai: models of /pools/space/v1) that sends and lists only the free models. The key is checked with a free request and stored encrypted." },
   SILICONFLOW: { title: "Add a SiliconFlow API key", placeholder: "sk-…",

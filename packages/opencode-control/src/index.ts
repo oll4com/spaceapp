@@ -1,8 +1,9 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
-export const opencodeDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-opencode";
-export const openCodeSpaceChatStateRoot = "/opt/spaceapp/var/opencode-chat-state";
+export const opencodeDirectParityRoot = `${SPACE_AGENT_HOME}/.codex/space-opencode`;
+export const openCodeSpaceChatStateRoot = `${SPACE_INSTALL_ROOT}/var/opencode-chat-state`;
 export const opencodeNativeSessionIdPattern = /^ses_[A-Za-z0-9]+$/;
 
 export const opencodeServerControlMaxBytes = 8_192;
@@ -11,7 +12,7 @@ export const opencodeServerControlHealthTimeoutMs = 1_500;
 
 /**
  * Static bridge address of the cli:opencode runtime netns, assigned by the
- * `runtimes` table in `/opt/spaceapp/bin/space-cli-vpn-broker`
+ * `runtimes` table in `<install root>/bin/space-cli-vpn-broker`
  * (`{ id: "cli:opencode", key: "opencode", address: "10.254.240.13" }`).
  * The shared OpenCode server binds 0.0.0.0:47047 inside that netns, so the
  * Space API (root netns) can only reach it via this address — never via the
@@ -595,7 +596,7 @@ export async function openCodeSessionExists(
 }
 
 export function openCodeSpaceChatControlPath(): string {
-  return "/opt/spaceapp/var/opencode-space-chat-control.json";
+  return `${SPACE_INSTALL_ROOT}/var/opencode-space-chat-control.json`;
 }
 
 /**

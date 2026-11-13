@@ -30,6 +30,11 @@ export function browserLastUse(row: BrowserRow, usedAt: UsedAt): number {
   return Math.max(at(row.updatedAt), at(row.lastFrameAt), at(row.agent?.drivenAt), usedAt(row.paneId) ?? 0);
 }
 
+/** In use now: an agent drives it or a control lease holds it. Kept for a task, a handoff or a sign-in is waiting, not use (Nous Score Idle open panes). */
+export function browserInUse(row: BrowserRow): boolean {
+  return Boolean(row.agent?.active || row.control);
+}
+
 /** What keeps a live browser open whatever its idle time, or null. */
 export function browserKeptFor(row: BrowserRow, scheduled: Set<string>): string | null {
   if (row.control) return "a control lease";

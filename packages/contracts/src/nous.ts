@@ -211,6 +211,9 @@ const criticalChoice = z.object({
   model: nousModelIdSchema.default("claude-haiku-5-5"),
   effort: z.enum(NOUS_CRITICAL_SPEND_EFFORTS).default("medium")
 }).strict().default(nousCriticalSpendModel);
+/** The default Load target of every spend mode (the Load tab below; operator 31/10 17:22 BKK). */
+export const NOUS_LOAD_TARGET = 90;
+const loadTarget = z.number().int().min(0).max(100).default(NOUS_LOAD_TARGET);
 export const nousLowSpendSettingsSchema = z.object({
   mode: z.enum(["AUTO", "ON", "OFF"]).default("AUTO"),
   /** Runtime-only automatic turn override, per kind and mode; normal models remain stored. */
@@ -221,7 +224,10 @@ export const nousLowSpendSettingsSchema = z.object({
   criticalBudgetRemainingPercent: z.number().min(0).max(100).default(20),
   maxTurnsPerHour: z.number().int().min(1).max(120).default(6),
   models: z.object({ inbox: lowChoice, standing: lowChoice, helper: lowChoice }).strict().default(() => ({ inbox: nousLowSpendModel(), standing: nousLowSpendModel(), helper: nousLowSpendModel() })),
-  criticalModels: z.object({ inbox: criticalChoice, standing: criticalChoice, helper: criticalChoice }).strict().default(() => ({ inbox: nousCriticalSpendModel(), standing: nousCriticalSpendModel(), helper: nousCriticalSpendModel() }))
+  criticalModels: z.object({ inbox: criticalChoice, standing: criticalChoice, helper: criticalChoice }).strict().default(() => ({ inbox: nousCriticalSpendModel(), standing: nousCriticalSpendModel(), helper: nousCriticalSpendModel() })),
+  /** The Load target per spend mode (operator 13/11 07:30 BKK, nous_msg:de65e4c2, plan 20261113-nous-load-setting); 0 never pushes. */
+  loadTargets: z.object({ NORMAL: loadTarget, LOW: loadTarget, CRITICAL: loadTarget }).strict()
+    .default(() => ({ NORMAL: NOUS_LOAD_TARGET, LOW: NOUS_LOAD_TARGET, CRITICAL: NOUS_LOAD_TARGET }))
 }).strict().refine(...orderedRange("criticalBudgetRemainingPercent", "lowBudgetRemainingPercent",
   { message: "The critical budget threshold must not exceed the low budget threshold.", path: ["criticalBudgetRemainingPercent"] }));
 export type NousLowSpendSettings = z.infer<typeof nousLowSpendSettingsSchema>;
@@ -281,7 +287,7 @@ export const nousRequestOutcomeSchema = z.object({
   summary: z.string().trim().min(1).max(300),
   outcome: z.enum(["SELF", "HELPER", "OPERATOR", "PENDING"]),
   missing: z.string().trim().min(1).max(300).optional(),
-  /** The operator corrected Nous or repeated an earlier request. */
+  /** The operator said Nous was wrong or repeated a request Nous reported done (not a new request, a card answer or a repeat while pending). */
   correction: z.boolean().optional()
 }).strict();
 export type NousRequestOutcome = z.infer<typeof nousRequestOutcomeSchema>;
@@ -315,9 +321,8 @@ export interface NousOperatorRequest {
 /**
  * The Load tab (operator 31/10 13:58 BKK, plan clipboard:f4SH36t3fJ6c): the share of the server's capacity and of the token pools Nous and
  * its agents use now (GET /api/nous/load), its series over a range and its averages, whose goal is to rise toward the target
- * (90 % since operator 31/10 17:22 BKK: «θελω 90% τουλαχιστον»).
+ * (90 % since operator 31/10 17:22 BKK: «θελω 90% τουλαχιστον»; per spend mode in `lowSpend.loadTargets` since 13/11).
  */
-export const NOUS_LOAD_TARGET = 90;
 export const nousLoadRangeSchema = z.enum(["1h", "24h", "7d", "30d"]);
 export type NousLoadRange = z.infer<typeof nousLoadRangeSchema>;
 export type NousLoadPartKey = "cpu" | "memory" | "load" | "pressure" | "tokens" | "panes" | "helpers";
@@ -327,6 +332,8 @@ export interface NousLoadAverage { value: number | null; previous: number | null
 export interface NousLoad {
   /** The newest sample; null before the first one. */
   at: string | null; overall: number | null; target: number;
+  /** The spend mode whose Load target is in force (Settings → Nous → Low-spend mode). */
+  targetMode?: NousSpendMode | null;
   level: "CALM" | "BUSY" | "OVERLOADED" | null;
   /** The hard limit that holds the overall at 100 (OVERLOADED, Nous's pool with no room). */
   limit: string | null;
@@ -345,7 +352,7 @@ export interface NousLoad {
 export const nousScoreRangeSchema = z.enum(["24h", "7d", "30d"]);
 export type NousScoreRange = z.infer<typeof nousScoreRangeSchema>;
 export type NousScoreTileKey = "plans" | "panes" | "goals" | "projects" | "dailyTasks" | "response" | "dailyErrors" | "requests" | "completed" | "done" | "utilization"
-  | "corrections" | "couldHaveDecided" | "scorecard" | "marketing" | "lostTokens" | "browsers" | "approvedNotDone" | "reset";
+  | "corrections" | "couldHaveDecided" | "scorecard" | "marketing" | "lostTokens" | "browsers" | "idlePanes" | "approvedNotDone" | "reset";
 /** One thing that gives or costs points (a plan, a request, a dimension); `id` is a plan, message or decision id when there is one. */
 export interface NousScoreItem { id: string | null; label: string; points: number; detail: string }
 export interface NousScoreTile { key: NousScoreTileKey; label: string; points: number; detail: string; items: NousScoreItem[] }
@@ -442,7 +449,9 @@ export const nousDecisionActionSchema = z.discriminatedUnion("type", [
   /** A copilot's review, rule, campaign or lead decision, as the operator. */
   z.object({
     type: z.literal("COPILOT"), copilot: nousCopilotSchema, item: z.enum(["REVIEW", "RULE", "CAMPAIGN", "LEAD"]), itemId: refId,
-    paneId: refId.nullable(), decision: z.string().min(1).max(40), text: z.string().max(20_000).optional(), note: z.string().max(2_000).optional()
+    paneId: refId.nullable(), decision: z.string().min(1).max(40), text: z.string().max(20_000).optional(), note: z.string().max(2_000).optional(),
+    /** A Marketing review's new time: a stale post (marketingPostStale) goes out again only with one. */
+    scheduledAt: z.string().datetime({ offset: true }).optional()
   }).strict(),
   /** Approves the product's release train at its current candidate commit. */
   z.object({ type: z.literal("RELEASE_APPROVE"), product: z.string().min(1).max(80) }).strict(),
@@ -771,7 +780,9 @@ export type NousAttachment = z.infer<typeof nousAttachmentSchema>;
 export const nousSendInputSchema = z.object({
   content: z.string().trim().default(""),
   // Any number of files a message (until 31/10 at most 10); each file's size stays bounded by its kind.
-  attachmentIds: z.array(nousAttachmentIdSchema).optional()
+  attachmentIds: z.array(nousAttachmentIdSchema).optional(),
+  // The Nous app's outbox id (nous_msg:acccb43f): a retry of a message SpaceApp already stored answers that message, never a second one.
+  clientId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/).optional()
 }).strict().refine((input) => input.content.length > 0 || Boolean(input.attachmentIds?.length), { message: "Write a message or attach a file." });
 
 /**

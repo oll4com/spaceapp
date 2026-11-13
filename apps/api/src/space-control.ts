@@ -1407,7 +1407,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
  
   async function watches(actor:ControlActor,roomId:string,op:string,params:{id?:string;paneId?:string;targetTaskRef?:string;timeoutMs?:number;maxRetries?:number;verificationPrompt?:string;remediationPrompt?:string}){
    await activeRoom(roomId);
-   if(op==="list")return (await repository.list("watch",actor.id,roomId)).map(r=>r.value);
+   // 12-13/11 (3 failed Nous calls "Watch ID is required."): a status with no id reads the room's watches, as list does.
+   if(op==="list"||((op==="status"||op==="get")&&!params.id))return (await repository.list("watch",actor.id,roomId)).map(r=>r.value);
    // Stable 2026-10-21/22: a prompt scheduled after a turn answers a control_schedule id, which Nous then read as a watch ("Watch not found").
    if((op==="status"||op==="get")&&params.id?.startsWith("control_schedule:")){
     const schedule=required(await repository.get("schedule",actor.id,params.id),"Schedule not found.");

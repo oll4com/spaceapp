@@ -330,3 +330,36 @@ describe.each([
     expect(classicCss).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*:root:is\(\[data-ui-background="jarvis"\], \[data-ui-background="aira"\]\) \.room-runtime-stack::after \{\s*animation: none;/);
   });
 });
+
+describe("Needs you card contrast (plan clipboard:T2uboz26Oh3q S9)", () => {
+  it("every word on a Graphite card reads at 4.5:1 on its #202022 surface, the Recommended badge's 18% tint included", () => {
+    const graphite = readFileSync(resolve(testDir, "../src/features/ui-theme/codex-theme.css"), "utf8");
+    // The dark kind colours (the light mode mixes them toward the text, no hex).
+    const kinds = readFileSync(resolve(testDir, "../src/features/needs-you/needs-you.css"), "utf8").split("[data-color-mode")[0]!;
+    const token = (name: string) => readHexToken(graphite, name);
+    const kind = (name: string) => readHexToken(kinds, `--needs-${name}`);
+    // color-mix(in srgb, fg share%, bg): needs-you.css .ny-badge is currentColor 18% over the button's own background.
+    const mix = (fg: string, bg: string, share: number) => `#${[1, 3, 5].map((at) => Math.round(Number.parseInt(fg.slice(at, at + 2), 16) * share
+      + Number.parseInt(bg.slice(at, at + 2), 16) * (1 - share)).toString(16).padStart(2, "0")).join("")}`;
+    const card = "#202022"; // the open card's surface measured in the operator's 13/11 Graphite screenshot
+    const pairs: Array<[string, string, string]> = [
+      ["text", token("--modern-text"), card], ["muted", token("--modern-muted"), card], ["faint", token("--modern-faint"), card],
+      ...["off", "ask", "review", "pane", "urgent", "ok"].map((name): [string, string, string] => [name, kind(name), card]),
+      ["primary", token("--modern-on-accent"), token("--modern-accent")],
+      ["approve", token("--modern-bg"), kind("ok")],
+      ["badge", token("--modern-text"), mix(token("--modern-text"), card, 0.18)],
+      ["badge on Decline", kind("urgent"), mix(kind("urgent"), card, 0.18)],
+      ["badge on primary", token("--modern-on-accent"), mix(token("--modern-on-accent"), token("--modern-accent"), 0.18)]
+    ];
+    for (const [name, foreground, background] of pairs) {
+      expect(foreground, name).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(contrastRatio(foreground, background), name).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("a tile keeps to its column: an auto column let a badged answer widen it past the card (9607 after shots)", () => {
+    const css = readFileSync(resolve(testDir, "../src/features/needs-you/needs-you.css"), "utf8");
+    expect(css).toMatch(/\.ny-choice \{[^}]*grid-template-columns: minmax\(0, 1fr\);[^}]*align-content: start;/);
+    expect(css).toMatch(/@container ny-card \(max-width: 279px\) \{ \.ny-choices \{ grid-template-columns: minmax\(0, 1fr\); \} \}/);
+  });
+});

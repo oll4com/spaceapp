@@ -188,6 +188,8 @@ export function registerVaultFences(app: FastifyInstance, deps: { protection: Va
       // Fixed Microsoft text CAPTCHA: only a cropped, masked image and status;
       // same viewers as masked_screenshot. No arbitrary selectors or page reads.
       if (commandType === "TEXT_CAPTCHA" && [...protectedPanes].every(id => id === body.targetPaneId && maskedFor(id))) return;
+      // Fixed Alibaba slider (operator 13/11): a drag that returns only a status, open like click to every pane that may act.
+      if (commandType === "SLIDER_CAPTCHA" && [...protectedPanes].every(id => id === body.targetPaneId)) return;
       // The masked readout (path, title, visible messages; never a field), so no step after a fill is taken blind (7/11 Oracle): same viewers.
       if (commandType === "PAGE_READOUT" && [...protectedPanes].every(id => id === body.targetPaneId && maskedFor(id))) return;
       if (commandType === "CLOSE_PAGE") {

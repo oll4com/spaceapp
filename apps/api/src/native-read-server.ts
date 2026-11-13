@@ -91,6 +91,13 @@ export function createNativeReadServer<T>(options: {
         const timer = setTimeout(() => {
           if (!pending.delete(id)) return;
           resolve(null);
+          // API audit 12/11 (598 one-shot sudo launchers in one hour of IO stall): the reads in flight with it wait on the same
+          // stall, so they answer null too instead of each falling back to a launcher; the next read starts a new server.
+          if (answered) {
+            child = null;
+            for (const settle of pending.values()) settle(null);
+            pending.clear();
+          }
           target.kill();
         }, timeoutMs);
         pending.set(id, (value) => {

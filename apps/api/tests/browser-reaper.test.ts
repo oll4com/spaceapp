@@ -3,7 +3,7 @@
 import { defaultFreelanceCopilotPaneMetadata } from "@space/contracts";
 import { SpaceConflictError } from "@space/runtime";
 import { describe, expect, it, vi } from "vitest";
-import { BROWSER_REAPED_ACTION, operatorFirstBrowsers, startBrowserReaper, unusedBrowsers, type BrowserRow } from "../src/browser-reaper.js";
+import { BROWSER_REAPED_ACTION, browserInUse, operatorFirstBrowsers, startBrowserReaper, unusedBrowsers, type BrowserRow } from "../src/browser-reaper.js";
 import { browserSessionCap } from "../src/browser-sessions.js";
 
 const NOW = Date.parse("2026-11-05T08:00:00.000Z");
@@ -28,6 +28,8 @@ describe("unusedBrowsers", () => {
     ];
     const unused = unusedBrowsers(rows, { now: NOW, usedAt: (paneId) => viewed.has(paneId) ? NOW : null, scheduled: new Set(["pane:task"]) });
     expect(unused.map((browser) => [browser.paneId, browser.why])).toEqual([["pane:closed", "its pane is closed"], ["pane:idle", "no agent or operator use for 60 min"]]);
+    // Nous Score Idle open panes (operator 13/11 09:48 BKK): only an agent or a lease is use; a kept browser's pane still counts idle.
+    expect(rows.filter(browserInUse).map((browser) => browser.paneId)).toEqual(["pane:agent", "pane:lease"]);
   });
 
   it("the reaper stops each unused browser (no actor) and audits it with its owner", async () => {

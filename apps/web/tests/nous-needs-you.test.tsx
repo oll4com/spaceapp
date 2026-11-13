@@ -85,7 +85,7 @@ describe("a plan's \"What it needs from you\" (plan clipboard:PHmjUTRmWM6C step 
     expect(within(section).getByRole("heading", { name: "Which colour?" })).toBeTruthy();
     expect(within(section).getByRole("button", { name: "Blue" }).className).toContain("is-primary");
     fireEvent.click(within(section).getByRole("button", { name: "Details" }));
-    expect(within(section).getByRole("button", { name: "Blue (Recommended)" })).toBeTruthy();
+    expect(within(section).getByRole("button", { name: "Blue Recommended" })).toBeTruthy();
     expect(within(section).getByRole("button", { name: "Red" })).toBeTruthy();
   });
 

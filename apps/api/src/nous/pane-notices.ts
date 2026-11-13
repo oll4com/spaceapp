@@ -64,7 +64,7 @@ export const notifyOperatorArgsSchema = z.object({
   items: z.array(z.object({
     text: z.string().trim().min(1).max(200).describe("One thing only the operator can do, in English, at most 200 characters (details stay in the pane)."),
     ref: z.string().trim().min(1).max(120).optional().describe("The notification, decision or task id it comes from; a copilot question held for you goes to the operator with the card."),
-    since: z.string().trim().min(3).max(200).optional().describe("What changed since the operator answered the same question (R16-2); shown as \"Since your answer: …\"."),
+    since: z.string().trim().min(3).max(200).optional().describe("What changed since the operator answered the same question (R16-2); the card shows it as \"Since then\"."),
     ruleDiffers,
     triedStored,
     target: needsYouTargetSchema.optional(),
@@ -85,7 +85,7 @@ export const focusPaneSchema = z.object({
   pane: z.string().trim().min(1).max(160).describe("A pane's name in that room (Andy, Bob, ...)."),
   reason: z.string().trim().min(1).max(200).describe("What only the operator can do or answer there, in one English line (it is the card's item)."),
   ref: z.string().trim().min(1).max(120).optional().describe("The notification, decision or task id it comes from; a copilot question held for you goes to the operator with the card."),
-  since: z.string().trim().min(3).max(200).optional().describe("What changed since the operator answered the same question (R16-2); shown as \"Since your answer: …\"."),
+  since: z.string().trim().min(3).max(200).optional().describe("What changed since the operator answered the same question (R16-2); the card shows it as \"Since then\"."),
   ruleDiffers,
   triedStored,
   target: needsYouTargetSchema.optional(),
@@ -258,6 +258,14 @@ export function principleConflicts(pick: string, context: string, rules: Array<{
   });
 }
 
+type GateNoted = NotifyOperatorArgs["items"][number] & { answersSource?: string };
+/** S5: the gate notes the operator reads under "Checked first:", not in the item; with several items each names its item. */
+const gateNotes = (items: GateNoted[]) => items.flatMap((item) => [
+  item.ruleDiffers ? `Differs from what Space holds: ${item.ruleDiffers}` : "", item.triedStored ? `Stored sign-in tried: ${item.triedStored}` : "",
+  item.answersSource ? `It answers the ${item.answersSource}'s question` : ""
+].filter(Boolean).map((note) => items.length > 1 ? `${item.text}: ${note}` : note));
+/** The notes and `since` of a card's items, so a changed one still updates the card. */
+const noteKey = (items: unknown) => JSON.stringify((Array.isArray(items) ? items as Array<Record<string, unknown>> : []).map((item) => [item.since, item.ruleDiffers, item.triedStored, item.answersSource]));
 const bodyOf = (items: NotifyOperatorArgs["items"]) => items.map((item) => `• ${item.text}${(item.steps ?? []).map((step, index) => `\n  ${index + 1}. ${step}`).join("")}`).join("\n");
 /** R20-asks-2: what only the operator's hands do (a sign-in, a code, a payment set-up, an install), which needs a link and numbered steps. */
 /** R24-2: a payment-method result card (its options report a state) and a `checked` line that says what the billing page showed. */
@@ -271,18 +279,22 @@ const EXTRAS_EL = ["Απέτυχε", "Χρειάζομαι link/βήματα"];
 const EXTRA_SAME = [/^(?:failed|απέτυχε)/i, /^(?:need (?:links|help)|χρειάζομαι (?:link|βήματα|οδηγίες)|θέλω βοήθεια)/i];
 const STATUS_OPTION = /^(?:done|installed|finished|completed|ready|signed in|έγινε|έτοιμο|ολοκληρώθηκε)\b/i;
 const HANDS_WORK = /sign[- ]?in|log[- ]?in|captcha|password|passcode|2fa|\bmfa\b|\botp\b|verification code|\bsms\b|handoff|billing|install/i;
+/** 13/11 (an office ERP invoices card held for its link): work in a tool with no web address, named instead of the link. */
+const OFFLINE_TOOL = /\bERP\b|\bdesktop (?:app|application|program|software|client)\b|\boffline\b|\bPOS\b|cash register|ταμειακ|\bprinter\b|εκτυπωτ/i;
 export const NOUS_HANDS_RULE = "A card for the operator's hands carries the exact https link and the full numbered steps in `steps` (the account to use, where a code arrives), "
-  + "never only a summary (operator rule cc31fdd2, 30/10: «δώσε μου links και οδηγίες ώστε να προχωρήσω τώρα»).";
+  + "never only a summary (operator rule cc31fdd2, 30/10: «δώσε μου links και οδηγίες ώστε να προχωρήσω τώρα»); work in an offline tool (a desktop ERP) names that tool instead of the link.";
 /** The hands items of a card that lack an https link or at least two numbered steps. */
 export function handsItemsMissingSteps(items: NotifyOperatorArgs["items"]): NotifyOperatorArgs["items"] {
   return items.filter((item) => {
     const words = [item.text, item.question ?? "", ...(item.steps ?? [])].join("\n");
     if (item.code || !HANDS_WORK.test(`${item.text} ${item.question ?? ""}`)) return false;
     const numbered = (item.steps?.length ?? 0) >= 2 || (/(?:^|\s)1[.)]\s/.test(words) && /(?:^|\s)2[.)]\s/.test(words));
-    return !/https:\/\/\S+/.test(words) || !numbered;
+    return !(/https:\/\/\S+/.test(words) || OFFLINE_TOOL.test(words)) || !numbered;
   });
 }
 const live = (item: SpaceNotification) => item.status === "OPEN" || item.status === "READ";
+// 13/11 Cartesia card: a pane agent's own needs-you card (`agentNeedsYouKey` in pane-reports.ts) joins Nous's duplicate check, so one ask is one card.
+const agentAsk = (item: SpaceNotification) => item.source === "AGENT" && Boolean(item.dedupeKey?.startsWith("agent:needs-you:"));
 /** The card's question: `lead` (the newest item with a target) when it asks, else its first item that asks one (a recommendation that is not an
  * option is dropped), answered through Nous. */
 function askOf(items: NotifyOperatorArgs["items"], lead?: NotifyOperatorArgs["items"][number]): NeedsYouAsk | null {
@@ -349,9 +361,8 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
           + `${twin.at.slice(11, 16)} UTC: "${twin.answer.slice(0, 160)}". Nothing raised. Do not call it again with this item; state the server's fact instead of asking them to `
           + "confirm it, or give the item `since` naming what changed since that answer." };
       }
-      if (args.items.some((item) => item.since)) args = { ...args, items: args.items.map((item) => item.since ? { ...item, text: `${item.text} (Since your answer: ${item.since})` } : item) };
-      if (args.items.some((item) => item.ruleDiffers)) args = { ...args, items: args.items.map(({ ruleDiffers: differs, ...item }) => differs ? { ...item, text: `${item.text} (Differs from what Space holds: ${differs})` } : item) };
-      if (args.items.some((item) => item.triedStored)) args = { ...args, items: args.items.map(({ triedStored: tried, ...item }) => tried ? { ...item, text: `${item.text} (Stored sign-in tried: ${tried})` } : item) };
+      // Operator 13/11 07:12 BKK (plan clipboard:T2uboz26Oh3q S5): `since`, `ruleDiffers` and `triedStored` stay item fields, never words in the item;
+      // the card shows `since` as "Since then" and the others under "Checked first:" (`gateNotes`).
       // 2026-10-30 REVIEW (R16-3 for Nous's own cards): by day the operator's standing answer to "now or later?" is now, one by one.
       const timing = args.items.find((item) => item.question && needsYouTimingNow({ title: "", body: "", payload: { ask: { question: item.question, options: item.options ?? [], answer: { kind: "NOUS" } } } }));
       if (timing && !(await deps.quiet?.(owner).catch(() => false))) {
@@ -443,14 +454,20 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
       if (yours) return { ok: false, refused: true, display: "This approval is yours, not the operator's", result: `${yours.id} is held for you under "May send to third parties": `
         + `decide it yourself (approve, edit, revise or reject: ${heldForNousNote(yours).trim()}). The operator sees it only if he turns the allowance off. Nothing raised.` };
       if (held.size) args = { ...args, items: args.items.map((item) => item.ref && held.has(item.ref)
-        ? { ...item, text: `${item.text} (answers the ${NOTIFICATION_SOURCE_LABELS[held.get(item.ref)!.source]}'s question)` } : item) };
+        ? { ...item, answersSource: NOTIFICATION_SOURCE_LABELS[held.get(item.ref)!.source] } : item) };
+      // Operator 13/11 07:12 BKK (plan clipboard:T2uboz26Oh3q S2): a card naming no pane that answers a held card is about that card's pane: it joins
+      // that pane's Nous card (one per pane), so the card opens the pane.
+      const heir = pane ? undefined : [...held.values()].find((found) => found.roomId && found.paneId);
+      const roomId = heir?.roomId ?? room.id;
+      const paneId = pane?.id ?? heir?.paneId ?? null;
+      const key = heir ? `${NOUS_PANE_NOTICE_PREFIX}${heir.paneId}` : dedupeKey;
       // Go to pane opens the item (operator 1/11 11:58 BKK): the newest item's target (nous_msg:4b36b80e: the page an item joining the card brings),
       // else the target of the card an item answers (`ref`).
       const lead = args.items.findLast((item) => item.target);
       let target = lead?.target;
       for (const ref of target ? [] : args.items.map((item) => item.ref).filter((ref): ref is string => Boolean(ref))) {
         const found = held.get(ref) ?? await deps.notifications.get?.(owner, ref).catch(() => null);
-        if (found?.link.target && found.paneId === (pane?.id ?? null)) { target = found.link.target; break; }
+        if (found?.link.target && found.paneId === paneId) { target = found.link.target; break; }
       }
       // Operator 12/11 23:19 BKK: an item naming a Mail review (its ref or words, mailrev:…) opens that review and its mail, without Nous naming it.
       target ??= needsYouMail({ body: "", payload: { items: args.items } })?.target;
@@ -461,17 +478,17 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
           + "page and go to the point»). Nothing raised." };
       }
       const items = bodyOf(args.items);
-      const body = `${items}${checkedBlock(args.checked)}`;
+      const body = `${items}${checkedBlock([...(args.checked ?? []), ...gateNotes(args.items)])}`;
       const ask = askOf(args.items, lead);
-      const current = (await openCards(owner)).find((item) => item.dedupeKey === dedupeKey);
-      // Other wording of what was checked is no new list: the operator is not alerted again for it.
+      const current = (await openCards(owner)).find((item) => item.dedupeKey === key);
+      // Other wording of what was checked is no new list: the operator is not alerted again for it (a changed gate note is one, as when it was in the item).
       if (current && current.title === title && current.body.split(CHECKED_HEADER)[0] === items && [ask, askBefore].some((same) => JSON.stringify(current.payload.ask ?? null) === JSON.stringify(same))
-        && (current.link.target ?? null) === (target ?? null)) {
+        && (current.link.target ?? null) === (target ?? null) && noteKey(current.payload.items) === noteKey(args.items)) {
         return { ok: true, display: `The card for ${where} already lists this`, result: `Unchanged (${current.id}); the operator was not alerted again.` };
       }
       const raise: NotificationRaiseInput = {
-        ownerUserId: owner, roomId: room.id, paneId: pane?.id ?? null, source: "NOUS", kind: "NEEDS_HANDS", severity: "ATTENTION", title, body,
-        link: { roomId: room.id, ...(pane ? { paneId: pane.id, ...(target ? { target } : {}) } : {}) }, dedupeKey, telegram: null,
+        ownerUserId: owner, roomId, paneId, source: "NOUS", kind: "NEEDS_HANDS", severity: "ATTENTION", title, body,
+        link: { roomId, ...(paneId ? { paneId, ...(target ? { target } : {}) } : {}) }, dedupeKey: key, telegram: null,
         payload: { items: args.items, checked: args.checked, ...(args.items.some((item) => item.files) ? { files: [...new Set(args.items.flatMap((item) => item.files ?? []))] } : {}), alertAt: new Date(now()).toISOString(), ...(ask ? { ask } : {}) }
       };
       const signinRefused = await deps.signinCard?.(raise).catch(() => null);
@@ -482,18 +499,23 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
         result: `Notification ${card.id}. Resolve it with space_resolve_notification when nothing is left there.` };
     },
 
-    /** R66: every open Nous card (every pane), for the duplicate-subject check before a new item. */
-    open: openCards,
-    /** 13/11 REVIEW (one npm 2FA link on 3 cards): Nous's pane cards raised since `since` that are closed now, for the same check. */
+    /** R66: every open Nous card (every pane) and every open pane agent's needs-you card, for the duplicate-subject check before a new item. */
+    async open(owner: string): Promise<SpaceNotification[]> {
+      return [...await openCards(owner), ...(await allNotifications(deps.notifications.list, owner, { status: "WAITING", source: "AGENT" })).filter((item) => agentAsk(item) && live(item))];
+    },
+    /** 13/11 REVIEW (one npm 2FA link on 3 cards): Nous's pane cards and agents' needs-you cards raised since `since` that are closed now, for the same check. */
     async closedSince(owner: string, since: number): Promise<SpaceNotification[]> {
       const out: SpaceNotification[] = [];
-      for (let before: string | undefined; ;) {
-        const page = await deps.notifications.list(owner, { status: "ALL", source: "NOUS", limit: 200, ...(before ? { before } : {}) });
-        const fresh = page.filter((item) => Date.parse(item.createdAt) >= since);
-        out.push(...fresh.filter((item) => !live(item) && (item.dedupeKey?.startsWith(NOUS_PANE_NOTICE_PREFIX) || item.dedupeKey === NOUS_GENERAL_NOTICE_KEY)));
-        if (page.length < 200 || fresh.length < page.length) return out;
-        before = page.at(-1)!.createdAt;
+      for (const source of ["NOUS", "AGENT"] as const) {
+        for (let before: string | undefined; ;) {
+          const page = await deps.notifications.list(owner, { status: "ALL", source, limit: 200, ...(before ? { before } : {}) });
+          const fresh = page.filter((item) => Date.parse(item.createdAt) >= since);
+          out.push(...fresh.filter((item) => !live(item) && (agentAsk(item) || (item.source === "NOUS" && (item.dedupeKey?.startsWith(NOUS_PANE_NOTICE_PREFIX) || item.dedupeKey === NOUS_GENERAL_NOTICE_KEY)))));
+          if (page.length < 200 || fresh.length < page.length) break;
+          before = page.at(-1)!.createdAt;
+        }
       }
+      return out;
     },
 
     /** The world's section: Nous's open cards, so it can update or resolve them; empty when there are none. */

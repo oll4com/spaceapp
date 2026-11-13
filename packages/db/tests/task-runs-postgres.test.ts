@@ -1,5 +1,6 @@
 // Task runs on a real, disposable PostgreSQL (migration 0277, plan clipboard:GA__W4qBxSPR): one row per claimed occurrence in the
 // claim's own statement, the pane's report deciding a typed run, NO_REPORT after 6 h, paging, filters and counts. Skips without Docker.
+import { createHash } from "node:crypto";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { applyPendingMigrations } from "../src/migration-runner.js";
@@ -115,5 +116,69 @@ describe.skipIf(unavailable !== null)(`Task runs on PostgreSQL${unavailable ? ` 
     expect(await store.pruneTaskRuns("2026-11-01T00:00:00.000Z")).toBe(2);
     const left = await pool.query<{ owner_user_id: string; at: Date }>("SELECT owner_user_id, at FROM task_runs WHERE task_id = 'task:prune' ORDER BY at");
     expect(left.rows.map((row) => [row.owner_user_id, row.at.toISOString()])).toEqual([[owner, "2026-08-10T00:00:00.000Z"], ["user:taskruns7", "2026-10-28T00:00:00.000Z"]]);
+  });
+
+  it("marks when a schedule began to apply: a pause clears it, the restore and a reopen set it, a time change or an upsert keeps it (Score 13/11)", async () => {
+    const store = new PostgresSpaceStore(pool);
+    const daily = (time: string) => ({ recurrence: { kind: "DAILY" as const, time }, timeZone: "Asia/Bangkok" });
+    const fields = { ownerUserId: owner, title: "Daily scan", objective: "Scan.", status: "OPEN" as const, source: "AGENT" as const, paneId: "pane:taskruns01", roomId: "room:taskruns01" };
+    const task = await store.upsertTaskItem({ ...fields, schedule: daily("09:00") });
+    expect(task.schedule?.scheduledSince).toBeUndefined(); // since it was made
+    expect((await store.updateTaskItem(owner, task.id, { schedule: null })).schedule).toBeNull();
+    const before = Date.now();
+    const since = (await store.updateTaskItem(owner, task.id, { schedule: daily("09:00") })).schedule?.scheduledSince;
+    expect(Date.parse(since!)).toBeGreaterThanOrEqual(before - 1_000);
+    expect((await store.updateTaskItem(owner, task.id, { schedule: daily("09:20") })).schedule?.scheduledSince).toBe(since);
+    expect((await store.upsertTaskItem({ ...fields, schedule: daily("09:30") })).schedule?.scheduledSince).toBe(since);
+    expect((await store.updateTaskItem(owner, task.id, { status: "DONE" })).schedule).toMatchObject({ nextRunAt: null });
+    expect((await store.getTaskItem(owner, task.id))!.schedule?.scheduledSince).toBeUndefined();
+    expect(Date.parse((await store.upsertTaskItem({ ...fields, schedule: daily("09:30") })).schedule!.scheduledSince!)).toBeGreaterThanOrEqual(Date.parse(since!));
+  });
+
+  it("0326 backfills when a schedule restored before 0324 began to apply, from the pane's audited clear and set (Daily tasks 13/11)", async () => {
+    const store = new PostgresSpaceStore(pool);
+    const fields = { ownerUserId: owner, status: "OPEN" as const, source: "AGENT" as const, paneId: "pane:taskruns01", roomId: "room:taskruns01",
+      schedule: { recurrence: { kind: "DAILY" as const, time: "11:10" }, timeZone: "UTC" } };
+    const [restored, neverPaused, alreadySet] = await Promise.all(["X session 11:10", "X report 22:40", "Reddit 12:10"].map((title) => store.upsertTaskItem({ ...fields, title, objective: title })));
+    await pool.query("UPDATE task_items SET scheduled_since = CASE WHEN id = $1 THEN '2026-11-13T03:00:00Z'::timestamptz END WHERE id = ANY($2)", [alreadySet.id, [restored.id, neverPaused.id, alreadySet.id]]);
+    const audit = (target: string, at: string, schedule: boolean) => pool.query(`INSERT INTO audit_events(id, trace_id, action, target_type, target_id, metadata, created_at)
+      VALUES ($1, 'trace:backfill', 'task.agent.update', 'task_item', $2, $3, $4)`, [`audit:${target}:${at}`, target, JSON.stringify({ schedule }), at]);
+    for (const target of [restored.id, alreadySet.id]) {
+      await audit(target, "2026-11-09T14:00:00Z", true);
+      await audit(target, "2026-11-09T15:07:01Z", false); // the Azure pause
+      await audit(target, "2026-11-12T14:23:00Z", true); // the restore
+      await audit(target, "2026-11-12T15:26:00Z", true); // a later time change keeps it
+    }
+    await audit(neverPaused.id, "2026-11-12T14:23:00Z", true);
+    const migration = (await loadMigrations()).find((entry) => entry.filename.startsWith("0326_"))!;
+    await pool.query(migration.sql);
+    const since = async (id: string) => (await store.getTaskItem(owner, id))!.schedule?.scheduledSince;
+    expect(await since(restored.id)).toBe("2026-11-12T14:23:00.000Z");
+    expect(await since(neverPaused.id)).toBeUndefined(); // never cleared: createdAt stays right
+    expect(await since(alreadySet.id)).toBe("2026-11-13T03:00:00.000Z");
+  });
+
+  it("a changed objective re-keys the task so a rebind moves it, and 0327 re-keys rows an older change left stale (Temu 12/11)", async () => {
+    const store = new PostgresSpaceStore(pool);
+    const fields = { ownerUserId: owner, status: "OPEN" as const, source: "AGENT" as const, roomId: "room:taskruns01",
+      schedule: { recurrence: { kind: "DAILY" as const, time: "02:00" }, timeZone: "UTC" } };
+    const task = await store.upsertTaskItem({ ...fields, title: "Temu watch", objective: "Temu v1", paneId: "pane:taskruns01" });
+    await store.updateTaskItem(owner, task.id, { objective: "Temu v2" });
+    const moved = await store.upsertTaskItem({ ownerUserId: owner, title: "Temu watch", objective: "Temu v2", status: "OPEN", source: "AGENT", roomId: "room:taskruns01", paneId: null });
+    expect(moved).toMatchObject({ id: task.id, paneId: null, schedule: { recurrence: { kind: "DAILY", time: "02:00" } } });
+    const other = await store.upsertTaskItem({ ...fields, title: "Other", objective: "Other" });
+    await expect(store.updateTaskItem(owner, other.id, { objective: "Temu v2" })).rejects.toThrow("Another task already has this exact objective.");
+
+    const [stale, dupOld, dupScheduled, held, shadow] = await Promise.all(["Stale", "Dup old", "Dup scheduled", "Held", "Shadow"]
+      .map((title) => store.upsertTaskItem({ ...fields, title, objective: title, ...(title === "Dup old" ? { schedule: null } : {}) })));
+    // What updateTaskItem left before this fix: a new objective under the old hash.
+    await pool.query("UPDATE task_items SET objective = CASE id WHEN $1 THEN 'Stale v2' WHEN $4 THEN 'Held' ELSE 'Dup' END, character_count = char_length(CASE id WHEN $1 THEN 'Stale v2' WHEN $4 THEN 'Held' ELSE 'Dup' END) WHERE id = ANY(ARRAY[$1, $2, $3, $4])",
+      [stale.id, dupOld.id, dupScheduled.id, shadow.id]);
+    await pool.query((await loadMigrations()).find((entry) => entry.filename.startsWith("0327_"))!.sql);
+    const hashOf = async (id: string) => (await pool.query<{ content_hash: string }>("SELECT content_hash FROM task_items WHERE id = $1", [id])).rows[0]!.content_hash;
+    const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+    expect(await hashOf(stale.id)).toBe(sha("Stale v2"));
+    expect([await hashOf(dupScheduled.id), await hashOf(dupOld.id)]).toEqual([sha("Dup"), sha("Dup old")]); // one per objective, the scheduled one
+    expect([await hashOf(held.id), await hashOf(shadow.id)]).toEqual([sha("Held"), sha("Shadow")]); // another row holds it: no merge
   });
 });

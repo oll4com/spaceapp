@@ -33,6 +33,8 @@ export interface NousRepository {
   /** Every OPERATOR message, cleared ones too, oldest first (the dock's "Go to my last message" walks them past the loaded page). */
   /** `person`: a person wrote it (meta.person), not a proof or automation session; a copilot's operatorOrder needs it. */
   listOperatorMessageRefs(owner: string): Promise<Array<{ id: string; createdAt: string; person: boolean }>>;
+  /** The OPERATOR message a client stored under its outbox id (meta.clientId), or null. */
+  operatorMessageByClientId(owner: string, clientId: string): Promise<NousMessage | null>;
   /** The Requests tab (plan clipboard:2NOOFNJDUIMO): OPERATOR messages newest first, older than the `before` message; Clear never hides them. */
   /** `since`: only the messages written then or later. */
   listOperatorMessages(owner: string, options: { before?: string; since?: string; limit: number }): Promise<NousMessage[]>;
@@ -168,6 +170,10 @@ export class InMemoryNousRepository implements NousRepository {
         ? this.turns.find((turn) => turn.ownerUserId === owner && turn.turnId === message.turnId && turn.status === "DONE") : null;
       return turn?.model ? { ...message, meta: { ...message.meta, model: turn.model, effort: turn.effort } } : message;
     }));
+  }
+  async operatorMessageByClientId(owner: string, clientId: string) {
+    const found = this.messages.find((message) => message.ownerUserId === owner && message.kind === "OPERATOR" && message.meta.clientId === clientId);
+    return found ? structuredClone(found) : null;
   }
   async listOperatorMessageRefs(owner: string) {
     return this.messages.filter((message) => message.ownerUserId === owner && message.kind === "OPERATOR").map(({ id, createdAt, meta }) => ({ id, createdAt, person: meta.person === true }));
@@ -373,6 +379,11 @@ export class PostgresNousRepository implements NousRepository {
       }
     }
     return messages;
+  }
+  async operatorMessageByClientId(owner: string, clientId: string) {
+    const result = await this.pool.query<MessageRow>(`SELECT ${messageColumns} FROM nous_messages WHERE owner_user_id = $1 AND kind = 'OPERATOR'
+      AND meta->>'clientId' = $2 ORDER BY created_at, id LIMIT 1`, [owner, clientId]);
+    return result.rows[0] ? messageOf(result.rows[0]) : null;
   }
   async listOperatorMessageRefs(owner: string) {
     const result = await this.pool.query<{ id: string; createdAt: Date | string; person: boolean }>(`SELECT id, created_at AS "createdAt",

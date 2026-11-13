@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, SpaceApiError, type MobileInstanceStatus, type MobilePairingOffer } from "../../api.js";
 import { markPairAfterStepUp, takePairAfterStepUp } from "./mobile-pair-resume.js";
 import { pairingQrPath } from "./pairing-qr.js";
+import { useUiText } from "../ui-language/ui-language.js";
 
 /**
  * Settings > Account > Mobile app (Nous Pro 1b, ADR-013): pair the Nous app straight to this SpaceApp, end to end encrypted. Setting up and
@@ -23,6 +24,8 @@ export function MobileAppManager() {
   // The server asked to confirm it is you: why, the action to run again after the password, and Google's step-up page.
   const [stepUp, setStepUp] = useState<{ reason: string; retry: () => Promise<void>; googleUrl?: string } | null>(null);
   const [password, setPassword] = useState("");
+  const [copied, setCopied] = useState(false);
+  const t = useUiText();
 
   useEffect(() => {
     let disposed = false;
@@ -76,6 +79,7 @@ export function MobileAppManager() {
   });
   // Pair a phone: the server sets the keys up first when there are none, so the status follows.
   async function pair() {
+    setCopied(false);
     setOffer(await api.createMobilePairing());
     if (!status?.configured) setStatus(await api.mobileInstance());
   }
@@ -114,6 +118,9 @@ export function MobileAppManager() {
       <span className="settings-flat-row-copy" style={{ flex: "1 1 12rem" }}>
         <small>Scan this with the Nous app and check that it shows the fingerprint {offer.fingerprint}. It works once and expires in {left} s.</small>
         <button type="button" className="button" disabled={busy} onClick={() => void cancel()}>Cancel</button>
+        {/* Space Link (ADR-014): the same code links another SpaceApp, pasted there in Settings > Account > Linked SpaceApps. */}
+        <button type="button" className="button" disabled={busy || !navigator.clipboard} onClick={() => void navigator.clipboard.writeText(offer.qr).then(() => setCopied(true), () => setError(t("The code could not be copied.")))}>
+          {t(copied ? "Copied: paste it in the other SpaceApp" : "Copy code for another SpaceApp")}</button>
       </span>
     </div> : null}
     {status?.retiring?.length ? <p className="settings-flat-note">Older keys still answer phones that have not reconnected: {status.retiring.map((key) => `${key.fingerprint} until ${new Date(key.until).toLocaleDateString("en-US")}`).join(", ")}.</p> : null}

@@ -136,6 +136,10 @@ it("answers the Details dialog: an image's measured size and the metadata a desi
   expect((await app.inject(`/api/artifacts/${encodeURIComponent(jpeg.id)}/metadata`)).json()).toMatchObject({ image: { width: 1200, height: 627 }, embedded: {}, design: null });
   const note = artifact("note.txt", "text/plain");
   expect((await app.inject(`/api/artifacts/${encodeURIComponent(note.id)}/metadata`)).json()).toMatchObject({ image: null, embedded: {}, design: null });
+  // A studio's artifact names its pane and request: a Needs you card's "Open in Design" goes there (plan clipboard:T2uboz26Oh3q S3).
+  const made = store.createArtifact({ roomId: null, paneId: "pane_design", kind: "IMAGE", mimeType: "text/plain", storageUri: "space-artifact://browser-evidence/fixture/made.txt",
+    byteSize: 7, sha256: "a".repeat(64), metadata: { source: "DESIGN", requestId: "dreq_1" } }).artifact;
+  expect((await app.inject(`/api/artifacts/${encodeURIComponent(made.id)}/metadata`)).json().artifact).toMatchObject({ paneId: "pane_design", metadata: { source: "DESIGN", requestId: "dreq_1" } });
   store.deleteArtifact(png.id);
   expect((await app.inject(`/api/artifacts/${encodeURIComponent(png.id)}/metadata`)).statusCode).toBeGreaterThanOrEqual(400);
 });

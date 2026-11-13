@@ -118,7 +118,7 @@ export function registerMarketingCopilot(app: FastifyInstance, deps: MarketingCo
 
   const paneRooms = new Map<string, string>();
   const service = createMarketingCopilotService({
-    repository, operatorMessages: deps.operatorMessages,
+    repository, operatorMessages: deps.operatorMessages, ...(deps.notice ? { notice: deps.notice } : {}),
     openInBrowser: async (owner, pane, bookmark, traceId, actor) => {
       // Tabs in another Google account are ADMIN-only, like the browser's account menu and the CLI bridge's SELECT_ACCOUNT.
       if (bookmark.profileId !== null && (await store.getControlActor(owner))?.role !== "ADMIN") throw new GitControlError("ADMIN_REQUIRED", "Google account selection requires a room owned by an ADMIN.", 403);

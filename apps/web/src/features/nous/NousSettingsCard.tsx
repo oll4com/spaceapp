@@ -9,6 +9,7 @@ import { formatUserTime } from "../date-time-settings/date-time-settings.js";
 import { DockButton, DockNotice } from "../dock-kit/DockKit.js";
 import { readNousFocusEnabled, writeNousFocusEnabled } from "../nous-focus/nous-focus-events.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 
 /** Nous's switches, only in Settings → Assistants & AI → Nous (the dock keeps just the On/Off one); the last one is kept on this device. */
 export function NousSettingsToggles({ settings, onChange, className }: {
@@ -321,6 +322,13 @@ function NousModelsRows({ settings, providers, loading, pending, onChange, class
   </>;
 }
 
+const LOAD_TARGET_INTRO = "How much of the server's capacity and token pools Nous fills with parallel work, for each token state. 0 never pushes for more work.";
+const LOAD_TARGET_DETAIL = {
+  NORMAL: "While Nous's token pools have room.",
+  LOW: "While Nous's own pool runs ahead of its pace.",
+  CRITICAL: "While no account of Nous's pool has room."
+} as const;
+
 function NousLowSpendRows({ settings, providers, loading, pending, onChange }: { settings: NousSettings | null; providers: NousProviderOption[]; loading: boolean; pending: boolean; onChange(patch: Partial<NousSettings>): void }) {
   const low = settings?.lowSpend ?? nousLowSpendSettingsSchema.parse({});
   const catalog = providers.find((item) => item.id === nousProvider(settings ?? {}))?.models ?? [];
@@ -328,6 +336,7 @@ function NousLowSpendRows({ settings, providers, loading, pending, onChange }: {
   const model = (kind: typeof NOUS_LOW_SPEND_KINDS[number], patch: Partial<NousModelChoice>) => save({ models: { ...low.models, [kind]: { ...low.models[kind], ...patch } } });
   const criticalModel = (kind: typeof NOUS_LOW_SPEND_KINDS[number], patch: Partial<NousLowSpendSettings["criticalModels"]["inbox"]>) =>
     save({ criticalModels: { ...low.criticalModels, [kind]: { ...low.criticalModels[kind], ...patch } } });
+  const language = useUiLanguage();
   return (
     <>
       <div className="settings-flat-subheading"><strong>Low-spend mode</strong><small>Keep quota available on your selected provider for the work that needs it.</small></div>
@@ -357,6 +366,11 @@ function NousLowSpendRows({ settings, providers, loading, pending, onChange }: {
           <NousModelFields choice={low.criticalModels[kind]} models={catalog} label={`Nous critical model for ${kind} turns`} disabled={!settings || pending || !low.cheaperModel} critical loading={loading}
             onChange={(choice) => criticalModel(kind, { model: choice.model, effort: choice.effort as "none" | "low" | "medium" })} />
         </div>
+      ))}
+      <div className="settings-flat-subheading"><strong>{uiText(language, "Load target")}</strong><small>{uiText(language, LOAD_TARGET_INTRO)}</small></div>
+      {(["NORMAL", "LOW", "CRITICAL"] as const).map((mode) => (
+        <PaneBoardNumber key={`load-${mode}`} label={uiText(language, "Load target in {mode} (%)", { mode })} detail={uiText(language, LOAD_TARGET_DETAIL[mode])}
+          value={low.loadTargets[mode]} min={0} max={100} onSave={(percent) => save({ loadTargets: { ...low.loadTargets, [mode]: percent } })} />
       ))}
     </>
   );

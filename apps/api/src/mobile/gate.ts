@@ -29,7 +29,8 @@ export function installMobileGate(app: FastifyInstance, options: { sessionSecret
     if (!secureTokenMatches(secret, request.headers[MOBILE_INVOKE_HEADER])) return sendApiError(reply, 401, "MOBILE_INVOKE", "A phone reaches SpaceApp only through its channel.");
     // The auth hook ran first: no user means the token expired or its device was revoked.
     if (!request.user) return sendApiError(reply, 401, "MOBILE_SESSION", "This phone's session ended; it reconnects.");
-    const rule = mobileRouteAllows(mobile.scopes, request.method, request.routeOptions.url, request.query as Record<string, unknown>);
+    // A SpaceApp link (ADR-014) is a device of app spaceapp-link and reaches LINK_ROUTE_SCOPES instead of the phone's table.
+    const rule = mobileRouteAllows(mobile.scopes, request.method, request.routeOptions.url, request.query as Record<string, unknown>, request.appSession);
     if (!rule) return sendApiError(reply, 403, "MOBILE_SCOPE_DENIED", "A phone cannot do this; use SpaceApp on a computer.");
     request.mobileDevice = { id: mobile.device, scopes: mobile.scopes, person: rule.person === true, rule };
     request.user.mobile = { device: mobile.device, person: rule.person === true };
