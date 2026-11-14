@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, lstat, mkdir, open, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { isAgentFileArtifact, isRoomMediaArtifact, type Artifact, type Room } from "@space/contracts";
+import { isAgentFileArtifact, isRoomMediaArtifact, type Artifact, type NousDecisionAction, type Room } from "@space/contracts";
 import { redactMemoryText, SpaceNotFoundError } from "@space/runtime";
 import { artifactFilename, localArtifactFilePath } from "../artifact-storage.js";
 import { agentFileMaxBytes, agentFilePreviewKind } from "../cli-agent-files.js";
@@ -46,6 +46,8 @@ export interface NousFilesDeps {
   /** One page of a room's artifacts, newest first (the store's paging). */
   listArtifacts(collection: "AGENT_FILES" | "ROOM_MEDIA", roomId: string, page: number, pageSize: number): Promise<Artifact[]>;
   getArtifact(id: string): Promise<Artifact>;
+  /** A Mail review's own draft, for a decision that names it in refs.files (Daily Nous errors 14/11). */
+  reviewDraft?: ReviewDraftReader["reviewDraft"];
 }
 
 const LOOK_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
@@ -254,8 +256,25 @@ export function createNousFiles(deps: NousFilesDeps) {
       await access(file, constants.R_OK).catch((error: unknown) => { throw code(error) === "EACCES" ? privateFile(label) : error; });
       throw Object.assign(new Error(`${label} is a binary file; only text is read.`), { binary: true });
     }
-    if (info.size > MAX_FILE_BYTES) throw new Error(`${label} is ${Math.round(info.size / 1_048_576)} MB; files up to 8 MB are read.`);
     const handle = await open(file, "r").catch((error: unknown) => { throw code(error) === "EACCES" ? privateFile(label) : error; });
+    // No Arbitrary Limits (Daily errors 12/11 10:00 UTC: a 46 MB log refused "files up to 8 MB are read"): a file past 8 MB streams and
+    // only its slice stays in memory. shortcut: its total counts every character (~1 s a 500 MB); upgrade to byte offsets if such reads grow.
+    if (info.size > MAX_FILE_BYTES) {
+      try {
+        const head = Buffer.alloc(8_192);
+        const { bytesRead } = await handle.read(head, 0, head.length, 0);
+        if (head.subarray(0, bytesRead).includes(0)) throw Object.assign(new Error(`${label} is a binary file; only text is read.`), { binary: true });
+        let total = 0;
+        let part = "";
+        for await (const chunk of handle.createReadStream({ encoding: "utf8", start: 0, autoClose: false }) as AsyncIterable<string>) {
+          const from = Math.max(0, offset - total);
+          if (part.length < size && from < chunk.length) part += chunk.slice(from, from + size - part.length);
+          total += chunk.length;
+        }
+        const start = Math.min(Math.max(0, offset), total);
+        return { label, start, end: start + part.length, total, text: redactMemoryText(part) };
+      } finally { await handle.close(); }
+    }
     let buffer: Buffer;
     try { buffer = await handle.readFile(); } finally { await handle.close(); }
     if (buffer.subarray(0, 8_192).includes(0)) throw Object.assign(new Error(`${label} is a binary file; only text is read.`), { binary: true });
@@ -424,6 +443,13 @@ export function createNousFiles(deps: NousFilesDeps) {
     async decisionFiles(owner: string, refs: string[]): Promise<Array<{ ref: string; text: string | null; total: number | null; truncated: boolean; error?: string; binary?: true }>> {
       return Promise.all(refs.map(async (ref) => {
         try {
+          // Daily Nous errors 14/11 (13/11 17:26: refs.files ["mailrev:li-3ZsjmTXFb"]): a Mail review named there shows its own draft.
+          if (/^mailrev:/.test(ref) && deps.reviewDraft) {
+            const draft = await deps.reviewDraft(owner, ref);
+            if (!draft) throw new Error(`${ref} is no Mail review of yours: name its id as space_copilot_items shows it.`);
+            const text = reviewText(draft, draft.body);
+            return { ref, text, total: text.length, truncated: false };
+          }
           const { file, label, artifact } = await target(owner, ref.startsWith("artifact:") ? { artifactId: ref } : { path: ref });
           const part = await slice(file, label, 0, NOUS_DECISION_FILE_MAX, !!artifact && agentFilePreviewKind(artifact) !== "TEXT").catch(async (error: unknown) => {
             // R28-1 (31/10 20:04, 1/11 11:12 UTC: a signed PDF and a demo video, both Agent Files, were refused "binary"): an artifact the
@@ -443,3 +469,20 @@ export function createNousFiles(deps: NousFilesDeps) {
   };
 }
 export type NousFiles = ReturnType<typeof createNousFiles>;
+export interface ReviewDraftReader { reviewDraft(owner: string, id: string): Promise<{ headers: Array<[string, string]>; body: string } | null> }
+
+/**
+ * A copilot review's own draft, first under a decision's "What it sends" (operator 13/11 21:43 BKK: mailrev:lddyXCl-tHDS's "show everything"
+ * showed nothing); refs.files stays optional for these. An edit shows the operator-approved text it sends instead of the copilot's.
+ */
+export async function reviewDraftFile(owner: string, action: NousDecisionAction | null | undefined, readers: Partial<Record<string, ReviewDraftReader>>) {
+  const reader = action?.type === "COPILOT" && action.item === "REVIEW" ? readers[action.copilot] : undefined;
+  if (!reader || action?.type !== "COPILOT") return [];
+  const ref = `${action.itemId} (the review's own draft)`;
+  const draft = await reader.reviewDraft(owner, action.itemId).catch((error: Error) => error);
+  if (!draft || draft instanceof Error) return [{ ref, text: null, total: null, truncated: false, error: draft ? `The review's draft could not be read: ${draft.message}` : "The copilot has no draft for this review." }];
+  const text = reviewText(draft, /^edit$/i.test(action.decision) && action.text !== undefined ? action.text : draft.body);
+  return [{ ref, text, total: text.length, truncated: false }];
+}
+const reviewText = (draft: { headers: Array<[string, string]> }, body: string) => [...draft.headers.filter(([, value]) => value).map(([name, value]) => `${name}: ${value}`), "", body].join("\n");
+

@@ -12,7 +12,7 @@ import { inferProviderFromModel, type LiveAudioProviderId, type VoiceTranscripti
 import { api } from "../../api.js";
 import { openVoiceRealtimeSession, supportsDeferredVoiceCapture, type VoiceRealtimeSessionHandle } from "../../voice-realtime.js";
 import { resolveVoiceProvider, voiceProviderLabel, voiceProviderUnavailable, type VoiceProviderChoice } from "../../voice-relay-close.js";
-import { browserSpeechLang, browserSpeechSupported, openBrowserSpeechSession } from "./browser-speech.js";
+import { browserSpeechSupported, openBrowserSpeechSession } from "./browser-speech.js";
 import {
   VOICE_SETTINGS_UPDATED_EVENT,
   readVoiceComposerSettings,
@@ -405,7 +405,7 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
         },
         onError: fail
       };
-      const handle = !choice ? openBrowserSpeechSession(browserSpeechLang(settings.language), callbacks) : await openVoiceRealtimeSession(
+      const handle = !choice ? await openBrowserSpeechSession(settings.language, callbacks) : await openVoiceRealtimeSession(
         {
           provider: choice.provider,
           model: choice.model,

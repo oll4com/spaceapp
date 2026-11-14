@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRuntimeRegistry, CopilotLaunchSettings } from "@space/contracts";
 import { api } from "../../api.js";
 import { DockNotice } from "../dock-kit/DockKit.js";
+import { InfoTip } from "../ui-controls/InfoTip.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
 import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { Bot } from "../ui-theme/app-icons.js";
 import { accountChoiceShown, defaultAccountProfileId, orderedAccountProfiles, useCopilotAccounts } from "./AgentAccountField.js";
@@ -50,6 +52,7 @@ export function CopilotSettingsCard({ kind }: { kind: CopilotKind }) {
   const accountValue = runtimeId && profiles.some((profile) => profile.profileId === launch?.accountProfileId)
     ? launch!.accountProfileId! : runtimeId ? defaultAccountProfileId(runtimeId, accounts) ?? "" : "";
 
+  const accountLabel = t("{agent} account", { agent: runtimeLabel });
   return (
     <section className={`agent-settings-card settings-flat-card ${kind.controlPrefix}-settings-card`} aria-label={t("{kind} settings", { kind: kind.label })} aria-busy={loading}>
       <div className="agent-settings-section-title settings-flat-heading">
@@ -60,10 +63,7 @@ export function CopilotSettingsCard({ kind }: { kind: CopilotKind }) {
         </span>
       </div>
       <label className="settings-flat-row">
-        <span className="settings-flat-row-copy">
-          <strong>{t("Default agent")}</strong>
-          <small>{t(kind.agentDescription)}</small>
-        </span>
+        <SettingsLabel label="Default agent" help={kind.agentDescription} />
         <select aria-label={t("Default {kind} agent", { kind: kind.label })} name={`${kind.controlPrefix}-default-agent`} value={runtimeId ?? ""} disabled={loading}
           onChange={(event) => {
             const next = event.target.value;
@@ -82,17 +82,16 @@ export function CopilotSettingsCard({ kind }: { kind: CopilotKind }) {
         accounts?.kind === "codex-gateway" ? (
           <div className="settings-flat-row">
             <span className="settings-flat-row-copy">
-              <strong>{t("{agent} account", { agent: runtimeLabel })}</strong>
+              <strong>{accountLabel}</strong>
               <small>{accounts.accounts ? t("Space Gateway (pooled): every {agent} pane uses the gateway's ChatGPT accounts ({count}).", { agent: runtimeLabel, count: accounts.accounts }) : t("Space Gateway (pooled): every {agent} pane uses the gateway's ChatGPT accounts.", { agent: runtimeLabel })}</small>
             </span>
           </div>
         ) : (
           <label className="settings-flat-row">
             <span className="settings-flat-row-copy">
-              <strong>{t("{agent} account", { agent: runtimeLabel })}</strong>
-              <small>{t("The account the agent's CLI starts on. Space Gateway (pooled) spreads the work over the gateway's accounts.")}</small>
+              <strong>{accountLabel}<InfoTip text={t("The account the agent's CLI starts on. Space Gateway (pooled) spreads the work over the gateway's accounts.")} label={t("About {label}", { label: accountLabel })} /></strong>
             </span>
-            <select aria-label={t("{agent} account", { agent: runtimeLabel })} name={`${kind.controlPrefix}-default-account`} value={accountValue}
+            <select aria-label={accountLabel} name={`${kind.controlPrefix}-default-account`} value={accountValue}
               onChange={(event) => launch && save({ ...launch, accountProfileId: copilotAccountFor(launch.runtimeId, event.target.value) })}>
               {profiles.map((profile) => (
                 <option key={profile.profileId} value={profile.profileId}>
@@ -104,7 +103,7 @@ export function CopilotSettingsCard({ kind }: { kind: CopilotKind }) {
         )
       ) : null}
       <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name={`${kind.controlPrefix}-ask-on-launch`} label={t("Ask which agent every time")}
-        detail={launch && !launch.askOnLaunch ? t("New {kind} panes open at once with the default agent.", { kind: kind.label }) : t("Each new {kind} pane shows the agent chooser first.", { kind: kind.label })}
+        help="On: every new pane of this copilot shows the agent chooser first. Off: it opens at once with the default agent."
         checked={!launch || launch.askOnLaunch} disabled={loading}
         onChange={(checked) => {
           if (launch) { save({ ...launch, askOnLaunch: checked }); return; }

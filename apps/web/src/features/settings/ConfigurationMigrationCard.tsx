@@ -18,6 +18,7 @@ import { api, type ConfigurationCliLogin, type ConfigurationInspectResult } from
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import type { SpaceConfigBundle, ImportConfigResult, ImportConfigMode } from "@space/contracts";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { InfoTip } from "../ui-controls/InfoTip.js";
 import { useDockConfirm } from "../dock-kit/DockKit.js";
 import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import "./configuration-migration.css";
@@ -199,15 +200,15 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
           <div className="config-migration-section-title">
             <Download size={18} aria-hidden="true" />
             <span>{t("Save a backup")}</span>
+            <InfoTip text={t("Download one file with your rooms, panes, preferences, bookmarks, plans and CLI defaults.")}
+              label={t("About {label}", { label: t("Save a backup") })} />
           </div>
         </div>
-        <p className="config-migration-desc">
-          {t("Download one file with your rooms, panes, preferences, bookmarks, plans and CLI defaults.")}
-        </p>
 
         {canManageInstallation ? <div className="config-migration-options-group">
           <SpaceToggle
             className="config-migration-toggle-row"
+            help="Adds your AI service keys (OpenAI, Anthropic, DeepSeek and others) to the file. Keep the file private."
             name="export-include-api-keys"
             ariaLabel={t("Include Provider API Keys")}
             label={
@@ -217,7 +218,6 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
                 <span className="config-migration-badge sensitive">{t("Sensitive")}</span>
               </span>
             }
-            detail={t("Adds your AI service keys (OpenAI, Anthropic, DeepSeek and others) to the file. Keep the file private.")}
             checked={includeApiKeys}
             disabled={isExporting}
             onChange={setIncludeApiKeys}
@@ -225,6 +225,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
 
           <SpaceToggle
             className="config-migration-toggle-row"
+            help="Adds the sign-ins of the AI coding tools you pick below, so they start signed in on the other computer."
             name="export-include-credentials"
             ariaLabel={t("Include CLI logins")}
             label={
@@ -234,7 +235,6 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
                 <span className="config-migration-badge sensitive">{t("Sensitive")}</span>
               </span>
             }
-            detail={t("Adds the sign-ins of the AI coding tools you pick below, so they start signed in on the other computer.")}
             checked={includeCredentials}
             disabled={isExporting}
             onChange={toggleIncludeCredentials}
@@ -250,6 +250,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
                     compact
                     className="config-migration-check-row"
                     label={login.displayName}
+                    help="Adds this tool's sign-in to the file. Only a signed-in tool whose login can be exported can be picked."
                     detail={!login.exportable ? t("not exportable") : login.loggedIn ? t("signed in") : t("not signed in")}
                     checked={available && exportRuntimes.includes(login.runtimeId)}
                     disabled={!available || isExporting}
@@ -308,11 +309,10 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
           <div className="config-migration-section-title">
             <Upload size={18} aria-hidden="true" />
             <span>{t("Restore from a backup")}</span>
+            <InfoTip text={t("Load a backup file saved here or on another Space.")}
+              label={t("About {label}", { label: t("Restore from a backup") })} />
           </div>
         </div>
-        <p className="config-migration-desc">
-          {t("Load a backup file saved here or on another Space.")}
-        </p>
 
         {/* Mode Selector */}
         <div className="config-migration-mode-selector">
@@ -481,6 +481,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
                 {(inspection.summary.apiKeysCount ?? 0) > 0 ? (
                   <SpaceToggle
                     className="config-migration-toggle-row"
+                    help="Restores the AI service keys saved in the backup."
                     name="import-api-keys"
                     ariaLabel={t("Import Provider API Keys ({count} found)", { count: inspection.summary.apiKeysCount ?? 0 })}
                     label={
@@ -489,7 +490,6 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
                         <span>{t("Import Provider API Keys ({count} found)", { count: inspection.summary.apiKeysCount ?? 0 })}</span>
                       </span>
                     }
-                    detail={t("Restores the AI service keys saved in the backup.")}
                     checked={importApiKeys}
                     disabled={isImporting}
                     onChange={setImportApiKeys}
@@ -500,6 +500,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
                   <>
                     <SpaceToggle
                       className="config-migration-toggle-row"
+                      help="Restores the sign-ins of the AI coding tools you pick below, so they start signed in here."
                       name="import-credentials"
                       ariaLabel={t("Import CLI logins ({count} found)", { count: inspection.secrets.cliAuthRuntimes.length })}
                       label={
@@ -517,7 +518,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
                       <fieldset className="config-migration-check-list" aria-label={t("CLI logins to import")}>
                         {inspection.secrets.cliAuthRuntimes.map((runtimeId) => (
                           <SpaceToggle key={runtimeId} compact className="config-migration-check-row"
-                            label={runtimeId.replace(/^cli:/, "")} checked={importRuntimes.includes(runtimeId)} disabled={isImporting}
+                            label={runtimeId.replace(/^cli:/, "")} help="Restores this tool's sign-in from the backup." checked={importRuntimes.includes(runtimeId)} disabled={isImporting}
                             onChange={(checked) => setImportRuntimes((current) => checked
                               ? [...current, runtimeId]
                               : current.filter((id) => id !== runtimeId))} />

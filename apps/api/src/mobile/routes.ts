@@ -124,7 +124,7 @@ export function registerMobileRoutes(app: FastifyInstance, options: {
     return { offerId: vaultBase64url.encode(offer.offerId), qr, fingerprint: (await keys.status()).fingerprint, scopes, expiresAt: new Date(offer.expiresAt).toISOString() };
   });
   // Demo mode's "Try the demo" (store-review demo instance, plan kTV3y2lwO-99 step 9): the day's standing offer, public by design. It pairs
-  // only with this instance, as its owner, with read and act at once and decide only through the real attestation (channel.ts).
+  // only with this instance, as its owner, read only (operator 13/11, plan step 18: offers.demo's scopes).
   if (options.demo) app.get("/api/mobile/demo-offer", options.routeOptions, async (request, reply) => {
     reply.header("Cache-Control", "no-store");
     const owner = (await options.store.getOwnerCredentials())?.user.id;

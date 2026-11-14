@@ -1,4 +1,4 @@
-import { spawn } from "./safe-child-process.js";
+import { execFile, spawn } from "./safe-child-process.js";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
@@ -6,7 +6,7 @@ import { accessSync, constants, createReadStream, readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { totalmem } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve as resolvePath, sep } from "node:path";
 import { nanoid } from "nanoid";
 import type { BrowserHostActorContext, BrowserHostCaptureMetrics } from "@space/browser-host";
 import {
@@ -45,7 +45,7 @@ import {
 } from "@space/contracts";
 import type { BrowserSelectState, VaultHostFillResult, VaultHostTarget } from "@space/contracts";
 import { VAULT_BROKER_HOST_SOCKET_PATH, createSocketVaultBroker, sealedFillBroker } from "./vault/broker-client.js";
-import { readVaultTarget, runSealedFill, type SealedFillPage } from "./vault/sealed-fill.js";
+import { readVaultTarget, runSealedFill, vaultPageFrames, type SealedFillPage } from "./vault/sealed-fill.js";
 import { SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, makeSpaceId, nowIso, redactMemoryText, type SpaceStore } from "@space/runtime";
 import { BrowserControlHeldError } from "./browser-errors.js";
 import type { SpaceApiConfig } from "./config.js";
@@ -66,6 +66,7 @@ import {
 } from "./google-browser-session-check.js";
 import { childProcessEnv } from "./child-process-env.js";
 import { chromeSandboxCheck, type ChromeSandboxState } from "./browser-sandbox.js";
+import { pulseBrowserAudioMuteDeps, soundingChromeProfiles } from "./browser-audio-mute.js";
 
 interface ViewportSize {
   width: number;
@@ -85,6 +86,12 @@ export const PANE_CHROME_STORAGE_ARGS = [
   "--disk-cache-size=268435456",
   "--disable-features=Vulkan,OptimizationGuideModelDownloading,OptimizationHintsFetching,OptimizationTargetPrediction,OptimizationGuideOnDeviceModel"
 ];
+
+/**
+ * WebGL keeps SwiftShader (sites see the same renderer), but the page itself is composited in software: SwiftShader compositing
+ * cost ~11% CPU per screencast frame per second vs ~2.5% (plan clipboard:DpmApwi78Fdh step 1, docs/agents/browser-weight.md).
+ */
+export const PANE_CHROME_GPU_ARGS = ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--disable-gpu-compositing"];
 
 /** Chrome's saved-login stores in a profile (and their SQLite side files). */
 export const CHROME_SAVED_LOGIN_FILES = ["Login Data", "Login Data For Account"]
@@ -120,6 +127,20 @@ export function resolveBrowserStreamProfile(mode: BrowserStreamMode, hints: Brow
   return { requestedMode: mode, resolvedMode, ...profile, format: "jpeg" };
 }
 
+/**
+ * What makes a browser's live frames for its viewers (plan clipboard:DpmApwi78Fdh step 3). Viewers that all take at most a frame a
+ * second (Preview) get one screenshot a second, so Chrome stops JPEG-encoding every frame (up to 60 a second) for them. Faster viewers
+ * keep the every-frame screencast: everyNthFrame would drop the only frame a click or a keystroke paints.
+ */
+export function browserFrameSource(subscribers: Iterable<{ profile: BrowserStreamProfile }>): "screencast" | "screenshots" | null {
+  let source: "screenshots" | null = null;
+  for (const { profile } of subscribers) {
+    if (profile.framesPerSecond > 1) return "screencast";
+    if (profile.framesPerSecond > 0) source = "screenshots";
+  }
+  return source;
+}
+
 // Keep the sampling phase instead of resetting it to each compositor frame.
 // Resetting it quantizes 35 fps to 30 (and 24 fps to 20) on a 60 Hz source.
 export function nextBrowserFrameDeadline(now: number, deadline: number, fps: number): number | null {
@@ -128,13 +149,18 @@ export function nextBrowserFrameDeadline(now: number, deadline: number, fps: num
   return deadline > 0 && now - deadline < interval ? deadline + interval : now + interval;
 }
 
+/** The memory pane browsers share: the cgroup or container limit first (`process.constrainedMemory()`, 0 when there is none), else the RAM. */
+export function browserMemoryBytes(constrained = process.constrainedMemory(), total = totalmem()): number {
+  return constrained > 0 ? Math.min(constrained, total) : total;
+}
+
 /**
- * Technical bound (operator 5/11 14:47 BKK «άλλαξε το όριο του browser»; it was 10): half the server's RAM at 1.25 GiB a pane browser. Measured
- * 5/11 on public-host: 6 sessions in 3 Chromes, 4.4 GB RSS (0.73 GB a session; one pane's own Chrome 1.7 GB). 47 GiB gives 18. Never below the old 10.
+ * Technical bound (plan clipboard:DpmApwi78Fdh step 2): half that memory at 512 MiB a pane browser, at least 1. Measured 13/11 with step 1's
+ * flags: one Chrome with one page 337-432 MB PSS (bench), live 5 sessions in 10 tabs 1.0 GB PSS. public-host's 23 GiB gives 23 (was 10), 2-4 GiB 2-4.
  * Past it the API closes the least recently used agent browser for the operator (browser-reaper.ts); agents still get BROWSER_SESSION_CAPACITY.
  */
-export function browserSessionCap(totalBytes: number): number {
-  return Math.max(10, Math.floor((totalBytes * 0.5) / (1.25 * 1024 ** 3)));
+export function browserSessionCap(memoryBytes: number): number {
+  return Math.max(1, Math.floor((memoryBytes * 0.5) / (512 * 1024 ** 2)));
 }
 
 export class BrowserCapacityGate {
@@ -260,6 +286,8 @@ interface BrowserRuntime {
   networkEntries: Record<string, unknown>[];
   streamSubscribers: Map<string, BrowserStreamSubscriber>;
   screencastActive: boolean;
+  /** The Preview screenshot loop running now (`browserFrameSource`); a new object each start, so an older loop ends. */
+  previewLoop?: object;
   streamSequence: number;
   detachDiagnostics: () => void;
   /** Chrome profiles of the pane's tabs in other Google accounts, by profile path. */
@@ -272,6 +300,8 @@ interface BrowserRuntime {
   vaultProtected?: boolean;
   /** The proxy routes this pane needs (a Freelance Copilot's); null: any Chrome of its account. */
   egressKey: string | null;
+  /** Last use by a viewer, an agent or the server (epoch ms): an unused window leaves the display (showWindow). */
+  usedAt: number;
 }
 
 /** Another Google account's Chrome (shared with the panes that use that account) holding some of a pane's tabs. */
@@ -292,6 +322,8 @@ export interface BrowserSessionStatus {
   capacity?: ReturnType<BrowserCapacityGate["snapshot"]>;
   /** This host presses every `space_browser_press` key (assertBrowserHostPressKey). */
   pressKeys?: boolean;
+  /** This host scrolls at a point (scrollBrowserPage, assertBrowserHostPressKey). */
+  scrollAt?: boolean;
   /** Chromium's own sandbox on this host (INT5-C-F3): SANDBOXED, or NO_SANDBOX with the reason. */
   sandbox?: ChromeSandboxState;
 }
@@ -402,6 +434,27 @@ export interface BrowserSessionManager {
 }
 
 const SCREENCAST = { format: "jpeg", quality: 72, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 };
+/** Frame pixels per CSS pixel of a portrait (phone) viewport: sharp text on a phone screen at about half the bytes of its 2x page. */
+const PHONE_FRAME_SCALE = 1.5;
+
+/** Teleport (operator 13/11): a portrait viewport streams frames sized for a phone screen and lighter for 4G; landscape keeps the dock's. */
+export function screencastFor(viewport: BrowserViewportDimensions | undefined) {
+  return viewport && viewport.height > viewport.width
+    ? { ...SCREENCAST, quality: 60, maxWidth: Math.round(viewport.width * PHONE_FRAME_SCALE), maxHeight: Math.round(viewport.height * PHONE_FRAME_SCALE) }
+    : SCREENCAST;
+}
+
+/** The Android user agent (and its client hints) of this Chrome's version, so a site serves the phone (or tablet) version of its pages. */
+export function mobileUserAgentOverride(product: string, phone: boolean) {
+  const major = /\/(\d+)\./.exec(product)?.[1] ?? "120";
+  return {
+    userAgent: `Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 ${phone ? "Mobile " : ""}Safari/537.36`,
+    userAgentMetadata: {
+      brands: [{ brand: "Chromium", version: major }, { brand: "Google Chrome", version: major }, { brand: "Not?A_Brand", version: "99" }],
+      platform: "Android", platformVersion: "10.0.0", architecture: "", model: "K", mobile: phone
+    }
+  };
+}
 
 const viewportSizes: Record<BrowserSessionViewport, ViewportSize> = {
   mobile: { width: 390, height: 844, deviceScaleFactor: 2, mobile: true },
@@ -411,7 +464,8 @@ const viewportSizes: Record<BrowserSessionViewport, ViewportSize> = {
 };
 
 const displayBase = 100;
-const displayCapacity = 10;
+// One display per Chrome and at most one Chrome a session, so the displays follow the session limit.
+const displayCapacity = browserSessionCap(browserMemoryBytes());
 const usedDisplays = new Set<number>();
 
 export const browserSessionDisplayBase = displayBase;
@@ -556,29 +610,36 @@ export async function capturePairingMasked(send: <T = unknown>(method: string, p
 /**
  * A PNG (base64) of the page with every form field, text area and editable area drawn as dots (Vault fence, 2026-10-19):
  * the mask goes into an isolated world of every frame of this page for this one shot and is removed after it. Without the
- * mask on the page's own frame nothing is captured; a frame of another process (out of this session) holds nothing a fill
- * of this page typed.
+ * mask on the page's own frame nothing is captured. With `page` (the client and the page's session) the cross-site frames
+ * a card fill types into (Stripe's, in another process) are reached through their own sessions, and one left unmasked
+ * refuses the shot; without it they are out of reach and the caller's page held no card.
  */
-export async function captureMaskedScreenshot(send: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>): Promise<string> {
-  const tree = await send<{ frameTree: BrowserFrameTreeNode }>("Page.getFrameTree");
-  const frameIds: string[] = [];
-  const walk = (node: BrowserFrameTreeNode) => { frameIds.push(node.frame.id); for (const child of node.childFrames ?? []) walk(child); };
-  walk(tree.frameTree);
-  const contexts: number[] = [];
+export async function captureMaskedScreenshot(send: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>,
+  page?: { cdp: SealedFillPage["cdp"]; sessionId: string }): Promise<string> {
+  const attached: string[] = [];
+  const masks: Array<{ contextId: number; sessionId?: string }> = [];
+  const sendIn = <T,>(sessionId: string | undefined, method: string, params: Record<string, unknown>) => sessionId ? page!.cdp.send<T>(method, params, sessionId) : send<T>(method, params);
   try {
-    for (const [index, frameId] of frameIds.entries()) {
+    const frames: Array<{ frameId: string; sessionId?: string }> = [];
+    if (page) frames.push(...await vaultPageFrames(page.cdp, page.sessionId, attached));
+    else {
+      const walk = (node: BrowserFrameTreeNode) => { frames.push({ frameId: node.frame.id }); for (const child of node.childFrames ?? []) walk(child); };
+      walk((await send<{ frameTree: BrowserFrameTreeNode }>("Page.getFrameTree")).frameTree);
+    }
+    for (const [index, { frameId, sessionId }] of frames.entries()) {
       try {
-        const world = await send<{ executionContextId: number }>("Page.createIsolatedWorld", { frameId, worldName: "space-vault-mask" });
-        const applied = await send<{ result?: { value?: unknown } }>("Runtime.evaluate", { contextId: world.executionContextId, returnByValue: true, expression: VAULT_MASK_APPLY });
+        const world = await sendIn<{ executionContextId: number }>(sessionId, "Page.createIsolatedWorld", { frameId, worldName: "space-vault-mask" });
+        const applied = await sendIn<{ result?: { value?: unknown } }>(sessionId, "Runtime.evaluate", { contextId: world.executionContextId, returnByValue: true, expression: VAULT_MASK_APPLY });
         if (applied.result?.value !== true) throw new Error("mask not applied");
-        contexts.push(world.executionContextId);
+        masks.push({ contextId: world.executionContextId, sessionId });
       } catch (error) {
-        if (index === 0) throw new SpaceConflictError(`The masked screenshot could not mask the page: ${error instanceof Error ? error.message : "unknown"}.`);
+        if (index === 0 || (page && sessionId !== page.sessionId)) throw new SpaceConflictError(`The masked screenshot could not mask the page: ${error instanceof Error ? error.message : "unknown"}.`);
       }
     }
     return (await send<{ data: string }>("Page.captureScreenshot", { format: "png", captureBeyondViewport: false })).data;
   } finally {
-    for (const contextId of contexts) await send("Runtime.evaluate", { contextId, expression: VAULT_MASK_REMOVE }).catch(() => undefined);
+    for (const { contextId, sessionId } of masks) await sendIn(sessionId, "Runtime.evaluate", { contextId, expression: VAULT_MASK_REMOVE }).catch(() => undefined);
+    for (const sessionId of attached) await page!.cdp.send("Target.detachFromTarget", { sessionId }).catch(() => undefined);
   }
 }
 
@@ -605,17 +666,20 @@ export async function pressBrowserKey(client: { send<T = unknown>(method: string
 }
 
 /**
- * A Browser Host started before the wider `press` keys presses Tab for every key but Enter (and says it pressed the key):
- * only a host whose status says `pressKeys` gets them; until its guarded restart they fail closed.
+ * A Browser Host started before an action's newer form does something else and says it did: it presses Tab for every key but
+ * Enter (`pressKeys`) and scrolls the page for a scroll at a point (`scrollAt`, 14/11). Only a host whose status names the form
+ * gets it; until its guarded restart that form fails closed.
  */
 export async function assertBrowserHostPressKey(
   manager: { status(): BrowserSessionStatus; browserHostHealth?(): Promise<{ status: unknown }> },
   action: BrowserToolActionInput
 ): Promise<void> {
-  if (action.type !== "press" || ["Enter", "Tab", "Shift+Tab"].includes(action.key)) return;
-  const knows = (status: unknown) => (status as { pressKeys?: unknown } | undefined)?.pressKeys === true;
+  const needs = action.type === "press" && !["Enter", "Tab", "Shift+Tab"].includes(action.key) ? ["pressKeys", `press ${action.key}`] as const
+    : action.type === "scroll" && (action.x !== undefined || action.y !== undefined) ? ["scrollAt", "scroll at a point"] as const : null;
+  if (!needs) return;
+  const knows = (status: unknown) => (status as Record<string, unknown> | undefined)?.[needs[0]] === true;
   if (knows(manager.status()) || knows((await manager.browserHostHealth?.().catch(() => null))?.status)) return;
-  throw new SpaceFeatureDisabledError("BROWSER_ACTION_UNAVAILABLE", `press ${action.key} needs the Browser Host restart that brings it.`);
+  throw new SpaceFeatureDisabledError("BROWSER_ACTION_UNAVAILABLE", `${needs[1]} needs the Browser Host restart that brings it.`);
 }
 
 // The focused dropdown or frame, read in an isolated world so page scripts cannot fake it.
@@ -726,6 +790,41 @@ export async function chooseOpenBrowserSelectOption(client: { send<T = unknown>(
   const chosen = await readOpenBrowserSelect(send, sessionId, index);
   if (chosen?.selectedIndex !== index) throw new SpaceConflictError("The dropdown did not take that option; pick it again.");
   return `Chose "${state.labels[index]}".`;
+}
+
+type BrowserCdpClient = { send<T = unknown>(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<T> };
+
+/**
+ * space_browser_type. A clicked native dropdown is focused and open, yet Chrome inserts text into the field focused before it
+ * (13/11 AvantLink country and phone code, reproduced in headful Chrome): into an open dropdown the text picks the option it
+ * names, the same label first, else the first it starts, as a person's type-ahead does; nothing is inserted anywhere.
+ */
+export async function typeIntoBrowserPage(client: BrowserCdpClient, sessionId: string, text: string): Promise<string | null> {
+  const open = await readOpenBrowserSelect((method, params, target) => client.send(method, params, target), sessionId);
+  if (!open) {
+    await client.send("Input.insertText", { text }, sessionId);
+    return null;
+  }
+  const fold = (value: string) => value.normalize("NFD").replace(/\p{M}/gu, "").trim().toLowerCase();
+  const wanted = fold(text);
+  const usable = open.labels.map((label, index) => ({ label: fold(label), index })).filter(({ index }) => !open.disabled.includes(index));
+  const match = wanted ? usable.find(({ label }) => label === wanted) ?? usable.find(({ label }) => label.startsWith(wanted)) : undefined;
+  if (!match) throw new SpaceConflictError(`No option of the open dropdown starts with "${text.slice(0, 80)}"; nothing was typed. Type the option's text as shown, or pick it with space_browser_press (arrows, Enter).`);
+  return chooseOpenBrowserSelectOption(client, sessionId, match.index);
+}
+
+/**
+ * space_browser_scroll. At a point, a mouse wheel there scrolls what is under it (a drawer, a list, an inner panel) as a person's
+ * wheel does; window.scrollBy moves only the page (13/11 affiliate sign-ups). Without a point, the page as before.
+ */
+export async function scrollBrowserPage(client: BrowserCdpClient, sessionId: string,
+  input: { deltaX: number; deltaY: number; x?: number | undefined; y?: number | undefined }): Promise<void> {
+  if (input.x === undefined && input.y === undefined) {
+    await client.send("Runtime.evaluate", { expression: `window.scrollBy(${JSON.stringify(input.deltaX)}, ${JSON.stringify(input.deltaY)})`, returnByValue: true }, sessionId);
+    return;
+  }
+  if (input.x === undefined || input.y === undefined) throw new SpaceConflictError("A scroll at a point needs both x and y; nothing was scrolled.");
+  await client.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: input.x, y: input.y, deltaX: input.deltaX, deltaY: input.deltaY }, sessionId);
 }
 
 function sanitizeSegment(value: string): string {
@@ -1512,12 +1611,16 @@ export async function assertSafeBrowserTargetUrl(raw: string, allowedLocalOrigin
   return new BrowserRequestGuard([allowedLocalOrigin, DEEPSEEK_HARNESS_BROWSER_ORIGIN]).assertAllowed(raw);
 }
 
+// Twice the Browser Host's 30 s request bound: a send never ends before the request waiting on it, but a Chrome that stopped
+// answering (13/11, pane:PAmSde500V-P) no longer holds its pane's start, and every stop queued behind it, forever.
+export const CDP_SEND_TIMEOUT_MS = 60_000;
+
 export class CdpClient {
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
   private readonly listeners = new Set<(event: CdpEvent) => void>();
 
-  private constructor(private readonly ws: WebSocket) {
+  private constructor(private readonly ws: WebSocket, private readonly sendTimeoutMs = CDP_SEND_TIMEOUT_MS) {
     this.ws.addEventListener("message", (event) => {
       const data = typeof event.data === "string" ? event.data : Buffer.from(event.data as ArrayBuffer).toString("utf8");
       const message = JSON.parse(data) as {
@@ -1553,7 +1656,7 @@ export class CdpClient {
     });
   }
 
-  static async connect(wsUrl: string, timeoutMs: number): Promise<CdpClient> {
+  static async connect(wsUrl: string, timeoutMs: number, sendTimeoutMs = CDP_SEND_TIMEOUT_MS): Promise<CdpClient> {
     const ws = new WebSocket(wsUrl);
     await withTimeout(
       new Promise<void>((resolve, reject) => {
@@ -1563,7 +1666,7 @@ export class CdpClient {
       timeoutMs,
       "Timed out opening Chrome DevTools Protocol socket."
     );
-    return new CdpClient(ws);
+    return new CdpClient(ws, sendTimeoutMs);
   }
 
   async send<T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<T> {
@@ -1571,7 +1674,15 @@ export class CdpClient {
     const id = this.nextId;
     this.nextId += 1;
     const response = new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: (value) => resolve(value as T), reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Chrome DevTools Protocol ${method} timed out after ${this.sendTimeoutMs}ms.`));
+      }, this.sendTimeoutMs);
+      timer.unref();
+      this.pending.set(id, {
+        resolve: (value) => { clearTimeout(timer); resolve(value as T); },
+        reject: (reason) => { clearTimeout(timer); reject(reason); }
+      });
     });
     try {
       this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
@@ -2353,7 +2464,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
   // Sessions this process is navigating right now (a count, for overlapping navigations).
   const navigationsInFlight = new Map<string, number>();
   const tickets = new Map<string, { paneId: string; sessionId: string; expiresAt: number }>();
-  const capacity = new BrowserCapacityGate(browserSessionCap(totalmem()), 4);
+  const capacity = new BrowserCapacityGate(browserSessionCap(browserMemoryBytes()), 4);
   const captureQueue: string[] = [];
   const captureCommands = new Map<string, "STOP" | "CANCEL">();
   const requestGuard = new BrowserRequestGuard([
@@ -2488,13 +2599,119 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       },
       runtime.cdpSessionId
     );
+    // A mobile preset is a phone (or tablet) to the site too: its user agent and touch; the others clear both ("" ends the override).
+    const product = size.mobile ? (await runtime.client.send<{ product: string }>("Browser.getVersion")).product : "";
+    await runtime.client.send("Emulation.setUserAgentOverride", size.mobile ? mobileUserAgentOverride(product, viewport === "mobile") : { userAgent: "" }, runtime.cdpSessionId);
+    await runtime.client.send("Emulation.setTouchEmulationEnabled", size.mobile ? { enabled: true, maxTouchPoints: 5 } : { enabled: false }, runtime.cdpSessionId);
     runtime.viewportDimensions = { width: size.width, height: size.height };
   }
 
-  function ensureRuntime(session: PaneBrowserSession): Promise<BrowserRuntime> {
+  // CPU plan 5.1 (operator decision 470a8165): a Chrome window nobody watches or drives still paints every frame (1.2-1.9 cores
+  // for one idle pane on the live host). Xvfb has no window manager, so a minimize is ignored; a window moved off the display
+  // stops painting (0.07 cores in bench 9) while its media and screenshots go on, and is back in ~6 ms on its next use.
+  // A headless Chrome (light browser step 5) paints off the display too but minimizes: page hidden, rAF 0, back at 60 fps
+  // on "normal", a frozen page too (probe 13/11).
+  const WINDOW_IDLE_MS = 5 * 60_000;
+  // X11 positions are 16-bit: 20000 plus a 4K-wide window still fits.
+  const OFFSCREEN_LEFT = 20_000;
+  type WindowBounds = { left: number; top: number } | { windowState: "normal" };
+  const hiddenWindows = new WeakMap<CdpClient, Map<number, WindowBounds>>();
+  // CdpClient.send has no timeout: a stuck Chrome stalls only its own sweep.
+  const sweeping = new WeakSet<CdpClient>();
+  const windowInUse = (runtime: BrowserRuntime) => runtime.streamSubscribers.size > 0 || Date.now() - runtime.usedAt < WINDOW_IDLE_MS;
+  // Light browser step 4 (plan clipboard:DpmApwi78Fdh): an off-display page still runs its timers and scripts, so the silent
+  // pages of an idle Chrome are frozen too (Page.setWebLifecycleState) and thawed with its windows on the next use. A freeze
+  // pauses media until play() (bench 5): a playing <video>/<audio> of the page or any sound of its Chrome keeps it running.
+  const frozenPages = new WeakMap<CdpClient, Set<string>>();
+  const pulse = pulseBrowserAudioMuteDeps(config.browserSessionsPulseServer, async () => []);
+  const playsMedia = (client: CdpClient, sid: string) => client.send<{ result?: { value?: unknown } }>("Runtime.evaluate",
+    { expression: "[...document.querySelectorAll('video, audio')].some((media) => !media.paused && !media.ended)", returnByValue: true }, sid)
+    .then((answer) => answer.result?.value !== false, () => true);
+
+  // A Chrome leaves the display only when every pane using it (its own and its account tabs' panes) is idle.
+  async function hideIdleWindows(profile: BrowserProfileRuntime, path: string, sounding: () => Promise<Set<string> | null>): Promise<void> {
+    const { client } = profile;
+    const idle = () => !closingAll && !runtimeStarts.size && ![...profile.members].some(windowInUse);
+    if (sweeping.has(client) || !idle()) return;
+    sweeping.add(client);
+    try {
+      const { targetInfos = [] } = await client.send<{ targetInfos?: Array<{ targetId: string; type?: string }> }>("Target.getTargets");
+      const homes = new Map<number, WindowBounds>();
+      const windowOf = new Map<string, number>();
+      for (const target of targetInfos) {
+        if (target.type !== "page") continue;
+        const found = await client.send<{ windowId: number; bounds: { left?: number; top?: number; windowState?: string } }>(
+          "Browser.getWindowForTarget", { targetId: target.targetId }).catch(() => null);
+        const { left = 0, top = 0, windowState } = found?.bounds ?? {};
+        if (found) windowOf.set(target.targetId, found.windowId);
+        if (found && windowState === "normal" && left < OFFSCREEN_LEFT) homes.set(found.windowId, profile.xvfb ? { left, top } : { windowState: "normal" });
+      }
+      // The panes' own pages only: an unowned one may still wait for its debugger. Unknown sound (pactl failed) freezes nothing.
+      const frozen = frozenPages.get(client) ?? new Set<string>();
+      const silent: Array<[sid: string, windowId: number]> = [];
+      const loud = await sounding();
+      if (loud && !loud.has(resolvePath(path))) {
+        for (const [targetId, sid] of profile.attachments) {
+          const windowId = windowOf.get(targetId);
+          if (windowId !== undefined && profile.owners.has(targetId) && !frozen.has(sid) && !(await playsMedia(client, sid))) silent.push([sid, windowId]);
+        }
+      }
+      // Nothing awaits from here on, so no use slips in between this check and the moves; a starting Chrome waits a minute.
+      if (!idle()) return;
+      const hidden = hiddenWindows.get(client) ?? new Map<number, WindowBounds>();
+      const away = profile.xvfb ? { left: OFFSCREEN_LEFT, top: 0 } : { windowState: "minimized" };
+      hiddenWindows.set(client, hidden);
+      const moved = new Map<number, Promise<boolean>>();
+      for (const [windowId, home] of homes) {
+        hidden.set(windowId, home);
+        moved.set(windowId, client.send("Browser.setWindowBounds", { windowId, bounds: away })
+          .then(() => true, () => { hidden.delete(windowId); return false; }));
+      }
+      frozenPages.set(client, frozen);
+      // A page frozen on the display paints no frame after its thaw (probe 13/11: no rAF, one screencast frame), so a page freezes
+      // only once its window is off the display, and only if no use thawed this Chrome meanwhile.
+      for (const [sid, windowId] of silent) {
+        void (moved.get(windowId) ?? Promise.resolve(hidden.has(windowId))).then((off) => {
+          if (!off || frozenPages.get(client) !== frozen) return;
+          frozen.add(sid);
+          void client.send("Page.setWebLifecycleState", { state: "frozen" }, sid).catch(() => frozen.delete(sid));
+        });
+      }
+    } catch {
+      // A Chrome that closed or failed meanwhile keeps its windows where they are.
+    } finally {
+      sweeping.delete(client);
+    }
+  }
+  const windowSweep = setInterval(() => {
+    let loud: Promise<Set<string> | null> | undefined;
+    const sounding = () => loud ??= soundingChromeProfiles(pulse).catch(() => null);
+    for (const [path, profile] of profiles) void hideIdleWindows(profile, path, sounding);
+  }, 60_000);
+  windowSweep.unref();
+
+  // Every use thaws and brings back all the pane's pages and windows before it goes on, a popup's opener too (CdpClient.send
+  // writes in call order on one socket per Chrome).
+  async function showWindow(runtime: BrowserRuntime): Promise<void> {
+    runtime.usedAt = Date.now();
+    for (const { client } of [runtime.profile, ...[...runtime.accountTabs.values()].map(tab => tab.profile)]) {
+      const hidden = hiddenWindows.get(client);
+      const frozen = frozenPages.get(client);
+      hiddenWindows.delete(client);
+      frozenPages.delete(client);
+      // A page or window that is gone needs no thaw or move; its use goes on.
+      await Promise.all([...[...frozen ?? []].map((sid) => client.send("Page.setWebLifecycleState", { state: "active" }, sid).catch(() => undefined)),
+        ...[...hidden ?? []].map(([windowId, bounds]) => client.send("Browser.setWindowBounds", { windowId, bounds }).catch(() => undefined))]);
+    }
+  }
+
+  /** `use: false` for reads that are no use of the page (the open view's tab list poll), so they leave an idle window hidden. */
+  function ensureRuntime(session: PaneBrowserSession, use = true): Promise<BrowserRuntime> {
     if (closingAll || closingSessions.has(session.sessionId)) return Promise.reject(new SpaceConflictError("The browser session is closing."));
     const existing = runtimes.get(session.sessionId);
-    if (existing && existing.process.exitCode === null && existing.process.signalCode === null) return Promise.resolve(existing);
+    if (existing && existing.process.exitCode === null && existing.process.signalCode === null) {
+      return use ? showWindow(existing).then(() => existing) : Promise.resolve(existing);
+    }
     const pending = runtimeStarts.get(session.sessionId);
     if (pending) return pending;
     // A crashed pane Chrome leaves its account tabs open elsewhere; they close here and reopen with the relaunch.
@@ -2549,11 +2766,35 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     await rename(`${path}.space-tmp`, path);
   }
 
+  // Light browser step 5 (plan clipboard:DpmApwi78Fdh): a Chrome that holds no Google account runs headless, with no Xvfb
+  // (docs/agents/browser-weight.md). Google refuses "HeadlessChrome" at its sign-in and takes Chrome's own user agent (probe
+  // 13/11, Chrome 157); a whole sign-in kept across restarts is unproven, so an account profile (google-accounts/,
+  // cli-accounts/) or one with Google's sign-in cookies stays headed. With Xvfb off every Chrome runs headless.
+  // shortcut: a Google sign-in started in a headless Chrome stays headless until its next launch, relaunch it headed on an
+  // accounts.google.com navigation if Google refuses one there.
+  let chromeUserAgent: Promise<string | null> | undefined;
+  const accountRoots = ["google-accounts", "cli-accounts"].map((name) => join(resolvePath(config.browserSessionsProfileRoot), name) + sep);
+  async function headlessArgs(profilePath: string, { width, height }: ViewportSize): Promise<string[] | null> {
+    const account = accountRoots.some((root) => resolvePath(profilePath).startsWith(root))
+      || await googleSignInCookieState(profilePath).then((state) => state.hasSignInCookies, () => true);
+    if (account && config.browserSessionsXvfbEnabled) return null;
+    const userAgent = await (chromeUserAgent ??= new Promise<string | null>((resolve) => {
+      execFile(config.browserSessionsChromePath, ["--version"], { timeout: 10_000 }, (error, stdout) => {
+        const major = error ? undefined : /\b(\d+)\.\d+\.\d+\.\d+\b/.exec(String(stdout))?.[1];
+        resolve(major ? `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36` : null);
+      });
+    }));
+    if (!userAgent && config.browserSessionsXvfbEnabled) return null;
+    // Headless reports an 800x600 screen unless told the window's.
+    return ["--headless=new", `--screen-info={${width}x${height}}`, ...(userAgent ? [`--user-agent=${userAgent}`] : [])];
+  }
+
   async function launchProfile(session: Pick<PaneBrowserSession, "profilePath" | "viewport">, egress: { args: string[]; env: Record<string, string>; key: string } | null = null): Promise<BrowserProfileRuntime> {
     await mkdir(session.profilePath, { recursive: true, mode: 0o700 });
     await forgetChromeSavedLogins(session.profilePath);
     await keepSessionCookies(session.profilePath).catch(() => undefined);
     const viewport = viewportSizes[session.viewport];
+    const headless = await headlessArgs(session.profilePath, viewport);
     const audioEnv = config.browserSessionsAudioEnabled
       ? {
           PULSE_SERVER: config.browserSessionsPulseServer,
@@ -2562,12 +2803,15 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       : {};
     let xvfb: ChildProcessWithoutNullStreams | undefined;
     let display: number | null = null;
-    if (config.browserSessionsXvfbEnabled) {
+    if (!headless) {
       // Displays another process's X server holds stay reserved until this launch ends, so each try takes the next one.
       const heldElsewhere: number[] = [];
       try {
         while (!xvfb) {
           display = allocateDisplay();
+          // 13/11 (Upwork scan 04:06Z, Andy 05:24Z): a Chrome that died on its own keeps its Xvfb and display until its own profile
+          // relaunches; when none is free, the dead ones give theirs back first.
+          if (display === null && await closeDeadProfiles()) display = allocateDisplay();
           if (display === null) {
             throw new SpaceFeatureDisabledError("BROWSER_SESSION_CAPACITY", "No Xvfb display is available for a headed browser session.", capacity.snapshot());
           }
@@ -2600,9 +2844,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         "--noerrdialogs",
         "--hide-crash-restore-bubble",
         "--disable-blink-features=AutomationControlled",
-        "--use-gl=angle",
-        "--use-angle=swiftshader",
-        "--enable-unsafe-swiftshader",
+        ...(headless ?? []),
+        ...PANE_CHROME_GPU_ARGS,
         ...PANE_CHROME_STORAGE_ARGS,
         ...(egress?.args ?? []),
         "about:blank"
@@ -2896,6 +3139,12 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     });
   }
 
+  async function closeDeadProfiles(): Promise<boolean> {
+    const dead = [...profiles].filter(([, profile]) => profile.process.exitCode !== null || profile.process.signalCode !== null);
+    for (const [path, profile] of dead) await closeProfile(profile, path).catch(() => undefined);
+    return dead.length > 0;
+  }
+
   /** Closes a pane's tabs in other accounts and leaves those Chromes; never inside the pane's own profile lock. */
   async function releaseAccountTabs(runtime: BrowserRuntime): Promise<void> {
     for (const [id, path] of [...runtime.pageProfiles]) {
@@ -2933,6 +3182,55 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     });
   }
 
+  /** A live frame (base64 JPEG) to every viewer whose frame rate wants one now. */
+  function deliverFrame(runtime: BrowserRuntime, sessionId: string, data: string, metadata: unknown): void {
+    runtime.streamSequence += 1;
+    const capturedAt = nowIso();
+    const now = Date.now();
+    for (const subscriber of runtime.streamSubscribers.values()) {
+      if (subscriber.profile.framesPerSecond <= 0) continue;
+      const nextDeadline = nextBrowserFrameDeadline(now, subscriber.lastSentAt, subscriber.profile.framesPerSecond);
+      if (nextDeadline === null) continue;
+      subscriber.lastSentAt = nextDeadline;
+      void Promise.resolve(
+        subscriber.onFrame({
+          sessionId,
+          sequence: runtime.streamSequence,
+          data: Buffer.from(data, "base64"),
+          mimeType: "image/jpeg",
+          capturedAt,
+          metadata: { ...sanitizeValue(metadata ?? {}) as Record<string, unknown>, viewportDimensions: runtime.viewportDimensions }
+        })
+      ).catch(() => undefined);
+    }
+  }
+
+  /** Starts, switches or stops the runtime's live frames to what its viewers need now (`browserFrameSource`). */
+  async function syncFrameSource(runtime: BrowserRuntime, sessionId: string): Promise<void> {
+    const wanted = browserFrameSource(runtime.streamSubscribers.values());
+    if (wanted !== "screenshots") runtime.previewLoop = undefined;
+    if (wanted !== "screencast" && runtime.screencastActive) {
+      runtime.screencastActive = false;
+      await runtime.client.send("Page.stopScreencast", {}, runtime.cdpSessionId).catch(() => undefined);
+    }
+    if (wanted === "screencast" && !runtime.screencastActive) {
+      await runtime.client.send("Page.startScreencast", screencastFor(runtime.viewportDimensions), runtime.cdpSessionId);
+      runtime.screencastActive = true;
+    }
+    if (wanted === "screenshots" && !runtime.previewLoop) void previewShots(runtime, sessionId, runtime.previewLoop = {});
+  }
+
+  /** Preview viewers: a screenshot of the active tab, then a second's pause (so each viewer's 1 fps deadline has passed). */
+  async function previewShots(runtime: BrowserRuntime, sessionId: string, loop: object): Promise<void> {
+    const quality = resolveBrowserStreamProfile("PREVIEW").quality;
+    while (runtime.previewLoop === loop && runtimes.get(sessionId) === runtime) {
+      const shot = await runtime.client.send<{ data: string }>("Page.captureScreenshot", { format: "jpeg", quality, captureBeyondViewport: false }, runtime.cdpSessionId)
+        .catch(() => null);
+      if (shot?.data && runtime.previewLoop === loop) deliverFrame(runtime, sessionId, shot.data, {});
+      await sleep(1_000);
+    }
+  }
+
   /** Live view frames, console, network and the request guard of a pane's pages in one Chrome (its own or an account tab's). */
   function runtimeEventListener(runtime: BrowserRuntime, client: CdpClient, sessionId: string): (event: CdpEvent) => void {
     return (event) => {
@@ -2948,26 +3246,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
           void client.send("Page.screencastFrameAck", { sessionId: frameId }, runtime.cdpSessionId).catch(() => undefined);
         }
         const data = event.params?.data;
-        if (typeof data !== "string") return;
-        runtime.streamSequence += 1;
-        const capturedAt = nowIso();
-        const now = Date.now();
-        for (const subscriber of runtime.streamSubscribers.values()) {
-          if (subscriber.profile.framesPerSecond <= 0) continue;
-          const nextDeadline = nextBrowserFrameDeadline(now, subscriber.lastSentAt, subscriber.profile.framesPerSecond);
-          if (nextDeadline === null) continue;
-          subscriber.lastSentAt = nextDeadline;
-          void Promise.resolve(
-            subscriber.onFrame({
-              sessionId,
-              sequence: runtime.streamSequence,
-              data: Buffer.from(data, "base64"),
-              mimeType: "image/jpeg",
-              capturedAt,
-              metadata: { ...sanitizeValue(event.params?.metadata ?? {}) as Record<string, unknown>, viewportDimensions: runtime.viewportDimensions }
-            })
-          ).catch(() => undefined);
-        }
+        if (typeof data === "string") deliverFrame(runtime, sessionId, data, event.params?.metadata);
         return;
       }
       if (runtime.vaultProtected) return;
@@ -3039,7 +3318,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         accountTabs: new Map(),
         pageProfiles: new Map(),
         accountWork: Promise.resolve(),
-        egressKey: egress?.key ?? null
+        egressKey: egress?.key ?? null,
+        usedAt: Date.now()
       };
       profile.members.add(runtime);
       runtime.targetId = await createOwnedPage(runtime, "about:blank");
@@ -3059,10 +3339,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       }
       runtimes.set(session.sessionId, runtime);
       if (runtime.streamSubscribers.size && capacity.acquireLive(`stream:${session.sessionId}`, capacity.maxSessions)) {
-        try {
-          await client.send("Page.startScreencast", SCREENCAST, runtime.cdpSessionId);
-          runtime.screencastActive = true;
-        } catch { capacity.releaseLive(`stream:${session.sessionId}`); }
+        try { await syncFrameSource(runtime, session.sessionId); } catch { capacity.releaseLive(`stream:${session.sessionId}`); }
       }
       // They wait for this profile lock, so they join this Chrome.
       for (const id of moved) void Promise.resolve(store.getPaneBrowserSession(id)).then(other => other?.isActive ? ensureRuntime(other) : undefined).catch(() => undefined);
@@ -3105,10 +3382,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     const id = makeSpaceId("browser_stream");
     runtime.streamSubscribers.set(id, { id, profile, lastSentAt: 0, onFrame });
     try {
-      if (!runtime.screencastActive) {
-        await runtime.client.send("Page.startScreencast", SCREENCAST, runtime.cdpSessionId);
-        runtime.screencastActive = true;
-      }
+      await syncFrameSource(runtime, sessionId);
     } catch (error) {
       runtime.streamSubscribers.delete(id);
       if (!runtime.streamSubscribers.size) capacity.releaseLive(workloadKey);
@@ -3125,13 +3399,20 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         const live = runtimes.get(sessionId);
         const current = live?.streamSubscribers === runtime.streamSubscribers ? live : runtime;
         current.streamSubscribers.delete(id);
-        if (current.streamSubscribers.size || !current.screencastActive) return;
+        // The viewers left may need another source (a Realtime viewer left Preview ones).
+        if (current.streamSubscribers.size) {
+          await syncFrameSource(current, sessionId).catch(() => undefined);
+          return;
+        }
+        const screencast = current.screencastActive;
+        if (!screencast && !current.previewLoop) return;
         current.screencastActive = false;
+        current.previewLoop = undefined;
         // A runtime that was replaced after a crash (or stopped) already gave up
         // this session's slot; it now belongs to the replacement's stream.
         if (runtimes.get(sessionId) !== current) return;
         capacity.releaseLive(workloadKey);
-        await current.client.send("Page.stopScreencast", {}, current.cdpSessionId).catch(() => undefined);
+        if (screencast) await current.client.send("Page.stopScreencast", {}, current.cdpSessionId).catch(() => undefined);
         void pumpCaptureQueue();
       }
     };
@@ -3290,8 +3571,9 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     await enablePageSecurity(runtime.client, attached.sessionId);
     await setViewport(runtime, session.viewport, runtime.viewportDimensions);
     await runtime.client.send("Target.activateTarget", { targetId: pageId });
+    await showWindow(runtime);
     if (wasStreaming && runtime.streamSubscribers.size) {
-      await runtime.client.send("Page.startScreencast", SCREENCAST, runtime.cdpSessionId);
+      await runtime.client.send("Page.startScreencast", screencastFor(runtime.viewportDimensions), runtime.cdpSessionId);
     }
   }
 
@@ -3378,6 +3660,9 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     await requireControlLease(session, input.leaseId, context);
     const lease = await store.updateBrowserControlLease(input.leaseId, release ? { status: "RELEASED" } : { ttlSeconds: input.ttlSeconds ?? 30 });
     if (release) await store.updatePaneBrowserSession(session.sessionId, { controlState: "UNCONTROLLED" });
+    // A held lease is use: its pages stay thawed and on display while its holder heartbeats.
+    const runtime = release ? undefined : runtimes.get(session.sessionId);
+    if (runtime) await showWindow(runtime);
     return lease;
   }
 
@@ -3499,6 +3784,11 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     const updated = await store.updatePaneBrowserSession(session.sessionId, { viewport });
     const runtime = await ensureRuntime(updated);
     await setViewport(runtime, viewport, boundedDimensions);
+    // A running screencast keeps its frame size until restarted (Chrome refuses a second start): the new shape gets its frames.
+    if (runtime.screencastActive) {
+      await runtime.client.send("Page.stopScreencast", {}, runtime.cdpSessionId).catch(() => undefined);
+      await runtime.client.send("Page.startScreencast", screencastFor(runtime.viewportDimensions), runtime.cdpSessionId);
+    }
     return responseFor(updated, !boundedDimensions);
   }
 
@@ -3551,7 +3841,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
 
   /** The pane that filled a Vault page sees its labels and buttons, never a value (captureMaskedScreenshot). */
   async function maskedScreenshot(session: PaneBrowserSession, runtime: BrowserRuntime): Promise<{ artifactId: string; path: string; masked: true }> {
-    const data = await captureMaskedScreenshot((method, params) => runtime.client.send(method, params, runtime.cdpSessionId));
+    const data = await captureMaskedScreenshot((method, params) => runtime.client.send(method, params, runtime.cdpSessionId), { cdp: runtime.client, sessionId: runtime.cdpSessionId });
     const segment = sanitizeSegment(`masked-${randomUUID()}`);
     const directory = join(config.browserEvidenceArtifactRoot, "browser-evidence", segment);
     const filename = "masked-screenshot.png";
@@ -3636,8 +3926,11 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
           job,
           session,
           artifactRoot: config.browserEvidenceArtifactRoot,
-          capturePng: async () => Buffer.from(await capturePairingMasked((method, params) => runtime.client.send(method, params, runtime.cdpSessionId),
-            { format: "png", captureBeyondViewport: false }), "base64"),
+          capturePng: async () => {
+            runtime.usedAt = Date.now(); // a recording keeps its window on the display
+            return Buffer.from(await capturePairingMasked((method, params) => runtime.client.send(method, params, runtime.cdpSessionId),
+              { format: "png", captureBeyondViewport: false }), "base64");
+          },
           registerSegmentArtifact: async ({ filePath, filename }) => registerCaptureArtifact({
             session,
             jobId: job.jobId,
@@ -3850,7 +4143,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
   }
 
   async function stopPaneById(paneId: string, _traceId?: string, context?: BrowserHostActorContext, skipStartWait = false): Promise<void> {
-    if (!skipStartWait) await paneStarts.get(paneId)?.catch(() => undefined);
+    // A start still running after this is hung on its Chrome; the stop closes that Chrome, which ends the start.
+    if (!skipStartWait) await withTimeout<unknown>(paneStarts.get(paneId) ?? Promise.resolve(), CDP_SEND_TIMEOUT_MS, "Browser start wait timed out.").catch(() => undefined);
     const active = await store.getActivePaneBrowserSession(paneId);
     if (!active) return;
     await assertCanMutate(active, context);
@@ -3963,6 +4257,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       checkedAt: nowIso(),
       capacity: capacity.snapshot(),
       pressKeys: true,
+      scrollAt: true,
       sandbox: sandbox.state()
     }),
     startOrRestore(input, context) {
@@ -4084,7 +4379,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     },
     async listPages(pane) {
       const session = await requireActiveSession(pane);
-      return refreshPages(session, await ensureRuntime(session));
+      return refreshPages(session, await ensureRuntime(session, false));
     },
     async createPage(pane, rawUrl, activate, _traceId, context) {
       const session = await requireActiveSession(pane);
@@ -4180,17 +4475,13 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         await runtime.client.send("Input.dispatchMouseEvent", { type: "mousePressed", x: input.x, y: input.y, button: "left", clickCount: 1 }, runtime.cdpSessionId);
         await runtime.client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: input.x, y: input.y, button: "left", clickCount: 1 }, runtime.cdpSessionId);
       }
+      let text: string | null = null;
       if (input.type === "type") {
-        await runtime.client.send("Input.insertText", { text: input.text }, runtime.cdpSessionId);
+        text = await typeIntoBrowserPage(runtime.client, runtime.cdpSessionId, input.text);
       }
       if (input.type === "scroll") {
-        await runtime.client.send(
-          "Runtime.evaluate",
-          { expression: `window.scrollBy(${JSON.stringify(input.deltaX)}, ${JSON.stringify(input.deltaY)})`, returnByValue: true },
-          runtime.cdpSessionId
-        );
+        await scrollBrowserPage(runtime.client, runtime.cdpSessionId, input);
       }
-      let text: string | null = null;
       if (input.type === "extract_text") {
         const result = await runtime.client.send<{ result?: { value?: string } }>(
           "Runtime.evaluate",
@@ -4250,6 +4541,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     },
     async closeAll() {
       closingAll = true;
+      clearInterval(windowSweep);
       for (const { timer } of googleCheckTimers.values()) clearTimeout(timer);
       googleCheckTimers.clear();
       await Promise.allSettled([...paneStarts.values(), ...runtimeStarts.values(), ...[...googleChecks.values()].map(check => check.promise), ...profileMoves, profileMoveRecovery]);

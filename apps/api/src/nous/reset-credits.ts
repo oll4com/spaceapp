@@ -13,7 +13,7 @@ export const nousResetRedeemArgsSchema = z.object({
   account: z.string().trim().min(1).max(320).describe("The Codex account: its e-mail or label (ntheogr@gmail.com, or ntheogr), alias or gw_account id.")
 });
 
-type Outcome = { ok: boolean; display: string; result: string };
+type Outcome = { ok: boolean; display: string; result: string; refused?: boolean };
 export type CodexResetAudit = { accountId: string; outcome: CodexResetCreditRedemptionOutcome | null; error?: string; idempotencyKey: string; via?: "nous" | "auto" };
 
 export const codexPoolAccounts = (accounts: GatewayAccount[]) => accounts.filter((account) => account.provider === "CODEX" && !["PAUSED", "DEACTIVATED"].includes(account.status));
@@ -66,11 +66,12 @@ export function createNousResetCredits(deps: {
       const [accounts, zone] = await Promise.all([deps.accounts(), deps.zone(owner)]);
       const now = deps.now?.() ?? Date.now();
       const account = findCodexAccount(accounts, args.account);
-      if (!account) return { ok: false, display: `No Codex account ${args.account}`,
+      // Daily Nous errors 14/11 (18:18 "a credit now would be wasted"): a credit Space keeps, and a name it does not know, are refusals that say why.
+      if (!account) return { ok: false, refused: true, display: `No Codex account ${args.account}`,
         result: `No Codex account is named ${args.account}. Codex accounts: ${accounts.filter((entry) => entry.provider === "CODEX").map((entry) => `${entry.alias ?? entry.label} [${entry.id}]`).join(", ") || "none"}.` };
       const state = codexResetState(account, now);
       const refusal = codexResetRefusal(state, now, CODEX_RESET_MANUAL_LEFT, timeIn(zone));
-      if (refusal) return { ok: false, display: `Did not spend a credit on ${state.name}`, result: `${refusal} Nothing spent.` };
+      if (refusal) return { ok: false, refused: true, display: `Did not spend a credit on ${state.name}`, result: `${refusal} Nothing spent.` };
       const idempotencyKey = codexResetKey(account.id, state.week?.resetAt ?? null);
       let outcome: CodexResetCreditRedemptionOutcome;
       try {

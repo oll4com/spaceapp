@@ -159,7 +159,8 @@ describe("AgentSettingsDock", () => {
     renderDock();
     openSection("Appearance");
     const appearance = screen.getByRole("button", { name: "Appearance" }).closest("section")!;
-    expect(appearance.querySelector(".settings-help")?.textContent).toMatch(/Change how Space looks/);
+    const about = appearance.querySelector<HTMLElement>('[aria-label="About Appearance"]')!;
+    expect(document.getElementById(about.getAttribute("aria-describedby")!)?.textContent).toMatch(/Change how Space looks/);
     expect(appearance.querySelector(".settings-scope")?.textContent).toBe("Affects: Only you");
     openSection("Backup & migration");
     const backup = screen.getByRole("button", { name: "Backup & migration" }).closest("section")!;

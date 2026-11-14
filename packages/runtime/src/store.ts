@@ -7,7 +7,7 @@ import type { GoogleAccount, VerifiedGoogleIdentity } from "./google-accounts.js
 import { setupExecutionStateSchema, type SetupExecutionState } from "@space/contracts";
 import { createSetupCompletion, type CompleteSetupExecutionInput } from "./setup-execution.js";
 import { transitionAgentRunLedger, agentRunEvaluationSchema, pickNextAvailablePaneName } from "@space/contracts";
-import { splitCliHostTranscriptContent } from "@space/contracts";
+import { splitCliHostTranscriptContent, isLightCodexPane } from "@space/contracts";
 import type { PaneBatchClaim } from "@space/contracts";
 import type { TaskTitleState } from "@space/contracts";
 import { createHash } from "node:crypto";
@@ -31,6 +31,8 @@ import {
   clipboardItemSchema,
   planDependencyProblem,
   PLAN_MAP_KEYS,
+  keepParkedClock,
+  planIsParked,
   cliMaintenanceAuthHandoffSchema,
   cliMaintenanceDiagnosticsSchema,
   cliMaintenanceEventSchema,
@@ -388,6 +390,7 @@ import { assertConfigReplaceConfirmed, configImportIncludes, mergeImportedUserSe
 export const ACTIVE_PANE_CAP = 16;
 export const PANE_CLI_TRANSCRIPT_CHUNK_CAP = 200;
 export type MaybePromise<T> = T | Promise<T>;
+export type TaskItemBinding = { roomId: string | null; paneId: string | null; paneTitle: string | null };
 
 export interface CreateMemoryChangeSetOptions {
   id?: string;
@@ -1002,6 +1005,8 @@ export interface SpaceStore {
   getTaskItem(ownerUserId: string, taskItemId: string): MaybePromise<TaskItem | null>;
   listTaskItems(ownerUserId: string, query?: ListTaskItemsQuery): MaybePromise<TaskItemListResult>;
   updateTaskItem(ownerUserId: string, taskItemId: string, input: UpdateTaskItemInput): MaybePromise<TaskItem>;
+  /** Moves the task itself to a room and pane (by id, never by its objective: a stale hash made a rebind insert an unscheduled copy, Grants 13/11). */
+  bindTaskItem(ownerUserId: string, taskItemId: string, binding: TaskItemBinding): MaybePromise<TaskItem>;
   deleteTaskItem(ownerUserId: string, taskItemId: string): MaybePromise<TaskItem>;
   clearTaskItems(ownerUserId: string): MaybePromise<number>;
   /** Every scheduled task due by `nowIso`, oldest first (`limit`: at most that many). */
@@ -2958,6 +2963,8 @@ export class InMemorySpaceStore implements SpaceStore {
         onboardingCompletedAt: null,
         starterRoomId: null
       };
+    } else if (!this.ownerSetup.ownerUserId) {
+      this.ownerSetup = { ...this.ownerSetup, tokenHash: input.tokenHash, expiresAt: input.expiresAt };
     }
     return this.getOwnerSetupStatus();
   }
@@ -3392,6 +3399,7 @@ export class InMemorySpaceStore implements SpaceStore {
       dependsOn: parsed.dependsOn ?? existing?.item.dependsOn ?? [],
       dueAt: parsed.dueAt ?? existing?.item.dueAt ?? null,
       waitsOn: existing?.item.waitsOn ?? null,
+      parked: existing?.item.parked ?? null,
       occurrenceCount: (existing?.item.occurrenceCount ?? 0) + 1,
       characterCount: Array.from(parsed.text).length,
       createdAt: existing?.item.createdAt ?? timestamp,
@@ -3435,6 +3443,7 @@ export class InMemorySpaceStore implements SpaceStore {
       .filter((record) => !parsed.source || record.item.source === parsed.source)
       .filter((record) => parsed.includeCompleted !== false || !record.item.isCompleted)
       .filter((record) => !parsed.paneId || record.item.paneId === parsed.paneId)
+      .filter((record) => !parsed.parked || planIsParked(record.item))
       .filter((record) => !search || record.item.text.toLocaleLowerCase().includes(search))
       .sort((left, right) => right.sequence - left.sequence);
     const offset = (parsed.page - 1) * parsed.pageSize;
@@ -3641,7 +3650,8 @@ export class InMemorySpaceStore implements SpaceStore {
       const problem = planDependencyProblem(clipboardItemId, input.dependsOn, this.openPlanDependencies(ownerUserId));
       if (problem) throw new SpaceConflictError(problem);
     }
-    const map = { dependsOn: input.dependsOn ?? record.item.dependsOn, dueAt: input.dueAt !== undefined ? input.dueAt : record.item.dueAt, waitsOn: input.waitsOn !== undefined ? input.waitsOn : record.item.waitsOn };
+    const map = { dependsOn: input.dependsOn ?? record.item.dependsOn, dueAt: input.dueAt !== undefined ? input.dueAt : record.item.dueAt, waitsOn: input.waitsOn !== undefined ? input.waitsOn : record.item.waitsOn,
+      parked: input.parked !== undefined ? keepParkedClock(record.item.parked, input.parked) : record.item.parked };
     if (mapOnly) {
       record.item = { ...record.item, ...map, lastUsedAt: nowIso() };
       return record.item;
@@ -3853,6 +3863,13 @@ export class InMemorySpaceStore implements SpaceStore {
     });
     record.item = updated;
     return updated;
+  }
+
+  bindTaskItem(ownerUserId: string, taskItemId: string, binding: TaskItemBinding): TaskItem {
+    const record = this.taskItems.get(taskItemId);
+    if (!record || record.ownerUserId !== ownerUserId) throw new SpaceNotFoundError(`Task item ${taskItemId} was not found.`);
+    record.item = taskItemSchema.parse({ ...record.item, ...binding, lastUsedAt: nowIso() });
+    return record.item;
   }
 
   dueTaskSchedules(nowIso: string, limit?: number): Array<TaskItem & { ownerUserId: string }> {
@@ -5336,7 +5353,8 @@ export class InMemorySpaceStore implements SpaceStore {
       paneName,
       providerId: input.providerId === undefined ? current.providerId : input.providerId,
       modelId: input.modelId === undefined ? current.modelId : input.modelId,
-      terminalRuntimeId:
+      // A Codex light pane keeps its runtime while it stays CHAT; an update never makes a pane light.
+      terminalRuntimeId: (input.mode ?? current.mode) === "CHAT" && isLightCodexPane(current) ? current.terminalRuntimeId :
         ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO", "VIDEO", "SECURITY_COPILOT", "MONITORING_COPILOT"].includes(input.mode ?? current.mode)
           ? input.terminalRuntimeId === undefined
             ? current.terminalRuntimeId

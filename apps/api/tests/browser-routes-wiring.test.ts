@@ -33,7 +33,7 @@ function wire(modules: string[] = ["job-copilot", "mail-copilot"]) {
   const audits: unknown[] = [];
   const noted: unknown[] = [];
   const accountsSelected: unknown[] = [];
-  const app = { log: { warn: (...args: unknown[]) => { warnings.push(args); }, info: () => {} }, addHook: () => {} };
+  const app = { log: { warn: (...args: unknown[]) => { warnings.push(args); }, info: () => {} }, addHook: () => {}, post: () => {}, get: () => {} };
   const deps = {
     config: { optionalModules: new Set(modules) }, auth: { sessionSecret: "s".repeat(32) }, eventBus: { bus: true },
     store: { upsertUser: async (user: { id: string }) => ({ id: `${user.id}:stored` }), recordAuditEvent: async (event: unknown) => { audits.push(event); } },

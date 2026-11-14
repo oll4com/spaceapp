@@ -185,6 +185,11 @@ export interface NousMarketingReport {
   sources: NousMarketingSource[];
   /** spaceapp.dev's anonymous page views of the owner's history period (visit.php day files); null: never synced to this server. */
   site?: NousSiteFunnel | null;
+  /** Plan clipboard:UoygRDurSshE step 2.4: site view → install interest → launcher started → completed → first CLI pane → active a second day, over the
+   * owner's history period; a step whose source is not synced to this server is left out. */
+  funnel?: Array<{ step: string; count: number }>;
+  /** The installs of `funnel` per launcher `--ref` channel code ("none" without one); empty until an install carries a ref. */
+  funnelByRef?: Array<{ ref: string; started: number; completed: number; firstCli: number; activeSecondDay: number }>;
 }
 /** A count and the median seconds of what it counts. */
 export interface NousSiteRow { key: string; views: number; medianSeconds: number | null }
@@ -195,6 +200,8 @@ export interface NousSiteFunnel {
   /** Page views of the period (one per visit id), and how many came from our own addresses (left out of everything below). */
   views: number;
   internal: number;
+  /** Views that opened an /install page or copied the install command (the funnel's install step, plan clipboard:UoygRDurSshE step 2.4). */
+  installIntent: number;
   /** Homepage sections in page order: views that reached it, median seconds on it, views that left the page there, clicks in it. */
   sections: Array<{ id: string; reached: number; medianSeconds: number | null; exits: number; clicks: number }>;
   /** Every page: views, median visible seconds, median scroll depth (%) and views that left the site from it. */

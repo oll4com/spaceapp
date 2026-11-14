@@ -14,7 +14,7 @@ const maxFileBytes = 64 * 1024;
 
 // inspect-env lists a wrapper's operations; select-free-model applies an owner's free OpenCode model pick (1.1.8).
 type CredentialAction = "credential-status" | "credential-install" | "credential-smoke" | "credential-observation" | "opencode-text" | "opencode-models" |
-  "inspect-env" | "select-free-model" | "check-free-model" | "agent-tools" | "agent-chat";
+  "inspect-env" | "select-free-model" | "check-free-model" | "agent-tools" | "agent-chat" | "opencode-nous";
 interface CredentialActionResult { exitCode: number; stdout: string }
 // argument: the one checked value of select-free-model (the agent refuses it on every other action).
 interface CredentialRequestOptions { timeoutMs?: number; signal?: AbortSignal; argument?: string }
@@ -55,6 +55,8 @@ export interface CredentialHost {
   openCodeModels(provider: string): Promise<string>;
   /** One Nous turn: headless Claude Code with Nous's tools only, its draft streamed to `onEvent` (the wrapper's `agent-tools`). */
   claudeAgentTools(request: NousAgentRequest, signal: AbortSignal, onEvent?: (event: NousTurnEvent) => void): Promise<NousTurnResult>;
+  /** The same turn on the Getting Started pane's free OpenCode model, while no Claude Code is signed in (OpenCode's `opencode-nous`). */
+  openCodeAgentTools(request: Omit<NousAgentRequest, "model" | "effort" | "fallbackModel">, signal: AbortSignal, onEvent?: (event: NousTurnEvent) => void): Promise<NousTurnResult>;
   /** One answer with no tool (the pane board; the wrapper's `agent-chat`). */
   claudeAgentChat(input: { model: string; effort: string; prompt: string }, signal?: AbortSignal): Promise<string>;
   close(): Promise<void>;
@@ -143,6 +145,11 @@ export function createPublicCredentialHost(config: Pick<SpaceApiConfig, "publicD
   const run = (commandPath: string, action: CredentialAction, input?: string, options?: CredentialRequestOptions) =>
     credentialAgentRequest(socketPath, { command: basename(commandPath), action, ...(input === undefined ? {} : { input }),
       ...(options?.argument === undefined ? {} : { argument: options.argument }) }, options);
+  const agentTurn = async (command: string, action: CredentialAction, request: { stream: boolean }, signal: AbortSignal, onEvent?: (event: NousTurnEvent) => void) => {
+    const reader = createNousTurnReader(request.stream, onEvent);
+    const end = await credentialAgentStream(socketPath, { command, action, input: JSON.stringify(request) }, { timeoutMs: NOUS_AGENT_TURN_MS + 30_000, signal }, (chunk) => reader.push(chunk));
+    return reader.finish(end.exitCode, end.stderr);
+  };
   return {
     run,
     // The agent unlinks and listens on its socket at every start, so a new inode and ctime name a new agent.
@@ -183,12 +190,10 @@ export function createPublicCredentialHost(config: Pick<SpaceApiConfig, "publicD
       return answer.stdout;
     },
     claudeAgentTools: async (request, signal, onEvent) => {
-      const reader = createNousTurnReader(request.stream, onEvent);
       const { fallbackModel, ...rest } = request;
-      const input = JSON.stringify({ ...rest, ...(fallbackModel ? { fallbackModel } : {}) });
-      const end = await credentialAgentStream(socketPath, { command: CLAUDE_CLI_WRAPPER, action: "agent-tools", input }, { timeoutMs: NOUS_AGENT_TURN_MS + 30_000, signal }, (chunk) => reader.push(chunk));
-      return reader.finish(end.exitCode, end.stderr);
+      return agentTurn(CLAUDE_CLI_WRAPPER, "agent-tools", { ...rest, ...(fallbackModel ? { fallbackModel } : {}) }, signal, onEvent);
     },
+    openCodeAgentTools: async (request, signal, onEvent) => agentTurn(openCodeWrapper, "opencode-nous", request, signal, onEvent),
     claudeAgentChat: async (input, signal) => {
       const answer = await run(CLAUDE_CLI_WRAPPER, "agent-chat", JSON.stringify(input), { timeoutMs: 620_000, signal });
       if (answer.exitCode !== 0 || !answer.stdout.trim()) throw new Error("Claude Code in the CLI container gave no answer.");

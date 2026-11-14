@@ -377,7 +377,9 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
       throw new SpaceConflictError(`Terminal pane requires runtime ${pane.terminalRuntimeId}.`);
     }
     await cliPaneReopener?.settled(pane.id);
-    const active = await store.getActivePaneCliSession(pane.id);
+    // Start on a hibernated pane continues its conversation (pane-hibernate-sweep.ts); Restart and Resume keep their own meaning.
+    const active = await store.getActivePaneCliSession(pane.id) ?? (!input.forceRestart && !input.resume &&
+      await cliTerminalManager.wakeHibernatedPane(pane, request.requestIdForSpace) ? await store.getActivePaneCliSession(pane.id) : null);
     const explicitAccount = input.accountProfileId !== undefined || input.accountMode === "AUTO";
     if (input.accountMode === "AUTO") {
       if (!cliAccountBalancer || !isCliBalancedRuntimeId(input.runtimeId)) {

@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { GATEWAY_FREE_GRANTS, GATEWAY_KEYLESS_KEY, GATEWAY_POOL_FREE_MODELS, type GatewayFreeGrant, type GatewayProvider, type GatewaySettings } from "@space/contracts";
 import type { GatewayAccountRecord } from "@space/db";
 import type { AccountPool } from "../../accounts/account-pool.js";
-import { requestOrigin } from "../../client-detect.js";
+import { CODE_CLIENTS, detectClient, requestOrigin } from "../../client-detect.js";
 import { gatewayError, gatewayErrors } from "../../errors.js";
 import { claudeCostUsd, costUsd } from "../../pricing/pricing.js";
 import { ClaudeStreamInspector, claudeResponseUsage, type ClaudeUsageTokens } from "../claude/stream.js";
@@ -61,6 +61,8 @@ export interface KeyPoolProvider {
   fixedModels?: readonly string[];
   /** Spends a cloud credit with a card behind it: refused unless GATEWAY_FREE_GRANTS records the credit in dollars, and from 90% of it spent. */
   spendsGrant?: boolean;
+  /** A granted credit for background, non-code work only (Azure's Microsoft for Startups credit): BACKGROUND keys, never a coding agent. */
+  backgroundOnly?: boolean;
 }
 
 const rows = (value: unknown): Record<string, unknown>[] | null =>
@@ -154,7 +156,7 @@ export const keyPoolProviders: Record<"openai" | "openrouter" | "deepseek" | "gr
   azure: { provider: "AZURE_OPENAI", label: "Azure OpenAI", baseUrl: "https://{account}.openai.azure.com/openai/v1",
     keyPattern: /^[a-z0-9][a-z0-9-]{1,62}:[A-Za-z0-9]{32,100}$/, keyHeader: "api-key",
     // Microsoft for Startups credit ends 4/8/2027 04:44 UTC (plan clipboard:dkmX-VVYx-SX T3a); the rest of that day a card would pay.
-    creditUntil: "2027-08-04T04:44:00Z", cooldownSeconds: 60,
+    creditUntil: "2027-08-04T04:44:00Z", cooldownSeconds: 60, backgroundOnly: true,
     checkUrl: "https://{account}.openai.azure.com/openai/v1/models",
     models: { url: "https://{account}.openai.azure.com/openai/deployments?api-version=2022-12-01", ids: (payload) => stringsOf(rows(field(payload, "data")), "id") },
     keyFrom: azureKeyFrom },
@@ -372,6 +374,16 @@ export function registerKeyPoolRoutes(app: FastifyInstance, helpers: GatewayRout
     // Operator rule 7/11 (nous_msg:21ec89e5): the cloud credits never serve Claude Code, which runs on the Claude subscriptions alone.
     if (entry.spendsGrant && isClaudeCodeRequest(request.headers)) {
       return reply.code(403).send(gatewayError("client_not_allowed", `${entry.label} does not serve Claude Code; Claude Code runs on the Claude subscriptions.`, "invalid_request_error"));
+    }
+    // Operator rule 13/11 14:38 BKK (space_memory:1d4a68e62b204390bf49f5f4): granted pools serve only helper panes' non-code work, never code.
+    if (entry.backgroundOnly) {
+      const client = detectClient(request.headers);
+      if (isClaudeCodeRequest(request.headers) || (client && CODE_CLIENTS.has(client))) {
+        return reply.code(403).send(gatewayError("client_not_allowed", `${entry.label} serves background, non-code work only, never a coding agent.`, "invalid_request_error"));
+      }
+      if (request.gatewayApiKey!.trafficClass !== "BACKGROUND") {
+        return reply.code(403).send(gatewayError("key_not_allowed", `${entry.label} serves only BACKGROUND keys.`, "invalid_request_error"));
+      }
     }
     if (entry.creditUntil && now() >= Date.parse(entry.creditUntil)) {
       return reply.code(402).send(gatewayError("credit_expired", `${entry.label}'s credit ended on ${entry.creditUntil}; past it a card pays, so Space Gateway stopped using it.`));

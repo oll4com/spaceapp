@@ -54,6 +54,8 @@ type SignInRoutesDeps = Pick<Deps<typeof registerAuthRoutes>, "auth" | "browserS
     passwordResetMail?: (owner: string, to: string, subject: string, text: string) => Promise<void>;
     /** Mail Campaigns is created later, with the copilot panes; read per request. */
     mailCampaigns?: () => MailCampaignsService | undefined;
+    /** A kept Vault key's value (vaultKeptKeyReader): a linked SpaceApp's Access service token (Space Link). */
+    vaultKeptKey?: AppSignInDeps["linkVaultKey"];
   };
 type UserToolRoutesDeps = Pick<Deps<typeof registerAgentSessionThreadRoutes>, "codexParity" | "unifiedCliTaskRegistry" | "cliRuntimeVisibility" | "visibleCliRuntimeIds">
   & Pick<Deps<typeof registerAgentSessionHistoryRoutes>, "agentSessionHistoryService">
@@ -114,7 +116,7 @@ export function registerSignInRoutes(app: FastifyInstance, deps: SignInRoutesDep
   } };
   registerAuthRoutes(app, {
     config, auth, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions, passwordResetMail,
-    googleAccountBrowserStatuses, dotsAuthenticatedOwner, connectorStateTools, connectorServiceRef, persistRevocation, appSignIn: registerAppSignIn(app, { store, crypto: connectorCrypto, version: config.version, events: eventBus, notifications: notificationService, decision: async (owner, id) => (await nousRef.current?.service.decisions(owner))?.find((item) => item.id === id) ?? null, goal: async (owner, id) => (await nousRef.current?.service.goalsView(owner))?.goals.find((item) => item.id === id) ?? null, sessionSecret: auth.sessionSecret, routeOptions: defaultRouteRateLimitOptions, persistRevocation, revocations: defaultSessionRevocationStore, databaseUrl: store instanceof PostgresSpaceStore ? config.databaseUrl : null, mobileRelayUrl: config.mobileRelayUrl, mobilePushUrl: config.mobilePushUrl, mobileDemo: config.mobileDemo, playIntegrityFile: config.playIntegrityServiceAccountFile,
+    googleAccountBrowserStatuses, dotsAuthenticatedOwner, connectorStateTools, connectorServiceRef, persistRevocation, appSignIn: registerAppSignIn(app, { store, crypto: connectorCrypto, version: config.version, linkVaultKey: deps.vaultKeptKey, events: eventBus, notifications: notificationService, decision: async (owner, id) => (await nousRef.current?.service.decisions(owner))?.find((item) => item.id === id) ?? null, goal: async (owner, id) => (await nousRef.current?.service.goalsView(owner))?.goals.find((item) => item.id === id) ?? null, sessionSecret: auth.sessionSecret, routeOptions: defaultRouteRateLimitOptions, persistRevocation, revocations: defaultSessionRevocationStore, databaseUrl: store instanceof PostgresSpaceStore ? config.databaseUrl : null, mobileRelayUrl: config.mobileRelayUrl, mobilePushUrl: config.mobilePushUrl, mobileDemo: config.mobileDemo, playIntegrityFile: config.playIntegrityServiceAccountFile,
       google: () => deps.mailCopilotGoogle ?? connectorServiceRef.current, gmailFetch: deps.mailCopilotGmailFetch })
   });
 

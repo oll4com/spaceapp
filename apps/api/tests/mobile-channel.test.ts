@@ -14,6 +14,8 @@ import { InMemoryAppDeviceSessionRepository } from "@space/db";
 import { InMemorySpaceStore, SpaceEventBus } from "@space/runtime";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import { persistAgentFile } from "../src/cli-agent-files.js";
+import { noteOperatorPaneInput } from "../src/queue-operator-grants.js";
 import { InstanceLinkError } from "../src/instance-link/client.js";
 import { instanceLinksFor } from "../src/instance-link/routes.js";
 import { cookieName, createCsrfToken, hashPassword, signSession } from "../src/auth.js";
@@ -269,7 +271,7 @@ describe("pairing a phone over the channel", () => {
     await store.upsertUser(operator);
     await store.linkGoogleAccount(operator.id, { sub: "google-operator", email: operator.email });
     app = await createApp({ store, eventBus, config: getApiConfig({ SPACE_LOG_LEVEL: "silent", SPACE_CONNECTOR_KEY_FILE: join(dir, "connector.key"),
-      SPACE_MOBILE_RELAY_URL: services.relay, SPACE_MOBILE_PUSH_URL: services.push, SPACE_PLAY_INTEGRITY_SERVICE_ACCOUNT_FILE: join(dir, "play-integrity.json") }),
+      SPACE_MOBILE_RELAY_URL: services.relay, SPACE_MOBILE_PUSH_URL: services.push, SPACE_PLAY_INTEGRITY_SERVICE_ACCOUNT_FILE: join(dir, "play-integrity.json"), SPACE_ARTIFACT_ROOT: dir }),
       auth: { sessionSecret: secret, devLogin: false, secureCookies: false, googleClientId: clientId }, mailCopilotGoogle: google, mailCopilotGmailFetch: gmailFetch });
     await app.ready();
     await stepUp();
@@ -336,7 +338,8 @@ describe("pairing a phone over the channel", () => {
     await vi.waitFor(() => {
       for (const ownerUserId of ["user:someone-else", operator.id]) eventBus.publish({ id: `ev_${ownerUserId}`, roomId: null, paneId: null, turnId: null, workflowId: null, traceId: "req:t",
         type: "NOTIFICATION_CREATED", message: "Created.", payload: { notificationId: "notif:mine", ownerUserId, title: "secret" }, createdAt: new Date().toISOString() } as never);
-      expect(allowed.phone.frames().filter((frame) => frame.type === "evt").map((frame) => frame.header)[0]).toEqual({ type: "NOTIFICATION_CREATED", ids: { notificationId: "notif:mine" } });
+      // The test's own event: a notification the requests above created may come first.
+      expect(allowed.phone.frames().filter((frame) => frame.type === "evt").map((frame) => frame.header as { ids?: Record<string, string> }).find((evt) => evt.ids?.notificationId === "notif:mine")).toEqual({ type: "NOTIFICATION_CREATED", ids: { notificationId: "notif:mine" } });
     });
     // The revoke alone ends the open channel, with no request from the phone (plan kTV3y2lwO-99 item 5).
     expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/revoke`, headers: person })).statusCode).toBe(200);
@@ -360,6 +363,8 @@ describe("pairing a phone over the channel", () => {
     expect(await link.request("POST", "/api/control/v1/inspect", { section: "CONTENT" })).toMatchObject(refused);
     expect(await link.request("POST", "/api/control/v1/commands", { roomId: "room:a", requestId: "r1", actions: [{ kind: "cli", runtimeId: "codex", enabled: false }] })).toMatchObject(refused);
     expect(await link.request("POST", "/api/control/v1/commands", { roomId: "room:a", requestId: "r1", userExplicitlyAuthorized: true, actions: [{ kind: "pane", operation: "close", target: {} }] })).toMatchObject(refused);
+    // An encoded byte the router decodes still names no link route, so it never gets round the lease (security review 13/11).
+    expect(await link.request("POST", "/api/control/v1/comm%61nds", { roomId: "room:a", requestId: "r1", actions: [] })).toMatchObject(denied);
     // The phone's routes are not the link's: no Nous chat, no notifications, no Vault, no settings.
     for (const [m, p] of [["GET", "/api/nous"], ["POST", "/api/notifications/read-all"], ["GET", "/api/space-vault/items"], ["GET", "/api/user-settings"]] as const) {
       expect(await link.request(m, p, m === "POST" ? {} : undefined), `${m} ${p}`).toMatchObject(denied);
@@ -396,8 +401,32 @@ describe("pairing a phone over the channel", () => {
     await expect(links.request(operator.id, id, "GET", "/api/control/v1/layout/../../space-vault/items")).rejects.toThrow(InstanceLinkError);
     await expect(links.request(operator.id, "nope", "GET", "/api/rooms")).rejects.toThrow("No linked SpaceApp is nope.");
     await expect(links.request("user:other", id, "GET", "/api/rooms")).rejects.toThrow(InstanceLinkError);
+    // Λ7: each linked SpaceApp's own load, read through its link; a phone never reaches it.
+    expect((await app.inject({ method: "GET", url: "/api/instance-links/load?range=24h", headers: person })).json())
+      .toMatchObject({ instances: [{ link: { id }, error: null, load: { range: "24h", target: expect.any(Number) } }] });
+    expect((await app.inject({ method: "GET", url: "/api/instance-links/load?range=1y", headers: person })).statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: "/api/instance-links/load", headers: phone })).statusCode).toBe(403);
+    // Λ6: Nous's world reads each link's overview in the background, never waiting for it.
+    expect(await links.peers(operator.id)).toEqual([expect.objectContaining({ link: expect.objectContaining({ id }), at: null })]);
+    expect(await vi.waitFor(async () => { const [peer] = await links.peers(operator.id); expect(peer!.at).not.toBeNull(); return peer; }))
+      .toMatchObject({ error: null, overview: { live: { agents: expect.any(Object) }, plans: expect.any(Array) } });
     expect(await links.request(operator.id, id, "POST", "/api/control/v1/commands", { roomId: "room:a", requestId: "r2", userExplicitlyAuthorized: true,
       actions: [{ kind: "pane", operation: "close", target: {} }] })).toMatchObject({ status: 400, body: { error: { code: "MOBILE_BODY" } } });
+    // Λ4: that act is audited on both sides under one trace id; the reads above are not. History lists this side's rows.
+    const acted = await vi.waitFor(async () => {
+      const rows = (await store.listAuditEvents()).filter((event) => event.action === "instance_link.request");
+      const outs = rows.filter((row) => row.targetType === "instance_link");
+      expect(outs).toHaveLength(1);
+      return rows.filter((row) => row.traceId === outs[0]!.traceId);
+    });
+    const out = acted.find((row) => row.targetType === "instance_link")!;
+    expect(acted).toHaveLength(2);
+    expect(out).toMatchObject({ targetId: id, traceId: expect.stringMatching(/^lnk:/), metadata: { via: "link-out", method: "POST", path: "/api/control/v1/commands", status: 400 } });
+    expect(acted.find((row) => row.targetType === "app_device")).toMatchObject({ targetId: deviceId, traceId: out.traceId, metadata: { via: "link", status: 400 } });
+    expect((await app.inject({ method: "GET", url: `/api/instance-links/${id}/history`, headers: person })).json().events).toEqual([
+      expect.objectContaining({ action: "instance_link.request", requestId: out.traceId }), expect.objectContaining({ action: "instance_link.paired" })]);
+    expect((await app.inject({ method: "GET", url: "/api/instance-links/link:none/history", headers: person })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/instance-links/${id}/history`, headers: phone })).statusCode).toBe(403);
     // Slice 4, the Remote mark: the managed side (here the same SpaceApp) sees the link's session, address, scopes and last request; a phone never does.
     expect((await app.inject({ method: "GET", url: "/api/auth/devices/live", headers: person })).json().sessions).toContainEqual(expect.objectContaining({ deviceId,
       app: "spaceapp-link", ip: expect.stringMatching(/127\.0\.0\.1/), scopes: ["read", "act"], since: expect.any(String),
@@ -407,12 +436,25 @@ describe("pairing a phone over the channel", () => {
     const close = { roomId: "room:a", requestId: "r3", actions: [{ kind: "pane", operation: "close", target: {} }] };
     expect((await app.inject({ method: "GET", url: "/api/auth/devices/live", headers: person })).json()).toMatchObject({ lease: { deviceId }, takenBackAt: null });
     expect((await app.inject({ method: "POST", url: "/api/auth/devices/live/take-back", headers: phone, payload: {} })).statusCode).toBe(403);
+    // Λ9, the Nous app's mark: the same reading without any address; a phone takes management back (Give back stays on a computer).
+    const status = await app.inject({ method: "GET", url: "/api/instance-links/status", headers: phone });
+    expect(status.json()).toMatchObject({ remote: [expect.objectContaining({ deviceId, app: "spaceapp-link", scopes: ["read", "act"], last: expect.any(Object) })],
+      lease: { deviceId }, takenBackAt: null, managing: [{ id, label, scopes: ["read", "act"], lastSeenAt: expect.any(String) }] });
+    expect(status.json().remote[0]).not.toHaveProperty("ip");
+    expect((await app.inject({ method: "POST", url: "/api/instance-links/status/take-back", headers: phone, payload: {} })).json()).toMatchObject({ lease: null, takenBackAt: expect.any(String) });
     expect((await app.inject({ method: "POST", url: "/api/auth/devices/live/take-back", headers: person, payload: {} })).json()).toMatchObject({ lease: null, takenBackAt: expect.any(String) });
     expect(await audit("instance_link.taken_back", operator.id)).toBeDefined();
     expect(await links.request(operator.id, id, "POST", "/api/control/v1/commands", close)).toMatchObject({ status: 409, body: { error: { code: "LINK_TAKEN_BACK" } } });
     expect((await links.request(operator.id, id, "GET", "/api/rooms")).status).toBe(200);
     expect((await app.inject({ method: "POST", url: "/api/auth/devices/live/give-back", headers: person, payload: {} })).json()).toMatchObject({ takenBackAt: null });
     expect((await links.request(operator.id, id, "POST", "/api/control/v1/commands", close)).status).not.toBe(409);
+    // Λ5 human wins per pane: a pane the operator in person just sent a line to is theirs; the link's act on it waits, others go on.
+    const held = store.createPane({ roomId: store.createRoom({ name: "Held", initialPaneCount: 0 }).id, title: "Builder", mode: "TERMINAL" });
+    noteOperatorPaneInput(held.id, "keep going\r");
+    expect(await links.request(operator.id, id, "POST", "/api/control/v1/commands", { ...close, roomId: held.roomId, requestId: "r4" }))
+      .toMatchObject({ status: 409, body: { error: { code: "HELD_BY_OPERATOR" } } });
+    expect((await links.request(operator.id, id, "POST", "/api/control/v1/commands", { ...close, roomId: held.roomId, requestId: "r5",
+      actions: [{ kind: "pane", operation: "close", target: { paneIds: ["pane:notheld1"] } }] })).body).not.toMatchObject({ error: { code: "HELD_BY_OPERATOR" } });
     expect((await app.inject({ method: "DELETE", url: `/api/instance-links/${id}`, headers: person })).json()).toEqual({ ok: true });
     expect(await audit("instance_link.removed", id)).toBeDefined();
     expect((await app.inject({ method: "GET", url: "/api/instance-links", headers: person })).json().links).toEqual([]);
@@ -518,6 +560,94 @@ describe("pairing a phone over the channel", () => {
     await vi.waitFor(() => expect(held.state.closed).toBe(4400));
   });
 
+  it("serves an Agent File up to 64 MiB in one answer, refuses more but serves it in Range pieces (13/11: 0.2.37 got 413 on the APK in Shared)", async () => {
+    const room = store.createRoom({ name: "Files", initialPaneCount: 0 }, undefined, operator.id);
+    const stage = async (name: string, size: number) => {
+      const bytes = randomBytes(size);
+      writeFileSync(join(dir, `staged-${name}`), bytes);
+      const { artifact } = await persistAgentFile({ store, artifactRoot: dir, roomId: room.id, paneId: null, cliSessionId: null, runtimeId: "user",
+        originalFilename: name, declaredMimeType: "application/vnd.android.package-archive", sourcePath: join(dir, `staged-${name}`),
+        traceId: "trace:range", source: "AGENT_OUTPUT", folder: "Apps/Android" });
+      return { bytes, path: `/api/artifacts/${encodeURIComponent(artifact.id)}/file` };
+    };
+    const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+    const fits = await stage("Nous-Android-9.9.8.apk", 60 * 1024 * 1024);
+    const over = await stage("Nous-Android-9.9.9.apk", 70 * 1024 * 1024);
+    const qr = await offer();
+    const { paired, phone: pairing, device } = await pair(qr);
+    pairing.ws.terminate();
+    const { phone } = await connect(qr, device, { deviceId: paired!.deviceId });
+    let nextId = 500;
+    // The res frame and its chunk frames, joined, as the app reassembles them.
+    const get = async (path: string, range?: string) => {
+      const id = nextId++;
+      phone.send({ type: "req", header: { id, m: "GET", p: path, ...(range ? { h: { range } } : {}) }, body: new Uint8Array(0) });
+      const mine = () => phone.frames().filter((frame) => frame.header.id === id);
+      await vi.waitFor(() => expect(mine().some((frame) => !frame.header.more)).toBe(true), { timeout: 30_000 });
+      const frames = mine();
+      return { status: frames[0]!.header.s, headers: frames[0]!.header.h as Record<string, string>, body: Buffer.concat(frames.map((frame) => frame.body)) };
+    };
+    // 0.2.37's Save to Downloads: one GET, no range.
+    const whole = await get(fits.path);
+    expect(whole.status).toBe(200);
+    expect(sha(whole.body)).toBe(sha(fits.bytes));
+    const refused = await get(over.path);
+    expect(refused.status).toBe(413);
+    expect(JSON.parse(refused.body.toString())).toMatchObject({ error: { code: "MOBILE_TOO_LARGE" } });
+    const piece = 16 * 1024 * 1024;
+    const parts: Buffer[] = [];
+    for (let at = 0; at < over.bytes.length; at += piece) {
+      const end = Math.min(at + piece, over.bytes.length) - 1;
+      const part = await get(over.path, `bytes=${at}-${end}`);
+      expect(part.status).toBe(206);
+      expect(part.headers["content-range"]).toBe(`bytes ${at}-${end}/${over.bytes.length}`);
+      parts.push(part.body);
+    }
+    expect(sha(Buffer.concat(parts))).toBe(sha(over.bytes));
+    expect(phone.state.closed).toBeUndefined();
+    phone.ws.terminate();
+  }, 120_000);
+
+  it("serves Nous 0.2.37's plain HTTPS update download (cookie mobile:<device>) as its open channel's request, and nothing else (nous_msg:268bc034)", async () => {
+    const room = store.createRoom({ name: "Apps", initialPaneCount: 0 }, undefined, operator.id);
+    const bytes = randomBytes(3 * 1024 * 1024);
+    const file = async (originalFilename: string) => {
+      writeFileSync(join(dir, `staged-${originalFilename}`), bytes);
+      return (await persistAgentFile({ store, artifactRoot: dir, roomId: room.id, paneId: null, cliSessionId: null, runtimeId: "user", originalFilename,
+        declaredMimeType: "application/octet-stream", sourcePath: join(dir, `staged-${originalFilename}`), traceId: "trace:bridge", source: "AGENT_OUTPUT", folder: "Apps/Android" })).artifact;
+    };
+    const apk = await file("Nous-Android-9.9.8.apk");
+    const other = await file("notes.bin");
+    const qr = await offer();
+    const { paired, phone: pairing, device } = await pair(qr);
+    pairing.ws.terminate();
+    const deviceId = paired!.deviceId;
+    const { phone } = await connect(qr, device, { deviceId });
+    // The address the channel came from, as Settings › Devices shows it (injectWS has none: 0.0.0.0).
+    const live = await app.inject({ method: "GET", url: "/api/auth/devices/live", headers: person });
+    const address = (live.json() as { sessions: Array<{ deviceId: string; ip: string }> }).sessions.find((session) => session.deviceId === deviceId)!.ip;
+    // As apk-install.ts sends it: okhttp, the channel token as both cookies, no invoke header, from the channel's own address.
+    const download = (id: string, extra: { device?: string; remoteAddress?: string; range?: string } = {}) => app.inject({
+      method: "GET", url: `/api/artifacts/${encodeURIComponent(id)}/file`, remoteAddress: extra.remoteAddress ?? address,
+      headers: { cookie: `space_session=mobile:${extra.device ?? deviceId}; space_session_dev=mobile:${extra.device ?? deviceId}`, "user-agent": "okhttp/4.12.0",
+        ...(extra.range ? { range: extra.range } : {}) } });
+    const sha = (data: Buffer) => createHash("sha256").update(data).digest("hex");
+    const whole = await download(apk.id);
+    expect(whole.statusCode).toBe(200);
+    expect(sha(whole.rawPayload)).toBe(sha(bytes));
+    const resumed = await download(apk.id, { range: `bytes=1000-${bytes.length - 1}` });
+    expect(resumed.statusCode).toBe(206);
+    expect(sha(resumed.rawPayload)).toBe(sha(bytes.subarray(1000)));
+    // Another address, another device, another file: still no session.
+    expect((await download(apk.id, { remoteAddress: "10.9.9.9" })).statusCode).toBe(401);
+    expect((await download(apk.id, { device: "app_device:other" })).statusCode).toBe(401);
+    expect((await download(other.id)).statusCode).toBe(401);
+    // A revoked device's channel ends, and its download with it.
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/revoke`, headers: person })).statusCode).toBe(200);
+    await vi.waitFor(() => expect(phone.state.closed).toBeDefined());
+    expect((await download(apk.id)).statusCode).toBe(401);
+  });
+
   it("a wrong code fails at message 3, counts toward the lock and burns the offer", async () => {
     const qr = await offer();
     expect((await pair(qr, {}, b64.encode(new Uint8Array(16).fill(9)))).closed).toBe(4401);
@@ -554,16 +684,16 @@ describe("pairing a phone over the channel", () => {
 
   // CODE-2 (MASVS L2, plan clipboard:kTV3y2lwO-99 step 7): a Nous app below the floor neither pairs nor connects; the close says what to install.
   it("closes 4426 for a Nous app below the update floor, at pairing and at connect", async () => {
-    const old = await pair(await offer(), { appVersion: "0.2.17" });
+    const old = await pair(await offer(), { appVersion: "0.2.21" });
     expect(old).toMatchObject({ closed: 4426, paired: null });
-    expect(JSON.parse(old.phone.state.reason!)).toEqual({ code: "APP_UPDATE_REQUIRED", minVersion: "0.2.18", minVersionCode: 218 });
+    expect(JSON.parse(old.phone.state.reason!)).toEqual({ code: "APP_UPDATE_REQUIRED", minVersion: "0.2.22", minVersionCode: 222 });
     expect(await audit("mobile.pairing.failed")).toMatchObject({ metadata: { reason: "APP_UPDATE_REQUIRED" } });
     const qr = await offer();
-    const { paired, phone: pairing, device } = await pair(qr, { appVersion: "0.2.18" });
+    const { paired, phone: pairing, device } = await pair(qr, { appVersion: "0.2.22" });
     pairing.ws.terminate();
     const deviceId = paired!.deviceId as string;
-    expect((await connect(qr, device, { deviceId, appVersion: "0.2.17" })).closed).toBe(4426);
-    const current = await connect(qr, device, { deviceId, appVersion: "0.2.18" });
+    expect((await connect(qr, device, { deviceId, appVersion: "0.2.21" })).closed).toBe(4426);
+    const current = await connect(qr, device, { deviceId, appVersion: "0.2.22" });
     expect(current.welcome).toMatchObject({ scopes: ["read"] });
     current.phone.ws.terminate();
   });
@@ -621,9 +751,9 @@ describe("pairing a phone over the channel", () => {
     expect((await cards()).map((card) => card.payload.deviceId)).not.toContain(paired!.deviceId);
   });
 
-  // Plan step 9 (demo-instance-plan §4): SPACE_MOBILE_DEMO on a public install serves one public offer a day; every phone pairs with read and act
+  // Plan step 9 (demo-instance-plan §4): SPACE_MOBILE_DEMO on a public install serves one public offer a day; every phone pairs read only (step 18)
   // at once, raises no card, and past MOBILE_DEMO_DEVICES_MAX live phones the oldest is revoked.
-  it("demo mode: the day's public offer pairs every phone with read and act, without a card, and revokes the oldest past the cap", async () => {
+  it("demo mode: the day's public offer pairs every phone read only, without a card, and revokes the oldest past the cap", async () => {
     expect((await app.inject({ method: "GET", url: "/api/mobile/demo-offer" })).statusCode).toBe(404);
     const owned = new InMemorySpaceStore();
     owned.initializeOwnerSetup({ tokenHash: "a".repeat(64), expiresAt: "2099-01-01T00:00:00.000Z" });
@@ -638,12 +768,12 @@ describe("pairing a phone over the channel", () => {
       expect((await demo.inject({ method: "POST", url: "/api/auth/step-up/password", headers: web, payload: { password: "demo owner words" } })).statusCode).toBe(200);
       expect((await demo.inject({ method: "POST", url: "/api/mobile/instance", headers: web, payload: {} })).json()).toMatchObject({ configured: true });
       const answer = (await demo.inject({ method: "GET", url: "/api/mobile/demo-offer" })).json();
-      expect(answer).toMatchObject({ scopes: ["read", "act", "decide"], fingerprint: expect.any(String) });
+      expect(answer).toMatchObject({ scopes: ["read"], fingerprint: expect.any(String) });
       expect((await demo.inject({ method: "GET", url: "/api/mobile/demo-offer" })).json().qr).toBe(answer.qr);
       const qr = decodeMobilePairQr(answer.qr, Math.floor(Date.now() / 1000));
       const first = await pair(qr), second = await pair(qr);
-      for (const one of [first, second]) expect(one.paired).toMatchObject({ op: "paired", scopes: ["read", "act"], pending: [], rid: null });
-      expect(await second.phone.request("POST", "/api/notifications/read-all", {})).toMatchObject({ status: 200 });
+      for (const one of [first, second]) expect(one.paired).toMatchObject({ op: "paired", scopes: ["read"], pending: [], rid: null });
+      expect(await second.phone.request("POST", "/api/notifications/read-all", {})).toMatchObject({ status: 403 });
       second.phone.ws.terminate();
       const firstId = first.paired!.deviceId as string, secondId = second.paired!.deviceId as string;
       expect((await demo.inject({ method: "GET", url: "/api/notifications?status=OPEN", headers: web })).json().notifications
@@ -657,12 +787,12 @@ describe("pairing a phone over the channel", () => {
       });
       let third: Awaited<ReturnType<typeof pair>>;
       try { third = await pair(qr); } finally { padded.mockRestore(); }
-      expect(third.paired).toMatchObject({ scopes: ["read", "act"] });
+      expect(third.paired).toMatchObject({ scopes: ["read"] });
       third.phone.ws.terminate();
       await vi.waitFor(() => expect(first.phone.state.closed).toBe(4403));
       expect((await connect(qr, first.device, { deviceId: firstId })).closed).toBe(4403);
       const still = await connect(qr, second.device, { deviceId: secondId });
-      expect(still.welcome).toMatchObject({ scopes: ["read", "act"] });
+      expect(still.welcome).toMatchObject({ scopes: ["read"] });
       still.phone.ws.terminate();
     } finally {
       app = shared;

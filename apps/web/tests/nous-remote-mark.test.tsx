@@ -27,6 +27,8 @@ describe("NousRemoteMark", () => {
     expect(info).toContain("Last request POST /api/control/v1/commands at");
     expect(info).toContain("Round trip 23 ms");
     expect(info).not.toContain("Pixel");
+    // The same text reaches the keyboard and a screen reader as the button's description.
+    expect(document.getElementById(remote.getAttribute("aria-describedby")!)!.textContent).toBe(info);
     expect((await screen.findByRole("button", { name: "Managing 1" })).getAttribute("title")).toContain("SpaceApp vm207 at https://vm207.example:4911: may read; never connected yet");
     fireEvent.click(remote);
     expect(settings.openSettingsSection).toHaveBeenCalledWith("account");

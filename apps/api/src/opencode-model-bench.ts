@@ -1,6 +1,6 @@
 import { execFile } from "./safe-child-process.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { SystemAnalyticsModel } from "@space/contracts";
@@ -207,6 +207,11 @@ export interface OpencodeModelBenchOptions {
   probeLatency?: (baseUrl: string, tokenPath: string | null) => Promise<{ ok: boolean; latencyMs: number | null }>;
 }
 
+/** Light browser step 6b (Nous 13/11): on a machine of 3 GiB or less (a run-spaceapp light install) the bench runs only when its page
+ * asks, never at start-up or daily: its start-up run held opencode in spaceapp-cli at the 2 GB cold-start OOM. */
+export const BENCH_BACKGROUND_MIN_MEMORY_BYTES = 3 * 1024 ** 3;
+export const benchRefreshesInBackground = (memoryBytes = totalmem()) => memoryBytes > BENCH_BACKGROUND_MIN_MEMORY_BYTES;
+
 export class OpencodeModelBenchService {
   private readonly repository: SystemAnalyticsRepository;
   private readonly now: () => Date;
@@ -332,11 +337,10 @@ export class OpencodeModelBenchService {
     const histByKey = new Map<string, SystemAnalyticsModel>();
     for (const h of historical) histByKey.set(`${h.providerId}\u0000${h.modelId}`, h);
 
-    const [opencodeModels, opencodeGoModels, openrouterModels] = await Promise.all([
-      this.execVerbose("opencode"),
-      this.execVerbose("opencode-go"),
-      this.execVerbose("openrouter")
-    ]);
+    // One opencode process at a time: three at once (~767 MB) OOM-killed a 2 GB install's core at start (light browser step 6).
+    const opencodeModels = await this.execVerbose("opencode");
+    const opencodeGoModels = await this.execVerbose("opencode-go");
+    const openrouterModels = await this.execVerbose("openrouter");
 
     // probe latencies for endpoints
     const [zenProbe, zenGoProbe, openrouterProbe] = await Promise.all([

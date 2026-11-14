@@ -170,7 +170,9 @@ GRANT SELECT, INSERT ON ngw_audit TO ${role};
 GRANT USAGE ON SEQUENCE ngw_audit_id_seq TO ${role};
 GRANT SELECT, INSERT, UPDATE, DELETE ON ngw_account_pools, ngw_task_routes TO ${role};
 GRANT SELECT, INSERT, UPDATE ON ngw_switches, ngw_switch_requests TO ${role};
-GRANT EXECUTE ON FUNCTION ngw_key_by_hash(text), ngw_pool_active_plans(text, timestamptz) TO ${role};`;
+GRANT EXECUTE ON FUNCTION ngw_key_by_hash(text), ngw_pool_active_plans(text, timestamptz) TO ${role};
+-- ngw_0004's table: a database built from NGW_SCHEMA_SQL alone (the lab) has none.
+DO $$ BEGIN IF to_regclass('ngw_stripe_events') IS NOT NULL THEN GRANT SELECT, INSERT ON ngw_stripe_events TO ${role}; END IF; END $$;`;
 };
 
 /** Request logs are kept 13 months (install plan §3.7, DPIA); partitions are made 2 months ahead, so an insert never lacks one. */
@@ -250,4 +252,16 @@ export const NGW_MIGRATIONS: readonly { id: string; sql: string }[] = [{ id: "ng
   // The Stripe sender's first try of a row (past Stripe's 24 h idempotency window it is never sent again automatically) and the 4xx
   // that holds it until an export re-run of its day or a person clears it.
   { id: "ngw_0003_meter_send_state", sql: `ALTER TABLE ngw_meter_exports ADD COLUMN IF NOT EXISTS send_started_at timestamptz;
-ALTER TABLE ngw_meter_exports ADD COLUMN IF NOT EXISTS send_error text;` }];
+ALTER TABLE ngw_meter_exports ADD COLUMN IF NOT EXISTS send_error text;` },
+  // K4-billing (nous/subscriptions.ts): the tenant's subscription, and every Stripe webhook event once (its id), with its outcome.
+  { id: "ngw_0004_stripe_subscriptions", sql: `ALTER TABLE ngw_tenant_billing ADD COLUMN IF NOT EXISTS stripe_subscription_id text
+  CHECK (stripe_subscription_id ~ '^sub_[A-Za-z0-9]{1,64}$');
+CREATE TABLE IF NOT EXISTS ngw_stripe_events (
+  event_id text PRIMARY KEY CHECK (event_id ~ '^evt_[A-Za-z0-9]{1,64}$'),
+  type text NOT NULL,
+  tenant_id text,
+  created timestamptz NOT NULL,
+  outcome text NOT NULL,
+  received_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ngw_stripe_events_tenant_idx ON ngw_stripe_events (tenant_id, created) WHERE tenant_id IS NOT NULL;` }];

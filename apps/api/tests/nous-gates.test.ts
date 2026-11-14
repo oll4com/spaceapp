@@ -184,9 +184,13 @@ describe("Nous's gates", () => {
       const send = (paths: string[]) => tools.execute("space_ask_operator", { category: "EXTERNAL", title: "Send the Filopoulos mail", body: "The mail below.", recommendation: "Yes. Πρόβλεψη: ναι (80%)",
         refs: { files: paths }, checked: ["The thread in Gmail: the client asked for the price list."] }, ctx);
       const refused = await send(["mail-ok.md", "mail-private.md"]);
-      expect(refused).toMatchObject({ ok: false, display: "mail-private.md is not readable by Space",
+      // Daily errors 13/11: a private file is a refusal, and a missing one (Daily Nous errors 13/11 evening) too, with the nearest names.
+      expect(refused).toMatchObject({ ok: false, refused: true, display: "mail-private.md is not readable by Space",
         result: expect.stringContaining("mail-private.md: mail-private.md is private to the agent that wrote it") });
       expect(refused.result).toContain("Make each file readable (chmod 644 or 664");
+      const missing = await send(["mail-ok.md", "mail-gone.md"]);
+      expect(missing).toMatchObject({ ok: false, refused: true, display: "mail-gone.md is not readable by Space", result: expect.stringContaining("Closest names there: mail-") });
+      expect(missing.result).not.toContain("chmod");
       expect(ask).not.toHaveBeenCalled();
       await chmod(join(root, "mail-private.md"), 0o644);
       expect((await send(["mail-ok.md", "mail-private.md"])).ok).toBe(true);
@@ -216,7 +220,8 @@ describe("Nous's gates", () => {
       const send = (paths: string[]) => tools.execute("space_ask_operator", { category: "EXTERNAL", title: "Post the demo video", body: "The video below.",
         recommendation: "Yes. Πρόβλεψη: ναι (80%)", refs: { files: paths }, checked: ["Agent Files: the 1-minute cut the operator asked for."] }, ctx);
       const byPath = await send(["signed.pdf"]);
-      expect(byPath).toMatchObject({ ok: false, result: expect.stringContaining('space_agent_files_add {"path": "signed.pdf", "folder": "Documents"}') });
+      // Daily Nous errors 14/11 (19:52 a png by path): the answer is the call, so it is a refusal.
+      expect(byPath).toMatchObject({ ok: false, refused: true, result: expect.stringContaining('space_agent_files_add {"path": "signed.pdf", "folder": "Documents"}') });
       expect(byPath.result).not.toContain("chmod");
       // 4/11 REVIEW: a folder's answer names its files.
       await mkdir(join(root, "drafts", "old"), { recursive: true });
@@ -314,7 +319,8 @@ describe("Nous's gates", () => {
     const decisions = [open("nous_decision:2ddd8bb7", "Start the example.invalid clearance sale today", minutes(3)),
       open("nous_decision:plan0001", "Lab plan order", minutes(10), { planId: "clipboard:labplan00001" }),
       open("nous_decision:old00001", "Renew the Hetzner box", minutes(90)),
-      open("nous_decision:880c1706", "Send the kits mail to the 133 shops", minutes(1), { files: ["/var/lib/spaceapp-user/agent-workspace/kits/mail.html"] })];
+      open("nous_decision:880c1706", "Send the kits mail to the 133 shops", minutes(1), { files: ["/var/lib/spaceapp-user/agent-workspace/kits/mail.html"] }),
+      open("nous_decision:2e8ad90b", "Plesk του public-host: να περάσουμε σε Web Admin μηνιαίο (~$17/μήνα) αντί για ανανέωση του Web Pro με €280,39 στις 25/11;", minutes(2))];
     const tools = createNousTools({ ask, decisions: async () => decisions, rooms: async () => [], listPanes: async () => [] } as unknown as NousToolDeps);
     const ctx = { owner: "user:operator", turnId: "nous_turn:r1", callId: "toolu_r", traceId: "trace:r" };
     const question = (title: string, refs: Record<string, unknown> = {}) => tools.execute("space_ask_operator", { category: "DIRECTION", title, body: "Which?", recommendation: "A. Πρόβλεψη: ναι (80%)",
@@ -325,6 +331,8 @@ describe("Nous's gates", () => {
     expect(await question("Which lab first?", { planId: "clipboard:labplan00001" })).toMatchObject({ ok: false, display: "nous_decision:plan0001 already asks this" });
     // R20-dup-2 (30/10: 880c1706 and 1c9db57f, the same files 2.5 s apart): the same file to approve is the same ask, whatever its title.
     expect(await question("Approve the shop mail text", { files: ["/var/lib/spaceapp-user/agent-workspace/kits/mail.html"] })).toMatchObject({ ok: false, display: "nous_decision:880c1706 already asks this" });
+    // 12/11 04:54 (e02eaed6 beside 2e8ad90b, both answered no: 2 misses): the same ask reworded with other prices and dates.
+    expect(await question("Plesk: να περάσουμε από Web Pro (~$330/έτος) σε Web Admin (~$187/έτος) πριν τις 25/11;")).toMatchObject({ ok: false, display: "nous_decision:2e8ad90b already asks this" });
     expect(ask).not.toHaveBeenCalled();
     // Another subject, or the same subject asked over an hour ago: asked.
     expect((await question("Renew the Hetzner box")).ok).toBe(true);
@@ -473,10 +481,8 @@ describe("Nous's gates", () => {
     const question = (replaces?: string) => tools.execute("space_ask_operator", { category: "EXTERNAL", title: "Send the free-server applications, all 47 texts",
       body: "All in one.", recommendation: "Yes. Πρόβλεψη: ναι (85%)", checked: ["The report: 47 texts ready"], ...(replaces ? { replaces } : {}) }, ctx);
     expect(await question()).toMatchObject({ ok: false, refused: true, display: "nous_decision:f308fe72 already asks this" });
-    // Only an open decision can be replaced: nothing is asked otherwise.
-    expect(await question("nous_decision:closed01")).toMatchObject({ ok: false, display: "nous_decision:closed01 is not open",
-      // Goal 401b115b (9/11): the refusal names the open ones that can be replaced.
-      result: expect.stringContaining('Your open decisions: nous_decision:f308fe72 ("Send the free-server applications") (space_nous_decisions status "OPEN" lists them)') });
+    // Daily Nous errors 14/11: a replaces naming no open decision is dropped and the ask goes on (here the twin of f308fe72 still holds it).
+    expect(await question("nous_decision:unknown1")).toMatchObject({ ok: false, refused: true, display: "nous_decision:f308fe72 already asks this" });
     expect(ask).not.toHaveBeenCalled();
     const asked = await question("nous_decision:f308fe72");
     expect(asked).toMatchObject({ ok: true, result: expect.stringContaining("nous_decision:f308fe72 closed as replaced by it.") });
@@ -493,6 +499,52 @@ describe("Nous's gates", () => {
       + "It went to the operator; do not run it another way.") });
     expect(same.result).not.toContain("closed as replaced");
     expect(withdraw).not.toHaveBeenCalled();
+  });
+
+  it("asks on when the decision it replaces was answered meanwhile, and says so (13/11 14:44, refused and asked again 4 s later)", async () => {
+    const ask = vi.fn(async (input: { title: string }) => ({ id: "nous_decision:new00002", status: "OPEN", title: input.title }));
+    const withdraw = vi.fn(async () => true);
+    const declined = { id: "nous_decision:declined1", ownerUserId: "user:operator", category: "EXTERNAL", title: "Restart the build VM", body: "", options: [],
+      recommendation: null, refs: {}, action: null, status: "DECLINED", answer: "No: not before 18:00", outcome: null, createdAt: new Date(Date.now() - 60_000).toISOString(), answeredAt: null };
+    const tools = createNousTools({ ask, withdraw, decisions: async () => [declined], rooms: async () => [], listPanes: async () => [] } as unknown as NousToolDeps);
+    const asked = await tools.execute("space_ask_operator", { category: "EXTERNAL", title: "Restart the build VM at 18:00", body: "At 18:00.",
+      recommendation: "Yes. Πρόβλεψη: ναι (80%)", checked: ["The VM: idle"], replaces: "nous_decision:declined1" },
+    { owner: "user:operator", turnId: "nous_turn:r37b", callId: "toolu_r37b", traceId: "trace:r37b" });
+    expect(asked).toMatchObject({ ok: true, result: expect.stringContaining('nous_decision:declined1 was already DECLINED ("No: not before 18:00"): nothing replaced.') });
+    expect(ask).toHaveBeenCalledWith(expect.anything(), expect.not.objectContaining({ replaces: expect.anything() }));
+    expect(withdraw).not.toHaveBeenCalled();
+  });
+
+  it("holds a question the operator answered or declined in the last hour, asked again (Daily Nous errors 14/11)", async () => {
+    // 12/11 04:55 2a6bccce: the Plesk ask reworded 60 s after the operator's no to ae47b051 (a correction and a miss); 16:12 9410b51b: Turso's question again 65 s on.
+    const ask = vi.fn(async (input: { title: string }) => ({ id: "nous_decision:new", status: "OPEN", title: input.title }));
+    const minutes = (count: number) => new Date(Date.now() - count * 60_000).toISOString();
+    const post = (itemId: string) => ({ type: "COPILOT", copilot: "MARKETING", item: "REVIEW", itemId, paneId: "pane:kate0001", decision: "approve" });
+    const answered = (id: string, title: string, status: string, answer: string | null, at: string, action: unknown = null) => ({ id, ownerUserId: "user:operator",
+      category: "DIRECTION", title, body: "", options: [], recommendation: null, refs: {}, action, status, answer, outcome: null, createdAt: at, answeredAt: at });
+    const decisions = [answered("nous_decision:ae47b051", "Plesk του public-host: να περάσουμε σε Web Admin μηνιαίο (~$17/μήνα) αντί για ανανέωση του Web Pro με €280,39 στις 25/11;",
+      "ANSWERED", "οχι δεν θελω να πληρωσουμε τιποτα, βρες μια δωρεαν λυση", minutes(1)),
+      answered("nous_decision:e30489aa", "Turso Start-up Program: ποιο έτος ίδρυσης γράφουμε στην απάντηση;", "ANSWERED", "Έτος ίδρυσης της INTRATRADE (γράψε το)", minutes(1)),
+      answered("nous_decision:decl0001", "Publish the Hetzner post on Reddit", "DECLINED", null, minutes(5), post("mktpost:hetzner00001")),
+      answered("nous_decision:old00001", "Renew the Hetzner box now", "DECLINED", "No", minutes(90))];
+    const tools = createNousTools({ ask, decisions: async () => decisions } as unknown as NousToolDeps);
+    const ctx = { owner: "user:operator", turnId: "nous_turn:reask", callId: "toolu_reask", traceId: "trace:reask" };
+    const question = (title: string, extra: Record<string, unknown> = {}) => tools.execute("space_ask_operator", { category: "DIRECTION", title, body: "Which?",
+      recommendation: "A. Πρόβλεψη: ναι (80%)", options: ["A", "B"], refs: {}, checked: ["The plan map: no answer there"], ...extra }, ctx);
+    expect(await question("Plesk: να περάσουμε από Web Pro (~$330/έτος) σε Web Admin (~$187/έτος) πριν τις 25/11;")).toMatchObject({ ok: false, refused: true,
+      display: "nous_decision:ae47b051 was answered", result: expect.stringContaining('UTC: "οχι δεν θελω να πληρωσουμε τιποτα, βρες μια δωρεαν λυση". Act on that answer; do not ask it again.') });
+    expect(await question("Turso: ποιο έτος ίδρυσης να γράψουμε στην απάντηση στον Jeff Olson;")).toMatchObject({ ok: false, display: "nous_decision:e30489aa was answered" });
+    // A declined action asked again is held with its status; the same subject over another action acts on the answer.
+    expect(await question("Publish the Hetzner post on Reddit today", { action: post("mktpost:hetzner00001") })).toMatchObject({ ok: false,
+      display: "nous_decision:decl0001 was answered", result: expect.stringContaining("UTC: DECLINED. Act on that answer") });
+    expect(ask).not.toHaveBeenCalled();
+    expect((await question("Turso Start-up Program: η απάντηση με έτος ίδρυσης 2019", { action: post("mktpost:turso000001") })).ok).toBe(true);
+    // Asked anyway by naming it, answered over an hour ago, or another subject: asked.
+    expect(await question("Plesk: Web Admin μηνιαίο ή δωρεάν panel μέχρι τις 25/11;", { replaces: "nous_decision:ae47b051" })).toMatchObject({ ok: true,
+      result: expect.stringContaining("nous_decision:ae47b051 was already ANSWERED") });
+    expect((await question("Renew the Hetzner box now")).ok).toBe(true);
+    expect((await question("Pick the Upwork niche")).ok).toBe(true);
+    expect(ask).toHaveBeenCalledTimes(4);
   });
 
   it("asks only with a prediction: the field, written in one form and stored, or the recommendation's line; the ledger scores the stored one (R12-11)", async () => {
@@ -722,7 +774,7 @@ describe("Nous's gates", () => {
       queues: async () => [{ name: "stable", report: stable }] } as unknown as NousToolDeps);
     const ctx = { owner: "user:operator", turnId: "nous_turn:d1", callId: "toolu_d", traceId: "trace:d" };
     const release = (action: Record<string, unknown>, category = "RELEASE") => tools.execute("space_ask_operator", { category, title: "Approve it", body: "Again.", recommendation: "Yes. Πρόβλεψη: ναι (80%)", action, checked: ["The decisions: one approved"] }, ctx);
-    expect(await release(approved)).toMatchObject({ ok: false, display: "nous_decision:4f82fa69 already approved this",
+    expect(await release(approved)).toMatchObject({ ok: false, refused: true, display: "nous_decision:4f82fa69 already approved this",
       result: expect.stringContaining("that yes is the operator's request; run it from there (its outcome: Sent to Emma in Main.). Nothing asked.") });
     expect(ask).not.toHaveBeenCalled();
     // Older than 24 hours, declined, or another action: asked as usual.
@@ -760,9 +812,9 @@ describe("Nous's gates", () => {
     const ctx = { owner: "user:operator", turnId: "nous_turn:h1", callId: "toolu_h", traceId: "trace:h" };
     const approve = (text: string) => tools.execute("space_ask_operator", { category: "RELEASE", title: "Approve the Qwen pins hotfix", body: "Stable fix.", recommendation: "Yes. Πρόβλεψη: ναι (80%)",
       action: { type: "PANE_TEXT", roomId: "room:gates1", paneId: "pane:emma0001", text, mode: "PROMPT" }, checked: ["The stable queue: the ticket"] }, ctx);
-    expect(await approve("Submit the hotfix, then space-queue approve it.")).toMatchObject({ ok: false, result: expect.stringContaining("The action approves no ticket. Have the pane submit the hotfix first") });
-    expect(await approve("space-queue approve q-20261028-090000-bbbb")).toMatchObject({ ok: false, display: "No ticket q-20261028-090000-bbbb on the stable queue" });
-    expect(await approve("space-queue approve q-20261028-070000-aaaa")).toMatchObject({ ok: false, result: expect.stringContaining("q-20261028-070000-aaaa is DEPLOYED: only a hotfix waiting for approval") });
+    expect(await approve("Submit the hotfix, then space-queue approve it.")).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("The action approves no ticket. Have the pane submit the hotfix first") });
+    expect(await approve("space-queue approve q-20261028-090000-bbbb")).toMatchObject({ ok: false, refused: true, display: "No ticket q-20261028-090000-bbbb on the stable queue" });
+    expect(await approve("space-queue approve q-20261028-070000-aaaa")).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("q-20261028-070000-aaaa is DEPLOYED: only a hotfix waiting for approval") });
     expect(ask).not.toHaveBeenCalled();
     expect((await approve("space-queue approve q-20261028-085017-5c93")).ok).toBe(true);
     expect(ask).toHaveBeenCalledTimes(1);
@@ -1030,9 +1082,15 @@ describe("Nous's gates", () => {
       const steps = ["Open https://www.npmjs.com/login?next=/login/cli/abc", "Approve as operator"];
       expect(await card("Dana", { text: reason, steps })).toMatchObject({ ok: true });
       expect(await tools.execute("space_focus_pane", { room: "Alex", pane: "Dana", reason, steps, checked: ["Dana: npm login link waiting"] }, ctx)).not.toMatchObject({ refused: true });
-      // An npmjs.com login in the Vault is still the stored method.
+      // An npmjs.com login in the Vault is the stored method for a plain sign-in, never for a CLI web-auth approval or a security key
+      // (13/11 18:56 BKK nous_msg:6734ba76: a Vault password cannot approve /login/cli/<uuid> or pass a security-key 2FA).
       items.push({ handle: "vault:n1", label: "npm operator", origins: ["https://www.npmjs.com"] });
-      expect(await card("Dana", { text: reason, steps })).toMatchObject({ refused: true, result: expect.stringContaining("npm operator") });
+      expect(await card("Dana", { text: reason, steps })).toMatchObject({ ok: true });
+      expect(await card("Dana", { text: "Sign in to npmjs.com and approve with your security key", steps: ["Open https://www.npmjs.com/login", "Touch the key"] })).toMatchObject({ ok: true });
+      expect(await tools.execute("space_focus_pane", { room: "Alex", pane: "Dana", reason: "Approve the npm CLI web login with your YubiKey", steps,
+        checked: ["Dana: npm login link waiting"] }, ctx)).not.toMatchObject({ refused: true });
+      expect(await card("Dana", { text: "Sign in to npmjs.com as operator", steps: ["Open https://www.npmjs.com/login", "Sign in"] }))
+        .toMatchObject({ refused: true, result: expect.stringContaining("npm operator") });
     });
 
     it("(3) answers an installed app version question from Space's device records (4/11 «δεν μου εμφανισε εκδοση»)", async () => {
@@ -1306,6 +1364,24 @@ describe("Nous's gates", () => {
     expect(await reply("Unlock the Vault please")).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("Vault unlock: never the operator's") });
     expect(replyNow).not.toHaveBeenCalled();
     expect((await reply("Το upwork.com proposal στάλθηκε.")).ok).toBe(true);
+  });
+
+  it("holds only hands asks with the Vault's login, by refs.site: a COPILOT approval naming sites passes (14/11 05:40 BKK mktpost:7eGGvTaVrV6q)", async () => {
+    const ask = vi.fn(async (input: { title: string }) => ({ id: "nous_decision:mkt0001", status: "OPEN", title: input.title }));
+    const call = vi.fn(async (input: { body: { site?: string } }) => ({ status: "LISTED", auditId: null,
+      items: input.body.site ? [{ handle: "vault:x1", label: input.body.site, origins: [`https://${input.body.site}`] }] : [] }));
+    const items = [{ copilot: "MARKETING", kind: "REVIEW", id: "mktpost:7eGGvTaVrV6q", paneId: null, title: "Review the X post", detail: "", createdAt: new Date().toISOString() }];
+    const tools = createNousTools({ ask, decisions: async () => [], copilots: { items: async () => items }, rooms: async () => [], listPanes: async () => [],
+      vault: { agent: { call } } } as unknown as NousToolDeps);
+    const ctx = { owner: "user:operator", turnId: "nous_turn:mkt", callId: "toolu_mkt", traceId: "trace:mkt" };
+    const base = { category: "EXTERNAL", recommendation: "Yes. Πρόβλεψη: ναι (85%)", checked: ["The Marketing rail: the post waits"] };
+    const action = { type: "COPILOT", copilot: "MARKETING", item: "REVIEW", itemId: "mktpost:7eGGvTaVrV6q", paneId: null, decision: "approve" };
+    expect((await tools.execute("space_ask_operator", { ...base, title: "Publish the X post", body: "The post: sign in to dev.to for the full guide.",
+      refs: { site: "x.com" }, action }, ctx)).ok).toBe(true);
+    // A hands ask still meets the gate by refs.site; a site named only in its body does not.
+    expect(await tools.execute("space_ask_operator", { ...base, title: "Sign in to X", body: "Please sign in.", refs: { site: "x.com" } }, ctx))
+      .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("the Vault has a login for x.com: fill it yourself") });
+    expect((await tools.execute("space_ask_operator", { ...base, title: "Sign in to dev.to", body: "Please sign in at dev.to." }, ctx)).ok).toBe(true);
   });
 
   it("names a site's Vault logins and mail on an EXTERNAL ask, and refuses a support message once until the sign-in and the mailbox were tried (R13-12)", async () => {

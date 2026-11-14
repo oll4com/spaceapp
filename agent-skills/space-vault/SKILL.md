@@ -1,6 +1,6 @@
 ---
 name: space-vault
-description: "Space Vault for agents: fill a site's login or one-time code from the operator's Vault without ever seeing it, save the logins you create or receive, and find and write server, VM, SSH, admin and API passwords and keys into the files they belong in, through the space_vault tools (opaque handles and ids; answers are a status and an audit id). Use when a task needs to sign in to a site in this pane's browser, or needs a password or key for a server, VM or service, or when a password reaches you (a mail). Works while the operator's agent access is on; no per-use approval."
+description: "Space Vault for agents: fill a site's login or one-time code from the operator's Vault without ever seeing it, save the logins you create or receive, and find and write server, VM, SSH, admin and API passwords and keys into the files they belong in, through the space_vault tools (opaque handles and ids; answers are a status and an audit id). Use when a task needs to sign in to a site in this pane's browser, or needs a password or key for a server, VM or service, or when a password reaches you (a mail), or to pay at a checkout with the operator's saved card. Works while the operator's agent access is on; no per-use approval."
 metadata:
   category: DOMAIN_POLICY
 ---
@@ -59,7 +59,8 @@ before filling (your session had run code in that page) and the field was gone: 
 names the command that dirtied the page in `dirtiedBy` (`Runtime.callFunctionOn` or `Runtime.evaluate`: `browser_evaluate`).
 A fill that worked after such a reload says `reloaded: true` (with `dirtiedBy`): every other field of the form is empty again, so
 fill them again before you submit; screenshots through `space_browser_capture_start` dirty the page too, so take
-`space_browser_masked_screenshot` instead while you sign up.
+`space_browser_masked_screenshot` instead while you sign up. `RELOAD_WOULD_RESUBMIT`: your session ran code in a page a form post
+made, and reloading it would post the form again: open the step from its first page and redo it without evaluate, then fill.
 
 ## How a sign-in goes
 
@@ -70,8 +71,9 @@ fill them again before you submit; screenshots through `space_browser_capture_st
    reads, plain screenshots, DevTools and Playwright are refused. To replace a field's text, Tab or Shift+Tab into it (that
    selects its text) and type, or press Control+A, Backspace; click + type appends. For a native dropdown, click it, then
    press ArrowDown/ArrowUp and Enter: its open list is in no screenshot and a second click closes it without choosing.
-   Your own pane also gets `space_browser_masked_screenshot` (every field drawn as dots; it returns the image path) and
-   `space_browser_upload_file {paths}` (a CV or photo from ~/agent-workspace or the Job Copilot's files; the page stays clean).
+   You, the CLI that filled or the CLI pane that drives that browser now, get `space_browser_masked_screenshot` (every field
+   drawn as dots; it returns the image path) and `space_browser_page_readout`; a pane that is itself the browser also gets `space_browser_upload_file {paths}` (a CV or
+   photo from ~/agent-workspace or the Job Copilot's files; the page stays clean).
    Click "Next" or "Sign in" if needed, or fill the next step. A human check or CAPTCHA on the filled page (before Submit) goes
    to the operator with `space_browser_request_handoff`; no reload is needed, and the fence stays on through the handoff.
 4. A code the site mailed you (passcode, verification code): finish it yourself, never ask the operator for it or hand
@@ -94,6 +96,33 @@ fill them again before you submit; screenshots through `space_browser_capture_st
    opened with `space_browser_navigate`, a reset handoff, a Nous card or decision and a support mail about the password. Sign
    in with the stored method. Only the operator's explicit order passes, as `operatorOrder: "nous_msg:<id>"` (a card: a
    `checked` item "operator order nous_msg:<id>"), and it is audited.
+
+## Paying with the operator's card
+
+The operator saves a payment card in the Vault dock. `space_vault_list` shows it with `origins: []`, the card fields and
+`card: "VISA ••4242"` (brand and last four, all you ever see). Operator 13/11: an agent fills it and presses Pay, and the operator
+only approves 3-D Secure in their bank's app. This replaces "only the operator types a card" (memory 5aab082d) for Vault fills
+only: never type, read or ask for card details yourself.
+
+1. Only a purchase the operator or Nous ordered. On the open checkout page, check that the merchant, amount, currency and
+   package/tier are exactly what was ordered (`space_browser_page_readout`, a masked screenshot). If anything differs, stop and
+   report it (lesson upwork-connects-tier: never take a bigger package or another plan than the one ordered).
+2. `space_vault_card_fill {handle, targetPaneId?}` on that page. Space types number, expiry, CVC and the name into the card form,
+   including a cross-site payment frame such as Stripe's or Adyen's. It never presses Pay. You get `FILLED` with `fields
+   {filled, disabled}` and an `auditId`. Afterwards the page is fenced, as after a login fill.
+3. Check the total again (`space_browser_page_readout`). Then press Pay or Place order yourself, once.
+4. 3-D Secure / "approve in your banking app": raise ONE needs-you with focus, for example
+   `space-progress needs-you "Approve in the Revolut app: <merchant>, <amount>. Nothing to type." --checked "card fields filled
+   from the Vault on the final checkout page, Pay pressed | total <amount> and package <package> verified on the page"`. The
+   checkout gate needs those two `checked` facts (form reached, amount verified). Then read the page back for the result.
+5. A one-time code the bank texts to the phone is the operator's: the same one needs-you, with the code to type in the page.
+   Never ask for the card or its CVC in that message.
+
+Refusals: `ORIGIN_MISMATCH CARD_NEEDS_HTTPS` (not an exact https page, or an IP or lookalike address): do not pay there.
+`BLOCKED CARD_NEEDS_HOST_RESTART` (this Browser Host fills no cards until the operator's guarded restart) and `BLOCKED
+NOT_DELEGATED` (agent use is off for that card, or no card is saved): tell Nous in one line and stop; never type a card
+yourself or hand the operator the whole form when a Vault card exists. `FILLED` with fields missing or a form that still
+shows empty boxes after the readout: report it and do not press Pay.
 
 ## Rules
 

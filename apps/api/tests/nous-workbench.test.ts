@@ -57,8 +57,25 @@ describe("Nous's own folder (space_files_write) and Agent Files (space_agent_fil
     // Goal 401b115b (9/11): any other outside path is answered with the workspace-relative form to send next.
     expect((await nous.execute("space_files_read", { path: "/home/someone/agent-workspace/reports/run.md" }, ctx)).result)
       .toContain('Read it relative to the workspace: path "reports/run.md".');
-    expect((await nous.execute("space_files_read", { path: "/opt/run.md" }, ctx)).result)
-      .toContain('e.g. path "reports/<folder>/run.md" or "nous/run.md"; space_files_list find "run.md" searches the names.');
+    const outside = await nous.execute("space_files_read", { path: "/opt/run.md" }, ctx);
+    expect(outside.result).toContain('e.g. path "reports/<folder>/run.md" or "nous/run.md"; space_files_list find "run.md" searches the names.');
+    // Daily Nous errors 13/11: the workspace boundary is a hold (its answer names the next path), not a failure.
+    expect(outside).toMatchObject({ ok: false, refused: true });
+  });
+
+  it("Daily errors 12/11 10:00 UTC (a 46 MB log refused at 8 MB): reads any slice of a big text file, multibyte text intact", async () => {
+    mkdirSync(join(root, "reports"), { recursive: true });
+    const line = "αβγ log line\n";
+    writeFileSync(join(root, "reports", "big.log"), line.repeat(Math.ceil(9 * 1024 * 1024 / Buffer.byteLength(line))));
+    const text = line.repeat(Math.ceil(9 * 1024 * 1024 / Buffer.byteLength(line)));
+    const total = text.length;
+    // 50,000-61,500 crosses the first 64 KiB read.
+    expect((await tools().execute("space_files_read", { path: "reports/big.log", offset: 50_000 }, ctx)).result).toContain(`characters 50000-61500 of ${total};`);
+    expect((await tools().execute("space_files_read", { path: "reports/big.log", offset: 50_000 }, ctx)).result).toContain(text.slice(50_000, 61_500));
+    const read = await tools().execute("space_files_read", { path: "reports/big.log", offset: total - 13 }, ctx);
+    expect(read).toMatchObject({ ok: true });
+    expect(read.result).toContain(`characters ${total - 13}-${total} of ${total} (end)`);
+    expect(read.result).toContain(line);
   });
 
   it("refuses paths outside its folder, secret-looking names, links a pane planted, binary text and files past 2 MB", async () => {
@@ -303,6 +320,9 @@ describe("Nous reads the web (space_web_read, space_web_search) and checks hosts
       expect((await nous.execute("space_net_check", { check: "dns", host }, ctx)).ok, host).toBe(false);
     }
     expect((await nous.execute("space_net_check", { check: "dns", host: "10.0.0.1", type: "PTR" }, ctx)).ok).toBe(false);
+    // Daily Nous errors 13/11 09:55 ("The operation was aborted"): a site that does not answer in time is the check's finding, as tcp's "not reachable".
+    expect(await tools({ web: web({ checkTimeoutMs: 200 }) }).execute("space_net_check", { check: "http", host: `http://site.example:${port}/stuck` }, ctx))
+      .toMatchObject({ ok: true, result: expect.stringContaining("/stuck → no answer within 0.2 s from public-host (timed out)") });
   });
 
   it("answers a SERVFAIL of the public resolvers as the check's result, not a failure (plan ro5ukMcJnIk4 step 2: 6 in 7 days)", async () => {
@@ -437,6 +457,14 @@ describe("R51-3: space_git names the repository that has what the other lacks", 
     expect((await run({ op: "file", path: "missing.ts" })).result).not.toContain("call again with repo");
     // R84 (6-8/11: guessed paths such as apps/api/src/nous-providers.ts): the nearest real paths follow the error.
     expect((await run({ op: "file", path: "src/app.ts" })).result).toMatch(/does not exist in 'HEAD'\nNearest paths at HEAD: app\.ts\.$/);
+  });
+
+  it("13/11 (repo \"space\" failed): reads stable and dev by their folder, path or stable's branch name", async () => {
+    const nous = tools({ git: createNousGit({ stable, dev, worktrees: join(base, "worktrees") }) });
+    const file = async (repo: string) => (await nous.execute("space_git", { repo, op: "file", path: "reveal.ts" }, ctx)).result;
+    // reveal.ts is only on dev: stable answers where it is, dev answers its text.
+    for (const repo of ["space", "main", "Stable", stable, `${stable}/`]) expect(await file(repo), repo).toContain('call again with repo "dev"');
+    for (const repo of ["space-dev", "DEV", dev]) expect(await file(repo), repo).toContain("export const shown = true;");
   });
 });
 
@@ -653,18 +681,20 @@ describe("Nous reliability fixes (workbench review 2026-10-21)", () => {
     expect(await words.execute("space_copilot_answer", { copilot: "MAIL", question: "Arize pricing reply", answer: "Archive it" }, ctx))
       .toMatchObject({ ok: false, display: "No such question", result: expect.stringContaining("Open now: [mailq:bloo] BlooMind") });
     expect(byId).toHaveBeenCalledTimes(3);
-    // 13/11 review: 7 of 7 failures named a needs-you card whose question had closed; an id that never existed still fails.
+    // 13/11 review: 7 of 7 failures named a needs-you card whose question had closed; an id that never existed is held, naming what is open
+    // (Daily Nous errors 13/11 late: an answer that did nothing and names the open questions is a refusal).
     const card = { id: "notification:card01", source: "JOB_COPILOT", kind: "QUESTION", title: "Job Copilot has a question", status: "RESOLVED", resolvedAt: "2026-11-12T10:00:00.000Z", updatedAt: "2026-11-12T10:00:00.000Z", payload: { answeredBy: "USER" } };
     const cards = nousFor({ copilots: { items, answerQuestion: byId } as never, notifications: { list: async () => [], resolve: async () => false, get: async (_o: string, id: string) => id === card.id ? card : null } as never });
     expect(await cards.execute("space_copilot_answer", { copilot: "JOB", question: card.id, answer: "Yes" }, ctx))
       .toMatchObject({ ok: true, display: "ALREADY_CLOSED", result: expect.stringContaining("was closed 2026-11-12T10:00:00.000Z by USER") });
-    expect(await cards.execute("space_copilot_answer", { copilot: "JOB", question: "notification:never01", answer: "Yes" }, ctx)).toMatchObject({ ok: false, display: "No such question" });
-    // 13/11 Score lever (Alibaba 02:11Z): a just-closed question named in Nous's own words is named back with its card id; still a failure.
+    const never = await cards.execute("space_copilot_answer", { copilot: "JOB", question: "notification:never01", answer: "Yes" }, ctx);
+    expect(never).toMatchObject({ ok: false, refused: true, display: "No such question", result: expect.stringContaining("Open now: ") });
+    // 13/11 Score lever (Alibaba 02:11Z): a just-closed question named in Nous's own words is named back with its card id, as a refusal (Daily errors 13/11).
     const alibaba = { ...card, id: "notification:ali01", source: "MAIL_COPILOT", title: "Mail Copilot has a question", body: "", payload: { ask: { question: "Alibaba Cloud AI Catalyst welcome: reply with our UID?" } } };
     const closedQuestions = vi.fn(async () => [alibaba, { ...alibaba, id: "notification:other01", payload: { ask: { question: "PayPal: which card?" } } }]);
     const words2 = nousFor({ copilots: { items, answerQuestion: byId } as never, notifications: { list: async () => [], resolve: async () => false, closedQuestions } as never });
     const named = await words2.execute("space_copilot_answer", { copilot: "MAIL", question: "Alibaba Cloud AI Catalyst: welcome mail, $200 credits need an account and the UID", answer: "Star it" }, ctx);
-    expect(named).toMatchObject({ ok: false, display: "No such question", result: expect.stringContaining("[notification:ali01] \"Mail Copilot has a question\" closed 2026-11-12T10:00:00.000Z") });
+    expect(named).toMatchObject({ ok: false, refused: true, display: "No such question", result: expect.stringContaining("[notification:ali01] \"Mail Copilot has a question\" closed 2026-11-12T10:00:00.000Z") });
     expect(named.result).not.toContain("other01");
     expect(closedQuestions).toHaveBeenCalledWith(owner, "MAIL_COPILOT");
     const calls: Array<[string, Record<string, unknown>]> = [];
@@ -698,8 +728,18 @@ describe("Nous reliability fixes (workbench review 2026-10-21)", () => {
     // Item 10 (round 5): while the turn runs, one word that is no menu key goes after it; "yes" or "1" stays an answer to a prompt that is gone.
     calls.length = 0;
     expect((await nousFor({ roomTool: running as never }).execute("space_answer_pane", { room: "Cleo", pane: "Andy", answer: "continue" }, ctx)).ok).toBe(true);
-    expect((await nousFor({ roomTool: running as never }).execute("space_answer_pane", { room: "Cleo", pane: "Andy", answer: "yes" }, ctx)).ok).toBe(false);
-    expect(calls.map(([name]) => name)).toEqual(["answer_pane_prompt", "send_to_pane", "answer_pane_prompt"]);
+    // Daily Nous errors 14/11: "yes" or "1" while the turn runs goes after it as its next prompt too.
+    expect((await nousFor({ roomTool: running as never }).execute("space_answer_pane", { room: "Cleo", pane: "Andy", answer: "yes" }, ctx))).toMatchObject({ ok: true, display: "SENT_AS_PROMPT" });
+    expect(calls.map(([name]) => name)).toEqual(["answer_pane_prompt", "send_to_pane", "answer_pane_prompt", "send_to_pane"]);
+    // 13/11 05:59 UTC: the guard that keeps an answer off a question that changed since it was inspected is a refusal with the next step.
+    const changed = vi.fn(async () => ({ ok: false, display: "Answering Andy failed", result: "The pane's question changed since it was inspected; inspect it again before answering." }));
+    const stale = await nousFor({ roomTool: changed as never }).execute("space_answer_pane", { room: "Cleo", pane: "Andy", answer: "2" }, ctx);
+    expect(stale).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("Read the pane (space_read_pane)") });
+    // 14/11: with the held queue the answer waits for the pane's first empty prompt instead, never typed into the new question.
+    const hold = vi.fn(async () => "held");
+    const queued = await nousFor({ roomTool: changed as never, held: { level: async () => "CALM", hold } as never }).execute("space_answer_pane", { room: "Cleo", pane: "Andy", answer: "2" }, ctx);
+    expect(queued).toMatchObject({ ok: true, display: "Held for Andy's next prompt", result: expect.stringContaining("is held as its next prompt") });
+    expect(hold).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ paneId: andy.id }), "2", "light");
     // A pane without a CLI names the tools that reach it instead of the Room Agent's bare refusal.
     const web = { ...andy, id: "pane:web000001", title: "Web", paneName: "Web", mode: "BROWSER", terminalRuntimeId: null };
     calls.length = 0;

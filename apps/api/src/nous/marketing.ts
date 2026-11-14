@@ -1,4 +1,4 @@
-import type { MarketingMetric, MarketingPost, NousMarketingNumbers, NousMarketingPlatform, NousMarketingPostRow, NousMarketingReport, NousMarketingSource, NousSiteFunnel } from "@space/contracts";
+import type { MarketingMetric, MarketingPost, SystemAnalyticsInstall, NousMarketingNumbers, NousMarketingPlatform, NousMarketingPostRow, NousMarketingReport, NousMarketingSource, NousSiteFunnel } from "@space/contracts";
 
 /**
  * The Nous "Marketing" page and space_marketing_stats (operator 5/11 10:42 BKK, nous_msg:25daa8b6ebbf489499694f64, plan clipboard:netzt-nNvtBL):
@@ -27,6 +27,7 @@ const KEYS = {
 const REFERRERS: Array<[string, RegExp]> = [["X", /^(t\.co|x\.com|(mobile\.)?twitter\.com)$/], ["REDDIT", /(^|\.)reddit\.com$/], ["HACKER_NEWS", /^news\.ycombinator\.com$/],
   ["DEVTO", /^dev\.to$/], ["LINKEDIN", /((^|\.)linkedin\.com|^lnkd\.in)$/], ["YOUTUBE", /((^|\.)youtube\.com|^youtu\.be)$/], ["PRODUCT_HUNT", /(^|\.)producthunt\.com$/], ["GITHUB", /^github\.com$/]];
 export const GA4_NEEDS = "a Google service account JSON key with Viewer on the GA4 properties of spaceapp.dev and oll4.com (SPACE_GA4_CREDENTIALS_FILE) and their property ids (SPACE_GA4_PROPERTIES=spaceapp.dev=<id>,oll4.com=<id>)";
+export const GSC_NEEDS = "the Search Console API turned on in the Google Cloud project of the GA4 service account, and that account added as a user (Restricted is enough) of each Search Console property (SPACE_GSC_SITES, unset: sc-domain:<each GA4 site>)";
 export const GITHUB_TRAFFIC_NEEDS = "a GitHub token with push access to the repository (fine-grained: Administration read) as SPACE_GITHUB_TRAFFIC_TOKEN";
 
 export function marketingNumbers(raw: Record<string, number>): NousMarketingNumbers {
@@ -105,6 +106,8 @@ export interface MarketingReportInput {
   devtoConfigured?: boolean;
   /** spaceapp.dev's own page views (site-visits.ts); absent where nothing reads them, as the copilot's snapshots. */
   site?: NousSiteFunnel | null;
+  /** The collector's installations first seen in the same period (install-pings.log); absent where it is not synced. */
+  installs?: SystemAnalyticsInstall[] | null;
   now: number;
 }
 
@@ -160,8 +163,30 @@ export function buildMarketingReport(input: MarketingReportInput): NousMarketing
     generatedAt: new Date(now).toISOString(), score: today.score, postsScore: today.postsScore, outcomesScore: today.outcomesScore, trend7: trend(7), trend30: trend(30), daysWithoutResult, target: MARKETING_SCORE_TARGET, daysBelowTarget,
     totals: { ...count(rows), ...sum(rows), zeroReach: published.filter((row) => row.score === 0).length },
     conversations: { ...count(replies), ...sum(replies) },
-    platforms, posts: rows, sources: marketingSources(input, rows), site: input.site ?? null
+    platforms, posts: rows, sources: marketingSources(input, rows), site: input.site ?? null,
+    funnel: marketingFunnel(input.site ?? null, input.installs ?? null), funnelByRef: marketingFunnelByRef(input.installs ?? null)
   };
+}
+
+/** Visit to active install (plan clipboard:UoygRDurSshE step 2.4); our own addresses left out, as in both sources. */
+export function marketingFunnel(site: NousSiteFunnel | null, installs: SystemAnalyticsInstall[] | null): Array<{ step: string; count: number }> {
+  const rows = (installs ?? []).filter((row) => !row.internal);
+  return [
+    ...(site ? [{ step: "Site views", count: site.views }, { step: "Install interest", count: site.installIntent }] : []),
+    ...(installs ? [{ step: "Launcher started", count: rows.length }, { step: "Install completed", count: rows.filter((row) => row.status === "COMPLETED").length },
+      { step: "First CLI pane", count: rows.filter((row) => row.firstCli).length }, { step: "Active a second day", count: rows.filter((row) => row.activeDays >= 2).length }] : [])
+  ];
+}
+
+/** The funnel's install steps per launcher --ref channel (plan clipboard:UoygRDurSshE step 2.4), most started first; none until a ref arrives. */
+export function marketingFunnelByRef(installs: SystemAnalyticsInstall[] | null): NonNullable<NousMarketingReport["funnelByRef"]> {
+  const rows = (installs ?? []).filter((row) => !row.internal);
+  if (!rows.some((row) => row.ref)) return [];
+  const groups = new Map<string, SystemAnalyticsInstall[]>();
+  for (const row of rows) groups.set(row.ref ?? "none", [...(groups.get(row.ref ?? "none") ?? []), row]);
+  return [...groups].map(([ref, list]) => ({ ref, started: list.length, completed: list.filter((row) => row.status === "COMPLETED").length,
+    firstCli: list.filter((row) => row.firstCli).length, activeSecondDay: list.filter((row) => row.activeDays >= 2).length }))
+    .sort((a, b) => b.started - a.started || a.ref.localeCompare(b.ref));
 }
 
 function marketingSources(input: MarketingReportInput, rows: NousMarketingPostRow[]): NousMarketingSource[] {
@@ -173,12 +198,15 @@ function marketingSources(input: MarketingReportInput, rows: NousMarketingPostRo
   const posts = (channel: string) => rows.filter((row) => row.channel === channel && row.status === "PUBLISHED");
   const refreshed = (channel: string) => posts(channel).filter((row) => marketingMeasured(row.raw)).length;
   const ga = newest("GA4", (key) => !key.includes(":ref:"));
+  const gsc = newest("GSC", (key) => !key.includes(":q:"));
   const traffic = newest("GITHUB_TRAFFIC");
   const readouts = rows.filter((row) => row.status === "PUBLISHED" && !["HACKER_NEWS", "DEVTO"].includes(row.channel));
   const sent = input.mail?.filter((campaign) => campaign.sent > 0) ?? [];
   return [
     { id: "GA4", label: "Google Analytics 4", connected: input.ga4Configured || ga.day !== null, ...ga,
       detail: input.ga4Configured || ga.day ? "Users, sessions and views of the last 30 days per site, and sessions per referrer, every 3 hours." : `Not connected: needs ${GA4_NEEDS}.` },
+    { id: "GSC", label: "Google Search Console", connected: gsc.day !== null, ...gsc,
+      detail: gsc.day ? "Clicks, impressions, CTR and position of the last 28 days per site, and each search query's impressions, every 3 hours." : `Not connected: needs ${GSC_NEEDS}.` },
     { id: "GITHUB", label: "GitHub repository", connected: true, ...newest("GITHUB"), detail: "Public numbers once a day: stars, forks, watchers, open issues and pull requests, release downloads." },
     { id: "GITHUB_TRAFFIC", label: "GitHub traffic", connected: input.trafficConfigured || traffic.day !== null, ...traffic,
       detail: input.trafficConfigured || traffic.day ? "Views, visitors, clones of GitHub's 14-day window and its referrers, once a day." : `Not connected: needs ${GITHUB_TRAFFIC_NEEDS}.` },
@@ -238,6 +266,8 @@ export function marketingToolText(report: NousMarketingReport, args: { view?: "s
       + `${report.totals.published} published, ${report.totals.failed} failed, ${report.totals.measured} measured; ${numbers(report.totals)}.`,
     "Platforms:", ...report.platforms.map((platform) => `- ${platform.channel}: score ${platform.score ?? "–"}, ${platform.posts} posts (${platform.published} published, ${platform.failed} failed, `
       + `${platform.measured} measured), ${numbers(platform)}, visits to our sites ${platform.visits ?? "–"}`),
+    ...(report.funnel?.length ? [`Funnel (history period): ${report.funnel.map((step) => `${step.step} ${step.count}`).join(" → ")}.`] : []),
+    ...(report.funnelByRef?.length ? [`By channel (--ref): ${report.funnelByRef.map((row) => `${row.ref} started ${row.started}, completed ${row.completed}, first CLI ${row.firstCli}, second day ${row.activeSecondDay}`).join("; ")}.`] : []),
     `Sources not connected: ${report.sources.filter((source) => !source.connected).map((source) => source.label).join(", ") || "none"}. view "posts" lists every post (channel, offset); view "sources" every source.`].join("\n");
 }
 

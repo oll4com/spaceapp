@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import {
@@ -48,6 +49,16 @@ export const connectorSealContext = (purpose: "connector-refresh" | "connector-a
 export function readConnectorKey(path: string | null): string | null {
   if (!path) return null;
   try { const key = readFileSync(path, "utf8").trim(); return key.length >= 32 ? key : null; } catch { return null; }
+}
+
+/**
+ * A public install has no operator to place the key (13/11: run-spaceapp 1.2.1's Mobile app setup answered CONNECTOR_KEY_MISSING),
+ * so its first start writes a random one on its data volume. An existing file is never overwritten: values sealed with it stay readable.
+ */
+export function ensureConnectorKey(path: string): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  try { writeFileSync(path, randomBytes(32).toString("base64url"), { mode: 0o600, flag: "wx" }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
 }
 
 const deriveKey = (secret: string, info: string) => Buffer.from(hkdfSync("sha256", Buffer.from(secret, "utf8"), Buffer.from("space-connectors"), Buffer.from(info), 32));

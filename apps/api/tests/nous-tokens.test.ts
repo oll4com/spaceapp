@@ -56,9 +56,10 @@ describe("Nous automatic low-spend policy", () => {
 
   it("counts Max accounts at the 10% room boundary and recovers at reset without a new sample", () => {
     expect(compute([account("main", 90), account("other", 90)]).mode).toBe("NORMAL");
-    // main, the one with room, runs its week out by the reset (88% with 25 hours left): nothing of it resets unused, so one account with room is
-    // LOW. At the 5-hour reset other has room with a week it would not use up: NORMAL (operator 5/11).
-    const accounts = [account("main", 90, spentWeek), account("other", 90.01)];
+    // Operator 13/11 23:03 BKK: other's 5-hour window is full but 90% of its week is left: a wait, not a hold.
+    expect(compute([account("main", 90, spentWeek), account("other", 90.01)]).mode).toBe("NORMAL");
+    // Both weeks spent (88% with 25 hours left): one account with room is LOW; at the 5-hour reset both weeks reset within 24 h: NORMAL.
+    const accounts = [account("main", 90, spentWeek), account("other", 90.01, spentWeek)];
     expect(compute(accounts)).toMatchObject({ mode: "LOW", max: { withRoom: 1, total: 2 }, servingAccountId: "main", resetAt: reset });
     expect(compute(accounts, { now: Date.parse(reset) })).toMatchObject({ mode: "NORMAL" });
     expect(compute([account("a", 100), account("b", 100)], { settings: { ...config, mode: "OFF" }, budget: budget(99) }).mode).toBe("NORMAL");
@@ -71,8 +72,8 @@ describe("Nous automatic low-spend policy", () => {
     expect(compute(full, { budget: budget(99) }).mode).toBe("NORMAL");
     // At the 5-hour reset a has room and a week it would not use up: NORMAL again then (operator 5/11).
     expect(compute([account("a", 100)], { budget: budget(0) })).toMatchObject({ mode: "CRITICAL", resetAt: reset });
-    // With a week it runs out, the 5-hour reset leaves it short (LOW); its fresh week at the weekly reset is NORMAL (6/11: the count needs a shortfall).
-    expect(compute([account("a", 100, spentWeek)], { budget: budget(0) })).toMatchObject({ mode: "CRITICAL", resetAt: weeklyReset });
+    // With a week it runs out, its week resets within 24 h of the 5-hour reset: week room, NORMAL then (operator 13/11 23:03 BKK).
+    expect(compute([account("a", 100, spentWeek)], { budget: budget(0) })).toMatchObject({ mode: "CRITICAL", resetAt: reset });
     expect(compute([account("a", 100)]).mode).toBe("CRITICAL");
     const recover = compute([account("a", 100), account("b", 100)], { budget: budget(20) });
     expect(recover).toMatchObject({ mode: "CRITICAL", resetAt: reset });
@@ -90,7 +91,8 @@ describe("Nous automatic low-spend policy", () => {
     { withRoom: 0, spentUsd: 100, mode: "CRITICAL", resetAt: reset }
   ])("returns $mode with $withRoom/5 Max accounts with room and $spentUsd/$500 spent", ({ withRoom, spentUsd, mode, resetAt }) => {
     // The accounts with room run their weeks out by the reset (88% with 25 hours left), so their count decides; with all five the weeks have room.
-    const accounts = Array.from({ length: 5 }, (_, index) => account(String(index), index < withRoom ? 5 : 100, index < withRoom && withRoom < 5 ? spentWeek : {}));
+    // (Every week spent: an account with 20% of its week left would hold the pool NORMAL by itself, operator 13/11 23:03 BKK.)
+    const accounts = Array.from({ length: 5 }, (_, index) => account(String(index), index < withRoom ? 5 : 100, withRoom < 5 ? spentWeek : {}));
     const state = compute(accounts, { budget: { budgetUsd: 500, spentUsd } });
     expect(state).toMatchObject({ mode, max: { withRoom, total: 5 }, resetAt });
     expect(compute(accounts, { now: Date.parse(reset), budget: { budgetUsd: 500, spentUsd } })).toMatchObject({ mode: "NORMAL", resetAt: null });
@@ -98,7 +100,9 @@ describe("Nous automatic low-spend policy", () => {
 
   it("estimates recovery at the Max reset that restores enough room, even beyond the month boundary", () => {
     const laterReset = "2026-11-01T10:00:00.000Z";
-    const accounts = [account("a", 100, spentWeek), account("b", 100, { ...spentWeek, primaryWindow: { usedPercent: 100, resetAt: laterReset, windowMinutes: 300 } })];
+    // a's week is used up past laterReset; b's fresh week comes the next day, but its 5-hour window only at laterReset.
+    const accounts = [account("a", 100, { secondaryWindow: { usedPercent: 100, resetAt: "2026-11-01T11:00:00.000Z", windowMinutes: 10080 } }),
+      account("b", 100, { ...spentWeek, primaryWindow: { usedPercent: 100, resetAt: laterReset, windowMinutes: 300 } })];
     const state = compute(accounts, { budget: budget(85) });
     expect(state).toMatchObject({ mode: "CRITICAL", nextResetAt: reset, resetAt: laterReset });
     expect(renderNousTokens(state, "Asia/Bangkok", now)).toContain("normal again at about 1 Nov 2026, 17:00 Asia/Bangkok");
@@ -278,7 +282,7 @@ describe("Nous automatic low-spend policy", () => {
   });
 
   // Operator 5/11: 79 Low-spend changes since 27/10 (27 on 1/11), and a restart's first sample counted as one.
-  it("changes NORMAL and LOW only once the new mode held 30 minutes, across restarts; CRITICAL at once", async () => {
+  it("starts LOW only once it held 30 minutes, across restarts; NORMAL and CRITICAL at once", async () => {
     let at = now;
     let mode: NousSpendMode = "NORMAL";
     const stored = new Map<string, NousHeldMode>();
@@ -299,16 +303,34 @@ describe("Nous automatic low-spend policy", () => {
     at += 10 * 60_000;
     expect((await second.read("owner")).mode).toBe("LOW");
     expect(transition.mock.calls.map((call) => [call[1], call[2].mode])).toEqual([["NORMAL", "LOW"]]);
-    // Back to NORMAL waits too, and says when; CRITICAL comes and goes at once.
+    // Back to NORMAL on the first sample that asks it (operator 13/11 23:07 BKK); CRITICAL comes and goes at once.
     mode = "NORMAL"; at += 60_000;
-    const waiting = await monitor().read("owner");
-    expect(waiting).toMatchObject({ mode: "LOW", pending: { mode: "NORMAL" }, resetAt: new Date(at + NOUS_MODE_HOLD_MS).toISOString() });
-    expect(renderNousTokenSummary(waiting, "UTC", at)).toContain("the samples ask NORMAL since");
+    expect(await second.read("owner")).toMatchObject({ mode: "NORMAL", since: new Date(at).toISOString(), pending: null });
     mode = "CRITICAL"; at += 60_000;
     expect((await second.read("owner")).mode).toBe("CRITICAL");
     mode = "NORMAL"; at += 60_000;
     expect((await second.read("owner")).mode).toBe("NORMAL");
-    expect(transition.mock.calls.map((call) => [call[1], call[2].mode])).toEqual([["NORMAL", "LOW"], ["LOW", "CRITICAL"], ["CRITICAL", "NORMAL"]]);
+    expect(transition.mock.calls.map((call) => [call[1], call[2].mode])).toEqual([["NORMAL", "LOW"], ["LOW", "NORMAL"], ["NORMAL", "CRITICAL"], ["CRITICAL", "NORMAL"]]);
+  });
+
+  // Operator 13/11 23:07 BKK («οταν μπενεις σε περιοερισμενο καταναλωση πρεπει να βγαινεις κιολας»): LOW from 21:30 showed "normal again at about
+  // 23:40" while crew, lab and ops had their 5-hour windows open. One rule (modeAt) on every sample: room back ⇒ NORMAL on the next read.
+  it("leaves LOW on the next sample once an account of the pool has room, not at the shown 'normal again' time", async () => {
+    let at = now;
+    // Two accounts, both weeks spent (no week room); one 5-hour window full: fewer than 2 with room while the week runs short ⇒ LOW.
+    const accounts = [account("crew", 100, spentWeek), account("lab", 50, spentWeek)];
+    const transition = vi.fn(async () => {});
+    const monitor = createNousTokenMonitor({ read: async () => compute(accounts, { now: at }), transition });
+    await monitor.read("owner");
+    at += NOUS_MODE_HOLD_MS;
+    expect((await monitor.read("owner")).mode).toBe("LOW");
+    // crew's new week opens: one sample later the mode in force is NORMAL, with no pending wait and no "normal again" time.
+    accounts[0] = account("crew", 0);
+    at += 60_000;
+    const back = await monitor.read("owner");
+    expect(back).toMatchObject({ mode: "NORMAL", since: new Date(at).toISOString(), pending: null });
+    expect(renderNousTokenSummary(back, "UTC", at)).not.toContain("normal again");
+    expect(transition.mock.calls.map((call) => [call[1], call[2].mode])).toEqual([["NORMAL", "LOW"], ["LOW", "NORMAL"]]);
   });
 
   it("reads existing local samples and peeks profiles without probing, even when stale", async () => {
@@ -349,9 +371,12 @@ describe("Nous low-spend mode and the Claude Max pool's weekly pace", () => {
 
   it("is LOW while Claude Max runs out before its reset, though Gemini has all its room, and background turns take the LOW models", () => {
     // The 4/11 sample with every week resetting with crew's: no account gets a fresh week before the pool's last reset.
-    const accounts = sample().map((entry) => entry.provider === "CLAUDE" ? { ...entry, secondaryWindow: { ...entry.secondaryWindow, resetAt: "2026-11-08T19:00:00Z" } } : entry);
+    // Operator 13/11 23:03 BKK: no account with 20% of its week left (crew 15%, ops 18%), so the pace may hold the pool.
+    const accounts = sample({ crew: 85, ops: 82 }).map((entry) => entry.provider === "CLAUDE" ? { ...entry, secondaryWindow: { ...entry.secondaryWindow, resetAt: "2026-11-08T19:00:00Z" } } : entry);
     const rooms = nousProviderRooms(accounts, null, at);
-    expect(rooms.find((room) => room.key === "claude")).toMatchObject({ nowLeft: 40, atReset: { percent: 0 }, pace: "AHEAD" });
+    expect(rooms.find((room) => room.key === "claude")).toMatchObject({ nowLeft: 15, atReset: { percent: 0 }, pace: "AHEAD" });
+    // With crew's 40% of the week the pool has week room: NORMAL, whatever the pace says.
+    expect(tokens(sample().map((entry) => entry.provider === "CLAUDE" ? { ...entry, secondaryWindow: { ...entry.secondaryWindow, resetAt: "2026-11-08T19:00:00Z" } } : entry), "claude").mode).toBe("NORMAL");
     expect(rooms.find((room) => room.key === "gemini")).toMatchObject({ nowLeft: 100, atReset: null });
     expect(nousProviderAdvice(rooms).avoid.map(({ room, why }) => [room.key, why])).toContainEqual(["claude", "runs out before its reset"]);
     // Two Max accounts still have 5-hour and weekly room (crew, ops): room alone said NORMAL.
@@ -398,6 +423,30 @@ describe("Nous low-spend mode and the Claude Max pool's weekly pace", () => {
     expect(computeNousTokens({ accounts: together, profiles, settings: config, now: now5, provider: "claude" }).max).toEqual({ withRoom: 3, total: 5 });
   });
 
+  // Operator 13/11 23:03 BKK: LOW 21:30-22:59 BKK on full 5-hour windows (lab 100%, ntheo 100% blocked, dev 99%) while dev had 52% and lab 60% of
+  // their weeks and Codex 40% plus a reset credit. A full 5-hour window is a wait for that window or another pool, never a hold.
+  it("is not LOW when the 5-hour windows are full but the pool still has week room", () => {
+    const at13 = Date.parse("2026-11-13T14:30:00Z");
+    const accounts = [
+      max("lab", 100, "2026-11-13T15:59:00Z", 40, "2026-11-17T10:00:00Z"),
+      { ...max("ntheo", 100, "2026-11-13T16:30:00Z", 70, "2026-11-18T02:00:00Z"), status: "QUOTA_EXCEEDED" as const },
+      max("dev", 85, "2026-11-13T16:00:00Z", 48, "2026-11-16T23:00:00Z"),
+      account("codex", 30, { provider: "CODEX", planType: "pro", resetCreditsAvailable: 1, primaryWindow: { usedPercent: 30, resetAt: "2026-11-13T16:00:00Z", windowMinutes: 300 },
+        secondaryWindow: { usedPercent: 60, resetAt: "2026-11-17T00:00:00Z", windowMinutes: 10080 } })
+    ];
+    const state = (pool: GatewayAccount[], provider: "claude" | "codex" | "space") => computeNousTokens({ accounts: pool, profiles, settings: config, now: at13, provider, spaceProviders: ["claude", "codex"] });
+    // dev alone has 5-hour room (1 of 3, under minMaxAccountsWithRoom): LOW before; NORMAL now, since dev and lab keep week room.
+    expect(state(accounts, "claude")).toMatchObject({ mode: "NORMAL", max: { withRoom: 1, total: 3 } });
+    expect(state(accounts, "space").mode).toBe("NORMAL");
+    // Every Claude 5-hour window full: Claude cannot serve now (CRITICAL), the Space provider moves to Codex, whose week and credit keep it NORMAL.
+    const full = accounts.map((entry) => entry.id === "dev" ? { ...entry, primaryWindow: { ...entry.primaryWindow, usedPercent: 100 } } : entry);
+    expect(state(full, "claude").mode).toBe("CRITICAL");
+    expect(state(full, "space")).toMatchObject({ mode: "NORMAL", provider: "space" });
+    // The same pools with no week room anywhere (under 20% left, no reset within 24 h, no credit): Low-spend holds them.
+    const spent = accounts.map((entry) => ({ ...entry, resetCreditsAvailable: null, secondaryWindow: { ...entry.secondaryWindow, usedPercent: 90 } }));
+    expect(state(spent, "claude").mode).toBe("LOW");
+  });
+
   // Daily token check 6/11: LOW 6/11 01:30-04:30 BKK on "1 of 5 with room" while ntheo had 52% of its week left and lab's fresh week came
   // at 04:00. Operator 5/11 (nous_msg:3723fc28): fewer accounts with room hold LOW only while the pool's room runs short before a reset.
   // 7/11 (nous_msg:e768734b): the 4 spent accounts' pace moves to ntheo and the fresh weeks, so this pool's week runs out before 12/11
@@ -413,10 +462,13 @@ describe("Nous low-spend mode and the Claude Max pool's weekly pace", () => {
     ];
     const mode = (pool: GatewayAccount[]) => computeNousTokens({ accounts: pool, profiles, settings: config, now: at5, provider: "claude" });
     expect(nousProviderRooms(accounts, null, at5).find((room) => room.key === "claude")!.atReset!.percent).toBe(0);
-    expect(mode(accounts)).toMatchObject({ mode: "LOW", max: { withRoom: 1, total: 5 } });
-    // ntheo's 5-hour window at 90% 40 minutes before its reset fills first at its pace: the count holds LOW.
+    // Operator 13/11 23:03 BKK: ntheo has 52% of its week and dev's and lab's weeks reset within 24 h, so the pool has week room: NORMAL.
+    expect(mode(accounts)).toMatchObject({ mode: "NORMAL", max: { withRoom: 1, total: 5 } });
     const hot = accounts.map((entry) => entry.id === "ntheo" ? { ...entry, primaryWindow: { ...entry.primaryWindow, usedPercent: 90 } } : entry);
-    expect(mode(hot)).toMatchObject({ mode: "LOW", max: { withRoom: 1, total: 5 } });
+    expect(mode(hot)).toMatchObject({ mode: "NORMAL", max: { withRoom: 1, total: 5 } });
+    // Only with no week room anywhere (ntheo 85% used, no other week resetting within 24 h) does the pace hold it LOW.
+    const spent = accounts.map((entry) => ({ ...entry, secondaryWindow: { ...entry.secondaryWindow, usedPercent: Math.max(85, entry.secondaryWindow.usedPercent ?? 0), resetAt: "2026-11-12T02:00:00Z" } }));
+    expect(mode(spent).mode).toBe("LOW");
   });
 
   it("stays NORMAL while the Claude Max pool is on pace", () => {

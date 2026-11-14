@@ -68,6 +68,8 @@ Show HN, weekly tip, demo video): `references/campaigns.md`.
    - **MEASURE**: a post published a day (or a week) ago. Open its URL in the pane browser, read the public
      counters (likes, reposts, comments, views, upvotes, points) and record them with
      `space_marketing_metrics_record {postId, metrics}` (lowercase keys such as `likes`, `comments`, `views`).
+     A DM or message thread has no public counters: record `replies` (the person's messages after ours, 0 if none)
+     with `not_measurable: 0`, never only `not_measurable` (a not-measurable post counts as never measured).
    - `waiting=true`: the run is paused; call `space_marketing_next` again.
 
    A Start on a quiet queue (the operator's, or Nous's) brings a brief to plan the next posts: draft for the

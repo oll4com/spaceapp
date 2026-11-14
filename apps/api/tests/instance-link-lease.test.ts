@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryNousRepository } from "@space/db";
 import { createNousService } from "../src/nous/service.js";
-import { LINK_LEASE_IDLE_MS, linkLease } from "../src/instance-link/lease.js";
+import { LINK_LEASE_IDLE_MS, heldPaneReached, linkLease } from "../src/instance-link/lease.js";
 
 describe("Space Link lease (ADR-014 Λ5)", () => {
   it("lets one link act at a time, expires when idle, and holds every link at reading once the person takes it back", () => {
@@ -25,6 +25,20 @@ describe("Space Link lease (ADR-014 Λ5)", () => {
     lease.giveBack("u");
     expect(lease.takenBackAt("u")).toBeNull();
     expect(lease.claim("u", "d1", "A")).toBeNull();
+  });
+
+  it("finds the pane the operator is at that a link's command reaches: by id anywhere, by name, or by its room alone", () => {
+    const held = { id: "pane:held0001", roomId: "room:a", paneName: "Builder", isClosed: false };
+    const command = (target: unknown, roomId = "room:a") => ({ roomId, requestId: "r", actions: [{ kind: "pane", operation: "prompt", text: "go", target }] });
+    expect(heldPaneReached(command({ paneIds: ["pane:held0001"] }), [held])).toBe(held);
+    expect(heldPaneReached(command({ paneNames: ["builder"] }), [held])).toBe(held);
+    expect(heldPaneReached(command({}), [held])).toBe(held);
+    expect(heldPaneReached(command({ runtimeId: "codex", state: "RUNNING" }), [held])).toBe(held);
+    expect(heldPaneReached({ roomId: "room:a", requestId: "r", actions: [{ kind: "resource", operation: "panes.update", input: { paneId: held.id } }] }, [held])).toBe(held);
+    expect(heldPaneReached(command({ paneIds: ["pane:other001"] }), [held])).toBeNull();
+    expect(heldPaneReached(command({ paneNames: ["Tester"] }), [held])).toBeNull();
+    expect(heldPaneReached(command({}, "room:b"), [held])).toBeNull();
+    expect(heldPaneReached(command({}), [])).toBeNull();
   });
 
   it("while a linked SpaceApp manages this one, Nous's own turns wait and the person's still run", async () => {

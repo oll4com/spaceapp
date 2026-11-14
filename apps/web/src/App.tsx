@@ -120,7 +120,7 @@ import {
   seedInitialLocalSettingsToServer,
   syncFromServer
 } from "./features/user-settings/user-settings-manager.js";
-import { type PaneCategoryColor } from "@space/contracts";
+import { isLightCodexPane, LIGHT_CODEX_RUNTIME_ID, type PaneCategoryColor } from "@space/contracts";
 import {
   nextCategoryColor,
   readStoredCategoryFilter,
@@ -3399,7 +3399,7 @@ export function App() {
           }
         }
         const prior = (await priorRequest)?.data ?? [];
-        const closedMatch = prior.find((candidate) => candidate.isClosed && candidate.mode === mode);
+        const closedMatch = prior.find((candidate) => candidate.isClosed && candidate.mode === mode && !isLightCodexPane(candidate));
         let pane: Pane;
         if (closedMatch) {
           pane = await api.updatePane(closedMatch.id, {
@@ -3454,6 +3454,20 @@ export function App() {
       await refreshRoomEvents(selectedRoomId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Harness pane failed to open");
+    }
+  }
+
+  async function addCodexLightPane() {
+    if (!selectedRoomId || panes.length >= 16) return;
+    try {
+      const pane = await api.createPane(selectedRoomId, "Codex light", "CHAT", { terminalRuntimeId: LIGHT_CODEX_RUNTIME_ID });
+      setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
+      setSelectedPaneId(pane.id);
+      setIsMemoryWorkspaceOpen(false);
+      setIsSpaceGatewayOpen(false);
+      await refreshRoomEvents(selectedRoomId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Codex light pane failed to open");
     }
   }
 
@@ -6854,6 +6868,7 @@ export function App() {
     } else if (id === "add-chat") {
       content = <LazyChatLauncherMenu mobile={false} onClose={onBack} onSelectChat={() => void addPane("CHAT")}
         onSelectHarness={() => void addHarnessPane()} onSelectLive={() => void addLivePane()} triggerRef={triggerRef}
+        onSelectCodexLight={() => void addCodexLightPane()} codexLightDisabled={!isCodexEnabled || panes.length >= 16}
         chatDisabled={!isCodexEnabled || panes.length >= 16} harnessDisabled={panes.length >= 16}
         chatHidden={isPaneHidden("chat")}
         harnessHidden={!isHarnessEnabled || isPaneHidden("harness")}
@@ -7319,6 +7334,8 @@ export function App() {
                         onSelectChat={() => void addPane("CHAT")}
                         onSelectHarness={() => void addHarnessPane()}
                         onSelectLive={() => void addLivePane()}
+                        onSelectCodexLight={() => void addCodexLightPane()}
+                        codexLightDisabled={!isCodexEnabled || panes.length >= 16}
                         triggerRef={chatLauncherButtonRef}
                         chatDisabled={!isCodexEnabled || panes.length >= 16}
                         chatHidden={isPaneHidden("chat")}

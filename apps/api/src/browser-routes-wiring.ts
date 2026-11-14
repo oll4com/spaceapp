@@ -2,6 +2,7 @@ import type { SpaceEventBus, SpaceStore } from "@space/runtime";
 import type { FastifyInstance } from "fastify";
 import { browserCensus, registerBrowserCensusRoutes } from "./browser-census-routes.js";
 import { browserAgentOf } from "./browser-control-activity.js";
+import { pageHasTypedText } from "./browser-page-readout.js";
 import { operatorFirstBrowsers, startBrowserReaper } from "./browser-reaper.js";
 import { registerCliBrowserBridgeRoutes } from "./cli-browser-bridge-routes.js";
 import { browserHandoffPendingReason, createCliBrowserCdpProxy } from "./cli-browser-cdp.js";
@@ -9,6 +10,7 @@ import type { SpaceApiConfig } from "./config.js";
 import { registerInternalAgentActionRoutes } from "./internal-agent-action-routes.js";
 import { settleBrowserHandoffNotifications } from "./notifications/browser-handoff.js";
 import { registerPaneBrowserRoutes } from "./pane-browser-routes.js";
+import { registerPaneBrowserTeleportRoutes } from "./pane-browser-teleport.js";
 import { registerPaneCliSessionRoutes } from "./pane-cli-session-routes.js";
 import { isBrowserPane } from "./pane-guards.js";
 import { registerPaneBrowserFrameRoutes } from "./pane-stream-routes.js";
@@ -32,7 +34,7 @@ type BrowserRoutesDeps = Pick<Bridge, "paneBrowserAccounts" | "marketingCopilotS
     browserSessionManager: Bridge["browserSessionManager"] & PaneBrowser["browserSessionManager"] & Vault["browser"] & Census["browserSessionManager"];
     cliRuntimeVisibility: Bridge["cliRuntimeVisibility"] & CliSessions["cliRuntimeVisibility"] & AgentActions["cliRuntimeVisibility"];
     browserControlActivity: NonNullable<Bridge["controlActivity"]> & PaneBrowser["controlActivity"] & Census["controlActivity"];
-    nousRef: NonNullable<Bridge["nous"]>; connectorCrypto: Vault["crypto"]; geminiAccountEmails: Census["geminiEmails"];
+    nousRef: NonNullable<Bridge["nous"]> & D<typeof registerPaneBrowserTeleportRoutes>["nous"]; connectorCrypto: Vault["crypto"]; geminiAccountEmails: Census["geminiEmails"];
     jobApplyService: NonNullable<Bridge["jobApplyService"]>; mailCopilotService: NonNullable<Bridge["mailCopilotService"]>;
     notificationService: Parameters<typeof settleBrowserHandoffNotifications>[0]["notifications"]; roomActionExecutor: AgentActions["roomActionExecutor"];
     cliUserHosting: { onUserCliHost: CliSessions["onUserCliHost"] };
@@ -80,7 +82,10 @@ export function registerBrowserRoutes(app: FastifyInstance, deps: BrowserRoutesD
         targetId: resolution.pane.id,
         metadata: { roomId: resolution.claims.roomId, cliPaneId: resolution.claims.paneId, cliSessionId: resolution.claims.cliSessionId, sessionId: resolution.session.sessionId }
       });
-    }
+    },
+    // A diagnostics read is a use of the pane browser in the Browser Host: an idle window comes back on the display and its
+    // frozen pages thaw; the proxy holds the agent's frames until it answers.
+    onActivity: (resolution) => browserSessionManager.diagnostics?.(resolution.pane, false, 1).catch(() => undefined)
   });
   cliBrowserCdpProxy.register(app, defaultRouteRateLimitOptions); vault.protection.onProtected((paneId) => cliBrowserCdpProxy.closeForPane(paneId, "VAULT_PROTECTED", "This browser is protected for the Vault."));
 
@@ -91,7 +96,20 @@ export function registerBrowserRoutes(app: FastifyInstance, deps: BrowserRoutesD
   const operatorBrowsers = operatorFirstBrowsers(browserSessionManager, { store, census, usedAt, noteUse: (paneId) => browserControlActivity.noteUse(paneId),
     warn: (error) => app.log.warn({ err: error }, "A browser could not yield to the operator.") });
   const reaper = startBrowserReaper({ store, census, usedAt, stopPane: (paneId, traceId) => browserSessionManager.stopPane(paneId, traceId),
-    warn: (error, paneId) => app.log.warn({ err: error, paneId }, "Browser reaper failed.") });
+    warn: (error, paneId) => app.log.warn({ err: error, paneId }, "Browser reaper failed."),
+    release: {
+      agentFor: (paneId) => browserControlActivity.agentFor(paneId, cliBrowserCdpProxy.connectionCount(paneId) > 0),
+      reports: async (driver) => {
+        const reports = nousRef.current?.paneReports;
+        return reports ? reports.list((await store.getRoom(driver.roomId)).ownerUserId ?? "user:operator", driver.id) : null;
+      },
+      typedForm: async (paneId) => {
+        const [pane, session] = await Promise.all([store.getPane(paneId), store.getLatestPaneBrowserSession(paneId)]);
+        // Like an agent's first command (onActivity below): the read brings an idle window back and thaws its frozen pages first.
+        await browserSessionManager.diagnostics?.(pane, false, 1).catch(() => undefined);
+        return !session || pageHasTypedText({ config, pane, session });
+      }
+    } });
   app.addHook("onClose", async () => reaper.stop());
   paneBrowserAccounts.current = registerPaneBrowserRoutes(app, {
     config, readGeminiAccountProfileDetails, store, browserSessionManager: operatorBrowsers, routeOptions: defaultRouteRateLimitOptions, cliBrowserCdpProxy,
@@ -112,6 +130,8 @@ export function registerBrowserRoutes(app: FastifyInstance, deps: BrowserRoutesD
     store, browserSessionManager: operatorBrowsers, routeOptions: defaultRouteRateLimitOptions, youtubeSessionStarts,
     youtubeAccountOperations
   });
+  registerPaneBrowserTeleportRoutes(app, { config, store, browserSessionManager: operatorBrowsers, controlActivity: browserControlActivity, nous: nousRef,
+    routeOptions: defaultRouteRateLimitOptions });
 
   registerPaneCliSessionRoutes(app, {
     config, deletingCliAccountProfileKeys, cliAccountProfileKey, store, eventBus, codexCliModeDefaultsService,

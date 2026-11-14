@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryControlRepository } from "@space/db";
-import { createHeldDispatch, heldModelRunning, holdCalmPrompts, holdUnlessAllowed, mayDeliver, type HeldDelivery, type NousLoadLevel } from "../src/nous/held-dispatch.js";
+import { calmPromptActionSchema, createHeldDispatch, heldModelRunning, holdCalmPrompts, holdUnlessAllowed, mayDeliver, type HeldDelivery, type NousLoadLevel } from "../src/nous/held-dispatch.js";
 
 const owner = "user:operator";
 const andy = { roomId: "room:dino0001", roomName: "Dino", paneId: "pane:andy0001", paneName: "Andy" };
@@ -64,7 +64,8 @@ describe("Nous's held dispatch", () => {
     const f = fixture("CALM");
     await f.held.hold(owner, andy, "Set the model", "light", { modelId: "gpt-6-astra", reasoningEffort: "high" });
     for (const result of ["Pane has no active session.", "Native state is unknown.", "Send or clear the current CLI draft before changing model settings.",
-      "Wait for the OpenCode turn to finish.", "Wait for this CLI turn to finish before changing models."]) {
+      "Wait for the OpenCode turn to finish.", "Wait for this CLI turn to finish before changing models.",
+      "Claude is working; change its model after the current turn."]) {
       f.deliver.mockResolvedValueOnce({ ok: false, result });
       expect(await f.held.tick()).toEqual({ delivered: 0, failed: 0 });
     }
@@ -153,6 +154,11 @@ describe("Nous's held dispatch", () => {
     f.state.level = "BUSY";
     expect((await holdCalmPrompts(nous, owner, room, panes, [calm])).actions)
       .toEqual([{ kind: "pane", operation: "prompt", target: { paneIds: [andy.paneId] }, text: "Step 3.", when: "AFTER_TURN" }]);
+    // Daily Nous errors F (7-8/11 ×3): a calm prompt naming its pane parses; a name no open pane has goes on after the turn for Space Control to name.
+    const named = { kind: "pane", operation: "prompt", target: { paneNames: ["Zed"] }, text: "Step 4.", when: "calm", priority: "normal" };
+    expect(calmPromptActionSchema.safeParse(named).success).toBe(true);
+    expect((await holdCalmPrompts(nous, owner, room, panes, [named])).actions)
+      .toEqual([{ kind: "pane", operation: "prompt", target: { paneNames: ["Zed"] }, text: "Step 4.", when: "AFTER_TURN" }]);
   });
 });
 

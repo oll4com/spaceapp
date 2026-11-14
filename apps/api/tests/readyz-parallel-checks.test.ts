@@ -29,7 +29,7 @@ it("starts every readiness check before any of them answers", async () => {
     } as never,
     browserSessionManager: {
       browserHostHealth: () => gated("browserHost", {
-        buildCommit: "abc", captureMetrics: null, status: { enabled: true }, capacity: { maxSessions: 10, maxLiveWorkloads: 4 }
+        buildCommit: "abc", captureMetrics: null, status: { enabled: true, sandbox: { state: "NO_SANDBOX", reason: "lab", checkedAt: null } }, capacity: { maxSessions: 1, maxLiveWorkloads: 4 } // a 2-4 GB browser container's cap (light browser step 6)
       })
     } as never,
     workerReadinessChecker: () => gated("worker", workerReadinessSchema.parse({
@@ -44,7 +44,8 @@ it("starts every readiness check before any of them answers", async () => {
   try {
     const ready = await app.inject({ method: "GET", url: "/readyz" });
     expect(ready.json().dependencies).toMatchObject({
-      database: "RUNNING", worker: "RUNNING", cliHost: "RUNNING", cliAdminHost: "RUNNING", browserHost: "RUNNING"
+      database: "RUNNING", worker: "RUNNING", cliHost: "RUNNING", cliAdminHost: "RUNNING", browserHost: "RUNNING",
+      browserSandbox: "NO_SANDBOX" // where the INT5-C-F3 ladder ends, run-spaceapp doctor names it
     });
   } finally {
     await app.close();

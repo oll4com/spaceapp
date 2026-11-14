@@ -110,6 +110,7 @@ export function WidgetsSettingsCard() {
               <SpaceToggle
                 className="settings-flat-row settings-flat-toggle-row dock-visibility-row"
                 name={`widget-visibility-${widget.id}`}
+                help={widget.description}
                 ariaLabel={t("Toggle {label} visibility", { label: t(widget.label) })}
                 label={
                   <span className="docks-toggle-label-wrap">
@@ -117,7 +118,6 @@ export function WidgetsSettingsCard() {
                     <span>{t(widget.label)}</span>
                   </span>
                 }
-                detail={t(widget.description)}
                 checked={isVisible}
                 onChange={(checked) => {
                   if (checked) {

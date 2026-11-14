@@ -2,13 +2,32 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { describe, expect, it, vi } from 'vitest';
 import { defaultFreelanceCopilotPaneMetadata } from '@space/contracts';
 import { InMemorySpaceStore } from '@space/runtime';
-const mocks = vi.hoisted(() => ({ spawn: vi.fn(), xvfbPid: 0 }));
-vi.mock('node:child_process', async importOriginal => ({ ...await importOriginal<typeof import('node:child_process')>(), spawn: mocks.spawn }));
+const mocks = vi.hoisted(() => ({ spawn: vi.fn(), xvfbPid: 0, pactl: '[]' as string | null, chromeVersion: null as string | null }));
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  const { promisify } = await import('node:util');
+  // pactl (the sound check of the idle sweep) answers from the test, null as a refusing sound server; the rest run.
+  const execFile = Object.assign((command: string, ...rest: unknown[]) => {
+    // `chrome --version` (the headless user agent, light browser step 5) answers from the test when it names a version.
+    if (command === process.execPath && (rest[0] as string[])[0] === '--version' && mocks.chromeVersion) {
+      const done = rest.at(-1) as (error: Error | null, stdout: string) => void;
+      setImmediate(() => done(null, mocks.chromeVersion!));
+      return new EventEmitter();
+    }
+    if (command !== 'pactl') return (actual.execFile as (...args: unknown[]) => unknown)(command, ...rest);
+    const done = rest.at(-1) as (error: Error | null, stdout: string) => void;
+    const answer = mocks.pactl;
+    setImmediate(() => answer === null ? done(new Error('Connection failure: Access denied'), '') : done(null, answer));
+    return new EventEmitter();
+  }, { [promisify.custom]: (actual.execFile as unknown as Record<symbol, unknown>)[promisify.custom] });
+  return { ...actual, spawn: mocks.spawn, execFile };
+});
 vi.mock('node:fs', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
@@ -20,10 +39,10 @@ vi.mock('node:fs', async importOriginal => {
       : (actual.readFileSync as (...args: unknown[]) => unknown)(path, ...rest)) as typeof actual.readFileSync
   };
 });
-import { allocateDisplay, createBrowserSessionManager, releaseDisplay, stopChromeAndDisplay } from '../src/browser-sessions.js';
+import { allocateDisplay, browserSessionDisplayCapacity, createBrowserSessionManager, releaseDisplay, stopChromeAndDisplay } from '../src/browser-sessions.js';
 import { getApiConfig } from '../src/config.js';
 
-async function fixture(mode: 'BROWSER' | 'YOUTUBE' | 'FREELANCE_COPILOT' = 'YOUTUBE') {
+async function fixture(mode: 'BROWSER' | 'YOUTUBE' | 'FREELANCE_COPILOT' = 'YOUTUBE', profile = 'profile') {
   const root = await mkdtemp(join(tmpdir(), 'browser-lifecycle-'));
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await new Promise<void>(resolve => server.once('listening', resolve));
@@ -32,11 +51,22 @@ async function fixture(mode: 'BROWSER' | 'YOUTUBE' | 'FREELANCE_COPILOT' = 'YOUT
   const scriptSources: string[] = [];
   let currentUrl: string | null = null;
   let targets = 0;
+  // One Chrome window: the manager's moves of it (CPU plan 5.1); Target.getTargets lists the pages only once asked.
+  const win = { left: 10, top: 10, width: 1440, height: 900, windowState: 'normal' };
+  const windowMoves: unknown[] = [];
+  // The pages' lifecycle states the manager set (light browser step 4), and whether the page plays a <video>/<audio>.
+  const lifecycle: string[] = [];
+  let mediaPlaying = false;
+  let windowMovesFail = false;
+  let listTargets = false;
   server.on('connection', socket => socket.on('message', data => {
     const { id, method, sessionId, params } = JSON.parse(data.toString());
     cdpMethods.push(method);
     if (method === 'Page.addScriptToEvaluateOnNewDocument' && typeof params?.source === 'string') scriptSources.push(params.source);
     if (method === 'Page.navigate') currentUrl = params.url;
+    if (method === 'Browser.setWindowBounds' && windowMovesFail) { socket.send(JSON.stringify({ id, error: { code: -32000, message: 'Browser window not found' } })); return; }
+    if (method === 'Browser.setWindowBounds') { windowMoves.push(params.bounds); Object.assign(win, params.bounds); }
+    if (method === 'Page.setWebLifecycleState') lifecycle.push(`${params.state}:${sessionId}`);
     if (method === 'Browser.close') {
       const chrome = children.find(child => child.command === process.execPath && child.exitCode === null && child.signalCode === null);
       if (chrome) { chrome.exitCode = 0; chrome.emit('exit', 0, null); }
@@ -44,7 +74,10 @@ async function fixture(mode: 'BROWSER' | 'YOUTUBE' | 'FREELANCE_COPILOT' = 'YOUT
     const result = method === 'Target.createTarget' ? { targetId: `page:test:${++targets}` }
       : method === 'Target.attachToTarget' ? { sessionId: `cdp:${params.targetId}` }
       : method === 'Page.captureScreenshot' ? { data: 'iVBORw0KGgo=' }
+      : method === 'Runtime.evaluate' && String(params?.expression).includes("querySelectorAll('video, audio')") ? { result: { value: mediaPlaying } }
       : method === 'Runtime.evaluate' ? { result: { value: { href: currentUrl === 'about:blank' ? null : currentUrl, title: 'Lifecycle proof', scrollX: 0, scrollY: 0, videoPaused: null } } }
+      : method === 'Browser.getWindowForTarget' ? { windowId: 1, bounds: { ...win } }
+      : method === 'Target.getTargets' && listTargets ? { targetInfos: Array.from({ length: targets }, (_, index) => ({ targetId: `page:test:${index + 1}`, type: 'page' })) }
       : {};
     socket.send(JSON.stringify({ id, result, ...(sessionId ? { sessionId } : {}) }));
     if (method === 'Page.navigate') socket.send(JSON.stringify({ method: 'Page.loadEventFired', sessionId, params: {} }));
@@ -68,9 +101,10 @@ async function fixture(mode: 'BROWSER' | 'YOUTUBE' | 'FREELANCE_COPILOT' = 'YOUT
   const room = store.createRoom({ name: 'Lifecycle proof', initialPaneCount: 0 });
   const pane = store.createPane({ roomId: room.id, title: 'Browser lifecycle', mode });
   const session = store.createPaneBrowserSession({ sessionId: 'browser_session:lifecycle', agentNumber: 1, paneId: pane.id, roomId: room.id,
-    profileId: 'profile:lifecycle', profilePath: join(root, 'profile'), viewport: 'wide', targetUrl: null, status: 'READY', isActive: true });
+    profileId: 'profile:lifecycle', profilePath: join(root, profile), viewport: 'wide', targetUrl: null, status: 'READY', isActive: true });
   const manager = createBrowserSessionManager({ store, config: getApiConfig({ SPACE_BROWSER_SESSIONS_PROFILE_ROOT: root, SPACE_BROWSER_SESSIONS_ENABLED: 'true', SPACE_BROWSER_SESSIONS_CHROME_PATH: process.execPath, SPACE_BROWSER_SESSIONS_XVFB_PATH: '/fixture/Xvfb', SPACE_BROWSER_SESSIONS_XVFB_ENABLED: 'true' }) });
-  return { manager, pane, store, session, children, cdpMethods, scriptSources, hold: () => { holdChrome = true; }, release: () => releaseChrome?.(),
+  return { manager, pane, store, session, children, cdpMethods, scriptSources, windowMoves, lifecycle, playMedia: (on: boolean) => { mediaPlaying = on; }, failWindowMoves: (on: boolean) => { windowMovesFail = on; }, listTargets: () => { listTargets = true; },
+    hold: () => { holdChrome = true; }, release: () => releaseChrome?.(),
     async cleanup() { await manager.closeAll(); for (const socket of server.clients) socket.terminate(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); } };
 }
 
@@ -98,7 +132,7 @@ describe('managed browser runtime lifecycle', () => {
       expect(f.children.every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true);
       expect(f.cdpMethods).toContain('Browser.close');
       expect(f.children.find(child => child.command === process.execPath)?.signalCode).toBeNull();
-      const displays = Array.from({ length: 8 }, () => allocateDisplay());
+      const displays = Array.from({ length: browserSessionDisplayCapacity }, () => allocateDisplay());
       expect(displays.every(display => display !== null)).toBe(true);
       displays.forEach(display => { if (display !== null) releaseDisplay(display); });
     } finally { await f.cleanup(); }
@@ -123,6 +157,195 @@ describe('managed browser runtime lifecycle', () => {
     // A later close of the same dead profile frees nothing twice.
     await stopChromeAndDisplay(chrome, undefined, xvfb, display, () => { freed += 1; });
     expect(freed).toBe(1);
+  });
+  it('a launch with no free display takes the display of a Chrome that died on its own (13/11 "No Xvfb display is available")', async () => {
+    const f = await fixture();
+    const held: number[] = [];
+    try {
+      await f.manager.getActive(f.pane);
+      const chrome = f.children.find(child => child.command === process.execPath)!;
+      chrome.exitCode = 1;
+      chrome.emit('exit', 1, null);
+      for (let display = allocateDisplay(); display !== null; display = allocateDisplay()) held.push(display);
+      const other = f.store.createPane({ roomId: f.pane.roomId, title: 'Scheduled scan', mode: 'BROWSER' });
+      f.store.createPaneBrowserSession({ sessionId: 'browser_session:scan', agentNumber: 2, paneId: other.id, roomId: f.pane.roomId, profileId: 'profile:scan',
+        profilePath: join(f.session.profilePath, '..', 'scan'), viewport: 'wide', targetUrl: null, status: 'READY', isActive: true });
+      await f.manager.getActive(other);
+      const xvfbs = f.children.filter(child => child.command === '/fixture/Xvfb');
+      expect(xvfbs).toHaveLength(2);
+      expect(xvfbs[0]!.signalCode).toBe('SIGTERM');
+      expect(xvfbs[1]!.args[0]).toBe(xvfbs[0]!.args[0]);
+    } finally { held.forEach(releaseDisplay); await f.cleanup(); }
+  });
+  const chrome157 = 'Google Chrome 157.0.8103.78 \n';
+  it('launches a browser that holds no Google account headless, without Xvfb, and as Chrome to sites (light browser step 5)', async () => {
+    mocks.chromeVersion = chrome157;
+    const f = await fixture();
+    try {
+      await f.manager.getActive(f.pane);
+      const chrome = f.children.find(child => child.command === process.execPath)!;
+      expect(f.children.filter(child => child.command === '/fixture/Xvfb')).toHaveLength(0);
+      expect(chrome.env?.DISPLAY).toBeUndefined();
+      expect(chrome.args).toEqual(expect.arrayContaining(['--headless=new', '--screen-info={1280x720}',
+        '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36']));
+    } finally { await f.cleanup(); mocks.chromeVersion = null; }
+  });
+  it.each([
+    ['a Google sign-in', 'profile'],
+    ['a Google account profile', 'google-accounts/owner/account'],
+    ['a CLI account profile', 'cli-accounts/key']
+  ])('keeps a browser with %s headed on Xvfb (light browser step 5)', async (kind, profile) => {
+    mocks.chromeVersion = chrome157;
+    const f = await fixture('YOUTUBE', profile);
+    try {
+      if (kind === 'a Google sign-in') {
+        await mkdir(join(f.session.profilePath, 'Default', 'Network'), { recursive: true });
+        const db = new DatabaseSync(join(f.session.profilePath, 'Default', 'Network', 'Cookies'));
+        db.exec("CREATE TABLE cookies (host_key TEXT, name TEXT, is_persistent INTEGER, expires_utc INTEGER); INSERT INTO cookies VALUES ('.google.com', 'SID', 0, 0)");
+        db.close();
+      }
+      await f.manager.getActive(f.pane);
+      const chrome = f.children.find(child => child.command === process.execPath)!;
+      expect(f.children.filter(child => child.command === '/fixture/Xvfb')).toHaveLength(1);
+      expect(chrome.env?.DISPLAY).toMatch(/^:\d+$/);
+      expect(chrome.args.some(arg => arg.startsWith('--headless') || arg.startsWith('--user-agent'))).toBe(false);
+    } finally { await f.cleanup(); mocks.chromeVersion = null; }
+  });
+  it('minimizes an idle headless window, freezes its pages only then, and restores both on the next use (light browser step 5)', async () => {
+    mocks.chromeVersion = chrome157;
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    const f = await fixture();
+    const settle = async (done: () => boolean) => { for (let i = 0; i < 300 && !done(); i += 1) await new Promise(resolve => setTimeout(resolve, 10)); };
+    try {
+      await f.manager.getActive(f.pane);
+      f.listTargets();
+      await vi.advanceTimersByTimeAsync(360_000);
+      await settle(() => f.lifecycle.length > 0);
+      // Off the display does nothing headless (probe 13/11: still visible, rAF 60); a minimized page is hidden.
+      expect(f.windowMoves).toEqual([{ windowState: 'minimized' }]);
+      expect(f.lifecycle).toEqual(['frozen:cdp:page:test:1']);
+      expect(f.cdpMethods.indexOf('Browser.setWindowBounds')).toBeLessThan(f.cdpMethods.indexOf('Page.setWebLifecycleState'));
+      await f.manager.getActive(f.pane);
+      expect(f.windowMoves).toEqual([{ windowState: 'minimized' }, { windowState: 'normal' }]);
+      expect(f.lifecycle).toEqual(['frozen:cdp:page:test:1', 'active:cdp:page:test:1']);
+    } finally { await f.cleanup(); vi.useRealTimers(); mocks.chromeVersion = null; }
+  });
+  it('moves a window nobody used for 5 minutes off the display, and back on its next use but not on a tab list read', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    const f = await fixture();
+    // The sweep waits on the fake Chrome's socket, which runs on real time.
+    const settle = async (done: () => boolean) => { for (let i = 0; i < 300 && !done(); i += 1) await new Promise(resolve => setTimeout(resolve, 10)); };
+    try {
+      await f.manager.getActive(f.pane);
+      f.listTargets();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settle(() => f.cdpMethods.includes('Browser.getWindowForTarget'));
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(f.windowMoves).toEqual([]);
+      await vi.advanceTimersByTimeAsync(300_000);
+      await settle(() => f.windowMoves.length > 0);
+      expect(f.windowMoves).toEqual([{ left: 20_000, top: 0 }]);
+      await f.manager.listPages(f.pane);
+      expect(f.windowMoves).toHaveLength(1);
+      await f.manager.getActive(f.pane);
+      expect(f.windowMoves).toEqual([{ left: 20_000, top: 0 }, { left: 10, top: 10 }]);
+    } finally { await f.cleanup(); vi.useRealTimers(); }
+  });
+  it('brings an off-display window back on an agent command and before a live view starts', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    const f = await fixture();
+    const settle = async (done: () => boolean) => { for (let i = 0; i < 300 && !done(); i += 1) await new Promise(resolve => setTimeout(resolve, 10)); };
+    const away = { left: 20_000, top: 0 }, home = { left: 10, top: 10 };
+    try {
+      await f.manager.getActive(f.pane);
+      f.listTargets();
+      await vi.advanceTimersByTimeAsync(360_000);
+      await settle(() => f.windowMoves.length === 1);
+      // The CLI CDP proxy sends this diagnostics read on an agent's command (cli-browser-cdp.test.ts, the pipe case).
+      await f.manager.diagnostics?.(f.pane, false, 1);
+      expect(f.windowMoves).toEqual([away, home]);
+      await vi.advanceTimersByTimeAsync(360_000);
+      await settle(() => f.windowMoves.length === 3);
+      const stream = await f.manager.startFrameStream?.(f.session.sessionId, 'INTERACTIVE', () => undefined);
+      expect(f.windowMoves).toEqual([away, home, away, home]);
+      expect(f.cdpMethods.lastIndexOf('Browser.setWindowBounds')).toBeLessThan(f.cdpMethods.lastIndexOf('Page.startScreencast'));
+      await stream?.stop();
+    } finally { await f.cleanup(); vi.useRealTimers(); }
+  });
+  it('freezes the pages of an idle, silent browser with its window and thaws them before its next command (light browser step 4)', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    const f = await fixture();
+    const settle = async (done: () => boolean) => { for (let i = 0; i < 300 && !done(); i += 1) await new Promise(resolve => setTimeout(resolve, 10)); };
+    try {
+      await f.manager.getActive(f.pane);
+      f.listTargets();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settle(() => f.cdpMethods.includes('Browser.getWindowForTarget'));
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(f.lifecycle).toEqual([]); // used a minute ago
+      await vi.advanceTimersByTimeAsync(300_000);
+      await settle(() => f.lifecycle.length > 0);
+      expect(f.lifecycle).toEqual(['frozen:cdp:page:test:1']);
+      // An agent command (the CLI CDP proxy's diagnostics read): the thaw is sent before anything else reaches the page.
+      const before = f.cdpMethods.length;
+      await f.manager.diagnostics?.(f.pane, false, 1);
+      await f.manager.getActive(f.pane);
+      expect(f.lifecycle).toEqual(['frozen:cdp:page:test:1', 'active:cdp:page:test:1']);
+      const after = f.cdpMethods.slice(before).filter(method => method.startsWith('Page.') || method.startsWith('Runtime.') || method.startsWith('Input.'));
+      expect(after[0]).toBe('Page.setWebLifecycleState');
+    } finally { await f.cleanup(); vi.useRealTimers(); mocks.pactl = '[]'; }
+  });
+  it('never freezes a page playing media or a browser whose sound it cannot read, though the window leaves the display', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    const f = await fixture();
+    const settle = async (done: () => boolean) => { for (let i = 0; i < 300 && !done(); i += 1) await new Promise(resolve => setTimeout(resolve, 10)); };
+    const sweeps = () => f.cdpMethods.filter(method => method === 'Target.getTargets').length;
+    try {
+      await f.manager.getActive(f.pane);
+      f.listTargets();
+      f.playMedia(true);
+      await vi.advanceTimersByTimeAsync(360_000);
+      await settle(() => f.windowMoves.length === 1);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(f.windowMoves).toEqual([{ left: 20_000, top: 0 }]);
+      expect(f.lifecycle).toEqual([]);
+      // Silent page, but pactl refuses: no freeze. Once pactl answers, the next sweep freezes it.
+      f.playMedia(false);
+      mocks.pactl = null;
+      let seen = sweeps();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settle(() => sweeps() > seen);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(f.lifecycle).toEqual([]);
+      mocks.pactl = '[]';
+      seen = sweeps();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settle(() => f.lifecycle.length > 0);
+      expect(f.lifecycle).toEqual(['frozen:cdp:page:test:1']);
+    } finally { await f.cleanup(); vi.useRealTimers(); mocks.pactl = '[]'; }
+  });
+  it('never freezes a page whose window stayed on the display: it would paint no frame after its thaw (light browser step 4)', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    const f = await fixture();
+    const settle = async (done: () => boolean) => { for (let i = 0; i < 300 && !done(); i += 1) await new Promise(resolve => setTimeout(resolve, 10)); };
+    const moveTries = () => f.cdpMethods.filter(method => method === 'Browser.setWindowBounds').length;
+    try {
+      await f.manager.getActive(f.pane);
+      f.listTargets();
+      f.failWindowMoves(true);
+      await vi.advanceTimersByTimeAsync(360_000);
+      await settle(() => moveTries() > 0);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(f.windowMoves).toEqual([]);
+      expect(f.lifecycle).toEqual([]);
+      // The next sweep moves it: now the page freezes, after the move.
+      f.failWindowMoves(false);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settle(() => f.lifecycle.length > 0);
+      expect(f.windowMoves).toEqual([{ left: 20_000, top: 0 }]);
+      expect(f.lifecycle).toEqual(['frozen:cdp:page:test:1']);
+      expect(f.cdpMethods.lastIndexOf('Browser.setWindowBounds')).toBeLessThan(f.cdpMethods.indexOf('Page.setWebLifecycleState'));
+    } finally { await f.cleanup(); vi.useRealTimers(); mocks.pactl = '[]'; }
   });
   it('removes the logins Chrome saved in the profile before launching it, and nothing else', async () => {
     const f = await fixture('FREELANCE_COPILOT');
@@ -266,6 +489,31 @@ describe('managed browser runtime lifecycle', () => {
       f.store.updateFreelanceCopilotMetadata(other.id, { ...metadata, settings: { ...metadata.settings, browserEgress: 'greece' } });
       await expect(f.manager.getActive(other)).rejects.toThrow(/BROWSER_ROUTE/);
       expect(chromes()).toHaveLength(2);
+    } finally { await f.cleanup(); }
+  });
+  it('streams Preview-only viewers by a screenshot a second and switches to the screencast while a faster viewer watches', async () => {
+    const f = await fixture('BROWSER');
+    try {
+      await f.manager.getActive(f.pane);
+      const count = (method: string) => f.cdpMethods.filter(sent => sent === method).length;
+      const previewFrames: number[] = [];
+      const preview = await f.manager.startFrameStream!(f.session.sessionId, 'PREVIEW', frame => { previewFrames.push(frame.sequence); });
+      await vi.waitFor(() => expect(previewFrames).toHaveLength(1));
+      expect(count('Page.startScreencast')).toBe(0);
+
+      const realtime = await f.manager.startFrameStream!(f.session.sessionId, 'REALTIME', () => undefined);
+      expect(count('Page.startScreencast')).toBe(1);
+      const shots = count('Page.captureScreenshot');
+      await new Promise(resolve => setTimeout(resolve, 1_200));
+      expect(count('Page.captureScreenshot')).toBe(shots);
+
+      // The Realtime viewer leaves: the screencast stops and the Preview viewer gets screenshots again.
+      await realtime.stop();
+      expect(count('Page.stopScreencast')).toBe(1);
+      await vi.waitFor(() => expect(count('Page.captureScreenshot')).toBeGreaterThan(shots));
+      await preview.stop();
+      expect(f.manager.capacity?.().activeLiveWorkloads).toBe(0);
+      expect(count('Page.stopScreencast')).toBe(1);
     } finally { await f.cleanup(); }
   });
   it('injects the YouTube ad-block document-start script by default', async () => {

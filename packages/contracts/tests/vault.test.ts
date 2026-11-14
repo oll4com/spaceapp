@@ -5,7 +5,7 @@ import {
   openVaultEnvelope, openWithVaultPrivateKey, sealPasswordEnvelope, sealRecoveryEnvelope, sealServerShare, sealToVaultPublicKey,
   sealVaultEnvelope, signVaultCertificate, signVaultMessage, splitVaultRootKey, vaultAgentResultSchema, vaultAgentSaveRequestSchema, vaultAgentSaveSite, vaultAuditEventSchema,
   vaultBase64url, vaultDelegationCertificateSchema, vaultDigest, vaultEnvelopeSchema, vaultItemMetadataSchema, vaultKdfParamsSchema,
-  vaultItemLink, vaultLoginPageProblem, vaultOriginCovers, vaultRandomBytes, vaultUnlockChallengeMessage, verifyVaultCertificate, verifyVaultMessage
+  vaultItemLink, vaultLoginPageProblem, vaultDelegateRequestSchema, vaultAgentListItemSchema, vaultAgentCardFillRequestSchema, vaultOriginCovers, vaultRandomBytes, vaultUnlockChallengeMessage, verifyVaultCertificate, verifyVaultMessage
 } from "../src/index.js";
 
 // Synthetic values only. The test KDF stands in for the browser's Argon2id (PBKDF2 keeps the suite fast).
@@ -136,6 +136,47 @@ describe("Vault exact origins", () => {
     expect(vaultOriginCovers(["http://login.gsis.gr"], "http://login.gsis.gr")).toBe(true);
     expect(vaultOriginCovers(["http://login.gsis.gr"], "https://oauth2.gsis.gr")).toBe(false);
     expect(vaultOriginCovers(["https://login.gsis.gr:8443"], "https://oauth2.gsis.gr")).toBe(false);
+  });
+});
+
+describe("Vault cards (plan clipboard:qf0P640vyLp2)", () => {
+  const policy = { agentUse: true, approvalMode: "ASSIST", submitAllowed: false, maxFillsPerHour: 6, acceptedOriginRisks: [] };
+  const card = { id: newVaultHandle("vault_item"), label: "Revolut", origins: [], fieldRoles: ["CARD_NUMBER", "CARD_EXPIRY", "CARD_CVC", "CARDHOLDER_NAME"], policy, card: { brand: "VISA", last4: "4242" } };
+
+  it("keeps only label, brand and last four in the clear; number, expiry, CVC and name are sealed fields", () => {
+    expect(vaultItemMetadataSchema.safeParse(card).success).toBe(true);
+    for (const extra of [{ number: "4242424242424242" }, { expiry: "12/30" }, { cvc: "123" }, { holder: "A Person" }]) {
+      expect(vaultItemMetadataSchema.safeParse({ ...card, card: { ...card.card, ...extra } }).success).toBe(false);
+      expect(vaultItemMetadataSchema.safeParse({ ...card, ...extra }).success).toBe(false);
+    }
+    for (const last4 of ["424", "42424", "abcd", "4242424242424242"]) expect(vaultItemMetadataSchema.safeParse({ ...card, card: { ...card.card, last4 } }).success).toBe(false);
+    expect(vaultItemMetadataSchema.safeParse({ ...card, card: { ...card.card, brand: "SYNTHETIC" } }).success).toBe(false);
+  });
+
+  it("never mixes a card with a login: no origins, card fields only, a number always", () => {
+    expect(vaultItemMetadataSchema.safeParse({ ...card, origins: ["https://shop.example"] }).success).toBe(false);
+    expect(vaultItemMetadataSchema.safeParse({ ...card, fieldRoles: ["CARD_NUMBER", "PASSWORD"] }).success).toBe(false);
+    expect(vaultItemMetadataSchema.safeParse({ ...card, fieldRoles: ["CARD_EXPIRY", "CARD_CVC"] }).success).toBe(false);
+    expect(vaultItemMetadataSchema.safeParse({ ...card, card: null }).success).toBe(false);
+    expect(vaultItemMetadataSchema.safeParse({ ...card, loginPage: "https://shop.example/pay" }).success).toBe(false);
+    const login = { id: newVaultHandle("vault_item"), label: "Login", origins: ["https://shop.example"], fieldRoles: ["USERNAME", "PASSWORD"], policy };
+    expect(vaultItemMetadataSchema.parse(login).card).toBeNull();
+    expect(vaultItemMetadataSchema.safeParse({ ...login, origins: [] }).success).toBe(false);
+    expect(vaultItemMetadataSchema.safeParse({ ...login, fieldRoles: ["USERNAME", "CARD_NUMBER"] }).success).toBe(false);
+    expect(vaultItemMetadataSchema.safeParse({ ...login, card: card.card }).success).toBe(false);
+  });
+
+  it("delegates a card with no origins and never with submit; agents see brand and last four only", () => {
+    const delegate = (item: Record<string, unknown>) => vaultDelegateRequestSchema.shape.items.safeParse([item]).success;
+    const base = { handle: card.id, origins: [], fields: card.fieldRoles, approvalMode: "FULL", submit: false };
+    expect(delegate(base)).toBe(true);
+    expect(delegate({ ...base, submit: true })).toBe(false);
+    expect(delegate({ ...base, origins: ["https://shop.example"] })).toBe(false);
+    expect(delegate({ ...base, fields: ["USERNAME", "PASSWORD"] })).toBe(false);
+    expect(delegate({ ...base, origins: ["https://shop.example"], fields: ["USERNAME", "PASSWORD"], submit: true })).toBe(true);
+    expect(vaultAgentListItemSchema.safeParse({ handle: card.id, label: "Revolut", origins: [], fields: card.fieldRoles, card: "VISA ••4242" }).success).toBe(true);
+    expect(vaultAgentCardFillRequestSchema.safeParse({ handle: card.id, targetPaneId: "pane:abcdef" }).success).toBe(true);
+    expect(vaultAgentCardFillRequestSchema.safeParse({ handle: card.id, submit: true }).success).toBe(false);
   });
 });
 

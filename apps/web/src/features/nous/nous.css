@@ -1322,3 +1322,5 @@
 .nous-marketing-tiles strong { color: var(--dock-text); font-size: 0.95rem; font-variant-numeric: tabular-nums; }
 .nous-marketing-tiles .is-main strong { color: var(--dock-accent); font-size: 1.15rem; }
 .nous-marketing-tiles .is-down strong { color: var(--dock-danger); }
+/* The join link as a button (operator 13/11 16:00 BKK); the pane's own colours are not defined here. */
+.nous-appointments-detail .appointments-join { justify-self: start; color: var(--modern-on-accent, #0b1412); }

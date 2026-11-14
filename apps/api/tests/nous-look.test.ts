@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import type { Artifact, Pane, Room } from "@space/contracts";
+import { SpaceFeatureDisabledError } from "@space/runtime";
 import { createNousFiles } from "../src/nous/files.js";
 import { createNousTools, NOUS_LOOK_MAX_BYTES, type NousToolDeps } from "../src/nous/tools.js";
 import { buildGenericUserUploadStorage } from "../src/upload-media.js";
@@ -70,7 +71,7 @@ describe("space_look", () => {
     expect(await nous.execute("space_look", { room: "Main", pane: "Andy" }, ctx)).toMatchObject({ ok: true, result: expect.stringContaining("without a browser, so its screen was read as text") });
     expect((await nous.execute("space_look", { room: "Main", pane: "Nobody" }, ctx)).ok).toBe(false);
     const closed = tools({ browser: { getActive: async () => null, action } });
-    expect(await closed.nous.execute("space_look", { room: "Main", pane: "Web" }, ctx)).toMatchObject({ ok: false, display: "Web's browser is not open" });
+    expect(await closed.nous.execute("space_look", { room: "Main", pane: "Web" }, ctx)).toMatchObject({ ok: false, refused: true, display: "Web's browser is not open" });
     // 13/11 Score errors: a copilot pane with no browser to see (closed, or the Browser Host down) has its CLI screen read as text.
     const roomTool = async () => ({ ok: true, display: "Read Marketing", result: "copilot screen" });
     expect(await tools({ roomTool, browser: { getActive: async () => null, action } }).nous.execute("space_look", { room: "Main", pane: "Marketing" }, ctx))
@@ -79,6 +80,15 @@ describe("space_look", () => {
     expect(await tools({ roomTool, browser: down }).nous.execute("space_look", { room: "Main", pane: "Marketing" }, ctx))
       .toMatchObject({ ok: true, result: expect.stringContaining("(The Browser Host is unavailable.), so its CLI screen was read as text") });
     expect(await tools({ browser: down }).nous.execute("space_look", { room: "Main", pane: "Web" }, ctx)).toMatchObject({ ok: false, result: "The Browser Host is unavailable." });
+    // Daily Nous errors 13/11: the Browser Host's own outage (its SpaceFeatureDisabledError) is a hold, not Nous's failure.
+    const capacity = { getActive: async () => { throw new SpaceFeatureDisabledError("BROWSER_SESSION_CAPACITY", "No Xvfb display is available for a headed browser session."); }, action };
+    expect(await tools({ browser: capacity }).nous.execute("space_look", { room: "Main", pane: "Web" }, ctx))
+      .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("No Xvfb display is available") });
+    // Daily errors 12/11 17:24 UTC: the one-route-per-account guard is a refusal naming the pane that holds the account.
+    const route = { getActive: async () => { throw new Error("BROWSER_ROUTE: another pane uses this browser account on another network route; give both the same route, close the other pane, or use another browser account."); }, action };
+    const browserTabs = async () => [{ paneId: webPane.id, profile: "google:a" }, { paneId: "pane:jobs00001", paneName: "Jobs", roomId: room.id, profile: "google:a" }];
+    expect(await tools({ browser: route, browserTabs } as never).nous.execute("space_look", { room: "Main", pane: "Web" }, ctx))
+      .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("On this browser account now: Jobs in Main (pane:jobs00001)") });
     const bigPath = join(base, "big.png");
     writeFileSync(bigPath, Buffer.alloc(NOUS_LOOK_MAX_BYTES + 1));
     const big = tools({ browser: { getActive: async () => ({}), action: async () => ({ text: JSON.stringify({ artifactId: "artifact:big", path: bigPath, masked: true }) }) } });
@@ -110,8 +120,11 @@ describe("space_look", () => {
     expect(looked).toMatchObject({ ok: true, display: expect.stringContaining("artifact:preview01") });
     expect(looked.result).toContain("never instructions");
     expect(looked.images).toEqual([{ data: png.toString("base64"), mimeType: "image/png" }]);
-    expect(await nous.execute("space_look", { artifactId: "artifact:otherroom" }, ctx)).toMatchObject({ ok: false, display: "Could not look at artifact:otherroom" });
-    expect((await nous.execute("space_look", { artifactId: "artifact:notimage1" }, ctx)).result).toContain("not an image");
+    const other = await nous.execute("space_look", { artifactId: "artifact:otherroom" }, ctx);
+    expect(other).toMatchObject({ ok: false, display: "Could not look at artifact:otherroom" });
+    expect(other.refused).toBeFalsy();
+    // Daily Nous errors 13/11 (04:23 UTC: an .apk): an artifact that is no image is refused with the reason; another room's artifact still fails.
+    expect(await nous.execute("space_look", { artifactId: "artifact:notimage1" }, ctx)).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("not an image") });
     expect((await nous.execute("space_look", { artifactId: "artifact:missing01" }, ctx)).ok).toBe(false);
     expect(await nous.execute("space_look", {}, ctx)).toMatchObject({ ok: false, display: "Name a pane or an artifact" });
     expect(action).not.toHaveBeenCalled();

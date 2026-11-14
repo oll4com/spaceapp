@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pane } from "@space/contracts";
-import { InMemorySpaceStore } from "@space/runtime";
-import { claudeClearHintTokens, createTaskScheduleRunner, scheduledTaskPrompt, TASK_RETRY_MS } from "../src/task-schedules.js";
+import { InMemorySpaceStore, SpaceNotFoundError } from "@space/runtime";
+import { claudeClearHintTokens, createTaskScheduleRunner, scheduledTaskPrompt, TASK_OCCURRENCE_TIMEOUT_MS, TASK_RETRY_MS } from "../src/task-schedules.js";
 import { rememberSpaceTyped } from "../src/cli-prompt-submit.js";
 import { MODEL_UNAVAILABLE_GATHER_MS, modelUnavailable, noteModelState, onModelUnavailable, resetModelUnavailable } from "../src/model-unavailable.js";
 
@@ -11,7 +11,7 @@ const cliPane = { id: "pane:cli", roomId: "room:mine", mode: "TERMINAL", title: 
 const emptyPrompt = { state: "IDLE", sessionId: "cli_session:1", promptFingerprint: "a".repeat(16), text: "done.\n\n❯ \n" };
 
 function fixture(screen: Record<string, unknown> = emptyPrompt, options: { reopen?: boolean; openPane?: boolean; notice?: (owner: string, key: string, line: string) => Promise<void>;
-  brief?: (pane: Pane, owner: string, text: string) => Promise<unknown> } = {}) {
+  brief?: (pane: Pane, owner: string, text: string) => Promise<unknown>; caps?: Record<string, number> } = {}) {
   const store = new InMemorySpaceStore();
   const answer = vi.fn(async () => ({}));
   const inspect = vi.fn(async () => screen as never);
@@ -24,20 +24,25 @@ function fixture(screen: Record<string, unknown> = emptyPrompt, options: { reope
     "pane:security": { ...cliPane, id: "pane:security", mode: "SECURITY_COPILOT", title: "Security Copilot" } as Pane };
   const reopen = vi.fn(async (pane: Pane, _owner: string) => { panes[pane.id] = { ...pane, isClosed: false }; });
   const openPane = vi.fn<(roomId: string, owner: string) => Promise<Pane>>(async (roomId) => (panes["pane:new"] = { ...cliPane, id: "pane:new", roomId, title: "Claude 2" } as Pane));
+  const db = { down: false };
+  const caps = options.caps ?? {};
+  const room = (id: string) => ({ id, name: id, kind: "WORKSPACE", archivedAt: null, ownerUserId: id === "room:theirs" ? "user:other" : owner, ...(id in caps ? { paneCap: caps[id] } : {}) }) as never;
   const runner = createTaskScheduleRunner({
     store: {
       dueTaskSchedules: (now, limit) => store.dueTaskSchedules(now, limit),
       claimTaskSchedule: (id, expected, update) => store.claimTaskSchedule(id, expected, update),
-      getPane: async (id) => { if (!panes[id]) throw new Error("gone"); return panes[id]!; },
-      getRoom: async (id) => ({ id, ownerUserId: id === "room:mine" ? owner : "user:other" }) as never,
-      upsertTaskItem: (input) => store.upsertTaskItem(input), listTaskRuns: (id, query) => store.listTaskRuns(id, query)
+      getPane: async (id) => { if (db.down) throw new Error("timeout exceeded when trying to connect"); if (!panes[id]) throw new SpaceNotFoundError(`Pane ${id} was not found`); return panes[id]!; },
+      getRoom: async (id) => room(id),
+      bindTaskItem: (owner, id, binding) => store.bindTaskItem(owner, id, binding), listTaskRuns: (id, query) => store.listTaskRuns(id, query),
+      listPanes: async (roomId) => Object.values(panes).filter((pane) => pane.roomId === roomId && !pane.isClosed),
+      listRooms: async () => Object.keys(caps).map(room)
     },
     inspect, answer, now: () => Date.now(), ...(options.reopen ? { reopen } : {}), ...(options.openPane ? { openPane } : {}), ...(options.notice ? { notice: options.notice } : {}),
     ...(options.brief ? { brief: options.brief } : {})
   });
   const add = (objective: string, schedule: Parameters<InMemorySpaceStore["upsertTaskItem"]>[0]["schedule"], paneId: string | null = cliPane.id) =>
     store.upsertTaskItem({ ownerUserId: owner, title: "Hetzner watch", objective, status: "OPEN", source: "AGENT", paneId, schedule });
-  return { store, runner, answer, inspect, reopen, openPane, add, get: (id: string) => store.getTaskItem(owner, id)! };
+  return { store, runner, answer, inspect, reopen, openPane, add, db, get: (id: string) => store.getTaskItem(owner, id)! };
 }
 const every2h = { recurrence: { kind: "INTERVAL" as const, minutes: 120 }, timeZone: "Europe/Athens" };
 
@@ -84,6 +89,49 @@ describe("scheduled tasks", () => {
     expect(await runner.tick()).toMatchObject({ RAN: 1 });
     expect(reopen).toHaveBeenCalledTimes(1);
     expect(get(task.id).schedule?.lastOutcome).toMatch(/^Sent to the CLI/);
+  });
+
+  it("a closed pane in a full room moves its task to an idle CLI pane there, else to a new pane in a room with space, else fails once with the cause (13/11 Felix)", async () => {
+    const busy = { state: "BUSY", sessionId: "cli_session:2", promptFingerprint: "c".repeat(16), text: "⠋ Working" };
+    const due = Date.parse("2026-10-15T10:00:10.000Z");
+    // room:mine has 5 open panes (pane:cli the only idle CLI) and a cap of 5: pane:closed cannot reopen.
+    const sameRoom = fixture(emptyPrompt, { reopen: true, notice: vi.fn(async () => undefined), caps: { "room:mine": 5 } });
+    const a = sameRoom.add("Run the daily self-review.", every2h, "pane:closed");
+    vi.setSystemTime(due);
+    expect(await sameRoom.runner.tick()).toMatchObject({ WAITING: 1 });
+    expect(sameRoom.reopen).not.toHaveBeenCalled();
+    expect(sameRoom.get(a.id)).toMatchObject({ roomId: "room:mine", paneId: "pane:cli" });
+    vi.setSystemTime(due + 30_000);
+    expect(await sameRoom.runner.tick()).toMatchObject({ RAN: 1 });
+    expect(sameRoom.answer).toHaveBeenCalledWith(cliPane, expect.objectContaining({ answer: expect.stringContaining("Run the daily self-review.") }), expect.stringMatching(/^task_run:/));
+
+    vi.setSystemTime(start);
+    const notice = vi.fn(async () => undefined);
+    const otherRoom = fixture(busy, { reopen: true, openPane: true, notice, caps: { "room:mine": 5, "room:spare": 6 } });
+    otherRoom.inspect.mockImplementation(async (pane: Pane) => (pane.id === "pane:new" ? emptyPrompt : busy) as never);
+    const b = otherRoom.add("Run the daily self-review.", every2h, "pane:closed");
+    vi.setSystemTime(due);
+    expect(await otherRoom.runner.tick()).toMatchObject({ WAITING: 1 });
+    expect(otherRoom.openPane).toHaveBeenCalledWith("room:spare", owner);
+    expect(otherRoom.get(b.id)).toMatchObject({ roomId: "room:spare", paneId: "pane:new" });
+    expect(notice).toHaveBeenCalledWith(owner, `task-moved:${b.id}`, expect.stringContaining("is full (5/5 panes); the task moved to pane Claude 2"));
+    vi.setSystemTime(due + 30_000);
+    expect(await otherRoom.runner.tick()).toMatchObject({ RAN: 1 });
+
+    // Neither: one visible FAILED run with the cause and one notice, not a silent retry each tick until the next day.
+    vi.setSystemTime(start);
+    const told = vi.fn(async () => undefined);
+    const nowhere = fixture(busy, { reopen: true, notice: told, caps: { "room:mine": 5 } });
+    const c = nowhere.add("Run the daily self-review.", every2h, "pane:closed");
+    vi.setSystemTime(due);
+    expect(await nowhere.runner.tick()).toMatchObject({ SKIPPED: 1, WAITING: 0 });
+    expect(nowhere.store.listTaskRuns(owner, { limit: 10 }).runs).toEqual([expect.objectContaining({ status: "FAILED", detail: expect.stringContaining("its room room:mine is full (5/5 panes)") })]);
+    expect(nowhere.get(c.id).schedule!.nextRunAt).toBe("2026-10-15T12:00:10.000Z");
+    vi.setSystemTime(due + 30_000);
+    expect(await nowhere.runner.tick()).toMatchObject({ SKIPPED: 0, WAITING: 0 });
+    expect(told).toHaveBeenCalledTimes(1);
+    expect(told).toHaveBeenCalledWith(owner, `task-missed:${c.id}`, expect.stringContaining("close a pane there or rebind the task"));
+    expect(nowhere.reopen).not.toHaveBeenCalled();
   });
 
   it("sends /clear first when Claude Code's idle hint names 150k+ tokens, then types the task at the cleared prompt (plan clipboard:ctqx7SPqkWR2 step 1)", async () => {
@@ -239,15 +287,20 @@ describe("scheduled tasks", () => {
     const post = add("Post the weekly SpaceApp update on X.", every2h, "pane:marketing");
     const leads = add("Check Upwork for new leads.", every2h, "pane:freelance");
     vi.setSystemTime(Date.parse("2026-10-15T10:00:10.000Z"));
-    expect(await runner.tick()).toMatchObject({ RAN: 2 });
+    // The closed copilot is reopened first and briefed on the next tick, once its CLI runs.
+    expect(await runner.tick()).toMatchObject({ RAN: 1, WAITING: 1 });
+    expect(reopen).toHaveBeenCalledWith(expect.objectContaining({ id: "pane:freelance" }), owner);
+    expect(brief).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.parse("2026-10-15T10:00:40.000Z"));
+    expect(await runner.tick()).toMatchObject({ RAN: 1 });
     expect(answer).not.toHaveBeenCalled();
     expect(brief).toHaveBeenCalledWith(expect.objectContaining({ id: "pane:marketing" }), owner, scheduledTaskPrompt(get(post.id)));
-    expect(reopen).toHaveBeenCalledWith(expect.objectContaining({ id: "pane:freelance" }), owner);
     expect(brief).toHaveBeenCalledWith(expect.objectContaining({ id: "pane:freelance" }), owner, expect.stringContaining("Check Upwork for new leads."));
-    for (const id of [post.id, leads.id]) expect(get(id).schedule).toMatchObject({ nextRunAt: "2026-10-15T12:00:10.000Z", lastOutcome: expect.stringMatching(/^Briefed its copilot/) });
+    expect(get(post.id).schedule).toMatchObject({ nextRunAt: "2026-10-15T12:00:10.000Z", lastOutcome: expect.stringMatching(/^Briefed its copilot/) });
+    expect(get(leads.id).schedule).toMatchObject({ nextRunAt: "2026-10-15T12:00:40.000Z", lastOutcome: expect.stringMatching(/^Briefed its copilot/) });
     // A brief that fails waits and is tried again.
     brief.mockRejectedValueOnce(new Error("store down"));
-    vi.setSystemTime(Date.parse("2026-10-15T12:00:20.000Z"));
+    vi.setSystemTime(Date.parse("2026-10-15T12:00:50.000Z"));
     expect(await runner.tick()).toMatchObject({ WAITING: 1, RAN: 1 });
     expect(await runner.tick()).toMatchObject({ RAN: 1 });
   });
@@ -365,6 +418,20 @@ describe("scheduled tasks", () => {
     expect(openPane).toHaveBeenCalledTimes(1);
   });
 
+  it("moves the scheduled task itself to the new pane, never an unscheduled copy with its objective (Grants 13/11)", async () => {
+    // task:GsGOdFpBUc3J kept a stale content hash; the rebind saved its objective again and bound a new unscheduled copy (task:eEcvPa9XrA0H) instead.
+    const { store, runner, openPane, get } = fixture(emptyPrompt, { openPane: true });
+    const objective = "Grants: re-measure usage.";
+    const task = store.upsertTaskItem({ ownerUserId: owner, title: "Grants", objective, status: "OPEN", source: "AGENT", roomId: "room:mine", paneId: "pane:gone", schedule: every2h });
+    (store as unknown as { taskItems: Map<string, { contentHash: string }> }).taskItems.get(task.id)!.contentHash = "stale";
+    const copy = store.upsertTaskItem({ ownerUserId: owner, title: "Grants", objective, status: "OPEN", source: "AGENT", roomId: "room:mine", paneId: "pane:other" });
+    vi.setSystemTime(Date.parse("2026-10-15T10:00:10.000Z"));
+    expect(await runner.tick()).toMatchObject({ WAITING: 1 });
+    expect(openPane).toHaveBeenCalledTimes(1);
+    expect(get(task.id)).toMatchObject({ roomId: "room:mine", paneId: "pane:new", schedule: { nextRunAt: "2026-10-15T10:00:00.000Z" } });
+    expect(get(copy.id)).toMatchObject({ paneId: "pane:other", schedule: null });
+  });
+
   // Copilot tasks were skipped as "not a CLI" although the copilot's CLI runs (2026-10-19).
   it("types a due task into a copilot pane's CLI, and skips one whose CLI is not running", async () => {
     const running = fixture();
@@ -403,13 +470,133 @@ describe("scheduled tasks", () => {
     expect(get(task.id).schedule?.lastOutcome).toMatch(/^Sent to the CLI/);
   });
 
-  it("a pane whose CLI could not be started skips at its grace end as a failed run with the error", async () => {
-    const { runner, reopen, add, get } = fixture({ state: "EXITED", sessionId: "cli_session:1" }, { reopen: true });
+  it("a pane whose CLI could not be started skips at its grace end as a failed run with the error, and Nous hears it", async () => {
+    const notice = vi.fn(async () => undefined);
+    const { runner, reopen, add, get } = fixture({ state: "EXITED", sessionId: "cli_session:1" }, { reopen: true, notice });
     reopen.mockRejectedValue(new Error("pane host unavailable"));
     const task = add("Run the daily self-review.", every2h);
+    vi.setSystemTime(Date.parse("2026-10-15T11:00:00.000Z"));
+    expect(await runner.tick()).toMatchObject({ WAITING: 1 });
     vi.setSystemTime(Date.parse("2026-10-15T12:00:01.000Z"));
     expect(await runner.tick()).toMatchObject({ SKIPPED: 1 });
-    expect(get(task.id).schedule!.lastOutcome).toBe("Failed 2026-10-15T10:00:00.000Z: the pane had no running CLI and Space could not start it (pane host unavailable).");
+    const outcome = "Failed 2026-10-15T10:00:00.000Z: the pane had no running CLI and Space could not start it (pane host unavailable).";
+    expect(get(task.id).schedule!.lastOutcome).toBe(outcome);
+    expect(notice).toHaveBeenCalledWith(owner, `task-missed:${task.id}`, expect.stringContaining("missed 2026-10-15T10:00:00.000Z: the pane had no running CLI and Space could not start it"));
+  });
+
+  it("a run first tried past its window (Space was down all of it) starts its CLI and types, never skipped in that same tick (11-12/11 Mail 3/3, X 13:40)", async () => {
+    const notice = vi.fn(async () => undefined);
+    const busy = { state: "BUSY", sessionId: "cli_session:2", promptFingerprint: "c".repeat(16), text: "⠋ Working" };
+    const { runner, answer, inspect, reopen, add, get } = fixture(emptyPrompt, { reopen: true, notice });
+    const noCli = { state: "UNKNOWN", sessionId: null };
+    let cliStarted = false;
+    reopen.mockImplementation(async () => { cliStarted = true; });
+    inspect.mockImplementation(async (pane: Pane) => (pane.id === "pane:job" ? busy : cliStarted ? emptyPrompt : noCli) as never);
+    const mail = add("Run mail round 3/3.", every2h);
+    const held = add("Archive job emails.", every2h, "pane:job");
+    vi.setSystemTime(Date.parse("2026-10-15T12:30:00.000Z"));
+    expect(await runner.tick()).toMatchObject({ WAITING: 2, SKIPPED: 0 });
+    expect(reopen).toHaveBeenCalledWith(expect.objectContaining({ id: cliPane.id }), owner);
+    vi.setSystemTime(Date.parse("2026-10-15T12:30:30.000Z"));
+    expect(await runner.tick()).toMatchObject({ RAN: 1, WAITING: 1 });
+    expect(answer).toHaveBeenCalledWith(cliPane, expect.objectContaining({ answer: expect.stringContaining("Run mail round 3/3.") }), expect.stringMatching(/^task_run:/));
+    expect(get(mail.id).schedule!.lastOutcome).toMatch(/^Sent to the CLI/);
+    // A pane still busy TASK_RETRY_MS after the first try skips, and Nous hears that run with its cause.
+    vi.setSystemTime(Date.parse("2026-10-15T12:30:00.000Z") + TASK_RETRY_MS);
+    expect(await runner.tick()).toMatchObject({ SKIPPED: 1 });
+    expect(notice).toHaveBeenCalledWith(owner, `task-missed:${held.id}`, expect.stringContaining("missed 2026-10-15T10:00:00.000Z: the CLI was busy or had a draft at its prompt"));
+  });
+
+  it("a daily run that missed its 12 h window still runs late until its next run is due, then hands over to it (13/11 Score Daily tasks)", async () => {
+    const notice = vi.fn(async () => undefined);
+    const busy = { state: "BUSY", sessionId: "cli_session:2", promptFingerprint: "c".repeat(16), text: "⠋ Working" };
+    const { runner, inspect, add, get } = fixture(emptyPrompt, { notice });
+    let free = false;
+    inspect.mockImplementation(async (pane: Pane) => (pane.id === "pane:job" || !free ? busy : emptyPrompt) as never);
+    const daily = { recurrence: { kind: "DAILY" as const, time: "12:00" }, timeZone: "Europe/Athens" }; // 09:00Z
+    const late = add("Run mail round 1/3.", daily);
+    const held = add("Archive job emails.", daily, "pane:job");
+    vi.setSystemTime(Date.parse("2026-10-15T22:00:00.000Z"));
+    expect(await runner.tick()).toMatchObject({ WAITING: 2, SKIPPED: 0 });
+    free = true;
+    vi.setSystemTime(Date.parse("2026-10-16T05:00:00.000Z"));
+    expect(await runner.tick()).toMatchObject({ RAN: 1, WAITING: 1 });
+    expect(get(late.id).schedule).toMatchObject({ nextRunAt: "2026-10-16T09:00:00.000Z", lastOutcome: expect.stringMatching(/^Sent to the CLI/) });
+    // Still busy when its next run is due: the old one is skipped (Nous hears it) and the new one, already due, keeps its own window.
+    vi.setSystemTime(Date.parse("2026-10-16T09:00:10.000Z"));
+    expect(await runner.tick()).toMatchObject({ RAN: 1, SKIPPED: 1 });
+    expect(get(held.id).schedule!.nextRunAt).toBe("2026-10-16T09:00:00.000Z");
+    expect(notice).toHaveBeenCalledWith(owner, `task-missed:${held.id}`, expect.stringContaining("missed 2026-10-15T09:00:00.000Z"));
+    expect(await runner.tick()).toMatchObject({ WAITING: 1, SKIPPED: 0 });
+  });
+
+  it("starts an open copilot's CLI before its brief when it has none, never one that runs, and counts the run only once briefed to a running CLI (11-12/11, 13/11)", async () => {
+    const brief = vi.fn<(pane: Pane, owner: string, text: string) => Promise<object>>(async () => ({}));
+    const notice = vi.fn(async () => undefined);
+    const { runner, inspect, reopen, add, get } = fixture(emptyPrompt, { brief, reopen: true, notice });
+    let securityRuns = false;
+    inspect.mockImplementation(async (pane: Pane) => (pane.id === "pane:security" && !securityRuns ? { state: "UNKNOWN", sessionId: null } : emptyPrompt) as never);
+    const scan = add("Check the fleet's CVEs.", every2h, "pane:security");
+    add("Post the weekly SpaceApp update on X.", every2h, "pane:marketing");
+    vi.setSystemTime(Date.parse("2026-10-15T10:00:10.000Z"));
+    expect(await runner.tick()).toMatchObject({ RAN: 1, WAITING: 1 });
+    expect(reopen).toHaveBeenCalledTimes(1);
+    expect(reopen).toHaveBeenCalledWith(expect.objectContaining({ id: "pane:security" }), owner);
+    // Not briefed while its CLI is not running, and started again only after TASK_RETRY_MS.
+    vi.setSystemTime(Date.parse("2026-10-15T10:00:40.000Z"));
+    expect(await runner.tick()).toMatchObject({ WAITING: 1 });
+    expect(reopen).toHaveBeenCalledTimes(1);
+    expect(brief.mock.calls.some(([pane]) => pane.id === "pane:security")).toBe(false);
+    expect(get(scan.id).schedule!.nextRunAt).toBe("2026-10-15T10:00:00.000Z");
+    vi.setSystemTime(Date.parse("2026-10-15T10:10:10.000Z"));
+    expect(await runner.tick()).toMatchObject({ WAITING: 1 });
+    expect(reopen).toHaveBeenCalledTimes(2);
+    // Once its CLI runs, the brief goes and the run counts.
+    securityRuns = true;
+    vi.setSystemTime(Date.parse("2026-10-15T10:10:40.000Z"));
+    expect(await runner.tick()).toMatchObject({ RAN: 1 });
+    expect(brief).toHaveBeenLastCalledWith(expect.objectContaining({ id: "pane:security" }), owner, scheduledTaskPrompt(get(scan.id)));
+    expect(get(scan.id).schedule!.lastOutcome).toMatch(/^Briefed its copilot/);
+    // A copilot whose CLI never runs is a miss at its window end, never a brief counted as run.
+    securityRuns = false;
+    vi.setSystemTime(Date.parse("2026-10-15T12:20:40.000Z"));
+    expect(await runner.tick()).toMatchObject({ WAITING: 1 });
+    vi.setSystemTime(Date.parse("2026-10-15T14:20:40.000Z"));
+    expect(await runner.tick()).toMatchObject({ SKIPPED: 1 });
+    expect(get(scan.id).schedule!.lastOutcome).toMatch(/^Skipped 2026-10-15T12:10:40.000Z: its copilot (has|had) no running CLI/);
+    expect(notice).toHaveBeenCalledWith(owner, `task-missed:${scan.id}`, expect.stringContaining("its copilot"));
+  });
+
+  it("a pane call that never answers holds only its own task: the tick goes on and never tries it twice at once (11-12/11)", async () => {
+    const { runner, inspect, add, get } = fixture();
+    inspect.mockImplementation((pane: Pane) => (pane.id === "pane:job" ? new Promise(() => undefined) : Promise.resolve(emptyPrompt)) as never);
+    add("Archive job emails.", { recurrence: { kind: "INTERVAL", minutes: 60 }, timeZone: "Europe/Athens" }, "pane:job");
+    const task = add("Check the ticket.", every2h);
+    vi.setSystemTime(Date.parse("2026-10-15T10:00:10.000Z"));
+    const ticking = runner.tick();
+    await vi.advanceTimersByTimeAsync(TASK_OCCURRENCE_TIMEOUT_MS);
+    expect(await ticking).toMatchObject({ WAITING: 1, RAN: 1 });
+    expect(get(task.id).schedule!.lastOutcome).toMatch(/^Sent to the CLI/);
+    expect(await runner.tick()).toMatchObject({ WAITING: 1 });
+    expect(inspect).toHaveBeenCalledTimes(2);
+  });
+
+  it("a pane read the database could not answer waits and types once it can; only a missing pane fails, and Nous hears it (12/11 Temu)", async () => {
+    const notice = vi.fn(async () => undefined);
+    const { runner, answer, add, get, db } = fixture(emptyPrompt, { notice });
+    const task = add("Check Temu orders.", every2h);
+    const gone = add("Watch the deleted pane.", every2h, "pane:deleted");
+    db.down = true;
+    vi.setSystemTime(Date.parse("2026-10-15T10:00:10.000Z"));
+    expect(await runner.tick()).toMatchObject({ WAITING: 2, SKIPPED: 0 });
+    expect(answer).not.toHaveBeenCalled();
+    db.down = false;
+    vi.setSystemTime(Date.parse("2026-10-15T10:01:10.000Z"));
+    expect(await runner.tick()).toMatchObject({ RAN: 1, SKIPPED: 1 });
+    expect(get(task.id).schedule!.lastRunAt).toBe("2026-10-15T10:01:10.000Z");
+    expect(get(gone.id).schedule!.lastOutcome).toMatch(/the task's pane no longer exists/);
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(notice).toHaveBeenCalledWith(owner, `task-no-pane:${gone.id}`, expect.stringContaining("its pane pane:deleted no longer exists"));
   });
 
   it("logs every handled occurrence as a task run, and only the pane's own report decides a typed one (plan clipboard:GA__W4qBxSPR)", async () => {

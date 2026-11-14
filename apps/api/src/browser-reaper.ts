@@ -64,21 +64,76 @@ export async function scheduledPanes(store: Pick<SpaceStore, "dueTaskSchedules">
   return new Set(tasks.filter((task) => task.status === "OPEN" && task.paneId).map((task) => task.paneId!));
 }
 
-type ReaperStore = Pick<SpaceStore, "dueTaskSchedules" | "getRoom" | "recordAuditEvent">;
+/**
+ * Score lever Idle open browsers (14/11: 33 reaped in 7 days, nearly all a terminal agent's "CLI Browser" or room browser left open after
+ * its turn ended): a BROWSER pane is released as soon as the terminal pane that drove it last is done with it, not 30 minutes later.
+ */
+export const BROWSER_RELEASED_ACTION = "browser.released";
+const WORK_ENDS = new Set(["TURN_END", "DONE", "FAILED"]);
+/** A report that waits on the operator: its browser may be what he is asked to look at. */
+const ASKS = new Set(["NEEDS_YOU", "NEEDS_DECISION", "BLOCKED", "WAITING", "QUESTION"]);
+const UNSAID = new Set(["TURN_END", "HEARTBEAT", "TODO"]);
 
-/** Every BROWSER_REAP_MS: closes the unused browsers (stopPane keeps their tabs for the next start) and audits each as BROWSER_REAPED_ACTION. */
-export function startBrowserReaper(deps: { store: ReaperStore; census(): Promise<{ sessions: BrowserRow[] }>; usedAt: UsedAt;
+/** Whether a driver's reports (newest first) end its work after its last drive: a turn end, done or failed, and its last word is no ask. */
+export function driverWorkEnded(reports: Array<{ at: string; status: string }>, drivenAt: number): boolean {
+  const newest = reports.find((report) => report.status !== "HEARTBEAT" && report.status !== "TODO");
+  return Boolean(newest && at(newest.at) > drivenAt && WORK_ENDS.has(newest.status) && !ASKS.has(reports.find((report) => !UNSAID.has(report.status))?.status ?? ""));
+}
+
+export interface ReleaseDeps {
+  /** The CLI pane that drove the browser last; active while it attaches or drove it in the last 10 minutes. */
+  agentFor(paneId: string): { paneId: string; at: number; active: boolean } | null;
+  /** The driver pane's reports, newest first; null when they cannot be read. */
+  reports(driver: Pane): Promise<Array<{ at: string; status: string }> | null>;
+  /** The active tab holds text someone typed into a form; true when it cannot be told. */
+  typedForm(paneId: string): Promise<boolean>;
+}
+
+/**
+ * The live BROWSER panes whose driver is a terminal pane (a copilot's own browser and the browsers it drives keep their sign-ins) that closed or
+ * ended its work since its last drive, with no operator use since then, nothing that keeps them (browserKeptFor) and no typed form.
+ */
+export async function releasableBrowsers(rows: BrowserRow[], input: { store: Pick<SpaceStore, "getPane">; usedAt: UsedAt; scheduled: Set<string>; release: ReleaseDeps }) {
+  const found: Array<UnusedBrowser & { driverPaneId: string }> = [];
+  for (const row of rows) {
+    if (row.mode !== "BROWSER" || row.paneClosed !== false || browserKeptFor(row, input.scheduled)) continue;
+    const noted = input.release.agentFor(row.paneId);
+    if (!noted || noted.active || (input.usedAt(row.paneId) ?? 0) >= noted.at) continue;
+    const driver = await Promise.resolve(input.store.getPane(noted.paneId)).catch(() => null);
+    if (driver?.mode !== "TERMINAL") continue;
+    const ended = driver.isClosed ? "closed" : driverWorkEnded(await input.release.reports(driver).catch(() => null) ?? [], noted.at) ? "ended its turn" : null;
+    if (!ended || await input.release.typedForm(row.paneId).catch(() => true)) continue;
+    found.push({ paneId: row.paneId, roomId: row.roomId, title: nameOf(row), idleSince: new Date(noted.at).toISOString(), driverPaneId: driver.id,
+      why: `its driver ${driver.paneName ?? driver.title} ${ended}` });
+  }
+  return found;
+}
+
+type ReaperStore = Pick<SpaceStore, "dueTaskSchedules" | "getRoom" | "getPane" | "recordAuditEvent">;
+
+/**
+ * Every BROWSER_REAP_MS: closes the unused browsers (stopPane keeps their tabs for the next start) and audits each as BROWSER_REAPED_ACTION,
+ * then the ones their terminal driver is done with (releasableBrowsers) as BROWSER_RELEASED_ACTION. One unused past 30 minutes stays reaped.
+ */
+export function startBrowserReaper(deps: { store: ReaperStore; census(): Promise<{ sessions: BrowserRow[] }>; usedAt: UsedAt; release?: ReleaseDeps;
   stopPane(paneId: string, traceId: string): Promise<void>; warn(error: unknown, paneId?: string): void; now?: () => number }) {
+  const close = async (browser: UnusedBrowser & { driverPaneId?: string }, action: string) => {
+    const traceId = makeSpaceId("trace");
+    // No actor: like closing the pane, the reaper outranks a stale lease (a live one keeps the browser above).
+    try { await deps.stopPane(browser.paneId, traceId); } catch (error) { deps.warn(error, browser.paneId); return; }
+    const ownerUserId = await Promise.resolve(deps.store.getRoom(browser.roomId)).then((room) => room.ownerUserId ?? null).catch(() => null);
+    await Promise.resolve(deps.store.recordAuditEvent({ actorUserId: null, traceId, action, targetType: "pane", targetId: browser.paneId,
+      metadata: { ownerUserId, roomId: browser.roomId, title: browser.title, idleSince: browser.idleSince, why: browser.why, driverPaneId: browser.driverPaneId } })).catch((error: unknown) => deps.warn(error, browser.paneId));
+  };
   const sweep = async () => {
-    const unused = unusedBrowsers((await deps.census()).sessions, { now: (deps.now ?? Date.now)(), usedAt: deps.usedAt, scheduled: await scheduledPanes(deps.store) });
-    for (const browser of unused) {
-      const traceId = makeSpaceId("trace");
-      // No actor: like closing the pane, the reaper outranks a stale lease (a live one keeps the browser above).
-      try { await deps.stopPane(browser.paneId, traceId); } catch (error) { deps.warn(error, browser.paneId); continue; }
-      const ownerUserId = await Promise.resolve(deps.store.getRoom(browser.roomId)).then((room) => room.ownerUserId ?? null).catch(() => null);
-      await Promise.resolve(deps.store.recordAuditEvent({ actorUserId: null, traceId, action: BROWSER_REAPED_ACTION, targetType: "pane", targetId: browser.paneId,
-        metadata: { ownerUserId, roomId: browser.roomId, title: browser.title, idleSince: browser.idleSince, why: browser.why } })).catch((error: unknown) => deps.warn(error, browser.paneId));
-    }
+    const rows = (await deps.census()).sessions;
+    const scheduled = await scheduledPanes(deps.store);
+    const unused = unusedBrowsers(rows, { now: (deps.now ?? Date.now)(), usedAt: deps.usedAt, scheduled });
+    for (const browser of unused) await close(browser, BROWSER_REAPED_ACTION);
+    if (!deps.release) return;
+    const reaped = new Set(unused.map((browser) => browser.paneId));
+    const released = await releasableBrowsers(rows.filter((row) => !reaped.has(row.paneId)), { store: deps.store, usedAt: deps.usedAt, scheduled, release: deps.release });
+    for (const browser of released) await close(browser, BROWSER_RELEASED_ACTION);
   };
   const timer = setInterval(() => void sweep().catch((error: unknown) => deps.warn(error)), BROWSER_REAP_MS);
   timer.unref();
@@ -90,10 +145,12 @@ const OPERATOR_USE = new Set(["startOrRestore", "navigate", "action", "input", "
 /** Calls that start or reattach the pane's Chrome, so an agent browser can refuse them. */
 const OPERATOR_FIRST = new Set([...OPERATOR_USE, "listPages", "setViewport", "setStreamMode", "getActive"]);
 
-const refusalOf = (error: unknown): "ROUTE" | "CAPACITY" | null => {
+export const refusalOf = (error: unknown): "ROUTE" | "CAPACITY" | null => {
   const text = error instanceof Error ? error.message : "";
   if (/^BROWSER_ROUTE: another pane uses this browser account/.test(text)) return "ROUTE";
-  return (error as { code?: unknown } | null)?.code === "BROWSER_SESSION_CAPACITY" || /^Browser limit reached/.test(text) ? "CAPACITY" : null;
+  // The host's SpaceFeatureDisabledError carries errorCode: "No Xvfb display is available" was never read as capacity before 13/11.
+  const code = (error as { code?: unknown; errorCode?: unknown } | null);
+  return code?.code === "BROWSER_SESSION_CAPACITY" || code?.errorCode === "BROWSER_SESSION_CAPACITY" || /^Browser limit reached/.test(text) ? "CAPACITY" : null;
 };
 
 type FirstStore = Pick<SpaceStore, "getPane" | "getPaneBrowserRoute" | "getLatestPaneBrowserSession" | "recordAuditEvent">;

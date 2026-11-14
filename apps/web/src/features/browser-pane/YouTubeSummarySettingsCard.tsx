@@ -3,6 +3,7 @@ import { YOUTUBE_DOWNLOAD_RESOLUTIONS, YOUTUBE_SUMMARY_MODELS, youtubeDownloadSe
 import { api } from "../../api.js";
 import { fetchAllAgentFiles } from "../agent-files/agent-files-api.js";
 import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
 
 /**
  * The YouTube pane's settings, in the pane and in Settings → Assistants & AI → YouTube: the Gemini model of "Summarize with AI",
@@ -53,30 +54,21 @@ export function YouTubeSettingsCard() {
   return <section className="agent-settings-card settings-flat-card" aria-label={t("YouTube settings")}>
     {error ? <small role="alert">{error}</small> : null}
     <label className="settings-flat-row">
-      <span className="settings-flat-row-copy">
-        <strong>{t("Summary model")}</strong>
-        <small>{t("Gemini on your Antigravity accounts in Space Gateway watches the video.")}</small>
-      </span>
+      <SettingsLabel label="Summary model" help="Gemini on your Antigravity accounts in Space Gateway watches the video." />
       <select aria-label={t("YouTube summary model")} value={model ?? ""} disabled={model === null} onChange={(event) => chooseModel(event.target.value)}>
         {model === null ? <option value="">{t("Loading…")}</option> : null}
         {YOUTUBE_SUMMARY_MODELS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
       </select>
     </label>
     <label className="settings-flat-row">
-      <span className="settings-flat-row-copy">
-        <strong>{t("Download folder")}</strong>
-        <small>{t("The Agent Files folder downloaded videos are saved in; the Video library lists them too.")}</small>
-      </span>
+      <SettingsLabel label="Download folder" help="The Agent Files folder downloaded videos are saved in; the Video library lists them too." />
       <select aria-label={t("Download folder")} value={download?.folder ?? ""} disabled={download === null} onChange={(event) => download && chooseDownload({ ...download, folder: event.target.value })}>
         {download === null ? <option value="">{t("Loading…")}</option> : null}
         {folderIds.map((id) => <option key={id} value={id}>{folders.label(id)}</option>)}
       </select>
     </label>
     <label className="settings-flat-row">
-      <span className="settings-flat-row-copy">
-        <strong>{t("Download resolution")}</strong>
-        <small>{t("The tallest video Download saves; a video without that size comes in the next one below.")}</small>
-      </span>
+      <SettingsLabel label="Download resolution" help="The tallest video Download saves; a video without that size comes in the next one below." />
       <select aria-label={t("Download resolution")} value={download?.maxHeight ?? ""} disabled={download === null} onChange={(event) => download && chooseDownload({ ...download, maxHeight: Number(event.target.value) })}>
         {download === null ? <option value="">{t("Loading…")}</option> : null}
         {YOUTUBE_DOWNLOAD_RESOLUTIONS.map((option) => <option key={option.maxHeight} value={option.maxHeight}>{t(option.label)}</option>)}

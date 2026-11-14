@@ -45,12 +45,12 @@ describe("tenant routes", () => {
       expect(tenantRoute(method!, url!)).toBeNull();
     }
     // K5-listener/profile: the replica's whole surface; the Antigravity pass-through, weekly-remaining and stats are not on it.
-    for (const [method, url] of [["GET", "/v1/models"], ["GET", "/readyz"], ["GET", "/health"], ["POST", "/__space-gateway/admin/reload"]]) {
+    for (const [method, url] of [["GET", "/v1/models"], ["GET", "/readyz"], ["GET", "/health"], ["POST", "/__space-gateway/admin/reload"], ["POST", "/stripe/webhook"]]) {
       expect(onNousSurface(method!, url!, false)).toBe(true);
     }
     expect(onNousSurface("GET", "/backend-api/codex/responses", true)).toBe(true); // answered 426, so the CLI falls back to HTTP
     for (const [method, url] of [["POST", "/antigravity/v1internal:generateContent"], ["GET", "/api/codex/weekly-remaining"], ["GET", "/stats"],
-      ["POST", "/v1/embeddings"], ["GET", "/backend-api/codex/models"]]) {
+      ["POST", "/v1/embeddings"], ["GET", "/backend-api/codex/models"], ["GET", "/stripe/webhook"]]) {
       expect(onNousSurface(method!, url!, false)).toBe(false);
     }
     expect(stickyScope({})).toBe("");
@@ -124,7 +124,7 @@ describe.skipIf(unavailable)("NGW_MODE=nous HTTP path: tenant key, pool scope, a
       headers: { "x-api-key": key, "anthropic-version": "2023-06-01", ...headers }, payload: { model, max_tokens: 64, stream: true, messages: [{ role: "user", content: "hi" }] } });
     return { repository, logs, tokens, sent, post, tenancy, metrics, app: gw.app };
   }
-  const tenant = async (tenantId: string, allowanceMicros: number, extra: { region?: string; plan?: "PERSONAL" | "TRIAL" } = {}) => {
+  const tenant = async (tenantId: string, allowanceMicros: number, extra: { region?: string; plan?: "PERSONAL" | "TRIAL" | "ULTRA" } = {}) => {
     const issued = await issueTenantKey(ops, { tenantId, actor: "test", plan: extra.plan ?? "PERSONAL", region: extra.region ?? "eu1", riskTier: "TRUSTED" });
     await openTenantPeriod(ops, { tenantId, start: periodStart, end: new Date(periodStart.getTime() + 30 * DAY), allowanceMicros });
     return issued.plainKey;
@@ -205,6 +205,23 @@ describe.skipIf(unavailable)("NGW_MODE=nous HTTP path: tenant key, pool scope, a
     expect(waits.json().error.message).toMatch(/^Your AI continues at \d{2}:\d{2} UTC\.$/);
     expect([...full.tokens, ...allFull.tokens]).toEqual([]);
     expect(await period("t-route")).toEqual({ spent: 0, reserved: 0 });
+  });
+
+  it("runs the hard list (Opus) for Ultra or on a failed reason turn's retry; another plan's hard request moves to the reason list", async () => {
+    const gw = await gateway(() => reply());
+    const personal = await tenant("t-hard-personal", 50_000_000);
+    for (const task of ["hard", "reason"]) {
+      const moved = await gw.post(personal, "/v1/messages", { "x-nous-task": task }, "claude-opus-5-5");
+      expect(moved.statusCode).toBe(409);
+      expect(moved.json()).toMatchObject({ error: { code: "route_moved" }, model: "claude-sonnet-5-5" });
+    }
+    expect(gw.tokens).toEqual([]);
+    const retry = await gw.post(personal, "/v1/messages", { "x-nous-task": "hard", "x-nous-after-failure": "reason" }, "claude-opus-5-5");
+    expect(retry.statusCode).toBe(200);
+    expect(gw.sent.at(-1)).not.toHaveProperty("x-nous-after-failure");
+    const ultra = await tenant("t-hard-ultra", 50_000_000, { plan: "ULTRA" });
+    expect((await gw.post(ultra, "/v1/messages", { "x-nous-task": "hard" }, "claude-opus-5-5")).statusCode).toBe(200);
+    expect((await gw.post(personal, "/v1/messages", { "x-nous-task": "code" })).statusCode).toBe(200); // a model on the task's own list runs
   });
 
   it("obeys the kill switches at once on every request: model or provider off moves the turn, user traffic only, all included AI off", async () => {

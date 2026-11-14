@@ -45,8 +45,10 @@ export function resetHold(owner: string, url: string, signin: SiteSignin | null,
 
 /** A sign-in or password ask: the agent's own hands when the Vault holds the login. */
 export const VAULT_SIGNIN_ASK = /\bsign(?:ed|ing)?[-_ ]?in\b|\blog(?:ged|ging)?[-_ ]?in\b|\blogin\b|password|credential|σύνδεσ|συνδεθ/i;
+/** 13/11 18:56 BKK (nous_msg:6734ba76: a CLI web-auth link to approve with the operator's security key, refused for a Vault login): no stored password passes these. */
+export const DEVICE_APPROVAL = /security[- ]key|hardware[- ]key|yubi ?key|webauthn|\bfido2?\b|passkey|windows hello|\/login\/cli\/|\bcli\b[^.\n]{0,40}\b(?:web[- ]?auth\w*|auth\w*|log[- ]?in|sign[- ]?in)\b|\bdevice (?:code|authori[sz]ation|login)\b|\bapprove\b[^.\n]{0,40}\b(?:log[- ]?in|sign[- ]?in)\b[^.\n]{0,20}\blink\b/i;
 /** What stays the operator's even then: a bot check, a push or code on their phone, a camera or ID, a card or payment (mailed codes: mailCodeHold). */
-export const OPERATOR_HANDS = /captcha|turnstile|puzzle|i am human|not a robot|\bpush\b|phone|\bsms\b|authenticator|\b2fa\b|\bmfa\b|\botp\b|one[- ]time|\bcodes?\b|passkey|camera|selfie|passport|identity|\bcard\b|\bpay|iban|\bbank\b|κάμερα|κινητ|κάρτα|πληρω|ταυτότητ/i;
+export const OPERATOR_HANDS = new RegExp(String.raw`captcha|turnstile|puzzle|i am human|not a robot|\bpush\b|phone|\bsms\b|authenticator|\b2fa\b|\bmfa\b|\botp\b|one[- ]time|\bcodes?\b|passkey|camera|selfie|passport|identity|\bcard\b|\bpay|iban|\bbank\b|κάμερα|κινητ|κάρτα|πληρω|ταυτότητ|${DEVICE_APPROVAL.source}`, "i");
 
 /**
  * A sign-in handoff or card for a site whose login the Vault holds (the record's handle, or a Vault login for the site) while that login

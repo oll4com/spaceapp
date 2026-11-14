@@ -285,7 +285,7 @@ describe("DateTimeSettings", () => {
         expect((screen.getByLabelText("Working time zone") as HTMLSelectElement).value).toBe(browser);
       }
       expect(readDateTimeSettings().timeZone).toBe(browser);
-      expect(screen.getByText(/^Every time in Space is shown in this zone.*Now: \d\d:\d\d /)).toBeTruthy();
+      expect(screen.getByText(/^Now: \d\d:\d\d /)).toBeTruthy();
     });
 
     it("resets to defaults when reset button is clicked", () => {

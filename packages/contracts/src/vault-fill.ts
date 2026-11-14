@@ -18,7 +18,7 @@ const code = z.string().regex(/^[A-Z][A-Z0-9_]{0,39}$/);
 const freshDocument = z.boolean().optional();
 
 export const vaultHostFillRequestSchema = z.object({
-  mode: z.enum(["FILL", "TOTP", "GENERATE"]),
+  mode: z.enum(["FILL", "TOTP", "GENERATE", "CARD"]),
   capability: vaultUseCapabilitySchema,
   /** The delegation's fill key under the ARK-derived generation key; only the broker opens it. */
   keyEnvelope: vaultSymmetricEnvelopeSchema,
@@ -64,7 +64,9 @@ export const vaultHostTargetSchema = z.object({
   /** True from a host that takes `freshDocument` in fill requests (2026-10-22); the API sends the field only then, so an older host's strict schema never sees it. */
   freshDocument: z.boolean().optional(),
   /** True from a host that takes a generate `policy` (queue item 37, after its guarded restart); the API sends one only then. */
-  generatePolicy: z.boolean().optional()
+  generatePolicy: z.boolean().optional(),
+  /** True from a host that fills cards (mode CARD, payment frames included); the API sends a card fill only then. */
+  cards: z.boolean().optional()
 }).strict();
 export type VaultHostTarget = z.infer<typeof vaultHostTargetSchema>;
 

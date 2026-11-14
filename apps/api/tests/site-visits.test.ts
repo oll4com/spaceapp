@@ -19,7 +19,7 @@ const LOG = [
 describe("site visits", () => {
   it("summarizes the period's views", () => {
     const site = summarizeSiteVisits(LOG, "2026-11-01T00:00:00.000Z");
-    expect(site).toMatchObject({ views: 3, internal: 1 });
+    expect(site).toMatchObject({ views: 3, internal: 1, installIntent: 1 });
     expect(site.sections).toEqual([
       { id: "hero", reached: 2, medianSeconds: 5, exits: 0, clicks: 0 },
       { id: "install", reached: 1, medianSeconds: 12, exits: 1, clicks: 2 }

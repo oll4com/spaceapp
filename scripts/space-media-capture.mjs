@@ -66,10 +66,14 @@ export const DOCKS = {
   // Nous on its Score tab (plan clipboard:1NF6u6gcCwtj), the same way.
   "nous-score": "nous",
   // Nous on its Requests tab (operator nous_msg:82daac31: the search with a status), the same way.
-  "nous-requests": "nous"
+  "nous-requests": "nous",
+  // Nous on its Affiliate tab (operator nous_msg:de448bc7, 14/11), docked or in its full-screen view.
+  "nous-affiliate": "nous", "nous-affiliate-fullscreen": "nous"
 };
 // The Nous tab each of those docks opens on (the dock's `space.nous.ui.tab`).
-const NOUS_TABS = { "nous-load": "load", "nous-quotas": "quotas", "nous-task-runs": "taskRuns", "nous-goals": "goals", "nous-needs-you": "needs", "nous-startup": "startup", "nous-funding": "startup", "nous-jobs": "jobs", "nous-crypto": "crypto", "nous-marketing": "marketing", "nous-score": "score", "nous-requests": "requests" };
+const NOUS_TABS = { "nous-load": "load", "nous-quotas": "quotas", "nous-task-runs": "taskRuns", "nous-goals": "goals", "nous-needs-you": "needs", "nous-startup": "startup", "nous-funding": "startup", "nous-jobs": "jobs", "nous-crypto": "crypto", "nous-marketing": "marketing", "nous-score": "score", "nous-requests": "requests", "nous-affiliate": "affiliate", "nous-affiliate-fullscreen": "affiliate" };
+// The Startup programs and Affiliate pages share the programs view: its status chips and a program's details.
+const PROGRAM_DOCKS = ["nous-startup", "nous-funding", "nous-affiliate", "nous-affiliate-fullscreen"];
 // A copilot pane's rail tab (--rail, with --pane), seeded as the rail preference copilot-kit/rail-preference.ts reads: [storage kind, tab].
 export const RAIL_TABS = { "monitoring-charts": ["monitoring-copilot", "charts"], "marketing-memory": ["marketing-copilot", "memory"], "app-studio-setup": ["app-studio", "setup"] };
 
@@ -153,16 +157,21 @@ export function validateStep(raw, instance) {
   if (raw.gateway !== undefined) step.gateway = oneOf(raw.gateway, Object.keys(GATEWAY_TABS), "gateway");
   if (raw.scene !== undefined) step.scene = parseScene(raw.scene);
   for (const chip of ["approved", "waiting"]) if (raw[chip] !== undefined) {
-    if (step.dock !== "nous-startup" && step.dock !== "nous-funding") throw new Error(`--${chip} needs --dock nous-startup.`);
+    if (!PROGRAM_DOCKS.includes(step.dock)) throw new Error(`--${chip} needs --dock nous-startup or nous-affiliate.`);
     if (raw[chip] === true) step[chip] = true;
   }
   // One program opened (details open only on a click: the capture clicks it, as the operator would).
   if (raw.program !== undefined) {
-    if (step.dock !== "nous-startup" && step.dock !== "nous-funding") throw new Error("--program needs --dock nous-startup.");
+    if (!PROGRAM_DOCKS.includes(step.dock)) throw new Error("--program needs --dock nous-startup or nous-affiliate.");
     if (typeof raw.program !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(raw.program)) throw new Error("--program is a program id such as nvidia-inception.");
     step.program = raw.program;
   }
   if (raw["focus-search"] === true) step.focusSearch = true;
+  // Settings in its full-screen view (the dock's own fullscreen button), as the operator reads it on a wide screen.
+  if (raw["settings-fullscreen"] === true) {
+    if (!step.settings) throw new Error("--settings-fullscreen needs --settings.");
+    step.settingsFullscreen = true;
+  }
   // A Settings row below the fold (13/11: the Load target rows sit under the Low-spend models), scrolled to the top as the operator would.
   if (raw["settings-row"] !== undefined) {
     if (!step.settings || typeof raw["settings-row"] !== "string" || !/^[A-Za-z0-9][A-Za-z0-9 ,.()%&'-]{0,59}$/.test(raw["settings-row"])) {
@@ -571,7 +580,7 @@ async function applyStep(page, step) {
       return !open();
     })()`);
     if (!closed) skipped.push("dock:none");
-  } else if (step.dock && await openDock(step.dock) && step.dock === "nous-fullscreen") {
+  } else if (step.dock && await openDock(step.dock) && ["nous-fullscreen", "nous-affiliate-fullscreen"].includes(step.dock)) {
     const full = await page.evaluate(`(async () => {
       for (let i = 0; i < 20; i += 1) {
         const button = [...document.querySelectorAll('button[aria-label="Open Nous fullscreen"]')].find((b) => b.getClientRects().length);
@@ -580,7 +589,7 @@ async function applyStep(page, step) {
       }
       return false;
     })()`);
-    if (!full) skipped.push("dock:nous-fullscreen");
+    if (!full) skipped.push(`dock:${step.dock}`);
     else await new Promise((resolve) => setTimeout(resolve, 2_500));
   }
   if (step.dock === "nous-goals" && !skipped.length) {
@@ -623,7 +632,7 @@ async function applyStep(page, step) {
   if (step.dock === "nous-quotas" && !skipped.length) {
     await page.until(`Boolean(document.querySelector('.nous-overview[aria-label="Quotas"] .aiq-footer'))`, "The Quotas", 60_000).catch(() => skipped.push("dock:nous-quotas"));
   }
-  if (["nous-startup", "nous-funding", "nous-jobs", "nous-crypto", "nous-marketing"].includes(step.dock) && !skipped.length) {
+  if ([...PROGRAM_DOCKS, "nous-jobs", "nous-crypto", "nous-marketing"].includes(step.dock) && !skipped.length) {
     try {
       await page.until(`Boolean(document.querySelector(".nous-programs .nous-program, .nous-programs .dock-kit-state:not(.is-loading), .nous-programs [role=alert]"))`, "The programs", 60_000);
     } catch { skipped.push(`dock:${step.dock}`); }
@@ -643,9 +652,12 @@ async function applyStep(page, step) {
   if (step.settings) {
     await openDock("settings");
     const title = SETTINGS_SECTIONS[step.settings];
-    const selector = JSON.stringify(`.settings-disclosure button[aria-label="${title}"]`);
+    // data-title is the English title: the button's label follows the interface language (--language el).
+    const selector = JSON.stringify(`.settings-disclosure button[aria-label="${title}"], .settings-disclosure[data-title="${title}"] > h3 > button`);
     try {
       await page.until(`Boolean(document.querySelector(${selector}))`, "The Settings section", 15_000);
+      if (step.settingsFullscreen && !await page.evaluate(`(() => { const b = document.querySelector(".agent-settings-dock .dock-fullscreen-toggle");
+        if (b && !b.classList.contains("is-active")) b.click(); return Boolean(b); })()`)) skipped.push("settings-fullscreen");
       await page.evaluate(`(() => { const b = document.querySelector(${selector}); if (b.getAttribute("aria-expanded") !== "true") b.click();
         b.closest(".settings-disclosure").scrollIntoView({ block: "start" }); return true; })()`);
       // A section that reads the server first says so ("Checking the providers…", "(checking…)", "Loading…"): shoot what it loads.
@@ -998,7 +1010,7 @@ const options = {
   tint: { type: "string" }, "room-theme": { type: "string" }, language: { type: "string" }, rail: { type: "string" }, appointments: { type: "string" }, "appointments-wheel": { type: "string" }, "token-usage": { type: "string" }, "requests-status": { type: "string" }, "requests-search": { type: "string" }, zoom: { type: "string" }, unmasked: { type: "boolean" }, format: { type: "string" },
   quality: { type: "string" }, frame: { type: "string" }, headline: { type: "string" }, subline: { type: "string" }, video: { type: "string" },
   gif: { type: "boolean" }, stdin: { type: "boolean" }, outage: { type: "string" }, program: { type: "string" }, approved: { type: "boolean" }, waiting: { type: "boolean" },
-  "focus-search": { type: "boolean" }, "settings-row": { type: "string" }
+  "focus-search": { type: "boolean" }, "settings-fullscreen": { type: "boolean" }, "settings-row": { type: "string" }
 };
 
 /**

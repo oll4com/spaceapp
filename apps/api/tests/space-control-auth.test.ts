@@ -75,6 +75,14 @@ describe("Space control authorization",()=>{
   expect(retry.id).toBe(first.id);
   expect(retry.results[0].evidence.result.snapshotId).toBe(first.results[0].evidence.result.snapshotId);
  });
+ it("names the fields a resource action's validation refused",async()=>{
+  const {app,room}=await fixture();
+  const response=await app.inject({method:"POST",url:"/api/control/v1/commands",headers:headers(),
+   payload:{roomId:room.id,requestId:"task-update-invalid",actions:[{kind:"resource",operation:"tasks.update",id:"task:missing",input:{status:"finished",priority:1}}]}});
+  const result=response.json().results[0];
+  expect(result.status).toBe("FAILED");
+  expect(result.error ?? result.detail).toMatch(/^Invalid request data\. .*priority.*; status: /);
+ });
  it("isolates personal-memory routes and enforces CSRF and revision conflicts",async()=>{
   const {app}=await fixture();
   const save=await app.inject({method:"POST",url:"/api/live/personal-memory",headers:headers(),payload:{key:"language",value:"el",expectedRevision:0}});

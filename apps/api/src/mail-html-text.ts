@@ -19,11 +19,23 @@ export function looksLikeHtml(text: string): boolean {
   return /^\s*<(?:!doctype html|html|head|body)\b/i.test(text) || (text.match(/<\/?(?:html|body|div|table|tr|td|p|br|span|font|center)\b[^>]*>/gi)?.length ?? 0) >= 10;
 }
 
+const anchorPattern = /<a\b[^>]*\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a\s*>/gi;
+
+/** The http(s) links of an HTML mail the text misses (13/11: Daisycon's text part says "Confirm your email address" without its URL). */
+export function linksMissingFromText(html: string, text: string): Array<{ text: string; url: string }> {
+  const links = new Map<string, string>();
+  for (const [, , href, inner] of html.matchAll(anchorPattern)) {
+    const url = decodeHtmlEntities(href!.trim());
+    if (/^https?:\/\//i.test(url) && !text.includes(url) && !links.has(url)) links.set(url, decodeHtmlEntities(inner!.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim());
+  }
+  return [...links].map(([url, label]) => ({ text: label, url }));
+}
+
 export function htmlToText(html: string): string {
   const text = html
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<(style|script|head|title|noscript)\b[\s\S]*?<\/\1\s*>/gi, " ")
-    .replace(/<a\b[^>]*\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a\s*>/gi, (_match, _quote: string, href: string, inner: string) => {
+    .replace(anchorPattern, (_match, _quote: string, href: string, inner: string) => {
       const label = inner.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
       const target = decodeHtmlEntities(href.trim());
       if (!/^https?:\/\//i.test(target)) return ` ${label} `;

@@ -115,6 +115,24 @@ it("preserves plain text preview and forced Agent File download", async () => {
   expect(download.body).toBe("content");
 });
 
+it("serves an Agent File download in resumable byte ranges, so a phone's dropped 69 MB download picks up where it stopped (13/11)", async () => {
+  const file = artifact("nous.apk", "application/vnd.android.package-archive", true);
+  const directory = join(root, "agent-files", "room_fixture", "pane_fixture", "session_fixture", "2026-10-03");
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "nous.apk"), "0123456789");
+  const url = `/api/artifacts/${encodeURIComponent(file.id)}/download`;
+  const whole = await app.inject(url);
+  expect([whole.statusCode, whole.headers["accept-ranges"], whole.headers["content-length"], whole.headers.etag, whole.body])
+    .toEqual([200, "bytes", "10", `"${"a".repeat(64)}"`, "0123456789"]);
+  expect(whole.headers["content-disposition"]).toMatch(/^attachment; filename="nous.apk";/);
+  expect(whole.headers["last-modified"]).toBeTruthy();
+  const resumed = await app.inject({ url, headers: { range: "bytes=4-", "if-range": whole.headers.etag as string } });
+  expect([resumed.statusCode, resumed.headers["content-range"], resumed.body]).toEqual([206, "bytes 4-9/10", "456789"]);
+  // A validator that no longer matches gets the whole file, never a splice of two versions.
+  const stale = await app.inject({ url, headers: { range: "bytes=4-", "if-range": '"stale"' } });
+  expect([stale.statusCode, stale.body]).toEqual([200, "0123456789"]);
+});
+
 it("answers the Details dialog: an image's measured size and the metadata a design PNG carries inside", async () => {
   const design = { formatId: "linkedin", width: 1200, height: 627, description: "6 AI models played chess. Zero checkmates.", madeBy: { by: "AGENT", runtimeId: "cli:claude", model: "claude-opus-5-5" } };
   const png = artifact("design-linkedin.png", "image/png");

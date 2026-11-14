@@ -40,7 +40,7 @@ async function item(owner: string, vaultId: string, id = newVaultHandle("vault_i
   const dek = vaultRandomBytes(32);
   return {
     metadata: { id, label: "Synthetic login", origins: ["https://example.com"], fieldRoles: ["USERNAME", "PASSWORD"],
-      policy: { agentUse: true, approvalMode: "ASSIST", submitAllowed: false, maxFillsPerHour: 6, acceptedOriginRisks: [] }, status: "ACTIVE", googleAccountId: null, loginKey: null, loginPage: null },
+      policy: { agentUse: true, approvalMode: "ASSIST", submitAllowed: false, maxFillsPerHour: 6, acceptedOriginRisks: [] }, status: "ACTIVE", googleAccountId: null, loginKey: null, loginPage: null, card: null },
     keyVersion: 1, history: [],
     dekEnvelope: await sealVaultEnvelope(vaultRandomBytes(32), dek, { ...scope, purpose: "ITEM_KEY" }),
     fields: {
@@ -149,6 +149,24 @@ describe.skipIf(unavailable !== null)(`vault repository on PostgreSQL${unavailab
     await pool.query("UPDATE vault_items SET origins = ARRAY['not an origin'] WHERE id = $1", [broken.metadata.id]);
     expect((await repository.listItems(erin)).map((entry) => entry.id).sort()).toEqual([long.metadata.id, other.metadata.id].sort());
     expect((await repository.listItemRecords(erin)).map((entry) => entry.metadata.id).sort()).toEqual([long.metadata.id, other.metadata.id].sort());
+  });
+
+  it("stores a card with only its brand and last four in the clear (plan clipboard:qf0P640vyLp2)", async () => {
+    const finn = "user:vault-finn";
+    await pool.query("INSERT INTO users(id, email, role) VALUES ($1, 'vault-finn@space.local', 'OPERATOR')", [finn]);
+    const { vaultId } = await repository.enroll(finn, await enrollment(finn));
+    const login = await item(finn, vaultId);
+    const scope = { ownerUserId: finn, vaultId, keyVersion: 1, itemId: login.metadata.id };
+    const dek = vaultRandomBytes(32);
+    const number = "4242424242424242";
+    const card: VaultItemRecord = { ...login, metadata: { ...login.metadata, label: "Revolut", origins: [], fieldRoles: ["CARD_NUMBER", "CARD_CVC"], card: { brand: "VISA", last4: "4242" } },
+      fields: { CARD_NUMBER: await sealVaultEnvelope(dek, encode.encode(number), { ...scope, purpose: "ITEM_FIELD", field: "CARD_NUMBER" }),
+        CARD_CVC: await sealVaultEnvelope(dek, encode.encode(SENTINEL), { ...scope, purpose: "ITEM_FIELD", field: "CARD_CVC" }) } };
+    expect(await repository.saveItem(finn, card)).toEqual(card);
+    expect((await repository.listItems(finn))[0]).toMatchObject({ origins: [], card: { brand: "VISA", last4: "4242" } });
+    const row = JSON.stringify((await pool.query("SELECT * FROM vault_items WHERE id = $1", [card.metadata.id])).rows);
+    expect(row).not.toContain(number);
+    expect(row).not.toContain(SENTINEL);
   });
 
   it("fails closed for a disabled owner", async () => {

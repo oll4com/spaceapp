@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import {
-  CLI_PANE_TYPES, PANE_TYPES, PANE_CATALOG_VERSION, roomPaneCommandSchema, isAgentRuntimeReady,
+  CLI_PANE_TYPES, LIGHT_CODEX_RUNTIME_ID, PANE_TYPES, PANE_CATALOG_VERSION, roomPaneCommandSchema, isAgentRuntimeReady,
   type AgentRuntimeRegistry, type CreatePaneInput, type PaneBatchClaim,
   type PaneType, type RoomPaneBatchItem, type RoomPaneCommand
 } from "@space/contracts";
@@ -91,8 +91,9 @@ export function createRoomPaneCommands(options: {
     }
     // Validate the complete catalog selection before provisioning anything.
     const result: CreatePaneInput[] = items.map(item => {
+      const light = item.mode === "CHAT" && item.terminalRuntimeId === LIGHT_CODEX_RUNTIME_ID;
       const entry = entries.find(({ definition }) => definition.mode === item.mode &&
-        (item.mode !== "TERMINAL" || definition.runtimeId === item.terminalRuntimeId));
+        (item.mode !== "TERMINAL" || definition.runtimeId === item.terminalRuntimeId) && (item.mode !== "CHAT" || (definition.typeId === "codex-light") === light));
       if (!entry) throw new SpaceConflictError("Pane type is not in the room command catalog.");
       if (!entry.available) throw new SpaceConflictError(`${entry.definition.label}: ${entry.reason}`);
       if (isCopilotPaneMode(item.mode) && "terminalRuntimeId" in item && item.terminalRuntimeId && !readyCliRuntimeIds.includes(item.terminalRuntimeId)) {
@@ -105,6 +106,7 @@ export function createRoomPaneCommands(options: {
           ? `${entry.definition.label} CLI` : item.mode === "HARNESS" ? "Harness" : entry.definition.label,
         mode: item.mode,
         ...(item.mode === "TERMINAL" ? { terminalRuntimeId: item.terminalRuntimeId, cwd: roomCwd } : {}),
+        ...(light ? { terminalRuntimeId: LIGHT_CODEX_RUNTIME_ID } : {}),
         // No cwd: the agent gets a managed per-session workspace with the Space bootstrap. Design and App Studio default to Claude Code too.
         ...(item.mode === "JOB_APPLY" || item.mode === "MAIL_COPILOT" || item.mode === "MARKETING_COPILOT" || item.mode === "FREELANCE_COPILOT" || item.mode === "DESIGN" || item.mode === "APP_STUDIO" || item.mode === "VIDEO" || item.mode === "SECURITY_COPILOT" || item.mode === "MONITORING_COPILOT" ? { terminalRuntimeId: item.terminalRuntimeId ?? defaultJobApplyRuntimeId(readyCliRuntimeIds) } : {}),
         ...(item.mode === "FILES" || item.mode === "DATABASES" ? { cwd: roomCwd !== "/etc" ? roomCwd : undefined } : {}),
@@ -151,7 +153,7 @@ export function createRoomPaneCommands(options: {
     const items = PANE_TYPES.flatMap(definition => Array.from({ length: command.action.counts[definition.typeId] ?? 0 },
       (): RoomPaneBatchItem => definition.mode === "TERMINAL"
         ? { mode: "TERMINAL", terminalRuntimeId: definition.runtimeId }
-        : { mode: definition.mode }));
+        : definition.typeId === "codex-light" ? { mode: "CHAT", terminalRuntimeId: LIGHT_CODEX_RUNTIME_ID } : { mode: definition.mode }));
     const inputs = await resolve(roomId, items);
     // Operator 12/11: a pane Nous opens (its request ids start with "nous:") is blue, so the operator tells it apart; 0320 colored the earlier ones.
     const panes = await options.store.createPanes(command.requestId.startsWith("nous:") ? inputs.map((input) => ({ ...input, categoryColor: "blue" as const })) : inputs, traceId, claim);

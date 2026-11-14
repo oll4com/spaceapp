@@ -11,7 +11,7 @@ import { parseBody } from "./route-parsing.js";
 // uiLanguage (operator 1/11 23:09 BKK: «needs you … στην γλώσσα που εχω ορισει»): how Space reads to him, set for him on his order like the theme.
 const agentAppearanceSettings = new Set(["uiTheme", "modernAppearance", "modernIconPack", "uiBackground", "liquidGlassTint", "roomTheme", "uiZoom", "sensitiveDataMasked", "uiLanguage", "agentLanguage"]);
 const agentRefusedSettings = new Set(["nous", "notifications", "suppressNotifications", "livePane", "voice", "promptVariables", "promptVariablesEnabled",
-  "promptVariablesAutoExpandOnSubmit", "history", "workspaceQuickActions", "projectPresets", "worktreeDefaultEnabled", "roomWorktreeOverrides",
+  "promptVariablesAutoExpandOnSubmit", "history", "paneHibernate", "workspaceQuickActions", "projectPresets", "worktreeDefaultEnabled", "roomWorktreeOverrides",
   "jobCopilot", "mailCopilot", "marketingCopilot", "freelanceCopilot", "design", "appStudio", "video", "securityCopilot", "monitoringCopilot"]);
 
 /** Provider settings and per-user settings; the parent retains authentication, CSRF, errors and rate limits. */

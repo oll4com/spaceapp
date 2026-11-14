@@ -50,7 +50,7 @@ export interface VoiceRealtimeOpenOptions {
   deferCapture?: boolean;
 }
 
-const MICROPHONE_CONSTRAINTS: MediaStreamConstraints = {
+export const MICROPHONE_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: true,
     noiseSuppression: true,

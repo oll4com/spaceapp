@@ -4,6 +4,7 @@ import { nousMessageIdSchema, requestDonePayloadSchema, type ClipboardItem, type
 import type { NousRepository } from "@space/db";
 import type { NotificationService } from "../notifications/service.js";
 import { titleWords } from "./pane-notices.js";
+import { waitsOnOperatorClaim } from "./pane-watch.js";
 import type { NousTurnItem } from "./turn-items.js";
 import { emitMakeEvent } from "../make-webhooks.js";
 
@@ -138,6 +139,8 @@ export function createNousRequestDone(deps: {
   notes: Pick<NousRepository, "listNotes" | "setNote" | "listTurnFacts" | "listAnswerLinks">;
   notifications: Pick<NotificationService, "list" | "raise">;
   plan(owner: string, id: string): Promise<ClipboardItem | null>;
+  /** A plan whose Done was refused because it waits on the operator: open, under 100 %, waitsOn OPERATOR, so its Needs you item rises (plan-needs-you.ts). */
+  holdForOperator?(owner: string, plan: ClipboardItem, what: string): Promise<void>;
   notice(owner: string, key: string, line: string, onDone?: () => Promise<void>, options?: { onDiscard?: () => Promise<void>; items?: NousTurnItem[] }): Promise<void>;
   /** The pane's done or failed report since `since` ("Andy reported done: …"), null when it has none. */
   paneFinished?(owner: string, paneId: string, since: string): Promise<string | null>;
@@ -272,6 +275,18 @@ export function createNousRequestDone(deps: {
   async function writeDone(owner: string, args: Args, origin?: string): Promise<{ ok: boolean; display: string; result: string; refused?: boolean }> {
     const identity = args.plan ?? args.id ?? origin;
     if (!identity) return { ok: false, display: "The request needs an identity", result: "Give the original request id for a request without a plan." };
+    // Operator 13/11 14:39 BKK: six decisions left to them reached Done, where Got it buries them. What waits on them is a Needs you, never Done.
+    const held = args.plan ? await deps.plan(owner, args.plan).catch(() => null) : null;
+    const claim = waitsOnOperatorClaim([args.request, args.summary, args.verified].filter(Boolean).join("\n"));
+    if (claim || held?.waitsOn?.kind === "OPERATOR") {
+      const what = held?.waitsOn?.kind === "OPERATOR" ? held.waitsOn.what : claim!;
+      if (held) await deps.holdForOperator?.(owner, held, what);
+      return { ok: false, refused: true, display: "Waits on the operator: not Done",
+        result: `Not recorded in Done: it leaves decisions or answers to the operator ("${clipWords(what, 160)}"). `
+          + (held ? `${held.id} stays open under 100 % waiting on the operator. Ask them now with space_notify_operator with plan ${held.id} (a question, its options `
+              + `and your recommendation; Approve / Reject for a yes/no); record Done once they have answered and the work is finished.`
+            : "Ask them with space_notify_operator (with the plan if there is one); record Done once they have answered and the work is finished.") };
+    }
     const key = receiptKey(identity);
     const saved = (await marks(owner)).get(key);
     if (saved) return { ok: true, display: "This request is already in Done", result: `Already recorded: ${saved}. The operator was not alerted again.` };
@@ -431,6 +446,25 @@ export function createNousRequestDone(deps: {
           || (request.id !== undefined && record.dedupeKey === `nous:done:${request.id}`)
           || overlap(titleWords(request.summary), `${earlier.request ?? ""} ${earlier.summary ?? ""}`) >= 0.6;
       }));
+    },
+
+    /**
+     * Corrections 13/11 (nous_msg:4258ef8d read Done with LiveKit's work, 04ced2b1 with the public-host disk's, 1b58b47e with Settings ⓘ's): a request
+     * reported with no id or plan takes the id of the open request it matches (one this turn answers first, else the newest), or of one its
+     * Done record closed in Done's 24 h window (the outcome reported again after that record), never simply the message this turn answers.
+     */
+    async named<T extends { summary: string; id?: string; plan?: string; tickets?: string[] }>(owner: string, requests: T[], replyTo: readonly string[]): Promise<T[]> {
+      if (requests.every((request) => request.id || request.plan)) return requests;
+      const notes = await deps.notes.listNotes(owner);
+      const since = new Date(now() - DONE_WINDOW_MS).toISOString();
+      const answered = (entry: NousOpenRequest) => Number(replyTo.includes(entry.messageId!));
+      const ordered = (entries: NousOpenRequest[]) => entries.filter((entry) => entry.messageId)
+        .sort((left, right) => answered(right) - answered(left) || right.openedAt.localeCompare(left.openedAt));
+      const known = [...ordered(openRequestsOf(notes)), ...ordered(closedRequestsOf(notes).filter((entry) => entry.closedReason === "recorded in Done" && entry.closedAt! >= since))];
+      return requests.map((request) => {
+        const entry = request.id || request.plan ? undefined : known.find((candidate) => sameRequest(candidate, request));
+        return entry ? { ...request, id: entry.requestId ?? entry.messageId! } : request;
+      });
     },
 
     /**

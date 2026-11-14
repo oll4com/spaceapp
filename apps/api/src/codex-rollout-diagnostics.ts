@@ -786,7 +786,9 @@ export async function findCurrentCodexCliTurnActivity(
     const { bytesRead } = await handle.read(buffer, 0, byteLength, fileStat.size - byteLength);
     const content = buffer.subarray(0, bytesRead).toString("utf8");
     const activity = inspectCurrentCodexCliTurnActivity(content);
-    const result: CodexCliTurnActivity = activity.status === "PENDING" ? { status: "RUNNING", turnId: null } : activity;
+    // A finished turn ended when its rollout was last written: the dashboard's Done since, which the hibernate sweep needs (plan step 2β).
+    const result: CodexCliTurnActivity = activity.status === "PENDING" ? { status: "RUNNING", turnId: null }
+      : activity.status === "RUNNING" ? activity : { ...activity, lastActivityAtMs: fileStat.mtimeMs };
     rememberRolloutResult(`turn\0${rolloutPath}`, fileStat.size, fileStat.mtimeMs, result);
     return result;
   } catch {

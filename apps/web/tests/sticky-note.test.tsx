@@ -36,7 +36,7 @@ const sampleNote: ClipboardItem = {
   roomId: "room:one",
   paneId: "pane:one",
   paneTitle: "Task",
-  dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
+  dependsOn: [], dueAt: null, waitsOn: null, parked: null, occurrenceCount: 1,
   characterCount: 34,
   createdAt: "2026-09-22T12:00:00.000Z",
   lastUsedAt: "2026-09-22T12:00:00.000Z"

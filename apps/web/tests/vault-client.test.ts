@@ -8,6 +8,7 @@ import {
 import { VAULT_AUTO_LOCK_DEFAULTS, VAULT_AUTO_LOCK_KEY, readVaultAutoLock } from "../src/features/vault/vault-auto-lock.js";
 import {
   VaultInboxError, argon2idKdf, changeMasterPassword, confirmVaultItem, createTransferReseal, recoverVault, decryptVaultItem, encryptVaultItem, importVaultPending, planDuplicateRemoval, setUpVault, signVaultSignupGrant, delegateVaultItems, unlockVault, vaultInboxKey,
+  vaultCardExpiry, vaultCardMetadata, vaultCardNumberValid,
   type VaultApi, type VaultInboxApi
 } from "../src/features/vault/vault-client.js";
 
@@ -189,6 +190,31 @@ describe("Vault dock client", () => {
       envelopeDigest: await vaultDigest(sent.fillEnvelopes), generation: 4, unlockEpoch: unlocked.epoch + 1, expiresAt: sent.expiresAt, items: sent.items }), sent.operatorSignature)).toBe(true);
     // An item hidden from agents (agentUse off) never goes; with nothing to hand over nothing is sent.
     expect(await delegateVaultItems({ vaultBroker: client.vaultBroker, vaultDelegate: async () => { throw new Error("not sent"); } } as never, unlocked, { records: [notAllowed], delegationGeneration: 0 })).toBeNull();
+  });
+
+  it("checks a card and hands it over with no address and no submit; only its brand and last four stay in the clear (plan clipboard:qf0P640vyLp2)", async () => {
+    // Public test numbers only.
+    expect(vaultCardNumberValid("4242424242424242")).toBe(true);
+    expect(vaultCardNumberValid("4242424242424241")).toBe(false);
+    expect(vaultCardNumberValid("4242")).toBe(false);
+    expect(vaultCardMetadata("4242424242424242")).toEqual({ brand: "VISA", last4: "4242" });
+    expect(vaultCardMetadata("5555555555554444").brand).toBe("MASTERCARD");
+    expect(vaultCardMetadata("2223003122003222").brand).toBe("MASTERCARD");
+    expect(vaultCardMetadata("378282246310005").brand).toBe("AMEX");
+    const now = new Date(2026, 10, 13);
+    expect(["11/26", "1126", "11 / 2026", "3/31"].map((text) => vaultCardExpiry(text, now))).toEqual(["11/26", "11/26", "11/26", "03/31"]);
+    expect(["10/26", "13/27", "11-26", ""].map((text) => vaultCardExpiry(text, now))).toEqual([null, null, null, null]);
+    const { client } = await harness();
+    const { unlocked } = await setUpVault(client, "user:alice", "a master", fastKdf);
+    const card = vaultItemRecordSchema.parse(await encryptVaultItem(unlocked, { label: "Revolut", origins: [], loginPage: null, card: vaultCardMetadata("4242424242424242"),
+      secrets: { CARD_NUMBER: "4242424242424242", CARD_EXPIRY: "11/26", CARD_CVC: "123" }, policy: { ...policy, agentUse: true, approvalMode: "FULL" } }));
+    expect(card.metadata).toMatchObject({ origins: [], fieldRoles: ["CARD_NUMBER", "CARD_EXPIRY", "CARD_CVC"], loginKey: null, card: { brand: "VISA", last4: "4242" } });
+    expect(JSON.stringify(card)).not.toContain("4242424242424242");
+    let sent: { items?: unknown } = {};
+    await delegateVaultItems({ vaultBroker: client.vaultBroker, vaultDelegate: async (body: { generation: number; items?: unknown }) => { sent = body; return { generation: body.generation }; } } as never, unlocked, { records: [card], delegationGeneration: 0 });
+    expect(sent.items).toEqual([{ handle: card.metadata.id, origins: [], fields: ["CARD_NUMBER", "CARD_EXPIRY", "CARD_CVC"], approvalMode: "FULL", submit: false }]);
+    expect(vaultDelegateRequestSchema.parse(sent)).toEqual(sent);
+    expect(JSON.stringify(sent)).not.toContain("4242424242424242");
   });
 
   it("changes the master password without changing the unlock key", async () => {

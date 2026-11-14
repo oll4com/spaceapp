@@ -165,13 +165,16 @@ describe("SystemAnalyticsService", () => {
     };
     // Nobody reads: the first tick and then every third one.
     expect(await ticks(7)).toEqual([true, false, false, true, false, false, true]);
+    // The health rail's model poll reads only the live sessions: no sample, and the 30 s rate stays.
+    await service.models("10m");
+    expect(await ticks(3)).toEqual([false, false, true]);
     // A read (the current sample is 10 s old, fresh enough) keeps every tick for a minute.
     await service.resources("10m");
-    expect(readProcessTable).toHaveBeenCalledTimes(3);
+    expect(readProcessTable).toHaveBeenCalledTimes(4);
     expect(await ticks(9)).toEqual([true, true, true, true, true, true, true, false, false]);
     // Direct samples (startup, a stale read) are never skipped.
     await service.sample();
-    expect(readProcessTable).toHaveBeenCalledTimes(11);
+    expect(readProcessTable).toHaveBeenCalledTimes(12);
     await service.dispose();
   });
 

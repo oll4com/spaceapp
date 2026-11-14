@@ -3,7 +3,7 @@ import { createCopilotPaneReopen, type CopilotReopenDeps } from "../copilot-pane
 import type { MarketingCopilotService } from "./service.js";
 
 export interface MarketingCopilotSchedulerDeps {
-  service: Pick<MarketingCopilotService, "duePosts" | "settingsOf" | "proposeReleaseCampaign" | "pendingBriefs">;
+  service: Pick<MarketingCopilotService, "duePosts" | "settingsOf" | "proposeReleaseCampaign" | "pendingBriefs" | "postsToMeasure">;
   /** The running SpaceApp version: a version nobody announced yet proposes its release campaign. */
   version?: string;
   store: { listRooms(): Promise<Room[]> | Room[]; listPanes(roomId: string, includeClosed?: boolean): Promise<Pane[]> | Pane[] };
@@ -30,7 +30,9 @@ const DEFAULT_INTERVAL_MS = 60_000;
 /**
  * Approved posts whose time has come (an approved post without a schedule at once) get published without the operator pressing
  * Start: for every open Marketing Copilot pane that is not paused and has no active run, due posts start a run once the pane's CLI
- * is at an empty prompt (its kickoff goes there; a busy CLI waits for a later tick). A RUNNING run whose agent left its loop is
+ * is at an empty prompt (its kickoff goes there; a busy CLI waits for a later tick). Published posts due their 1-day or 7-day reading
+ * start one run per owner when none is going (13/11: 7 posts stayed unmeasured; any run's space_marketing_next hands out every
+ * owner's reading, so a second run would read the same post). A RUNNING run whose agent left its loop is
  * kicked by copilot-run-kick, which counts the same due posts. A pane without a running CLI agent raises one notification instead.
  * Single-flight: a slow tick is never overlapped.
  */
@@ -46,24 +48,33 @@ export function createMarketingCopilotScheduler(deps: MarketingCopilotSchedulerD
     let notified = 0;
     try {
       const panes = reopener.collect();
+      const listed: Array<{ room: Room; owner: string; open: Pane[] }> = [];
       for (const room of await deps.store.listRooms()) {
         if (!room.ownerUserId) continue;
         // Closed panes too: the store lists open ones by default, and item 44 reopens a closed one (28/10: Cleo/Bob was never seen).
         const marketing = (await deps.store.listPanes(room.id, true)).filter((candidate) => candidate.mode === "MARKETING_COPILOT");
         for (const pane of marketing) panes.add(room.ownerUserId, room, pane);
-        for (const pane of marketing.filter((candidate) => !candidate.isClosed)) {
+        listed.push({ room, owner: room.ownerUserId, open: marketing.filter((candidate) => !candidate.isClosed) });
+      }
+      const active = new Set<string>();
+      const measuring = new Set<string>();
+      for (const { owner, open } of listed) for (const pane of open) if (await deps.hasActiveRun(pane)) { active.add(pane.id); measuring.add(owner); }
+      for (const { room, owner, open } of listed) {
+        for (const pane of open) {
           try {
-            if (deps.version) await deps.service.proposeReleaseCampaign(room.ownerUserId, pane, deps.version);
-            if (deps.service.settingsOf(pane).paused || await deps.hasActiveRun(pane)) continue;
-            const due = await deps.service.duePosts(room.ownerUserId, pane);
+            if (deps.version) await deps.service.proposeReleaseCampaign(owner, pane, deps.version);
+            if (deps.service.settingsOf(pane).paused || active.has(pane.id)) continue;
+            const due = await deps.service.duePosts(owner, pane);
+            const measure = !due.length && !measuring.has(owner) && (await deps.service.postsToMeasure(owner)).length > 0;
             // 31/10 (operator: idle panes with waiting briefs): a brief waiting after the agent ended its run starts one too, not only due posts.
-            if (!due.length && !await deps.service.pendingBriefs(room.ownerUserId, pane)) continue;
+            if (!due.length && !measure && !await deps.service.pendingBriefs(owner, pane)) continue;
             if (!(await deps.hasAgent(pane))) {
               if (!due.length) continue;
-              await deps.notifyDue(room.ownerUserId, room, pane, due);
+              await deps.notifyDue(owner, room, pane, due);
               notified += 1;
             } else if (!deps.ready || await deps.ready(pane)) {
-              await deps.startRun(room.ownerUserId, pane);
+              await deps.startRun(owner, pane);
+              measuring.add(owner);
               started += 1;
             }
           } catch (error) {

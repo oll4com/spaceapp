@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import {
   allocateDisplay,
+  browserSessionDisplayCapacity,
   displayHeldElsewhere,
   applyRestoreState,
   assertSafeBrowserTargetUrl,
@@ -21,12 +22,16 @@ import {
   createBrowserSessionManager,
   dispatchBrowserRuntimeInput,
   isPrivateOrReservedAddress,
+  browserFrameSource,
+  PANE_CHROME_GPU_ARGS,
   PANE_CHROME_STORAGE_ARGS,
+  mobileUserAgentOverride,
   readPageMetadata,
   recordBrowserFramesInSegments,
   recoverInterruptedBrowserCaptureJobs,
   releaseDisplay,
-  resolveBrowserStreamProfile
+  resolveBrowserStreamProfile,
+  screencastFor
 } from "../src/browser-sessions.js";
 import { getApiConfig } from "../src/config.js";
 import { BrowserControlHeldError } from "../src/browser-errors.js";
@@ -53,6 +58,23 @@ describe("browser startup lifecycle", () => {
       expect(store.getActivePaneBrowserSession(pane.id)).toBeNull();
       expect(manager.capacity?.()).toMatchObject({ activeSessions: 0, activeLiveWorkloads: 0 });
     } finally { await manager.closeAll(); await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("browser teleport emulation (operator 13/11)", () => {
+  it("gives a mobile preset this Chrome's Android user agent, Mobile only on a phone", () => {
+    const phone = mobileUserAgentOverride("Chrome/157.0.8103.78", true);
+    expect(phone.userAgent).toBe("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Mobile Safari/537.36");
+    expect(phone.userAgentMetadata).toMatchObject({ platform: "Android", mobile: true, brands: expect.arrayContaining([{ brand: "Google Chrome", version: "157" }]) });
+    const tablet = mobileUserAgentOverride("HeadlessChrome/157.0.8103.78", false);
+    expect(tablet.userAgent).toContain("Chrome/157.0.0.0 Safari/537.36");
+    expect(tablet.userAgentMetadata.mobile).toBe(false);
+  });
+
+  it("sizes portrait frames to the phone and keeps landscape frames as the dock's", () => {
+    expect(screencastFor({ width: 412, height: 800 })).toMatchObject({ quality: 60, maxWidth: 618, maxHeight: 1200 });
+    expect(screencastFor({ width: 1440, height: 900 })).toMatchObject({ quality: 72, maxWidth: 1280, maxHeight: 720 });
+    expect(screencastFor(undefined)).toMatchObject({ maxWidth: 1280 });
   });
 });
 
@@ -297,6 +319,15 @@ describe("browser runtime v2 stream profiles", () => {
     expect(resolveBrowserStreamProfile("AUTO", { visible: false }).resolvedMode).toBe("SILENT");
     expect(resolveBrowserStreamProfile("AUTO", { resourcePressure: true }).resolvedMode).toBe("PREVIEW");
     expect(resolveBrowserStreamProfile("AUTO", { focused: true }).resolvedMode).toBe("REALTIME");
+  });
+
+  it("makes live frames by screenshot only while every viewer is on Preview (plan step 3)", () => {
+    const viewer = (mode: "SILENT" | "PREVIEW" | "INTERACTIVE" | "REALTIME") => ({ profile: resolveBrowserStreamProfile(mode) });
+    expect(browserFrameSource([])).toBeNull();
+    expect(browserFrameSource([viewer("SILENT")])).toBeNull();
+    expect(browserFrameSource([viewer("PREVIEW"), viewer("PREVIEW")])).toBe("screenshots");
+    expect(browserFrameSource([viewer("PREVIEW"), viewer("INTERACTIVE")])).toBe("screencast");
+    expect(browserFrameSource([viewer("REALTIME")])).toBe("screencast");
   });
 });
 
@@ -1332,14 +1363,14 @@ describe("browser session restore metadata", () => {
 });
 
 describe("browser session display pool", () => {
-  it("allocates up to ten displays and reuses released ones", () => {
+  it("allocates one display per browser the memory allows and reuses released ones", () => {
     const allocated = new Set<number>();
-    for (let index = 0; index < 10; index += 1) {
+    for (let index = 0; index < browserSessionDisplayCapacity; index += 1) {
       const display = allocateDisplay();
       expect(display).not.toBeNull();
       allocated.add(display!);
     }
-    expect(allocated.size).toBe(10);
+    expect(allocated.size).toBe(browserSessionDisplayCapacity);
     expect(allocateDisplay()).toBeNull();
 
     const first = [...allocated][0]!;
@@ -1384,6 +1415,14 @@ describe("live frame pacing", () => {
     const resumed = nextBrowserFrameDeadline(30000, deadline, 35)!;
     expect(resumed).toBeCloseTo(30000 + 1000 / 35);
     expect(nextBrowserFrameDeadline(30001, resumed, 35)).toBeNull();
+  });
+});
+
+describe("pane Chrome GPU flags (plan clipboard:DpmApwi78Fdh step 1)", () => {
+  it("composites pages in software and keeps SwiftShader for WebGL", () => {
+    expect(PANE_CHROME_GPU_ARGS).toContain("--disable-gpu-compositing");
+    expect(PANE_CHROME_GPU_ARGS).toEqual(expect.arrayContaining(["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"]));
+    expect(PANE_CHROME_GPU_ARGS).not.toContain("--disable-gpu");
   });
 });
 

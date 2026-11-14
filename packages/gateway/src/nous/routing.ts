@@ -1,4 +1,5 @@
 import type pg from "pg";
+import type { TenantPlan } from "./tenant-keys.js";
 
 /**
  * Task routing of the Nous Gateway (plan clipboard:_0qBSFCftZuD step 4, K5-routing; install plan §3.3): the Nous turn worker names the
@@ -47,3 +48,14 @@ export async function nextRoute(models: readonly string[], current: string, hasR
   for (const model of models) if (model !== current && modelProvider(model) && await hasRoom(model)) return model;
   return null;
 }
+
+/**
+ * Plan v2 §4.4.5 (Ultra routing): the `hard` list (Opus, Astra, Fable) runs for Ultra when its user asks, and for any plan only on
+ * the retry of a `reason` turn that failed (`x-nous-after-failure: reason`). A model only the hard list names counts as a hard
+ * request whatever task the header says, so a cheaper plan cannot reach Opus by naming it under `reason`.
+ */
+export function hardRequest(routes: Record<NousTask, string[]>, task: NousTask, model: string): boolean {
+  return task === "hard" || (routes.hard.includes(model) && !routes[task].includes(model));
+}
+export const hardAllowed = (plan: TenantPlan, afterFailure: string | string[] | undefined): boolean =>
+  plan === "ULTRA" || (Array.isArray(afterFailure) ? afterFailure[0] : afterFailure)?.trim().toLowerCase() === "reason";

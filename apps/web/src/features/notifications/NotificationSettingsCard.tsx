@@ -53,25 +53,26 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
   return (
     <section className="agent-settings-card settings-flat-card suppress-notifications-settings-card" aria-label="Notification settings" aria-busy={!settings}>
       <SpaceToggle className="settings-flat-row settings-flat-toggle-row suppress-notifications-toggle" name="show-notifications" label="Show notifications"
-        detail={suppressNotifications ? "Pop-up messages and alerts are hidden for your account." : "Pop-up messages and alerts appear normally."}
+        help="Turns every pop-up message and alert on or off for your account. Turn it off when you want no interruptions."
+        detail={suppressNotifications ? "Pop-up messages and alerts are hidden for your account." : undefined}
         checked={!suppressNotifications} onChange={(show) => onSuppressNotificationsChange(!show)} />
-      <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-in-app" label="In-app badges and Notification Center" detail="Counts on the toolbar bell and rooms, and the records in the Notification Center."
+      <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-in-app" label="In-app badges and Notification Center" help="Counts on the toolbar bell and rooms, and the records in the Notification Center."
         checked={current.channels.inApp} disabled={!settings} onChange={(checked) => channel("inApp", checked)} />
-      <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-toast" label="Pop-up toasts" detail="A short card in the corner while Space is in front."
+      <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-toast" label="Pop-up toasts" help="A short card in the corner while Space is in front."
         checked={current.channels.toast} disabled={!settings} onChange={(checked) => channel("toast", checked)} />
-      <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-sound" label="Sound" detail="A chime for notifications that need you (follows the Space volume)."
+      <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-sound" label="Sound" help="A chime for notifications that need you (follows the Space volume)."
         checked={current.channels.sound} disabled={!settings} onChange={(checked) => channel("sound", checked)} />
       <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-desktop" label={nativeNotificationsAvailable() ? "System notifications on this device" : "Desktop notifications in this browser"}
-        detail={permission === "unsupported" ? "This browser cannot show desktop notifications." : permission === "denied" ? "Blocked in the browser; allow notifications for this site to turn them on."
-          : desktop ? "Shown while Space is in the background; a tap brings Space back." : nativeNotificationsAvailable() ? "Off on this device. Turning it on may ask the system for permission." : "Off in this browser. Turning it on asks the browser for permission."}
+        help="Shown while Space is in the background; a tap brings Space back. Turning it on may ask the browser or the system for permission."
+        detail={permission === "unsupported" ? "This browser cannot show desktop notifications." : permission === "denied" ? "Blocked in the browser; allow notifications for this site to turn them on." : undefined}
         checked={desktop && current.channels.desktop} disabled={!settings || permission === "unsupported" || permission === "denied"}
         onChange={(checked) => { void setDesktopNotifications(checked).then((on) => { setDesktop(on); setPermission(desktopNotificationPermission()); channel("desktop", checked); }); }} />
-      <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-telegram" label="Telegram" detail="Notifications that need you also go to the paired Telegram bot (Settings → Telegram)."
+      <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-telegram" label="Telegram" help="Notifications that need you also go to the paired Telegram bot (Settings → Telegram)."
         checked={current.channels.telegram} disabled={!settings} onChange={(checked) => channel("telegram", checked)} />
       {pushNotificationsSupported() ? (
         <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-push" label="Push notifications on this device"
-          detail={!pushAvailable ? "On, but this Space server has no push key yet: nothing is pushed until it has one."
-            : push ? "Notifications that need you arrive also while the app is closed; a tap opens them." : "Off on this device. Turning it on may ask the system for permission."}
+          help="Notifications that need you arrive also while the app is closed; a tap opens them. Turning it on may ask the system for permission."
+          detail={!pushAvailable ? "On, but this Space server has no push key yet: nothing is pushed until it has one." : undefined}
           checked={push} disabled={!settings}
           onChange={(checked) => {
             setError(null);
@@ -80,9 +81,7 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
           }} />
       ) : null}
       <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-quiet-hours" label="Quiet hours for hand requests"
-        detail={current.quietHours.enabled
-          ? `From ${current.quietHours.start} to ${current.quietHours.end} in your working time zone (Settings → Date & time zone; without one nothing is held), sign-ins, CAPTCHAs, handoffs and needs-you requests are kept without alerts and come as one morning batch. Urgent ones still alert.`
-          : "Off: hand requests alert at any hour."}
+        help="Between the times below, in your working time zone (Settings → Date & time zone; without one nothing is held), sign-ins, CAPTCHAs, handoffs and needs-you requests wait without alerts and come as one morning batch. Urgent ones still alert."
         checked={current.quietHours.enabled} disabled={!settings} onChange={(checked) => quiet({ enabled: checked })} />
       {current.quietHours.enabled ? (
         <div className="settings-flat-row notification-quiet-hours">
@@ -94,8 +93,9 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
       ) : null}
       <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-appointments" label="Appointment reminders"
         detail={current.appointmentReminders.enabled
-          ? `Before every appointment: ${leads.length ? leads.map(leadLabel).join(", ") : "no lead times set"}. A reminder that falls in your quiet hours comes 5 minutes before they start, never dropped.`
-          : "Off: appointments are not reminded."}
+          ? `Before every appointment: ${leads.length ? leads.map(leadLabel).join(", ") : "no lead times set"}.`
+          : undefined}
+        help="Reminds you before every appointment at the lead times below. A reminder that falls in your quiet hours comes 5 minutes before they start, never dropped."
         checked={current.appointmentReminders.enabled} disabled={!settings} onChange={(checked) => reminders({ enabled: checked })} />
       {current.appointmentReminders.enabled ? (
         <div className="settings-flat-row notification-quiet-hours">
@@ -109,14 +109,14 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
         {NOTIFICATION_SOURCES.map((source) => (
           <div key={source} className="notification-source-row">
             <strong>{NOTIFICATION_SOURCE_LABELS[source]}</strong>
-            <SpaceToggle compact label="In-app" checked={current.perSource[source]?.inApp ?? current.channels.inApp} disabled={!settings} onChange={(checked) => perSource(source, "inApp", checked)} />
-            <SpaceToggle compact label="Desktop" checked={current.perSource[source]?.desktop ?? current.channels.desktop} disabled={!settings} onChange={(checked) => perSource(source, "desktop", checked)} />
-            <SpaceToggle compact label="Telegram" checked={current.perSource[source]?.telegram ?? current.channels.telegram} disabled={!settings} onChange={(checked) => perSource(source, "telegram", checked)} />
-            {pushNotificationsSupported() ? <SpaceToggle compact label="Push" checked={current.perSource[source]?.push ?? current.channels.push} disabled={!settings} onChange={(checked) => perSource(source, "push", checked)} /> : null}
+            <SpaceToggle compact label="In-app" help="This source's notifications in the bell, the rooms' counts and the Notification Center." checked={current.perSource[source]?.inApp ?? current.channels.inApp} disabled={!settings} onChange={(checked) => perSource(source, "inApp", checked)} />
+            <SpaceToggle compact label="Desktop" help="This source's notifications as desktop or system notifications." checked={current.perSource[source]?.desktop ?? current.channels.desktop} disabled={!settings} onChange={(checked) => perSource(source, "desktop", checked)} />
+            <SpaceToggle compact label="Telegram" help="This source's notifications that need you, also through the paired Telegram bot." checked={current.perSource[source]?.telegram ?? current.channels.telegram} disabled={!settings} onChange={(checked) => perSource(source, "telegram", checked)} />
+            {pushNotificationsSupported() ? <SpaceToggle compact label="Push" help="This source's notifications that need you, also as push notifications while the app is closed." checked={current.perSource[source]?.push ?? current.channels.push} disabled={!settings} onChange={(checked) => perSource(source, "push", checked)} /> : null}
           </div>
         ))}
       </details>
-      <div className="settings-flat-row">
+      <div className="settings-flat-actions">
         <button type="button" className="settings-flat-button" disabled={!settings} onClick={() => {
           setMessage(null);
           void api.testNotification().then(() => setMessage("A test notification was raised; it follows the channels above.")).catch((caught: unknown) => setError(caught instanceof Error ? caught.message : "The test failed."));

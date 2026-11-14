@@ -19,6 +19,7 @@ import type { MailCopilotKickoff } from "./kickoff.js";
 import { buildMime, header, parseParticipants, parsePayload, type MimeAttachment } from "./gmail-mime.js";
 import { sanitizeMailHtml } from "./html-sanitizer.js";
 import { decodeEntities } from "../job-apply/gmail-mailbox.js";
+import { linksMissingFromText } from "../mail-html-text.js";
 import { mailCopilotNoticeKey } from "./notify.js";
 import { RESET_ASK, resetRefusal } from "../signin-readback.js";
 import type { SiteSignin } from "@space/contracts";
@@ -175,6 +176,11 @@ const HANDLES_MAIL: ReadonlySet<MailOperatorAction> = new Set(["ARCHIVE", "TRASH
 const ACTION_RETENTION_MS = 365 * 24 * 3_600_000;
 
 /** The accounts a pane works with: the chosen ones, else every account allowed for Space. */
+/** A conversation as the agent gets it: text without the HTML, plus the HTML's links the text misses. */
+export function agentThread<T extends { messages: MailMessage[] }>(thread: T): T & { messages: Array<MailMessage & { links: Array<{ text: string; url: string }> }> } {
+  return { ...thread, messages: thread.messages.map((message) => ({ ...message, html: null, links: message.html ? linksMissingFromText(message.html, message.text) : [] })) };
+}
+
 export function paneAccountEmails(pane: Pane | null, accounts: ReadonlyArray<{ email: string }>): string[] {
   const chosen = pane?.mode === "MAIL_COPILOT" ? resolveMailCopilotPaneMetadata(pane.mailCopilotMetadata).settings.accounts : [];
   const all = accounts.map((account) => account.email);
@@ -300,6 +306,14 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
   }
   const deciding = new Map<string, Promise<{ decision: MailCopilotReviewDecision["decision"]; sent: { messageId: string; threadId: string } | null }>>();
 
+  /** The rule memory that requires the operator to read this review (`reviewRequiringMemories`), or null. */
+  async function requiredMemory(owner: string, draft: MailComposeInput | undefined, message: string, account: string | null | undefined) {
+    const address = draft?.to[0] ? senderAddress(draft.to[0]).toLowerCase() : undefined;
+    const [memory] = await reviewRequiringMemories((query) => repository.listMemory(owner, { query, kinds: ["FACT", "LESSON", "PREFERENCE"], contactEmail: address,
+      domain: address ? senderDomain(address) : undefined }), `${draft?.subject ?? ""} ${message.replace(/^Review: /, "")}`,
+    [address, account].filter((value): value is string => Boolean(value)));
+    return memory ?? null;
+  }
   async function record(owner: string, input: MailCopilotEventInput & MailEventContext & { type: MailCopilotEventType; status?: "PENDING" | "TAKEN" | "DONE" | null }): Promise<MailCopilotEvent> {
     const event = await repository.createEvent({
       ownerUserId: owner, paneId: input.paneId ?? null, runId: input.runId ?? null, accountEmail: input.accountEmail ?? null, threadId: input.threadId ?? null, messageId: input.messageId ?? null,
@@ -1159,7 +1173,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const memories = newest ? await this.recallMemory(owner, { query: newest.subject, contactEmail: newest.from.address, domain: senderDomain(newest.from.address) }) : [];
       // How the operator handled this sender and this kind of mail before, on this account: the copilot's main guide.
       const habits = newest ? await habitsFor(owner, item.accountEmail, { from: newest.from.address, subject: newest.subject }).catch(() => null) : null;
-      return { thread: thread ? { ...thread, messages: thread.messages.map((message) => ({ ...message, html: null })) } : null, memories, habits };
+      return { thread: thread ? agentThread(thread) : null, memories, habits };
     },
     async reportItem(owner: string, pane: Pane, input: { eventId: string; outcome: "replied" | "drafted" | "archived" | "labeled" | "skipped" | "needs_user" | "learned" | "fixed"; summary: string; memoryIds: string[] }) {
       const item = await repository.getEvent(owner, input.eventId);
@@ -1248,8 +1262,12 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const vouched = (await repository.listRules(owner, { status: ["APPROVED"], accountEmail: input.draft.account }))
         .some((rule) => rule.action.type === "REPLY" && mailRuleMatches(rule.condition, facts)) ? "RULE" : null;
       const reviewId = `mailrev:${randomBytes(9).toString("base64url")}`;
+      const message = `Review: ${input.summary}${overrides ? ` (${overrides})` : ""}${files.length ? ` [attachments: ${files.map((file) => file.filename).join(", ")}]` : ""}`;
+      // Nous 13/11 (mailrev:lddyXCl-tHDS, Akamai credits, held for Nous under "May send" against mailmem:SLvZ9IZgCRc4): a review a rule memory
+      // says the operator reads first goes to the operator's Needs you, never held for Nous (isNousApproval reads `operatorReads`).
+      const operatorReads = await requiredMemory(owner, input.draft, message, input.draft.account).catch(() => null);
       await record(owner, { paneId: pane.id, type: "REVIEW_REQUESTED", accountEmail: input.draft.account, threadId: input.draft.threadId ?? null, messageId: input.draft.inReplyToMessageId ?? null,
-        message: `Review: ${input.summary}${overrides ? ` (${overrides})` : ""}${files.length ? ` [attachments: ${files.map((file) => file.filename).join(", ")}]` : ""}`, payload: { reviewId, draft: input.draft,
+        message, payload: { reviewId, draft: input.draft, ...(operatorReads ? { operatorReads: operatorReads.id } : {}),
           ...(files.length ? { attachmentsFrom: input.attachmentsFrom, attachments: files } : {}),
           reasoning: [overrides, input.reasoning].filter(Boolean).join("\n") || null,
           ...(order ? { operatorOrder: order } : {}), ...(vouched ? { vouched } : {}) } });
@@ -1269,15 +1287,18 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
      * Nous 13/11 (mailrev:oLB398mFW7pu went out under maySend): the rule memory that requires this review (funding mail: "the operator reads
      * it before it goes out"), read with the words and addresses it was raised with; null when none does or the review is unknown.
      */
+    /** The draft a review sends, for a Nous decision's "What it sends" (operator 13/11 21:43 BKK: "show everything" showed nothing); null when unknown or an RSVP. */
+    async reviewDraft(owner: string, reviewId: string) {
+      const review = (await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] })).find((event) => event.payload.reviewId === reviewId);
+      const draft = review?.payload.draft as MailComposeInput | undefined;
+      if (!draft) return null;
+      const files = (review!.payload.attachments as Array<{ filename: string }> | undefined) ?? [];
+      return { headers: [["From", draft.account], ["To", draft.to.join(", ")], ["Cc", (draft.cc ?? []).join(", ")], ["Bcc", (draft.bcc ?? []).join(", ")], ["Subject", draft.subject],
+        ["Attachments", files.map((file) => file.filename).join(", ")]] as Array<[string, string]>, body: draft.text };
+    },
     async reviewRequiredBy(owner: string, reviewId: string) {
       const review = (await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] })).find((event) => event.payload.reviewId === reviewId);
-      if (!review) return null;
-      const draft = review.payload.draft as MailComposeInput | undefined;
-      const address = draft?.to[0] ? senderAddress(draft.to[0]).toLowerCase() : undefined;
-      const [memory] = await reviewRequiringMemories((query) => repository.listMemory(owner, { query, kinds: ["FACT", "LESSON", "PREFERENCE"], contactEmail: address,
-        domain: address ? senderDomain(address) : undefined }), `${draft?.subject ?? ""} ${review.message.replace(/^Review: /, "")}`,
-      [address, review.accountEmail].filter((value): value is string => Boolean(value)));
-      return memory ?? null;
+      return review ? requiredMemory(owner, review.payload.draft as MailComposeInput | undefined, review.message, review.accountEmail) : null;
     },
     /**
      * One decision and one Gmail send per review (stable 2026-10-17: one approval went to Hetzner twice, 9 s apart): a decided
@@ -1588,12 +1609,20 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     /** Replies and forwards logged on one thread since a time (Nous's double-send guard, queue item 27). */
     threadReplies: (owner: string, account: string, threadId: string, since: string) =>
       repository.listActions(owner, { accountEmail: account.toLowerCase(), threadId, actions: ["REPLY", "FORWARD"], since, limit: 5 }),
-    /** Nous Score's «sent means seen» from the store, no Gmail read: our newest logged reply or forward on a thread since a time, BOUNCED when a mailer-daemon mail came after it; null: none. */
+    /**
+     * Nous Score's «sent means seen» from the store, no Gmail read: our newest send on a thread since a time (a logged reply or forward, our SENT
+     * event, or a review the operator decided whose send went out: REVIEW_DECIDED with payload.sent; a review draft with no in-reply-to logs no
+     * REPLY, 13/11 3fac478d), BOUNCED when a mailer-daemon mail came after it; null: none.
+     */
     async threadSend(owner: string, account: string, threadId: string, since: string, recipients: string[] = []): Promise<"SENT" | "BOUNCED" | null> {
-      const [reply] = await repository.listActions(owner, { accountEmail: account.toLowerCase(), threadId, actions: ["REPLY", "FORWARD"], since, limit: 1 });
-      if (!reply) return null;
-      const after = await repository.listEvents(owner, { accountEmail: account.toLowerCase(), threadId, types: ["MAIL_RECEIVED"], since: reply.occurredAt });
-      return bouncedFor(after, addressesIn([recipients, reply.fromAddress])) ? "BOUNCED" : "SENT";
+      const scope = { accountEmail: account.toLowerCase(), threadId, since };
+      const [[reply], events] = await Promise.all([repository.listActions(owner, { ...scope, actions: ["REPLY", "FORWARD"], limit: 1 }),
+        repository.listEvents(owner, { ...scope, types: ["SENT", "REVIEW_DECIDED"] })]);
+      const sends = events.filter((event) => event.type === "SENT" || (event.payload.sent as { messageId?: unknown } | null)?.messageId);
+      const at = [reply?.occurredAt, ...sends.map((event) => event.createdAt)].filter((time): time is string => !!time).sort().at(-1);
+      if (!at) return null;
+      const after = await repository.listEvents(owner, { ...scope, types: ["MAIL_RECEIVED"], since: at });
+      return bouncedFor(after, addressesIn([recipients, reply?.fromAddress, sends.map((event) => [event.payload.to, event.payload.cc])])) ? "BOUNCED" : "SENT";
     },
     /**
      * Score's mail rule (goal 84ba917a, audit 6/11): our send since a time, in ANY thread of any account (null) or of `account`, to one of

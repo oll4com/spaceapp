@@ -49,7 +49,7 @@ export function summarizeInstallPings(log: string, now = Date.now()): Omit<Syste
     const row = rows.get(key) ?? {
       installId: key.slice(0, 64), linked: installId !== null, internal: false, firstSeenAt: ping.t, lastSeenAt: ping.t, status: "STARTED",
       failedStage: null, durationSeconds: null, country: null, os: null, osVersion: null, arch: null, cpus: null, ramGb: null,
-      profile: null, access: null, version: null, screen: null, dpr: null, browser: null, lang: null, firstCli: null,
+      profile: null, access: null, version: null, screen: null, dpr: null, browser: null, lang: null, firstCli: null, ref: null,
       setupCompletedAt: null, firstAnswerAt: null, lastActiveAt: null, activeDays: 0
     } satisfies SystemAnalyticsInstall;
     rows.set(key, row);
@@ -59,7 +59,7 @@ export function summarizeInstallPings(log: string, now = Date.now()): Omit<Syste
     if (ping.os !== "unknown") row.os = text(ping.os) ?? row.os;
     row.arch = text(ping.arch) ?? row.arch;
     row.version = text(ping.version) ?? row.version;
-    for (const field of ["country", "profile", "access", "screen", "dpr", "browser", "lang"] as const) row[field] = text(ping[field]) ?? row[field];
+    for (const field of ["country", "profile", "access", "screen", "dpr", "browser", "lang", "ref"] as const) row[field] = text(ping[field]) ?? row[field];
     row.osVersion = text(ping.os_version) ?? row.osVersion;
     row.cpus = integer(ping.cpus) ?? row.cpus;
     row.ramGb = integer(ping.ram_gb) ?? row.ramGb;

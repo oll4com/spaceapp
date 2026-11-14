@@ -57,8 +57,8 @@ const requestsQuery = z.object({ before: nousMessageIdSchema.optional(), limit: 
   since: z.string().datetime({ offset: true }).optional(), q: z.string().max(200).optional() }).strict();
 // Audit 6/11: done needs its proof (a URL, a message id, a booking), void its reason, as space_settle_decision.
 const settleSchema = z.discriminatedUnion("state", [
-  z.object({ state: z.literal("DONE"), proof: z.string().trim().min(1).max(1_000), reason: z.string().trim().min(1).max(500) }).strict(),
-  z.object({ state: z.literal("VOID"), proof: z.string().trim().max(1_000).optional(), reason: z.string().trim().min(1).max(500) }).strict()]);
+  z.object({ state: z.literal("DONE"), proof: z.string().trim().min(1), reason: z.string().trim().min(1) }).strict(),
+  z.object({ state: z.literal("VOID"), proof: z.string().trim().optional(), reason: z.string().trim().min(1) }).strict()]);
 const vaultBrokerReinstallSchema = z.object({ reason: z.string().trim().min(1).max(1_000) }).strict();
 
 /** The Nous dock: state, conversation, settings, decisions and the overview. */
@@ -125,11 +125,13 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
       await earlier?.catch(() => undefined);
       const known = await service.operatorMessageByClientId(owner, input.clientId!);
       if (!known) return sendMessage(request, owner, input);
-      return { message: known, attachments: deps.attachments ? (await deps.attachments.forMessages(owner, [known.id]))[known.id] ?? [] : [] };
+      return answered(owner, known);
     })();
     sending.set(key, work);
     try { return reply.code(202).send(await work); } finally { if (sending.get(key) === work) sending.delete(key); }
   });
+  const answered = async (owner: string, message: NousMessage) =>
+    ({ message, attachments: deps.attachments ? (await deps.attachments.forMessages(owner, [message.id]))[message.id] ?? [] : [] });
   async function sendMessage(request: FastifyRequest, owner: string, input: z.infer<typeof nousSendInputSchema>) {
     const ids = input.attachmentIds ?? [];
     // The files' block rides on the operator's message, so every turn that sees the message sees its files.
@@ -137,7 +139,11 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
     // Only a person at the dock (never a proof or automation session) can start Away from the chat.
     let person = true;
     try { deps.assertPerson(request); } catch { person = false; }
-    const message = await service.send(owner, [input.content, prepared?.block].filter(Boolean).join("\n\n"), { person, client: requestNousClient(request),
+    const content = [input.content, prepared?.block].filter(Boolean).join("\n\n");
+    // Score 13/11: the app sending one message again under a new outbox id answers the first; the copy's files stay unsent.
+    const repeat = await service.repeatOf(owner, content);
+    if (repeat) return answered(owner, repeat);
+    const message = await service.send(owner, content, { person, client: requestNousClient(request),
       ...(request.mobileDevice ? { mobile: { device: request.mobileDevice.id, scopes: request.mobileDevice.scopes } } : {}), ...(input.clientId ? { clientId: input.clientId } : {}) });
     if (prepared) await deps.attachments!.link(owner, message.id, prepared.attachments.map((attachment) => attachment.id));
     return { message, attachments: prepared?.attachments ?? [] };

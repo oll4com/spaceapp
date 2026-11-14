@@ -1,6 +1,7 @@
 import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import { createPortal } from "react-dom";
-import { MessageSquare, Mic, Network, X } from "../ui-theme/app-icons.js";
+import { MessageSquare, Mic, Network, Terminal, X } from "../ui-theme/app-icons.js";
+import { useUiText } from "../ui-language/ui-language.js";
 import { useLayoutEffect, useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { CHAT_LAUNCHER_MENU_ID } from "../toolbar-menu-ids.js";
 export { CHAT_LAUNCHER_MENU_ID } from "../toolbar-menu-ids.js";
@@ -17,6 +18,8 @@ interface ChatLauncherMenuProps {
   onSelectChat: () => void;
   onSelectHarness: () => void;
   onSelectLive?: () => void;
+  onSelectCodexLight?: () => void;
+  codexLightDisabled?: boolean;
   triggerRef: RefObject<HTMLButtonElement | null>;
   chatDisabled?: boolean;
   chatHidden?: boolean;
@@ -36,6 +39,8 @@ export function ChatLauncherMenu({
   onSelectChat,
   onSelectHarness,
   onSelectLive,
+  onSelectCodexLight,
+  codexLightDisabled,
   triggerRef,
   chatDisabled,
   chatHidden,
@@ -45,6 +50,7 @@ export function ChatLauncherMenu({
   harnessHidden,
 }: ChatLauncherMenuProps) {
   const embedded = useWorkspaceSurface();
+  const t = useUiText();
   const popupRef = useRef<HTMLElement | null>(null);
   const closeIntentRef = useRef<"dismissal" | "activation">("dismissal");
   const [position, setPosition] = useState({ left: VIEWPORT_MARGIN, top: VIEWPORT_MARGIN, ready: false });
@@ -159,6 +165,22 @@ export function ChatLauncherMenu({
           <span>
             <strong>Add chat pane</strong>
             <small>Chat pane</small>
+          </span>
+        </button>
+      ) : null}
+      {onSelectCodexLight && !chatHidden ? (
+        <button
+          type="button"
+          role={mobile ? undefined : "menuitem"}
+          className={mobile ? "mobile-action-sheet-main" : undefined}
+          aria-label={t("Add Codex light pane")}
+          disabled={Boolean(codexLightDisabled)}
+          onClick={() => runAction(onSelectCodexLight)}
+        >
+          <Terminal aria-hidden="true" />
+          <span>
+            <strong>{t("Codex light pane")}</strong>
+            <small>{t("Codex in a chat pane, under its own CLI identity")}</small>
           </span>
         </button>
       ) : null}

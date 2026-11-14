@@ -36,6 +36,7 @@ import type { PaneBrowserAccountControl } from "./pane-browser-routes.js";
 import { recordAudit } from "./request-audit.js";
 import type { createRoomPaneCliController } from "./room-pane-cli-controller.js";
 import { parseBody, parseQuery } from "./route-parsing.js";
+import { registerMakeAppRoutes } from "./make-app-routes.js";
 import { registerSecurityCopilot, type SecurityCopilotWiring } from "./security-copilot/wiring.js";
 import { GitControlError } from "./source-control/errors.js";
 import type { registerUserToolRoutes } from "./user-routes-wiring.js";
@@ -47,7 +48,7 @@ import { submitCliPrompt } from "./cli-prompt-submit.js";
 import { registerSignatures } from "./signatures.js";
 
 type CopilotPaneRoutesDeps = {
-  store: SpaceStore; config: SpaceApiConfig; auth: Pick<AuthConfig, "sessionSecret">; eventBus: SpaceEventBus;
+  store: SpaceStore; config: SpaceApiConfig; auth: Pick<AuthConfig, "sessionSecret" | "operatorEmail">; eventBus: SpaceEventBus;
   options: Parameters<typeof registerJobApply>[1]["options"] & {
     /** A test app's canonical memory: no Space Memory file to read. */
     canonicalMemory?: unknown;
@@ -223,6 +224,7 @@ export function registerCopilotPaneRoutes(app: FastifyInstance, deps: CopilotPan
       default: throw new Error(`A ${pane.mode} pane takes no brief.`);
     }
   };
+  registerMakeAppRoutes(app, { store, operatorEmail: auth.operatorEmail, nous: () => nousRef.current, notifications: notificationService, brief: () => taskBrief.current, roomOwner, routeOptions: defaultRouteRateLimitOptions });
   return { jobApplyRepository, jobApplyService, mailCopilotService, paneBrowserAccounts, marketingCopilotService, freelanceCopilotService, designService,
     appStudioService, securityCopilotService, monitoringCopilotService, mailCampaignsService, videoService };
 }

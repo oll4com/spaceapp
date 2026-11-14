@@ -12,6 +12,7 @@ import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { CodeXml, Gauge, GitBranch, Images, MousePointer2 } from "../ui-theme/app-icons.js";
 import { SettingsDisclosure, SettingsSections } from "../settings/SettingsDisclosure.js";
 import { DockNotice } from "../dock-kit/DockKit.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
 
 interface CliDockProps {
   canManage: boolean;
@@ -56,7 +57,8 @@ export function CliDock({
       <CliProvidersSettingsCard canManage={canManage} />
 
       {canManage ? (
-        <SettingsDisclosure title="T3 Code" description="Status, version, on/off and restart of the managed T3 Code service." scope="Installation" icon={CodeXml}>
+        <SettingsDisclosure title="T3 Code" description="Status, version, on/off and restart of the managed T3 Code service." scope="Installation" icon={CodeXml}
+          help="Shows the T3 Code service that powers T3 Code panes on this server, and lets you turn it on or off or restart it.">
           <T3CodeServiceSettingsCard />
         </SettingsDisclosure>
       ) : null}
@@ -67,7 +69,8 @@ export function CliDock({
         <CliPaneControlsSettingsCard />
       </SettingsDisclosure>
 
-      <SettingsDisclosure title="Git worktrees" description="Whether new CLI panes work on their own branch copy." scope="Your account" icon={GitBranch}>
+      <SettingsDisclosure title="Git worktrees" description="Whether new CLI panes work on their own branch copy." scope="Your account" icon={GitBranch}
+        help="Choose whether new CLI panes in rooms with a project folder start on their own Git worktree or work directly in the project folder.">
         <section className="agent-settings-card settings-flat-card cli-worktree-settings-card" aria-label="Git Worktrees default settings">
           <div className="agent-settings-section-title settings-flat-heading">
             <GitBranch aria-hidden="true" />
@@ -81,14 +84,15 @@ export function CliDock({
             name="default-worktree-enabled"
             ariaLabel="Enable isolated worktrees by default"
             label="Isolated worktrees by default"
-            detail="In rooms with a project folder, each new CLI pane works in its own Git worktree (a separate branch copy), so it cannot change your main checkout until you merge it."
+            help="In rooms with a project folder, each new CLI pane works in its own Git worktree (a separate branch copy), so it cannot change your main checkout until you merge it."
             checked={Boolean(defaultWorktreeEnabled)}
             onChange={(checked) => onDefaultWorktreeEnabledChange?.(checked)}
           />
         </section>
       </SettingsDisclosure>
 
-      <SettingsDisclosure title="Room cache" description="Keep recently used rooms ready for your account." scope="Your account" icon={Gauge}>
+      <SettingsDisclosure title="Room cache" description="Keep recently used rooms ready for your account." scope="Your account" icon={Gauge}
+        help="Keeps the rooms you used recently loaded in this browser, so switching back to them is instant. Turn it off or lower the limit if this computer runs short of memory.">
       <section className="agent-settings-card settings-flat-card warm-room-cache-settings-card" aria-label="Warm room cache settings">
         <div className="agent-settings-section-title settings-flat-heading">
           <Gauge aria-hidden="true" />
@@ -102,15 +106,12 @@ export function CliDock({
           name="warm-room-cache-enabled"
           ariaLabel="Enable warm room cache"
           label="Warm room cache"
-          detail="Keep recently used rooms ready in this browser."
+          help="When on, rooms you leave stay loaded in this browser and open instantly when you return. When off, only the room you are in is loaded; CLIs keep running on the server either way."
           checked={warmRoomEnabled}
           onChange={onWarmRoomEnabledChange}
         />
         <label className="settings-flat-row">
-          <span className="settings-flat-row-copy">
-            <strong>Warm connected pane limit</strong>
-            <small>Terminal and browser panes that can stay connected in hidden rooms.</small>
-          </span>
+          <SettingsLabel label="Warm connected pane limit" help="How many terminal and browser panes may stay connected in rooms you are not looking at. A higher number keeps more rooms instant but uses more memory and CPU in this browser." />
           <input
             className="settings-flat-control"
             type="number"
@@ -137,7 +138,8 @@ export function CliDock({
       </section>
 
       </SettingsDisclosure>
-      <SettingsDisclosure title="Image previews" description="How many uploaded images a CLI pane's preview strip shows at once." scope="Your account" icon={Images}>
+      <SettingsDisclosure title="Image previews" description="How many uploaded images a CLI pane's preview strip shows at once." scope="Your account" icon={Images}
+        help="Sets how many uploaded images a CLI pane's preview strip shows at once; older images move to earlier pages.">
       <section className="agent-settings-card settings-flat-card cli-upload-settings-card" aria-label="CLI photo preview settings">
         <div className="agent-settings-section-title settings-flat-heading">
           <Images aria-hidden="true" />
@@ -147,10 +149,7 @@ export function CliDock({
           </span>
         </div>
         <label className="settings-flat-row">
-          <span className="settings-flat-row-copy">
-            <strong>Photo previews</strong>
-            <small>Images shown at once in a CLI pane&apos;s preview strip. Older images move to earlier pages.</small>
-          </span>
+          <SettingsLabel label="Photo previews" help="Images shown at once in a CLI pane's preview strip. Older images move to earlier pages." />
           <input
             className="settings-flat-control"
             type="number"

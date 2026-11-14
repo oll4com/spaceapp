@@ -141,8 +141,35 @@ export async function changeMasterPassword(client: VaultApi, unlocked: UnlockedV
   return { ...unlocked, epoch };
 }
 
-export interface VaultItemSecrets { USERNAME?: string; PASSWORD?: string; OTP?: string }
-export interface VaultItemDraft extends Omit<VaultItemMetadata, "id" | "fieldRoles" | "status" | "googleAccountId" | "loginKey" | "loginPage"> {
+export type VaultItemSecrets = Partial<Record<VaultFieldRole, string>>;
+
+type VaultCardBrand = NonNullable<VaultItemMetadata["card"]>["brand"];
+const CARD_BRANDS: Array<[RegExp, VaultCardBrand]> = [[/^4/, "VISA"], [/^3[47]/, "AMEX"], [/^(5[1-5]|2(22[1-9]|2[3-9]|[3-6]|7[01]|720))/, "MASTERCARD"],
+  [/^(6011|64[4-9]|65)/, "DISCOVER"], [/^62/, "UNIONPAY"], [/^35(2[89]|[3-8])/, "JCB"], [/^3(0[0-5]|[689])/, "DINERS"], [/^(50|5[6-9]|6)/, "MAESTRO"]];
+/** A card's only clear metadata (plan clipboard:qf0P640vyLp2): its brand from the leading digits and its last four. */
+export const vaultCardMetadata = (digits: string) => ({ brand: CARD_BRANDS.find(([pattern]) => pattern.test(digits))?.[1] ?? "OTHER", last4: digits.slice(-4) });
+/** A card number of 12-19 digits that passes the Luhn check. */
+export function vaultCardNumberValid(digits: string): boolean {
+  if (!/^[0-9]{12,19}$/.test(digits)) return false;
+  let sum = 0;
+  for (let index = 0; index < digits.length; index += 1) {
+    const digit = Number(digits[digits.length - 1 - index]) * (index % 2 ? 2 : 1);
+    sum += digit > 9 ? digit - 9 : digit;
+  }
+  return sum % 10 === 0;
+}
+/** The expiry as MM/YY from MM/YY, MM/YYYY or MMYY; null when it is no month or the card has expired. */
+export function vaultCardExpiry(text: string, now = new Date()): string | null {
+  const match = /^\s*([0-9]{1,2})\s*\/?\s*([0-9]{2}|[0-9]{4})\s*$/.exec(text);
+  if (!match) return null;
+  const month = Number(match[1]);
+  const year = match[2]!.length === 2 ? 2000 + Number(match[2]) : Number(match[2]);
+  // Valid through the last day of its month.
+  return month >= 1 && month <= 12 && new Date(year, month, 1) > now ? `${String(month).padStart(2, "0")}/${String(year % 100).padStart(2, "0")}` : null;
+}
+export interface VaultItemDraft extends Omit<VaultItemMetadata, "id" | "fieldRoles" | "status" | "googleAccountId" | "loginKey" | "loginPage" | "card"> {
+  /** A card's brand and last four (absent: a login, or the saved item's). */
+  card?: VaultItemMetadata["card"];
   id?: string; status?: VaultItemMetadata["status"]; googleAccountId?: string | null; loginKey?: string | null; secrets: VaultItemSecrets;
   /** Absent keeps the saved item's login page (an import, a password change); null clears it. */
   loginPage?: string | null;
@@ -180,7 +207,7 @@ export async function encryptVaultItem(unlocked: UnlockedVault, draft: VaultItem
       metadata: { id, label: draft.label, origins: draft.origins, fieldRoles: roles, policy: draft.policy, status: draft.status ?? "ACTIVE",
         googleAccountId: draft.googleAccountId ?? previous?.metadata.googleAccountId ?? null,
         loginKey: draft.secrets.USERNAME && draft.origins[0] ? vaultLoginKey(unlocked, draft.origins[0], draft.secrets.USERNAME) : null,
-        loginPage: draft.loginPage === undefined ? previous?.metadata.loginPage ?? null : draft.loginPage },
+        loginPage: draft.loginPage === undefined ? previous?.metadata.loginPage ?? null : draft.loginPage, card: draft.card ?? previous?.metadata.card ?? null },
       keyVersion: 1, dekEnvelope: previous?.dekEnvelope ?? await sealVaultEnvelope(unlocked.vrk, dek, { ...scope, purpose: "ITEM_KEY" }), fields, history
     };
   } finally {
@@ -377,7 +404,8 @@ export async function delegateVaultItems(client: Pick<typeof liveApi, "vaultBrok
         fillEnvelopes[handle]![role] = await sealVaultEnvelope(fillKey, utf8.encode(secrets[role]!), { ...scope, purpose: "FILL_FIELD", itemId: handle, field: role, generation });
       }
       // The broker's signed format still names an approval mode; every agent use is FULL now.
-      items.push({ handle, origins: vaultDelegationOrigins(record.metadata.origins), fields, approvalMode: "FULL", submit: true });
+      // A card has no address (the broker fills it at any https checkout) and is never submitted: the agent clicks Pay.
+      items.push({ handle, origins: vaultDelegationOrigins(record.metadata.origins), fields, approvalMode: "FULL", submit: !record.metadata.card });
     }
     const expiresAt = new Date(Date.now() + (input.days ?? 3650) * 86_400_000).toISOString();
     const envelopeDigest = await vaultDigest(fillEnvelopes);

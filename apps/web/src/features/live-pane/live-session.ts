@@ -6778,6 +6778,14 @@ export async function openLiveConversationSession(
   if (provider === "vercel") {
     return openVercelLiveConversationSession(options, callbacks, options.paneId ?? "live");
   }
+  if (provider === "livekit") {
+    // LiveKit Inference is the default while its grant lasts; when it cannot start (grant spent, key missing, call refused) Live opens on OpenAI by itself.
+    return openCascadeVoiceSession(options, callbacks, provider).catch((error: unknown) => {
+      callbacks.onLogEvent?.("livekit-fallback", { reason: error instanceof Error ? error.message : String(error) });
+      const openai = LIVE_AUDIO_PROVIDERS.openai;
+      return openOpenAiVoiceConversationSession({ ...options, provider: "openai", model: openai.defaultModel, voice: openai.defaultVoice }, callbacks);
+    });
+  }
   if (provider && CASCADE_LIVE_PROVIDERS.has(provider)) {
     return openCascadeVoiceSession(options, callbacks, provider);
   }

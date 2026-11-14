@@ -82,7 +82,9 @@ export const OPERATOR_HANDS_RULE = "Before you ask for the operator's hands (sig
   + "space_browser_request_handoff and the needs-you answers carry it (operator.localTime, operator.quiet, operator.heldUntil). During their night "
   + "(quiet hours, 23:00-09:00 in their working time zone by default) the request waits for their morning batch on its own: keep the work ready and go on with other work; never expect them at a computer. "
   + "By day request the handoff itself, one at a time; never ask them when (their standing answer is «now, one by one»). "
-  + "Every ask for their hands carries the exact https link, the account to use, the full numbered steps and where a code arrives (operator rule 30/10).";
+  + "Ask for their hands only for a CAPTCHA the internal solver (space_browser_cloudflare, _hcaptcha, _recaptcha, _press_hold, _text_captcha) tried on that page and could not pass, or data you cannot get "
+  + "(a card number or CVC at its field; anything else only after the Vault, mail and Space Memory lack it): do every other step yourself, then raise it at that step with its link, "
+  + "no steps and no time of day, and never again for what they already answered (operator rule 13/11 nous_msg:83c0acb8).";
 /**
  * The operator's chosen language (operator 1/11 11:59 BKK, Settings → Language, ui-language.ts): what they read comes in it. Written into a CLI
  * session's AGENTS.md (and a copilot's CLAUDE.md) when it starts, and into Nous's world each turn; null for English, the default.
@@ -120,6 +122,8 @@ export const VAULT_PASSWORDS_RULE = "Passwords and keys: before you ask the oper
   + "(a mail, the operator, a service) goes into the Vault at once: space_vault_key_save, or space_vault_save for a website login; never into Space Memory, notes, plans, chat or a file of your own. "
   + "A login any agent saved, created or changed is fillable at once with the Vault locked: never ask or remind the operator to unlock or open the Vault for it.";
 const VIDEO_CLIPS_HINT = "Videos (skill space-video): ask the Video pane with space_video space_video_request (brief, sources: Media artifact ids or https URLs you confirm the operator owns, formatIds such as youtube-short, ig-reel, x, square; optionally options with technique silence|scene|highlights|manual, captions, narration text and language, music), then space_video_request_wait; delivered videos come back as Media artifact ids with a poster frame, a description and credits. With no Video pane open, one opens in your room and its editor starts.";
+/** nous_msg:5321471cb6334fd6ab52a30f (13/11: a plain CLI pane sent 3 mails by driving Gmail web in its browser pane). */
+export const SINGLE_MAIL_HINT = "One mail (send, reply, read a thread or a code): never through Gmail web in a browser pane. Read with space_mailcopilot space_mail_accounts, space_mail_search and space_mail_thread_read; hand a mail to send to the owner's Mail Copilot with space_mail_review_request {draft: {account, to, subject, text, threadId?}, summary} (it waits in the Mail pane until the operator approves, then goes out) and space_mail_review_wait.";
 const MAIL_CAMPAIGNS_HINT = "Bulk mail, newsletters and outreach (skill space-mail-campaigns): never send them from a mailbox or a script; build them with space_mailcampaigns (templates with {{fields}}, lists with an honest consent basis, senders, campaigns, deliverability checks) and space_mail_campaign_submit: the operator reads every mail in Mail Copilot → Campaigns and approves there, and nothing reaches a recipient before.";
 const DESIGN_GRAPHICS_HINT = "Graphics (skill space-design): ask the Design pane with space_design space_design_request (brief, formatIds such as x, linkedin-banner, story; optionally engine, templateId, params with the text and colours, brandKitId from space_design_brand_kits), then space_design_request_wait; delivered designs come back as Media artifact ids. With no Design pane open, one opens in your room and its designer starts.";
 
@@ -160,6 +164,7 @@ export function buildSpaceAgentBootstrapPrompt(input: SpaceAgentBootstrapInput):
     input.channel === "CLI" ? `- ${DESIGN_GRAPHICS_HINT}` : null,
     input.channel === "CLI" ? `- ${VIDEO_CLIPS_HINT}` : null,
     input.channel === "CLI" ? `- ${MAIL_CAMPAIGNS_HINT}` : null,
+    input.channel === "CLI" && input.paneMode !== "MAIL_COPILOT" ? `- ${SINGLE_MAIL_HINT}` : null,
     "- Secret policy: never write raw provider credentials, cookies, browser profile data, private keys, or unredacted tokens to docs, chat, logs, memory, or transcripts.",
     skillBridgeLine,
     mcpBridgeLine,

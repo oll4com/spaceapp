@@ -64,6 +64,29 @@ describe("Needs you keeps only what needs the operator (2/11)", () => {
     expect(itemActed(item, [{ name: "space_send_to_pane", args: { room: room.id, pane: "pane:other0001", text: "x" }, ok: true, subjects: [] }])).toBe(false);
   });
 
+  it("13/11 19:25 BKK (Iris, public-host Space Link): an agent's needs-you right after the operator answered its pane, or with a code that expires in minutes, shows at once", async () => {
+    const f = fixture();
+    const ask = (question: string, paneId = pane.id) => f.card({ source: "AGENT", kind: "NEEDS_YOU", paneId, title: "Iris needs you", body: question, dedupeKey: `agent:needs-you:${paneId}`,
+      payload: { ask: { question, answer: { kind: "PANE" } } } });
+    const ready = await f.notifications.raise(ask("Pair public-host with Space Link now?"), { realert: true });
+    expect(ready.payload.heldForNous).toBeTruthy();
+    await f.notifications.setStatus(owner, ready.id, "ACKED", { answer: { text: "Ready now", at: new Date().toISOString(), routed: "PANE" } });
+    const code = await f.notifications.raise(ask("Type 482 913 on the public-host Space Link page."), { realert: true });
+    expect(code.payload.heldForNous).toBeFalsy();
+    expect((await f.waiting()).map((item) => item.id)).toContain(code.id);
+    // No answer on that pane, but a code that dies in two minutes: shown too; an ordinary ask there is still Nous's first.
+    const other = "pane:other0001";
+    expect((await f.notifications.raise(ask("Enter the 2-minute pairing code 771 204 on the link page.", other), { realert: true })).payload.heldForNous).toBeFalsy();
+    expect((await f.notifications.raise(ask("Which plan should the link use?", "pane:third0001"), { realert: true })).payload.heldForNous).toBeTruthy();
+    // Follow-up: codes in seconds (Iris's 120 s code), Greek ones and QR codes show too; a held ask refreshed with a code leaves the hold.
+    for (const [question, at] of [["Type the 120 s public-host pairing code 482913.", "pane:fourth001"], ["Ο κωδικός λήγει σε 120 δευτερόλεπτα: 482913", "pane:fifth0001"], ["Scan the QR on the public-host page.", "pane:sixth0001"]]) {
+      expect((await f.notifications.raise(ask(question!, at), { realert: true })).payload.heldForNous).toBeFalsy();
+    }
+    const refreshed = await f.notifications.raise(ask("Type the 120 s pairing code 482913 now.", "pane:third0001"), { realert: true });
+    expect(refreshed.payload.heldForNous).toBeFalsy();
+    expect((await f.waiting()).map((item) => item.id)).toContain(refreshed.id);
+  });
+
   it("rule 2: a second card about the same billing account refreshes the first; resolving either key closes it", async () => {
     const f = fixture();
     const one = await f.notifications.raise(f.card({ body: "Google Cloud billing account 01A2B3-C4D5E6-F7G8H9: the payment failed, update the card", link: { target: "thread:a@b.gr:t1" } }));

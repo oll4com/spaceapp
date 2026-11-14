@@ -3,10 +3,10 @@ import { eventSchema, type Pane, type Room } from "@space/contracts";
 import { InMemorySiteSigninsRepository, InMemorySpaceNotificationsRepository } from "@space/db";
 import { makeSpaceId, SpaceEventBus } from "@space/runtime";
 import { createNotificationService } from "../src/notifications/service.js";
-import { baseRateRecommendation, createNousPaneNotices, ledgerRecommendation, principleConflicts, ruleRecommendation } from "../src/nous/pane-notices.js";
+import { baseRateRecommendation, createNousPaneNotices, ledgerRecommendation, NOUS_PREDICTION_RULE, principleConflicts, ruleRecommendation } from "../src/nous/pane-notices.js";
 import { heldForNousNote, NOUS_QUESTION_REWAKE_MS, sweepCopilotQuestions } from "../src/nous/copilot-questions.js";
 import { cardTextMatched } from "../src/nous/predictions.js";
-import { createNousTools, type NousToolDeps } from "../src/nous/tools.js";
+import { createNousTools, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
 
 // One card per pane for what only the operator's hands can do (plan clipboard:8FfXWclYUfOH).
 const owner = "user:operator";
@@ -37,6 +37,17 @@ describe("Nous's cards to the operator", () => {
     // The same notes are the same card; a changed note updates it, as when it was in the item.
     expect((await notify("A dunning notice now names suspension on 6/11")).display).toBe("The card for Andy in Freelance already lists this");
     expect((await notify("The suspension moved to 5/11")).display).toMatch(/^Updated/);
+  });
+
+  it("operator 13/11 15:37 BKK (card 9ef2254f): a plan's card carries its plan's open pane, and a plan's question without options is refused", async () => {
+    const f = fixture();
+    const notices = createNousPaneNotices({ notifications: f.service, planPane: async (_owner, planId) => planId === "clipboard:S6PyXKwpBrit" ? { roomId: room.id, paneId: andy.id } : null });
+    const vague = await notices.notify(owner, room, null, { plan: "clipboard:S6PyXKwpBrit", title: "Partner Advantage case", items: [{ text: "EXTERNAL decision: submit the case", question: "Submit it?" }] });
+    expect(vague).toMatchObject({ ok: false, refused: true, display: "A plan card asks with its options" });
+    expect((await notices.notify(owner, room, null, { plan: "clipboard:S6PyXKwpBrit", title: "Partner Advantage case",
+      items: [{ text: "Submit the Partner Advantage case", question: "Θα το στείλει ο Hugo;", options: ["Approve", "Reject"], recommended: "Approve" }] })).ok).toBe(true);
+    const card = (await f.service.list(owner, { status: "OPEN", source: "NOUS", limit: 5 }))[0]!;
+    expect([card.paneId, card.link]).toEqual([null, { roomId: room.id, paneId: andy.id }]);
   });
 
   it("closedSince: the pane cards raised since a time that are closed now (13/11 REVIEW, one subject on 3 cards)", async () => {
@@ -222,23 +233,22 @@ describe("Nous's cards to the operator", () => {
     expect((await ask("Restart the Browser Host tonight?")).ok).toBe(true);
   });
 
-  it("refuses a hands item without its link and numbered steps, and offers Failed and Need links/steps on one asked with options (R20-asks-2)", async () => {
-    // Operator rule cc31fdd2, 30/10: «δώσε μου links και οδηγίες ώστε να προχωρήσω τώρα» four times in a day; 7 of 36 cards answered against «Done».
+  it("refuses a hands item that opens no page, and offers Failed and Need links/steps on one asked with options (13/11 nous_msg:83c0acb8)", async () => {
+    // Operator rule 13/11 (nous_msg:83c0acb8) supersedes cc31fdd2's steps: the card opens the page at the one step only they can do, no list.
     const { service, notices } = fixture();
     const card = (item: Record<string, unknown>) => notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Andy needs you",
       checked: ["Andy's space_look: the billing page shows no linked project"], items: [{ text: "Set up Google billing", ...item }] });
-    expect(await card({})).toMatchObject({ ok: false, refused: true, display: "A hands card needs its link and steps", result: expect.stringContaining("the exact https link and the full numbered steps") });
-    expect(await card({ steps: ["Open the billing page", "Add the card"] })).toMatchObject({ ok: false, refused: true });
-    expect(await card({ steps: ["Open https://console.cloud.google.com/billing as ntheogr@gmail.com"] })).toMatchObject({ ok: false, refused: true });
-    expect(await card({ steps: ["Open https://console.cloud.google.com/billing as ntheogr@gmail.com", "Link the Space project to the billing account"],
-      question: "Billing linked?", options: ["Done", "Not yet"], recommended: "Not yet" })).toMatchObject({ ok: true });
+    expect(await card({})).toMatchObject({ ok: false, refused: true, display: "A hands card needs its link", result: expect.stringContaining("its https link or `target`") });
+    // 14/11 REVIEW (Dana's rule 4): an interview, a security key or an identity video is hands work too, so it opens its page.
+    for (const text of ["Mercor Domain Expert interview", "Approve the npm sign-in with your security key", "Braintrust identity video", "Η συνέντευξη Mercor (Domain Expert)"]) {
+      expect(await card({ text }), text).toMatchObject({ ok: false, refused: true, display: "A hands card needs its link" });
+    }
+    expect(await card({ text: "Set up Google billing at https://console.cloud.google.com/billing", question: "Billing linked?", options: ["Done", "Not yet"], recommended: "Not yet" })).toMatchObject({ ok: true });
     const raised = (await service.list(owner, { status: "OPEN", limit: 5 }))[0]!;
     expect(raised.payload.ask).toMatchObject({ options: ["Done", "Not yet", "Failed", "Need links/steps"] });
-    expect(raised.body).toContain("• Set up Google billing\n  1. Open https://console.cloud.google.com/billing as ntheogr@gmail.com\n  2. Link the Space project");
-    // 13/11: work in a desktop ERP has no link to give; it names the tool, and its numbered steps are still due.
-    const erp = { text: "Install the ERP update on the office PC (login Mach 301)" };
-    expect(await card({ ...erp, steps: ["Open the ERP"] })).toMatchObject({ ok: false, refused: true });
-    expect((await card({ ...erp, steps: ["Open the ERP on the office PC", "Run Help → Update"] })).ok).toBe(true);
+    expect((await card({ target: "tab:page-1" })).ok).toBe(true);
+    // 13/11: work in a desktop ERP has no link to give; it names the tool.
+    expect((await card({ text: "Install the ERP update on the office PC (login Mach 301)" })).ok).toBe(true);
     // An item that is no hands work needs none.
     expect((await notices.notify(owner, room, bob, { room: "Freelance", pane: "Bob", title: "Pick", items: [{ text: "Pick the Upwork profile" }] })).ok).toBe(true);
   });
@@ -348,6 +358,10 @@ describe("Nous's cards to the operator", () => {
     const ask = () => notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Andy needs you", checked: ["Andy's space_look: the billing page shows no linked account"],
       items: [{ text: "Set up Google billing", steps: ["Open https://console.cloud.google.com/billing as ntheogr@gmail.com", "Link the Space project"], question: "Billing linked?", options: ["Done", "Not yet"], recommended: "Done" }] });
     expect(await ask()).toMatchObject({ ok: false, refused: true, display: '"Done" is no recommendation for a hands card', result: expect.stringContaining("Need links/steps") });
+    // A Greek status too (\b saw no word edge after «Έγινε» before 14/11).
+    expect(await notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Andy needs you", checked: ["Andy's space_look: the billing page shows no linked account"],
+      items: [{ text: "Σύνδεσε το Google billing", steps: ["https://console.cloud.google.com/billing"], question: "Συνδέθηκε το billing;", options: ["Έγινε", "Όχι ακόμα"], recommended: "Έγινε" }] }))
+      .toMatchObject({ ok: false, refused: true, display: '"Έγινε" is no recommendation for a hands card' });
     for (let index = 0; index < 5; index += 1) rows.push({ source: "NEEDS_YOU:NOUS", title: "Billing linked?", answer: "Done", at: new Date(Date.now() - index * 60_000 - 3 * 3_600_000).toISOString() });
     expect((await ask()).ok).toBe(true);
   });
@@ -753,4 +767,13 @@ describe("1056: a recommendation against a saved principle rule (13/11 REVIEW: V
     expect(principleConflicts("Show me the draft first, then send", "Reply to the accelerator about the grant", rules)).toEqual([]);
     expect(principleConflicts("Send it now", "Reply to the landlord about the lease", rules)).toEqual([]);
   });
+});
+
+// 14/11 (prediction misses x10, Dana's rule 6, Space Memory b78789c1): where Nous builds a prediction it reads to predict the operator's own words.
+it("tells Nous to predict from the operator's own words and Space Memory facts where it builds a prediction", () => {
+  const ask = nousToolDefinitions({ copilots: false }).find((tool) => tool.name === "space_ask_operator")!.inputSchema as { properties: { prediction: { description: string } } };
+  for (const text of [ask.properties.prediction.description, NOUS_PREDICTION_RULE]) {
+    expect(text).toContain("a value, scope or combination they wrote on this subject (chat or a card answer) is the answer");
+    expect(text).toContain("a personal or company fact is read from Space Memory");
+  }
 });

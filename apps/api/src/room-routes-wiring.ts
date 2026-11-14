@@ -11,6 +11,7 @@ import { recordAudit } from "./request-audit.js";
 import type { createRoomPaneCliController } from "./room-pane-cli-controller.js";
 import { deleteRoomWithTeardown, registerRoomListRoutes, registerRoomManagementRoutes } from "./room-routes.js";
 import { idleProofRooms, PROOF_ROOM_SWEEP_MS } from "./proof-room-sweep.js";
+import { PANE_HIBERNATE_SWEEP_MS, runsBackgroundJob, sweepHibernatePanes } from "./pane-hibernate-sweep.js";
 import { type createRoomShareAccess, registerRoomShareRoutes } from "./room-shares.js";
 import { YouTubeAccountStore } from "./youtube-accounts.js";
 import { YouTubePlaybackStore } from "./youtube-playback-state.js";
@@ -23,7 +24,7 @@ type RoomRoutesDeps = Pick<List, "readDashboardAgents" | "visibleCliRuntimeIds">
   & {
     config: SpaceApiConfig; store: SpaceStore; browserSessionManager: Manage["browserSessionManager"];
     activityLogService: List["activityLogService"] & Proof["activityLogService"];
-    cliTerminalManager: Proof["cliTerminalManager"] & Manage["cliTerminalManager"] & Pick<CliTerminalManager, "observeRoomScreen" | "closeUserRoomSockets">;
+    cliTerminalManager: Proof["cliTerminalManager"] & Manage["cliTerminalManager"] & Pick<CliTerminalManager, "observeRoomScreen" | "closeUserRoomSockets" | "activeSessionPids" | "interrupt">;
     cliRuntimeVisibility: List["cliRuntimeVisibility"] & Proof["cliRuntimeVisibility"];
     roomShares: ReturnType<typeof createRoomShareAccess>; roomPaneController: Pick<ReturnType<typeof createRoomPaneCliController>, "interrupt">;
     inspectRoomCli: RenderAi["inspect"]; controlQuota: RenderAi["quota"]; controlSend: RenderAi["send"] & DashboardProof["send"];
@@ -89,5 +90,26 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRoutesDeps) {
   const proofRoomSweep = setInterval(() => void sweepProofRooms().catch((error: unknown) => app.log.warn({ err: error }, "Proof room autosweep failed.")), PROOF_ROOM_SWEEP_MS);
   proofRoomSweep.unref();
   app.addHook("onClose", async () => clearInterval(proofRoomSweep));
+  // Idle CLI panes sleep after their owner's Settings → Panes → Sleep after and wake on their next message (plan clipboard:YqhRIXfLAnfK step 2β).
+  let hibernateSweeping = false; // a slow sweep never overlaps the next minute's and interrupts a pane twice
+  const paneHibernateSweep = setInterval(() => {
+    if (hibernateSweeping) return;
+    hibernateSweeping = true;
+    void sweepHibernatePanes({
+    store, readDetails: async (roomId) => (await readDashboardAgents(roomId)).details,
+    backgroundJobs: async (sessions) => {
+      const pids = await cliTerminalManager.activeSessionPids(sessions);
+      const busy = await Promise.all([...pids].map(async ([sessionId, pid]) => (await runsBackgroundJob(pid)) ? sessionId : null));
+      return new Set(busy.filter((sessionId): sessionId is string => sessionId !== null));
+    },
+    interrupt: (sessionId, transcript) => cliTerminalManager.interrupt(sessionId, transcript),
+    makeTraceId: () => makeSpaceId("trace"),
+    onError: (error, paneId) => app.log.warn({ err: error, paneId }, "Pane hibernate failed.")
+  }).then((slept) => { if (slept.length) app.log.info({ event: "pane.hibernate", paneIds: slept }, "Idle CLI panes hibernated."); })
+    .catch((error: unknown) => app.log.warn({ err: error }, "Pane hibernate sweep failed."))
+    .finally(() => { hibernateSweeping = false; });
+  }, PANE_HIBERNATE_SWEEP_MS);
+  paneHibernateSweep.unref();
+  app.addHook("onClose", async () => clearInterval(paneHibernateSweep));
   return { assertRoomAccess, youtubePlaybackStore, youtubeAccountStore, browserAccountStore };
 }

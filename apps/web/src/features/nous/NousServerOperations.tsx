@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, SpaceApiError, type ServerOpsService, type ServerOpsStatus, type ServerOpsUnit } from "../../api.js";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
 import { DockButton } from "../dock-kit/DockKit.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
 import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import "./nous-server-operations.css";
 
@@ -14,12 +15,12 @@ export interface ServerOpsClient {
 }
 type OpId = "promote" | "deploy-remotes" | "clean-disk" | "clean-worktrees" | "restart";
 
-const OPS: Array<{ id: OpId; label: string; confirm: string }> = [
-  { id: "promote", label: "Promote dev to stable", confirm: "Stable builds and restarts once (about 5 minutes). CLI sessions keep running; a failed check rolls stable back." },
-  { id: "deploy-remotes", label: "Push to GitHub and Gitea", confirm: "Pushes stable's verified main to GitHub and Gitea. Never a force push." },
-  { id: "clean-disk", label: "Clean disk", confirm: "Runs the daily retention now: logs, caches, orphan and merged clean worktrees, superseded CLI versions. Records are never deleted." },
-  { id: "clean-worktrees", label: "Clean worktrees", confirm: "Removes merged, clean worktrees. One with changes, unmerged work or an open pane stays." },
-  { id: "restart", label: "Restart a service", confirm: "The guarded restart: refused while a merge queue is busy or, for the pane hosts, while a CLI session runs." }
+const OPS: Array<{ id: OpId; label: string; help: string; confirm: string }> = [
+  { id: "promote", label: "Promote dev to stable", help: "Brings the changes verified on dev to stable, where you work.", confirm: "Stable builds and restarts once (about 5 minutes). CLI sessions keep running; a failed check rolls stable back." },
+  { id: "deploy-remotes", label: "Push to GitHub and Gitea", help: "Pushes stable's verified main to GitHub and Gitea; use it when the remotes fell behind.", confirm: "Pushes stable's verified main to GitHub and Gitea. Never a force push." },
+  { id: "clean-disk", label: "Clean disk", help: "Runs the daily disk retention now; use it when the disk is filling up.", confirm: "Runs the daily retention now: logs, caches, orphan and merged clean worktrees, superseded CLI versions. Records are never deleted." },
+  { id: "clean-worktrees", label: "Clean worktrees", help: "Removes merged, clean worktrees to free disk space.", confirm: "Removes merged, clean worktrees. One with changes, unmerged work or an open pane stays." },
+  { id: "restart", label: "Restart a service", help: "Restarts the Browser Host or the pane hosts with the guarded restart; use it when one of them misbehaves.", confirm: "The guarded restart: refused while a merge queue is busy or, for the pane hosts, while a CLI session runs." }
 ];
 const SERVICES: Array<{ id: ServerOpsService; label: string }> = [{ id: "browser-host", label: "Browser Host" }, { id: "pane-hosts", label: "Pane hosts (CLI panes)" }];
 
@@ -96,7 +97,7 @@ export function NousServerOperations({ client = api }: { client?: ServerOpsClien
       </div>
       {OPS.map((op) => (
         <div key={op.id} className="settings-flat-row nous-server-ops-row">
-          <span className="settings-flat-row-copy"><strong>{t(op.label)}</strong><small>{confirming === op.id ? t(op.confirm) : state[op.id]}</small></span>
+          <SettingsLabel label={op.label} help={op.help}>{confirming === op.id ? t(op.confirm) : state[op.id]}</SettingsLabel>
           <div className="nous-server-ops-actions">
             {op.id === "restart" ? (
               <select aria-label={t("Service to restart")} value={service} disabled={busy} onChange={(event) => setService(event.target.value as ServerOpsService)}>

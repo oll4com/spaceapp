@@ -246,7 +246,7 @@ describe("Video agent bridge", () => {
 
       const next = (await app.inject({ method: "POST", url: `${cli}/next`, headers: worker, payload: {} })).json();
       expect(next).toMatchObject({ done: false, request: { id: created.request.id }, formats: [{ id: "youtube-short", width: 1080, height: 1920, maxDurationSec: 180 }],
-        sources: [{ index: 0, artifactId: source.artifactId, kind: "VIDEO" }], options: { technique: "silence", narration: { text: "Welcome", language: "en", engine: "kokoro" } } });
+        sources: [{ index: 0, artifactId: source.artifactId, kind: "VIDEO" }], options: { technique: "silence", narration: { text: "Welcome", language: "en", engine: "murf" } } });
 
       // Engine jobs answer at once; the agent waits for them.
       const probe = (await app.inject({ method: "POST", url: `${cli}/probe`, headers: worker, payload: { requestId: created.request.id } })).json().job;
@@ -390,5 +390,28 @@ describe("Video agent bridge", () => {
     const progress: number[] = [];
     expect(await engine(job, (step) => progress.push(step.progress))).toEqual({ echo: "probe" });
     expect(progress).toEqual([10]);
+  });
+
+  it("falls back to the local voice when Murf or Cartesia fails or the LiveKit grant is closed, and meters LiveKit calls", async () => {
+    const requests: VideoEngineJob[] = [];
+    const recorded: unknown[] = [];
+    let open = true;
+    const liveKit = { open: async () => open, spent: async () => 0, record: async (use: unknown) => { recorded.push(use); } };
+    const engine = createVideoEngine({ load: async () => ({ level: "OK", reasons: [] }) as never, liveKit, run: async (request) => {
+      const job = JSON.parse(request) as VideoEngineJob;
+      requests.push(job);
+      if (job.engine === "murf" || job.engine === "cartesia") throw new Error(`${job.engine} HTTP 402`);
+      return JSON.stringify({ result: { engine: job.engine, durationSec: 30 } });
+    } });
+    const base = { workDir: "/nowhere", toolsDir: "/nowhere" };
+    expect(await engine({ ...base, op: "tts", engine: "murf", text: "Γεια", voice: "el-GR-stavros", language: "el" } as VideoEngineJob)).toMatchObject({ engine: "chatterbox" });
+    expect([requests.at(-1)!.engine, requests.at(-1)!.voice]).toEqual(["chatterbox", undefined]);
+    expect(await engine({ ...base, op: "tts", engine: "cartesia", text: "Hello", language: "en" } as VideoEngineJob)).not.toMatchObject({ engine: "cartesia" });
+    expect(await engine({ ...base, op: "tts", engine: "livekit", text: "Hello" } as VideoEngineJob)).toMatchObject({ engine: "livekit" });
+    expect(await engine({ ...base, op: "transcribe", engine: "livekit" } as VideoEngineJob)).toMatchObject({ engine: "livekit" });
+    expect(recorded).toEqual([{ source: "video", kind: "tts", model: "cartesia/sonic-3", characters: 5 }, { source: "video", kind: "stt", model: "deepgram/nova-3", seconds: 30 }]);
+    open = false;
+    expect(await engine({ ...base, op: "transcribe", engine: "livekit" } as VideoEngineJob)).toMatchObject({ engine: "whisper" });
+    expect(recorded).toHaveLength(2);
   });
 });

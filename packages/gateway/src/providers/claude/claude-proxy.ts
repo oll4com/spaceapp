@@ -130,6 +130,9 @@ export function claudePoolLimitMessage(accounts: number, resetsAt: number | null
   return `${subject}. ${accounts === 1 ? "It is" : "The first one is"} back in ${wait} (at ${at}).`;
 }
 
+/** How long Claude Code keeps retrying a 429 without x-should-retry (10 tries with backoff, 183 s seen 13/11). */
+const CLAUDE_CODE_RETRY_SECONDS = 180;
+
 /** Anthropic clients read `{ type: "error", error: { type, message } }`. */
 function anthropicError(envelope: GatewayErrorEnvelope) {
   return { type: "error", error: { type: envelope.error.type, message: envelope.error.message, code: envelope.error.code } };
@@ -299,6 +302,13 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
           const message = budget || result.reserved ? result.errorMessage! : limited ? claudePoolLimitMessage(pooled, result.resetsAt, now() / 1000)
             : result.errorMessage ?? gatewayErrors.noAccounts().error.message;
           options.logs.add({ ...baseLog(), status: "error", errorCode: result.errorCode ?? "no_accounts", errorMessage: message, latencyMs: now() - startedAt });
+          // 13/11 09:42 UTC: without x-should-retry Claude Code retried this refusal 10 times over 183 s (a reset 2 h away) before Nous
+          // could fail over. A block past its ~3 min of retries stops the client at once (its gateway contract); a nearer reset it may wait out.
+          const waitSeconds = result.resetsAt && result.resetsAt > now() / 1000 ? Math.ceil(result.resetsAt - now() / 1000) : null;
+          if (limited && (waitSeconds === null || waitSeconds > CLAUDE_CODE_RETRY_SECONDS)) {
+            reply.header("x-should-retry", "false");
+            if (waitSeconds !== null) reply.header("retry-after", String(waitSeconds));
+          }
           return reply.code(status).send(anthropicError(gatewayError(result.errorCode ?? "no_accounts", message,
             status === 429 ? "rate_limit_error" : "api_error")));
         }

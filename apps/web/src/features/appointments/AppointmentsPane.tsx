@@ -121,7 +121,7 @@ export function AppointmentsPane({ pane }: { pane?: Pane }) {
     format: item.format ?? "LIVE_HUMAN_VIDEO", timing: item.timing ?? "FIXED", deadline: item.deadlineAt ? isoToZonedInput(item.deadlineAt, zone) : "" });
 
   function renderItem(item: Appointment) {
-    const link = appointmentLink(item.location);
+    const link = appointmentLink(item);
     const Icon = APPOINTMENT_KIND_ICONS[item.kind];
     const isNext = item.id === nextId;
     const when = appointmentWhen(item, byDeadline);

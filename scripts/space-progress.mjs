@@ -11,6 +11,7 @@
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { sharedServerPaneEnvironment } from "../deploy/space-harness-pane-env.mjs";
+import { refusalText } from "./space-site-signins-tools.mjs";
 
 const tokenHeader = "x-space-cli-browser-token";
 export const STATUSES = ["started", "progress", "blocked", "needs-decision", "needs-you", "waiting", "done", "failed"];
@@ -69,7 +70,7 @@ export function parseArgs(argv) {
 /** The MCP tool (server space_progress, scripts/space-progress-mcp.mjs; space_browser still accepts it unlisted). */
 export const progressReportTool = {
   name: "space_progress_report",
-  description: "Report this pane's progress to Nous, the mind that coordinates every pane: at task start, after each finished plan step, when blocked or needing a decision (give the options and your recommendation in needs), when you submit a merge-queue ticket, and when done or failed (what, tests, ticket, next). needs-you only when the operator themselves must act or answer in this pane: needs is then the ONE question they answer from their Needs you card, with options (the answers to pick from), recommended (one of them) and target (the mail thread or page Go to pane opens); their answer comes back as this pane's next prompt (a decision Nous can make is needs-decision). needs-you also needs checked: 1-8 items, each a source you looked at first (Space Memory, your copilot's memory, the Vault, mail, files, the web) and what it showed; ask only what none of them holds. One line in summary; the full report in report. For needs-you, report says why you ask (what it unblocks, any deadline) and the link and numbered steps, each once; write summary, needs, options and report in the operator's language (the last line of your AGENTS.md names it). Space records the end of every turn on its own.",
+  description: "Report this pane's progress to Nous, the mind that coordinates every pane: at task start, after each finished plan step, when blocked or needing a decision (give the options and your recommendation in needs), when you submit a merge-queue ticket, and when done or failed (what, tests, ticket, next). done is refused while the report leaves decisions or answers to the operator: report needs-you for them and keep the plan open. needs-you only when the operator themselves must act or answer in this pane: needs is then the ONE question they answer from their Needs you card, with options (the answers to pick from), recommended (one of them) and target (the mail thread or page Go to pane opens); their answer comes back as this pane's next prompt (a decision Nous can make is needs-decision). needs-you also needs checked: 1-8 items, each a source you looked at first (Space Memory, your copilot's memory, the Vault, mail, files, the web) and what it showed; ask only what none of them holds. One line in summary; the full report in report. For needs-you, report says why you ask (what it unblocks, any deadline) and the link, never steps for the operator (do them yourself) and never a time of day; needs-you only for a CAPTCHA the internal solver tried on that page and could not pass, or data you cannot get (a card at its field; anything else after the Vault, mail and Space Memory lack it), and never again for what the operator already answered (operator rule 13/11); write summary, needs, options and report in the operator's language (the last line of your AGENTS.md names it). Space records the end of every turn on its own.",
   inputSchema: {
     type: "object",
     properties: {
@@ -118,7 +119,8 @@ export async function postProgress(body, env = process.env, path = undefined) {
   const response = await fetch(url, { method: "POST", body: JSON.stringify(body), signal: AbortSignal.timeout(30_000),
     headers: { "content-type": "application/json", [tokenHeader]: token } });
   const payload = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(payload?.error?.message || payload?.message || `Space answered HTTP ${response.status}.`);
+  // 14/11: a done whose words leave work to the operator showed only "Invalid request data."; name the field and why.
+  if (!response.ok) throw new Error(refusalText(payload, `Space answered HTTP ${response.status}.`));
   return payload;
 }
 

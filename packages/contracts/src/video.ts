@@ -123,7 +123,8 @@ export const videoOverlaySchema = z.object({
   opacity: z.number().min(0).max(1).default(1)
 }).strict().refine(...orderedRange("fromSec", "toSec", "An overlay ends after it starts.", true));
 export const videoNarrationSchema = z.object({
-  engine: videoTtsEngineSchema.default("kokoro"),
+  /** Murf by default while its prepaid API credits last (plan clipboard:mmmeF0-e3x4G step 4); the engine runner falls back to Kokoro by itself. */
+  engine: videoTtsEngineSchema.default("murf"),
   voice: z.string().trim().max(60).nullable().default(null),
   language: languageTag.default("en"),
   /** What is said, at which second of the output; one segment from 0 is a plain voice-over. */
@@ -165,11 +166,12 @@ export const videoPaneSettingsSchema = z.object({
   transition: videoTransitionSchema.default("auto"),
   filter: videoFilterSchema.default("none"),
   captions: videoCaptionStyleSchema.default("karaoke"),
+  // Murf by default (its voice per language from MURF_VOICES; af_heart is the Kokoro voice the fallback keeps).
   narration: z.object({
-    engine: videoTtsEngineSchema.default("kokoro"),
+    engine: videoTtsEngineSchema.default("murf"),
     voice: z.string().trim().max(60).default("af_heart"),
     language: languageTag.default("en")
-  }).strict().default({ engine: "kokoro", voice: "af_heart", language: "en" }),
+  }).strict().default({ engine: "murf", voice: "af_heart", language: "en" }),
   music: z.object({ volumeDb: db(-40, 0).default(-18), duckDb: db(-30, 0).default(-12) }).strict().default({ volumeDb: -18, duckDb: -12 }),
   /** Requests from others: AUTO delivers when the video is done, APPROVAL waits for the operator's yes (the Design pane's rule). */
   requestAutonomy: designRequestAutonomySchema.default("AUTO"),

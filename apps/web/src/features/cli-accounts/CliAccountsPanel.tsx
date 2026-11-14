@@ -17,6 +17,9 @@ import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
 import { readStoredSuppressNotifications } from "../../notifications-settings.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import { DockNotice } from "../dock-kit/DockKit.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
+import { InfoTip } from "../ui-controls/InfoTip.js";
+import { useUiText } from "../ui-language/ui-language.js";
 import { AlertTriangle, Check, CircleHelp, Link2, Loader2, Pencil, Plus, RefreshCw, Trash2, X } from "../ui-theme/app-icons.js";
 import { cliAccountAvailability, cliAccountPlan, type CliAccountAvailability, type CliAccountRuntimeId } from "./cli-account-availability.js";
 import {
@@ -72,6 +75,7 @@ function RuntimeIcon({ runtimeId, className }: { runtimeId: CliAccountRuntimeId;
 }
 
 export function CliAccountsPanel({ canManage, client }: { canManage: boolean; client: CliAccountsPanelClient }) {
+  const t = useUiText();
   const [runtimeId, setRuntimeId] = useState<CliAccountRuntimeId>("cli:gemini");
   const [profiles, setProfiles] = useState<CliAccountProfile[] | null>(null);
   const [pending, setPending] = useState(false);
@@ -373,7 +377,8 @@ export function CliAccountsPanel({ canManage, client }: { canManage: boolean; cl
 
       <div className="cli-accounts-list-head">
         <span>
-          <strong>{runtimeLabel} accounts</strong>
+          <strong>{runtimeLabel} accounts<InfoTip text={t("The main profile is the default account. Profiles signed in with the same email are linked across CLIs; each keeps its own native sign-in.")}
+            label={t("About {label}", { label: `${runtimeLabel} accounts` })} /></strong>
           <small>
             {profiles?.length ?? 0} {profiles?.length === 1 ? "account" : "accounts"}
             {linkedEmailCount ? ` · ${linkedEmailCount} linked by email` : ""}
@@ -430,8 +435,8 @@ export function CliAccountsPanel({ canManage, client }: { canManage: boolean; cl
           <span className="cli-accounts-suggestions-title">
             <Link2 aria-hidden="true" />
             <span>
-              <strong>Already set up in other CLIs</strong>
-              <small>Add with one click; no need to enter them again.</small>
+              <strong>Already set up in other CLIs<InfoTip text={t("Add with one click; no need to enter them again.")}
+                label={t("About {label}", { label: t("Already set up in other CLIs") })} /></strong>
             </span>
           </span>
           <div className="cli-accounts-suggestion-chips">
@@ -468,10 +473,7 @@ export function CliAccountsPanel({ canManage, client }: { canManage: boolean; cl
           }}
         >
           <label className="settings-flat-row">
-            <span className="settings-flat-row-copy">
-              <strong>Account name</strong>
-              <small>Shown in this list and in each pane, e.g. Work.</small>
-            </span>
+            <SettingsLabel label="Account name" help="Shown in this list and in each pane, e.g. Work." />
             <input
               autoFocus
               name="cli-account-display-name"
@@ -513,9 +515,6 @@ export function CliAccountsPanel({ canManage, client }: { canManage: boolean; cl
 
       <div className="cli-accounts-foot">
         <CliAccountColorLegend />
-        <small className="cli-account-profiles-note">
-          The main profile is the default account. Profiles signed in with the same email are linked across CLIs; each keeps its own native sign-in.
-        </small>
       </div>
       {detailsModal}
     </div>

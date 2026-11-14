@@ -86,3 +86,23 @@ it("offers no range longer than the History period", async () => {
   await screen.findByRole("button", { name: "7 days" });
   await waitFor(() => expect(screen.queryByRole("button", { name: "30 days" })).toBeNull());
 });
+
+it("lists each linked SpaceApp's load with the average over all, and keeps a stale reading for one that stops answering (Space Link Λ7)", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  let answering = true;
+  const link = { id: "link:b", label: "SpaceApp vm207", origins: ["https://vm207.example"], deviceId: "appdev:b", scopes: ["read"], createdAt: "2026-11-13T01:00:00.000Z", lastSeenAt: null, connected: true };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.startsWith("/api/instance-links/load")) return Response.json({ instances: [{ link, load: answering ? view(70) : null, error: answering ? null : "It did not answer." }] });
+    return Response.json(url.startsWith("/api/nous/load") ? view(40) : {});
+  }));
+  render(<NousLoad active />);
+  const linked = await screen.findByRole("region", { name: "Linked SpaceApps" });
+  expect(linked.textContent).toContain("55% average over this SpaceApp and 1 linked");
+  expect(within(linked).getByText("SpaceApp vm207")).toBeTruthy();
+  answering = false;
+  await act(async () => { vi.advanceTimersByTime(30_000); });
+  await waitFor(() => expect(linked.textContent).toContain("70% at"));
+  expect(linked.textContent).toContain("stale: It did not answer.");
+  expect(linked.textContent).toContain("40% average over this SpaceApp and 1 linked");
+});

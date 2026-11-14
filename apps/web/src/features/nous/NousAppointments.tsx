@@ -4,12 +4,12 @@ import { api } from "../../api.js";
 import { LinkedText } from "../appointments/AppointmentDetail.js";
 import {
   APPOINTMENT_KIND_COLORS, APPOINTMENT_KIND_ICONS, APPOINTMENT_KIND_LABELS, appointmentCalendarDayLabel, appointmentClock, appointmentCountdown,
-  appointmentDay, appointmentDayLabel, appointmentRelativeDay, appointmentsByDay, appointmentWhen, useAppointments
+  appointmentDay, appointmentDayLabel, appointmentLink, appointmentRelativeDay, appointmentsByDay, appointmentWhen, useAppointments
 } from "../appointments/appointments-view.js";
 import { APPOINTMENT_FORMAT_LABELS, AppointmentBadges } from "../appointments/AppointmentBadges.js";
 import { DockSearch } from "../dock-kit/DockKit.js";
 import { dayLabel, monthDays, shiftDay, shiftMonth, weekDays } from "../task-dock/calendar-days.js";
-import { CalendarDays, ChevronLeft, ChevronRight, Columns3, List, Timer, type LucideIcon } from "../ui-theme/app-icons.js";
+import { CalendarDays, ChevronLeft, ChevronRight, Columns3, ExternalLink, List, Timer, type LucideIcon } from "../ui-theme/app-icons.js";
 import { requestNousFocus } from "../nous-focus/nous-focus-events.js";
 import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import { useNousUiState } from "./nous-ui-state.js";
@@ -108,12 +108,13 @@ export function NousAppointments() {
   const items = searchAppointments(list?.appointments ?? [], query, language);
   const count = items.filter((item) => item.status === "UPCOMING").length;
 
-  const detail = (item: Appointment) => (
+  const detail = (item: Appointment, link = appointmentLink(item)) => (
     <div id={`nous-appointment-${item.id}`} className="nous-appointments-detail">
       <p>
         {kind(item)}
         {" · "}{appointmentClock(item.startsAt, settings)}{item.endsAt ? `–${appointmentClock(item.endsAt, settings)}` : ""} ({zone})
       </p>
+      {link ? <a className="appointments-join" href={link.href} target="_blank" rel="noreferrer noopener"><ExternalLink aria-hidden="true" />{t("Open {host}", { host: link.host })}</a> : null}
       {item.location ? <p><LinkedText text={item.location} /></p> : null}
       <dl>
         {appointmentSections(item.notes).map((section, index) => (

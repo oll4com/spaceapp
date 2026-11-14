@@ -10,6 +10,7 @@ import {
 import {
   SpaceConflictError, type SpaceEventBus, SpaceFeatureDisabledError, SpaceNotFoundError, type SpaceStore
 } from "@space/runtime";
+import { registerAgentFileChunkRoute } from "./agent-file-chunks.js";
 import { withStagedAgentFiles } from "./agent-file-upload.js";
 import { permanentlyDeleteLocalArtifact, safeOriginalFilename } from "./artifact-storage.js";
 import {
@@ -193,6 +194,8 @@ export function registerArtifactRoutes(app: FastifyInstance, deps: {
       if (name === "folder") folder = typeof value === "string" ? value.trim() : null;
     });
   });
+  registerAgentFileChunkRoute(app, { artifactRoot: config.browserEvidenceArtifactRoot, store, eventBus,
+    docxNormalizer: options.agentFileDocxNormalizer, routeOptions: defaultRouteRateLimitOptions });
   app.delete("/api/rooms/:id/agent-files", defaultRouteRateLimitOptions, async (request) => {
     const params = parseBody(idParamSchema, request.params);
     await store.getRoom(params.id);

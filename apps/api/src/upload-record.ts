@@ -15,7 +15,8 @@ const recordSchema = z.object({
   roomId: z.string().nullable(),
   traceId: z.string().max(500),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
-  byteSize: z.number().int().positive().max(100 * 1024 * 1024),
+  // Each caller enforces its own size bound (Agent Files 500 MiB multipart, the chunks route any size); the journal only records it.
+  byteSize: z.number().int().positive(),
   createdAt: z.string().datetime()
 });
 

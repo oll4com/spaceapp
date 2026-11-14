@@ -682,7 +682,6 @@ async function okOrFail(response, label) {
 async function cartesiaSpeak(text, voice, language, path) {
   const key = await grantKey("SPACE_CARTESIA_KEY_FILE", "space-cartesia.key", "cartesia.key", "Cartesia");
   progress(5, "Cartesia Sonic 3");
-  // shortcut: built from Cartesia's published API without a key to test against; check it once the Cartesia key is installed.
   const response = await okOrFail(await fetch("https://api.cartesia.ai/tts/bytes", {
     method: "POST", signal: AbortSignal.timeout(TIMEOUTS_MS.tts - 5000), headers: { ...UA, "content-type": "application/json", "X-API-Key": key, "Cartesia-Version": CARTESIA_VERSION },
     body: JSON.stringify({ model_id: "sonic-3", transcript: text, voice: { mode: "id", id: UUID.test(voice) ? voice : SONIC_VOICE }, language: language.split("-")[0],
@@ -772,7 +771,6 @@ async function cloudTranscribe(engine, ctx, src, language) {
     detected = answer.language_code?.split("_")[0] ?? language; // "en_us" → faster-whisper's "en"
   } else if (engine === "cartesia") {
     progress(15, "Cartesia Ink");
-    // shortcut: built from Cartesia's published batch STT API without a key to test against; check it once the Cartesia key is installed.
     const form = new FormData();
     form.append("file", new Blob([audio], { type: "audio/wav" }), "speech.wav");
     form.append("model", "ink-whisper");

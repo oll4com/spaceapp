@@ -190,7 +190,8 @@
     "apps/api/src/cli-runtime-routes.ts",
     "apps/api/src/cli-runtime-params.ts",
     "apps/api/src/cli-account-routes.ts",
-    "apps/api/src/link-inspect-routes.ts"
+    "apps/api/src/link-inspect-routes.ts",
+    "apps/api/src/app-options.ts"
   ],
   "allowedCyclicEdges": [
     "apps/api/src/cli-render-proof-fixture.ts -> apps/api/src/cli-terminal.ts",

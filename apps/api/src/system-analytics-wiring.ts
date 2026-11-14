@@ -4,7 +4,7 @@ import type { SpaceStore } from "@space/runtime";
 import type { createPublicCredentialHost } from "./cli-auth-transfer.js";
 import type { CliHostReapAggregate, CliTerminalManager } from "./cli-terminal.js";
 import type { SpaceApiConfig } from "./config.js";
-import { OpencodeModelBenchService, openCode2Models } from "./opencode-model-bench.js";
+import { benchRefreshesInBackground, OpencodeModelBenchService, openCode2Models } from "./opencode-model-bench.js";
 import { createSystemServicesProvider, runSystemServicesCollector, type SystemServicesRunner } from "./service-services.js";
 import { SystemAnalyticsService, tokenUsageSourcesFor, type SystemAnalyticsLiveSession } from "./system-analytics-service.js";
 import { createToolbarModelStatsCollector, type ToolbarModelStatsCollector } from "./toolbar-model-stats.js";
@@ -142,7 +142,7 @@ export function createSystemAnalyticsServices(deps: SystemAnalyticsDeps) {
         )
       : new InMemorySystemAnalyticsRepository()
   });
-  if (process.env.NODE_ENV !== "test" && process.env.VITEST !== "true") {
+  if (process.env.NODE_ENV !== "test" && process.env.VITEST !== "true" && benchRefreshesInBackground()) {
     opencodeModelBenchService.startDailyRefresh();
   }
   return { toolbarCliSessionStatsProvider, systemServicesProvider, toolbarHostMemoryProvider, toolbarCliSessionReaper, toolbarCliSessionTerminator,

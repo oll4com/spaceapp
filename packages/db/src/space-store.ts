@@ -3,7 +3,7 @@ import { freelanceEgressRouteSchema, t3CodePaneMetadataSchema, type FreelanceEgr
 import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, appStudioPaneMetadataSchema, videoPaneMetadataSchema, securityCopilotPaneMetadataSchema, type SecurityCopilotPaneMetadata, monitoringCopilotPaneMetadataSchema, type MonitoringCopilotPaneMetadata, type AppStudioPaneMetadata, type VideoPaneMetadata, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
 import type { PlanExecutionEvent } from "@space/runtime";
 import { managedPlanProjection, redactSecretText } from "@space/runtime";
-import { managedPlanExecutionSchema } from "@space/contracts";
+import { managedPlanExecutionSchema, isLightCodexPane } from "@space/contracts";
 import { SPACE_INSTALL_ROOT } from "@space/contracts";
 import { PostgresPlanExecutionRepository } from "./plan-execution-repository.js";
 import { PostgresGoogleAccountsRepository } from "./google-accounts-repository.js";
@@ -38,6 +38,8 @@ import {
   planWaitsOnSchema,
   planDependencyProblem,
   PLAN_MAP_KEYS,
+  keepParkedClock,
+  planParkedSchema,
   type PlanStep,
   cliMaintenanceAuthHandoffSchema,
   cliMaintenanceEventSchema,
@@ -534,7 +536,10 @@ export interface PostgresPoolOptions {
   socketPath?: string;
 }
 
-export const DEFAULT_SPACE_PG_SOCKET_PATH = "/var/run/space-postgres/.s.PGSQL.5432";
+/** Postgres's socket on the host: docker-compose.yml mounts this dir on the container's /var/run/postgresql. */
+export const DEFAULT_SPACE_PG_SOCKET_PATH = "/run/space-postgres/socket/.s.PGSQL.5432";
+/** The loopback port Space's Postgres container publishes (docker-compose.yml): only a URL naming it is that server. */
+const SPACE_PG_PUBLISHED_PORT = "54329";
 
 export function isSocketAccessible(socketPath = DEFAULT_SPACE_PG_SOCKET_PATH): boolean {
   try {
@@ -610,15 +615,15 @@ function createSinglePgPool(
 }
 
 /**
- * The Space socket replaces only a loopback TCP address. A connection string that
- * already names a socket directory (`?host=`) or another host is used as given,
- * so a test's disposable database is never redirected to a reachable live socket.
+ * The Space socket replaces only the loopback address of Space's own Postgres (its published port 54329). A connection
+ * string that names a socket directory (`?host=`), another host or another port is used as given, so a disposable
+ * database (tests, restore drills) is never redirected to the live server's trust socket.
  */
 export function prefersSpaceSocket(connectionString: string): boolean {
   try {
     const url = new URL(connectionString);
     if (url.searchParams.has("host")) return false;
-    return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
+    return url.port === SPACE_PG_PUBLISHED_PORT && ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
   } catch {
     return false;
   }
@@ -825,6 +830,7 @@ type ClipboardItemRow = {
   dependsOn?: unknown;
   dueAt?: Date | string | null;
   waitsOn?: unknown;
+  parked?: unknown;
   occurrenceCount: number;
   characterCount: number;
   createdAt: Date | string;
@@ -1782,6 +1788,7 @@ const clipboardItemColumns = `
     depends_on AS "dependsOn",
     due_at AS "dueAt",
     waits_on_json AS "waitsOn",
+    parked_json AS "parked",
     occurrence_count AS "occurrenceCount",
     character_count AS "characterCount",
     created_at AS "createdAt",
@@ -3032,6 +3039,7 @@ function mapClipboardItem(row: ClipboardItemRow): ClipboardItem {
     dueAt: row.dueAt ? toIso(row.dueAt) : null,
     // A stored wait that no longer fits the contract reads as none, never as a corrupt row.
     waitsOn: planWaitsOnSchema.safeParse(row.waitsOn).data ?? null,
+    parked: planParkedSchema.safeParse(row.parked).data ?? null,
     createdAt: toIso(row.createdAt),
     lastUsedAt: toIso(row.lastUsedAt)
   });
@@ -4356,6 +4364,8 @@ export class PostgresSpaceStore implements SpaceStore {
     });
   }
 
+  // Until an owner is claimed, every start takes the token file as it is now (light browser step 6b): a database and file that
+  // drifted apart heal on the next core start instead of refusing the printed token.
   async initializeOwnerSetup(input: InitializeOwnerSetupInput): Promise<OwnerSetupStatus> {
     await this.pool.query(
       `
@@ -4366,7 +4376,11 @@ export class PostgresSpaceStore implements SpaceStore {
           updated_at
         )
         VALUES (true, $1, $2, now())
-        ON CONFLICT (singleton) DO NOTHING
+        ON CONFLICT (singleton) DO UPDATE SET
+          setup_token_hash = EXCLUDED.setup_token_hash,
+          setup_token_expires_at = EXCLUDED.setup_token_expires_at,
+          updated_at = now()
+        WHERE space_owner_setup.owner_user_id IS NULL
       `,
       [input.tokenHash, input.expiresAt]
     );
@@ -5211,6 +5225,7 @@ export class PostgresSpaceStore implements SpaceStore {
       values.push(parsed.paneId);
       conditions.push(`pane_id = $${values.length}`);
     }
+    if (parsed.parked) conditions.push("parked_json IS NOT NULL AND parked_json->>'resumedAt' IS NULL");
     if (parsed.q) {
       const escapedSearch = parsed.q.replace(/[\\%_]/g, "\\$&");
       values.push(`%${escapedSearch}%`);
@@ -5342,12 +5357,13 @@ export class PostgresSpaceStore implements SpaceStore {
       const problem = planDependencyProblem(clipboardItemId, input.dependsOn, open.rows.map((row) => ({ id: row.id, dependsOn: Array.isArray(row.dependsOn) ? row.dependsOn as string[] : [] })));
       if (problem) throw new SpaceConflictError(problem);
     }
-    const map = { dependsOn: input.dependsOn ?? existing.dependsOn, dueAt: input.dueAt !== undefined ? input.dueAt : existing.dueAt, waitsOn: input.waitsOn !== undefined ? input.waitsOn : existing.waitsOn };
+    const map = { dependsOn: input.dependsOn ?? existing.dependsOn, dueAt: input.dueAt !== undefined ? input.dueAt : existing.dueAt, waitsOn: input.waitsOn !== undefined ? input.waitsOn : existing.waitsOn,
+      parked: input.parked !== undefined ? keepParkedClock(existing.parked, input.parked) : existing.parked };
     if (mapOnly) {
       const result = await client.query<ClipboardItemRow>(
-        `UPDATE clipboard_items SET depends_on = $3::jsonb, due_at = $4::timestamptz, waits_on_json = $5::jsonb, last_used_at = clock_timestamp()
+        `UPDATE clipboard_items SET depends_on = $3::jsonb, due_at = $4::timestamptz, waits_on_json = $5::jsonb, parked_json = $6::jsonb, last_used_at = clock_timestamp()
           WHERE owner_user_id = $1 AND id = $2 RETURNING ${clipboardItemColumns}`,
-        [ownerUserId, clipboardItemId, JSON.stringify(map.dependsOn), map.dueAt, map.waitsOn ? JSON.stringify(map.waitsOn) : null]
+        [ownerUserId, clipboardItemId, JSON.stringify(map.dependsOn), map.dueAt, map.waitsOn ? JSON.stringify(map.waitsOn) : null, map.parked ? JSON.stringify(map.parked) : null]
       );
       return mapClipboardItem(firstOrNotFound(result.rows, `Clipboard item ${clipboardItemId} was not found.`));
     }
@@ -5436,6 +5452,7 @@ export class PostgresSpaceStore implements SpaceStore {
           text = COALESCE($15, text),
           content_hash = COALESCE($16, content_hash),
           character_count = char_length(COALESCE($15, text)),
+          parked_json = $17::jsonb,
           last_progress_at = clock_timestamp(),
           last_used_at = clock_timestamp()
         WHERE owner_user_id = $1 AND id = $2
@@ -5444,7 +5461,8 @@ export class PostgresSpaceStore implements SpaceStore {
       `,
       [ownerUserId, clipboardItemId, executionStatus, finalPercentage, activeAgent, JSON.stringify(steps), isCompleted, nextRoomId, nextPaneId, nextPaneTitle,
         JSON.stringify(map.dependsOn), map.dueAt, map.waitsOn ? JSON.stringify(map.waitsOn) : null,
-        input.title ?? null, input.text ?? null, input.text !== undefined ? createHash("sha256").update(input.text).digest("hex") : null]
+        input.title ?? null, input.text ?? null, input.text !== undefined ? createHash("sha256").update(input.text).digest("hex") : null,
+        map.parked ? JSON.stringify(map.parked) : null]
     ).catch((error: unknown) => {
       if ((error as { code?: string }).code === "23505") throw new SpaceConflictError("Another clipboard record already has this exact text.");
       throw error;
@@ -5634,6 +5652,13 @@ export class PostgresSpaceStore implements SpaceStore {
       });
       return mapTaskItem(firstOrNotFound(result.rows, `Task item ${taskItemId} was not found.`));
     });
+  }
+
+  async bindTaskItem(ownerUserId: string, taskItemId: string, binding: { roomId: string | null; paneId: string | null; paneTitle: string | null }): Promise<TaskItem> {
+    const result = await this.pool.query<TaskItemRow>(
+      `UPDATE task_items SET room_id = $3, pane_id = $4, pane_title = $5, last_used_at = clock_timestamp() WHERE owner_user_id = $1 AND id = $2 RETURNING ${taskItemReturning}`,
+      [ownerUserId, taskItemId, binding.roomId, binding.paneId, binding.paneTitle?.slice(0, 160) ?? null]);
+    return mapTaskItem(firstOrNotFound(result.rows, `Task item ${taskItemId} was not found.`));
   }
 
   /** Scheduled tasks whose next run is due, oldest first. */
@@ -8383,7 +8408,8 @@ export class PostgresSpaceStore implements SpaceStore {
         paneName: nextPaneName,
         providerId: input.providerId === undefined ? current.providerId : input.providerId,
         modelId: input.modelId === undefined ? current.modelId : input.modelId,
-        terminalRuntimeId:
+        // A Codex light pane keeps its runtime while it stays CHAT; an update never makes a pane light.
+        terminalRuntimeId: (input.mode ?? current.mode) === "CHAT" && isLightCodexPane(current) ? current.terminalRuntimeId :
           ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO", "VIDEO", "SECURITY_COPILOT", "MONITORING_COPILOT"].includes(input.mode ?? current.mode)
             ? input.terminalRuntimeId === undefined
               ? current.terminalRuntimeId

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { nousFailureCause, nousFreeRouteAllowed, nousModelLabel, nousModelMatchesProvider, nousSpaceModel } from "@space/contracts";
+import { GATEWAY_FREE_ROUTES, NOUS_FREE_ROUTE_MODELS, NOUS_SPACE_ROUTES, NOUS_TURN_REASONS, nousFailureCause, nousModelLabel, nousModelMatchesProvider, nousSettingsSchema, nousSpaceModel } from "@space/contracts";
+import { nousTokenModel } from "../src/nous/tokens.js";
 import { InMemoryNousRepository } from "@space/db";
 import { createNousProviderCatalog } from "../src/nous/providers.js";
 import { createNousService, type NousRunner } from "../src/nous/service.js";
@@ -59,8 +60,6 @@ describe("Space provider: ids, classes and efforts", () => {
     const background = spaceAttempts({ model: "auto-light", effort: "high", free: true }, routes).attempts;
     expect(background.map((attempt) => attempt.route)).toEqual(["CLAUDE", "CODEX", "CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_FLASH", "ANTIGRAVITY_CLAUDE", "INCEPTION"]);
     expect(background.at(-1)).toMatchObject({ id: "inception:mercury-3", provider: "opencode", free: true });
-    expect(nousFreeRouteAllowed("INBOX")).toBe(true);
-    expect(["OPERATOR", "DECISION", "GOAL"].some(nousFreeRouteAllowed)).toBe(false);
   });
 
   it("tries the routes of a pool with no room for Nous after those that have room (operator 8/11)", () => {
@@ -257,6 +256,33 @@ describe("Space provider router", () => {
     expect(actedCall).toHaveBeenCalledTimes(1);
   });
 
+  it("puts no free or granted pool on any Nous turn kind, in any spend mode (operator rule 13/11 14:38 BKK)", () => {
+    expect(NOUS_FREE_ROUTE_MODELS).toEqual({});
+    const free = route("AZURE_OPENAI", "opencode", "azure", [{ id: "gpt-5-mini", label: "gpt-5-mini", efforts: ["low", "medium", "high", "xhigh", "max"] }], { free: true });
+    const settings = nousSettingsSchema.parse({});
+    for (const reason of [...NOUS_TURN_REASONS, "HELPER" as const]) for (const mode of ["NORMAL", "LOW", "CRITICAL"] as const) {
+      const { model, effort } = nousTokenModel(settings, reason, mode);
+      const parsed = nousSpaceModel(model);
+      const route = parsed && "route" in parsed ? parsed.route : null;
+      // A namespaced default never names a granted/free pool or a cloud-credit route (no Nous runner: provider null).
+      expect(route === null || (!GATEWAY_FREE_ROUTES.has(route) && NOUS_SPACE_ROUTES[route].provider !== null), `${reason} ${mode}: ${model}`).toBe(true);
+      // Nous's choice never sets `free` (wiring.ts), so even a free route listed first is skipped.
+      expect(spaceAttempts({ model, effort }, [free, ...ROUTES]).attempts.some((attempt) => attempt.free)).toBe(false);
+    }
+  });
+
+  it("goes on to Claude when a free pool listed first refuses its key or fails (stable 13/11 14:31 BKK, Azure gpt-5-mini 401)", async () => {
+    const free = route("AZURE_OPENAI", "opencode", "azure", [{ id: "gpt-5-mini", label: "gpt-5-mini", efforts: ["low", "medium", "high", "xhigh", "max"] }], { free: true });
+    for (const refusal of ["authentication refused by Space Gateway (401 invalid_api_key: GPT-5 mini on Azure OpenAI ... Invalid API key)", "The provider stopped.", "Space Gateway answered 503: upstream unavailable."]) {
+      const router = createSpaceRouter({ routes: async () => [free, ...ROUTES] });
+      const call = vi.fn(async (attempt: { id: string; route: string }) => attempt.route === "AZURE_OPENAI" ? { text: refusal, isError: true } : ok(attempt));
+      const served = await router.run({ model: "auto-light", effort: "high", free: true }, call);
+      expect(served.attempt.route).toBe("CLAUDE");
+      expect(served.failures).toEqual([expect.objectContaining({ route: "AZURE_OPENAI" })]);
+      expect(call).toHaveBeenCalledTimes(2);
+    }
+  });
+
   it("waits cleanly when every enabled route is exhausted: a quota refusal naming each route, never a claim of capacity", async () => {
     const router = createSpaceRouter({ routes: async () => ROUTES });
     const error = await router.run({ model: "auto", effort: "high" }, async () => ({ text: "usage limit reached", isError: true })).catch((caught: unknown) => caught as SpaceRouteError);
@@ -388,7 +414,7 @@ describe("Space provider failover inside a Nous turn", () => {
       await input.onAttempt!({ index: 0, label: "Claude Opus 5.5 · Claude (high) on Claude Code", after: null });
       expect(input.acted!()).toBe(false);
       await service.callTool(owner, input.turnId, "space_send_to_pane", { pane: "Alex", text: "go" }, "toolu_1");
-      // The attempt acted, so the turn runner refuses to fail over (Kate E-3); below the service's second guard alone, as if it had.
+      // The attempt acted and its route's pool refused: the turn goes on on the next route under the service's guard.
       expect(input.acted!()).toBe(true);
       const extra = await input.onAttempt!({ index: 1, label: "GPT-6 Astra · Codex (high) on Codex", after: "All Claude accounts reached their usage limit." });
       expect(input.acted!()).toBe(false);
@@ -450,6 +476,18 @@ describe("R54-a: an operator turn never dies on one pool or on its step limit (3
     const quota = backendOf([{ text: "All Claude accounts reached their usage limit.", isError: true }, { text: "Answered on Codex.", isError: false }]);
     expect(await turnRunner(options, quota.backend, pick as never, async () => false, async () => false, router())(turn("DECISION"), new AbortController().signal))
       .toMatchObject({ text: "Answered on Codex.", model: "codex:gpt-6-astra" });
+    // 13/11 09:34 UTC: Claude Code's quota stop arrives thrown (the launcher's exit), and moves the same; another thrown error does not.
+    const stop = "Claude Code has no available tokens/quota right now: the account quota is exhausted.";
+    const thrown = vi.fn().mockRejectedValueOnce(new Error(stop)).mockResolvedValueOnce({ text: "Answered on Codex.", isError: false, costUsd: null, tokens: null });
+    const thrownTurn = turn("OPERATOR");
+    expect(await turnRunner(options, { run: thrown, unavailable: async () => null } as never, pick as never, async () => false, async () => false, router())(thrownTurn, new AbortController().signal))
+      .toMatchObject({ text: "Answered on Codex.", model: "codex:gpt-6-astra" });
+    expect(thrown.mock.calls[1]![0]).toMatchObject({ provider: "codex", model: "gpt-6-astra" });
+    expect((thrownTurn as { onAttempt: ReturnType<typeof vi.fn> }).onAttempt).toHaveBeenCalledWith(expect.objectContaining({ after: stop }));
+    await expect(turnRunner(options, { run: vi.fn().mockRejectedValue(new Error(stop)), unavailable: async () => null } as never, pick as never, async () => false,
+      async () => false, router())(turn("INBOX"), new AbortController().signal)).rejects.toThrow(stop);
+    await expect(turnRunner(options, { run: vi.fn().mockRejectedValue(new Error("The CLI exited with code 1.")), unavailable: async () => null } as never, pick as never,
+      async () => false, async () => false, router())(turn("OPERATOR"), new AbortController().signal)).rejects.toThrow("The CLI exited with code 1.");
     // A Space provider explicit model that exhausts quota moves to auto on an operator turn.
     const spacePick = async () => ({ provider: "space" as const, model: "codex:gpt-6-astra", effort: "high", fallbackModel: null });
     const spaceQuota = backendOf([{ text: "Codex: quota exhausted.", isError: true }, { text: "Answered on Claude via OpenCode.", isError: false }]);
@@ -486,6 +524,22 @@ describe("R54-a: an operator turn never dies on one pool or on its step limit (3
     expect(run.mock.calls.map(([request]) => request.provider)).toEqual(["gemini", "claude"]);
     expect((operator as { onAttempt: ReturnType<typeof vi.fn> }).onAttempt).toHaveBeenLastCalledWith(expect.objectContaining({
       label: "Claude Opus 5.5 · Claude (high) on claude, continued after its step limit" }));
+  });
+
+  it("a turn that acted goes on past its route's pool refusal; a Codex 429 the Gateway then shows out of quota is quota (13/11 18:07 UTC)", async () => {
+    let spent = false;
+    const space = createSpaceRouter({ routes: async () => [{ ...ROUTES[0]!, enabled: false },
+      spent ? { ...ROUTES[1]!, available: false, reason: "Its Space Gateway accounts are paused or out of quota." } : ROUTES[1]!, { ...ROUTES[2]!, enabled: false }, ROUTES[3]!] });
+    const pick = async () => ({ provider: "space" as const, model: "auto", effort: "high", fallbackModel: null });
+    const run = vi.fn(async (request: { provider: string }) => {
+      if (request.provider === "gemini") return { text: "Finished.", isError: false, costUsd: null, tokens: null };
+      spent = true;
+      return { text: "exceeded retry limit, last status: 429 Too Many Requests", isError: true, costUsd: null, tokens: null };
+    });
+    expect(await turnRunner(options, { run, unavailable: async () => null } as never, pick as never, async () => false, async () => false, space)(
+      { ...(turn("INBOX") as object), acted: () => true } as never, new AbortController().signal)).toMatchObject({ text: "Finished." });
+    expect(run.mock.calls.map(([request]) => request.provider)).toEqual(["codex", "gemini"]);
+    expect(space.cooling("CODEX")).toMatchObject({ kind: "quota", reason: expect.stringContaining("out of quota") });
   });
 
   it("a turn the CLI broker could not start runs again on the same Claude route after a short wait; one that acted is not repeated", async () => {

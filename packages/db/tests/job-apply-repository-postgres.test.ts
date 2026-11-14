@@ -78,6 +78,16 @@ describe.skipIf(unavailable !== null)(`job apply repository on PostgreSQL${unava
     await repository.upsertProfile(owner, { candidate: {} });
   });
 
+  it("keeps the daily target across other profile updates and records each day's target misses once, in order", async () => {
+    expect((await repository.upsertProfile(owner, { dailyTarget: 200 })).dailyTarget).toBe(200);
+    expect((await repository.upsertProfile(owner, { candidate: { fullName: "Nikolaos" } })).dailyTarget).toBe(200);
+    await repository.addTargetMiss(owner, "2026-11-13", "QUEUE_DEFERRED");
+    await Promise.all([repository.addTargetMiss(owner, "2026-11-13", "CLI_BUSY"), repository.addTargetMiss(owner, "2026-11-13", "QUEUE_DEFERRED")]);
+    await repository.addTargetMiss(owner, "2026-11-14", "QUEUE_EMPTY");
+    expect((await repository.getProfile(owner))?.targetMisses).toEqual({ "2026-11-13": ["QUEUE_DEFERRED", "CLI_BUSY"], "2026-11-14": ["QUEUE_EMPTY"] });
+    await repository.upsertProfile(owner, { dailyTarget: 0 });
+  });
+
   it("recalls memories by full-text search and exact keys, keeps one answer per key and scope", async () => {
     const years = await repository.upsertMemoryByKey({ ownerUserId: owner, kind: "ANSWER", key: "how many years of typescript experience do you have", text: "6", site: null, company: null, tags: ["form"], source: "CV", confidence: 0.7, pinned: false });
     const again = await repository.upsertMemoryByKey({ ownerUserId: owner, kind: "ANSWER", key: "how many years of typescript experience do you have", text: "7", site: null, company: null, tags: [], source: "USER", confidence: 0.95, pinned: false });

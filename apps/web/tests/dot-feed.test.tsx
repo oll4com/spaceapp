@@ -1,7 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { agentPaneSessionSchema, type AgentPaneSession, type DotFeed as DotFeedPage, type DotFeedItem, type DotProfile, type Pane } from "@space/contracts";
+import { agentPaneSessionSchema, type AgentPaneSession, type DotFeed as DotFeedPage, type CodexThreadItem, type DotFeedItem, type DotProfile, type Pane } from "@space/contracts";
 import { DotFeed, dotFeedSeparatorLabel, needsDotFeedSeparator } from "../src/features/agent-pane/DotFeed.js";
+import { codexStepsByReply } from "../src/features/agent-pane/CodexTranscript.js";
 import { mergeLatestDotFeed } from "../src/features/agent-pane/useDotFeed.js";
 import { dotActiveLabel, DotInfoCard, slackDirectUrl } from "../src/features/agent-pane/DotInfoCard.js";
 import { OPEN_DOT_SETTINGS_EVENT } from "../src/features/agent-pane/dot-home-events.js";
@@ -105,6 +106,33 @@ describe("the feed", () => {
     expect(merged.replaced).toBe(false);
     const gap = mergeLatestDotFeed([a], page([item({ id: "z", createdAt: "2026-10-12T09:00:00.000Z" })], "cursor"));
     expect(gap).toEqual({ items: [expect.objectContaining({ id: "z" })], replaced: true });
+  });
+  it("shows the commands, outputs and reasoning behind each Codex reply, and the current turn's steps while it runs", () => {
+    let n = 0;
+    const t = (kind: CodexThreadItem["kind"], role: CodexThreadItem["role"], content: string, toolName: string | null = null): CodexThreadItem =>
+      ({ id: `i${n += 1}`, kind, role, content, toolName, rawType: null, createdAt: null });
+    const thread = [
+      t("message", "user", "Count the files"), t("reasoning", "assistant", "Reasoning"),
+      t("tool_call", "tool", "ls | wc -l", "exec_command"), t("tool_result", "tool", "Process exited with code 0\nOutput:\n12"),
+      t("message", "assistant", "Done."),
+      t("message", "user", "Delete the temp file"), t("reasoning", "assistant", "**Checking** the path first"),
+      t("message", "assistant", "Looking for it."), t("tool_call", "tool", "rm /tmp/x", "exec_command"),
+      t("tool_result", "tool", "Exit code: 1\nrm: cannot remove '/tmp/x'"), t("message", "assistant", "Done."),
+      t("message", "user", "And now?"), t("tool_call", "tool", "ls /tmp", "exec_command")
+    ];
+    const replies = [item({ id: "r1", content: "Done." }), item({ id: "r2", content: "Done.", createdAt: "2026-10-12T08:01:00.000Z" })];
+    const steps = codexStepsByReply(thread, replies);
+    // A repeated reply keeps its own steps; the empty "Reasoning" placeholder is not a step.
+    expect(steps.byReply.get("r1")!.map((step) => step.id)).toEqual(["i3", "i4"]);
+    expect(steps.byReply.get("r2")!.map((step) => step.content)).toEqual(["**Checking** the path first", "Looking for it.", "rm /tmp/x",
+      "Exit code: 1\nrm: cannot remove '/tmp/x'"]);
+    expect(steps.pending.map((step) => step.id)).toEqual(["i13"]);
+    render(<DotFeed {...props} items={replies} steps={steps} running={{ status: "RUNNING", elapsedSeconds: 3, progress: null }} />);
+    expect(screen.getByText("2 steps")).toBeTruthy();
+    expect(screen.getByText("4 steps")).toBeTruthy();
+    expect(screen.getByText("Output · Exit code 1").closest("li")!.getAttribute("data-failed")).toBe("true");
+    expect(screen.getByText("Output · Exit code 0").closest("li")!.hasAttribute("data-failed")).toBe(false);
+    expect(within(screen.getByRole("status", { name: "Orbit is working" })).getByText("ls /tmp")).toBeTruthy();
   });
 });
 

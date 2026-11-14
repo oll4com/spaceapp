@@ -60,8 +60,6 @@ export const NOUS_SPACE_ROUTES: Record<GatewayProviderRoute, { prefix: string; p
 export const NOUS_FREE_ROUTE_MODELS: Partial<Record<GatewayProviderRoute, string>> = {};
 /** The Space Gateway account provider behind a free route (OpenRouter's free models are its one key pool). */
 export const nousFreeRouteProvider = (route: GatewayProviderRoute): string => route;
-/** Nous turn reasons that may run on a free pool: background work, never the operator's own, a decision or a goal turn (code and judgement). */
-export const nousFreeRouteAllowed = (reason: string): boolean => !["OPERATOR", "DECISION", "GOAL"].includes(reason);
 /** Auto models of the Space provider and the tier each asks every route for (3: Opus/Astra class, 2: Sonnet/Sol class, 1: Haiku/Luna class). */
 export const NOUS_SPACE_AUTO: Record<string, { tier: 1 | 2 | 3; label: string }> = {
   auto: { tier: 3, label: "Auto: best model, Gateway order" },
@@ -312,10 +310,12 @@ export interface NousOperatorRequest {
   doneSummary?: string; where?: "stable" | "dev" | "no code"; tickets?: string[];
   /** The plan it is linked to and its progress. */
   planId?: string; planPercent?: number;
-  /** The first answer of Nous that covered it, and its Done record's time. */
-  answeredAt?: string; doneAt?: string;
+  /** The first answer of Nous that covered it, and its Done record's time and id (one record can cover several messages: a plan's). */
+  answeredAt?: string; doneAt?: string; doneId?: string;
   /** The first reply that reached the chat for it: an operator turn's space_reply_now, else its answer (the Score's first answer). */
   repliedAt?: string;
+  /** Of the time to its Done, how long it waited on the operator alone (their own test or answer): the Score leaves it out. */
+  operatorWaitMs?: number;
 }
 
 /**
@@ -352,7 +352,7 @@ export interface NousLoad {
 export const nousScoreRangeSchema = z.enum(["24h", "7d", "30d"]);
 export type NousScoreRange = z.infer<typeof nousScoreRangeSchema>;
 export type NousScoreTileKey = "plans" | "panes" | "goals" | "projects" | "dailyTasks" | "response" | "dailyErrors" | "requests" | "completed" | "done" | "utilization"
-  | "corrections" | "couldHaveDecided" | "scorecard" | "marketing" | "lostTokens" | "browsers" | "idlePanes" | "approvedNotDone" | "reset";
+  | "corrections" | "couldHaveDecided" | "scorecard" | "marketing" | "lostTokens" | "browsers" | "idlePanes" | "approvedNotDone" | "parked" | "reset";
 /** One thing that gives or costs points (a plan, a request, a dimension); `id` is a plan, message or decision id when there is one. */
 export interface NousScoreItem { id: string | null; label: string; points: number; detail: string }
 export interface NousScoreTile { key: NousScoreTileKey; label: string; points: number; detail: string; items: NousScoreItem[] }
@@ -581,7 +581,7 @@ export const nousSettingsSchema = z.object({
   /** Missing tabs stay on. Conversation is always visible and cannot be switched off. */
   dockTabs: z.object({
     needs: z.boolean().optional(), done: z.boolean().optional(), updates: z.boolean().optional(), decisions: z.boolean().optional(), overview: z.boolean().optional(),
-    panes: z.boolean().optional(), plans: z.boolean().optional(), goals: z.boolean().optional(), startup: z.boolean().optional(), funding: z.boolean().optional(), jobs: z.boolean().optional(), crypto: z.boolean().optional(), marketing: z.boolean().optional(), quotas: z.boolean().optional(), shared: z.boolean().optional(), requests: z.boolean().optional(),
+    panes: z.boolean().optional(), plans: z.boolean().optional(), goals: z.boolean().optional(), startup: z.boolean().optional(), affiliate: z.boolean().optional(), funding: z.boolean().optional(), jobs: z.boolean().optional(), crypto: z.boolean().optional(), marketing: z.boolean().optional(), quotas: z.boolean().optional(), shared: z.boolean().optional(), requests: z.boolean().optional(),
     load: z.boolean().optional(), score: z.boolean().optional(), taskRuns: z.boolean().optional(),
     // The Nous app's own tabs (nous_msg:b4fb69589b394a6aa4679dc2, app 0.2.34): its Settings › Tabs saves them here; the web dock has neither tab.
     appointments: z.boolean().optional(), signature: z.boolean().optional()
@@ -902,7 +902,9 @@ export const nousOverviewSchema = z.object({
     active: z.boolean().optional(),
     /** The plan map (2026-10-25): dependency depth (0 = depends on no open plan), the open plans it depends on, its date and hold. */
     level: z.number().int().min(0).optional(), dependsOn: z.array(z.string()).optional(), dueAt: z.string().nullable().optional(),
-    overdue: z.boolean().optional(), hold: nousPlanHoldSchema.nullable().optional()
+    overdue: z.boolean().optional(), hold: nousPlanHoldSchema.nullable().optional(),
+    /** Parked now (plan clipboard:7S_jA46vDkU9): why, and how many resume conditions are met. */
+    parked: z.object({ reason: z.string(), met: z.number().int().min(0), total: z.number().int().min(0) }).strict().optional()
   }).strict()),
   needsHands: z.array(z.object({ id: z.string(), source: z.string(), title: z.string(), room: z.string().nullable() }).strict()),
   trains: z.string(),

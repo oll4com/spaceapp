@@ -10,7 +10,11 @@ export interface LiveDeviceSession { deviceId: string; app: string; name: string
   last: { method: string; path: string; at: string } | null; rttMs: number | null }
 /** Who manages this SpaceApp now (Space Link lease) and whether its person took management back. */
 export interface LiveDevices { sessions: LiveDeviceSession[]; lease: { deviceId: string; name: string; since: string } | null; takenBackAt: string | null }
-export interface InstanceLink { id: string; label: string; origins: string[]; deviceId: string; scopes: string[]; createdAt: string; lastSeenAt: string | null; connected: boolean }
+export interface InstanceLink { id: string; label: string; origins: string[]; deviceId: string; scopes: string[]; access: InstanceLinkAccess | null; createdAt: string; lastSeenAt: string | null; connected: boolean }
+/** The Vault key ids (never the values) of a Cloudflare Access service token in front of a linked SpaceApp's channel. */
+export interface InstanceLinkAccess { clientId: string; clientSecret: string }
+/** One row of a link's history (Space Link Λ4): its pairing, or an act through it with the trace id both SpaceApps audit it under. */
+export interface InstanceLinkEvent { id: string; action: string; requestId: string; createdAt: string; metadata: { method?: string; path?: string; status?: number | null } | null }
 import type { FreelanceEgressRoute } from "@space/contracts";
 import type { ClientErrorReport } from "./client-error-reporter.js";
 import type { LiveHistorySnapshot, PersistedLiveTurn } from "./features/live-pane/live-history-sync.js";
@@ -1565,11 +1569,13 @@ export const api = {
   createMobilePairing: () => request<MobilePairingOffer>("/api/mobile/pairing", { method: "POST", body: JSON.stringify({}) }),
   cancelMobilePairing: (offerId: string) => request<{ cancelled: boolean }>(`/api/mobile/pairing/${encodeURIComponent(offerId)}`, { method: "DELETE" }),
   listInstanceLinks: () => request<{ links: InstanceLink[] }>("/api/instance-links"),
+  linkedLoads: (range: NousLoadRange) => request<{ instances: Array<{ link: InstanceLink; load: NousLoad | null; error: string | null }> }>(`/api/instance-links/load?range=${range}`),
   liveDeviceSessions: () => request<LiveDevices>("/api/auth/devices/live"),
   linkManagement: (action: "take-back" | "give-back") => request<LiveDevices>(`/api/auth/devices/live/${action}`, { method: "POST", body: "{}" }),
-  linkInstance: (code: string) => request<{ link: InstanceLink; pending: string[] }>("/api/instance-links", { method: "POST", body: JSON.stringify({ code }) }),
+  linkInstance: (code: string, access?: InstanceLinkAccess) => request<{ link: InstanceLink; pending: string[] }>("/api/instance-links", { method: "POST", body: JSON.stringify({ code, access }) }),
   checkInstanceLink: (id: string) => request<{ link: InstanceLink; scopes: string[]; status: number; rttMs: number }>(`/api/instance-links/${encodeURIComponent(id)}/check`, { method: "POST", body: JSON.stringify({}) }),
   removeInstanceLink: (id: string) => request<{ ok: true }>(`/api/instance-links/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  instanceLinkHistory: (id: string) => request<{ events: InstanceLinkEvent[] }>(`/api/instance-links/${encodeURIComponent(id)}/history`),
   checkGoogleAccountBrowser: (id: string) => request<{ account: GoogleAccountSummary; check: GoogleBrowserCheckSummary }>(`/api/auth/google/accounts/${encodeURIComponent(id)}/browser-check`, {
     method: "POST", body: JSON.stringify({})
   }),

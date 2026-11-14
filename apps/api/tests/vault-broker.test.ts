@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   generateVaultSigningKey, generateVaultTransportKey, newVaultHandle, openWithVaultPrivateKey, sealToVaultPublicKey,
   sealVaultEnvelope, signVaultMessage, splitVaultRootKey, vaultBase64url, vaultDelegationCertificateSchema, vaultDelegationOperatorMessage,
-  vaultDigest, vaultRandomBytes, vaultUnlockChallengeMessage, verifyVaultCertificate, vaultSignupGrantOperatorMessage, vaultSignupGrantCertificateSchema, VAULT_DELEGATION_TECHNICAL_MAX_ITEMS
+  vaultDigest, vaultRandomBytes, vaultUnlockChallengeMessage, verifyVaultCertificate, vaultSignupGrantOperatorMessage, vaultSignupGrantCertificateSchema, VAULT_DELEGATION_TECHNICAL_MAX_ITEMS, type VaultFieldRole
 } from "@space/contracts";
 import { createVaultBroker, createVaultBrokerHttpServer, vaultSocketPosture, type VaultBrokerCore } from "../src/vault/broker-server.js";
 import { VaultBrokerRefusedError, createSocketVaultBroker } from "../src/vault/broker-client.js";
@@ -57,12 +57,16 @@ async function enrolled(now?: () => Date) {
   return { ...broker, vaultId, scope, serverShare, unlock, unlockPublicKey, serverShareEnvelope, transport };
 }
 
-async function delegation(vault: Awaited<ReturnType<typeof enrolled>>, generation = 1, moreLogins = 0) {
+/** A card (plan clipboard:qf0P640vyLp2): synthetic values, no origins, never submitted. */
+const CARD = { CARD_NUMBER: "4242424242424242", CARD_EXPIRY: "12/30", CARD_CVC: SENTINEL, CARDHOLDER_NAME: "Synthetic Alice" };
+
+async function delegation(vault: Awaited<ReturnType<typeof enrolled>>, generation = 1, moreLogins = 0, card = false) {
   const handle = newVaultHandle("vault_item");
   const fillKey = vaultRandomBytes(32);
-  const field = (role: "USERNAME" | "PASSWORD", text: string) => sealVaultEnvelope(fillKey, new TextEncoder().encode(text), { ...vault.scope, purpose: "FILL_FIELD", itemId: handle, field: role, generation });
-  const fillEnvelopes = { [handle]: { USERNAME: await field("USERNAME", "synthetic@example.com"), PASSWORD: await field("PASSWORD", SENTINEL) } };
-  const items = [{ handle, origins: ["https://login.example"], fields: ["USERNAME", "PASSWORD"] as Array<"USERNAME" | "PASSWORD">, approvalMode: "FULL", submit: false },
+  const field = (role: VaultFieldRole, text: string) => sealVaultEnvelope(fillKey, new TextEncoder().encode(text), { ...vault.scope, purpose: "FILL_FIELD", itemId: handle, field: role, generation });
+  const values: Partial<Record<VaultFieldRole, string>> = card ? CARD : { USERNAME: "synthetic@example.com", PASSWORD: SENTINEL };
+  const fillEnvelopes = { [handle]: Object.fromEntries(await Promise.all(Object.entries(values).map(async ([role, text]) => [role, await field(role as VaultFieldRole, text!)]))) };
+  const items = [{ handle, origins: card ? [] : ["https://login.example"], fields: Object.keys(values) as VaultFieldRole[], approvalMode: "FULL", submit: false },
     ...Array.from({ length: moreLogins }, (_, index) => ({ handle: newVaultHandle("vault_item"), origins: [`https://site-${index}.example`],
       fields: ["USERNAME", "PASSWORD"] as Array<"USERNAME" | "PASSWORD">, approvalMode: "FULL", submit: false }))];
   const envelopeDigest = await vaultDigest(fillEnvelopes);
@@ -137,6 +141,26 @@ describe("space-vault-broker", () => {
     const opened = JSON.parse(new TextDecoder().decode(await openWithVaultPrivateKey(host.privateKey, host.publicKey, (answer.body as { sealedFields: unknown }).sealedFields, vault.scope)));
     expect(opened).toEqual({ PASSWORD: SENTINEL });
     expect((await post(vault.core, "/v1/fill", fill)).body).toEqual({ error: "CAPABILITY_USED" });
+  });
+
+  it("fills a card at any clean https checkout, never submitted or generated; a card claim with origins or submit is never signed", async () => {
+    const vault = await enrolled();
+    const { handle, fillEnvelopes, request } = await delegation(vault, 1, 0, true);
+    for (const items of [[{ ...request.items[0]!, origins: ["https://shop.example"] }], [{ ...request.items[0]!, submit: true }]]) {
+      expect((await post(vault.core, "/v1/delegate", { ...request, items })).body).toEqual({ error: "BAD_REQUEST" });
+    }
+    const { certificate, keyEnvelope } = await vault.client.delegate(request);
+    const cardUse = (overrides: Record<string, unknown>) => useRequest(vault, certificate, handle, { fields: Object.keys(CARD), origin: "https://checkout.shop.example", ...overrides });
+    for (const overrides of [{ origin: "http://shop.example" }, { origin: "https://checkout.shop.example/pay" }, { origin: "https://10.0.0.1" }, { origin: "https://xn--shp-sna.example" },
+      { submit: true }, { generate: { roles: ["NEW_PASSWORD"], inboxPublicKey: b64.encode((await generateVaultTransportKey()).publicKey) } }, { fields: ["PASSWORD"] }]) {
+      expect((await post(vault.core, "/v1/use", cardUse(overrides))).body, JSON.stringify(overrides)).toEqual({ error: "NOT_DELEGATED" });
+    }
+    const host = await generateVaultTransportKey();
+    const use = await post(vault.core, "/v1/use", cardUse({}));
+    expect(use.status).toBe(200);
+    const answer = await post(vault.core, "/v1/fill", { capability: (use.body as { capability: unknown }).capability, keyEnvelope, fieldEnvelopes: fillEnvelopes[handle], replyPublicKey: b64.encode(host.publicKey) });
+    expect(JSON.stringify(answer.body) + JSON.stringify(use.body)).not.toContain(SENTINEL);
+    expect(JSON.parse(new TextDecoder().decode(await openWithVaultPrivateKey(host.privateKey, host.publicKey, (answer.body as { sealedFields: unknown }).sealedFields, vault.scope)))).toEqual(CARD);
   });
 
   it("keeps its keys and generation floor across a restart, but no outstanding capability", async () => {

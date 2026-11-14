@@ -56,6 +56,7 @@ export function summarizeSiteVisits(log: string, since: string, updatedAt: strin
 
   return {
     updatedAt, since, views: views.length, internal: all.length - views.length,
+    installIntent: views.filter((visit) => visit.p.startsWith("/install") || (visit.ev?.split(",") ?? []).includes("install_copy")).length,
     sections: [...sections].sort(([, a], [, b]) => mean(a.positions) - mean(b.positions))
       .map(([id, value]) => ({ id, reached: value.seconds.length, medianSeconds: median(value.seconds), exits: value.exits, clicks: value.clicks })),
     pages: grouped((visit) => [visit.p], visible).map((row) => {

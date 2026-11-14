@@ -26,7 +26,8 @@ answer). Your reports add what only you know: where you are in the task and what
   For a decision Nous can make, use `needs-decision`.
 - `waiting`: you wait for something that will happen on its own (a deploy, a ticket, a date).
 - `done` / `failed`: the task ended. One line in the summary; the full report (what changed, tests, ticket, next,
-  what is still needed) in `--report-file`.
+  what is still needed) in `--report-file`. A task that leaves decisions or answers to the operator is not done: report
+  `needs-you` for them with `--plan` and keep the plan under 100 %; Space refuses a `done` whose report says so.
 
 Do not report every small action: at most a few reports per step (30 an hour per pane).
 

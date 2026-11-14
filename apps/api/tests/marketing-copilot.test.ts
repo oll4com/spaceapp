@@ -28,6 +28,8 @@ describe("Marketing Copilot publication gate", () => {
     await expect(service.beginPublish(owner, target, post.id)).rejects.toThrow(/MARKETING_NEEDS_REVIEW: autonomy on X is Assist/);
     await service.requestReview(owner, target, { postId: post.id });
     expect((await service.pendingItems(owner, target.id)).map((item) => item.kind)).toEqual(["REVIEW"]);
+    // A Nous decision on it shows the post itself under "What it sends" (operator 13/11 21:43 BKK).
+    expect(await service.reviewDraft(owner, post.id)).toEqual({ headers: [["Channel", "X post"], ["Where", ""], ["Title", ""], ["Scheduled", ""], ["Attachments", ""]], body });
     await service.decideReview(owner, target, post.id, { decision: "approve" });
     const publishing = await service.beginPublish(owner, target, post.id);
     expect(publishing.status).toBe("PUBLISHING");

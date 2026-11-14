@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { controlTargetSchema } from "@space/contracts";
 import type { ControlRepository } from "@space/db";
 import { makeSpaceId } from "@space/runtime";
 
@@ -107,7 +108,7 @@ export function createHeldDispatch(deps: HeldDispatchDeps) {
         }
         // R65-1: waiting for a model's empty prompt is not a failed delivery. Keep it across long turns/drafts and startup.
         // A menu that did not confirm is a failed try (5/11 Bruno/Bob: kept forever, each minute's try ended in an Esc "Kept model").
-        if ((item.model || item.configure) && /Native state is unknown|Pane has no active session|Send or clear the current CLI draft|not confirmed ready for input|Wait for (?:the OpenCode|this CLI) turn to finish|Live (?:Codex|OpenCode) model control is unavailable/i.test(error)) continue;
+        if ((item.model || item.configure) && /Native state is unknown|Pane has no active session|Send or clear the current CLI draft|not confirmed ready for input|Wait for (?:the OpenCode|this CLI) turn to finish|is working; change its model after the current turn|Live (?:Codex|OpenCode) model control is unavailable/i.test(error)) continue;
         // 31/10 Alex/Max: a text left as an unsent draft is in the composer and Nous already has its line; typing it again would double it.
         const drafted = /unsent draft/.test(error);
         const attempts = drafted ? HELD_MAX_ATTEMPTS : item.attempts + 1;
@@ -137,7 +138,9 @@ export type HeldDispatch = ReturnType<typeof createHeldDispatch>;
 
 /** A space_execute pane prompt held until the server's load allows it (Space Control's own actions know only NOW and AFTER_TURN). */
 export const calmPromptActionSchema = z.object({
-  kind: z.literal("pane"), operation: z.literal("prompt"), target: z.object({ paneIds: z.array(z.string().trim().min(1).max(160)).min(1).max(16) }).strict(),
+  // Daily Nous errors F (7-8/11: 3 calls refused "when: expected NOW|AFTER_TURN; Unrecognized key: priority"): a calm prompt names its
+  // panes like any prompt (names, state); the handler turns names into ids before the hold.
+  kind: z.literal("pane"), operation: z.literal("prompt"), target: controlTargetSchema.extend({ state: controlTargetSchema.shape.state.unwrap().optional() }),
   text: z.string().trim().min(1).max(20_000), when: z.literal("calm"), priority: z.enum(["normal", "light", "urgent"]).optional()
 }).strict().describe("A pane prompt sent once the server's load allows it: normal waits for CALM, light also goes when BUSY, urgent at once.");
 
@@ -166,8 +169,10 @@ export async function holdCalmPrompts(held: NousHeld, owner: string, room: { id:
   const notes: string[] = [];
   for (const action of actions) {
     const paneIds = (action.target as { paneIds?: unknown } | undefined)?.paneIds;
-    if (action.kind !== "pane" || action.operation !== "prompt" || action.when !== "calm"
-      || typeof action.text !== "string" || !Array.isArray(paneIds) || !paneIds.length) { run.push(action); continue; }
+    if (action.kind !== "pane" || action.operation !== "prompt" || action.when !== "calm" || typeof action.text !== "string") { run.push(action); continue; }
+    // A name the room has no open pane for goes on after the turn, so Space Control names it.
+    const rest = Object.fromEntries(Object.entries(action).filter(([key]) => key !== "priority"));
+    if (!Array.isArray(paneIds) || !paneIds.length || (action.target as { paneNames?: unknown[] }).paneNames?.length) { run.push({ ...rest, when: "AFTER_TURN" }); continue; }
     const targets = paneIds.map((paneId) => { const pane = panes.find((entry) => entry.id === paneId);
       return { roomId: room.id, roomName: room.name, paneId: String(paneId), paneName: pane ? pane.paneName ?? pane.title : String(paneId) }; });
     const priority = action.priority === "light" || action.priority === "urgent" ? action.priority : "normal";

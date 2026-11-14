@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appointmentContentMissing, appointmentSections } from "../src/appointment-content.js";
+import { appointmentContentMissing, appointmentJoinUrl, appointmentScheduleMissing, appointmentSections } from "../src/appointment-content.js";
 
 // Operator 4/11 14:39 BKK (nous_msg:a60162597d984866b79b9a2f): what every upcoming appointment must hold, read from its notes' sections.
 describe("appointment content", () => {
@@ -17,5 +17,27 @@ describe("appointment content", () => {
     expect(appointmentContentMissing({ notes: null })).toHaveLength(5);
     expect(appointmentContentMissing({ status: "DONE", notes: null })).toEqual([]);
     expect(appointmentContentMissing({ status: "CANCELLED", notes: "one line" })).toEqual([]);
+  });
+
+  it("needs an online one's location to start with its join link; a phone or place may be text (operator 13/11 16:00 BKK)", () => {
+    const at = { status: "UPCOMING", timing: "FIXED", startsAt: "2099-11-14T05:00:00.000Z" };
+    const refused = (format: string, location: string | null) => appointmentScheduleMissing({ ...at, format, location }, "Asia/Bangkok").some((what) => what.startsWith("location"));
+    for (const format of ["AI_INTERVIEW", "RECORDED_VIDEO", "LIVE_HUMAN_VIDEO", "WEBINAR", "TEST"]) {
+      expect(refused(format, "Google Meet (link in the calendar invite)")).toBe(true);
+      expect(refused(format, null)).toBe(true);
+      expect(refused(format, "Link «Join My Webinar» στο mail https://x.test")).toBe(true);
+    }
+    expect(refused("WEBINAR", "https://teams.microsoft.com/l/x Meeting ID: 123 Passcode: ab")).toBe(false);
+    expect(refused("AI_INTERVIEW", " https://mail.google.com/mail/u/0/#all/19a0 ")).toBe(false);
+    expect(refused("PHONE", "+30 210 000 0000")).toBe(false);
+    expect(refused("IN_PERSON", "Ermou 1, Athens")).toBe(false);
+    expect(appointmentScheduleMissing({ ...at, status: "DONE", format: "WEBINAR", location: "in the mail" }, "Asia/Bangkok")).toEqual([]);
+  });
+
+  it("finds the join link in location, else in the HOW TO JOIN (ΕΙΣΟΔΟΣ) line", () => {
+    expect(appointmentJoinUrl({ location: "https://meet.google.com/abc-defg-hij, then wait", notes: null })).toBe("https://meet.google.com/abc-defg-hij");
+    expect(appointmentJoinUrl({ location: "Google Meet", notes: "WHAT IT IS: x\nΕΙΣΟΔΟΣ: Κουμπί στο mail (https://mail.google.com/mail/u/0/#all/19a0).\nWHY: y https://other.test" }))
+      .toBe("https://mail.google.com/mail/u/0/#all/19a0");
+    expect(appointmentJoinUrl({ location: "Google Meet", notes: "WHY IT MATTERS: https://other.test" })).toBeNull();
   });
 });

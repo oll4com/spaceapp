@@ -325,7 +325,7 @@ describe("room pane batch API", () => {
     expect((await submit([{ mode: "TERMINAL", terminalRuntimeId: "cli:root" }])).statusCode).toBe(409);
     expect((await submit([{ mode: "TERMINAL", terminalRuntimeId: "cli:claude" }])).statusCode).toBe(409);
     expect((await submit([{ mode: "TERMINAL", terminalRuntimeId: "cli:missing" }])).statusCode).toBe(409);
-    expect((await submit([{ mode: "CHAT", terminalRuntimeId: "cli:codex" }])).statusCode).toBe(422);
+    expect((await submit([{ mode: "CHAT", terminalRuntimeId: "cli:claude" }])).statusCode).toBe(422);
     expect(store.listPanes(room.id)).toEqual([]);
     expect(store.listEvents(room.id).filter((event) => event.type === "PANE_CREATED")).toEqual([]);
     await app.close();
@@ -379,6 +379,19 @@ describe("durable room pane command API", () => {
       expect(store.listPanes(room.id)).toHaveLength(6);
       expect((await app.inject({ method: "POST", url: `/api/rooms/${room.id}/commands`, payload })).statusCode).toBe(401);
       expect((await app.inject({ method: "POST", url: `/api/rooms/${room.id}/commands`, headers: { cookie }, payload })).statusCode).toBe(403);
+    } finally { await app.close(); }
+  });
+
+  it("opens a Codex light pane from counts: a Chat pane on cli:codex, so Space Control can open one (S2 stable proof, 13/11)", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Light proof", kind: "AGENT_PROOF", initialPaneCount: 0 });
+    const { app, cookie, csrfToken } = await authedApp(store);
+    try {
+      const response = await app.inject({ method: "POST", url: `/api/rooms/${room.id}/commands`, headers: { cookie, [csrfHeaderName]: csrfToken },
+        payload: { requestId: "command:light", catalogVersion: PANE_CATALOG_VERSION, action: { type: "OPEN_PANES", counts: { "codex-light": 1, chat: 1 } } } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().data.map((pane: { title: string; mode: string; terminalRuntimeId?: string | null }) => [pane.title.replace(/ \d+$/, ""), pane.mode, pane.terminalRuntimeId ?? null]))
+        .toEqual([["Chat", "CHAT", null], ["Codex light", "CHAT", "cli:codex"]]);
     } finally { await app.close(); }
   });
 });

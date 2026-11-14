@@ -46,6 +46,7 @@ async function setup() {
       return message;
     }),
     operatorMessageByClientId: vi.fn(async (who: string, id: string) => messages.find((message) => message.ownerUserId === who && message.meta.clientId === id) ?? null),
+    repeatOf: vi.fn<(who: string, content: string) => Promise<NousMessage | null>>(async () => null),
     messages: vi.fn(async (who: string) => messages.filter((message) => message.ownerUserId === who)),
     messagePage: vi.fn(async (who: string) => ({ messages: messages.filter((message) => message.ownerUserId === who), hasMore: false })),
     clear: vi.fn(async () => { const count = messages.length; messages.length = 0; return count; }),
@@ -145,6 +146,22 @@ describe("Nous attachments", () => {
     expect((await app.inject({ method: "POST", url: "/api/nous/messages", payload: { content: "Next", clientId: "outbox-0002-abcdef" } })).statusCode).toBe(202);
     expect(service.send).toHaveBeenCalledTimes(3);
     expect((await app.inject({ method: "POST", url: "/api/nous/messages", payload: { content: "Bad", clientId: "x" } })).statusCode).toBe(500);
+  });
+
+  it("Score 13/11 (e602d5de, e0f1e573, 1aaa7bd6): the same text and file sent again under a new outbox id answers the first message, never a second", async () => {
+    const { app, service } = await setup();
+    const upload = async () => ((await app.inject({ method: "POST", url: "/api/nous/attachments", ...form([{ name: "shot.png", type: "image/png", data: png }]) })).json().attachments as Array<{ id: string }>)[0]!.id;
+    const first = await upload();
+    const sent = await app.inject({ method: "POST", url: "/api/nous/messages", payload: { content: "Δεν δουλεύει", attachmentIds: [first], clientId: "outbox-0001-abcdef" } });
+    const message = sent.json().message as NousMessage;
+    service.repeatOf.mockImplementationOnce(async () => message);
+    const copy = await upload();
+    const again = await app.inject({ method: "POST", url: "/api/nous/messages", payload: { content: "Δεν δουλεύει", attachmentIds: [copy], clientId: "outbox-0002-abcdef" } });
+    expect(again.statusCode).toBe(202);
+    expect(again.json().message.id).toBe(message.id);
+    expect(again.json().attachments.map((file: { id: string }) => file.id)).toEqual([first]);
+    expect(service.repeatOf).toHaveBeenLastCalledWith(owner, expect.stringContaining(copy));
+    expect(service.send).toHaveBeenCalledTimes(1);
   });
 
   it("serves files to their owner only, with ranges, previews and downloads", async () => {

@@ -12,11 +12,14 @@ import {
   type DateFormat,
   type TimeFormat,
 } from "./date-time-settings.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
+import { useUiText } from "../ui-language/ui-language.js";
 import "./date-time-settings.css";
 
 export function DateTimeSettingsCard({ userId }: { userId?: string }) {
   const { settings, updateSettings, formatDateTime } = useDateTimeSettings(userId);
   const [now, setNow] = useState(() => new Date());
+  const t = useUiText();
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
@@ -58,10 +61,9 @@ export function DateTimeSettingsCard({ userId }: { userId?: string }) {
       </div>
 
       <div className="settings-flat-row">
-        <span className="settings-flat-row-copy">
-          <strong>Working time zone</strong>
-          <small>Every time in Space is shown in this zone, and new scheduled tasks run in it. Now: {formatUserTime(now, {}, settings)}</small>
-        </span>
+        <SettingsLabel label="Working time zone" help="Every time in Space is shown in this zone, and new scheduled tasks run in it. Detect picks this browser's time zone.">
+          {t("Now: {time}", { time: formatUserTime(now, {}, settings) })}
+        </SettingsLabel>
         <button
           type="button"
           className="date-time-detect-btn"
@@ -95,10 +97,7 @@ export function DateTimeSettingsCard({ userId }: { userId?: string }) {
       </div>
 
       <label className="settings-flat-row">
-        <span className="settings-flat-row-copy">
-          <strong>Time format</strong>
-          <small>Choose 24-hour clock (17:30) or 12-hour clock (5:30 PM).</small>
-        </span>
+        <SettingsLabel label="Time format" help="Choose a 24-hour clock (17:30) or a 12-hour clock (5:30 PM) for every time in Space." />
         <select
           aria-label="Time format"
           name="space-date-time-format"
@@ -111,10 +110,7 @@ export function DateTimeSettingsCard({ userId }: { userId?: string }) {
       </label>
 
       <label className="settings-flat-row">
-        <span className="settings-flat-row-copy">
-          <strong>Date format</strong>
-          <small>Choose date display ordering (day, month, year).</small>
-        </span>
+        <SettingsLabel label="Date format" help="Choose the order of day, month and year in every date in Space." />
         <select
           aria-label="Date format"
           name="space-date-time-date-format"
@@ -130,10 +126,7 @@ export function DateTimeSettingsCard({ userId }: { userId?: string }) {
       </label>
 
       <div className="settings-flat-row date-time-preview-row">
-        <span className="settings-flat-row-copy">
-          <strong>Preview</strong>
-          <small>The current time with your choices.</small>
-        </span>
+        <SettingsLabel label="Preview" help="The current time with your choices, so you can check them before you leave." />
         <code className="date-time-preview-value" aria-label="Clock preview">
           {preview}
         </code>

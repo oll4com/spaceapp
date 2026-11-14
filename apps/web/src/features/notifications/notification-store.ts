@@ -1,4 +1,4 @@
-import { requestDoneView, requestUpdatesView } from "../nous/nous-done-events.js";
+import { requestDoneView, requestPlanView, requestUpdatesView } from "../nous/nous-done-events.js";
 import { useSyncExternalStore } from "react";
 import { needsYou, needsYouMail, type NotificationLink, type NotificationsPending, type NotificationStreamPayload, type SpaceNotification } from "@space/contracts";
 import { api } from "../../api.js";
@@ -164,6 +164,12 @@ export function goToNeedsYouPane(notification: SpaceNotification): void {
   const mail = !notification.link.target || /^(?:thread|review):/.test(notification.link.target) ? needsYouMail(notification)?.target : undefined;
   const opened = mail ? { ...notification, link: { ...notification.link, target: mail } } : notification;
   if (notification.roomId && notification.paneId) requestNousFocus({ roomId: notification.roomId, paneId: notification.paneId, immediate: true, notification: opened });
+  // Operator 13/11 15:37 BKK («παταω go to pane και δεν κανει τιποτα»): a plan's card has no pane of its own: Go takes them to its plan's pane (the
+  // link the server stamped; "activity", its default, so a CLI pane counts as a place), else opens the plan. Never a dead click.
+  else if (notification.link.roomId && notification.link.paneId) requestNousFocus({ roomId: notification.link.roomId, paneId: notification.link.paneId, immediate: true,
+    notification: { ...opened, roomId: notification.link.roomId, paneId: notification.link.paneId, link: { ...opened.link, target: opened.link.target ?? "activity" } } });
+  else if (typeof notification.payload.planId === "string") { requestPlanView(notification.payload.planId); navigator?.({ surface: "nous" }, notification); }
+  else openNeedsYouCard(notification);
 }
 /** A click on a needs-you toast, pop-up, Center row or native notification opens the card in Nous's Needs you tab: no room or pane changes. */
 export function openNeedsYouCard(notification: SpaceNotification): void {
@@ -172,6 +178,12 @@ export function openNeedsYouCard(notification: SpaceNotification): void {
   if (notification.status === "OPEN") void markNotificationRead(notification.id);
 }
 /** Opens what the notification points at and marks it read; a needs-you request opens its card (operator 3/11 19:25 BKK: never the pane by itself). */
+/** An appointment reminder's join link (payload.joinUrl, operator 13/11 16:00 BKK): a button that opens it, beside the click that opens the pane. */
+export function notificationJoinUrl(notification: SpaceNotification): string | null {
+  const url = notification.payload.joinUrl;
+  return typeof url === "string" && /^https?:\/\//i.test(url) ? url : null;
+}
+
 export function openNotification(notification: SpaceNotification): void {
   if (needsYou(notification)) openNeedsYouCard(notification);
   else {

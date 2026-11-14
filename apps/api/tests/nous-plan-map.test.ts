@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { clipboardItemSchema, type ClipboardItem, type NousGlobalHold } from "@space/contracts";
 import type { PaneReport } from "@space/db";
-import { buildPlanMap, createPlanHoldsMonitor, renderPlanMap, stalledHold } from "../src/nous/plan-map.js";
+import { buildPlanMap, createPlanHoldsMonitor, renderParkedPlans, renderPlanMap, stalledHold } from "../src/nous/plan-map.js";
 
 const NOW = new Date("2026-10-25T10:00:00.000Z");
 const plan = (id: string, title: string, patch: Partial<ClipboardItem> = {}): ClipboardItem => clipboardItemSchema.parse({
@@ -16,6 +16,28 @@ const build = (plans: ClipboardItem[], extra: Partial<Parameters<typeof buildPla
   buildPlanMap({ plans, executions: [], summaries: [], reports: [], holds: [], now: NOW, ...extra });
 
 describe("the plan map (operator request 2026-10-25)", () => {
+  it("holds a parked plan on its first open resume condition and lists every parked plan, open or closed, with N/M met (operator 13/11)", () => {
+    const condition = (id: string, who: string, what: string, state: "OPEN" | "MET", check: Record<string, unknown> = { kind: "MANUAL" }) =>
+      ({ id, who, what, check, state, checkedAt: null, metAt: null, evidence: null });
+    const parked = (reason: string, conditions: unknown[]) => ({ reason, since: "2026-10-24T00:00:00.000Z", conditions, resumedAt: null });
+    const plans = [
+      plan("park0001", "Open parked", { parked: parked("Needs the vendor", [condition("c1", "OPERATOR", "Approve the spend", "MET"), condition("c2", "AGENT", "Re-run the import", "OPEN")]) as never }),
+      plan("park0002", "Closed parked", { isCompleted: true, executionStatus: "COMPLETED", progressPercentage: 60,
+        parked: parked("Waits for promote", [condition("c1", "PROMOTE", "The fix reaches stable", "OPEN", { kind: "TICKET", ticket: "q-20261113-010203-abcd", on: "stable" })]) as never }),
+      plan("park0003", "Resumed", { parked: { ...parked("Old", [condition("c1", "NOUS", "x", "MET")]), resumedAt: "2026-10-25T00:00:00.000Z" } as never })
+    ];
+    const map = build(plans);
+    expect(map.nodes.get("clipboard:park0001")!.hold).toEqual({ kind: "NOUS", what: "Re-run the import", until: null, source: "PLAN" });
+    expect(map.nodes.get("clipboard:park0003")!.hold).toBeNull();
+    const text = renderParkedPlans(plans)!;
+    expect(text).toContain('[clipboard:park0001] "Open parked" open at 0% · parked since 2026-10-24 00:00: Needs the vendor · 1/2 met');
+    expect(text).toContain("  - c2 OPEN AGENT: Re-run the import (you mark it (condition))");
+    expect(text).toContain('[clipboard:park0002] "Closed parked" closed at 60%');
+    expect(text).toContain("when q-20261113-010203-abcd is on stable");
+    expect(text).not.toContain("park0003");
+    expect(renderParkedPlans([plan("free0001", "Free")])).toBeNull();
+  });
+
   it("takes each plan's hold in order: its own wait, an unfinished dependency, its execution, its pane's board line, its pane's report, then a server-wide hold", () => {
     const plans = [
       plan("mail0001", "Fix the mail server", { waitsOn: { kind: "THIRD_PARTY", what: "the hosting company", until: null } }),

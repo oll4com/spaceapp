@@ -71,6 +71,19 @@ export function createBrowserAudioMute(deps: BrowserAudioMuteDeps) {
   };
 }
 
+/**
+ * The resolved `--user-data-dir` of every Chrome playing sound now, from any frame or Web Audio: a stream not corked, muted at
+ * the source or not (a frozen page would stop it, browser-sessions.ts). A stream with no corked field counts as playing.
+ */
+export async function soundingChromeProfiles(deps: Pick<BrowserAudioMuteDeps, "pactl" | "chromeProfileOf">): Promise<Set<string>> {
+  const inputs = JSON.parse(await deps.pactl(["-f", "json", "list", "sink-inputs"])) as Array<SinkInput & { corked?: boolean }>;
+  const profiles = await Promise.all(inputs.filter((input) => input.corked !== true).map((input) => {
+    const pid = Number(input.properties?.["application.process.id"]);
+    return Number.isInteger(pid) && pid > 1 ? deps.chromeProfileOf(pid) : null;
+  }));
+  return new Set(profiles.filter((path): path is string => Boolean(path)).map((path) => resolve(path)));
+}
+
 export function pulseBrowserAudioMuteDeps(pulseServer: string, profilesOf: BrowserAudioMuteDeps["profilesOf"]): BrowserAudioMuteDeps {
   const env = { ...childProcessEnv(), PULSE_SERVER: pulseServer };
   let warned = false;

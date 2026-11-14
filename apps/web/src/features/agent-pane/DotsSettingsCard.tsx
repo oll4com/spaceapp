@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import type { ChannelsStatus, DotModelChoices, DotPermissionMode, DotProactiveUsage, DotProfile, DotUserSettings, UpdateDotUserSettings } from "@space/contracts";
 import { api } from "../../api.js";
+import { InfoTip } from "../ui-controls/InfoTip.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { DotChannels } from "./DotChannels.js";
 import { DotConnections } from "./DotConnections.js";
@@ -160,69 +161,64 @@ export function DotsSettingsCard({ roomId, isAdmin, request = null }: { roomId: 
   return <section className="dots-settings" aria-label={t("Dots settings")}>
     <section className="dots-settings-group" aria-label={t("All Dots")}>
       <h4>{t("All Dots")}</h4>
-      <label className="dots-settings-field"><span>{t("Default Dot")}</span>
+      <label className="dots-settings-field"><span>{t("Default Dot")}<InfoTip text={t("A new Chat pane opens with this Dot.")} label={t("About {label}", { label: t("Default Dot") })} /></span>
         <select aria-label={t("Default Dot")} value={settings.defaultDotId ?? ""} disabled={saving}
           onChange={(event) => void save({ defaultDotId: event.currentTarget.value || null })}>
           <option value="">{t("{name} (first Dot)", { name: dots[0]?.name ?? t("First Dot") })}</option>
           {dots.slice(1).map((dot) => <option key={dot.dotId} value={dot.dotId}>{dot.name}</option>)}
-        </select>
-        <small>{t("A new Chat pane opens with this Dot.")}</small></label>
+        </select></label>
       <SpaceToggle name="dots-confirm-external" label={t("Ask before sending email or creating events")} checked={settings.confirmExternalActions} disabled={saving}
-        detail={settings.confirmExternalActions ? t("Every email and calendar event waits for your approval in the Dot's conversation.")
-          : t("Dots send email and create events when you ask them to, without asking again.")}
+        help="On: every email and calendar event waits for your approval in the Dot's conversation. Off: Dots send email and create events when you ask them to, without asking again."
         onChange={(checked) => void save({ confirmExternalActions: checked })} />
-      <label className="dots-settings-field"><span>{t("Default model")}</span>
+      <label className="dots-settings-field"><span>{t("Default model")}<InfoTip text={t("Used by every Dot without its own model.")} label={t("About {label}", { label: t("Default model") })} /></span>
         <DotModelSelect label="Default model for Dots" value={settings.defaultModelConfigId ?? ""} choices={choices} disabled={saving}
-          defaultLabel="Chat default" onChange={(value) => void save({ defaultModelConfigId: value || null })} />
-        <small>{t("Used by every Dot without its own model.")}</small></label>
-      <label className="dots-settings-field"><span>{t("Default permissions")}</span>
+          defaultLabel="Chat default" onChange={(value) => void save({ defaultModelConfigId: value || null })} /></label>
+      <label className="dots-settings-field"><span>{t("Default permissions")}<InfoTip text={t("How much a Dot may do without asking you. Approve for me lets a reviewer approve workspace actions; Full access runs without prompts.")} label={t("About {label}", { label: t("Default permissions") })} /></span>
         <select aria-label={t("Default permissions for Dots")} value={settings.defaultPermissionMode ?? ""} disabled={saving}
           onChange={(event) => void save({ defaultPermissionMode: (event.currentTarget.value || null) as DotPermissionMode | null })}>
           <option value="">{t("Chat default")}</option><option value="approve_for_me">{t("Approve for me")}</option><option value="full_access">{t("Full access")}</option>
-        </select>
-        <small>{t("How much a Dot may do without asking you. Approve for me lets a reviewer approve workspace actions; Full access runs without prompts.")}</small></label>
+        </select></label>
       {notice ? <p className="dots-settings-notice" role={notice.tone}>{notice.text}</p> : null}
     </section>
     <DotsPartCard partRef={proactiveRef} title={t("Messages from your Dot")} open={openParts.has("messages")} onToggle={() => togglePart("messages")}
       summary={settings.proactive.enabled ? t("On: a Dot tells you about new email and upcoming events.") : t("Off: Dots write only when you message them.")}>
     <section className="dots-settings-group" aria-label={t("Messages from your Dot")}>
       <SpaceToggle name="dots-proactive" label={t("Let a Dot message me about new email and upcoming events")} checked={settings.proactive.enabled} disabled={saving}
-        detail={settings.proactive.enabled ? t("It reads only, and writes in its conversation when something needs you: account security, replies due, bills, travel, meetings soon.")
-          : t("Dots write only when you message them.")}
+        help="It reads only, and writes in its conversation when something needs you: account security, replies due, bills, travel, meetings soon."
         onChange={(enabled) => void save({ proactive: { enabled } })} />
       {settings.proactive.enabled ? <>
-        <label className="dots-settings-field"><span>{t("Dot that writes")}</span>
+        <label className="dots-settings-field"><span>{t("Dot that writes")}<InfoTip text={t("The Dot that writes these messages in its own conversation.")} label={t("About {label}", { label: t("Dot that writes") })} /></span>
           <select aria-label={t("Dot that writes")} value={settings.proactive.dotId ?? ""} disabled={saving}
             onChange={(event) => void save({ proactive: { dotId: event.currentTarget.value || null } })}>
             <option value="">{t("Default Dot")}</option>
             {dots.map((dot) => <option key={dot.dotId} value={dot.dotId}>{dot.name}</option>)}
           </select></label>
-        <SpaceToggle compact name="dots-proactive-email" label={t("New email")} checked={settings.proactive.email} disabled={saving}
+        <SpaceToggle compact name="dots-proactive-email" label={t("New email")} help="The Dot tells you about new email that needs you." checked={settings.proactive.email} disabled={saving}
           onChange={(email) => void save({ proactive: { email } })} />
-        <SpaceToggle compact name="dots-proactive-calendar" label={t("Upcoming events")} checked={settings.proactive.calendar} disabled={saving}
+        <SpaceToggle compact name="dots-proactive-calendar" label={t("Upcoming events")} help="The Dot tells you about calendar events coming soon." checked={settings.proactive.calendar} disabled={saving}
           onChange={(calendar) => void save({ proactive: { calendar } })} />
-        <label className="dots-settings-field"><span>{t("Check every")}</span>
+        <label className="dots-settings-field"><span>{t("Check every")}<InfoTip text={t("How often the Dot looks at your email and calendar for something to tell you.")} label={t("About {label}", { label: t("Check every") })} /></span>
           <select aria-label={t("Check every")} value={settings.proactive.intervalMinutes} disabled={saving}
             onChange={(event) => void save({ proactive: { intervalMinutes: Number(event.currentTarget.value) } })}>
             {[30, 60, 120, 240, 480].map((minutes) => <option key={minutes} value={minutes}>{minutes < 60 ? t("{count} minutes", { count: minutes }) : t(minutes === 60 ? "{count} hour" : "{count} hours", { count: minutes / 60 })}</option>)}
           </select></label>
-        <label className="dots-settings-field"><span>{t("At most per day")}</span>
+        <label className="dots-settings-field"><span>{t("At most per day")}<InfoTip text={t("The most messages the Dot writes to you in one day.")} label={t("About {label}", { label: t("At most per day") })} /></span>
           <select aria-label={t("At most per day")} value={settings.proactive.maxPerDay} disabled={saving}
             onChange={(event) => void save({ proactive: { maxPerDay: Number(event.currentTarget.value) } })}>
             {[1, 3, 5, 10, 20].map((count) => <option key={count} value={count}>{t(count === 1 ? "{count} message" : "{count} messages", { count })}</option>)}
           </select></label>
-        <SpaceToggle compact name="dots-proactive-quiet" label={t("Quiet hours")} checked={Boolean(settings.proactive.quietHours)} disabled={saving}
+        <SpaceToggle compact name="dots-proactive-quiet" label={t("Quiet hours")} help="In your time zone (Settings → Date and time). Nothing is checked during quiet hours." checked={Boolean(settings.proactive.quietHours)} disabled={saving}
           onChange={(on) => void save({ proactive: { quietHours: on ? { start: "23:00", end: "08:00" } : null } })} />
         {settings.proactive.quietHours ? <div className="dots-settings-quiet" role="group" aria-label={t("Quiet hours")}>
           <label><span>{t("From")}</span><input type="time" aria-label={t("Quiet hours from")} value={settings.proactive.quietHours.start} disabled={saving}
             onChange={(event) => { const start = event.currentTarget.value; if (/^\d{2}:\d{2}$/.test(start)) void save({ proactive: { quietHours: { ...settings.proactive.quietHours!, start } } }); }} /></label>
           <label><span>{t("To")}</span><input type="time" aria-label={t("Quiet hours to")} value={settings.proactive.quietHours.end} disabled={saving}
             onChange={(event) => { const end = event.currentTarget.value; if (/^\d{2}:\d{2}$/.test(end)) void save({ proactive: { quietHours: { ...settings.proactive.quietHours!, end } } }); }} /></label>
-          <small>{t("In your time zone (Settings → Date and time). Nothing is checked during quiet hours.")}</small>
         </div> : null}
         {slackConfigured || settings.proactive.alsoSlack ? <SpaceToggle compact name="dots-proactive-slack" label={t("Also send to Slack")}
           checked={settings.proactive.alsoSlack} disabled={saving || (!settings.proactive.alsoSlack && !slackLinked)}
-          detail={slackLinked ? t("The same message, as a direct message from the Space app.") : t("Link your Slack account under Slack and Teams first.")}
+          help="The same message, as a direct message from the Space app."
+          detail={slackLinked ? undefined : t("Link your Slack account under Slack and Teams first.")}
           onChange={(alsoSlack) => void save({ proactive: { alsoSlack } })} /> : null}
       </> : null}
       {usage ? <p className="dots-settings-usage">{usage === "unavailable" ? t("Model use is unavailable.") : proactiveUsageText(usage, t)}</p> : null}

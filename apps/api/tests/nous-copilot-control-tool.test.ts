@@ -28,6 +28,25 @@ describe("space_copilot_control as Nous's tool", () => {
     expect((await tools.execute("space_copilot_control", { room: "Bruno", pane: "Bob", action: "pause" }, { ...ctx, owner: "user:someone" })).ok).toBe(false);
     expect(control).toHaveBeenCalledTimes(1);
   });
+
+  it("13/11 (×3 on 12/11): a CLI that has not opened its input yet is a refusal naming the next step, not a failure", async () => {
+    const control = vi.fn(async () => { throw new Error("The CLI has not opened its input yet (still starting, or waiting for sign-in or a question); no input was sent."); });
+    const tools = createNousTools({ rooms: async () => [{ id: "room:bruno001", name: "Bruno" }], listPanes: async () => [pane("MAIL_COPILOT")], copilots: { control } } as unknown as NousToolDeps);
+    const held = await tools.execute("space_copilot_control", { room: "Bruno", pane: "Bob", action: "run_start" }, { owner: "user:operator", turnId: "nous_turn:t1", callId: "toolu_1", traceId: "trace:1" });
+    expect(held).toMatchObject({ ok: false, refused: true });
+    expect(held.result).toContain("space_read_pane");
+  });
+
+  it("13/11 02:00 UTC (a pane by name with no room): a name open in one room only acts there; open in several, the answer names them", async () => {
+    const control = vi.fn(async () => "Started Bob's agent (cli:claude).");
+    const ctx = { owner: "user:operator", turnId: "nous_turn:t1", callId: "toolu_1", traceId: "trace:1" };
+    const tools = (rooms: Array<{ id: string; name: string }>) => createNousTools({ rooms: async () => rooms,
+      listPanes: async (roomId: string) => [pane("MAIL_COPILOT", { roomId, id: `pane:bob-${roomId.slice(5)}` } as Partial<Pane>)], copilots: { control } } as unknown as NousToolDeps);
+    expect(await tools([{ id: "room:bruno001", name: "Bruno" }]).execute("space_copilot_control", { pane: "Bob", action: "start_agent" }, ctx)).toMatchObject({ ok: true });
+    const two = await tools([{ id: "room:bruno001", name: "Bruno" }, { id: "room:cleo0001", name: "Cleo" }]).execute("space_copilot_control", { pane: "Bob", action: "start_agent" }, ctx);
+    expect(two).toMatchObject({ ok: false, result: expect.stringContaining("room is required: Bob is open in Bruno (room:bruno001), Cleo (room:cleo0001)") });
+    expect(control).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("space_copilot_control through the API", () => {

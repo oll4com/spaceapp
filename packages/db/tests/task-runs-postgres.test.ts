@@ -158,6 +158,28 @@ describe.skipIf(unavailable !== null)(`Task runs on PostgreSQL${unavailable ? ` 
     expect(await since(alreadySet.id)).toBe("2026-11-13T03:00:00.000Z");
   });
 
+  it("0331 backfills a restore no audit saw from the first run after the pane's audited clear (Daily tasks 13/11)", async () => {
+    const store = new PostgresSpaceStore(pool);
+    const fields = { ownerUserId: owner, status: "OPEN" as const, source: "AGENT" as const, paneId: "pane:taskruns01", roomId: "room:taskruns01",
+      schedule: { recurrence: { kind: "DAILY" as const, time: "02:00" }, timeZone: "UTC" } };
+    const [restored, nousPaused, notRunYet, alreadySet] = await Promise.all(["Mail round 1/3", "Temporal rustls", "Upwork scan", "Grants re-measure"]
+      .map((title) => store.upsertTaskItem({ ...fields, title, objective: title })));
+    const ids = [restored.id, nousPaused.id, notRunYet.id, alreadySet.id];
+    await pool.query("UPDATE task_items SET scheduled_since = CASE WHEN id = $1 THEN '2026-11-13T03:00:00Z'::timestamptz END WHERE id = ANY($2)", [alreadySet.id, ids]);
+    for (const target of [restored.id, notRunYet.id, alreadySet.id]) await pool.query(`INSERT INTO audit_events(id, trace_id, action, target_type, target_id, metadata, created_at)
+      VALUES ('audit:0331:' || $1, 'trace:backfill0331', 'task.agent.update', 'task_item', $1, '{"schedule":false}', '2026-11-09T15:07:01Z')`, [target]); // the Azure pause
+    const run = (task: string, due: string) => pool.query(`INSERT INTO task_runs(owner_user_id, task_id, task_title, due_at, at, status, typed, detail)
+      VALUES ($1, $2, 'x', $3, $3::timestamptz + interval '5 seconds', 'RUNNING', true, 'Sent to the CLI.')`, [owner, task, due]);
+    for (const task of [restored.id, nousPaused.id, notRunYet.id, alreadySet.id]) await run(task, "2026-11-09T02:00:00Z"); // before the pause
+    for (const task of [restored.id, nousPaused.id, alreadySet.id]) for (const due of ["2026-11-14T02:00:00Z", "2026-11-13T02:00:00Z"]) await run(task, due);
+    await pool.query((await loadMigrations()).find((entry) => entry.filename.startsWith("0331_"))!.sql);
+    const since = async (id: string) => (await store.getTaskItem(owner, id))!.schedule?.scheduledSince;
+    expect(await since(restored.id)).toBe("2026-11-13T02:00:00.000Z");
+    expect(await since(nousPaused.id)).toBeUndefined(); // no audited clear to anchor on
+    expect(await since(notRunYet.id)).toBeUndefined();
+    expect(await since(alreadySet.id)).toBe("2026-11-13T03:00:00.000Z");
+  });
+
   it("a changed objective re-keys the task so a rebind moves it, and 0327 re-keys rows an older change left stale (Temu 12/11)", async () => {
     const store = new PostgresSpaceStore(pool);
     const fields = { ownerUserId: owner, status: "OPEN" as const, source: "AGENT" as const, roomId: "room:taskruns01",

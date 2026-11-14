@@ -9,6 +9,7 @@ import {
   type CodexAppServerJsonRpcMessage,
   type CodexAppServerProviderRoute,
   type CodexAppServerProcessEnv,
+  type CodexAppServerStdioProcess,
   type CodexAppServerStdioProcessFactory,
   type CodexAppServerTurnSessionState
 } from "@space/codex-app-server";
@@ -80,7 +81,7 @@ import { noteActivityFailureReason } from "./activity-observability.js";
 import { observeTurnActivity, recordTurnStatePersistenceFailure } from "./turn-observability.js";
 import { dotGatewayDeveloperInstructions, dotGatewayDynamicTools, dotGatewayIdentity, handleDotToolCall, nativeChatThreadConfig } from "./dot-tool-gateway.js";
 import { openCodeTurnUsage, openCodeTurnUsageSource, type OpenCodeTurnUsage } from "./opencode-turn-usage.js";
-import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
+import { isLightCodexPane, LIGHT_CODEX_RUNTIME_ID, SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 let cachedStore: PostgresSpaceStore | null = null;
 
@@ -624,6 +625,25 @@ function firstClosedCodexTurnGate(config: CodexAppServerTurnActivityConfig): { r
   return null;
 }
 
+/**
+ * A Codex light pane's launch env (plan YqhRIXfLAnfK Δ S2): the API builds it from the pane record, like a TUI cli:codex
+ * pane's; it carries the pane's control token, so it lives only in the spawn env (never a result, error or log).
+ */
+async function lightCodexLaunchEnv(input: DummyTurnInput, config: CodexAppServerTurnActivityConfig,
+  storeOverride?: SpaceStore): Promise<Record<string, string> | null> {
+  const pane = input.paneId ? await getCompletionStore(storeOverride)?.getPane(input.paneId) : null;
+  if (!pane || !isLightCodexPane(pane)) return null;
+  if (!config.internalApiToken) throw new Error("A Codex light pane needs internal API authentication.");
+  const response = await fetch(`${config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/agent/light-codex-env`, {
+    method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": config.internalApiToken },
+    body: JSON.stringify({ paneId: pane.id }), signal: AbortSignal.timeout(30_000)
+  });
+  if (!response.ok) throw new Error(`The Codex light pane's launch environment returned HTTP ${response.status}.`);
+  const { env } = await response.json() as { env?: Record<string, string> };
+  if (!env?.SPACE_CONTROL_TOKEN) throw new Error("The Codex light pane's launch environment is incomplete.");
+  return env;
+}
+
 async function defaultStdioTurnExecutor(
   input: DummyTurnInput,
   config: CodexAppServerTurnActivityConfig,
@@ -638,13 +658,23 @@ async function defaultStdioTurnExecutor(
   storeOverride?: SpaceStore
 ): Promise<CodexAppServerTurnSessionState> {
   const imageAttachments = await loadCodexTurnImageAttachments(input, config);
-  const nativeChat = isNativeChatTurn(input);
+  const lightEnv = await lightCodexLaunchEnv(input, config, storeOverride);
+  // A light turn is the pane's CLI, not a Native Chat/Dot turn: no Dot workspace, gateway tools or dispatcher identity.
+  const nativeChat = !lightEnv && isNativeChatTurn(input);
   // A Dot works in its private workspace, created on first use; a project stays the working directory when there is one.
   const dotWorkspace = nativeChat && input.dotId ? await ensureDotWorkspace(input.dotId, env) : null;
   const targetWorkspace = await resolveTurnWorkspace(input, storeOverride) ?? dotWorkspace;
   const baseTurnConfig = runtime.codexHome ? { ...config, home: runtime.codexHome } : config;
-  const turnConfig = targetWorkspace ? { ...baseTurnConfig, cwd: targetWorkspace } : baseTurnConfig;
-  const modelProvider = runtime.modelProvider;
+  const workspace = lightEnv?.SPACE_CLI_WORKSPACE ?? targetWorkspace;
+  const turnConfig = workspace ? { ...baseTurnConfig, cwd: workspace } : baseTurnConfig;
+  const modelProvider = lightEnv ? undefined : runtime.modelProvider;
+  // The broker enters the pane's netns as its uid; the wrapper cds into SPACE_CLI_WORKSPACE as the pane's user.
+  const turnSpawn: CodexAppServerStdioProcessFactory | undefined = lightEnv ? (_command, args, options) => {
+    const lightArgv = ["-n", getCliAgentTurnActivityConfig(env).brokerExecutable, "exec", LIGHT_CODEX_RUNTIME_ID, ...args];
+    const lightLaunch = { cwd: "/", stdio: options.stdio, env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8", ...lightEnv } };
+    return spawnProcess ? spawnProcess("/usr/bin/sudo", lightArgv, lightLaunch)
+      : spawn("/usr/bin/sudo", lightArgv, lightLaunch) as CodexAppServerStdioProcess;
+  } : spawnProcess;
   const proactive = nativeChat && input.dotWorkMode === "PROACTIVE";
   const turnEnv = buildCodexAppServerTurnEnv(turnConfig, env, targetWorkspace);
   const dotsRepository = nativeChat ? getDotsRepository(env) : null;
@@ -655,7 +685,9 @@ async function defaultStdioTurnExecutor(
   const serverRequestHandler = nativeChat ? (request: CodexAppServerJsonRpcMessage) => request.method === "item/tool/call"
     ? dotToolContext ? handleDotToolCall(dotToolContext, request)
       : { contentItems: [{ type: "inputText", text: "Space tools are unavailable in this conversation." }], success: false }
-    : resolveCodexAppServerRequestUserInput(request) : undefined;
+    : resolveCodexAppServerRequestUserInput(request)
+    // Light pane: questions get Native Chat's empty answers; any other request (approvals) fails closed, Chat has no Ask mode.
+    : lightEnv ? resolveCodexAppServerRequestUserInput : undefined;
   const run = (threadId: string | null, resumeTurnId: string | null) => runCodexAppServerStdioTurnSession({
     // Native Chat: dispatcher identity always; Dot tools and instructions only on gateway threads.
     threadConfig: nativeChat ? nativeChatThreadConfig(undefined, { writableRoots: dotWorkspace ? [dotWorkspace] : [], proactive }) : null,
@@ -672,9 +704,9 @@ async function defaultStdioTurnExecutor(
     threadId,
     ephemeral: input.agentSessionId ? false : true,
     imageAttachments,
-    model: input.modelId ?? turnConfig.model ?? undefined,
+    model: input.modelId ?? (lightEnv ? undefined : turnConfig.model) ?? undefined,
     modelProvider,
-    providerRoute: runtime.providerRoute,
+    providerRoute: lightEnv ? undefined : runtime.providerRoute,
     reasoningEffort: input.reasoningEffort ?? undefined,
     permissionMode: input.permissionMode,
     collaborationMode: input.collaborationMode === "plan" ? "plan" : null,
@@ -688,7 +720,7 @@ async function defaultStdioTurnExecutor(
     serverRequestHandler,
     signal,
     shouldInterruptOnAbort: reason => !["WORKER_SHUTDOWN", "TIMED_OUT"].includes(reason instanceof Error ? reason.message : String(reason)),
-    spawnProcess,
+    spawnProcess: turnSpawn,
     resumeTurnId,
     // A follow-up is a new native turn within the same workflow. Reusing the
     // initial marker would recover its completed answer without sending new evidence.

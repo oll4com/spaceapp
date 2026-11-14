@@ -39,12 +39,22 @@ export function parsePostStats(channel: MarketingPost["channel"], body: Json): R
   return null;
 }
 
-export interface Ga4Config { credentialsFile: string; /** site → GA4 property id ("spaceapp.dev" → "123456789"). */ properties: Record<string, string> }
-/** SPACE_GA4_CREDENTIALS_FILE (a service account's JSON key with Viewer on the properties) and SPACE_GA4_PROPERTIES ("spaceapp.dev=123,oll4.com=456"). */
+export interface Ga4Config {
+  credentialsFile: string;
+  /** site → GA4 property id ("spaceapp.dev" → "123456789"). */
+  properties: Record<string, string>;
+  /** Search Console properties the same service account reads (it must be a user of each, and the Search Console API on in its project). */
+  gscSites: string[];
+}
+/**
+ * SPACE_GA4_CREDENTIALS_FILE (a service account's JSON key with Viewer on the properties) and SPACE_GA4_PROPERTIES ("spaceapp.dev=123,oll4.com=456").
+ * SPACE_GSC_SITES ("sc-domain:spaceapp.dev,https://oll4.com/") names the Search Console properties; unset, every GA4 site as a domain property.
+ */
 export function ga4ConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Ga4Config | null {
   const properties = Object.fromEntries((env.SPACE_GA4_PROPERTIES ?? "").split(",").map((pair) => pair.trim().split("=").map((part) => part.trim()))
     .filter((pair) => pair.length === 2 && /^[a-z0-9.-]+$/i.test(pair[0]!) && /^\d+$/.test(pair[1]!)));
-  return env.SPACE_GA4_CREDENTIALS_FILE && Object.keys(properties).length ? { credentialsFile: env.SPACE_GA4_CREDENTIALS_FILE, properties } : null;
+  const gscSites = env.SPACE_GSC_SITES?.trim() ? env.SPACE_GSC_SITES.split(",").map((site) => site.trim()).filter(Boolean) : Object.keys(properties).map((site) => `sc-domain:${site}`);
+  return env.SPACE_GA4_CREDENTIALS_FILE && Object.keys(properties).length ? { credentialsFile: env.SPACE_GA4_CREDENTIALS_FILE, properties, gscSites } : null;
 }
 
 /**
@@ -67,12 +77,12 @@ export function parseGa4Report(body: Json, day: string, site: string): Marketing
   return out;
 }
 
-async function ga4Token(credentialsFile: string, fetchImpl: typeof fetch): Promise<string> {
+async function ga4Token(credentialsFile: string, fetchImpl: typeof fetch, scope = "https://www.googleapis.com/auth/analytics.readonly"): Promise<string> {
   const key = JSON.parse(await readFile(credentialsFile, "utf8")) as { client_email?: string; private_key?: string };
   if (!key.client_email || !key.private_key) throw new Error("the GA4 credentials file is not a service account key");
   const at = Math.floor(Date.now() / 1000);
   const part = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  const unsigned = `${part({ alg: "RS256", typ: "JWT" })}.${part({ iss: key.client_email, scope: "https://www.googleapis.com/auth/analytics.readonly",
+  const unsigned = `${part({ alg: "RS256", typ: "JWT" })}.${part({ iss: key.client_email, scope,
     aud: "https://oauth2.googleapis.com/token", iat: at, exp: at + 3600 })}`;
   const assertion = `${unsigned}.${createSign("RSA-SHA256").update(unsigned).sign(key.private_key, "base64url")}`;
   const response = await fetchImpl("https://oauth2.googleapis.com/token", { method: "POST", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -93,6 +103,47 @@ export async function fetchGa4Metrics(config: Ga4Config, day: string, fetchImpl:
         metrics: [{ name: "activeUsers" }, { name: "sessions" }, { name: "screenPageViews" }], metricAggregations: ["TOTAL"] }) }).catch((error: unknown) => error as Error);
     if (response instanceof Error || !response.ok) { errors.push(`GA4 ${site}: ${response instanceof Error ? response.message : `HTTP ${response.status}`}`); continue; }
     metrics.push(...parseGa4Report(await response.json() as Json, day, site));
+  }
+  return { metrics, errors };
+}
+
+/**
+ * Search Console's last 28 days of one property (step 5.4): `<site>:clicks_28d`, `:impressions_28d`, `:ctr_28d`, `:position_28d` from the totals
+ * answer, and each search query's impressions as `<site>:q:<query>` (the words people searched when SpaceApp showed up).
+ */
+export function parseGscReport(totals: Json, queries: Json, day: string, property: string): MarketingMetric[] {
+  const site = property.replace(/^sc-domain:/, "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+  const out: MarketingMetric[] = [];
+  const add = (key: string, value: unknown) => { if (typeof value === "number" && Number.isFinite(value)) out.push({ day, source: "GSC", key: `${site}:${key}`.slice(0, 80), value }); };
+  type Row = { keys?: unknown[]; clicks?: unknown; impressions?: unknown; ctr?: unknown; position?: unknown };
+  const total = Array.isArray(totals?.rows) ? (totals.rows as Row[])[0] : undefined;
+  add("clicks_28d", total?.clicks ?? 0); add("impressions_28d", total?.impressions ?? 0);
+  if (total) { add("ctr_28d", total.ctr); add("position_28d", total.position); }
+  for (const row of Array.isArray(queries?.rows) ? queries.rows as Row[] : []) {
+    const query = Array.isArray(row?.keys) ? String(row.keys[0] ?? "").replace(/\s+/g, " ").trim() : "";
+    if (query) add(`q:${query}`, row.impressions);
+  }
+  return out;
+}
+
+export async function fetchGscMetrics(config: Ga4Config, day: string, fetchImpl: typeof fetch = fetch): Promise<{ metrics: MarketingMetric[]; errors: string[] }> {
+  if (!config.gscSites.length) return { metrics: [], errors: [] };
+  const token = await ga4Token(config.credentialsFile, fetchImpl, "https://www.googleapis.com/auth/webmasters.readonly");
+  const startDate = new Date(Date.parse(day) - 28 * 86_400_000).toISOString().slice(0, 10);
+  const metrics: MarketingMetric[] = [];
+  const errors: string[] = [];
+  for (const site of config.gscSites) {
+    // 25000 rows is the API's maximum (technical); a property with more queries than that keeps the rest in Search Console's Performance page.
+    const answers = await Promise.all([{}, { dimensions: ["query"], rowLimit: 25_000 }].map(async (extra) => {
+      const response = await fetchImpl(`https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(site)}/searchAnalytics/query`, { method: "POST", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ startDate, endDate: day, ...extra }) });
+      const body = await response.json().catch(() => null) as Json;
+      // Google's message names what is missing (the API off in the key's project, or the account not a user of the property).
+      if (!response.ok) throw new Error(`HTTP ${response.status} ${String((body?.error as { message?: unknown } | undefined)?.message ?? "").slice(0, 300)}`.trim());
+      return body;
+    })).catch((error: unknown) => error as Error);
+    if (answers instanceof Error) { errors.push(`GSC ${site}: ${answers.message}`); continue; }
+    metrics.push(...parseGscReport(answers[0]!, answers[1]!, day, site));
   }
   return { metrics, errors };
 }
@@ -144,8 +195,10 @@ export function createMarketingStatsCollector(deps: MarketingStatsDeps) {
         if (deps.ga4 && owner === OPERATOR) {
           const ga = await fetchGa4Metrics(deps.ga4, day, fetchImpl).catch((error: unknown) => ({ metrics: [], errors: [`GA4: ${error instanceof Error ? error.message : String(error)}`] }));
           errors.push(...ga.errors);
-          await deps.service.recordMetrics(owner, ga.metrics);
-          recorded += ga.metrics.length;
+          const gsc = await fetchGscMetrics(deps.ga4, day, fetchImpl).catch((error: unknown) => ({ metrics: [], errors: [`GSC: ${error instanceof Error ? error.message : String(error)}`] }));
+          errors.push(...gsc.errors);
+          await deps.service.recordMetrics(owner, [...ga.metrics, ...gsc.metrics]);
+          recorded += ga.metrics.length + gsc.metrics.length;
         }
         if (deps.snapshot) {
           const snapshot = await deps.snapshot(owner, day).catch((error: unknown) => { errors.push(`score: ${error instanceof Error ? error.message : String(error)}`); return []; });

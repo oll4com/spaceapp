@@ -83,7 +83,7 @@ const pane: Pane = {
 
 const now = new Date().toISOString();
 const profile: JobApplyProfile = {
-  ownerUserId: "user:1", campaignStartedAt: null, candidate: { fullName: "Nikolaos Theodoropoulos", email: null, phone: null, address: null, location: null, country: null, linkedinUrl: null, githubUrl: null,
+  ownerUserId: "user:1", campaignStartedAt: null, dailyTarget: 0, candidate: { fullName: "Nikolaos Theodoropoulos", email: null, phone: null, address: null, location: null, country: null, linkedinUrl: null, githubUrl: null,
     websiteUrl: null, headline: null, summary: null, workAuthorization: null, needsSponsorship: true, willingToRelocate: null, salaryExpectation: null, salaryBelowMarketPercent: 10, noticePeriod: null,
     yearsOfExperience: null, skills: [], languages: [], experience: [], education: [], extra: {} },
   qaBank: [], cvArtifactId: "artifact:cv000001", coverLetterArtifactId: null, cvTextChars: 4200, mailbox: null, mailboxVerifiedAt: null, google: null, googleAccounts: [], googleAvailable: true, updatedAt: now
@@ -580,6 +580,18 @@ describe("JobCopilotPane", () => {
     expect(rows).toEqual([["Oct 14", "24", "24", "0"], ["Oct 13", "47", "47", "0"]]);
   });
 
+  it("shows today against the daily target and why a day ended under it", async () => {
+    const { stats } = await apiMock.jobApplyStats("UTC");
+    apiMock.jobApplyStats.mockResolvedValue({ stats: { ...stats, target: 200, days: [{ ...stats.days[0], missed: ["QUEUE_DEFERRED", "WAITS_ON_OPERATOR"] }, stats.days[1]] } });
+    renderPane();
+    await waitFor(() => expect(screen.getByRole("tab", { name: /Activity/ })).toBeTruthy());
+    fireEvent.click(screen.getByRole("tab", { name: /Activity/ }));
+    const overview = await screen.findByRole("region", { name: "Overview" });
+    await waitFor(() => expect(overview.textContent).toContain("Today 24 / 200"));
+    const rows = Array.from(overview.querySelectorAll("tbody tr")).map((row) => Array.from(row.children).map((cell) => cell.textContent));
+    expect(rows).toEqual([["Oct 14", "24", "24", "0", "Every posting deferred · Waited on you"], ["Oct 13", "47", "47", "0", ""]]);
+  });
+
   it("explains a reset before doing it, sends it only on confirmation, and archives earlier rows in the Queue", async () => {
     const { stats } = await apiMock.jobApplyStats("UTC");
     apiMock.resetJobApply.mockResolvedValue({ reset: { campaignStartedAt: "2026-10-14T06:00:00.000Z", closed: 2, runsStopped: 1 } });
@@ -830,6 +842,24 @@ describe("JobCopilotSettingsCard", () => {
     expect(apiMock.updateUserSettings).toHaveBeenLastCalledWith({ jobCopilot: { runtimeId: "cli:codex", accountProfileId: null, askOnLaunch: true } });
     expect(screen.queryByRole("combobox", { name: "Codex account" })).toBeNull();
     expect(screen.getByText(/every Codex pane uses the gateway's ChatGPT accounts/)).toBeTruthy();
+  });
+
+  it("saves the daily application target to the Job Copilot profile, not to a pane", async () => {
+    apiMock.userSettings.mockResolvedValue({});
+    apiMock.jobApplyProfile.mockResolvedValue({ profile });
+    apiMock.updateJobApplyProfile.mockImplementation(async (input: { dailyTarget: number }) => ({ profile: { ...profile, dailyTarget: input.dailyTarget } }));
+    render(<JobCopilotSettingsCard />);
+    const target = await screen.findByRole("spinbutton", { name: "Daily application target" }) as HTMLInputElement;
+    await waitFor(() => expect(target.value).toBe("0"));
+    fireEvent.change(target, { target: { value: "200" } });
+    await act(async () => { fireEvent.blur(target); });
+    expect(apiMock.updateJobApplyProfile).toHaveBeenCalledWith({ dailyTarget: 200 });
+    expect(apiMock.updateUserSettings).not.toHaveBeenCalled();
+    expect(target.value).toBe("200");
+    fireEvent.change(target, { target: { value: "-5" } });
+    await act(async () => { fireEvent.blur(target); });
+    expect(apiMock.updateJobApplyProfile).toHaveBeenCalledTimes(1);
+    expect(target.value).toBe("200");
   });
 
   it("turning asking off without a saved agent picks the recommended ready CLI", async () => {

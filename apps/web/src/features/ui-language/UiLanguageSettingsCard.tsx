@@ -1,9 +1,14 @@
 import { useEffect, useState } from "react";
 import { UI_LANGUAGES, UI_LANGUAGE_NAMES, agentLanguageOf, uiLanguageOf, type UiLanguage } from "@space/contracts";
 import { api } from "../../api.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
 import { announceAgentLanguage, announceUiLanguage, useUiText } from "./ui-language.js";
 
 type Choice = { interface: UiLanguage; agents: UiLanguage };
+const ROWS: Array<{ key: keyof Choice; label: string; help: string }> = [
+  { key: "interface", label: "Interface language", help: "Space's own labels, buttons and menus." },
+  { key: "agents", label: "Agent language", help: "What Nous, agents and copilots write to you: replies, the steps in the Nous conversation, Needs you cards, decisions and notifications." }
+];
 
 /**
  * Settings → Personal → Language (operator 1/11 11:59 BKK; split 2/11 09:51 BKK «μια για το ui μια για της γλώσσα που μιλας στους agent»):
@@ -36,21 +41,13 @@ export function UiLanguageSettingsCard() {
     }
   }
 
-  const row = (key: keyof Choice, title: string, hint: string) => (
-    <label className="settings-flat-row">
-      <span className="settings-flat-row-copy">
-        <strong>{t(title)}</strong>
-        <small role={error && key === "interface" ? "alert" : undefined}>{error && key === "interface" ? error : t(hint)}</small>
-      </span>
-      <select aria-label={t(title)} value={choice?.[key] ?? ""} disabled={choice === null} onChange={(event) => void choose(key, event.target.value as UiLanguage)}>
+  return <section className="agent-settings-card settings-flat-card" aria-label="Language settings">
+    {ROWS.map(({ key, label, help }) => <label key={key} className="settings-flat-row">
+      <SettingsLabel label={label} help={help}>{error && key === "interface" ? <span role="alert">{error}</span> : null}</SettingsLabel>
+      <select aria-label={t(label)} value={choice?.[key] ?? ""} disabled={choice === null} onChange={(event) => void choose(key, event.target.value as UiLanguage)}>
         {choice === null ? <option value="">Loading…</option> : null}
         {UI_LANGUAGES.map((option) => <option key={option} value={option}>{UI_LANGUAGE_NAMES[option]}</option>)}
       </select>
-    </label>
-  );
-
-  return <section className="agent-settings-card settings-flat-card" aria-label="Language settings">
-    {row("interface", "Interface language", "Space's own labels, buttons and menus.")}
-    {row("agents", "Agent language", "What Nous, agents and copilots write to you: replies, the steps in the Nous conversation, Needs you cards, decisions and notifications.")}
+    </label>)}
   </section>;
 }

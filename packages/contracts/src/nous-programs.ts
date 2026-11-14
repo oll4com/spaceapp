@@ -4,7 +4,8 @@ import { GATEWAY_PROGRAM_PROVIDERS } from "./gateway.js";
 // Startup programs (operator 3/11 20:09 BKK, plan clipboard:17yLAnH5ZpyF, brief nous/briefs/20261103-programs-pages.md):
 // every program applied to, one row each under its parent (NVIDIA › Inception), with its status, amounts, dates, every mail and whether
 // to apply again. The second page, "oll4-funding", is gone (operator 7/11, nous_msg:e9c06cd838de45f4bccda467); its rows were moved to startup.
-export const NOUS_PROGRAM_PAGES = ["startup"] as const;
+// Affiliate (operator 14/11 00:07 BKK, nous_msg:de448bc711204fdb832cf926): every affiliate application and what each approval gives.
+export const NOUS_PROGRAM_PAGES = ["startup", "affiliate"] as const;
 export const NOUS_PROGRAM_STATUSES = ["APPROVED", "REJECTED", "IN_PROGRESS", "APPLIED", "DRAFT", "NOT_APPLIED", "EXPIRED", "CANCELLED"] as const;
 export type NousProgramPage = (typeof NOUS_PROGRAM_PAGES)[number];
 export type NousProgramStatus = (typeof NOUS_PROGRAM_STATUSES)[number];
@@ -127,6 +128,21 @@ export const nousProgramTierSchema = z.object({
 });
 export type NousProgramTier = z.output<typeof nousProgramTierSchema>;
 
+// What an affiliate approval gives (the Affiliate page); terms go in commitments, the approval mail in mails. Replaced whole when given.
+export const nousProgramAffiliateSchema = z.object({
+  network: text.optional().default(null),
+  publisherId: text.optional().default(null),
+  commission: text.optional().default(null),
+  cookieDays: z.number().int().min(0).nullable().optional().default(null),
+  // The link or deep-link format with our id, e.g. https://www.banggood.com/?p=<id>.
+  trackingLink: text.optional().default(null),
+  couponFeed: text.optional().default(null),
+  payout: text.optional().default(null),
+  // Only a Vault handle: a password or token never enters the registry.
+  signIn: z.preprocess(blankToNull, z.string().trim().regex(/^vault_item:[A-Za-z0-9_-]+$/, "Only a Vault handle such as vault_item:abc").nullable()).optional().default(null)
+});
+export type NousProgramAffiliate = z.output<typeof nousProgramAffiliateSchema>;
+
 export const nousProgramReapplySchema = z.object({
   needed: z.boolean(),
   why: text.optional().default(null),
@@ -174,6 +190,7 @@ export const nousProgramInputSchema = z.object({
   // Replaced whole when given (unlike mails).
   benefits: z.preprocess((value) => value ?? [], z.array(nousProgramBenefitSchema)).optional(),
   tiers: z.preprocess((value) => value ?? [], z.array(nousProgramTierSchema)).optional(),
+  affiliate: nousProgramAffiliateSchema.nullable().optional(),
   // Fields the operator locked (9/11 20:59 BKK: UpCloud's €5,000 went back to €1,000 with a file rewrite): a data file never changes them,
   // space_programs only with a new source in sources. Replaced whole when given; set by space_programs only.
   locked: texts.optional()
@@ -188,7 +205,7 @@ export interface NousProgram {
   amount: { text: string; value: number | null; currency: string | null } | null;
   commitments: string | null; account: string | null; contacts: string[]; mails: NousProgramMail[]; nextAction: string | null;
   reapply: { needed: boolean; why: string | null; when: string | null } | null;
-  sources: string[]; notes: string | null; givesMoney: boolean | null; tags: string[]; whatItIs: string | null; howWeUse: string | null; benefits: NousProgramBenefit[]; tiers: NousProgramTier[]; locked?: string[]; awaitingCompletion?: boolean; createdAt: string; updatedAt: string;
+  sources: string[]; notes: string | null; givesMoney: boolean | null; tags: string[]; whatItIs: string | null; howWeUse: string | null; benefits: NousProgramBenefit[]; tiers: NousProgramTier[]; affiliate?: NousProgramAffiliate | null; locked?: string[]; awaitingCompletion?: boolean; createdAt: string; updatedAt: string;
 }
 
 /** The usage report's file (plan clipboard:MUFqsrKfQtAt): `{ generatedAt, entries: [{ id, benefits }] }`, merged into the stored lines. */

@@ -11,7 +11,7 @@ import { continuesAt, LAB_COST_RESERVE_MICROS, poolPressure, tenantPool, type Po
 import { admit, MICROS_PER_CREDIT, settle, type TrafficClass } from "./ledger.js";
 import type { GaugeFamily, NgwMetrics } from "./metrics.js";
 import type { SwitchReader, SwitchState } from "./switches.js";
-import { modelProvider, nextRoute, readTaskRoutes, taskOf, type NousTask } from "./routing.js";
+import { hardAllowed, hardRequest, modelProvider, nextRoute, readTaskRoutes, taskOf, type NousTask } from "./routing.js";
 import type { TenantKey, TenantKeyResolver } from "./tenant-keys.js";
 
 /**
@@ -57,11 +57,13 @@ export function admissionEstimateMicros(model: string, provider: TenantProvider,
   return prices ? Math.ceil(tokens * prices.input) + LAB_COST_RESERVE_MICROS : null;
 }
 
-/** The paths a replica answers in NGW_MODE=nous (K5-listener): the tenant routes, the model list, health, and the admin listener's forward. */
+/** The paths a replica answers in NGW_MODE=nous (K5-listener): the tenant routes, the model list, health, the Stripe webhook (K4-billing, its own
+ * signature) and the admin listener's forward. */
 export function onNousSurface(method: string, url: string, upgrade: boolean): boolean {
   const path = url.split("?")[0]!;
   if (tenantRoute(method, url) || (upgrade && tenantRoute("POST", url))) return true;
   if (method === "GET" && (path === "/v1/models" || path === "/health" || path === "/readyz")) return true;
+  if (method === "POST" && path === "/stripe/webhook") return true;
   // Space's own admin routes, which accept only the per-process token the mTLS admin listener sends.
   return path.startsWith("/__space-gateway/");
 }
@@ -202,8 +204,9 @@ export function createNousTenancy(options: NousTenancyOptions) {
       const task = taskOf(request.headers["x-nous-task"]);
       if (!task) return refuse(400, gatewayError("invalid_request", "x-nous-task must be classify, extract, browse, reason, code or hard.", "invalid_request_error"));
       const trafficClass: TrafficClass = String(request.headers["x-nous-traffic-class"] ?? "").toUpperCase() === "BACKGROUND" ? "BACKGROUND" : "FOREGROUND";
+      const afterFailure = request.headers["x-nous-after-failure"];
       // Nothing of the tenant's own reaches a provider: its key and its routing hints.
-      for (const name of ["authorization", "x-api-key", "x-nous-task", "x-nous-traffic-class"]) delete request.headers[name];
+      for (const name of ["authorization", "x-api-key", "x-nous-task", "x-nous-traffic-class", "x-nous-after-failure"]) delete request.headers[name];
 
       let members: Awaited<ReturnType<typeof poolMembers>>;
       try { members = await poolMembers(route.provider, pool); } catch { return refuse(503, gatewayErrors.unavailable()); }
@@ -216,11 +219,26 @@ export function createNousTenancy(options: NousTenancyOptions) {
           return refuse(429, gatewayError("background_waits", "Background work waits; your own requests continue.", "rate_limit_error"));
         }
         const switchedOff = (next: string) => Boolean(switches?.modelOff(next) || switches?.providerOff(modelProvider(next)!, pool));
+        // Ultra routing: a hard request of another plan, not the retry of a failed reason turn, moves to the reason list.
+        let routes: Record<NousTask, string[]>;
+        try { routes = await readRoutes(); } catch { return refuse(503, gatewayErrors.unavailable()); }
+        if (hardRequest(routes, task, model) && !hardAllowed(key.plan, afterFailure)) {
+          let to: string | null;
+          try { to = await nextRoute(routes.reason, model, async (next) => !switchedOff(next) && (await poolRoom(modelProvider(next)!, pool)).open); }
+          catch { return refuse(503, gatewayErrors.unavailable()); }
+          to ??= routes.reason.find((next) => modelProvider(next)) ?? null;
+          if (to) {
+            count(route.provider, "route_moved");
+            answered.add(request);
+            return void reply.code(409).send({ ...errorBody(route.provider, gatewayError("route_moved",
+              `Model '${model}' runs on Ultra, or after a failed turn; start the next turn on '${to}'.`, "invalid_request_error"), 409), model: to });
+          }
+        }
         // The model's pool is closed: the worker's next turn goes to the first model of the task's list with room (409), or waits (429).
         let room: Awaited<ReturnType<typeof poolRoom>>, moved: string | null = null;
         try {
           room = switchedOff(model) ? { open: false, resetsAt: null } : await poolRoom(route.provider, pool, members);
-          if (!room.open) moved = await nextRoute((await readRoutes())[task], model, async (next) => !switchedOff(next) && (await poolRoom(modelProvider(next)!, pool)).open);
+          if (!room.open) moved = await nextRoute(routes[task], model, async (next) => !switchedOff(next) && (await poolRoom(modelProvider(next)!, pool)).open);
         } catch {
           return refuse(503, gatewayErrors.unavailable());
         }

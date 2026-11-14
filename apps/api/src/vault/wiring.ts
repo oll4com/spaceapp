@@ -87,7 +87,8 @@ export function registerVault(app: FastifyInstance, deps: {
   const protection = createVaultProtection(repository as (VaultStore & VaultProtectionStore) | null,
     browser?.vaultTarget ? async (paneId) => browser.vaultTarget!(await deps.store.getPane(paneId)) : undefined,
     browser?.listPages ? async (paneId) => (await browser.listPages!(await deps.store.getPane(paneId))).pages : undefined);
-  registerVaultFences(app, { protection, config: { internalApiToken: config.internalApiToken ?? null, agentTokenSecret: config.agentTokenSecret ?? null } });
+  registerVaultFences(app, { protection, config: { internalApiToken: config.internalApiToken ?? null, agentTokenSecret: config.agentTokenSecret ?? null },
+    controlActivity: deps.controlActivity });
   const paneOwner = async (paneId: string) => {
     try {
       const pane = await deps.store.getPane(paneId);
@@ -134,13 +135,26 @@ export function vaultKeyReader(store: Pick<Parameters<typeof registerVault>[1]["
   };
 }
 
+/**
+ * A kept Vault key's value for Space's own server code (Space Link's Access service token), or null: a one-time key belongs to the pane
+ * it was handed to, and taking it here would spend it. The take is recorded on the key as `use` (taken_by_pane_id), like Mail Campaigns'.
+ */
+export function vaultKeptKeyReader(vault: () => VaultModule, crypto: ConnectorCrypto, use: string) {
+  return async (owner: string, id: string) => {
+    const store = vault().repository;
+    if (!store || !(await store.listHandoffKeys(owner)).some((key) => key.id === id && key.kept && key.hasValue)) return null;
+    const taken = await store.takeHandoffKey(owner, id, use);
+    return taken ? crypto.open(taken.valueSealed, connectorSealContext("vault-handoff-key", owner, id)) : null;
+  };
+}
+
 /** Agent routes on the CLI bridge: the owner is the pane's explicit owner, else the room's, from the verified token only. */
 export function registerVaultAgentBridge(app: FastifyInstance, vault: VaultModule, deps: {
   store: {
     getRoom(roomId: string): Promise<{ ownerUserId?: string | null }> | { ownerUserId?: string | null };
     getPaneOwner?(paneId: string): Promise<string | null> | string | null;
   };
-  requireBridge(request: FastifyRequest, reply: FastifyReply): Promise<{ claims: { roomId: string; paneId: string } } | null>;
+  requireBridge(request: FastifyRequest, reply: FastifyReply): Promise<{ claims: { roomId: string; paneId: string; cliSessionId?: string } } | null>;
 }): void {
   registerVaultAgentRoutes(app, {
     agent: vault.agent, parseBody,
@@ -150,7 +164,7 @@ export function registerVaultAgentBridge(app: FastifyInstance, vault: VaultModul
       const bridge = await deps.requireBridge(request, reply);
       if (!bridge) return null;
       const owner = (await deps.store.getPaneOwner?.(bridge.claims.paneId)) ?? (await deps.store.getRoom(bridge.claims.roomId)).ownerUserId ?? null;
-      return { owner, paneId: bridge.claims.paneId, roomId: bridge.claims.roomId };
+      return { owner, paneId: bridge.claims.paneId, roomId: bridge.claims.roomId, ...(bridge.claims.cliSessionId ? { viewer: `cli:${bridge.claims.cliSessionId}` } : {}) };
     }
   });
 }

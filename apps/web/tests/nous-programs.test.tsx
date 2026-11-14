@@ -73,6 +73,30 @@ it("counts, filters, searches and groups the page's programs, and opens a progra
   expect(screen.getAllByRole("region").map((group) => group.getAttribute("aria-label"))).toEqual(["Nous Pro", "SpaceApp"]);
 });
 
+// Affiliate (operator 14/11 00:07 BKK, nous_msg:de448bc711204fdb832cf926): the same page on its own rows, with what each approval gives.
+it("reads the Affiliate page's own rows, shows the network and commission on the line and every approval fact once opened, without the grant types", async () => {
+  const banggood: NousProgram = { ...base, id: "banggood-affiliate", page: "affiliate", parent: "Banggood", program: "Banggood Affiliate", project: null, status: "APPROVED",
+    commitments: "No brand bidding", affiliate: { network: "Direct", publisherId: "BG111421424", commission: "Up to 8%", cookieDays: 30,
+      trackingLink: "https://www.banggood.com/?p=YJ0321", couponFeed: "Coupon feed in the dashboard", payout: "PayPal, $50 minimum", signIn: "vault_item:6OAgXDcmj74EV27JrFjuuA" } };
+  const urls = serve([banggood, { ...base, id: "webgains", page: "affiliate", parent: "Webgains", program: "Webgains", project: null, affiliate: { network: "Webgains",
+    publisherId: null, commission: null, cookieDays: null, trackingLink: null, couponFeed: null, payout: null, signIn: null } }]);
+  render(<NousPrograms page="affiliate" active />);
+  const line = await screen.findByRole("button", { name: /Banggood Affiliate/ });
+  expect(urls).toContain("/api/nous/programs?page=affiliate");
+  expect(urls).not.toContain("/api/admin/gateway/pool-models");
+  expect(screen.queryByRole("group", { name: "Program types" })).toBeNull();
+  expect(line.textContent).toContain("Direct · Up to 8%");
+  expect(line.querySelector(".nous-program-tag")).toBeNull();
+  fireEvent.click(line);
+  const facts = document.querySelector<HTMLElement>('.nous-program-body dl[aria-label="Affiliate"]')!;
+  expect([...facts.querySelectorAll("dt")].map((label) => label.textContent)).toEqual(["Network", "Publisher ID", "Commission", "Cookie days", "Tracking link", "Coupons and feed",
+    "Payout", "Sign-in (Vault)"]);
+  expect(within(facts).getByText("vault_item:6OAgXDcmj74EV27JrFjuuA")).toBeTruthy();
+  expect(screen.getByText("No brand bidding")).toBeTruthy();
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search programs" }), { target: { value: "BG111421424" } });
+  expect(screen.getAllByRole("region").map((group) => group.getAttribute("aria-label"))).toEqual(["Banggood"]);
+});
+
 // Operator 7/11 16:19 BKK (nous_msg:8cb6b284): every approved row shows the whole grant's indicative value, from the same worth() as the totals.
 it("shows an approved row's indicative value from its amount or its monthly benefits, and no chip without a number", async () => {
   const line = { what: "Pro plan", account: null, perMonth: null, total: null, used: null, remaining: null, usageAt: null, validUntil: null, status: "ACTIVE" as const,

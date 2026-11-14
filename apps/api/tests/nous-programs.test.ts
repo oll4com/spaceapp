@@ -72,6 +72,21 @@ it("imports the data files by id, idempotently, entry by entry, and never over a
   expect(await programs.list("user:other")).toEqual([]);
 });
 
+it("imports affiliate-programs.json onto the Affiliate page with what each approval gives, and takes only a Vault handle as its sign-in", async () => {
+  const programs = createNousPrograms({ repository: new InMemoryNousProgramsRepository(), now: () => Date.parse("2026-11-14T00:00:00Z") });
+  const banggood = { id: "banggood-affiliate", parent: "Banggood", program: "Banggood Affiliate Program", status: "APPROVED", commitments: "No brand bidding",
+    affiliate: { network: "Direct", publisherId: "BG111421424", commission: "Up to 8%", cookieDays: 30, trackingLink: "https://www.banggood.com/?p=YJ0321", signIn: "vault_item:6OAgXDcmj74EV27JrFjuuA" } };
+  await write("startup-programs.json", { generatedAt: "2026-11-13T12:00:00Z", entries: [inception] });
+  await write("affiliate-programs.json", { generatedAt: "2026-11-14T00:00:00Z", entries: [banggood, { ...banggood, id: "leaky", parent: "Leaky", affiliate: { signIn: "hunter2" } }] });
+  const results = await programs.importFiles(owner, dir, join(dir, "usage.json"));
+  expect(results.map(({ page, written, problems }) => [page, written, problems.length])).toEqual([["startup", 1, 0], ["affiliate", 1, 1]]);
+  expect(results[1]!.problems[0]).toMatch(/^leaky: .*Vault handle/);
+  expect((await programs.list(owner, "affiliate")).map((program) => program.id)).toEqual(["banggood-affiliate"]);
+  expect((await programs.list(owner, "startup")).map((program) => program.id)).toEqual(["nvidia-inception"]);
+  expect(await programs.get(owner, "banggood-affiliate")).toMatchObject({ page: "affiliate", commitments: "No brand bidding",
+    affiliate: { ...banggood.affiliate, couponFeed: null, payout: null } });
+});
+
 it("refuses links that are not web addresses and thread ids that would break the Gmail link", async () => {
   const programs = createNousPrograms({ repository: new InMemoryNousProgramsRepository() });
   expect(await programs.upsert(owner, { ...google, id: "x1", url: "javascript:alert(1)" })).toMatchObject({ problem: expect.stringMatching(/url/) });
@@ -122,13 +137,19 @@ it("gives Nous space_programs to list with filters, read, upsert and add mails; 
   expect((await tools.execute("space_programs", { action: "list", status: "APPROVED", query: "nvidia spaceapp" }, ctx)).result).toContain("[nvidia-inception]");
   expect((await tools.execute("space_programs", { action: "list", query: "microsoft" }, ctx)).result).toBe("No program matches.");
   // R83: a guessed id is answered with the ids sharing its words.
-  expect((await tools.execute("space_programs", { action: "read", id: "nvidia-credits" }, ctx)).result).toContain("Ids with its words: nvidia-inception.");
+  const guessed = await tools.execute("space_programs", { action: "read", id: "nvidia-credits" }, ctx);
+  expect(guessed).toMatchObject({ ok: false, refused: true });
+  expect(guessed.result).toContain("Ids with its words: nvidia-inception.");
+  // Daily Nous errors 14/11 (20:21 ×4 admitad-aliexpress): the one id starting with the guess and a dash is read.
+  expect(await tools.execute("space_programs", { action: "read", id: "nvidia" }, ctx)).toMatchObject({ ok: true, result: expect.stringContaining("[nvidia-inception]") });
   const read = await tools.execute("space_programs", { action: "read", id: "nvidia-inception" }, ctx);
   expect(read.result).toContain("https://mail.google.com/mail/u/?authuser=ntheo%40spaceapp.dev#all/19a0b2c3d4");
   expect(read.result).toContain("Commitments: Keep the company profile current");
   const helper = { ...ctx, turn: { reason: "HELPER" } } as never;
   expect((await tools.execute("space_programs", { action: "read", id: "nvidia-inception" }, helper)).ok).toBe(true);
-  expect((await tools.execute("space_programs", { action: "upsert", entry: { id: "nvidia-inception", status: "EXPIRED" } }, helper)).ok).toBe(false);
+  // Daily Nous errors 14/11 (11/11 02:56: 19 helper writes failed): the helper's write is held, the registry unchanged.
+  expect(await tools.execute("space_programs", { action: "upsert", entry: { id: "nvidia-inception", status: "EXPIRED" } }, helper)).toMatchObject({ ok: false, refused: true });
+  expect((await programs.get(owner, "nvidia-inception"))?.status).not.toBe("EXPIRED");
   const added = await tools.execute("space_programs", { action: "upsert", entry: { id: "microsoft-founders-hub", page: "startup", parent: "Microsoft",
     program: "Founders Hub", status: "APPLIED", expectedReplyBy: "2026-11-20" } }, ctx);
   expect(added).toMatchObject({ ok: true, display: "Added Founders Hub" });

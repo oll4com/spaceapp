@@ -135,7 +135,8 @@ describe("Space provider route 3 on a real gateway (plan clipboard:52W5YTibb65k 
     expect(again.status).toBe(200);
     expect(again.headers.get("x-space-route")).toBe("CLAUDE_OPENCODE");
     expect(JSON.parse(again.headers.get("x-space-fallback") ?? "null")).toEqual([
-      { route: "CLAUDE", model: "claude:claude-opus-5-5", kind: "quota", scope: "provider_pool", code: "usage_limit_reached", resets_at: null }]);
+      // The pool's refusal carries Retry-After since 13/11 (claude-proxy x-should-retry), so the route knows when the pool is back.
+      { route: "CLAUDE", model: "claude:claude-opus-5-5", kind: "quota", scope: "provider_pool", code: "usage_limit_reached", resets_at: expect.any(String) }]);
     expect(gateway.upstream.filter((call) => call.provider === "CLAUDE" && call.path === "/v1/messages").map((call) => call.credential).slice(3)).toEqual(["api-key"]);
     // Gateway's log under the test key: each Claude refusal (the last account asked, or none), then the answer on the API-key account.
     expect((await gateway.logRows()).map((row) => [row.provider, row.status, row.errorCode, row.accountId, row.model])).toEqual([

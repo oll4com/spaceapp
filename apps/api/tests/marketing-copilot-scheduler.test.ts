@@ -199,6 +199,27 @@ describe("marketing copilot scheduler", () => {
     expect((await service.duePosts(owner, target)).map((post) => post.id)).toEqual([failed.id]);
   });
 
+  // 13/11: the publish gate's stale check sat after a throw in the not-due branch, so a CLI's direct publish skipped the 24-hour rule.
+  it("refuses a CLI's direct publish 24 hours after the post's time or, unscheduled, its approval, and sends it to Nous once", async () => {
+    let clock = Date.parse("2026-11-10T09:00:00.000Z");
+    const now = () => new Date(clock).toISOString();
+    const repository = new InMemoryMarketingCopilotRepository(now);
+    const notices: string[] = [];
+    const service = createMarketingCopilotService({ repository, now, notice: (_owner, key) => { notices.push(key); } });
+    const target = pane("pane:mkt000001");
+    const scheduled = await approvedPost(service, target, "2026-11-10T10:00:00.000Z");
+    const unscheduled = await approvedPost(service, target, null);
+    clock = Date.parse("2026-11-11T09:30:00.000Z"); // 23.5 h after the slot, 24.5 h after the approval
+    await expect(service.beginPublish(owner, target, unscheduled.id)).rejects.toThrow(/MARKETING_STALE/);
+    clock = Date.parse("2026-11-11T10:30:00.000Z"); // 24.5 h after the slot
+    await expect(service.beginPublish(owner, target, scheduled.id)).rejects.toThrow(/MARKETING_STALE/);
+    for (const post of [scheduled, unscheduled]) {
+      expect((await repository.getPost(owner, post.id))!.status).toBe("IN_REVIEW");
+      await expect(service.beginPublish(owner, target, post.id)).rejects.toThrow(/cannot be published now/);
+    }
+    expect(notices).toEqual([`marketing-stale:${unscheduled.id}`, `marketing-stale:${scheduled.id}`]);
+  });
+
   it("does nothing while nothing is due", async () => {
     const service = createMarketingCopilotService({ repository: new InMemoryMarketingCopilotRepository() });
     const target = pane("pane:mkt000001");
@@ -234,6 +255,34 @@ describe("a brief waiting after the agent ended its run (31/10, operator: idle p
     const notifyDue = vi.fn(async () => {});
     const scheduler = createMarketingCopilotScheduler({ service, log: { warn: vi.fn() }, store: { listRooms: () => [room], listPanes: () => [target] },
       hasAgent: async () => agent, hasActiveRun: async () => active, ready: async () => true, startRun, notifyDue });
+    expect(await scheduler.tick()).toMatchObject({ started: 1 });
+    expect(startRun).toHaveBeenCalledTimes(1);
+    active = true;
+    expect(await scheduler.tick()).toMatchObject({ started: 0 });
+    active = false; agent = false;
+    expect(await scheduler.tick()).toMatchObject({ started: 0, notified: 0 });
+    expect(notifyDue).not.toHaveBeenCalled();
+  });
+});
+
+describe("a published post due its 1-day or 7-day reading (13/11: 7 posts never measured)", () => {
+  it("starts one run per owner across its panes, none while another pane's run is going, and raises no posts-due card without an agent", async () => {
+    let at = Date.parse("2026-11-12T10:00:00.000Z");
+    const service = createMarketingCopilotService({ repository: new InMemoryMarketingCopilotRepository(), now: () => new Date(at).toISOString() });
+    const metadata = defaultMarketingCopilotPaneMetadata();
+    const full = { ...pane("pane:mktmeas1"), marketingCopilotMetadata: { ...metadata, settings: { ...metadata.settings, autonomy: "FULL" as const } } };
+    const other = pane("pane:mktmeas2");
+    const { post } = await service.createPost(owner, full, { channel: "X", kind: "POST", body: "SpaceApp runs your AI coding CLIs side by side.", assets: [] });
+    await service.beginPublish(owner, full, post.id);
+    await service.finishPublish(owner, full, { postId: post.id, url: "https://x.com/spaceapp/status/1" });
+    let active = false;
+    let agent = true;
+    const startRun = vi.fn(async () => {});
+    const notifyDue = vi.fn(async () => {});
+    const scheduler = createMarketingCopilotScheduler({ service, log: { warn: vi.fn() }, store: { listRooms: () => [room], listPanes: () => [full, other] },
+      hasAgent: async () => agent, hasActiveRun: async (target) => active && target.id === other.id, ready: async () => true, startRun, notifyDue });
+    expect(await scheduler.tick()).toMatchObject({ started: 0 });
+    at += 25 * 3_600_000;
     expect(await scheduler.tick()).toMatchObject({ started: 1 });
     expect(startRun).toHaveBeenCalledTimes(1);
     active = true;

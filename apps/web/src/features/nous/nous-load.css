@@ -14,6 +14,11 @@
 
 .nous-load-parts { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; }
 .nous-load-parts li { display: grid; grid-template-columns: 5.6rem minmax(0, 1fr) 2.6rem; align-items: center; gap: 0.2rem 0.5rem; font-size: 0.74rem; }
+.nous-load-linked { display: grid; gap: 0.3rem; font-size: 0.74rem; color: var(--dock-text); }
+.nous-load-linked p, .nous-load-linked ul { margin: 0; }
+.nous-load-linked ul { list-style: none; padding: 0; display: grid; gap: 0.25rem; }
+.nous-load-linked li { display: flex; justify-content: space-between; gap: 0.5rem; overflow-wrap: anywhere; }
+.nous-load-stale { color: var(--dock-muted); }
 .nous-load-part-label { color: var(--dock-text); }
 .nous-load-part-value { text-align: right; color: var(--dock-text); font-variant-numeric: tabular-nums; }
 .nous-load-part-detail { grid-column: 2 / -1; color: var(--dock-muted); font-size: 0.68rem; overflow-wrap: anywhere; }

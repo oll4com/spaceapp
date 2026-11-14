@@ -17,6 +17,13 @@ describe("decision tools take the short id", () => {
     expect(settleDecision).toHaveBeenCalledWith("user:operator", approved.id, expect.anything());
   });
 
+  it("settles with a reason of any length (12/11: a 500+ character reason was refused)", async () => {
+    const reason = "Sent through Mail Copilot and confirmed in the thread. ".repeat(40);
+    const result = await tools.execute("space_settle_decision", { decision: approved.id, state: "DONE", proof: "https://example.com/p/1", reason }, ctx);
+    expect(result.ok).toBe(true);
+    expect(settleDecision).toHaveBeenLastCalledWith("user:operator", approved.id, expect.objectContaining({ reason: reason.trim() }));
+  });
+
   it("leaves an ambiguous short id as it was", async () => {
     await tools.execute("space_withdraw_decision", { decision: "nous_decision:aa11bb22", reason: "answered" }, ctx);
     expect(withdraw).toHaveBeenLastCalledWith("user:operator", "nous_decision:aa11bb22", "answered", undefined);

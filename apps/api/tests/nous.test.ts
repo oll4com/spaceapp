@@ -16,12 +16,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyNousOutgoing, classifyNousPrompt } from "../src/nous/guardrails.js";
 import { renderNousWorld } from "../src/nous/digest.js";
-import { waitsOnOperatorClaim } from "../src/nous/pane-watch.js";
-import { createNousService, nousHistory, NOUS_OVERVIEW_REUSE_MS, NOUS_PERSONA, NousUnavailableError, mailSentClaim, operatorMessagesToAnswer, operatorRefusal, renderDone, toolSubjects, type NousRunner, type NousServiceDeps } from "../src/nous/service.js";
-import { NOUS_MODE_HOLD_MS } from "../src/nous/tokens.js";
+import { inNeedsYouClaim, waitsOnOperatorClaim } from "../src/nous/pane-watch.js";
+import { createNousService, nousHistory, NOUS_OVERVIEW_REUSE_MS, NOUS_PERSONA, NousUnavailableError, cardPromiseClaim, claimTopicWords, mailSentClaim, operatorMessagesToAnswer, paneToldClaim, operatorRefusal, riskLineSentence, knownFaultSentence, reportPromiseSentence, renderDone, toolSubjects, type NousRunner, type NousServiceDeps } from "../src/nous/service.js";
 import { itemActed, NOUS_ITEM_HOLDS, type NousTurnAct, type NousTurnItem } from "../src/nous/turn-items.js";
 import { heldReviewItem } from "../src/nous/copilot-questions.js";
-import { createNousTools, nousControlRisk, nousToolDefinitions, paneIdIn, pendingNousBriefOf, type CopilotBriefEvent, type NousToolDeps, type NousToolOutcome } from "../src/nous/tools.js";
+import { createNousTools, nousControlRisk, nousToolDefinitions, paneIdIn, pendingNousBriefOf, timedFocusSentence, timedPromoteSentence, type CopilotBriefEvent, type NousToolDeps, type NousToolOutcome } from "../src/nous/tools.js";
 import { NOUS_SAVE_RETRY_TEXT } from "../src/nous/save-request.js";
 import { SpaceRouteError } from "../src/nous/space-provider.js";
 import { NOUS_SUBAGENT_EXCLUDED } from "../src/nous/subagents.js";
@@ -472,6 +471,24 @@ describe("Nous's world", () => {
     expect((await f.tools.execute("space_create_room", { name: "main" }, ctx)).ok).toBe(false);
   });
 
+  it("13/11 MSfS: leaves a pane open whose scheduled task is overdue or due within the hour, by either close path and even with force", async () => {
+    const f = toolFixture();
+    const task = (nextRunAt: string) => ({ id: "task:023K1Tdt7XMM", title: "MSfS daily Azure check", paneId: "pane:andy0001", schedule: { nextRunAt } }) as never;
+    const at = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+    const close = [{ kind: "pane", operation: "close", target: { paneNames: ["Andy"] }, force: true }];
+    for (const nextRunAt of [at(-75), at(30)]) {
+      f.deps.tasks.list = async () => [task(nextRunAt)];
+      expect(await f.tools.execute("space_close_pane", { room: "Main", panes: ["Andy"], force: true }, ctx))
+        .toMatchObject({ ok: false, refused: true, result: expect.stringContaining('"MSfS daily Azure check" [task:023K1Tdt7XMM]') });
+      expect((await f.tools.execute("space_execute", { room: "Main", actions: close }, ctx)).ok).toBe(false);
+    }
+    expect(f.roomTool).not.toHaveBeenCalled();
+    // Its next run hours away: the pane closes, and the scheduler reopens it then (operator order 2026-10-24).
+    f.deps.tasks.list = async () => [task(at(180))];
+    expect((await f.tools.execute("space_close_pane", { room: "Main", panes: ["Andy"] }, ctx)).ok).toBe(true);
+    expect(f.roomTool).toHaveBeenCalledWith("close_pane", { panes: ["pane:andy0001"] }, expect.anything());
+  });
+
   it("mutes a room's finished and waiting panes for as long as Nous sets, and nothing else", async () => {
     let clock = Date.parse("2026-10-17T15:00:00.000Z");
     const mutes = createNousMutes(() => clock);
@@ -840,7 +857,7 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
   it("wires cached quota into every world and helper admission, and persists the automatic switch", async () => {
     const resetAt = new Date(Date.now() + 3_600_000).toISOString();
     const account = { id: "main", provider: "CLAUDE", label: "Max account", alias: null, email: "main@example.com", planType: "max", status: "ACTIVE",
-      primaryWindow: { usedPercent: 90, resetAt, windowMinutes: 300 }, secondaryWindow: { usedPercent: 20, resetAt: weekReset(), windowMinutes: 10080 } };
+      primaryWindow: { usedPercent: 90, resetAt, windowMinutes: 300 }, secondaryWindow: { usedPercent: 85, resetAt: weekReset(), windowMinutes: 10080 } };
     const profileProbe = vi.fn(async () => ({ data: [] }));
     const provider = Object.assign(profileProbe, { peek: () => ({ data: [{ id: "main", label: "Main", email: account.email, status: "CONNECTED", fiveHourRemainingPercent: 10, weeklyRemainingPercent: 80 }] }) as never });
     const helperRunner = vi.fn(async () => ({ text: "checked", isError: false }));
@@ -932,9 +949,9 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
   it("shows each turn's runtime model through LOW, CRITICAL, switch-off and reset recovery without saving over configured models", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const resetAt = new Date(Date.now() + 3_600_000).toISOString();
-    const account = { id: "a", provider: "CLAUDE", label: "Max", planType: "max", status: "ACTIVE", primaryWindow: { usedPercent: 100, resetAt, windowMinutes: 300 }, secondaryWindow: { usedPercent: 10, resetAt, windowMinutes: 10080 } };
-    // One account with room is LOW (2 needed); none is CRITICAL whatever the API budget (operator rule 2026-10-27).
-    const other = { ...account, id: "b", primaryWindow: { usedPercent: 10, resetAt, windowMinutes: 300 }, secondaryWindow: { usedPercent: 10, resetAt: weekReset(), windowMinutes: 10080 } };
+    const account = { id: "a", provider: "CLAUDE", label: "Max", planType: "max", status: "ACTIVE", primaryWindow: { usedPercent: 100, resetAt, windowMinutes: 300 }, secondaryWindow: { usedPercent: 85, resetAt: weekReset(), windowMinutes: 10080 } };
+    // One account with room and no week room left is LOW (2 needed; 13/11: week room keeps NORMAL); none is CRITICAL whatever the API budget (operator rule 2026-10-27).
+    const other = { ...account, id: "b", primaryWindow: { usedPercent: 10, resetAt, windowMinutes: 300 }, secondaryWindow: { usedPercent: 85, resetAt: weekReset(), windowMinutes: 10080 } };
     const f = await wired({ settings: claudeSettings(), ops: { gatewayAdmin: { listAccounts: async () => ({ data: [account, other] }), getSettings: async () => ({ anthropicMonthlyBudgetUsd: 100 }),
       anthropicBilling: async () => ({ status: { configured: true }, days: [{ day: new Date().toISOString().slice(0, 10), reported: true, organizationUsd: 25 }] }) } as never } });
     try {
@@ -959,6 +976,7 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
       expect(f.requests.at(-1)!.prompt).toMatch(/Low-spend mode: CRITICAL[^\n]+model: Opus 5\.5 \(high\) for OPERATOR/);
 
       account.primaryWindow.resetAt = new Date(Date.now() - 1000).toISOString();
+      account.secondaryWindow.usedPercent = 10;
       await f.wiring.service.saveSettings(owner, { lowSpend: nousLowSpendSettingsSchema.parse({ minMaxAccountsWithRoom: 1 }) });
       vi.setSystemTime(Date.now() + NOUS_OVERVIEW_REUSE_MS);
       await f.wiring.service.overview(owner);
@@ -971,22 +989,20 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
   it("keeps the running turn's launch model in world reads across a reset and recovers for the next turn", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const resetAt = new Date(Date.now() + 3_600_000).toISOString();
-    const account = { id: "a", provider: "CLAUDE", label: "Max", planType: "max", status: "ACTIVE", primaryWindow: { usedPercent: 100, resetAt, windowMinutes: 300 }, secondaryWindow: { usedPercent: 10, resetAt, windowMinutes: 10080 } };
-    const other = { ...account, id: "b", primaryWindow: { usedPercent: 10, resetAt, windowMinutes: 300 }, secondaryWindow: { usedPercent: 10, resetAt: weekReset(), windowMinutes: 10080 } };
+    const account = { id: "a", provider: "CLAUDE", label: "Max", planType: "max", status: "ACTIVE", primaryWindow: { usedPercent: 100, resetAt, windowMinutes: 300 }, secondaryWindow: { usedPercent: 85, resetAt: weekReset(), windowMinutes: 10080 } };
+    const other = { ...account, id: "b", primaryWindow: { usedPercent: 10, resetAt, windowMinutes: 300 }, secondaryWindow: { usedPercent: 85, resetAt: weekReset(), windowMinutes: 10080 } };
     let worldDuringTurn = "";
     const f = await wired({ settings: claudeSettings(), ops: { gatewayAdmin: { listAccounts: async () => ({ data: [account, other] }) } as never }, onRun: async (input) => {
       if (input.reason !== "STANDING" || worldDuringTurn) return;
-      // The NORMAL a's reset asked for comes into force during this turn.
+      // a's reset (its week too: 13/11 week room alone keeps NORMAL) comes during this turn; NORMAL applies on the next sample (operator 13/11 23:07 BKK).
+      account.primaryWindow.resetAt = new Date(Date.now() - 1000).toISOString();
+      account.secondaryWindow.usedPercent = 10;
       vi.setSystemTime(Date.now() + 2_000);
       worldDuringTurn = (await f.wiring.service.callTool(owner, input.turnId, "space_world", {}, "mid-reset")).result;
     } });
     try {
       await f.wiring.service.saveSettings(owner, { enabled: true, lowSpend: nousLowSpendSettingsSchema.parse({ minMaxAccountsWithRoom: 2 }) });
       expect((await f.run(["space_token_state", {}]))[0]!.result).toMatch(/^Low-spend mode: LOW/);
-      // a's 5-hour reset: the samples ask NORMAL from now, in force once that held 30 minutes; the turn starts a second before.
-      account.primaryWindow.resetAt = new Date(Date.now() - 1000).toISOString();
-      expect((await f.run(["space_token_state", {}]))[0]!.result).toMatch(/^Low-spend mode: LOW[^\n]+the samples ask NORMAL since/);
-      vi.setSystemTime(Date.now() + NOUS_MODE_HOLD_MS - 1_000);
       await f.wiring.service.standing(owner, "STANDING", "Before reset"); await f.wiring.service.idle(owner);
       // f.run's operator turns are requests too.
       const standing = () => f.requests.filter((request) => request.reason === "STANDING");
@@ -1125,6 +1141,45 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
       expect(listed!.result).toContain(`"Launch the site" PLANNED 0% · needs claude-opus-5-5 · due 2099-10-30T09:00:00.000Z · depends on ${mailId}`);
       const [cleared] = await f.run(["space_plan_update", { plan: mailId, waitsOn: null }]);
       expect(cleared!.result).toBe("PLANNED 0%");
+    } finally {
+      await f.app.close();
+    }
+  });
+
+  it("parks a plan with resume conditions, marks one met, and refuses to close a plan with open steps unless it is parked (operator 13/11)", async () => {
+    const f = await wired();
+    try {
+      const [created] = await f.run(["space_plan_create", { title: "Ship the relay", text: "Relay.", minimumModel: "claude-opus-5-5", steps: [{ title: "Build" }, { title: "Deploy" }] }]);
+      const id = /Plan (clipboard:[^ ]+) recorded/.exec(created!.result)![1]!;
+      const [refused, dropped] = await f.run(["space_plan_update", { plan: id, executionStatus: "COMPLETED" }],
+        ["space_plan_update", { plan: id, step: { step: 1, status: "COMPLETED" }, executionStatus: "COMPLETED" }]);
+      expect(refused).toMatchObject({ ok: false, display: expect.stringContaining("Park it or drop its steps") });
+      expect(refused!.result).toContain("step 1, step 2");
+      expect(dropped!.result).toContain("step 2");
+      const [parked, unknown, met] = await f.run(
+        ["space_plan_update", { plan: id, executionStatus: "COMPLETED", park: { reason: "Waits for the vendor's fix.", conditions: [
+          { who: "THIRD_PARTY", what: "The vendor ships the fix" }, { who: "DATE", what: "After the weekend", check: { kind: "DATE", at: "2099-01-01T00:00:00.000Z" } }] } }],
+        ["space_plan_update", { plan: id, condition: { id: "c9", met: true } }],
+        ["space_plan_update", { plan: id, condition: { id: "c1", met: true, evidence: "The vendor's changelog 2.1" } }]);
+      expect(parked).toMatchObject({ ok: true, result: expect.stringContaining("parked: Waits for the vendor's fix. (c1 OPEN THIRD_PARTY: The vendor ships the fix; c2 OPEN DATE: After the weekend)") });
+      expect(unknown).toMatchObject({ ok: false, result: expect.stringContaining("is parked with conditions c1, c2, not c9: name one of those.") });
+      expect(met).toMatchObject({ ok: true });
+      const plan = await f.store.getClipboardItem(owner, id);
+      expect(plan).toMatchObject({ isCompleted: true, parked: { reason: "Waits for the vendor's fix.", resumedAt: null,
+        conditions: [{ id: "c1", state: "MET", evidence: "The vendor's changelog 2.1" }, { id: "c2", state: "OPEN", check: { kind: "DATE" } }] } });
+      // Re-parking replaces the conditions but keeps the parked clock.
+      await f.run(["space_plan_update", { plan: id, park: { reason: "Waits for the vendor.", conditions: [{ who: "THIRD_PARTY", what: "The fix" }] } }]);
+      expect((await f.store.getClipboardItem(owner, id))!.parked).toMatchObject({ reason: "Waits for the vendor.", since: plan!.parked!.since, conditions: [{ id: "c1", state: "OPEN" }] });
+      const [unparked] = await f.run(["space_plan_update", { plan: id, park: null }]);
+      expect(unparked).toMatchObject({ ok: true });
+      expect((await f.store.getClipboardItem(owner, id))!.parked).toBeNull();
+      // 13/11 06:48 UTC: a condition of a plan not parked says so; one Space already reopened is a refusal with nothing to mark.
+      const [loose] = await f.run(["space_plan_update", { plan: id, condition: { id: "c1", met: true } }]);
+      expect(loose).toMatchObject({ ok: false, display: "Not parked" });
+      expect(loose!.refused).toBeUndefined();
+      await f.store.updateClipboardItemProgress(owner, id, { parked: { ...plan!.parked!, resumedAt: "2026-11-13T06:40:00.000Z" } } as never);
+      const [reopened] = await f.run(["space_plan_update", { plan: id, condition: { id: "c1", met: true } }]);
+      expect(reopened).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("Space reopened it 2026-11-13T06:40:00.000Z") });
     } finally {
       await f.app.close();
     }
@@ -1996,6 +2051,124 @@ describe("Nous's turns", () => {
     expect(proven.requests.map((request) => request.reason)).toEqual(["OPERATOR"]);
   }, 20_000);
 
+  it("lessons 6-12/11: says a pane was told or a card comes only after this turn did it; reply_now is held, the answer brings one line", async () => {
+    // The 9/11 answer (set-pane-model lesson) and other ways to say it.
+    expect(paneToldClaim("Άλλαξα τα μοντέλα. Οι οδηγίες έχουν σταλεί και τα panes ξεκινούν τώρα.")).toBe("Οι οδηγίες έχουν σταλεί και τα panes ξεκινούν τώρα.");
+    for (const text of ["Είπα στον Bob να ξαναστήσει το build.", "Ανέθεσα το fix στην Iris.", "I've briefed Cleo on the cutover.", "The brief was sent to Emma."])
+      expect(paneToldClaim(text)).toBe(text);
+    for (const text of ["Οι οδηγίες δεν έχουν σταλεί ακόμα.", "Θα στείλω το brief στην Emma.", "The reply was sent at 10:08.", "Ο Bob τελείωσε το build.", "I have not told Bob yet.",
+      "Ενημέρωσα τη μνήμη."]) expect(paneToldClaim(text)).toBeNull();
+    expect(cardPromiseClaim("Το βρήκα. Θα σου στείλω απόφαση για το UpCloud.")).toBe("Θα σου στείλω απόφαση για το UpCloud.");
+    for (const text of ["Θα σου έρθει κάρτα με τα βήματα.", "I'll raise a decision for the DNS move.", "It will come to you as a card."]) expect(cardPromiseClaim(text)).toBe(text);
+    for (const text of ["Δεν θα σου στείλω απόφαση, το αποφάσισα.", "Η απόφαση εγκρίθηκε.", "I sent the decision."]) expect(cardPromiseClaim(text)).toBeNull();
+    // Daily Nous errors 13/11 10:57-11:49 UTC: the present tense and focus, while every such call was held.
+    for (const text of ["Σου στέλνω τώρα focus για το AWS.", "Τώρα βάζω στο Needs you τις 3 ερωτήσεις.", "Βάζω όλες τις εκκρεμότητες σε Needs you τώρα.", "Θα σου δώσω focus στο npm.",
+      "I'm putting them in Needs you now.", "I'll give you focus on the npm login."]) expect(cardPromiseClaim(text)).toBe(text);
+    for (const text of ["Δεν μπόρεσα ακόμα να τα βάλω στο Needs you.", "Στέλνω στον Bob την απόφασή σου.", "I'm sending your decision to Bob.", "Δεν σου στέλνω focus, το έκανε ο Bob."])
+      expect(cardPromiseClaim(text)).toBeNull();
+    // Correction 180 (13/11 04:10-04:22 UTC): focus set for a time of day or after an event; the corrections and quotes of it pass.
+    expect(timedFocusSentence("Εντάξει: ο Jack κρατά ανοιχτό το checkout της Cartesia. Μετά τις συνεντεύξεις, γύρω στις 13:00, θα σου δώσει focus μόνο στο πεδίο της κάρτας."))
+      .toBe("Μετά τις συνεντεύξεις, γύρω στις 13:00, θα σου δώσει focus μόνο στο πεδίο της κάρτας.");
+    for (const text of ["Γύρω στις **13:00** (μετά τις συνεντεύξεις) θα σου δώσει focus μόνο στο πεδίο της κάρτας.",
+      "Μένει η σωστή: κρατά το checkout ανοιχτό και γύρω στις 13:00, μετά τις συνεντεύξεις σου, σου δίνει focus μόνο στο πεδίο της κάρτας.",
+      "Από σένα θα χρειαστεί μόνο ένα πράγμα, γύρω στις 13:00, μετά τις συνεντεύξεις: να βάλεις την κάρτα όταν σου ανοίξει το focus.",
+      "keep the checkout open and around 13:00, after the interviews, give the operator focus on the card field"]) expect(timedFocusSentence(text)).toBe(text);
+    for (const text of ["Είχα γράψει «γύρω στις 13:00 θα σου δώσει focus».", "Δεν βάζω πια ώρα 13:00.", "Focus θα σου έρχεται μόνο όταν και αν χρειάζεται, χωρίς ώρα (όχι «13:00»)",
+      "Δεν χρειάζεται να περιμένεις τις 13:00 για focus.", "focus when the card form is ready", "Στις 11:14 σού έδωσα focus", "Focus on step 3 until 14:00"])
+      expect(timedFocusSentence(text)).toBeNull();
+    // Correction 87b8e25d (13/11 04:21 UTC «μην καθυστερείς το promote χωρίς λόγο»): Nous's 03:43-04:15 UTC answers set the promote for a time; past promotes and refusals of a time pass.
+    for (const text of ["Μπαίνει στο stable με το επόμενο promote, γύρω στις 12:30.", "Θα αναβαθμιστεί μετά το promote γύρω στις 12:30.",
+      "Θα περάσει στο stable με το promote στις 12:50, αφού τελειώσουν οι συνεντεύξεις σου, και μετά θα ελέγξω ότι η οθόνη δεν πάγωσε.",
+      "- **Πάγωμα του SpaceApp:** το promote γίνεται γύρω στις 12:50, μετά τις συνεντεύξεις σου.", "It reaches stable with the next promote, around 12:30."]) expect(timedPromoteSentence(text)).toBe(text);
+    for (const text of ["Μπήκαν με το promote των 10:27.", "Promote: το ξεκινάω τώρα με ό,τι είναι έτοιμο στο dev, χωρίς να περιμένω το δίωρο.", "Στις 09:45 έγινε deploy στο stable (το promote 84bf).",
+      "Έτσι το build δεν περιμένει πια ούτε το promote των 12:30.", "Δεν περιμένω τις 12:50 για το promote.", "Ο Hugo μπαίνει στο stable μετά το promote που τρέχει τώρα."])
+      expect(timedPromoteSentence(text)).toBeNull();
+    expect(NOUS_PERSONA).not.toContain("once every two hours");
+    const f = serviceFixture([async (input, service) => {
+      expect(await service.callTool(owner, input.turnId, "space_reply_now", { text: "Γύρω στις 13:00 ο Jack θα σου δώσει focus στην κάρτα." }, "p0")).toMatchObject({ ok: false, refused: true, display: expect.stringContaining("operator's focus for a time") });
+      expect(await service.callTool(owner, input.turnId, "space_reply_now", { text: "Το promote γίνεται γύρω στις 12:50, μετά τις συνεντεύξεις σου." }, "p0b")).toMatchObject({ ok: false, refused: true, display: expect.stringContaining("promote for a time") });
+      expect(await service.callTool(owner, input.turnId, "space_reply_now", { text: "Οι οδηγίες στάλθηκαν στον Bob." }, "p1")).toMatchObject({ ok: false, refused: true, display: expect.stringContaining("nothing sent to a pane") });
+      expect(await service.callTool(owner, input.turnId, "space_reply_now", { text: "Θα σου στείλω απόφαση για το UpCloud." }, "p2")).toMatchObject({ ok: false, refused: true, display: expect.stringContaining("decision, card or focus") });
+      return { text: "Είπα στον Bob να ξαναστήσει το build.", isError: false };
+    }, async () => ({ text: "NOTHING_NEW", isError: false })]);
+    await f.service.send(owner, "τι έγινε με τον Bob;");
+    await vi.waitFor(() => expect(f.requests.map((request) => request.reason)).toEqual(["OPERATOR", "INBOX"]), { timeout: 8_000 });
+    await f.service.idle(owner);
+    expect(f.execute).not.toHaveBeenCalledWith("space_reply_now", expect.anything(), expect.anything());
+    expect(f.requests[1]!.prompt).toContain("Your answer told the operator a pane was told or sent its work (\"Είπα στον Bob να ξαναστήσει το build.\"), and that turn sent nothing to any pane.");
+    // A turn that sent and raised it may say both: nothing held, no line.
+    const proven = serviceFixture([async (input, service) => {
+      await service.callTool(owner, input.turnId, "space_send_to_pane", { paneId: "pane:bob", text: "rebuild" }, "p3");
+      await service.callTool(owner, input.turnId, "space_ask_operator", { title: "UpCloud" }, "p4");
+      expect((await service.callTool(owner, input.turnId, "space_reply_now", { text: "Είπα στον Bob. Θα σου έρθει απόφαση για το UpCloud." }, "p5")).ok).toBe(true);
+      return { text: "Είπα στον Bob να ξαναστήσει το build.", isError: false };
+    }]);
+    await proven.service.send(owner, "τι έγινε;");
+    await proven.service.idle(owner);
+    await new Promise((resolve) => setTimeout(resolve, 6_000));
+    expect(proven.requests.map((request) => request.reason)).toEqual(["OPERATOR"]);
+  }, 20_000);
+
+  it("correction 13/11 nous_msg:3d2c5057: warns of a risk only after this turn acted on it or asked the operator", async () => {
+    const answer = "Η ουρά σταμάτησε.\nΚίνδυνος: αν δεν κατέβει ο δίσκος κάτω από 90%, κανένα promote δεν φτάνει στο stable απόψε.";
+    expect(riskLineSentence(answer)).toBe("Κίνδυνος: αν δεν κατέβει ο δίσκος κάτω από 90%, κανένα promote δεν φτάνει στο stable απόψε.");
+    for (const text of ["- Ένας πιθανός κίνδυνος: το κουτάκι συναίνεσης μάλλον έμεινε τσεκαρισμένο.", "**Risk:** two Job Copilots may pick the same postings."]) expect(riskLineSentence(text)).toBe(text);
+    for (const text of ["Δεν υπάρχει κίνδυνος για τα δεδομένα.", "No risk: the backup is verified.", "Ο κίνδυνος πέρασε."]) expect(riskLineSentence(text)).toBeNull();
+    const f = serviceFixture([async (input, service) => {
+      expect(await service.callTool(owner, input.turnId, "space_reply_now", { text: answer }, "r1")).toMatchObject({ ok: false, refused: true, display: expect.stringContaining("risk this turn did not act on") });
+      return { text: answer, isError: false };
+    }, async (input, service) => {
+      await service.callTool(owner, input.turnId, "space_send_to_pane", { paneId: "pane:bob", text: "free /srv/disk2 to 85%" }, "r2");
+      expect((await service.callTool(owner, input.turnId, "space_reply_now", { text: answer }, "r3")).ok).toBe(true);
+      return { text: "NOTHING_NEW", isError: false };
+    }]);
+    await f.service.send(owner, "γιατί κόλλησε η ουρά;");
+    await vi.waitFor(() => expect(f.requests.map((request) => request.reason)).toEqual(["OPERATOR", "INBOX"]), { timeout: 8_000 });
+    await f.service.idle(owner);
+    expect(f.requests[1]!.prompt).toContain("Your answer told the operator of a risk (\"Κίνδυνος: αν δεν κατέβει ο δίσκος");
+    expect(f.requests[1]!.prompt).toContain("and that turn neither acted on it nor asked the operator. Act, don't warn");
+  }, 20_000);
+
+  it("correction 13/11 nous_msg:6734ba76: calls a fault known or worked around only in a turn that sent its fix to a pane", async () => {
+    const answer = "Το AWS έδωσε 400 μετά το Vault. Είναι γνωστό σφάλμα από τις προηγούμενες συνδέσεις και ξέρουμε πώς να το παρακάμψουμε.";
+    expect(knownFaultSentence(answer)).toBe("Είναι γνωστό σφάλμα από τις προηγούμενες συνδέσεις και ξέρουμε πώς να το παρακάμψουμε.");
+    for (const text of ["Το σφάλμα 400 το παρακάμπταμε κάθε φορά.", "It is a known issue with the Vault fill.", "Bob uses the usual workaround."]) expect(knownFaultSentence(text)).toBe(text);
+    for (const text of ["Δεν είναι γνωστό σφάλμα.", "Not a known issue.", "Ο Bob διόρθωσε το σφάλμα 400.", "Άγνωστο σφάλμα 500 στο Stripe."]) expect(knownFaultSentence(text)).toBeNull();
+    const f = serviceFixture([async (input, service) => {
+      expect(await service.callTool(owner, input.turnId, "space_reply_now", { text: answer }, "k1")).toMatchObject({ ok: false, refused: true, display: expect.stringContaining("known or worked around") });
+      return { text: answer, isError: false };
+    }, async (input, service) => {
+      await service.callTool(owner, input.turnId, "space_send_to_pane", { paneId: "pane:bob", text: "fix the Vault fill 400 at its root" }, "k2");
+      expect((await service.callTool(owner, input.turnId, "space_reply_now", { text: answer }, "k3")).ok).toBe(true);
+      return { text: "NOTHING_NEW", isError: false };
+    }]);
+    await f.service.send(owner, "γιατί πάλι 400 στο AWS;");
+    await vi.waitFor(() => expect(f.requests.map((request) => request.reason)).toEqual(["OPERATOR", "INBOX"]), { timeout: 8_000 });
+    await f.service.idle(owner);
+    expect(f.requests[1]!.prompt).toContain("and that turn gave its fix to no pane. Known means fixed now");
+  }, 20_000);
+
+  it("correction 11/11 e1daf3df: promises to tell the operator later only in a turn that set a follow-up", async () => {
+    const answer = "Το UpCloud τρέχει στον Bob. Θα σου γράψω πού έφτασε μόλις τελειώσει το build.";
+    expect(reportPromiseSentence(answer)).toBe("Θα σου γράψω πού έφτασε μόλις τελειώσει το build.");
+    for (const text of ["Θα σε ενημερώσω με το MARK.", "Μόλις περάσει η διόρθωση, θα σας πω να ξαναπατήσετε.", "I'll let you know when it is live."]) expect(reportPromiseSentence(text)).toBe(text);
+    for (const text of ["Δεν θα σου πω ότι στάλθηκε πριν το δω.", "Σου γράφω τι βρήκα.", "Θα σου έρθει απόφαση για το UpCloud."]) expect(reportPromiseSentence(text)).toBeNull();
+    const f = serviceFixture([async (input, service) => {
+      await service.callTool(owner, input.turnId, "space_nous_followup", { op: "list" }, "f0");
+      expect(await service.callTool(owner, input.turnId, "space_reply_now", { text: answer }, "f1")).toMatchObject({ ok: false, refused: true, display: expect.stringContaining("later update with no follow-up") });
+      return { text: answer, isError: false };
+    }, async (input, service) => {
+      await service.callTool(owner, input.turnId, "space_nous_followup", { op: "add", note: "tell the operator where the UpCloud build got", room: "room:cleo", pane: "pane:bob" }, "f2");
+      expect((await service.callTool(owner, input.turnId, "space_reply_now", { text: answer }, "f3")).ok).toBe(true);
+      return { text: "NOTHING_NEW", isError: false };
+    }]);
+    await f.service.send(owner, "τι γίνεται με το UpCloud;");
+    await vi.waitFor(() => expect(f.requests.map((request) => request.reason)).toEqual(["OPERATOR", "INBOX"]), { timeout: 8_000 });
+    await f.service.idle(owner);
+    expect(f.requests[1]!.prompt).toContain("Your answer told the operator you will tell them later (\"Θα σου γράψω πού έφτασε");
+    expect(f.requests[1]!.prompt).toContain("and that turn set no follow-up to bring it back. Promised later means a follow-up");
+  }, 20_000);
+
   it("operator 8/11 20:04 BKK: an answer saying something waits for the operator, with no Needs you card or open decision, brings one line", async () => {
     // The 19:59 BKK answer (nous_msg:67c4b21b) and other ways to say it.
     expect(waitsOnOperatorClaim("Κρατάω ανοιχτά: Iris: το πλάνο Cloud Identity περιμένει δικές σου ενέργειες.")).toBe("Κρατάω ανοιχτά: Iris: το πλάνο Cloud Identity περιμένει δικές σου ενέργειες.");
@@ -2003,10 +2176,14 @@ describe("Nous's turns", () => {
       expect(waitsOnOperatorClaim(text)).toBe(text);
     for (const text of ["Δεν σε περιμένει τίποτα.", "Τίποτα δεν περιμένει από σένα.", "Nothing waits for you.", "Bob no longer waits on you.", "Περιμένουμε το Teams invite.",
       "I waited for Bob."]) expect(waitsOnOperatorClaim(text)).toBeNull();
+    for (const text of ["Η κάρτα για τον κωδικό είναι ήδη στο Needs you, πάτα Enter.", "Τα cards npm και AWS είναι ήδη ορατά στον χειριστή.", "Μπήκαν στα Needs you οι 3 ερωτήσεις.",
+      "The npm card is now in your Needs you.", "Both cards are visible to you."]) expect(inNeedsYouClaim(text)).toBe(text);
+    for (const text of ["Δεν τα βλέπεις ακόμα στα Needs you.", "Δεν είναι ακόμα στο Needs you.", "It is not in Needs you.", "Η κάρτα κρατήθηκε, δεν μπήκε στο Needs you."])
+      expect(inNeedsYouClaim(text)).toBeNull();
     const answer = async () => ({ text: "Iris: το πλάνο Cloud Identity περιμένει δικές σου ενέργειες.", isError: false });
-    const card = { id: "notif:1", source: "NOUS", kind: "NEEDS_YOU", paneId: "pane:iris", roomId: "room:cleo" };
+    const card = { id: "notif:1", source: "NOUS", kind: "NEEDS_YOU", paneId: "pane:iris", roomId: "room:cleo", title: "Iris: sign in to Cloud Identity", body: "" };
     const bare = serviceFixture([answer, async () => ({ text: "NOTHING_NEW", isError: false })]);
-    const list = vi.fn(async (_owner: string, query: { source?: string }) => query.source === "NOUS" ? [card] : []);
+    const list = vi.fn(async () => [card]);
     const quietCards = () => ({ raise: vi.fn(async () => ({}) as never), resolve: vi.fn(async () => 0) });
     const carded = serviceFixture([answer], { notifications: { ...quietCards(), list } as never });
     const decided = serviceFixture([answer], { notifications: { ...quietCards(), list: vi.fn(async () => []) } as never });
@@ -2019,7 +2196,22 @@ describe("Nous's turns", () => {
     expect(none.requests[1]!.prompt).toContain("raise ONE space_notify_operator card on that pane");
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     for (const f of [bare, carded, decided]) expect(f.requests.map((request) => request.reason)).toEqual(["OPERATOR"]);
-    expect(list).toHaveBeenCalledWith(owner, { status: "NEEDS_YOU", source: "NOUS", limit: 1 });
+    expect(list).toHaveBeenCalledWith(owner, { status: "NEEDS_YOU", limit: 200 });
+    // Lessons 6-12/11 (upcloud-stale-wait): an open card about something else does not back the claim.
+    expect(claimTopicWords("Το UpCloud περιμένει δικές σου ενέργειες.")).toEqual(["upcloud"]);
+    const other = { ...card, title: "Hetzner: approve the invoice" };
+    const stale = serviceFixture([async () => ({ text: "Το UpCloud cutover περιμένει δικές σου ενέργειες.", isError: false }), async () => ({ text: "NOTHING_NEW", isError: false })],
+      { notifications: { ...quietCards(), list: vi.fn(async () => [other]) } as never });
+    await stale.service.send(owner, "τι μένει;");
+    await vi.waitFor(() => expect(stale.requests.map((request) => request.reason)).toEqual(["OPERATOR", "INBOX"]), { timeout: 8_000 });
+    expect(stale.requests[1]!.prompt).toContain("none of their 1 open Needs you cards and decisions is about it (Hetzner: approve the invoice");
+    // Daily Nous errors 13/11 (corrections 188, 190): "the card is in your Needs you" while Space held it for Nous (the list leaves held cards out).
+    const said = "Η κάρτα για τον κωδικό AWS είναι ήδη στο Needs you, πάτα Enter στο Vault.";
+    const held = serviceFixture([async () => ({ text: said, isError: false }), async () => ({ text: "NOTHING_NEW", isError: false })],
+      { notifications: { ...quietCards(), list: vi.fn(async () => []) } as never });
+    await held.service.send(owner, "μου έδωσες focus;");
+    await vi.waitFor(() => expect(held.requests.map((request) => request.reason)).toEqual(["OPERATOR", "INBOX"]), { timeout: 8_000 });
+    expect(held.requests[1]!.prompt).toContain(`something waits for them ("${said}"), and they have no Needs you card`);
   }, 20_000);
 
   it("never loses an operator message: a failed turn runs it again, a restart answers it even after an interim reply, a Stop leaves it queued", async () => {
@@ -2043,12 +2235,24 @@ describe("Nous's turns", () => {
     expect((await cut.repository.listMessages(owner, 10)).at(-1)).toMatchObject({ kind: "ANSWER", content: "Τελική απάντηση." });
     expect((await cut.service.messages(owner)).filter((message) => message.kind === "OPERATOR").map((message) => message.content)).toEqual(["και η Hetzner;"]);
 
-    const stopped = serviceFixture([async (_input, service) => { service.stop(owner); throw new Error("aborted"); }], { limits: { inboxDebounceMs: 10, retryMs: 10 } });
+    // A person's Stop (after reading Nous) leaves the message for the next turn they start.
+    let clock = Date.parse("2026-11-13T06:58:57.484Z");
+    const stopped = serviceFixture([async (_input, service) => { clock += 34_000; service.stop(owner); throw new Error("aborted"); }],
+      { limits: { inboxDebounceMs: 10, retryMs: 10 }, now: () => clock });
     await stopped.service.send(owner, "σταμάτα");
     await stopped.service.idle(owner);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(stopped.requests).toHaveLength(1);
     expect(operatorMessagesToAnswer(await stopped.repository.listMessages(owner, 10)).map((message) => message.content)).toEqual(["σταμάτα"]);
+
+    // Score 13/11: the Nous app's Send turns into Stop under the finger; a Stop 0.5 s after the send is that tap, the message still gets its answer.
+    const tapped = serviceFixture([async (_input, service) => { clock += 500; service.stop(owner); throw new Error("aborted"); },
+      async () => ({ text: "Το αναλαμβάνω.", isError: false })], { limits: { inboxDebounceMs: 10, retryMs: 60_000 }, now: () => clock });
+    await tapped.service.send(owner, "θα ήθελα να κάνουμε το ίδιο με τα cli types");
+    await vi.waitFor(() => expect(tapped.requests).toHaveLength(2), { timeout: 3_000 });
+    await tapped.service.idle(owner);
+    expect(tapped.requests.map((request) => request.reason)).toEqual(["OPERATOR", "OPERATOR"]);
+    expect(operatorMessagesToAnswer(await tapped.repository.listMessages(owner, 10))).toEqual([]);
   });
 
   it("answers the operator at once while a background turn runs: the operator's own slot (operator first, 2026-10-24)", async () => {
@@ -2149,23 +2353,130 @@ describe("Nous's turns", () => {
     g.service.stop(owner);
   });
 
-  it("Score 13/11: past a minute with no answer, an operator turn's tool answers remind it to reply now, until it does", async () => {
+  it("Score 13/11: a Stop drops the running work, not the message the operator wrote with it (7efdc536 15 min, 3bbf77d1 4 min)", async () => {
+    // A new operator turn that had not acted, stopped with a background turn: its message runs again at once.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const f = serviceFixture([
+      async () => { await gate; throw new Error("aborted"); },
+      async () => { await gate; throw new Error("aborted"); },
+      async (input) => { expect(input.prompt).toContain(": κάνε το ίδιο με τα CLI"); return { text: "Το αναλαμβάνω.", isError: false }; }
+    ], { limits: { inboxDebounceMs: 10, retryMs: 60_000 } });
+    await f.service.notice(owner, "monitor:a", "Room Main pane Andy: FINISHED");
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+    await f.service.send(owner, "κάνε το ίδιο με τα CLI");
+    await vi.waitFor(() => expect(f.requests).toHaveLength(2));
+    expect(f.service.stop(owner)).toBe(true);
+    release();
+    await vi.waitFor(() => expect(f.requests.map((request) => request.reason)).toEqual(["INBOX", "OPERATOR", "OPERATOR"]), { timeout: 3_000 });
+    await f.service.idle(owner);
+    expect(operatorMessagesToAnswer(await f.repository.listMessages(owner, 20))).toEqual([]);
+
+    // A message waiting beside an operator turn that acted: the stopped turn never takes it, an operator turn answers it after the Stop.
+    let releaseG!: () => void;
+    const gateG = new Promise<void>((resolve) => { releaseG = resolve; });
+    let afterStop = "";
+    const g = serviceFixture([
+      async (input, service) => {
+        await service.callTool(owner, input.turnId, "space_world", {}, "call-1");
+        await gateG;
+        afterStop = (await service.callTool(owner, input.turnId, "space_world", {}, "call-2")).result;
+        throw new Error("aborted");
+      },
+      async (input) => { expect(input.prompt).toContain(": touch, όχι chat"); return { text: "Touch, το πήρα.", isError: false }; }
+    ], { limits: { inboxDebounceMs: 10, retryMs: 60_000, deliverMs: 60_000 } });
+    await g.service.send(owner, "θέλω chat στο Go pane");
+    await vi.waitFor(() => expect(g.execute).toHaveBeenCalledTimes(1));
+    await g.service.send(owner, "touch, όχι chat");
+    g.service.stop(owner);
+    releaseG();
+    await vi.waitFor(() => expect(g.requests).toHaveLength(2), { timeout: 3_000 });
+    await g.service.idle(owner);
+    expect(afterStop).not.toContain("touch");
+    expect(operatorMessagesToAnswer(await g.repository.listMessages(owner, 20))).toEqual([]);
+  });
+
+  it("Score 13/11: past a minute with no answer, an operator turn's first call is held once and its tool answers remind it to reply now, until it does", async () => {
     let clock = Date.parse("2026-11-13T01:00:00.000Z");
     const results: string[] = [];
     const f = serviceFixture([async (input, service) => {
       results.push((await service.callTool(owner, input.turnId, "space_world", {}, "call-1")).result);
       clock += 61_000;
-      results.push((await service.callTool(owner, input.turnId, "space_world", {}, "call-2")).result);
-      results.push((await service.callTool(owner, input.turnId, "space_reply_now", { text: "Το κοιτάζω τώρα." }, "call-3")).result);
-      results.push((await service.callTool(owner, input.turnId, "space_world", {}, "call-4")).result);
+      results.push((await service.callTool(owner, input.turnId, "space_send_to_pane", { pane: "Dana", text: "go" }, "call-2")).result);
+      results.push((await service.callTool(owner, input.turnId, "space_send_to_pane", { pane: "Dana", text: "go" }, "call-3")).result);
+      results.push((await service.callTool(owner, input.turnId, "space_reply_now", { text: "Το κοιτάζω τώρα." }, "call-4")).result);
+      results.push((await service.callTool(owner, input.turnId, "space_world", {}, "call-5")).result);
       return { text: "Έγινε.", isError: false };
     }], { now: () => clock });
     await f.service.send(owner, "τι τρέχει;");
     await f.service.idle(owner);
+    const nudge = "The operator has waited 61 s with no answer: call space_reply_now now with the short answer (what you found or will do), then go on with the work.";
     expect(results[0]).toBe("result of space_world");
-    expect(results[1]).toBe("result of space_world\n\nThe operator has waited 61 s with no answer: call space_reply_now now with the short answer (what you found or will do), then go on with the work.");
-    expect(results[2]).not.toContain("has waited");
-    expect(results[3]).toBe("result of space_world");
+    // 0ff4c64b: 80 s of acts went by with this reminder; the first call past the minute does not run.
+    expect(results[1]).toBe(`Not run: answer the operator first, then call this again.\n\n${nudge}`);
+    expect(results[2]).toBe(`result of space_send_to_pane\n\n${nudge}`);
+    expect(f.execute.mock.calls.filter(([name]) => name === "space_send_to_pane")).toHaveLength(1);
+    expect(results[3]).not.toContain("has waited");
+    expect(results[4]).toBe("result of space_world");
+  });
+
+  it("Response time 14/11 (381fe2d6, 159 s): the wait counts from the operator's message, so a turn rerun 75 s later holds its first call", async () => {
+    // The in-memory repository stamps messages with the real clock; the service's clock starts 75 s later, as after a restart.
+    const clock = Date.now() + 75_000;
+    const results: string[] = [];
+    const f = serviceFixture([async (input, service) => {
+      results.push((await service.callTool(owner, input.turnId, "space_world", {}, "call-1")).result);
+      results.push((await service.callTool(owner, input.turnId, "space_reply_now", { text: "Το κοιτάζω τώρα." }, "call-2")).result);
+      return { text: "Έγινε.", isError: false };
+    }], { now: () => clock });
+    await f.service.send(owner, "τι τρέχει;");
+    await f.service.idle(owner);
+    expect(results[0]).toMatch(/^Not run: answer the operator first, then call this again\.\n\nThe operator has waited 7\d s with no answer/);
+    expect(f.execute.mock.calls.filter(([name]) => name === "space_world")).toHaveLength(0);
+    expect(results[1]).not.toContain("has waited");
+  });
+
+  it("Score 13/11 (e602d5de, e0f1e573, 1aaa7bd6 within 28 s): the newest row is a repeat when it is the same operator text, files' ids aside, under a minute old", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.parse("2026-11-13T14:22:00.000Z"));
+      const f = serviceFixture([async () => ({ text: "Το κοιτάζω.", isError: false })]);
+      const text = (id: string) => `Δεν δουλεύει!!!\n\n[[Attachments: 1. shot.png: image, 133 KB. Look at it with space_nous_attachment_view {"id":"nous_file:${id}"}.]]`;
+      const first = await f.service.send(owner, text("aaaaaaaaaaaaaaaaaaaaaaaa"));
+      vi.setSystemTime(Date.now() + 12_000);
+      expect((await f.service.repeatOf(owner, text("bbbbbbbbbbbbbbbbbbbbbbbb")))?.id).toBe(first.id);
+      expect(await f.service.repeatOf(owner, "Δεν δουλεύει!!! Τώρα;")).toBeNull();
+      vi.setSystemTime(Date.now() + 49_000);
+      expect(await f.service.repeatOf(owner, text("bbbbbbbbbbbbbbbbbbbbbbbb"))).toBeNull();
+      // After Nous's answer the same text is asked again on purpose.
+      vi.setSystemTime(Date.now() - 49_000);
+      await f.service.idle(owner);
+      expect(await f.service.repeatOf(owner, text("bbbbbbbbbbbbbbbbbbbbbbbb"))).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("Score 13/11 (3 of 3 TIMEOUTs 12-13/11): in a turn's last 3 minutes each tool answer says when it stops, and a new operator message gets its own turn", async () => {
+    let clock = Date.parse("2026-11-13T01:00:00.000Z");
+    let arrived!: () => void;
+    const sent = new Promise<void>((resolve) => { arrived = resolve; });
+    const results: string[] = [];
+    const f = serviceFixture([async (input, service) => {
+      results.push((await service.callTool(owner, input.turnId, "space_reply_now", { text: "Το κοιτάζω." }, "call-1")).result);
+      await sent;
+      clock += 20 * 60_000 - 120_000;
+      results.push((await service.callTool(owner, input.turnId, "space_world", {}, "call-2")).result);
+      return { text: "Έγινε.", isError: false };
+    }, async () => ({ text: "Second answered.", isError: false })], { now: () => clock, limits: { deliverMs: 60_000 } });
+    await f.service.send(owner, "first");
+    await vi.waitFor(() => expect(results).toHaveLength(1));
+    await f.service.send(owner, "second");
+    arrived();
+    await vi.waitFor(() => expect(f.requests).toHaveLength(2));
+    await f.service.idle(owner);
+    expect(results[0]).toBe("result of space_reply_now");
+    expect(results[1]).toBe("result of space_world\n\nThis turn stops in 120 s: write your final answer now; leave what is left to space_nous_followup or the plan's next step.");
+    expect(f.requests.map((request) => request.reason)).toEqual(["OPERATOR", "OPERATOR"]);
+    expect(f.requests[1]!.prompt.split("# Operator messages to answer")[1]!.split("\n# ")[0]).toContain(": second");
   });
 
   it("runs one Claude Code turn whose tool calls come back through the turn's MCP calls", async () => {
@@ -2612,6 +2923,17 @@ describe("Nous's turns", () => {
     expect(held[0]).toContain(second.id);
     // Held once: the second report is recorded as it is, and the message left out reads Not done.
     expect(held[1]).not.toContain("Not recorded");
+
+    // Corrections 13/11 (nous_msg:4258ef8d): a request with no id that is an earlier message's open request leaves this turn's message unreported.
+    const moved: string[] = [];
+    const h = serviceFixture([async (input, service) => {
+      moved.push((await service.callTool(owner, input.turnId, "space_nous_outcome", { requests: [{ summary: "LiveKit works", outcome: "SELF" }] }, "call-1")).result);
+      return { text: "Done.", isError: false };
+    }], { requestsNamed: async (_owner, requests) => requests.map((request) => ({ ...request, id: "nous_msg:earlier0001" })) });
+    const asked = await h.service.send(owner, "Is LiveKit done?");
+    await h.service.idle(owner);
+    expect(moved[0]).toContain(asked.id);
+    expect(moved[0]).toContain('"LiveKit works" is the open request of nous_msg:earlier0001');
   });
 
   it("keeps the conversation as text between turns", async () => {
@@ -2808,6 +3130,36 @@ describe("Nous's turns", () => {
     expect(retry!.reason).toBe("OPERATOR");
     expect(retry!.prompt).toContain("# Already done since these messages (tool steps of earlier turns; do not repeat them)\n- did space_copilot_brief: “Review the reply.”");
     expect(retry!.prompt).toContain("Review the mail to Anna.");
+  });
+
+  it("one operator request, one turn: a queued turn that started first leaves the message a waiting turn took, and never covers it (plan clipboard:d-6UryIWaOhp step 3)", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const lists = (prompt: string) => prompt.includes("# Operator messages to answer");
+    const after: Step = async (input) => ({ text: lists(input.prompt) ? "Second answered." : "Decision noted.", isError: false });
+    const f = serviceFixture([async () => { await gate; return { text: "First answered.", isError: false }; }, after, after],
+      { limits: { inboxDebounceMs: 10, deliverMs: 60_000, retryMs: 60_000 } });
+    await f.service.send(owner, "first");
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+    // Both wait for the running operator turn: the decision's turn queued (pending), "second" for that turn's next tool answer.
+    const decision = await f.service.ask({ ownerUserId: owner, category: "RELEASE", title: "Promote dev", body: "", options: [], recommendation: "Yes.", refs: {}, action: null });
+    await f.service.answer(owner, decision.id, { answer: "APPROVE" });
+    await f.service.send(owner, "second");
+    // The turn ends without a tool call: the queued turn and a turn for "second" start together.
+    release();
+    await vi.waitFor(() => expect(f.requests).toHaveLength(3));
+    await f.service.idle(owner);
+    const later = f.requests.slice(1);
+    expect(later.map((request) => request.reason)).toEqual(["OPERATOR", "OPERATOR"]);
+    const holders = later.filter((request) => lists(request.prompt));
+    expect(holders).toHaveLength(1);
+    expect(holders[0]!.prompt.split("# Operator messages to answer")[1]).toContain(": second");
+    expect(later.find((request) => !lists(request.prompt))!.prompt).toContain("answered in their own turn, not here");
+    // The turn that held nothing never covers "second": had the holder failed, it would still wait.
+    const messages = await f.repository.listMessages(owner, 30);
+    const answered = messages.find((message) => message.kind === "ANSWER" && message.content === "Second answered.")!;
+    expect(operatorMessagesToAnswer(messages.filter((message) => message !== answered)).map((message) => message.content)).toEqual(["second"]);
+    expect(operatorMessagesToAnswer(messages)).toEqual([]);
   });
 
   it("lists a step recorded in the same millisecond as the waiting message: by position, not time (1.1.9 public suite flake)", () => {
@@ -3254,6 +3606,24 @@ describe("expiring waits reach Nous at once (round 4, item 29)", () => {
     const uncapped = serviceFixture([], { limits: { inboxDebounceMs: 60_000 }, settings: async () => ({ enabled: true, maxTurnsPerHour: 0 }) as never });
     await uncapped.service.notice(owner, "monitor:pane:a:WAITING", "Room Main pane Andy: WAITING", undefined, { soonMs: 10 });
     await vi.waitFor(() => expect(uncapped.requests).toHaveLength(1));
+  });
+});
+
+describe("one turn per done report (plan clipboard:CDbnZ7FSj-ww item 7)", () => {
+  it("takes the report, its FINISHED notice and the standing orders' finished line (soon) in one INBOX turn within seconds, not after the debounce", async () => {
+    const f = serviceFixture([], { limits: { inboxDebounceMs: 60_000 } });
+    // What wiring.ts sends for a DONE report with no plan or ticket: both routine, so alone they take no turn.
+    await f.service.notice(owner, "report:pane:a", 'Room "Main" pane Andy reported done (pane data): "Shipped."', undefined, { routine: true });
+    await f.service.notice(owner, "monitor:pane:a:FINISHED", "Room \"Main\" pane Andy: FINISHED", undefined, { routine: true });
+    await new Promise((done) => setTimeout(done, 50));
+    expect(f.requests).toHaveLength(0);
+    // The standing tick within a minute of the report: its line with `soon` (soonMs 5 s in wiring, 10 ms here).
+    await f.service.notice(owner, "finished:pane:a", "Finished pane Main/Andy · done 1 min · save not asked yet", undefined, { soonMs: 10 });
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+    await f.service.idle(owner);
+    await new Promise((done) => setTimeout(done, 50));
+    expect(f.requests.map((request) => request.reason)).toEqual(["INBOX"]);
+    for (const part of ["reported done", "pane Andy: FINISHED", "Finished pane Main/Andy"]) expect(f.requests[0]!.prompt).toContain(part);
   });
 });
 

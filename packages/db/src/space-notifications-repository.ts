@@ -198,12 +198,13 @@ export class PostgresSpaceNotificationsRepository implements SpaceNotificationsR
     return result.rows[0] ? fromRow(result.rows[0]) : null;
   }
   async list(owner: string, query: NotificationListQuery) {
-    // NEEDS_YOU is `needsYou` in SQL (the same kinds pattern) on panes still open: a closed pane's request needs nobody there; a copilot
+    // NEEDS_YOU is `needsYou` in SQL (the same kinds pattern) on panes still open: a closed pane's request needs nobody there (a plan's item,
+    // `nous:plan:<id>` in plan-needs-you.ts, has no pane and shows while its plan waits on the operator); a copilot
     // question held for Nous (`heldForNous`, Ask Last step 7) waits outside it until Nous puts it on a card or its hour ends.
     const result = await this.pool.query<Row>(`SELECT ${columns} FROM space_notifications WHERE owner_user_id = $1 AND ($2::text IS NULL OR status = $2)
       AND ($3::text IS NULL OR source = $3) AND ($4::timestamptz IS NULL OR created_at < $4)
-      AND ($6::text IS NULL OR (status IN ('OPEN', 'READ') AND severity <> 'INFO' AND room_id IS NOT NULL AND kind ~ $6
-        AND EXISTS (SELECT 1 FROM panes p WHERE p.id = space_notifications.pane_id AND NOT p.is_closed)
+      AND ($6::text IS NULL OR (status IN ('OPEN', 'READ') AND severity <> 'INFO' AND kind ~ $6
+        AND (dedupe_key LIKE 'nous:plan:%' OR (room_id IS NOT NULL AND EXISTS (SELECT 1 FROM panes p WHERE p.id = space_notifications.pane_id AND NOT p.is_closed)))
         AND NOT coalesce((payload->'heldForNous'->>'until')::timestamptz > now(), false) AND payload->'heldForNous'->>'allowance' IS NULL))
       AND ($7::text IS NULL OR kind = $7) AND ($8::text IS NULL OR dedupe_key = $8) AND (NOT $9::boolean OR status IN ('OPEN', 'READ'))
       AND ($10::text IS NULL OR pane_id = $10)

@@ -27,7 +27,7 @@ import { VAULT_AUTO_LOCK_KEY } from "../src/features/vault/vault-auto-lock.js";
 const envelope = { v: 1, alg: "A256GCM", purpose: "ITEM_FIELD", keyVersion: 1, nonce: "A".repeat(16), ct: "B".repeat(40) } as const;
 const policy = { agentUse: true, approvalMode: "ASSIST" as const, submitAllowed: false, maxFillsPerHour: 6, acceptedOriginRisks: [] };
 const record = (id: string, label: string, status: "ACTIVE" | "PENDING", history: VaultItemRecord["history"] = [], googleAccountId: string | null = null): VaultItemRecord => ({
-  metadata: { id, label, origins: ["https://shop.example"], fieldRoles: ["PASSWORD"], policy, status, googleAccountId, loginKey: null, loginPage: null },
+  metadata: { id, label, origins: ["https://shop.example"], fieldRoles: ["PASSWORD"], policy, status, googleAccountId, loginKey: null, loginPage: null, card: null },
   keyVersion: 1, dekEnvelope: { ...envelope, purpose: "ITEM_KEY" }, fields: { PASSWORD: envelope }, history
 });
 // A real (synthetic-seed) unlock key: deletes and key changes are signed with it (Vault review 2026-10-22).
@@ -694,5 +694,43 @@ describe("VaultDock", () => {
     const fallback = (mocks.delegateVaultItems.mock.calls[1]![2] as { records: VaultItemRecord[] }).records.map((item) => item.metadata.id);
     expect(fallback.slice(0, 2)).toEqual([used.metadata.id, made.metadata.id]);
     expect(fallback).toHaveLength(200);
+  });
+
+  it("adds a card with only its brand and last four in the clear, and hands logins to an older broker without it (plan clipboard:qf0P640vyLp2)", async () => {
+    const card = { ...record("vault_item:CCCCCCCCCCCCCCCCCCCCCC", "Revolut", "ACTIVE"), metadata: { ...record("vault_item:CCCCCCCCCCCCCCCCCCCCCC", "Revolut", "ACTIVE").metadata,
+      origins: [], fieldRoles: ["CARD_NUMBER" as const, "CARD_EXPIRY" as const, "CARD_CVC" as const], card: { brand: "VISA" as const, last4: "4242" } } };
+    mocks.vaultItems.mockResolvedValue({ items: [changed.metadata, card.metadata] });
+    mocks.vaultItem.mockImplementation(async (id: string) => ({ item: id === card.metadata.id ? card : changed }));
+    mocks.vaultState.mockResolvedValue(state({ agentAccess: true }));
+    // A broker from before cards refuses a delegation holding one.
+    mocks.delegateVaultItems.mockRejectedValueOnce(new Error("The delegation was refused; nothing changed.")).mockResolvedValue({ generation: 1, count: 1 });
+    mocks.encryptVaultItem.mockImplementation(async () => card);
+    render(<VaultDock />);
+    fireEvent.change(await screen.findByLabelText("Master password"), { target: { value: "a synthetic master" } });
+    fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+    const row = (await screen.findByText("Revolut")).closest("li")!;
+    expect(within(row).getByText("Visa ••4242")).toBeTruthy();
+    expect(within(row).queryByRole("link")).toBeNull();
+    await waitFor(() => expect(mocks.delegateVaultItems).toHaveBeenCalledTimes(2));
+    const [all, logins] = mocks.delegateVaultItems.mock.calls.map((call) => (call[2] as { records: VaultItemRecord[] }).records.map((item) => item.metadata.id));
+    expect(all).toContain(card.metadata.id);
+    expect(logins).toEqual([changed.metadata.id]);
+    fireEvent.click(screen.getByRole("button", { name: "Add card" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Revolut" } });
+    fireEvent.change(screen.getByLabelText("Card number"), { target: { value: "4242 4242 4242 4241" } });
+    fireEvent.change(screen.getByLabelText("Expiry date"), { target: { value: "01/20" } });
+    fireEvent.change(screen.getByLabelText("Security code (CVC)"), { target: { value: "123" } });
+    const save = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+    expect(screen.getByText("This card number is not valid.")).toBeTruthy();
+    expect(screen.getByText(/the card must not have expired/)).toBeTruthy();
+    expect(save.disabled).toBe(true);
+    expect(screen.getByLabelText("Card number").getAttribute("autocomplete")).toBe("cc-number");
+    expect(screen.getByLabelText("Card number").getAttribute("type")).toBe("password");
+    fireEvent.change(screen.getByLabelText("Card number"), { target: { value: "4242 4242 4242 4242" } });
+    fireEvent.change(screen.getByLabelText("Expiry date"), { target: { value: "12/2099" } });
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() => expect(mocks.encryptVaultItem).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      origins: [], loginPage: null, card: { brand: "VISA", last4: "4242" }, secrets: { CARD_NUMBER: "4242424242424242", CARD_EXPIRY: "12/99", CARD_CVC: "123", CARDHOLDER_NAME: undefined } }), undefined));
   });
 });

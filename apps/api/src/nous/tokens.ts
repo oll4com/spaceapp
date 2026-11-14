@@ -125,6 +125,9 @@ export function computeNousTokens(input: NousTokenInput): NousTokens {
     // Operator rule 2026-10-27: the API key never serves Claude Code, so its budget no longer counts for Nous's mode.
     if (room === 0) return "CRITICAL";
     if (config.mode === "ON") return "LOW";
+    // Operator 13/11 23:03 BKK: full 5-hour windows are a wait (or another pool), never a hold; 21:30-22:59 BKK LOW came from lab, ntheo and dev's
+    // 5-hour windows while dev had 52% and lab 60% of their weeks. The pool is held only when no account has week room (service.ts prompt rule).
+    if (pool.some((account) => weekRoom(account, at))) return "NORMAL";
     // Operator 5/11 («μην χάνετε ούτε ένα token»): while an account with room now still has room left at its own reset at its pace, that room
     // would reset unused: the pool is not LOW (5/11 05:19-10:05 BKK: LOW with ntheo's whole week free, 27 panes idle all night).
     if (pool.some((account) => roomAt(account, at) && losesRoomAtReset(account, at))) return "NORMAL";
@@ -169,6 +172,15 @@ export interface NousProviderRoom {
 }
 
 const WEEK_MS = 10_080 * 60_000;
+/** Week room (operator 13/11 23:03 BKK): 20% of the week left, a week that resets within 24 h, or a Codex weekly reset credit. Unknown weeks give none. */
+function weekRoom(account: GatewayAccount, at: number): boolean {
+  if ((account.resetCreditsAvailable ?? 0) > 0) return true;
+  const week = windowOf(account, 10_080);
+  const used = week ? nousWindowUsed(week, at) : null;
+  if (used === null) return false;
+  const resetAt = Date.parse(week!.resetAt ?? "");
+  return 100 - used >= 20 || (Number.isFinite(resetAt) && resetAt - at <= 24 * 3_600_000);
+}
 /** The account's week still has at least 1% free at its own reset at its pace since the week began (quotaLeftAtReset over one account). */
 function losesRoomAtReset(account: GatewayAccount, at: number): boolean {
   const week = windowOf(account, 10_080);
@@ -306,14 +318,14 @@ export async function readNousTokens(input: Omit<NousTokenInput, "accounts" | "n
       spentUsd: (bill ? anthropicMonthSpendUsd(bill, now) : null) ?? month?.spentUsd ?? null } : input.budget });
 }
 
-/** NORMAL and LOW change only once the new mode has held this long (operator 5/11: 79 changes since 27/10, 27 on 1/11). */
+/** LOW starts only once the samples asked for it this long (operator 5/11: 79 changes since 27/10, 27 on 1/11); NORMAL comes back at once (13/11). */
 export const NOUS_MODE_HOLD_MS = 30 * 60_000;
 /** The mode in force, since when, and the one the samples ask for meanwhile; kept across API restarts by `held`. */
 export interface NousHeldMode { mode: NousSpendMode; since: string; pending?: { mode: NousSpendMode; since: string } | null }
 
 /**
- * Serialize concurrent reads per owner and notify exactly once when the mode in force changes. NORMAL ↔ LOW waits until the samples have
- * asked for the new mode for NOUS_MODE_HOLD_MS; CRITICAL (no account has room now) comes and goes at once. `held` keeps the mode in force
+ * Serialize concurrent reads per owner and notify exactly once when the mode in force changes. NORMAL → LOW waits until the samples have
+ * asked for LOW for NOUS_MODE_HOLD_MS; LOW → NORMAL applies on the first sample that asks it; CRITICAL (no account has room now) comes and goes at once. `held` keeps the mode in force
  * across restarts (a deploy restarts the API; a fresh monitor took each restart's first sample as a change).
  */
 export function createNousTokenMonitor(deps: { read(owner: string): Promise<NousTokens>; transition(owner: string, previous: NousSpendMode, state: NousTokens): Promise<void>;
@@ -331,8 +343,10 @@ export function createNousTokenMonitor(deps: { read(owner: string): Promise<Nous
         const known = holds.get(owner) ?? await deps.held?.load(owner).catch(() => null) ?? null;
         const hold = known ?? { mode: "NORMAL" as const, since: sample.sampledAt };
         const asked = sample.mode === hold.mode ? null : hold.pending?.mode === sample.mode ? hold.pending : { mode: sample.mode, since: sample.sampledAt };
-        // Only the automatic samples wait: a first start (nothing held), the operator's ON/OFF and CRITICAL apply at once.
-        const now = !asked || !known || sample.control !== "AUTO" || sample.mode === "CRITICAL" || hold.mode === "CRITICAL"
+        // Only the automatic samples wait: a first start (nothing held), the operator's ON/OFF and CRITICAL apply at once. NORMAL too (operator 13/11
+        // 23:07 BKK «οταν μπενεις σε περιοερισμενο καταναλωση πρεπει να βγαινεις κιολας»: LOW from 21:30 waited "normal again at about 23:40" with
+        // crew, lab and ops' 5-hour windows open): the same modeAt asks NORMAL on the sample after room comes back, and it applies then; only LOW waits.
+        const now = !asked || !known || sample.control !== "AUTO" || sample.mode === "CRITICAL" || sample.mode === "NORMAL" || hold.mode === "CRITICAL"
           || Date.parse(sample.sampledAt) - Date.parse(asked.since) >= NOUS_MODE_HOLD_MS;
         const held: NousHeldMode = !asked ? { mode: hold.mode, since: hold.since } : now ? { mode: sample.mode, since: sample.sampledAt } : { mode: hold.mode, since: hold.since, pending: asked };
         holds.set(owner, held);

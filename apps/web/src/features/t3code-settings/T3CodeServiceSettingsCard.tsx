@@ -4,6 +4,7 @@ import { api } from "../../api.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { CodeXml, Recycle, RefreshCw } from "../ui-theme/app-icons.js";
 import { DockButton, DockIconButton, DockNotice } from "../dock-kit/DockKit.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
 import "./t3code-settings.css";
 
 type Pending = null | "status" | "enable" | "disable" | "restart";
@@ -88,17 +89,14 @@ export function T3CodeServiceSettingsCard() {
         <CodeXml aria-hidden="true" />
         <span>
           <strong>T3 Code</strong>
-          <small>The T3 Code service on this server that powers T3 Code panes.</small>
         </span>
       </div>
       <div className="settings-flat-row t3code-service-status-row">
-        <span className="settings-flat-row-copy">
-          <strong>Status <span className={`pill ${label.tone}`} data-t3code-service-state={label.text}>{label.text}</span></strong>
-          <small>
-            {runtime ? `T3 Code ${status?.serverVersion ?? runtime.packageVersion} · ${runtime.tag} · integration ${runtime.integrationRevision}` : "Runtime version unavailable."}
-            {status?.activeRuns != null ? ` · ${status.activeRuns} active ${status.activeRuns === 1 ? "run" : "runs"}` : ""}
-          </small>
-        </span>
+        <SettingsLabel label="Status" help="Whether the T3 Code service is ready, with its version and the runs in progress. Refresh it after a change on the server.">
+          <span className={`pill ${label.tone}`} data-t3code-service-state={label.text}>{label.text}</span>{" "}
+          {runtime ? `T3 Code ${status?.serverVersion ?? runtime.packageVersion} · ${runtime.tag} · integration ${runtime.integrationRevision}` : "Runtime version unavailable."}
+          {status?.activeRuns != null ? ` · ${status.activeRuns} active ${status.activeRuns === 1 ? "run" : "runs"}` : ""}
+        </SettingsLabel>
         <DockIconButton label="Refresh T3 Code status" title="Refresh status" icon={RefreshCw} busy={pending === "status"}
           disabled={busy} onClick={() => void refresh()} />
       </div>
@@ -107,16 +105,14 @@ export function T3CodeServiceSettingsCard() {
         name="t3code-service-enabled"
         ariaLabel="Enable T3 Code service"
         label="T3 Code service"
-        detail={status && !status.featureEnabled ? "Turned off by SPACE_T3CODE_ENABLED on this installation." : "Starts the service and keeps it enabled across reboots."}
+        detail={status && !status.featureEnabled ? "Turned off by SPACE_T3CODE_ENABLED on this installation." : undefined}
+        help="Starts the T3 Code service and keeps it enabled across reboots. Turning it off interrupts any T3 Code runs in progress."
         checked={serviceOn}
         disabled={!status || !status.featureEnabled || busy}
         onChange={(checked) => void run(checked ? "enable" : "disable")}
       />
       <div className="settings-flat-row">
-        <span className="settings-flat-row-copy">
-          <strong>Restart</strong>
-          <small>Restarts only the T3 Code service. Space, terminals and the DeepSeek Harness keep running.</small>
-        </span>
+        <SettingsLabel label="Restart" help="Restarts only the T3 Code service. Space, terminals and the DeepSeek Harness keep running." />
         <DockButton icon={Recycle} busy={pending === "restart"} disabled={!status || !serviceOn || busy} onClick={() => void run("restart")}>
           Restart
         </DockButton>

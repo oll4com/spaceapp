@@ -28,6 +28,12 @@ export const CLI_PANE_TYPES = Object.freeze([
 // The other CLIs cancel a running turn on Ctrl-C (Qoder binds ctrl+c to app:interrupt).
 const ESCAPE_INTERRUPT_CLI_RUNTIME_IDS: ReadonlySet<string> = new Set(["cli:codex", "cli:claude", "cli:muse", "cli:omp", "cli:droid"]);
 
+// Codex light pane (plan YqhRIXfLAnfK Δ): a CHAT pane whose turns run `codex app-server` per turn under its own CLI identity (netns, uid, control token).
+export const LIGHT_CODEX_RUNTIME_ID = "cli:codex";
+export function isLightCodexPane(pane: { mode: string; terminalRuntimeId?: string | null }): boolean {
+  return pane.mode === "CHAT" && pane.terminalRuntimeId === LIGHT_CODEX_RUNTIME_ID;
+}
+
 /** The key that interrupts a CLI's running turn without quitting the TUI. */
 export function cliTurnInterruptKey(runtimeId: string | null | undefined): "escape" | "ctrl_c" {
   return runtimeId && ESCAPE_INTERRUPT_CLI_RUNTIME_IDS.has(runtimeId) ? "escape" : "ctrl_c";
@@ -37,6 +43,7 @@ export const PANE_TYPES = Object.freeze([
   ...CLI_PANE_TYPES.map(type => ({ typeId: type.typeId, label: type.shortLabel, aliases: type.aliases,
     mode: "TERMINAL" as const, runtimeId: type.id, adapter: "cli" as const, readiness: "TERMINAL_INPUT" as const })),
   { typeId: "chat", label: "Chat", aliases: [], mode: "CHAT", runtimeId: null, adapter: "chat", readiness: "COMPOSER" },
+  { typeId: "codex-light", label: "Codex light", aliases: ["light codex", "codex light pane", "light pane"], mode: "CHAT", runtimeId: null, adapter: "chat", readiness: "COMPOSER" },
   { typeId: "youtube", label: "YouTube", aliases: ["music"], mode: "YOUTUBE", runtimeId: null, adapter: "youtube", readiness: "PLAYER" },
   { typeId: "vnc", label: "VNC", aliases: [], mode: "VNC", runtimeId: null, adapter: "vnc", readiness: "CONNECTION_FORM" },
   { typeId: "browser", label: "Browser", aliases: [], mode: "BROWSER", runtimeId: null, adapter: "browser", readiness: "NAVIGATION" },

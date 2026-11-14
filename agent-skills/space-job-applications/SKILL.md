@@ -102,8 +102,13 @@ on the CV at once without asking (operator rule, 31/10): publish the new CV with
 ## The run loop (the operator presses Start; you pull the work)
 
 The kickoff prompt in this terminal names the run. When it says nothing queued can be taken now (empty queue,
-or every posting waits for an employer limit), first find new postings (`references/discovery.md`) and queue
-those scoring 3 or more with `space_job_application_start` status `QUEUED`. From then on:
+or every posting waits for an employer limit or the 180-day company cooldown), first find new postings
+(`references/discovery.md`) and queue those scoring 3 or more that pass the CV's region, work-authorization,
+seniority and stack rules with `space_job_application_start` status `QUEUED`. Space also starts a run by itself
+when the operator's daily application target (Settings → Job Copilot) is behind its pace; the operator's Stop
+holds that until they start again. The target never loosens a check: verify before submit, no duplicates,
+answers only from the CV, profile and memory, never another agent's sites, never a test or video interview.
+From then on:
 
 1. `space_job_next {waitMs: 120000}`. It returns either `done: true` (the run was stopped or the
    queue is empty: say so in one line and stop looping) or a **task packet**: `application`

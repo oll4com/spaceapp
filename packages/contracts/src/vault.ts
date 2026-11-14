@@ -7,7 +7,20 @@ import { noRepeatedValues } from "./array-rules.js";
 // non-secret metadata: no schema has a field that can hold a plaintext secret, a VRK share, a password or the ARK.
 
 export const VAULT_FORMAT_VERSION = 1;
-export const VAULT_FIELD_ROLES = ["USERNAME", "PASSWORD", "OTP"] as const;
+/** A payment card's fields (plan clipboard:qf0P640vyLp2), sealed in the browser like a login's; CARD_EXPIRY is "MM/YY". */
+export const VAULT_CARD_ROLES = ["CARD_NUMBER", "CARD_EXPIRY", "CARD_CVC", "CARDHOLDER_NAME"] as const;
+export const VAULT_FIELD_ROLES = ["USERNAME", "PASSWORD", "OTP", ...VAULT_CARD_ROLES] as const;
+export const isVaultCardRole = (role: string): boolean => (VAULT_CARD_ROLES as readonly string[]).includes(role);
+/** A card's only non-secret metadata besides its label: the brand and the last four digits. */
+export const VAULT_CARD_BRANDS = ["VISA", "MASTERCARD", "AMEX", "MAESTRO", "DISCOVER", "DINERS", "JCB", "UNIONPAY", "OTHER"] as const;
+export const vaultCardMetadataSchema = z.object({ brand: z.enum(VAULT_CARD_BRANDS), last4: z.string().regex(/^[0-9]{4}$/) }).strict();
+/**
+ * A delegated item is a login (origins, login fields, may submit) or a card (no origins: it pays at any https merchant; card
+ * fields only; the broker never submits it, the agent presses Pay).
+ */
+const loginOrCard = (item: { origins: readonly string[]; fields: readonly string[]; submit?: boolean }) => item.fields.every(isVaultCardRole)
+  ? item.origins.length === 0 && item.submit !== true : item.origins.length > 0 && !item.fields.some(isVaultCardRole);
+const LOGIN_OR_CARD = "A login needs origins and login fields; a card has no origins, card fields only and never submits.";
 /** What a fill typed and what stayed disabled or read-only (Oracle 7/11: a confirm box the site opens late), so an agent never submits past an empty box. */
 const filledRole = z.enum([...VAULT_FIELD_ROLES, "NEW_PASSWORD", "CONFIRM_PASSWORD"]);
 export const vaultFillFieldsSchema = z.object({ filled: z.array(filledRole), disabled: z.array(filledRole) }).strict();
@@ -146,8 +159,10 @@ export const vaultItemPolicySchema = z.object({
 
 /** Non-secret item metadata; usernames are secret fields, never metadata. */
 export const vaultItemMetadataSchema = z.object({
-  id: vaultItemIdSchema, label: z.string().trim().min(1).max(80), origins: z.array(canonicalOrigin).min(1).max(10),
-  fieldRoles: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(3), policy: vaultItemPolicySchema,
+  id: vaultItemIdSchema, label: z.string().trim().min(1).max(80), origins: z.array(canonicalOrigin).max(10),
+  fieldRoles: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(VAULT_CARD_ROLES.length), policy: vaultItemPolicySchema,
+  /** A payment card (migration 0330): brand and last four only; null: a login. */
+  card: vaultCardMetadataSchema.nullable().default(null),
   /** PENDING: created or changed by an agent's generated password; the operator keeps or discards it. */
   status: z.enum(["ACTIVE", "PENDING"]).default("ACTIVE"),
   /** The owner's Google account the login belongs to (a Chrome import's source account, migration 0240); null: none. */
@@ -168,6 +183,10 @@ export const vaultItemMetadataSchema = z.object({
     }
   }
   if (new Set(item.fieldRoles).size !== item.fieldRoles.length) context.addIssue({ code: "custom", message: "Duplicate field role.", path: ["fieldRoles"] });
+  const card = item.fieldRoles.every(isVaultCardRole);
+  if (!loginOrCard({ origins: item.origins, fields: item.fieldRoles }) || card !== (item.card !== null) || (card && (!item.fieldRoles.includes("CARD_NUMBER") || item.loginKey || item.loginPage))) {
+    context.addIssue({ code: "custom", message: LOGIN_OR_CARD, path: ["fieldRoles"] });
+  }
 });
 export type VaultItemMetadata = z.infer<typeof vaultItemMetadataSchema>;
 
@@ -214,9 +233,9 @@ export const vaultDelegationClaimsSchema = z.object({
   v: z.literal(1), kind: z.literal("DELEGATION"), certId: vaultDelegationIdSchema, ownerUserId: ownerSchema, vaultId: vaultIdSchema,
   generation: z.number().int().min(1), unlockEpoch: z.number().int().min(1),
   items: z.array(z.object({
-    handle: vaultItemIdSchema, origins: z.array(canonicalOrigin).min(1).max(10), fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(3),
+    handle: vaultItemIdSchema, origins: z.array(canonicalOrigin).max(10), fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(VAULT_CARD_ROLES.length),
     approvalMode: z.enum(VAULT_APPROVAL_MODES), submit: z.boolean()
-  }).strict()).min(1).max(VAULT_DELEGATION_TECHNICAL_MAX_ITEMS),
+  }).strict().refine(loginOrCard, LOGIN_OR_CARD)).min(1).max(VAULT_DELEGATION_TECHNICAL_MAX_ITEMS),
   envelopeDigest: b64url(43, 43), issuedAt: isoDate, expiresAt: isoDate
 }).strict();
 export const vaultDelegationCertificateSchema = signed(vaultDelegationClaimsSchema);
@@ -226,7 +245,7 @@ export type VaultDelegationClaims = z.infer<typeof vaultDelegationClaimsSchema>;
 export const vaultUseClaimsSchema = z.object({
   v: z.literal(1), kind: z.literal("USE"), certId: vaultDelegationIdSchema, ownerUserId: ownerSchema, vaultId: vaultIdSchema,
   generation: z.number().int().min(1), epoch: z.number().int().min(1), handle: vaultItemIdSchema, origin: canonicalOrigin,
-  fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(3), submit: z.boolean(), paneId: z.string().min(1).max(200),
+  fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(VAULT_CARD_ROLES.length), submit: z.boolean(), paneId: z.string().min(1).max(200),
   targetId: z.string().min(1).max(128), pageId: z.string().min(1).max(128), frameId: z.string().min(1).max(128),
   nonce: b64url(22, 64), issuedAt: isoDate, expiresAt: isoDate,
   /** Generate fills only: the fields to fill and the operator's PENDING inbox key the generated password is sealed to. */
@@ -259,7 +278,7 @@ export const vaultAuditEventSchema = z.object({
   actor: z.enum(["OPERATOR", "AGENT", "BROKER", "SYSTEM"]), action: z.enum(VAULT_AUDIT_ACTIONS),
   result: z.enum(["OK", ...VAULT_AGENT_STATUSES]), reason: code.nullable().default(null),
   itemId: vaultItemIdSchema.nullable().default(null), origin: canonicalOrigin.nullable().default(null),
-  fields: z.array(z.enum(VAULT_FIELD_ROLES)).max(3).default([]), paneId: z.string().max(200).nullable().default(null),
+  fields: z.array(z.enum(VAULT_FIELD_ROLES)).max(VAULT_CARD_ROLES.length).default([]), paneId: z.string().max(200).nullable().default(null),
   /** RESEAL, MOVE_OUT, MOVE_IN: sha256 hex of the old and new broker transport (public) keys; from is null when unknown. */
   brokerKeys: z.object({ from: z.string().regex(/^[0-9a-f]{64}$/).nullable(), to: z.string().regex(/^[0-9a-f]{64}$/) }).strict().optional()
 }).strict();
@@ -276,6 +295,8 @@ const targetPaneId = z.string().regex(/^pane:[A-Za-z0-9_-]{6,80}$/).optional();
 export const vaultAgentFillRequestSchema = z.object({
   handle: vaultItemIdSchema, fields: z.array(z.enum(["USERNAME", "PASSWORD"])).min(1).max(2), submit: z.boolean().default(false), targetPaneId
 }).strict();
+/** A card at a checkout: the broker fills number, expiry, CVC and name in the page and its payment frames, never presses Pay. */
+export const vaultAgentCardFillRequestSchema = z.object({ handle: vaultItemIdSchema, targetPaneId }).strict();
 export const vaultAgentTotpRequestSchema = z.object({ handle: vaultItemIdSchema, submit: z.boolean().default(false), targetPaneId }).strict();
 /** Generate a password inside the fill path and fill it; the agent learns only the handle of the (PENDING) item. */
 export const vaultAgentGenerateRequestSchema = z.object({
@@ -375,9 +396,9 @@ export const vaultAuditQuerySchema = z.object({
 /** Delegate items to agents: fill fields sealed under a fresh fill key, the key sealed to the broker. */
 export const vaultDelegateRequestSchema = z.object({
   items: z.array(z.object({
-    handle: vaultItemIdSchema, origins: z.array(canonicalOrigin).min(1).max(10), fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(3),
+    handle: vaultItemIdSchema, origins: z.array(canonicalOrigin).max(10), fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(VAULT_CARD_ROLES.length),
     approvalMode: z.enum(VAULT_APPROVAL_MODES), submit: z.boolean()
-  }).strict()).min(1).max(VAULT_DELEGATION_TECHNICAL_MAX_ITEMS),
+  }).strict().refine(loginOrCard, LOGIN_OR_CARD)).min(1).max(VAULT_DELEGATION_TECHNICAL_MAX_ITEMS),
   fillEnvelopes: vaultFillEnvelopesSchema,
   sealedFillKey: vaultTransportEnvelopeSchema,
   /** Signed by the operator with the items: the next generation, the epoch it was unlocked in and the end of the delegation. */
@@ -405,7 +426,9 @@ export function vaultDelegationOperatorMessage(input: {
 
 /** space_vault_list while agent access is on: what an agent may know of a delegated item. */
 export const vaultAgentListItemSchema = z.object({
-  handle: vaultItemIdSchema, label: z.string().max(80), origins: z.array(z.string().max(300)).max(10), fields: z.array(z.enum(VAULT_FIELD_ROLES)).max(3),
+  handle: vaultItemIdSchema, label: z.string().max(80), origins: z.array(z.string().max(300)).max(10), fields: z.array(z.enum(VAULT_FIELD_ROLES)).max(VAULT_CARD_ROLES.length),
+  /** A card: "VISA ••1234" (brand and last four only); absent: a login. */
+  card: z.string().max(40).optional(),
   /** The Google account's address the login belongs to (a Chrome import's source account); absent: none. */
   account: z.string().max(320).optional(),
   /** The page to open before a fill; absent: the first origin. */

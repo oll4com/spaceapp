@@ -15,7 +15,7 @@ import { useIsDockActive } from "../docks/dock-active-context.js";
 import { requestNousFocus, useLeaveDuringNousFocus } from "../nous-focus/nous-focus-events.js";
 import { NousAppointments } from "./NousAppointments.js";
 import { clearConversationMatches, findConversationText, paintConversationMatches, searchPlans } from "./nous-search.js";
-import { Activity, ArrowLeft, CalendarCheck, ChartSpline, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, ChevronsDown, ChevronsUp, CircleStop, ClipboardList, FileSymlink, Gauge, Gavel, Briefcase, TrendingUp, LayoutGrid, ListChecks, Maximize2, Megaphone, MessageSquare, Minimize2, Nous, Paperclip, Rocket, Search, Send, Star, Target, Trash2, UserCheck, X } from "../ui-theme/app-icons.js";
+import { Activity, ArrowLeft, CalendarCheck, ChartSpline, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, ChevronsDown, ChevronsUp, CircleStop, ClipboardList, FileSymlink, Gauge, Gavel, Briefcase, Handshake, TrendingUp, LayoutGrid, ListChecks, Maximize2, Megaphone, MessageSquare, Minimize2, Nous, Paperclip, Rocket, Search, Send, Star, Target, Trash2, UserCheck, X } from "../ui-theme/app-icons.js";
 import { NousBrain3D } from "./NousBrain3D.js";
 import { NousLiveStats } from "./NousLiveStats.js";
 import { NousDone, useDoneRequests, useDoneView } from "./NousDone.js";
@@ -25,6 +25,7 @@ import { NousRequests, useRequestsInProgress } from "./NousRequests.js";
 import { decisionMarkdown, needsYouMarkdown, NousNeedsYou, PlanNeedsYou, useNeedsYouRequests } from "./NousNeedsYou.js";
 import { NeedsYouFiles } from "../needs-you/NeedsYouFiles.js";
 import { useNeedsYouView } from "../needs-you/needs-you-view.js";
+import { consumePlanView, NOUS_DONE_OPEN_EVENT } from "./nous-done-events.js";
 import { goToNeedsYouPane, peekNotificationStore } from "../notifications/notification-store.js";
 import { NousPaneBoard } from "./NousPaneBoard.js";
 import { NousPlanMap } from "./NousPlanMap.js";
@@ -46,7 +47,7 @@ import { clipboardFiles, NousMessageFiles, NousPendingFiles, operatorText, usePe
 import "./nous.css";
 import { setClientView } from "../../client-context.js";
 
-type Tab = "conversation" | "needs" | "done" | "updates" | "requests" | "shared" | "decisions" | "overview" | "panes" | "plans" | "goals" | "startup" | "jobs" | "crypto" | "marketing" | "quotas" | "load" | "score" | "taskRuns";
+type Tab = "conversation" | "needs" | "done" | "updates" | "requests" | "shared" | "decisions" | "overview" | "panes" | "plans" | "goals" | "startup" | "affiliate" | "jobs" | "crypto" | "marketing" | "quotas" | "load" | "score" | "taskRuns";
 const FAST_POLL_MS = 3_000;
 const NOUS_VOICE_OWNER = "nous-dock";
 const SLOW_POLL_MS = 20_000;
@@ -61,10 +62,10 @@ const REASON_LABELS: Record<NonNullable<NousState["running"]>["reason"], string>
   OPERATOR: "Answering you", INBOX: "Reading news from the rooms", DECISION: "Acting on your answer", HEARTBEAT: "Checking every room", STANDING: "Standing orders: finished panes and stalled plans",
   REVIEW: "Daily self-review", GOAL: "Working on your goals"
 };
-const VIEW_TITLES: Record<Tab, string> = { conversation: "Conversation", needs: "Needs you", done: "Done", updates: "Updates", requests: "Requests", shared: "Shared", decisions: "Decisions", overview: "Overview", panes: "Pane board", plans: "Plans", goals: "Goals", startup: "Startup programs", jobs: "Job applications", crypto: "Crypto", marketing: "Marketing", quotas: "Quotas", load: "Load", score: "Score", taskRuns: "Task runs" };
+const VIEW_TITLES: Record<Tab, string> = { conversation: "Conversation", needs: "Needs you", done: "Done", updates: "Updates", requests: "Requests", shared: "Shared", decisions: "Decisions", overview: "Overview", panes: "Pane board", plans: "Plans", goals: "Goals", startup: "Startup programs", affiliate: "Affiliate", jobs: "Job applications", crypto: "Crypto", marketing: "Marketing", quotas: "Quotas", load: "Load", score: "Score", taskRuns: "Task runs" };
 // The maximized rail groups the views (operator 3/11, after the Nous app's grouped tabs): what is his, the work, the system.
 const RAIL_SECTIONS: Array<[string, Tab[]]> = [["Me", ["conversation", "needs", "decisions", "done", "updates", "requests", "shared"]],
-  ["Work", ["overview", "panes", "plans", "goals", "startup", "jobs", "crypto", "marketing"]], ["System", ["quotas", "load", "score", "taskRuns"]]];
+  ["Work", ["overview", "panes", "plans", "goals", "startup", "affiliate", "jobs", "crypto", "marketing"]], ["System", ["quotas", "load", "score", "taskRuns"]]];
 const isDecisionFilter = (value: unknown): value is "open" | "all" => value === "open" || value === "all";
 const isTab = (value: unknown): value is Tab => typeof value === "string" && Object.hasOwn(VIEW_TITLES, value);
 // A tab stored on the removed oll4.com funding page (operator 7/11, nous_msg:e9c06cd838de45f4bccda467) opens Startup programs, where its programs went.
@@ -255,6 +256,15 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
     if (state && everything && !decisions.some((decision) => decision.id === everything && decision.status === "OPEN")) setEverything(null);
   }, [state, everything, decisions, setEverything]);
   const openPlan = (id: string) => { setPlanView(id); if (id in plans) void loadPlans([id]); };
+  // Go on a needs-you card about a plan with no open pane (notification-store.ts) opens that plan here, once the dock is mounted.
+  const openPlanRef = useRef(openPlan);
+  openPlanRef.current = openPlan;
+  useEffect(() => {
+    const open = () => { const id = consumePlanView(); if (id) openPlanRef.current(id); };
+    window.addEventListener(NOUS_DONE_OPEN_EVENT, open);
+    open();
+    return () => window.removeEventListener(NOUS_DONE_OPEN_EVENT, open);
+  }, []);
   // An open plan is a history entry (operator 31/10 16:15 BKK): Android's back and the browser's Back close it instead of leaving
   // SpaceApp; closing it any other way takes that entry back. Only an entry this dock pushed is ever taken back.
   const pushedPlanRef = useRef(false);
@@ -516,6 +526,8 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
     { id: "plans", label: "Plans", icon: ClipboardList }, { id: "goals", label: "Goals", icon: Target, ...(activeGoals ? { count: activeGoals } : {}) },
     // Operator 3/11 20:09 BKK (plan clipboard:17yLAnH5ZpyF): every startup program, the oll4.com projects' ones included (7/11).
     { id: "startup", label: "Startup programs", icon: Rocket },
+    // Operator 14/11 00:07 BKK (nous_msg:de448bc711204fdb832cf926): every affiliate application and what each approval gives.
+    { id: "affiliate", label: "Affiliate", icon: Handshake },
     // Operator 3/11 22:33 BKK (nous_msg:e734994004dd): every job applied to and every crypto method tested, each as one picture.
     { id: "jobs", label: "Job applications", icon: Briefcase }, { id: "crypto", label: "Crypto", icon: TrendingUp },
     // Operator 5/11 10:42 BKK (plan clipboard:netzt-nNvtBL): every marketing post, platform and stats source, scored.
@@ -609,7 +621,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
       {dragging ? <div className="nous-drop-hint" aria-hidden="true">{t("Drop files to send them to Nous")}</div> : null}
     </div>
   ) : tab === "needs" ? (
-    <NousNeedsYou requests={needs} decisions={open} plans={overview?.plans} focus={needsFocus} renderDecision={(decision) => <NousDecisionCard decision={decision} onAnswer={answerDecision(decision)} />} />
+    <NousNeedsYou requests={needs} decisions={open} plans={overview?.plans} focus={needsFocus} onOpenPlan={openPlan} renderDecision={(decision) => <NousDecisionCard decision={decision} onAnswer={answerDecision(decision)} />} />
   ) : tab === "done" ? (
     <NousDone requests={done.requests} error={done.error} onRetry={done.retry} onOpenPlan={openPlan} onAcknowledged={done.acknowledged} />
   ) : tab === "updates" ? (
@@ -620,6 +632,8 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
     <NousShared files={shared.files} error={shared.error} onRetry={() => void shared.retry()} onRemoved={shared.removed} />
   ) : tab === "startup" ? (
     <NousPrograms page="startup" active={isActive && canRun} />
+  ) : tab === "affiliate" ? (
+    <NousPrograms page="affiliate" active={isActive && canRun} />
   ) : tab === "jobs" ? (
     <NousJobs active={isActive && canRun} />
   ) : tab === "crypto" ? (
@@ -977,6 +991,8 @@ function NousDecisionEverything({ decision, answers, onClose }: { decision: Nous
   const [files, setFiles] = useState<NousDecisionFile[] | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const named = decision.refs.files ?? [];
+  // A Mail, Freelance or Marketing review sends its own draft: the server reads it with the files (operator 13/11 21:43 BKK).
+  const review = decision.action?.type === "COPILOT" && decision.action.item === "REVIEW" && ["MAIL", "FREELANCE", "MARKETING"].includes(decision.action.copilot);
   const namedKey = named.join("\n");
   // A modal like the dock's confirm: above every dock and pane, Escape closes only this.
   useEffect(() => {
@@ -985,12 +1001,12 @@ function NousDecisionEverything({ decision, answers, onClose }: { decision: Nous
     dialog?.querySelector<HTMLElement>("button")?.focus();
   }, []);
   useEffect(() => {
-    if (!namedKey) return;
+    if (!namedKey && !review) return;
     let cancelled = false;
     api.nousDecisionFiles(decision.id).then((result) => { if (!cancelled) setFiles(result.files); })
       .catch((err: unknown) => { if (!cancelled) setFailed(messageOf(err, "The files could not be read.")); });
     return () => { cancelled = true; };
-  }, [decision.id, namedKey]);
+  }, [decision.id, namedKey, review]);
   return (
     <dialog ref={ref} className="nous-everything" aria-modal="true" aria-label={`Everything about: ${decision.title}`}
       onCancel={(event) => { event.preventDefault(); onClose(); }}
@@ -1007,8 +1023,8 @@ function NousDecisionEverything({ decision, answers, onClose }: { decision: Nous
         {decision.action ? <section><h4>{t("On approval Space runs")}</h4><p className="nous-everything-action">{describeAction(language, decision.action, Infinity)}</p></section> : null}
         <section aria-label={t("What it sends")}>
           <h4>{t("What it sends")}</h4>
-          {named.length === 0 ? <p className="nous-muted">{t("Nous named no files with the texts this sends. Ask it in the conversation to attach them before you approve.")}</p> : null}
-          {failed ? <p className="nous-muted" role="alert">{failed}</p> : named.length > 0 && files === null ? <DockState kind="loading" title={t("Reading the files")} /> : null}
+          {(files ? files.length === 0 : named.length === 0 && !review) ? <p className="nous-muted">{t("Nous named no files with the texts this sends. Ask it in the conversation to attach them before you approve.")}</p> : null}
+          {failed ? <p className="nous-muted" role="alert">{failed}</p> : (named.length > 0 || review) && files === null ? <DockState kind="loading" title={t("Reading the files")} /> : null}
           {files?.map((file) => (
             <article key={file.ref} className="nous-everything-file" aria-label={file.ref}>
               <h5>{file.ref}{file.truncated ? ` · the first ${file.text?.length.toLocaleString()} of ${file.total?.toLocaleString()} characters` : ""}</h5>

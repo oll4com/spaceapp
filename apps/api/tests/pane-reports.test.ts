@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { NEEDS_YOU_GO_NOW, needsYouAnswerKind, type Pane, type Room, type RoomAgentEvent } from "@space/contracts";
+import { NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY, NEEDS_YOU_START_NOW, needsYouAnswerKind, type Pane, type Room, type RoomAgentEvent } from "@space/contracts";
 import { InMemoryNousPaneChecksRepository, InMemoryPaneReportsRepository } from "@space/db";
 import { createPaneReports, paneProgressSchema, paneReportLine, paneReportsText, planReportLine, questionSummary, reportSummary, screenSummary, tailSummary } from "../src/pane-reports.js";
 import { createNousPaneWatch } from "../src/nous/pane-watch.js";
@@ -106,13 +106,38 @@ describe("pane reports", () => {
     const reports = createPaneReports({ repository: new InMemoryPaneReportsRepository(), now: () => now, store: { getRoom: async () => bruno, getPane: async () => andy } as never,
       lastAnswer: async () => null, screen: async () => null, notifications: { raise, resolve: vi.fn(async () => 1) } });
     await reports.report(bruno, andy, { status: "needs-you", summary: "Contra identity check", needs: "Finish the ID check at https://contra.com/settings/verification, then W-8." });
+    // Goal 7365014c: a page to act on asks whether to start now (Go now / Later today), never "when"; the ask stays in the body.
     expect(raise.mock.calls[0]![0]).toMatchObject({ link: { target: "url:https://contra.com/settings/verification" },
-      payload: { ask: { options: [NEEDS_YOU_GO_NOW, "Failed", "Need links/steps"], recommended: NEEDS_YOU_GO_NOW, answer: { kind: "PANE" } } } });
+      body: expect.stringContaining("Finish the ID check at https://contra.com/settings/verification, then W-8."),
+      payload: { ask: { question: NEEDS_YOU_START_NOW, options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY], recommended: NEEDS_YOU_GO_NOW, answer: { kind: "PANE" } } } });
+    // With nowhere to open, R27-2's options stay.
+    await reports.report(bruno, andy, { status: "needs-you", summary: "Call the bank", needs: "Ask them to lift the card block" });
+    expect(raise.mock.calls.at(-1)![0]).toMatchObject({ payload: { ask: { question: "Ask them to lift the card block", options: [NEEDS_YOU_GO_NOW, "Failed", "Need links/steps"] } } });
     // Going is the operator's own: "Always answer like this" never stores a Go now.
     expect(needsYouAnswerKind(raise.mock.calls[0]![0] as never)).toBeNull();
+    raise.mockClear();
     // The agent's own options and target stay as given.
     await reports.report(bruno, andy, { status: "needs-you", summary: "Pick", needs: "Which one, see https://example.com/a?", options: ["A", "B"], recommended: "B", target: "browser" });
-    expect(raise.mock.calls[1]![0]).toMatchObject({ link: { target: "browser" }, payload: { ask: { options: ["A", "B"], recommended: "B" } } });
+    expect(raise.mock.calls[0]![0]).toMatchObject({ link: { target: "browser" }, payload: { ask: { options: ["A", "B"], recommended: "B" } } });
+  });
+
+  it("goal 7365014c: the same pane and target asked again within 24 h refreshes the open card without a new alert; another target or a day later alerts", async () => {
+    let clockNow = now;
+    let open: { link: { target?: string }; payload: Record<string, unknown>; createdAt: string } | null = null;
+    const raise = vi.fn(async (input: { link: { target?: string }; payload: Record<string, unknown> }) => { open = { ...input, createdAt: new Date(clockNow).toISOString() }; return input as never; });
+    const reports = createPaneReports({ repository: new InMemoryPaneReportsRepository(), now: () => clockNow, store: { getRoom: async () => bruno, getPane: async () => andy } as never,
+      lastAnswer: async () => null, screen: async () => null, notifications: { raise: raise as never, resolve: vi.fn(async () => 1) }, openCard: async () => open as never });
+    const ask = (url: string) => reports.report(bruno, andy, { status: "needs-you", summary: "Sign the form", needs: `Sign at ${url}`, checked: ["Vault: no login"] });
+    const first = new Date(now).toISOString();
+    await ask("https://a.test/form");
+    clockNow += 3_600_000;
+    await ask("https://a.test/form");
+    expect(raise.mock.calls.map((call) => [call[0].payload.alertAt, call[1]])).toEqual([[first, { realert: true }], [first, { realert: false }]]);
+    await ask("https://b.test/other");
+    expect(raise.mock.calls[2]![1]).toEqual({ realert: true });
+    clockNow += 25 * 3_600_000;
+    await ask("https://b.test/other");
+    expect(raise.mock.calls[3]![1]).toEqual({ realert: true });
   });
 
   it("a blocked report whose --needs asks for the operator's hands raises the same Needs you card; a blocked one without needs or with needs none does not (nous_msg:e68eed59)", async () => {
@@ -129,7 +154,7 @@ describe("pane reports", () => {
     // 11/11 03:01Z: Jack's blocked report needed the operator to approve an npm login link and no card came.
     expect(await raised("Open and approve https://www.npmjs.com/login?next=/login/cli/x")).toMatchObject([{ kind: "NEEDS_YOU", title: "Andy needs you",
       link: { target: "url:https://www.npmjs.com/login?next=/login/cli/x" }, dedupeKey: `agent:needs-you:${andy.id}`,
-      payload: { ask: { options: [NEEDS_YOU_GO_NOW, "Failed", "Need links/steps"], recommended: NEEDS_YOU_GO_NOW } } }]);
+      payload: { ask: { options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY], recommended: NEEDS_YOU_GO_NOW } } }]);
     expect(await raised()).toEqual([]);
     expect(await raised("none")).toEqual([]);
   });

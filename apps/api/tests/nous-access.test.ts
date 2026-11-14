@@ -265,6 +265,11 @@ describe("Nous Council and mail tools", () => {
     const found = await nous.execute("space_mail_search", { q: "from:github newer_than:1d" }, ctx);
     expect(mail.search).toHaveBeenCalledWith(owner, { account: "all", q: "from:github newer_than:1d", labelId: "ALL", max: 25 });
     expect(found.result).toContain("op@example.com · t1");
+    // Daily Nous errors 14/11 (20:39 crew@spaceapp.dev): an address that is no account of the pane is searched as mail to it in every account.
+    mail.search.mockRejectedValueOnce(new Error("crew@example.dev is not a mail account of this pane."));
+    const forwarded = await nous.execute("space_mail_search", { account: "crew@example.dev", q: "stripe" }, ctx);
+    expect(mail.search).toHaveBeenLastCalledWith(owner, { account: "all", q: "to:crew@example.dev stripe", labelId: "ALL", max: 25 });
+    expect(forwarded).toMatchObject({ ok: true, result: expect.stringContaining("crew@example.dev is not a connected account: searched mail to it in every account") });
     const read = await nous.execute("space_mail_read", { account: "op@example.com", threadId: "t1" }, ctx);
     expect(read.result).toContain("Your code is 123456");
     expect(read.result).not.toContain("secret.token.value");
@@ -281,6 +286,8 @@ describe("Nous Council and mail tools", () => {
     expect(mail.read).toHaveBeenCalledTimes(2);
     mail.read.mockRejectedValueOnce(new Error("Gmail no longer has that message or thread."));
     expect((await nous.execute("space_mail_read", { account: "other@example.com", threadId: "t4" }, ctx)).ok).toBe(false);
+    mail.read.mockRejectedValueOnce(new Error("crew@example.dev is not a mail account of this pane."));
+    expect(await nous.execute("space_mail_read", { account: "crew@example.dev", threadId: "t9" }, ctx)).toMatchObject({ ok: false, refused: true });
   });
 
   it("names a failed mail read's cause, the connected accounts and the next step, and records mailCode for the REVIEW (R17-6)", async () => {

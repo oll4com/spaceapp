@@ -3,6 +3,7 @@ import type { DeployQueueTicket } from "@space/contracts";
 import type { NousFollowup, NousFollowupsRepository, NousFollowupTrigger } from "@space/db";
 import { defaultDeployQueueRoot, readDeployQueueTicket } from "../deploy-queue.js";
 import { defaultReleasesOptions } from "../instance-releases.js";
+import { execGit } from "../worktrees/worktree-service.js";
 
 /**
  * Nous's follow-ups (plan clipboard:8s0ZNiO3q5ZT S3): "remind me when ..." back into its own inbox. A follow-up waits for a
@@ -10,6 +11,8 @@ import { defaultReleasesOptions } from "../instance-releases.js";
  * line. Per owner, persisted; the rows (status, outcome, times) are the audit. Nothing here acts on anything else.
  */
 /** A ticket in one of these states has ended; CANCELLED too, so its follow-up does not wait forever. */
+/** A merge-queue ticket id inside free words (a note, a wait). */
+export const TICKET_IN_WORDS = /\bq-\d{8}-\d{6}-[0-9a-f]{4}\b/;
 const ENDED = new Set<DeployQueueTicket["status"]>(["DEPLOYED", "FAILED", "CONFLICT", "CANCELLED"]);
 
 export const nousFollowupArgsSchema = z.object({
@@ -45,6 +48,11 @@ export async function readTicket(ticketId: string, roots = [defaultDeployQueueRo
     if (ticket) return ticket;
   }
   return null;
+}
+/** A ticket whose file the queue no longer keeps is on stable when main carries its "Merge queue <id>:" merge commit (13/11: a 5/11 ticket kept a parked plan waiting). */
+export async function ticketMergedOnMain(ticketId: string, root: string): Promise<boolean> {
+  const found = await execGit(root, ["log", "main", "-1", "--format=%H", "--fixed-strings", `--grep=Merge queue ${ticketId}:`], 5_000).catch(() => null);
+  return found?.code === 0 && found.stdout.trim() !== "";
 }
 export const readTicketStatus = async (ticketId: string, roots?: string[]): Promise<DeployQueueTicket["status"] | null> => (await readTicket(ticketId, roots))?.status ?? null;
 
@@ -86,7 +94,8 @@ export function createNousFollowups(deps: NousFollowupsDeps) {
   return {
     /** The space_nous_followup tool; `pane` is already resolved to the owner's pane by the caller. */
     async run(owner: string, args: NousFollowupArgs, pane: { paneId: string; paneLabel: string } | null): Promise<{ ok: boolean; refused?: boolean; display: string; result: string }> {
-      const fail = (result: string) => ({ ok: false, display: "Follow-up not changed", result });
+      // Daily Nous errors 14/11 slice 5 (×2 in 7 days "Give exactly one trigger"): every answer here names the argument the next call needs: a refusal.
+      const fail = (result: string) => ({ ok: false, refused: true, display: "Follow-up not changed", result });
       if (args.op === "list") {
         // Every open follow-up, then the newest closed ones (operator 2026-10-27: no limit on open follow-ups).
         const items = await deps.repository.list(owner, 40);
@@ -113,7 +122,7 @@ export function createNousFollowups(deps: NousFollowupsDeps) {
       }
       // 1057 (13/11 REVIEW: deferrals that could have run): a time wait whose note names a merge-queue ticket still running fires when that
       // ticket ends instead. shortcut: tickets only; a wait on a pane's or plan's job named in the note still keeps its time.
-      const namedTicket = args.ticket || pane ? undefined : args.note.match(/\bq-\d{8}-\d{6}-[0-9a-f]{4}\b/)?.[0];
+      const namedTicket = args.ticket || pane ? undefined : args.note.match(TICKET_IN_WORDS)?.[0];
       const namedStatus = namedTicket ? await ticketStatus(namedTicket).catch(() => null) : null;
       const ticket = args.ticket ?? (namedStatus && !ENDED.has(namedStatus) ? namedTicket : undefined);
       const moved = ticket && !args.ticket ? ` Its note names ticket ${ticket}, still ${namedStatus}: it fires when that ticket ends, not at the time given.` : "";

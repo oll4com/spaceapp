@@ -36,7 +36,7 @@ describe("CliPlansMenu", () => {
       roomId: null,
       paneId: null,
       paneTitle: null,
-      dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
+      dependsOn: [], dueAt: null, waitsOn: null, parked: null, occurrenceCount: 1,
       characterCount: 18,
       createdAt: "2026-09-27T10:00:00.000Z",
       lastUsedAt: "2026-09-27T10:00:00.000Z"
@@ -57,7 +57,7 @@ describe("CliPlansMenu", () => {
       roomId: null,
       paneId: null,
       paneTitle: null,
-      dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
+      dependsOn: [], dueAt: null, waitsOn: null, parked: null, occurrenceCount: 1,
       characterCount: 30,
       createdAt: "2026-09-28T10:00:00.000Z",
       lastUsedAt: "2026-09-28T10:00:00.000Z"
@@ -77,7 +77,7 @@ describe("CliPlansMenu", () => {
       roomId: null,
       paneId: null,
       paneTitle: null,
-      dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
+      dependsOn: [], dueAt: null, waitsOn: null, parked: null, occurrenceCount: 1,
       characterCount: 22,
       createdAt: "2026-09-28T11:00:00.000Z",
       lastUsedAt: "2026-09-28T11:00:00.000Z"
@@ -1096,7 +1096,7 @@ describe("CliPlansMenu", () => {
       roomId: null,
       paneId: "pane-long-agent-1",
       paneTitle: "Bob",
-      dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
+      dependsOn: [], dueAt: null, waitsOn: null, parked: null, occurrenceCount: 1,
       characterCount: 50,
       createdAt: "2026-10-08T10:00:00.000Z",
       lastUsedAt: "2026-10-08T10:00:00.000Z"
@@ -1172,7 +1172,7 @@ describe("CliPlansMenu", () => {
       roomId: null,
       paneId: null,
       paneTitle: null,
-      dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
+      dependsOn: [], dueAt: null, waitsOn: null, parked: null, occurrenceCount: 1,
       characterCount: 200,
       createdAt: "2026-10-08T10:00:00.000Z",
       lastUsedAt: "2026-10-08T10:00:00.000Z"

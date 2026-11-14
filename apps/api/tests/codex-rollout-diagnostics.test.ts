@@ -577,7 +577,10 @@ describe("Codex rollout diagnostics", () => {
       await rm(join(codexHome, "state_5.sqlite"));
       expect(await findCurrentCodexCliTurnActivity({ codexHome, threadId: "thread-a" })).toEqual({ status: "RUNNING", turnId: "t1" });
       await appendFile(rollout, `${JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "t9" } })}\n`);
-      expect(await findCurrentCodexCliTurnActivity({ codexHome, threadId: "thread-a" })).toEqual({ status: "COMPLETED", turnId: "t9" });
+      const doneAt = new Date("2026-10-24T10:05:00.000Z");
+      await utimes(rollout, doneAt, doneAt);
+      // A finished turn says when it ended (its rollout's last write): without it a Codex pane is Done with no since and never sleeps.
+      expect(await findCurrentCodexCliTurnActivity({ codexHome, threadId: "thread-a" })).toEqual({ status: "COMPLETED", turnId: "t9", lastActivityAtMs: doneAt.getTime() });
       expect(await findCodexCliPlanState({ codexHome, threadId: "thread-a" })).toBeNull();
     } finally {
       await rm(codexHome, { recursive: true, force: true });

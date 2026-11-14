@@ -7,12 +7,13 @@ import { taskAcceptanceSchema } from "./task-acceptance.js";
 import { cliAdapterContractSchema } from "./cli-adapter.js";
 import { controlToolSchemas } from "./space-control.js";
 import { z } from "zod";
-import { planWaitsOnSchema } from "./plan-map.js";
+import { planParkedSchema, planWaitsOnSchema } from "./plan-map.js";
 import { roomMiniRouteSchema } from "./pane-catalog.js";
 import { nousSettingsSchema } from "./nous.js";
 import { brokerScopeSchema } from "./broker-scopes.js";
 import { patchSchema } from "./partial-update.js";
 import { historySettingsSchema } from "./history-period.js";
+import { paneHibernateSettingsSchema } from "./pane-hibernate.js";
 import { uiLanguageSchema } from "./ui-language.js";
 import { MAX_ROOM_LIMIT, MAX_ROOMS } from "./room-names.js";
 import { taskMetadataSchema } from "./task-metadata.js";
@@ -600,11 +601,11 @@ export const createPaneInputSchema = z
   })
   .superRefine((input, context) => {
     // Copilot panes (Job, Mail, Marketing, Freelance), Design, App Studio and Video panes run their agent in a CLI session, so they carry a runtime too.
-    if (input.terminalRuntimeId && input.mode !== "TERMINAL" && input.mode !== "JOB_APPLY" && input.mode !== "MAIL_COPILOT" && input.mode !== "MARKETING_COPILOT" && input.mode !== "FREELANCE_COPILOT" && input.mode !== "DESIGN" && input.mode !== "APP_STUDIO" && input.mode !== "VIDEO" && input.mode !== "SECURITY_COPILOT" && input.mode !== "MONITORING_COPILOT") {
+    if (input.terminalRuntimeId && !(input.mode === "CHAT" && input.terminalRuntimeId === "cli:codex") && input.mode !== "TERMINAL" && input.mode !== "JOB_APPLY" && input.mode !== "MAIL_COPILOT" && input.mode !== "MARKETING_COPILOT" && input.mode !== "FREELANCE_COPILOT" && input.mode !== "DESIGN" && input.mode !== "APP_STUDIO" && input.mode !== "VIDEO" && input.mode !== "SECURITY_COPILOT" && input.mode !== "MONITORING_COPILOT") {
       context.addIssue({
         code: "custom",
         path: ["terminalRuntimeId"],
-        message: "Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN, APP_STUDIO, VIDEO, SECURITY_COPILOT or MONITORING_COPILOT mode."
+        message: "Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN, APP_STUDIO, VIDEO, SECURITY_COPILOT or MONITORING_COPILOT mode (or cli:codex on a CHAT pane: Codex light pane)."
       });
     }
     if (input.vncTarget && input.mode !== "VNC") {
@@ -627,7 +628,8 @@ export const roomPaneBatchItemSchema = z.discriminatedUnion("mode", [
     .strict(),
   z
     .object({
-      mode: z.literal("CHAT")
+      mode: z.literal("CHAT"),
+      terminalRuntimeId: z.literal("cli:codex").optional() // Codex light pane
     })
     .strict(),
   z
@@ -3750,7 +3752,10 @@ export const browserToolActionInputSchema = z.discriminatedUnion("type", [
   browserActionBaseSchema.extend({
     type: z.literal("scroll"),
     deltaX: z.number().min(-10000).max(10000).default(0),
-    deltaY: z.number().min(-10000).max(10000)
+    deltaY: z.number().min(-10000).max(10000),
+    // A point (both): the wheel scrolls what is under it, a drawer or an inner panel; without one, the page (scrollBrowserPage).
+    x: z.number().min(0).max(10000).optional(),
+    y: z.number().min(0).max(10000).optional()
   }),
   browserActionBaseSchema.extend({
     type: z.literal("set_viewport"),
@@ -5453,6 +5458,8 @@ export const systemAnalyticsInstallSchema = z
     browser: installTextSchema,
     lang: installTextSchema,
     firstCli: installTextSchema,
+    /** run-spaceapp install --ref: the channel code the site's copy button took from utm_source (opted-in install_started only). */
+    ref: installTextSchema,
     setupCompletedAt: isoDateTimeSchema.nullable(),
     firstAnswerAt: isoDateTimeSchema.nullable(),
     lastActiveAt: isoDateTimeSchema.nullable(),
@@ -8772,9 +8779,11 @@ export const keyboardAutocorrectSettingsSchema = z.object({
 
 export const livePaneSettingsSchema = z.object({
   streamingMode: z.boolean().default(false),
-  provider: liveAudioProviderIdSchema.optional().default("openai"),
-  voiceModel: z.string().default("gpt-live-1"),
-  voice: z.string().default("alloy"),
+  // LiveKit Inference by default while its startup grant lasts (plan clipboard:mmmeF0-e3x4G step 4): Sonic 3's first voice; the Live pane falls
+  // back to OpenAI's gpt-live-1 by itself when LiveKit cannot start (grant spent, key missing, call failed).
+  provider: liveAudioProviderIdSchema.optional().default("livekit"),
+  voiceModel: z.string().default("livekit/cartesia-sonic-3"),
+  voice: z.string().default("9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"),
   language: voiceTranscriptionLanguageSchema.default("auto"),
   timeZone: z.string().optional(),
   opening: z.string().default(""),
@@ -8936,6 +8945,8 @@ export const userSettingsSchema = z.object({
   youtubeDownload: youtubeDownloadSettingsSchema.optional().catch(undefined),
   /** How far back every history reaches (history-period.ts, at most 90 days); unset reads as 90. */
   history: historySettingsSchema.optional().catch(undefined),
+  /** Idle minutes before a CLI pane sleeps (pane-hibernate.ts); unset reads as 30, 0 = never. */
+  paneHibernate: paneHibernateSettingsSchema.optional().catch(undefined),
   /** The interface language (ui-language.ts); unset follows Voice input's Greek, else English. */
   uiLanguage: uiLanguageSchema.optional().catch(undefined),
   /** The language Nous, agents and copilots write to the operator in (ui-language.ts); unset follows the interface language. */
@@ -9020,6 +9031,7 @@ export const updateUserSettingsInputSchema = z.object({
   youtubeDownload: youtubeDownloadSettingsSchema.optional(),
   /** A period over 90 days, or not one of HISTORY_PERIOD_DAYS, is refused. */
   history: historySettingsSchema.optional(),
+  paneHibernate: paneHibernateSettingsSchema.optional(),
   uiLanguage: uiLanguageSchema.optional(),
   agentLanguage: uiLanguageSchema.optional()
 }).strict();
@@ -9416,6 +9428,7 @@ export const clipboardItemSchema = z
     dependsOn: planDependsOnSchema.default([]),
     dueAt: isoDateTimeSchema.nullable().default(null),
     waitsOn: planWaitsOnSchema.nullable().default(null),
+    parked: planParkedSchema.nullable().default(null),
     occurrenceCount: z.number().int().min(1),
     characterCount: z.number().int().min(1).max(clipboardTextMaxCharacters),
     createdAt: isoDateTimeSchema,
@@ -9504,6 +9517,10 @@ export const listClipboardItemsQuerySchema = z
       value === undefined ? undefined : value === true || value === "true"
     ).optional(),
     paneId: idSchema.optional(),
+    /** Only plans parked now (a park not yet resumed), open or closed. */
+    parked: z.union([z.boolean(), z.enum(["true", "false"])]).optional().transform((value) =>
+      value === undefined ? undefined : value === true || value === "true"
+    ).optional(),
     page: z.coerce.number().int().min(1).default(1),
     pageSize: z.coerce.number().int().min(1).max(100).default(25)
   })
@@ -9541,6 +9558,8 @@ export const updatePlanProgressRequestSchema = z
     dependsOn: planDependsOnSchema.optional(),
     dueAt: isoDateTimeSchema.nullable().optional(),
     waitsOn: planWaitsOnSchema.nullable().optional(),
+    /** Why the plan is parked and what resumes it (plan-map.ts); null unparks. */
+    parked: planParkedSchema.nullable().optional(),
     /** The plan's own title and text, edited in place (Nous daily upgrade 2026-10-27): the record keeps its id. */
     title: z.string().trim().min(1).max(clipboardPlanTitleMaxCharacters).optional(),
     text: nonBlankExactText(clipboardTextMaxCharacters).optional()

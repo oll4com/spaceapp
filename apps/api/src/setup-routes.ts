@@ -27,6 +27,16 @@ const setupConnectionCheckReplayQuerySchema = z.object({
 const emptySetupConnectionCheckRunSchema = z.object({}).strict();
 
 /**
+ * The owner set in .env (SPACE_OPERATOR_EMAIL and _PASSWORD_HASH) is the owner while no row is claimed and no setup token file offers a
+ * claim: without this a fresh database showed every signed-out browser the owner setup page instead of sign-in (B, 13/11).
+ */
+export async function ownerSetupStatus(store: SpaceStore, auth: AuthConfig) {
+  const status = await store.getOwnerSetupStatus();
+  return status.setupRequired && !status.expiresAt && auth.operatorEmail && auth.operatorPasswordHash
+    ? { setupRequired: false, expiresAt: null } : status;
+}
+
+/**
  * Single-owner setup: claim, overview, connection checks and the starter room; the parent retains authentication,
  * CSRF, errors and rate limits.
  */
@@ -53,7 +63,7 @@ export function registerSetupRoutes(app: FastifyInstance, options: {
 }) {
   const { auth, store, setupConnections, setupConnectionCheckRuns, execution, routeOptions: defaultRouteRateLimitOptions } = options;
   app.get("/api/setup/status", defaultRouteRateLimitOptions, async () => {
-    return setupStatusSchema.parse(await store.getOwnerSetupStatus());
+    return setupStatusSchema.parse(await ownerSetupStatus(store, auth));
   });
   app.post(
     "/api/setup/claim",
@@ -64,7 +74,7 @@ export function registerSetupRoutes(app: FastifyInstance, options: {
     async (request, reply) => {
       const input = parseBody(setupClaimInputSchema, request.body);
       // Refuse before scrypt when no claim can succeed, so this public route cannot be used to burn CPU (review F16).
-      const status = await store.getOwnerSetupStatus();
+      const status = await ownerSetupStatus(store, auth);
       if (!status.setupRequired) throw new SpaceConflictError("SpaceApp owner setup is already claimed.");
       if (!status.expiresAt) throw new SpaceConflictError("The SpaceApp setup token is not valid.");
       if (Date.parse(status.expiresAt) <= Date.now()) throw new SpaceConflictError("The SpaceApp setup token has expired.");

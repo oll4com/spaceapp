@@ -38,6 +38,10 @@ export interface PaneBoardRouteDeps {
   };
   /** R13-6: one line in Nous's inbox (deduplicated by key). */
   inbox?(owner: string, key: string, line: string): Promise<void>;
+  /** Clears a plan's wait on the operator (Approve on its Needs you card); false when it did not wait on them. */
+  unblockPlan?(owner: string, planId: string): Promise<boolean>;
+  /** What the plan a card asks for waits on the operator for (`PlanNeedsYou.waitOf`): kept with the answer, so that wait is not asked again. */
+  planWait?(owner: string, record: SpaceNotification): Promise<string | null>;
   /** Nous's space_send_to_pane path: the pane's next prompt (after its turn, held until it is at a prompt; critical text comes back refused). */
   sendToPane(owner: string, room: Room, pane: Pane, text: string): Promise<NousToolOutcome>;
   /** A copilot's review, rule or campaign decided as the operator: the server code an approved Nous COPILOT decision runs. */
@@ -152,7 +156,9 @@ export function registerNousPaneBoardRoutes(app: FastifyInstance, deps: PaneBoar
     const found = record.paneId ? await deps.pane(owner, record.paneId) : null;
     const refs = found ? { roomId: found.room.id, paneId: found.pane.id } : undefined;
     const toNous = async (why = "") => {
-      await deps.send(owner, `${found ? `[${found.room.name} · ${paneLabel(found.pane)}] ` : ""}${by === "TIMING" ? "Space answered by the operator's standing rule (hands now, one by one)"
+      // A plan's card with no pane (plan-needs-you.ts) names its plan, like the web's plan reply.
+      const where = found ? `[${found.room.name} · ${paneLabel(found.pane)}] ` : typeof record.payload.planId === "string" ? `[Plan ${record.title} · ${record.payload.planId}] ` : "";
+      await deps.send(owner, `${where}${by === "TIMING" ? "Space answered by the operator's standing rule (hands now, one by one)"
         : by ? `Space answered by the operator's "Always answer like this"` : "My answer"} to "${ask.question}": ${answer}${why}`,
         { person: !by, ...(refs ? { refs } : {}), ...(client && !by ? { client } : {}), ...(mobile ? { mobile } : {}) });
       return `Sent to Nous${found ? ` about ${paneLabel(found.pane)}` : ""}.`;
@@ -203,6 +209,10 @@ export function registerNousPaneBoardRoutes(app: FastifyInstance, deps: PaneBoar
       if (!again) await ledger(NEEDS_YOU_GO_NOW, ask.recommended ? ask.recommended === NEEDS_YOU_GO_NOW : null);
       return { routed: ask.answer.kind, display: `Going to ${found ? paneLabel(found.pane) : "the pane"}: the card stays until its work is done.`, notification };
     }
+    const planCard = !found && record.payload.derived === true && Boolean(record.dedupeKey?.startsWith("nous:plan:"));
+    // Operator 14/11 00:41 BKK (nous_msg:f8a4d2df): every answer closes the card; the wait it answered is kept so Space does not ask it again.
+    const wait = await deps.planWait?.(owner, record).catch(() => null) ?? null;
+    let cleared = false;
     const target = ask.answer;
     let routed = target.kind;
     let display: string;
@@ -266,13 +276,27 @@ export function registerNousPaneBoardRoutes(app: FastifyInstance, deps: PaneBoar
     } else if (target.kind === "MAIL_FIX" || target.kind === "ACK") {
       routed = "ACK";
       display = `Noted: ${answer}.`;
+    } else if (planCard && input.option === "Not now") {
+      routed = "ACK";
+      display = "Not now: it leaves Needs you and comes back only when the plan's wait changes.";
+    } else if ((input.option === "Approve" || (planCard && input.option === "Done")) && !found && record.dedupeKey?.startsWith("nous:plan:") && typeof record.payload.planId === "string" && deps.unblockPlan) {
+      // Operator 13/11 14:41 BKK: Approve on a plan's card (Done on Space's own) unblocks the plan; Nous gets the answer and runs what it was for.
+      const planId = record.payload.planId;
+      display = await attempt(async () => {
+        cleared = await deps.unblockPlan!(owner, planId);
+        await toNous(cleared ? "\n(Space cleared the plan's wait on the operator.)" : "");
+        const said = input.option === "Done" ? "Done" : "Approved";
+        return cleared ? `${said}: the plan no longer waits on you, and Nous carries on.` : `${said}: sent to Nous.`;
+      });
     } else {
       display = await attempt(() => toNous());
     }
     // R21-pred-1: words confirming the affirmative recommended option are that option, kept with the words.
     const confirmed = !input.option && cardWordsConfirm(ask.recommended, input.text, nousAnswerIntent(input.text ?? ""), Array.isArray(ask.options) ? ask.options : []);
     const stored = confirmed ? `${ask.recommended}: ${input.text!.trim()}` : answer;
-    const notification = await deps.notifications.setStatus(owner, record.id, "ACKED", { answer: { text: stored, at: new Date().toISOString(), routed, ...(by ? { by } : {}) } });
+    // A cleared wait was done, not answered: if it is set again, it is asked again.
+    const answered = { answer: { text: stored, at: new Date().toISOString(), routed, ...(by ? { by } : {}) }, ...(deps.planWait ? { answeredWait: cleared ? null : wait } : {}) };
+    const notification = await deps.notifications.setStatus(owner, record.id, "ACKED", answered);
     // Goal 7365014c-e: the operator's own answers go to the decision ledger (an "Always answer like this" is not one).
     // R16-9: a base-rate recommendation keeps the card's kind as its plain source and kind, so the next base rate counts this answer too.
     if (!by) await ledger(stored, ask.recommended ? cardTextMatched(ask, stored) : null);

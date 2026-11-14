@@ -3,6 +3,7 @@ import type { NousOverview, NousPlanHold, NousPlanHolds } from "@space/contracts
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
 import { DockChips, DockState } from "../dock-kit/DockKit.js";
 import { Nous } from "../ui-theme/app-icons.js";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import { isFlag, useNousUiState } from "./nous-ui-state.js";
 
 /**
@@ -137,6 +138,7 @@ function PlanItem({ plan, chip, onOpen }: { plan: PlanRow; chip(id: string): Rea
   const hold = plan.hold ?? null;
   const resumes = hold?.kind === "DATE" ? hold.until : null;
   const phrase = hold ? GROUP_TITLE.get(hold.kind)!.toLowerCase() : null;
+  const language = useUiLanguage();
   return (
     <li className="nous-plan-item">
       <button type="button" className={`nous-plans-btn nous-plan-row is-${plan.status.toLowerCase()}`} onClick={() => onOpen(plan.id)}
@@ -146,7 +148,9 @@ function PlanItem({ plan, chip, onOpen }: { plan: PlanRow; chip(id: string): Rea
           <span className="nous-plan-row-pct">{plan.progress}%</span>
         </span>
         <span className="nous-progress" aria-hidden="true"><span style={{ width: `${plan.progress}%` }} /></span>
-        {hold && hold.kind !== "PLAN" ? <span className="nous-plan-row-detail" title={hold.what}>{hold.what}</span> : null}
+        {/* A parked plan's reason already says what it waits on. */}
+        {plan.parked ? <span className="nous-plan-row-detail nous-plan-row-parked" title={plan.parked.reason}>{uiText(language, "Parked: {reason} · {met}/{total} conditions met", plan.parked)}</span>
+          : hold && hold.kind !== "PLAN" ? <span className="nous-plan-row-detail" title={hold.what}>{hold.what}</span> : null}
         <span className="nous-plan-row-meta">
           <span>{plan.pane ? `${plan.pane}${plan.room ? ` · ${plan.room}` : ""}` : plan.paneClosed ? "Pane closed" : "No pane"}</span>
           {resumes ? <span>Resumes {when(resumes)}</span> : null}

@@ -116,7 +116,7 @@ describe("what a SpaceApp link may reach", () => {
     for (const action of [{ kind: "cli", runtimeId: "x", enabled: false }, { kind: "vpn", operation: "rotate" }, { kind: "clipboard", operation: "delete" },
       { kind: "screenshot" }, { kind: "playback", operation: "play" }, { kind: "native_command", command: "/clear" }, { kind: "resource", operation: "ops.deploy" },
       { kind: "resource", operation: "files.delete" }, { kind: "resource", operation: "settings.update" }, { kind: "resource", operation: "tasks.delete" },
-      { kind: "pane", operation: "visual_audit" }, { kind: "pane", operation: "focus", captureScreenshot: true }, null]) {
+      { kind: "pane", operation: "visual_audit" }, { paneId: "pane:a", action: "visual_audit" }, { kind: "pane", operation: "focus", captureScreenshot: true }, null]) {
       expect(run(action), JSON.stringify(action)).toMatch(/runs rooms, panes/);
     }
     expect(mobileBodyProblem("linkExecute", { roomId: "room:a", requestId: "r1", userExplicitlyAuthorized: true, actions: [{ kind: "pane", operation: "close" }] })).toMatch(/approve here/);
@@ -143,7 +143,9 @@ describe("what a phone may reach", () => {
     const all = ["read", "act", "decide", "admin"];
     for (const [method, pattern] of [["PUT", "/api/user-settings"], ["GET", "/api/space-vault/items"], ["POST", "/api/admin/releases/hotfixes/:ticketId/approve"],
       ["GET", "/api/auth/devices"], ["POST", "/api/mobile/pairing"], ["POST", "/api/control/v1/execute"], ["DELETE", "/api/artifacts/:id"],
-      ["GET", "/api/artifacts/:id/download"], ["POST", "/api/nous/decisions/vault-broker-reinstall"], ["GET", "/api/nous/messages/:id"]] as const) {
+      ["GET", "/api/artifacts/:id/download"], ["POST", "/api/nous/decisions/vault-broker-reinstall"], ["GET", "/api/nous/messages/:id"],
+      // Space Link (Λ9): a phone reads the status and takes back, never gives back, sees addresses or changes links.
+      ["POST", "/api/auth/devices/live/give-back"], ["GET", "/api/auth/devices/live"], ["GET", "/api/instance-links"], ["POST", "/api/instance-links"]] as const) {
       expect(mobileRouteAllows(all, method, pattern), `${method} ${pattern}`).toBeNull();
     }
     expect(mobileRouteAllows(all, "GET", undefined)).toBeNull();
@@ -176,6 +178,15 @@ describe("what a phone may reach", () => {
     // The old default-signature routes, the phone number and signing an Agent File without a request stay on the computer.
     for (const route of ["PUT /api/signature", "DELETE /api/signature", "PUT /api/signature/details", "POST /api/artifacts/:id/sign"]) expect(MOBILE_ROUTE_SCOPES[route], route).toBeUndefined();
     expect(mobileRouteAllows(["read"], "POST", "/api/signatures")).toBeNull();
+  });
+  // Teleport (operator 13/11 nous_msg:6d87d2a6): the phone drives a pane browser by touch in person; its other browser routes stay on the computer.
+  it("lets the phone teleport a pane browser and drive it in person, nothing more of the browser", () => {
+    for (const route of ["POST /api/panes/:id/browser/teleport", "POST /api/panes/:id/browser/teleport/input", "POST /api/panes/:id/browser/teleport/upload",
+      "POST /api/panes/:id/browser/control/acquire", "POST /api/panes/:id/browser/control/heartbeat", "POST /api/panes/:id/browser/control/release"]) {
+      expect(MOBILE_ROUTE_SCOPES[route], route).toEqual({ scope: "act", person: true });
+    }
+    expect(MOBILE_ROUTE_SCOPES["GET /api/panes/:id/browser/teleport/frame"]).toEqual({ scope: "read" });
+    for (const route of ["POST /api/panes/:id/browser/navigate", "POST /api/panes/:id/browser/action", "POST /api/panes/:id/browser/input"]) expect(MOBILE_ROUTE_SCOPES[route], route).toBeUndefined();
   });
   it("body rules", () => {
     expect(mobileBodyProblem("settingsEnabledAndTabs", { enabled: false })).toBeNull();
@@ -238,7 +249,7 @@ describe("MASVS L2 core gaps (plan clipboard:kTV3y2lwO-99 step 7)", () => {
     expect(mobileAppVersionCode("0.2")).toBeNull();
     expect(mobileAppUpdateRequired("nous", NOUS_APP_MIN_VERSION)).toBeNull();
     expect(mobileAppUpdateRequired("nous", "0.3.0")).toBeNull();
-    expect(mobileAppUpdateRequired("nous", "0.2.17")).toEqual({ code: "APP_UPDATE_REQUIRED", minVersion: "0.2.18", minVersionCode: 218 });
+    expect(mobileAppUpdateRequired("nous", "0.2.21")).toEqual({ code: "APP_UPDATE_REQUIRED", minVersion: "0.2.22", minVersionCode: 222 });
     expect(mobileAppUpdateRequired("nous", "dev")).toMatchObject({ code: "APP_UPDATE_REQUIRED" });
     expect(mobileAppUpdateRequired("spaceapp", "0.0.1")).toBeNull();
   });

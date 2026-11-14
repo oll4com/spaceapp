@@ -23,8 +23,9 @@ export const NOTIFICATION_SOURCE_LABELS: Record<NotificationSource, string> = {
  * showing a toast, and takes them back when it resolves. Never INFO; failures, "posts due" and finished work stay toasts.
  */
 export const NEEDS_YOU_KINDS = /^(NEEDS_HANDS|NEEDS_YOU|NEEDS_USER|QUESTION|REVIEW_REQUESTED|RULE_PROPOSED|CAMPAIGN_PROPOSED|CAMPAIGN_REVIEW|CLIENT_READY|HANDOFF_REQUESTED|BROWSER_HANDOFF_REQUESTED|WAITING|SIGN_IN|STUCK|USAGE_LIMIT|OVERLAP|(?:DESIGN|VIDEO)_(?:APPROVAL|QUESTION)|APP_STUDIO_QUESTION|SECURITY_(?:QUESTION|REVIEW)|MONITORING_(?:QUESTION|REVIEW))$/;
-export const needsYou = (notification: { source: NotificationSource; kind: string; severity: NotificationSeverity; paneId: string | null; roomId: string | null }) =>
-  Boolean(notification.paneId && notification.roomId) && notification.severity !== "INFO" && NEEDS_YOU_KINDS.test(notification.kind);
+// A plan's own card (`nous:plan:<id>`, the API's plan-needs-you.ts) needs no pane: it outlives the panes that worked on the plan.
+export const needsYou = (notification: { source: NotificationSource; kind: string; severity: NotificationSeverity; paneId: string | null; roomId: string | null; dedupeKey?: string | null }) =>
+  Boolean((notification.paneId && notification.roomId) || notification.dedupeKey?.startsWith("nous:plan:")) && notification.severity !== "INFO" && NEEDS_YOU_KINDS.test(notification.kind);
 
 /** The copilots whose questions go to Nous first and are swept once answered (Ask Last step 7, 2026-10-27). */
 export const COPILOT_QUESTION_SOURCES: readonly NotificationSource[] = ["JOB_COPILOT", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO",
@@ -87,11 +88,12 @@ export function copilotQuestionItemId(notification: { dedupeKey: string | null; 
  * While Nous is on with that allowance, such a card is Nous's alone (`heldForNous.allowance`, no time limit): it reaches the operator only when
  * the allowance or Nous is turned off. Every surface reads this one predicate (the notification hold, the panes' "Nous reviewing").
  */
-export const isNousApproval = (notification: { source: NotificationSource; kind: string }) =>
-  (notification.kind === "REVIEW_REQUESTED" && NOUS_APPROVAL_SOURCES.has(notification.source))
+export const isNousApproval = (notification: { source: NotificationSource; kind: string; payload?: Record<string, unknown> }) =>
+  // Nous 13/11 (mailrev:lddyXCl-tHDS, Akamai credits): a review a rule memory says the operator reads first (`payload.operatorReads`) is theirs.
+  !notification.payload?.operatorReads && ((notification.kind === "REVIEW_REQUESTED" && NOUS_APPROVAL_SOURCES.has(notification.source))
   || (notification.source === "MAIL_COPILOT" && (notification.kind === "CAMPAIGN_REVIEW"
     // Operator 3/11 18:28 BKK («κανε το εσυ μην μου ερχονται τετοια Needs you!!!»): resuming a paused campaign is "May send"'s too.
-    || notification.kind === "CAMPAIGN_PAUSED"));
+    || notification.kind === "CAMPAIGN_PAUSED")));
 const NOUS_APPROVAL_SOURCES = new Set<NotificationSource>(["MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "JOB_COPILOT"]);
 /** The allowance a card is held for Nous under (`payload.heldForNous.allowance`, isNousApproval), or null for an hour's hold. */
 export const heldUnderAllowance = (notification: { payload: Record<string, unknown> }): string | null => {
@@ -257,9 +259,11 @@ const HANDS_PANE_MODES = new Set(["BROWSER", "YOUTUBE", "JOB_APPLY", "MARKETING_
  * card on any other pane with no target (steps on a phone, at a desk) does not: it is answered from the card, and offers no Go. The pane's
  * mode is the caller's, else the one the server stamped when it raised the card (`payload.paneMode`); a card with neither keeps its Go.
  */
-export function needsYouHasPlace(notification: Pick<SpaceNotification, "source" | "link" | "payload">, paneMode?: string | null): boolean {
+export function needsYouHasPlace(notification: Pick<SpaceNotification, "source" | "link" | "payload"> & { paneId?: string | null }, paneMode?: string | null): boolean {
   if (notification.link?.target || needsYouBrowserPage(notification)) return true;
   if (notification.source !== "NOUS" && notification.source !== "AGENT") return true;
+  // Operator 13/11 nous_msg:0fa7d370: a card on no pane, surface or plan offered "Go to pane", and its click only reopened Needs you.
+  if (!notification.paneId && !notification.link?.paneId && !notification.link?.surface && typeof notification.payload?.planId !== "string") return false;
   const mode = paneMode ?? (typeof notification.payload?.paneMode === "string" ? notification.payload.paneMode : null);
   return mode === null || HANDS_PANE_MODES.has(mode);
 }
@@ -312,6 +316,13 @@ export function needsYouAnswerKind(record: Pick<SpaceNotification, "source" | "k
 
 /** R27-2: the answer a Nous hands card recommends: the operator goes to the pane now, to the page it names (the card stays for the visit). */
 export const NEEDS_YOU_GO_NOW = "Go now";
+/** Goal 7365014c (Nous 13/11): an agent's hands card for a page, with no options of its own, asks whether to start now, never "when". */
+export const NEEDS_YOU_LATER_TODAY = "Later today";
+export const NEEDS_YOU_START_NOW = "Start now?";
+/** Space's own words on those cards in the operator's language, as Nous asked them; the card translator never rewords them. */
+export const NEEDS_YOU_FIXED_WORDS: Partial<Record<UiLanguage, Record<string, string>>> = {
+  el: { [NEEDS_YOU_GO_NOW]: "Πάμε τώρα", [NEEDS_YOU_LATER_TODAY]: "Αργότερα σήμερα", [NEEDS_YOU_START_NOW]: "Ξεκινάς τώρα;" }
+};
 
 /** The end of an agent's needs-you question past 300 characters (the card's question); its whole ask is in the card's body. */
 export const NEEDS_YOU_QUESTION_MORE = " … (the whole ask is under Details)";

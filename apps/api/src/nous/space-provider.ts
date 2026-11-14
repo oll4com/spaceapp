@@ -182,10 +182,18 @@ export function createSpaceRouter(deps: { routes(): Promise<SpaceRoute[]>; now?:
           cooling.delete(attempt.route);
           return { ...result, attempt, failures };
         }
-        last = failed(attempt, result.text || "The provider stopped.", routes.find((route) => route.route === attempt.route));
+        let text = result.text || "The provider stopped.";
+        // 13/11 18:07 UTC (Codex at its usage limit; its CLI said only "exceeded retry limit, last status: 429"): a throttle after which the
+        // Gateway shows the route's pool out of quota is that quota.
+        if (classifySpaceFailure(text) === "throttle") {
+          const after = (await deps.routes().catch(() => [])).find((route) => route.route === attempt.route);
+          if (after && !after.available && classifySpaceFailure(after.reason ?? "") === "quota") text = `${text} — ${after.reason}`;
+        }
+        last = failed(attempt, text, routes.find((route) => route.route === attempt.route));
         failures.push(last);
         // An explicit model is never replaced; the turn's own failure, a refused credential or an attempt that acted unguarded stop here.
-        if (plan.explicit || last.kind === "auth" || last.kind === "other" || hooks.mayFailOver?.() === false) break;
+        // Stable 13/11 14:31 BKK (Azure gpt-5-mini 401 failed every background turn): a free/granted pool's failure of any kind goes on to the next route.
+        if (plan.explicit || (!attempt.free && (last.kind === "auth" || last.kind === "other")) || hooks.mayFailOver?.() === false) break;
       }
       const kinds = new Set(failures.map((failure) => failure.kind));
       const list = failures.map(describe).join("; ");

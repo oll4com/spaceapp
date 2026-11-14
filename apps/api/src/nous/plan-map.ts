@@ -1,4 +1,4 @@
-import type { ClipboardItem, ManagedPlanExecution, NousGlobalHold, NousPlanHold, PlanWaitsOnKind } from "@space/contracts";
+import { planIsParked, type ClipboardItem, type ManagedPlanExecution, type NousGlobalHold, type NousPlanHold, type PlanResumeCondition, type PlanWaitsOnKind } from "@space/contracts";
 import type { NousPaneSummaryRow, PaneReport } from "@space/db";
 
 /**
@@ -33,6 +33,7 @@ const REPORT_HOLD: Partial<Record<PaneReport["status"], PlanWaitsOnKind>> = { NE
 export const HARD_HOLDS = new Set<NousGlobalHold["kind"]>(["QUEUE_PAUSED", "QUEUE_DOWN", "PLAN_CONTROLLER_OFF"]);
 /** Holds someone can act on; a date passes by itself and a dependency is cleared by finishing the plan it names. */
 const ACTIONABLE = new Set<PlanWaitsOnKind>(["OPERATOR", "THIRD_PARTY", "PROMOTE", "NOUS"]);
+const RESUME_HOLD: Record<PlanResumeCondition["who"], PlanWaitsOnKind> = { NOUS: "NOUS", AGENT: "NOUS", OPERATOR: "OPERATOR", THIRD_PARTY: "THIRD_PARTY", DATE: "DATE", PLAN: "PLAN", PROMOTE: "PROMOTE" };
 const KIND_ORDER: Array<PlanMapUnblock["kind"]> = ["SERVER", "OPERATOR", "THIRD_PARTY", "PROMOTE", "NOUS", "FINISH"];
 export const PLAN_HOLD_LABELS: Record<PlanWaitsOnKind, string> = { OPERATOR: "you", DATE: "a date", PROMOTE: "a promote", THIRD_PARTY: "a third party", PLAN: "another plan", NOUS: "Nous", SERVER: "the server" };
 
@@ -61,6 +62,9 @@ export function buildPlanMap(input: {
   const holdOf = (plan: ClipboardItem): NousPlanHold | null => {
     // A recorded wait on a date that passed is over; every other recorded wait stands until it is cleared.
     if (plan.waitsOn && (plan.waitsOn.kind !== "DATE" || future(plan.waitsOn.until))) return { ...plan.waitsOn, source: "PLAN" };
+    // A parked plan waits on its first open resume condition (operator 13/11).
+    const condition = planIsParked(plan) ? plan.parked.conditions.find((entry) => entry.state === "OPEN") : undefined;
+    if (condition) return { kind: RESUME_HOLD[condition.who], what: condition.what, until: condition.check.kind === "DATE" ? condition.check.at : null, source: "PLAN" };
     const dependency = (plan.dependsOn ?? []).map((id) => byId.get(id)).find((entry): entry is ClipboardItem => Boolean(entry));
     if (dependency) return { kind: "PLAN", what: planTitle(dependency), until: dependency.dueAt, source: "DEPENDENCY" };
     const execution = executions.get(plan.id);
@@ -159,6 +163,33 @@ export function renderPlanMap(map: PlanMap, zone = "UTC"): string {
     `- [${node.id}] "${oneLine(node.title, 100)}" ${node.progress}%${own(node) ? ` · ${holdText(own(node)!, zone)}` : ""}${node.dueAt ? ` · due ${planMapTime(node.dueAt, zone)}${node.overdue ? " OVERDUE" : ""}` : ""}`
     + `${node.dependsOn.length ? ` · needs: ${node.dependsOn.map((dep) => `[${dep}] "${oneLine(map.nodes.get(dep)!.title, 60)}"`).join(", ")}` : ""}`));
   return lines.join("\n");
+}
+
+const checkText = (condition: PlanResumeCondition, zone: string) => {
+  const check = condition.check;
+  if (check.kind === "DATE") return `on ${planMapTime(check.at, zone)}`;
+  if (check.kind === "PLAN") return `when [${check.planId}] closes`;
+  if (check.kind === "TICKET") return `when ${check.ticket} is on ${check.on}`;
+  if (check.kind === "DECISION") return `when ${check.id} is answered`;
+  return "you mark it (condition)";
+};
+/** "2/3 conditions met" */
+export const parkedCount = (plan: ClipboardItem) => planIsParked(plan) ? `${plan.parked.conditions.filter((entry) => entry.state === "MET").length}/${plan.parked.conditions.length}` : null;
+
+/**
+ * The world's "## Parked plans" section (operator 13/11): every plan parked now, open or closed, why, and each condition that brings it back.
+ * Space checks the DATE, PLAN, TICKET and DECISION conditions itself and reopens the plan when all are met; the open NOUS and AGENT ones are Nous's to do.
+ */
+export function renderParkedPlans(plans: ClipboardItem[], zone = "UTC"): string | null {
+  const parked = plans.filter(planIsParked).sort((left, right) => left.parked.since.localeCompare(right.parked.since));
+  if (!parked.length) return null;
+  return ["## Parked plans (why each is parked and what brings it back: do the NOUS and AGENT conditions, check the rest, mark them with space_plan_update condition; "
+    + "Space reopens a plan to a pane when every condition is met. A closed parked plan costs Score points every day it does not move)",
+  ...parked.flatMap((plan) => [
+    `- [${plan.id}] "${oneLine(planTitle(plan), 100)}" ${plan.isCompleted ? "closed" : "open"} at ${plan.progressPercentage}% · parked since ${planMapTime(plan.parked.since, zone)}: ${oneLine(plan.parked.reason, 200)} · ${parkedCount(plan)} met`,
+    ...plan.parked.conditions.map((entry) => `  - ${entry.id} ${entry.state === "MET" ? "MET" : "OPEN"} ${entry.who}: ${oneLine(entry.what, 160)} (${checkText(entry, zone)})`
+      + `${entry.evidence ? ` · ${oneLine(entry.evidence, 120)}` : ""}${entry.checkedAt ? ` · checked ${planMapTime(entry.checkedAt, zone)}` : ""}`)
+  ])].join("\n");
 }
 
 /** The heading of the plan map's per-plan rows (the picture above it stays whole; the rows are entries a turn keeps by relevance). */

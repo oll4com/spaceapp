@@ -61,4 +61,11 @@ describe("the Plans view's plan map (operator request 2026-10-25)", () => {
     render(<NousPlanMap onOpen={() => undefined} overview={overview([])} />);
     expect(screen.getByText("No open plans")).toBeTruthy();
   });
+
+  it("shows a parked plan's reason and its met conditions in place of its wait (plan clipboard:7S_jA46vDkU9)", () => {
+    render(<NousPlanMap onOpen={() => undefined} overview={overview([plan("parked", "Parked one", { hold: { kind: "NOUS", what: "the proof", until: null, source: "PANE" },
+      parked: { reason: "Waits on nous: the proof", met: 1, total: 2 } })])} />);
+    expect(screen.getByText("Parked: Waits on nous: the proof · 1/2 conditions met")).toBeTruthy();
+    expect(screen.queryByText("the proof")).toBeNull();
+  });
 });

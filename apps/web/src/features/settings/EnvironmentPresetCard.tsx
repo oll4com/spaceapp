@@ -1,4 +1,5 @@
 import { CheckCircle2, RotateCcw, SlidersHorizontal, Sparkles, X } from "../ui-theme/app-icons.js";
+import { InfoTip } from "../ui-controls/InfoTip.js";
 import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import { useEnvironmentPreset } from "./use-environment-preset.js";
 import "./environment-preset.css";
@@ -39,7 +40,7 @@ export function EnvironmentPresetCard({
         </div>
         <div className="environment-preset-title-wrap">
           <div className="environment-preset-heading-row">
-            <strong>{t("Workspace environment")}</strong>
+            <strong>{t("Workspace environment")}<InfoTip text={t("Max turns every dock, pane, widget and AI coding tool on; Custom keeps only the ones you picked. Switch at any time: going back to Custom restores your picks.")} label={t("About {label}", { label: t("Workspace environment") })} /></strong>
             <span className={`environment-preset-mode-tag ${preset === "max" ? "is-max" : "is-custom"}`}>
               {preset === "max" ? t("MAX") : t("CUSTOM")}
             </span>
@@ -93,8 +94,6 @@ export function EnvironmentPresetCard({
           )}
         </button>
       </div>
-
-      <div className="environment-preset-note">{t("Switch at any time: going back to Custom restores your picks.")}</div>
 
       {isActivating && (
         <div className="environment-progress-container" role="status" aria-live="polite">

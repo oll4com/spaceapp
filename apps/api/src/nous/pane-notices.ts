@@ -11,11 +11,14 @@ import { heldForNousNote } from "./copilot-questions.js";
  */
 export const NOUS_PANE_NOTICE_PREFIX = "nous:pane:";
 export const NOUS_GENERAL_NOTICE_KEY = "nous:general";
+/** A plan's Needs you item, one per plan, with no pane (plan-needs-you.ts; operator 13/11 nous_msg:2e24947d). */
+export const NOUS_PLAN_NOTICE_PREFIX = "nous:plan:";
+const nousKey = (key: string | null) => Boolean(key?.startsWith(NOUS_PANE_NOTICE_PREFIX) || key?.startsWith(NOUS_PLAN_NOTICE_PREFIX) || key === NOUS_GENERAL_NOTICE_KEY);
 
 /** Needs you as questions (plan clipboard:5AQvaoSR-IZa): the card asks its first item's question; the operator's answer comes back to Nous. */
-/** R20-asks-2 (operator rule cc31fdd2, 30/10: "give me links and instructions so I can go on now", four times in a day): a hands item's steps. */
+/** Operator rule 13/11 nous_msg:83c0acb8 supersedes R20-asks-2 (cc31fdd2): the operator gets focus at the one step only they can do, never a list. */
 const stepsField = { steps: z.array(z.string().trim().min(3).max(300)).min(1).max(10).optional()
-  .describe("For what only the operator's hands can do: the full numbered steps, the exact https link first, the account to use and where a code arrives.") };
+  .describe("Leave empty: a card carries no steps for the operator (operator rule 13/11 nous_msg:83c0acb8). Do every step yourself and raise the card at the one only they can do; a card with steps is refused.") };
 /** nous_msg:0cb8d563: the Agent Files an item is about, shown on the card as chips that open them. */
 const filesField = { files: z.array(z.string().trim().regex(/^artifact:[A-Za-z0-9_-]{6,80}$/)).min(1).max(20).optional()
   .describe("The Agent Files this item is about (artifact:<id>): the card shows each as a chip that opens it.") };
@@ -41,10 +44,14 @@ const askFields = {
 export const NOUS_ASK_LAST_RULE = "Ask last (operator goal ee5a573e, 2026-10-27): find it yourself first (Space Memory and operator facts, your own answers and notes, "
   + "pane reports and files, Vault, mail, DB, git, web, Live history) and list in `checked` (1-8 items) each source you consulted and what it showed; "
   + "ask the operator only for their hands, taste, money or a third party's approval.";
+/** 14/11 (prediction misses x10 of 7 d, Dana's rule 6, Space Memory b78789c1): 7 predicted a plain yes and got the operator's own value or
+ * scope (5), a plan id they had written an hour before (B1/B2 12/11) or a company fact Space Memory held (Turso 12/11). */
+export const NOUS_PREDICT_FROM_WORDS = "Predict from the operator's own words first: a value, scope or combination they wrote on this subject (chat or a card answer) is the answer, "
+  + "so act on it or predict exactly that, not a plain yes; a personal or company fact is read from Space Memory, and a guess keeps a low confidence.";
 /** R12-11 (29/10: 5 of the day's 17 decisions had no prediction and could not be scored): every decision and every card question predicts. */
 export const NOUS_PREDICTION_RULE = "Every decision carries a prediction (goal 7365014c criterion 3): give space_ask_operator `prediction` {answer: \"yes\", \"no\" or one "
   + "of the options word for word, or with no options the words you expect, e.g. \"yes, but by Friday\"; confidence 0-100} (or end the recommendation with \"Prediction: yes|no|option N (X %)\"), and give every card item with options "
-  + "its `recommended` option.";
+  + "its `recommended` option. " + NOUS_PREDICT_FROM_WORDS;
 export const nousCheckedSchema = z.array(z.string().trim().min(3).max(200), { error: NOUS_ASK_LAST_RULE }).min(1, { error: NOUS_ASK_LAST_RULE }).max(8)
   .describe("What you checked before asking, 1-8 items: each a source and what it showed, e.g. \"Space Memory: no entry on X\", \"mail: no reply from Y since 27/10\".");
 const CHECKED_HEADER = "\n\nChecked first:\n";
@@ -58,8 +65,10 @@ export function withCheckedBlock(text: string, checked: readonly string[] | unde
 }
 
 export const notifyOperatorArgsSchema = z.object({
-  room: z.string().trim().min(1).max(200).describe("The room's name as shown in the world (or its id)."),
-  pane: z.string().trim().min(1).max(160).optional().describe("The pane that needs the operator (required: a card without a pane never shows in Needs you)."),
+  room: z.string().trim().min(1).max(200).optional().describe("The room's name as shown in the world (or its id); with `plan` and no pane, the plan's room by default."),
+  pane: z.string().trim().min(1).max(160).optional().describe("The pane that needs the operator. Give it, or `plan` when no pane works on it (a card with neither never shows in Needs you)."),
+  plan: z.string().trim().regex(/^clipboard:[A-Za-z0-9_-]{6,80}$/).optional().describe("The plan (clipboard:<id>) the card is about. Without a pane the card is that plan's "
+    + "Needs you item (one per plan; it opens the plan); with a pane it ties the card to the plan, so it moves to the plan when the pane closes."),
   title: z.string().trim().min(1).max(80).describe("What waits there, in a few English words."),
   items: z.array(z.object({
     text: z.string().trim().min(1).max(200).describe("One thing only the operator can do, in English, at most 200 characters (details stay in the pane)."),
@@ -108,6 +117,7 @@ export interface NousPaneNoticesDeps {
     /** R16-8: a held copilot card an item names (`ref`) stays held and is answered through Nous's card. */
     get?(owner: string, id: string): Promise<SpaceNotification | null>;
     addPayload?(owner: string, id: string, payload: Record<string, unknown>): Promise<SpaceNotification | null>;
+    releaseHeldForNous?(owner: string, id: string, add?: { body?: string; payload?: Record<string, unknown> }): Promise<SpaceNotification | null>;
   };
   /** R11-2 (6): the operator-rule memories, to take a card item's recommended option from the rule that answers its question. */
   operatorRules?(): Promise<Array<{ id: string; title: string; body: string }>>;
@@ -120,6 +130,10 @@ export interface NousPaneNoticesDeps {
   signinCard?(input: NotificationRaiseInput): Promise<string | null>;
   /** R23-3: whether an artifact a card names opens for the owner (not deleted, in one of their rooms): Needs you shows it. */
   artifactOpens?(owner: string, id: string): Promise<boolean>;
+  /** A gone pane's open asks move to their plan's item before its card resolves (plan-needs-you.ts `carry`). */
+  carry?(owner: string, paneId: string): Promise<number>;
+  /** A plan's open pane (its room and pane), for a plan's card raised with no pane: Go takes the operator there (operator 13/11 15:37 BKK). */
+  planPane?(owner: string, planId: string): Promise<{ roomId: string; paneId: string } | null>;
 }
 
 /**
@@ -267,7 +281,7 @@ const gateNotes = (items: GateNoted[]) => items.flatMap((item) => [
 /** The notes and `since` of a card's items, so a changed one still updates the card. */
 const noteKey = (items: unknown) => JSON.stringify((Array.isArray(items) ? items as Array<Record<string, unknown>> : []).map((item) => [item.since, item.ruleDiffers, item.triedStored, item.answersSource]));
 const bodyOf = (items: NotifyOperatorArgs["items"]) => items.map((item) => `• ${item.text}${(item.steps ?? []).map((step, index) => `\n  ${index + 1}. ${step}`).join("")}`).join("\n");
-/** R20-asks-2: what only the operator's hands do (a sign-in, a code, a payment set-up, an install), which needs a link and numbered steps. */
+/** R20-asks-2: what only the operator's hands do (a sign-in, a code, a payment set-up, an install), which needs the page's link (13/11: no steps). */
 /** R24-2: a payment-method result card (its options report a state) and a `checked` line that says what the billing page showed. */
 const PAYMENT_WORDS = /\b(?:card|payment method|payment|billing)\b/i;
 const RESULT_OPTION = /^(?:done|saved|added|card added|updated|set|ready|completed)\b/i;
@@ -277,20 +291,19 @@ const PAGE_SEEN = /\b(?:page|screen|space_look)\b.*\b(?:shows?|showed|lists?|lis
 /** R60: the hands extras in Greek, and what says each extra in either language (an option Nous wrote itself counts). */
 const EXTRAS_EL = ["Απέτυχε", "Χρειάζομαι link/βήματα"];
 const EXTRA_SAME = [/^(?:failed|απέτυχε)/i, /^(?:need (?:links|help)|χρειάζομαι (?:link|βήματα|οδηγίες)|θέλω βοήθεια)/i];
-const STATUS_OPTION = /^(?:done|installed|finished|completed|ready|signed in|έγινε|έτοιμο|ολοκληρώθηκε)\b/i;
-const HANDS_WORK = /sign[- ]?in|log[- ]?in|captcha|password|passcode|2fa|\bmfa\b|\botp\b|verification code|\bsms\b|handoff|billing|install/i;
+// The Greek words end on a lookahead: \b sees no word edge after a Greek letter, so «Έγινε» was never held.
+const STATUS_OPTION = /^(?:(?:done|installed|finished|completed|ready|signed in)\b|(?:έγινε|έτοιμο|ολοκληρώθηκε)(?!\p{L}))/iu;
+// 14/11 REVIEW (Dana's rule 4: Mercor interview, npm security key, Space Link, Braintrust identity video asked with no link, «δωσε μου λινκ»).
+const HANDS_WORK = /sign[- ]?in|log[- ]?in|captcha|password|passcode|2fa|\bmfa\b|\botp\b|verification code|\bsms\b|handoff|billing|install|interview|security key|passkey|selfie|identity (?:video|check|verification)|\bpersona\b|link spaceapp|συνέντευξ|ταυτοποίησ/i;
 /** 13/11 (an office ERP invoices card held for its link): work in a tool with no web address, named instead of the link. */
 const OFFLINE_TOOL = /\bERP\b|\bdesktop (?:app|application|program|software|client)\b|\boffline\b|\bPOS\b|cash register|ταμειακ|\bprinter\b|εκτυπωτ/i;
-export const NOUS_HANDS_RULE = "A card for the operator's hands carries the exact https link and the full numbered steps in `steps` (the account to use, where a code arrives), "
-  + "never only a summary (operator rule cc31fdd2, 30/10: «δώσε μου links και οδηγίες ώστε να προχωρήσω τώρα»); work in an offline tool (a desktop ERP) names that tool instead of the link.";
-/** The hands items of a card that lack an https link or at least two numbered steps. */
-export function handsItemsMissingSteps(items: NotifyOperatorArgs["items"]): NotifyOperatorArgs["items"] {
-  return items.filter((item) => {
-    const words = [item.text, item.question ?? "", ...(item.steps ?? [])].join("\n");
-    if (item.code || !HANDS_WORK.test(`${item.text} ${item.question ?? ""}`)) return false;
-    const numbered = (item.steps?.length ?? 0) >= 2 || (/(?:^|\s)1[.)]\s/.test(words) && /(?:^|\s)2[.)]\s/.test(words));
-    return !(/https:\/\/\S+/.test(words) || OFFLINE_TOOL.test(words)) || !numbered;
-  });
+export const NOUS_HANDS_RULE = "A card for the operator's hands opens the exact page: its https link or `target` (the tab), and no steps (operator rule 13/11 nous_msg:83c0acb8: "
+  + "focus only when needed, at the one step only they can do); work in an offline tool (a desktop ERP) names that tool instead of the link.";
+/** The hands items of a card that open no page: no https link, no `target`, no offline tool named. */
+export function handsItemsMissingLink(items: NotifyOperatorArgs["items"]): NotifyOperatorArgs["items"] {
+  // `steps` still counts as where the link is: signinCard (focus-need.ts) refuses the steps themselves.
+  return items.filter((item) => { const words = [item.text, item.question ?? "", ...(item.steps ?? [])].join("\n");
+    return !item.code && HANDS_WORK.test(`${item.text} ${item.question ?? ""}`) && !item.target && !/https:\/\/\S+/.test(words) && !OFFLINE_TOOL.test(words); });
 }
 const live = (item: SpaceNotification) => item.status === "OPEN" || item.status === "READ";
 // 13/11 Cartesia card: a pane agent's own needs-you card (`agentNeedsYouKey` in pane-reports.ts) joins Nous's duplicate check, so one ask is one card.
@@ -328,14 +341,14 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
   const paymentHeld = new Map<string, number>();
   // Every waiting Nous card (until 31/10 among the newest 200 Nous records of any status, so an older open card was missed).
   const openCards = async (owner: string) => (await allNotifications(deps.notifications.list, owner, { status: "WAITING", source: "NOUS" }))
-    .filter((item) => item.source === "NOUS" && live(item) && (item.dedupeKey?.startsWith(NOUS_PANE_NOTICE_PREFIX) || item.dedupeKey === NOUS_GENERAL_NOTICE_KEY));
+    .filter((item) => item.source === "NOUS" && live(item) && nousKey(item.dedupeKey));
 
   return {
     /** The room and pane are already the owner's (resolved by the tool). */
     /** R20-ask-1's account facts stay Nous's (its tool's holds): the card never carries them (operator 2/11 09:49 BKK). */
-    async notify(owner: string, room: Room, pane: Pane | null, args: NotifyOperatorArgs): Promise<{ ok: boolean; display: string; result: string; refused?: boolean }> {
-      const dedupeKey = pane ? `${NOUS_PANE_NOTICE_PREFIX}${pane.id}` : NOUS_GENERAL_NOTICE_KEY;
-      const where = pane ? `${pane.paneName ?? pane.title} in ${room.name}` : room.name;
+    async notify(owner: string, room: Room | null, pane: Pane | null, args: NotifyOperatorArgs): Promise<{ ok: boolean; display: string; result: string; refused?: boolean }> {
+      const dedupeKey = pane ? `${NOUS_PANE_NOTICE_PREFIX}${pane.id}` : args.plan ? `${NOUS_PLAN_NOTICE_PREFIX}${args.plan}` : NOUS_GENERAL_NOTICE_KEY;
+      const where = pane ? `${pane.paneName ?? pane.title} in ${room?.name ?? "its room"}` : room?.name ?? `plan ${args.plan ?? "?"}`;
       const title = args.title;
       // R11-2 (6): an operator rule that answers an item's question sets its recommended option, and the item says which rule.
       // R13-7: else the operator's last 2 agreeing answers to the same question set it.
@@ -397,7 +410,7 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
       const codes = args.items.filter((item) => item.code);
       if (codes.length && (!pane || codes.length > 1 || codes.some((item) => item.options?.length))) return { ok: false, refused: true, display: "A code item goes to its pane",
         result: "A one-time code item (`code: true`) is typed into its pane's prompt: one a card, on a pane, with a question and no options. Nothing raised." };
-      // R20-asks-2 (operator rule cc31fdd2): a hands item comes with its link and numbered steps; one asked with options also offers
+      // R20-asks-2 (operator rule cc31fdd2, 13/11 nous_msg:83c0acb8): a hands item opens its page (link or target), no steps; one asked with options also offers
       // "Failed" and "Need links/steps" (7 of 36 cards on 30/10 were answered against a «Done/Installed» recommendation).
       // R23-3 (31/10, operator «Θέλω να τα δω όλα αυτά»: icon and video options asked by id): Needs you shows every artifact a card names,
       // so one that does not open for the owner would show nothing.
@@ -406,10 +419,16 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
           result: `${id} is no artifact of your rooms (deleted, mistyped, or another owner's): Needs you shows each artifact a card names. Name it by its exact id `
             + "(space_files_list artifacts) or leave it out. Nothing raised." };
       }
-      const bare = handsItemsMissingSteps(args.items);
-      if (bare.length) return { ok: false, refused: true, display: "A hands card needs its link and steps", result: `"${bare[0]!.text.slice(0, 120)}": ${NOUS_HANDS_RULE} Nothing raised.` };
+      const bare = handsItemsMissingLink(args.items);
+      if (bare.length) return { ok: false, refused: true, display: "A hands card needs its link", result: `"${bare[0]!.text.slice(0, 120)}": ${NOUS_HANDS_RULE} Nothing raised.` };
       const extras = ["Failed", "Need links/steps"];
       const hands = (item: NotifyOperatorArgs["items"][number]) => HANDS_WORK.test(`${item.text} ${item.question ?? ""}`);
+      // Operator 13/11 15:37 BKK («δεν καταλαβαίνω καν τι αφορά»): a plan's card shows no item as a bare free-text box: it asks with its options, is hands work,
+      // or says it wants a typed value (answerKind "text").
+      const vague = !pane && args.plan ? args.items.find((item) => item.question && !item.code && !item.options?.length && item.answerKind !== "text" && !hands(item)) : undefined;
+      if (vague) return { ok: false, refused: true, display: "A plan card asks with its options", result: `"${vague.text.slice(0, 120)}": a plan's card item `
+        + "is a question in the operator's language with its options and your recommendation (a yes/no is Approve / Reject), hands work with its link, or "
+        + "answerKind \"text\" for a value they type. Nothing raised." };
       const goNow = (item: NotifyOperatorArgs["items"][number]) => ({ ...item, ...(hands(item) ? { question: item.question ?? item.text } : {}), options: [NEEDS_YOU_GO_NOW, ...extras], recommended: NEEDS_YOU_GO_NOW });
       // The ask a card raised before brief 20261103 carries (only hands items took the Go now options): the same list is no reason to alert again.
       const askBefore = askOf(args.items.map((item) => !item.code && !item.options?.length && hands(item) ? goNow(item) : item));
@@ -457,8 +476,8 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
         ? { ...item, answersSource: NOTIFICATION_SOURCE_LABELS[held.get(item.ref)!.source] } : item) };
       // Operator 13/11 07:12 BKK (plan clipboard:T2uboz26Oh3q S2): a card naming no pane that answers a held card is about that card's pane: it joins
       // that pane's Nous card (one per pane), so the card opens the pane.
-      const heir = pane ? undefined : [...held.values()].find((found) => found.roomId && found.paneId);
-      const roomId = heir?.roomId ?? room.id;
+      const heir = pane || args.plan ? undefined : [...held.values()].find((found) => found.roomId && found.paneId);
+      const roomId = heir?.roomId ?? room?.id ?? null;
       const paneId = pane?.id ?? heir?.paneId ?? null;
       const key = heir ? `${NOUS_PANE_NOTICE_PREFIX}${heir.paneId}` : dedupeKey;
       // Go to pane opens the item (operator 1/11 11:58 BKK): the newest item's target (nous_msg:4b36b80e: the page an item joining the card brings),
@@ -477,6 +496,8 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
           + "\"url:https://…\" (the exact page to act on) or \"tab:<tabId>\" (space_browser_tabs lists them), so Go now opens it (R27-2: the operator answered «open the "
           + "page and go to the point»). Nothing raised." };
       }
+      // Operator 13/11 15:37 BKK («παταω go to pane και δεν κανει τιποτα»): a plan's card stays off any pane (one per plan), its link names the plan's open pane.
+      const planPane = !paneId && args.plan ? await deps.planPane?.(owner, args.plan).catch(() => null) ?? null : null;
       const items = bodyOf(args.items);
       const body = `${items}${checkedBlock([...(args.checked ?? []), ...gateNotes(args.items)])}`;
       const ask = askOf(args.items, lead);
@@ -488,17 +509,28 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
       }
       const raise: NotificationRaiseInput = {
         ownerUserId: owner, roomId, paneId, source: "NOUS", kind: "NEEDS_HANDS", severity: "ATTENTION", title, body,
-        link: { roomId, ...(paneId ? { paneId, ...(target ? { target } : {}) } : {}) }, dedupeKey: key, telegram: null,
-        payload: { items: args.items, checked: args.checked, ...(args.items.some((item) => item.files) ? { files: [...new Set(args.items.flatMap((item) => item.files ?? []))] } : {}), alertAt: new Date(now()).toISOString(), ...(ask ? { ask } : {}) }
+        link: { ...(roomId ? { roomId } : {}), ...(paneId ? { paneId, ...(target ? { target } : {}) } : planPane ?? {}) }, dedupeKey: key, telegram: null,
+        payload: { items: args.items, checked: args.checked, ...(args.plan ? { planId: args.plan } : {}), ...(args.items.some((item) => item.files) ? { files: [...new Set(args.items.flatMap((item) => item.files ?? []))] } : {}), alertAt: new Date(now()).toISOString(), ...(ask ? { ask } : {}) }
       };
       const signinRefused = await deps.signinCard?.(raise).catch(() => null);
-      if (signinRefused) return { ok: false, refused: true, display: signinRefused.startsWith("Not raised: nothing shows an account") ? "No account shows at that site yet" : signinRefused.startsWith("Not raised: a bot check comes last") ? "Fill the page first" : "The tab runs in another Google account", result: signinRefused };
+      if (signinRefused) return { ok: false, refused: true, display: signinRefused.startsWith("Not raised: nothing shows an account") ? "No account shows at that site yet" : signinRefused.startsWith("Not raised: a bot check comes last") ? "Fill the page first" : signinRefused.includes("nous_msg:83c0acb8") ? "Not needed: focus only when needed" : "The tab runs in another Google account", result: signinRefused };
       const card = await deps.notifications.raise(raise, { realert: Boolean(current) });
       for (const ref of held.keys()) await deps.notifications.addPayload?.(owner, ref, { heldForNous: { until: new Date(now() + 30 * 86_400_000).toISOString(), card: card.id } }).catch(() => null);
       return { ok: true, display: `${current ? "Updated" : "Sent"} the operator's card for ${where} (${args.items.length} item${args.items.length === 1 ? "" : "s"})`,
         result: `Notification ${card.id}. Resolve it with space_resolve_notification when nothing is left there.` };
     },
 
+    /** Daily Nous errors 13/11 (agent cards 079c6e5a AWS code, 85a5c16a npm: held for Nous up to an hour while each notify and focus on their pane was
+     *  refused as "already asks"): Nous forwarding a pane agent's held card shows it now, Nous's note first and its pick as the recommendation.
+     *  Null when it is not held for Nous (shown already, or an allowance's). */
+    async release(owner: string, card: SpaceNotification, items: Array<{ text: string; question?: string; recommended?: string; steps?: string[] }>): Promise<SpaceNotification | null> {
+      if (!card.payload.heldForNous || heldUnderAllowance(card) || !deps.notifications.releaseHeldForNous) return null;
+      const ask = card.payload.ask as NeedsYouAsk | undefined;
+      const pick = items.find((item) => item.recommended && ask?.options?.includes(item.recommended))?.recommended;
+      const note = items.map((item) => [item.text, item.question, ...item.steps ?? [], item.recommended ? `Recommended: "${item.recommended}".` : ""].filter(Boolean).join(" ")).join("\n");
+      // Nous's note leads: a body over 2,000 characters keeps its start.
+      return deps.notifications.releaseHeldForNous(owner, card.id, { body: `Nous: ${note}\n\n${card.body}`, payload: { nousItems: items, ...(pick ? { ask: { ...ask, recommended: pick } } : {}) } });
+    },
     /** R66: every open Nous card (every pane) and every open pane agent's needs-you card, for the duplicate-subject check before a new item. */
     async open(owner: string): Promise<SpaceNotification[]> {
       return [...await openCards(owner), ...(await allNotifications(deps.notifications.list, owner, { status: "WAITING", source: "AGENT" })).filter((item) => agentAsk(item) && live(item))];
@@ -510,7 +542,7 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
         for (let before: string | undefined; ;) {
           const page = await deps.notifications.list(owner, { status: "ALL", source, limit: 200, ...(before ? { before } : {}) });
           const fresh = page.filter((item) => Date.parse(item.createdAt) >= since);
-          out.push(...fresh.filter((item) => !live(item) && (agentAsk(item) || (item.source === "NOUS" && (item.dedupeKey?.startsWith(NOUS_PANE_NOTICE_PREFIX) || item.dedupeKey === NOUS_GENERAL_NOTICE_KEY)))));
+          out.push(...fresh.filter((item) => !live(item) && (agentAsk(item) || (item.source === "NOUS" && nousKey(item.dedupeKey)))));
           if (page.length < 200 || fresh.length < page.length) break;
           before = page.at(-1)!.createdAt;
         }
@@ -525,7 +557,7 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
       return ["## Your cards to the operator (space_notify_operator: one per pane; resolve with space_resolve_notification when done)",
         ...cards.map((card) => {
           const items = Array.isArray(card.payload.items) ? card.payload.items.length : card.body.split("\n").length;
-          return `- [${card.id}] ${card.title} · ${names.pane(card.paneId) ?? "no pane"} in ${names.room(card.roomId) ?? "a room"} · ${items} item${items === 1 ? "" : "s"}${card.status === "READ" ? " · read" : ""}`;
+          return `- [${card.id}] ${card.title} · ${names.pane(card.paneId) ?? (typeof card.payload.planId === "string" ? `plan ${card.payload.planId}` : "no pane")} in ${names.room(card.roomId) ?? "a room"} · ${items} item${items === 1 ? "" : "s"}${card.status === "READ" ? " · read" : ""}`;
         })].join("\n");
     },
 
@@ -534,7 +566,10 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
       let resolved = 0;
       for (const card of await openCards(owner)) {
         const paneId = card.dedupeKey?.startsWith(NOUS_PANE_NOTICE_PREFIX) ? card.dedupeKey.slice(NOUS_PANE_NOTICE_PREFIX.length) : null;
-        if (paneId && !openPaneIds.has(paneId)) resolved += await deps.notifications.resolve(owner, card.dedupeKey!, "its pane is gone");
+        if (!paneId || openPaneIds.has(paneId)) continue;
+        // Its asks move to the plan the pane worked on first (operator 13/11 nous_msg:2e24947d), as on PANE_CLOSED (browser-handoff.ts).
+        await deps.carry?.(owner, paneId).catch(() => 0);
+        resolved += await deps.notifications.resolve(owner, card.dedupeKey!, "its pane is gone");
       }
       return resolved;
     }

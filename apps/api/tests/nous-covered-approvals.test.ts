@@ -101,6 +101,16 @@ describe("approvals \"May send\" covers are Nous's, never the operator's (operat
     expect(f.telegramSend).toHaveBeenCalledOnce();
   });
 
+  it("never holds a review a rule memory says the operator reads first, and the sweep leaves it in Needs you (Nous 13/11, Akamai credits)", async () => {
+    const f = fixture();
+    const card = await f.review({ payload: { review: { id: "mktpost:8GLHGsG9nGfa", channel: "REDDIT", text: "Art 10" }, operatorReads: "mailmem:SLvZ9IZgCRc4" } });
+    expect(isNousApproval(card)).toBe(false);
+    expect(card.payload.heldForNous).toBeUndefined();
+    await f.sweep();
+    expect((await f.service.get(owner, card.id))?.payload.heldForNous).toBeUndefined();
+    expect(await f.needsYou()).toEqual([card.id]);
+  });
+
   it("holds a Mail campaign's review for Nous too, and never a Security review or an URGENT card", async () => {
     const f = fixture();
     const campaign = await f.review({ source: "MAIL_COPILOT", kind: "CAMPAIGN_REVIEW", title: "Mail campaign \"oll4 support\" waits for approval", dedupeKey: "mail-campaign:review:mcamp:abcdefgh",

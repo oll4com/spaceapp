@@ -21,7 +21,7 @@ const plan = (id: string, paneId: string, steps: string[], extra: Record<string,
 const task = (id: string, paneId: string, schedule: Record<string, unknown> | null, status = "OPEN") => ({ id, title: `Task ${id.slice(-1)}`, paneId, roomId: room.id, status,
   schedule: schedule && { recurrence: { kind: "ONCE" }, timeZone: "UTC", nextRunAt: null, lastRunAt: null, lastOutcome: null, ...schedule } }) as unknown as TaskItem;
 
-function fixture(panes: Array<{ pane: Pane; state: string; since: string }>, plans: ClipboardItem[], tasks: TaskItem[] = []) {
+function fixture(panes: Array<{ pane: Pane; state: string; since: string }>, plans: ClipboardItem[], tasks: TaskItem[] = [], deps: Partial<StandingOrdersDeps> = {}) {
   let clock = T0;
   const notice = vi.fn<NonNullable<StandingOrdersDeps["notice"]>>(async () => {});
   const standing = vi.fn<StandingOrdersDeps["standing"]>(async () => "STARTED");
@@ -32,9 +32,9 @@ function fixture(panes: Array<{ pane: Pane; state: string; since: string }>, pla
     settings: async () => nousSettingsSchema.parse({ enabled: true, standingOrders: { dailyReview: false } }), owners: async () => [owner],
     collect: async () => ({ rooms: [{ room, sample: sample() }], reports: [], notifications: [], decisions: [], copilotItems: [], plans, checks: [], tasks, executions: [], summaries: [] }),
     reportsSince: async () => [], standing, notice, now: () => clock, utilizationLow: async () => "Utilization stayed under the 90% target for 15 min.",
-    review: { facts: async () => [], decisions: async () => [], timeZone: async () => "Asia/Bangkok" } });
+    review: { facts: async () => [], decisions: async () => [], timeZone: async () => "Asia/Bangkok" }, ...deps });
   const pushes = () => notice.mock.calls.filter((call) => call[1] === "utilization-low").map((call) => call[3] as NousTurnItem[]);
-  return { orders, panes, standing, pushes, advance: (ms: number) => { clock += ms; } };
+  return { orders, panes, standing, notice, pushes, advance: (ms: number) => { clock += ms; } };
 }
 
 describe("Load push (13/11)", () => {
@@ -54,6 +54,20 @@ describe("Load push (13/11)", () => {
     expect(f.pushes().at(-1)!.map((item) => item.key)).toEqual(["utilization", "plan:clipboard:a", "plan:clipboard:b"]);
   });
 
+  // 13/11 23:03 BKK: at 22:41 BKK seven CLI panes finished with no plan step or task of their own and waited for the 10-minute push.
+  it("queues a dispatch turn at once when a CLI pane finishes with nothing waiting on it", async () => {
+    const f = fixture([{ pane: andy, state: "working", since: iso(T0 - 5 * MIN) }], [plan("clipboard:z", "pane:gone0001", ["COMPLETED", "PENDING"])]);
+    await f.orders.tickOwner(owner);
+    expect(f.notice.mock.calls.filter((call) => call[1] === "utilization-low").map((call) => call[4])).toEqual([false]);
+    f.advance(2 * MIN);
+    f.panes[0] = { pane: andy, state: "done", since: iso(T0 + MIN) };
+    await f.orders.tickOwner(owner);
+    const call = f.notice.mock.calls.filter((entry) => entry[1] === "utilization-low").at(-1)!;
+    expect(call[4]).toBe(true);
+    expect(call[2]).toContain("CLI panes free since the last push (hand each the next piece of work below now): Main/Andy done");
+    expect(call[2]).toContain("Plans not on a pane");
+  });
+
   it("gives a finished pane whose task run ended one item, and a task update naming it moves it", async () => {
     const ran = task("task:ran00001", andy.id, { lastRunAt: iso(T0 - 30 * MIN) });
     const f = fixture([{ pane: andy, state: "done", since: iso(T0 - 15 * MIN) }, { pane: bob, state: "idle", since: iso(T0 - 15 * MIN) }, { pane: cody, state: "idle", since: iso(T0 - 15 * MIN) }],
@@ -71,13 +85,42 @@ describe("Load push (13/11)", () => {
     expect(itemActed(item, [{ name: "space_send_to_pane", ok: true, subjects: [`pane ${andy.id}`], args: { panes: [andy.id], text: "Next step of the task" } }])).toBe(true);
   });
 
+  // 13/11 (operator: utilization at 80 % until morning; memory 60ca649d): under LOW the push waited up to an hour behind the inbox cap.
+  it("sends a finished pane its plan's next step itself, once per step, and only with the push's gate open", async () => {
+    const dispatch = vi.fn<NonNullable<StandingOrdersDeps["dispatch"]>>(async () => true);
+    let line: string | null = null;
+    const done = { state: "done", since: iso(T0 - 15 * MIN) };
+    const plans = [plan("clipboard:a", andy.id, ["COMPLETED", "PENDING"]), plan("clipboard:b", bob.id, ["COMPLETED", "PENDING"]), plan("clipboard:c", cody.id, ["PENDING"])];
+    const f = fixture([{ pane: andy, ...done }, { pane: bob, ...done }, { pane: cody, ...done }], plans, [], { dispatch, utilizationLow: async () => line,
+      // Bob's plan waits on another plan (Nous decides which step runs); Cody runs on Codex, which the Provider advice avoids under LOW.
+      planMap: async () => ({ nodes: new Map([["clipboard:b", { hold: { kind: "PLAN", what: "clipboard:x", until: null } }]]), holds: [] }) as never,
+      spend: async () => ({ mode: "LOW", avoid: ["codex"] }) });
+    f.panes[2] = { pane: { ...cody, terminalRuntimeId: "cli:codex" } as Pane, ...done };
+    // Gate closed (over target, a limit, CRITICAL, or the server busy): nothing goes.
+    await f.orders.tickOwner(owner);
+    expect(dispatch).not.toHaveBeenCalled();
+    line = "Utilization stayed under the 80% target for 15 min.";
+    f.advance(10 * MIN);
+    await f.orders.tickOwner(owner);
+    expect(dispatch.mock.calls).toEqual([[owner, room.id, andy.id, expect.stringContaining("Continue plan clipboard:a \"Plan a\": its next step is 2. Step 2 (PENDING).")]]);
+    const push = f.notice.mock.calls.filter((call) => call[1] === "utilization-low").at(-1)!;
+    expect((push[3] as NousTurnItem[]).map((item) => item.key)).toEqual(["utilization", "plan:clipboard:b"]);
+    expect(push[2]).toContain("Space sent the next step itself (nothing to send): Andy [clipboard:a] 2. Step 2 (PENDING)");
+    // Andy ends again with the same step open: it stays with Nous, not sent twice.
+    f.advance(10 * MIN);
+    await f.orders.tickOwner(owner);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect((f.notice.mock.calls.at(-1)![3] as NousTurnItem[]).map((item) => item.key)).toEqual(["utilization", "plan:clipboard:a", "plan:clipboard:b"]);
+  });
+
   it("asks a finished pane whose plan has only BLOCKED steps left to save, and keeps one with a step to run or an operator wait", async () => {
     const f = fixture([{ pane: andy, state: "done", since: iso(T0 - 45 * MIN) }, { pane: bob, state: "done", since: iso(T0 - 45 * MIN) }, { pane: cody, state: "done", since: iso(T0 - 45 * MIN) }],
       [plan("clipboard:a", andy.id, ["COMPLETED", "BLOCKED"]), plan("clipboard:b", bob.id, ["BLOCKED", "PENDING"]),
         plan("clipboard:c", cody.id, ["COMPLETED", "BLOCKED"], { waitsOn: { kind: "OPERATOR", what: "his sign-in", until: null } })]);
     await f.orders.tickOwner(owner);
-    const text = f.standing.mock.calls.map((call) => call[2]).join("\n");
-    expect(text).toContain("- Main/Andy · done 45 min · plan step waits for what its BLOCKED steps name: its task or you reopen the pane when the work continues · save not asked yet");
+    // Item 7 A (round 14/11): finished panes come as inbox lines.
+    const text = f.notice.mock.calls.filter(([, key]) => key.startsWith("finished:")).map(([, , line]) => line).join("\n");
+    expect(text).toContain("Finished pane Main/Andy · done 45 min · plan step waits for what its BLOCKED steps name: its task or you reopen the pane when the work continues · save not asked yet");
     expect(text).not.toContain("Main/Bob ·");
     expect(text).not.toContain("Main/Cody ·");
   });

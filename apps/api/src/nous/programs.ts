@@ -18,7 +18,7 @@ import { emitMakeEvent } from "../make-webhooks.js";
  * changed since its last revision lands; a value the registry replaced since, or a field the operator locked, is kept, and Nous and the
  * operator are told. Every change is appended to a journal next to the file (stable), which brings the replaced values back after a restart.
  */
-export const NOUS_PROGRAM_FILES: Record<NousProgramPage, string> = { startup: "startup-programs.json" };
+export const NOUS_PROGRAM_FILES: Record<NousProgramPage, string> = { startup: "startup-programs.json", affiliate: "affiliate-programs.json" };
 /** Where the data panes write them (brief nous/briefs/20261103-programs-pages.md). */
 export const NOUS_PROGRAMS_IMPORT_DIR = `${SPACE_AGENT_HOME}/agent-workspace/active/20261103-programs`;
 /** The grants usage report (plan clipboard:MUFqsrKfQtAt, measured daily by its pane): used/remaining on the approved programs' benefit lines. */
@@ -30,20 +30,22 @@ export const programsToolArgsSchema = z.object({
   action: z.enum(["list", "read", "upsert", "add_mail", "delete"]).describe("list: one line per program (filters below); read: one program whole with its mails; "
     + "upsert: create or change one program (entry); add_mail: add one mail to a program (id, mail); delete: remove one program (id) that is no "
     + "program we take part in or has no source (a Gmail thread read, a Space Memory id or a file showing it)."),
-  page: nousProgramPageSchema.optional().describe("list: startup, the only page (every program, oll4.com projects' ones included)."),
+  page: nousProgramPageSchema.optional().describe("list: startup (every startup program, oll4.com projects' ones included) or affiliate (every affiliate application and approval)."),
   status: z.enum(NOUS_PROGRAM_STATUSES).optional().describe("list: only this status."),
   reapply: z.boolean().optional().describe("list: only the programs flagged to apply again."),
   query: z.string().trim().min(1).optional().describe("list: words in the parent, program, project, account, contacts or notes."),
   id: z.string().trim().min(1).optional().describe("read, add_mail, delete: the program's id (its slug, e.g. nvidia-inception)."),
   entry: z.record(z.string(), z.unknown()).optional().describe("upsert: the program's fields as the data files write them: id (slug, required), page "
-    + "(startup, the only page; an oll4.com project's program goes there with its project), parent (e.g. NVIDIA), program, project, url, status (APPROVED = the program said yes (approved, accepted, welcome, ready to move forward), even while activation, a code, card verification "
+    + "(startup, the default; an oll4.com project's program goes there with its project; affiliate: an affiliate application, with affiliate below), parent (e.g. NVIDIA), program, project, url, status (APPROVED = the program said yes (approved, accepted, welcome, ready to move forward), even while activation, a code, card verification "
     + "or the credit itself is still pending: put what remains in nextAction and set awaitingCompletion true (the page lists it under Waiting too; false once the credit or access is in); APPLIED = no yes yet, waiting for a reply; IN_PROGRESS = no yes yet, "
     + "the process is moving (forms, calls, reviews); REJECTED, DRAFT, NOT_APPLIED, EXPIRED, CANCELLED), statusReason, appliedAt, decidedAt, expectedReplyBy, validUntil (ISO dates), amount {text, value, currency}, "
     + "commitments, account, contacts [addresses], mails [{date, direction SENT|RECEIVED, from, to [..], subject, gmailAccount, threadId}], nextAction, "
     + "reapply {needed, why, when}, sources [space_memory:…, clipboard:…, paths], notes, givesMoney (true: cash, investment or spendable credits "
     + "with a value such as API usage, cloud, GPU or storage credits; false: courses, memberships, free tiers or services, seats only; mixed with money = true), tags [ai-tokens, server-access, cash-grants, dev-tools, perks: the pages' tag chips; choose: worth joining (AI tokens or servers SpaceApp uses, over $1,000, nothing to pay), with the reason in notes], "
     + "whatItIs (what the service or program is, one line) and howWeUse (how SpaceApp/oll4 uses it and what that needs: a card, a paid plan, setup such as a DSN, "
-    + "a deadline), both in the operator's language: write them with every approval (an approval without them is still saved as APPROVED and counted, the answer warns and his report waits for them). A new program needs parent, program and status, and is refused "
+    + "a deadline), both in the operator's language: write them with every approval (an approval without them is still saved as APPROVED and counted, the answer warns and his report waits for them). affiliate (page affiliate): what the approval gives, {network (Awin, CJ, Impact, Admitad, direct...), "
+    + "publisherId, commission, cookieDays (number), trackingLink (the link or deep-link format with our id), couponFeed, payout (threshold and method), signIn (a Vault "
+    + "handle vault_item:..., never a password)}, replaced whole when given; its terms and restrictions go in commitments, the approval mail in mails. A new program needs parent, program and status, and is refused "
     + "when the same parent, program and project is already recorded (the answer names that id: update it). A field "
     + "left out keeps its value, null clears it; mails are added to the ones kept. locked [field names, e.g. amount]: fields the operator locked; the data files never "
     + "change them and an upsert changes or unlocks them only with a new source in sources (the operator's message or mail that says so). An approval, rejection or new approved amount sends the operator his full "
@@ -173,7 +175,7 @@ export function createNousPrograms(deps: { repository: NousProgramsRepository; n
     const base: NousProgram = kept ?? { id: fields.id, page: fields.page, parent: fields.parent!, program: fields.program!, project: null, url: null,
       status: fields.status!, statusReason: null, appliedAt: null, decidedAt: null, expectedReplyBy: null, validUntil: null, amount: null, commitments: null,
       account: null, contacts: [], mails: [], nextAction: null, reapply: null, sources: [], notes: null, givesMoney: null, tags: [], whatItIs: null, howWeUse: null, benefits: [], tiers: [],
-      locked: [], createdAt: at, updatedAt: at };
+      locked: [], affiliate: null, createdAt: at, updatedAt: at };
     const program: NousProgram = { ...base, ...definedOnly(fields), mails: mergeMails(base.mails, fields.mails ?? []),
       benefits: fields.benefits ? keepUsage(base.benefits, fields.benefits) : base.benefits, createdAt: base.createdAt, updatedAt: at };
     // Operator 7/11: the provider's yes is APPROVED even while activation steps remain (card, promo, billing go in nextAction);

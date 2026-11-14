@@ -5,6 +5,7 @@ import { readDateTimeSettings, type DateTimeSettings } from "../date-time-settin
 import { ChatCopyButton, ChatMarkdown } from "./ChatMarkdown.js";
 import { TaskDetails } from "./TaskDetails.js";
 import { DotAvatar } from "./DotAvatar.js";
+import { CodexSteps, type CodexReplySteps } from "./CodexTranscript.js";
 import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 type Translate = (text: string, vars?: Record<string, string | number>) => string;
@@ -63,7 +64,7 @@ function elapsed(seconds: number): string {
 }
 
 /** One Dot's conversation as the user sees it: bubbles, one-line events, date separators and the running task. */
-export function DotFeed({ dot, mood = "idle", motion = true, items, status, hasOlder, loadingOlder, onLoadOlder, onRetry, running, latestRun }: {
+export function DotFeed({ dot, mood = "idle", motion = true, items, status, hasOlder, loadingOlder, onLoadOlder, onRetry, running, latestRun, steps }: {
   dot: { name: string; character: DotCharacter };
   mood?: DotMood;
   motion?: boolean;
@@ -75,6 +76,8 @@ export function DotFeed({ dot, mood = "idle", motion = true, items, status, hasO
   onRetry: () => void;
   running: DotFeedLiveRun | null;
   latestRun: AgentPaneTaskRun | null;
+  /** Codex's work behind each reply (Chat panes): shown closed above the reply, and live under the working bubble. */
+  steps?: CodexReplySteps | null;
 }) {
   const language = useUiLanguage();
   const t: Translate = (text, vars) => uiText(language, text, vars);
@@ -103,6 +106,7 @@ export function DotFeed({ dot, mood = "idle", motion = true, items, status, hasO
         {separator ? <div className="dots-feed-separator" role="separator" aria-label={dotFeedSeparatorLabel(item.createdAt, now, settings, t)}>
           <span>{dotFeedSeparatorLabel(item.createdAt, now, settings, t)}</span></div> : null}
         {newConversation ? <div className="dots-feed-divider" role="separator" aria-label={t("New conversation")}><span>{t("New conversation")}</span></div> : null}
+        {steps?.byReply.get(item.id) ? <CodexSteps steps={steps.byReply.get(item.id)!} /> : null}
         {item.kind === "EVENT" ? <FeedEvent item={item} />
           : item.author === "USER" ? <article className="dots-bubble user" title={title}>
             {item.content ? <p>{item.content}</p> : null}
@@ -134,6 +138,7 @@ export function DotFeed({ dot, mood = "idle", motion = true, items, status, hasO
       <span className="dots-working-label">{running.status === "QUEUED" ? t("{name} is about to start", { name: dot.name }) : running.status === "INTERRUPTING"
         ? t("{name} is stopping", { name: dot.name }) : t("{name} is working", { name: dot.name })} · <time>{elapsed(running.elapsedSeconds)}</time></span>
       {running.progress ? <p className="dots-working-progress">{running.progress}</p> : null}
+      {steps?.pending.length ? <CodexSteps steps={steps.pending} /> : null}
     </article> : null}
   </main>;
 }

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { FastifyInstance } from "fastify";
 import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
-import { detectClient, requestOrigin } from "../../client-detect.js";
+import { CODE_CLIENTS, detectClient, requestOrigin } from "../../client-detect.js";
 import { gatewayError } from "../../errors.js";
 import { checkKeyLimits, PolicyRejection } from "../../policy.js";
 import { readBounded } from "../../proxy-util.js";
@@ -23,9 +23,6 @@ export const MAKE_AI_CREDIT_RATES: Record<string, readonly [number, number]> = {
 /** The plan's budget: 30K of the program's credits a month for AI through Make, so about 1,000 a day (operator rule 3/11: a daily cap that says when it is spent). */
 export const MAKE_DAILY_CREDITS_DEFAULT = 1000;
 
-/** Coding agents never spend Make credits (operator, plan step 4): the clients `detectClient` names that write code. */
-const CODE_CLIENTS = new Set(["Claude Code", "Claude Code (VS Code)", "Anthropic CLI", "Codex CLI", "Cursor", "Grok Build", "Zed", "Aider", "Droid",
-  "OpenCode", "Copilot", "Antigravity", "Reasonix", "Oh My Pi", "Kilo Code"]);
 
 /** The Vault's two handles (vault_key:tOuOCRTzDKx3fq_ua-DuvA the URL, vault_key:RMgSXCywsKGSjFDAqxQKvw the token), installed for the gateway's user `space` first, the agent home's copies second. */
 export async function readMakeRelayCredentials(): Promise<{ url: string; token: string } | null> {
@@ -85,6 +82,7 @@ export function registerMakeRelayRoutes(app: FastifyInstance, helpers: GatewayRo
     }
     const key = request.gatewayApiKey!;
     const client = detectClient(request.headers);
+    // Coding agents never spend Make credits (operator, plan step 4).
     if (isClaudeCodeRequest(request.headers) || (client && CODE_CLIENTS.has(client))) {
       return reply.code(403).send(gatewayError("client_not_allowed", "Make AI serves background jobs only, never a coding agent.", "invalid_request_error"));
     }

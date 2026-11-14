@@ -153,7 +153,7 @@ describe("Vault agent routes", () => {
       const { body } = await enrollment(brokerKey.publicKey, (await store.getRoom(room.id)).ownerUserId!);
       await app.inject({ method: "POST", url: "/api/space-vault/enroll", headers: alice.headers, payload: body });
       const handle = newVaultHandle("vault_item");
-      for (const [path, payload] of [["list", {}], ["fill", { handle, fields: ["USERNAME", "PASSWORD"] }], ["totp-fill", { handle }],
+      for (const [path, payload] of [["list", {}], ["fill", { handle, fields: ["USERNAME", "PASSWORD"] }], ["card-fill", { handle }], ["totp-fill", { handle }],
         ["generate-fill", { purpose: "NEW_ACCOUNT", label: "Synthetic shop", username: "synthetic@example.com", roles: ["NEW_PASSWORD", "CONFIRM_PASSWORD"] }],
         ["generate-fill", { purpose: "CHANGE_PASSWORD", handle }], ["save", { site: "https://shop.example", username: "synthetic@example.com", password: SENTINEL, label: "Shop" }]] as const) {
         const answer = await call(path, payload);
@@ -170,7 +170,8 @@ describe("Vault agent routes", () => {
       for (const [path, payload] of [["fill", { handle, fields: ["PASSWORD"], selector: "#password" }], ["fill", { handle, fields: ["PASSWORD"], origin: "https://evil.example" }],
         ["generate-fill", { purpose: "NEW_ACCOUNT" }], ["generate-fill", { purpose: "CHANGE_PASSWORD" }],
         ["generate-fill", { purpose: "NEW_ACCOUNT", label: "x", policy: { minLength: 20, maxLength: 10 } }], ["generate-fill", { purpose: "NEW_ACCOUNT", label: "x", policy: { maxLength: 4 } }], ["fill", { handle: "vault_item:../x", fields: ["PASSWORD"] }],
-        ["list", { paneId: "pane:other" }], ["approval", { handle, fields: ["PASSWORD"] }], ["fill", { handle, fields: ["PASSWORD"], targetPaneId: "../x" }],
+        ["list", { paneId: "pane:other" }], ["approval", { handle, fields: ["PASSWORD"] }],
+        ["card-fill", { handle, fields: ["CARD_NUMBER"] }], ["card-fill", { handle, submit: true }], ["card-fill", { handle, number: SENTINEL }], ["fill", { handle, fields: ["PASSWORD"], targetPaneId: "../x" }],
         ["save", { site: "http://10.0.0.1", username: "a", label: "A" }], ["save", { site: "https://shop.example", username: "a", label: "A", fields: { PASSWORD: "x" } }]] as const) {
         expect([404, 422], JSON.stringify(payload)).toContain((await call(path, payload)).statusCode);
       }

@@ -68,7 +68,28 @@ export const APPOINTMENT_HOURS = { from: "11:00", to: "18:00", lateTo: "21:00" }
 export const APPOINTMENT_SCHEDULE_RULE = `An UPCOMING appointment also needs format (${APPOINTMENT_FORMATS.join(" | ")}: who or what is on the other side) and timing `
   + "(FIXED: only at that exact start; FLEXIBLE: can be done any time until deadlineAt, which it then needs). A FLEXIBLE one's time (start to end) must be "
   + `within ${APPOINTMENT_HOURS.from}-${APPOINTMENT_HOURS.to} in the operator's zone, to ${APPOINTMENT_HOURS.lateTo} only with a TIME ZONE REASON (ΛΟΓΟΣ ΖΩΝΗΣ ΩΡΑΣ) `
-  + "line in its notes saying which time zone forces it. FIXED times the other side set are kept as they are.";
+  + "line in its notes saying which time zone forces it. FIXED times the other side set are kept as they are. One joined online (format "
+  + "AI_INTERVIEW | RECORDED_VIDEO | LIVE_HUMAN_VIDEO | WEBINAR | TEST) needs location to start with its real join link as an http(s) URL, taken from "
+  + "the mail or invite (for a button that exists only in the mail, the Gmail thread URL), never text such as \"link in the mail\"; PHONE and "
+  + "IN_PERSON may give a number or place as text.";
+
+// Operator 13/11 16:00 BKK («link μέσα στο ραντεβού να το ανοίγω, όχι κείμενο»): an online one's location is the link the operator opens.
+export const APPOINTMENT_ONLINE_FORMATS = ["AI_INTERVIEW", "RECORDED_VIDEO", "LIVE_HUMAN_VIDEO", "WEBINAR", "TEST"] as const;
+const WEB_ADDRESS = /https?:\/\/[^\s<>"«»]+[^\s<>"«»),.;:!?]/i;
+const webAddress = (text: string | null | undefined): string | null => {
+  const href = WEB_ADDRESS.exec(text ?? "")?.[0];
+  try { return href && new URL(href) ? href : null; } catch { return null; }
+};
+
+const startsWithLink = (location: string | null | undefined) => {
+  const link = webAddress(location);
+  return Boolean(link && location!.trim().startsWith(link));
+};
+
+/** The link to join by: the first web address in location, else in its HOW TO JOIN (ΕΙΣΟΔΟΣ) notes. */
+export function appointmentJoinUrl(item: { location?: string | null; notes?: string | null }): string | null {
+  return webAddress(item.location) ?? appointmentSections(item.notes).filter((section) => section.key === "join").map((section) => webAddress(section.text)).find(Boolean) ?? null;
+}
 
 const minutes = (clock: string) => Number(clock.slice(0, 2)) * 60 + Number(clock.slice(3));
 const minuteOfDay = (iso: string, zone: string) =>
@@ -83,10 +104,14 @@ export function appointmentWithinHours(item: { startsAt: string; endsAt?: string
 
 /** What an UPCOMING appointment's format and time still miss or break, by the names the refusal gives; none for DONE and CANCELLED ones. */
 export function appointmentScheduleMissing(item: { status?: string | null; format?: string | null; timing?: string | null; deadlineAt?: string | null;
-  startsAt: string; endsAt?: string | null; notes?: string | null }, zone: string): string[] {
+  startsAt: string; endsAt?: string | null; notes?: string | null; location?: string | null }, zone: string): string[] {
   if (item.status && item.status !== "UPCOMING") return [];
   const missing: string[] = [];
   if (!item.format) missing.push(`format (${APPOINTMENT_FORMATS.join(" | ")})`);
+  else if ((APPOINTMENT_ONLINE_FORMATS as readonly string[]).includes(item.format) && !startsWithLink(item.location)) {
+    missing.push(`location that starts with the real join link as an http(s) URL (${item.format} is joined online; from the mail or invite, `
+      + "for a button only in the mail the Gmail thread URL), not text");
+  }
   if (!item.timing) missing.push("timing (FIXED or FLEXIBLE)");
   if (item.timing !== "FLEXIBLE") return missing;
   if (!item.deadlineAt) missing.push("deadlineAt (a FLEXIBLE one can be done any time until it)");

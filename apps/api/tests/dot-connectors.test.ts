@@ -1,6 +1,9 @@
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import { createCipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConnectorAccountRecord, ConnectorAccountsRepository } from "@space/db";
 import {
@@ -10,6 +13,8 @@ import {
   createConnectorService,
   createGoogleConnector,
   createMicrosoftConnector,
+  ensureConnectorKey,
+  readConnectorKey,
   registerConnectorRoutes,
   rfc822,
   type ConnectorProviderClient
@@ -94,6 +99,22 @@ describe("connector crypto and messages", () => {
     expect(() => keyless.seal("x", refresh)).toThrow(expect.objectContaining({ code: "CONNECTOR_KEY_MISSING" }));
     expect(keyless.open(sealV1("old-token"), refresh)).toBe("old-token");
     expect(() => keyless.open(sealed, refresh)).toThrow(/Reconnect/);
+  });
+
+  it("writes a public install's missing key once, 0600, and never replaces an existing one (13/11)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "connector-key-"));
+    try {
+      const path = join(dir, "connector", "space-connector.key");
+      ensureConnectorKey(path);
+      const key = readConnectorKey(path);
+      expect(key?.length).toBeGreaterThanOrEqual(32);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      ensureConnectorKey(path);
+      expect(readConnectorKey(path)).toBe(key);
+      writeFileSync(path, "short");
+      ensureConnectorKey(path);
+      expect(readConnectorKey(path)).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
   it("builds RFC 822 mail without header injection", () => {
     const raw = Buffer.from(rfc822("me@example.com", { to: ["a@example.com\r\nBcc: evil@example.com"], subject: "Hi\nBcc: x@example.com", body: "Hello" }), "base64url").toString("utf8");

@@ -36,7 +36,7 @@ const item: ClipboardItem = {
   roomId: "room:one",
   paneId: "pane:one",
   paneTitle: "Model Task",
-  dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 2,
+  dependsOn: [], dueAt: null, waitsOn: null, parked: null, occurrenceCount: 2,
   characterCount: 54,
   createdAt: "2026-07-15T11:00:00.000Z",
   lastUsedAt: "2026-07-15T11:18:00.000Z"
@@ -70,7 +70,7 @@ const planItem: ClipboardItem = {
   roomId: "room:one",
   paneId: "pane:one",
   paneTitle: "Model Task",
-  dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
+  dependsOn: [], dueAt: null, waitsOn: null, parked: null, occurrenceCount: 1,
   characterCount: 33,
   createdAt: "2026-07-15T12:00:00.000Z",
   lastUsedAt: "2026-07-15T12:05:00.000Z"
@@ -293,6 +293,18 @@ describe("ClipboardDock", () => {
     expect(document.querySelector(".clipboard-plan-step-model")).toBeNull();
     expect(document.body.textContent).not.toMatch(/🧠|🤖/);
     expect(screen.getByText("(antigravity)")).toBeTruthy();
+  });
+
+  it("shows why a plan is parked and how many of its resume conditions are met (operator 13/11)", async () => {
+    const condition = (id: string, state: "OPEN" | "MET") => ({ id, who: "OPERATOR" as const, what: `Condition ${id}`, check: { kind: "MANUAL" as const }, state, checkedAt: null, metAt: null, evidence: null });
+    mocks.clipboardItems.mockResolvedValue({
+      data: [{ ...planItem, parked: { reason: "Waits for the vendor", since: "2026-11-13T00:00:00.000Z", conditions: [condition("c1", "MET"), condition("c2", "OPEN")], resumedAt: null } }],
+      pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 }
+    });
+    render(<ClipboardDock canInsert activePaneLabel="Model Task" onInsert={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Plans" }));
+    const parked = await screen.findByText("Parked: Waits for the vendor · 1/2 conditions met");
+    expect(parked.getAttribute("title")).toBe("MET OPERATOR: Condition c1\nOPEN OPERATOR: Condition c2");
   });
 
   it("shows who took a plan in which room, its stages in order, and a compact completed toggle", async () => {

@@ -6,7 +6,7 @@ import {
   mailRuleProposalSchema, mailRuleStatusSchema, mailThreadsQuerySchema, resolveMailCopilotPaneMetadata, type Pane
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
-import type { MailCopilotService } from "./service.js";
+import { agentThread, type MailCopilotService } from "./service.js";
 
 // Agent-facing routes of the Mail Copilot pane, reached with the pane-scoped CLI bridge token. The owner is the
 // room owner; the agent gets mail as text, memories, work items and decisions, never a token.
@@ -15,7 +15,7 @@ const ruleIdSchema = z.string().regex(/^mailrule:[A-Za-z0-9_-]{6,80}$/);
 
 export interface CliBridgeClaims { roomId: string; paneId: string; cliSessionId: string }
 export interface MailCopilotAgentRouteDependencies {
-  store: Pick<SpaceStore, "getRoom" | "getPane">;
+  store: Pick<SpaceStore, "getRoom" | "getPane" | "listRooms" | "listPanes">;
   routeOptions: Record<string, unknown>;
   requireBridge(request: FastifyRequest, reply: FastifyReply): Promise<{ claims: CliBridgeClaims } | null>;
   parseBody<TSchema extends z.ZodTypeAny>(schema: TSchema, body: unknown): z.infer<TSchema>;
@@ -35,14 +35,25 @@ export function registerMailCopilotAgentRoutes(app: FastifyInstance, service: Ma
   const { routeOptions, parseBody, parseQuery } = deps;
   const route = (path: string) => `${cliMailCopilotPathPrefix}${path}`;
 
-  async function context(request: FastifyRequest, reply: FastifyReply): Promise<{ owner: string; pane: Pane } | null> {
+  /**
+   * nous_msg:5321471cb6334fd6ab52a30f (13/11: a plain CLI pane sent 3 mails through Gmail web in its browser): `shared` routes (read, draft,
+   * review) also serve any other CLI pane of the owner, through the owner's open Mail Copilot pane (its own room first). The draft waits there
+   * as a review and goes out only when approved; send, organize, the run loop and memory stay the Mail Copilot's own.
+   */
+  async function context(request: FastifyRequest, reply: FastifyReply, shared = false): Promise<{ owner: string; pane: Pane; asker?: Pane } | null> {
     const bridge = await deps.requireBridge(request, reply);
     if (!bridge) return null;
     const room = await deps.store.getRoom(bridge.claims.roomId);
     if (!room.ownerUserId) throw new SpaceConflictError("This room has no owner; open the Mail Copilot pane from a signed-in operator account.");
     const pane = await deps.store.getPane(bridge.claims.paneId);
-    if (pane.mode !== "MAIL_COPILOT") throw new SpaceConflictError("Mail Copilot tools belong to the CLI session of a Mail Copilot pane.");
-    return { owner: room.ownerUserId, pane };
+    if (pane.mode === "MAIL_COPILOT") return { owner: room.ownerUserId, pane };
+    if (!shared) throw new SpaceConflictError("Mail Copilot tools belong to the CLI session of a Mail Copilot pane; other panes may read mail (space_mail_accounts, space_mail_search, space_mail_thread_read) and hand a mail over with space_mail_review_request.");
+    const rooms = [room, ...(await deps.store.listRooms(room.ownerUserId)).filter((other) => other.id !== room.id && other.kind !== "AGENT_PROOF")];
+    for (const candidate of rooms) {
+      const mail = (await deps.store.listPanes(candidate.id)).find((other) => other.mode === "MAIL_COPILOT" && !other.isClosed);
+      if (mail) return { owner: room.ownerUserId, pane: mail, asker: pane };
+    }
+    throw new SpaceConflictError("No Mail Copilot pane is open: open one (a Mail pane) and hand the mail to it; never use Gmail web in a browser pane.");
   }
 
   app.get(route("state"), routeOptions, async (request, reply) => {
@@ -57,11 +68,11 @@ export function registerMailCopilotAgentRoutes(app: FastifyInstance, service: Ma
     if (!bridge) return reply;
     const view = resolveMailCopilotPaneMetadata(bridge.pane.mailCopilotMetadata).view ?? null;
     const thread = view?.threadId && view.account !== "all" ? await service.thread(bridge.owner, bridge.pane, view.account, view.threadId).catch(() => null) : null;
-    return { view, thread: thread ? { ...thread, messages: thread.messages.map((message) => ({ ...message, html: null })) } : null };
+    return { view, thread: thread ? agentThread(thread) : null };
   });
 
   app.get(route("accounts"), routeOptions, async (request, reply) => {
-    const bridge = await context(request, reply);
+    const bridge = await context(request, reply, true);
     if (!bridge) return reply;
     return { accounts: await service.accounts(bridge.owner, bridge.pane) };
   });
@@ -72,18 +83,18 @@ export function registerMailCopilotAgentRoutes(app: FastifyInstance, service: Ma
     return { labels: await service.labels(bridge.owner, bridge.pane, query.account) };
   });
   app.post(route("threads"), routeOptions, async (request, reply) => {
-    const bridge = await context(request, reply);
+    const bridge = await context(request, reply, true);
     if (!bridge) return reply;
     return service.threads(bridge.owner, bridge.pane, parseBody(mailThreadsQuerySchema, request.body ?? {}));
   });
   app.get(route("threads/:threadId"), routeOptions, async (request, reply) => {
-    const bridge = await context(request, reply);
+    const bridge = await context(request, reply, true);
     if (!bridge) return reply;
     const params = parseQuery(threadParamsSchema, request.params);
     const query = parseQuery(z.object({ account: emailSchema }).strict(), request.query ?? {});
     const thread = await service.thread(bridge.owner, bridge.pane, query.account, params.threadId);
     // Text only: the agent never receives HTML.
-    return { thread: { ...thread, messages: thread.messages.map((message) => ({ ...message, html: null })) } };
+    return { thread: agentThread(thread) };
   });
   app.post(route("threads/:threadId/modify"), routeOptions, async (request, reply) => {
     const bridge = await context(request, reply);
@@ -105,7 +116,7 @@ export function registerMailCopilotAgentRoutes(app: FastifyInstance, service: Ma
     return service.habits(bridge.owner, bridge.pane, input);
   });
   app.post(route("draft"), routeOptions, async (request, reply) => {
-    const bridge = await context(request, reply);
+    const bridge = await context(request, reply, true);
     if (!bridge) return reply;
     const input = parseBody(mailComposeInputSchema, request.body ?? {});
     const draft = await service.draft(bridge.owner, bridge.pane, input);
@@ -182,9 +193,11 @@ export function registerMailCopilotAgentRoutes(app: FastifyInstance, service: Ma
     return service.waitForAnswer(bridge.owner, parseBody(mailCopilotQuestionWaitSchema, request.body ?? {}));
   });
   app.post(route("review"), routeOptions, async (request, reply) => {
-    const bridge = await context(request, reply);
+    const bridge = await context(request, reply, true);
     if (!bridge) return reply;
-    return service.requestReview(bridge.owner, bridge.pane, parseBody(mailCopilotReviewRequestSchema, request.body ?? {}));
+    const input = parseBody(mailCopilotReviewRequestSchema, request.body ?? {});
+    // The operator reads which pane asked on the review card.
+    return service.requestReview(bridge.owner, bridge.pane, bridge.asker ? { ...input, summary: `[${bridge.asker.title}] ${input.summary}` } : input);
   });
   app.post(route("calendar/respond"), routeOptions, async (request, reply) => {
     const bridge = await context(request, reply);
@@ -192,7 +205,7 @@ export function registerMailCopilotAgentRoutes(app: FastifyInstance, service: Ma
     return service.requestRsvp(bridge.owner, bridge.pane, parseBody(mailCopilotRsvpRequestSchema, request.body ?? {}));
   });
   app.post(route("review/wait"), routeOptions, async (request, reply) => {
-    const bridge = await context(request, reply);
+    const bridge = await context(request, reply, true);
     if (!bridge) return reply;
     return service.waitForReview(bridge.owner, parseBody(mailCopilotReviewWaitSchema, request.body ?? {}));
   });

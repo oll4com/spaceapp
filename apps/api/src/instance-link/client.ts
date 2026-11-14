@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { WebSocket } from "ws";
 import {
-  LINK_APP, MOBILE_UPDATE_REQUIRED_CLOSE, MobileNoiseHandshake, decodeMobileFrame, decodeMobilePairQr, encodeMobileFrame, mobileFrames, mobileHandshakePrologue,
+  LINK_APP, MOBILE_FRAME_MAX_PLAINTEXT, MOBILE_UPDATE_REQUIRED_CLOSE, MobileNoiseHandshake, decodeMobileFrame, decodeMobilePairQr, encodeMobileFrame, mobileFrames, mobileHandshakePrologue,
   mobilePairedSchema, mobilePairingPsk, mobileRotationStatementSchema, mobileWelcomeSchema, noiseKeyPair, vaultBase64url as b64, verifyMobileRotation,
   type MobileFrame, type MobileNoiseTransport
 } from "@space/contracts";
@@ -14,6 +14,10 @@ import {
 const HANDSHAKE_MS = 30_000;
 /** It pings every 30 s; 120 s without a frame from it means it is gone (its PING_MS, SILENCE_MS). */
 const PING_MS = 30_000, SILENCE_MS = 120_000;
+/** Its channel refuses an answer over 64 MiB (mobile/channel.ts RESPONSE_MAX_BYTES), so a longer one is a hostile side: it fails here. */
+const ANSWER_MAX_BYTES = 64 * 1024 * 1024;
+/** A Noise message is at most 65,535 bytes (the frame and its 16-byte tag), so ws never buffers a bigger one. */
+const MESSAGE_MAX_BYTES = MOBILE_FRAME_MAX_PLAINTEXT + 16;
 const CLOSES: Record<number, string> = {
   4400: "it refused a message", 4401: "the pairing code is unknown or used; make a new one there", 4403: "it refused this link (removed there, expired, or not this key)",
   4408: "the time ran out, or the two clocks differ by over 5 minutes", 4409: "it saw this connect before", 4410: "the session reached its 24 hours"
@@ -26,11 +30,14 @@ export class InstanceLinkError extends Error {}
 /** The keys and address a link keeps (instance_links), the private key opened. */
 export interface LinkKeys { origins: readonly string[]; noisePublic: string; identityPublic: string; deviceId: string; devicePrivate: Uint8Array }
 
-/** One WebSocket to the other SpaceApp at the first of its addresses that answers: its binary messages in order, until it closes. */
-async function dial(origins: readonly string[], path: string) {
+/**
+ * One WebSocket to the other SpaceApp at the first of its addresses that answers: its binary messages in order, until it closes.
+ * `headers`: a Cloudflare Access service token in front of its channel (CF-Access-Client-Id/Secret); Noise still authenticates on top.
+ */
+async function dial(origins: readonly string[], path: string, headers: Record<string, string>) {
   let failure: unknown = new Error("no address");
   for (const origin of origins) {
-    const ws = new WebSocket(`${origin.replace(/^http/, "ws")}${path}`, { handshakeTimeout: HANDSHAKE_MS });
+    const ws = new WebSocket(`${origin.replace(/^http/, "ws")}${path}`, { headers, handshakeTimeout: HANDSHAKE_MS, maxPayload: MESSAGE_MAX_BYTES });
     const inbox: Uint8Array[] = [];
     let wake = () => {}, closed: number | null = null;
     ws.on("message", (data: Buffer, binary: boolean) => { if (binary) inbox.push(new Uint8Array(data)); wake(); });
@@ -59,14 +66,14 @@ async function dial(origins: readonly string[], path: string) {
  * Pairs with the SpaceApp whose `SPACEAPP-PAIR:` code its person made (Settings > Mobile app there): XXpsk3 with the code, then this
  * SpaceApp asks for read and act as a server of app spaceapp-link. The other side holds it at read until its person allows it.
  */
-export async function pairInstanceLink(code: string, deviceName: string, appVersion: string) {
+export async function pairInstanceLink(code: string, deviceName: string, appVersion: string, headers: Record<string, string> = {}) {
   const qr = decodeMobilePairQr(code.trim(), Math.floor(Date.now() / 1000));
   // shortcut: direct addresses only; a relay-only code needs the SpaceApp relay's Pro licence here too. Add the relay when a managed SpaceApp has no reachable address.
   if (!qr.u.length) throw new InstanceLinkError("This code reaches its SpaceApp through the relay only; make a Direct code there.");
   const offerId = b64.decode(qr.o), device = noiseKeyPair();
   const handshake = new MobileNoiseHandshake({ pattern: "XXpsk3", initiator: true, prologue: mobileHandshakePrologue("pair", offerId, null), s: device,
     psk: mobilePairingPsk(b64.decode(qr.c), b64.decode(qr.k), b64.decode(qr.i), offerId) });
-  const socket = await dial(qr.u, `/api/mobile/channel?m=pair&o=${qr.o}`);
+  const socket = await dial(qr.u, `/api/mobile/channel?m=pair&o=${qr.o}`, headers);
   try {
     socket.ws.send(handshake.writeMessage());
     const said = JSON.parse(text(handshake.readMessage(await socket.next(HANDSHAKE_MS)))) as { i?: unknown };
@@ -89,15 +96,15 @@ export interface InstanceLinkSession {
   /** The other side's new keys when it answered with a routine rotation signed by the identity key this link pinned. */
   rotated: { noisePublic: string; identityPublic: string } | null;
   closed(): boolean;
-  request(method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", path: string, body?: unknown): Promise<{ status: number; body: unknown }>;
+  request(method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", path: string, body?: unknown, requestId?: string): Promise<{ status: number; body: unknown }>;
   close(): void;
 }
 
 /** Connects with Noise IK on the pinned instance key, with a fresh hello the other side checks for time and replay. */
-export async function connectInstanceLink(keys: LinkKeys, appVersion: string): Promise<InstanceLinkSession> {
+export async function connectInstanceLink(keys: LinkKeys, appVersion: string, headers: Record<string, string> = {}): Promise<InstanceLinkSession> {
   const handshake = new MobileNoiseHandshake({ pattern: "IK", initiator: true, prologue: mobileHandshakePrologue("ik", null, null), s: noiseKeyPair(keys.devicePrivate),
     rs: b64.decode(keys.noisePublic) });
-  const socket = await dial(keys.origins, "/api/mobile/channel?m=ik");
+  const socket = await dial(keys.origins, "/api/mobile/channel?m=ik", headers);
   let transport: MobileNoiseTransport, welcome;
   try {
     socket.ws.send(handshake.writeMessage(utf8(JSON.stringify({ deviceId: keys.deviceId, appVersion, ts: Date.now(), nonce: b64.encode(randomBytes(16)) }))));
@@ -112,7 +119,7 @@ export async function connectInstanceLink(keys: LinkKeys, appVersion: string): P
   }
   const session = { scopes: welcome.scopes as string[], rotated };
   const send = (frame: MobileFrame) => { if (socket.ws.readyState === WebSocket.OPEN) socket.ws.send(transport.encrypt(encodeMobileFrame(frame))); };
-  const waiting = new Map<number, { status: number; parts: Uint8Array[]; resolve: (answer: { status: number; body: unknown }) => void; reject: (error: Error) => void }>();
+  const waiting = new Map<number, { status: number; parts: Uint8Array[]; size: number; resolve: (answer: { status: number; body: unknown }) => void; reject: (error: Error) => void }>();
   let nextId = 1, heard = Date.now();
   const silence = setInterval(() => { if (Date.now() - heard > SILENCE_MS) socket.ws.terminate(); }, PING_MS);
   silence.unref();
@@ -141,7 +148,9 @@ export async function connectInstanceLink(keys: LinkKeys, appVersion: string): P
           const entry = waiting.get(id)!;
           if (frame.type === "res") entry.status = Number(frame.header.s);
           entry.parts.push(frame.body);
-          if (!frame.header.more) finish(id);
+          entry.size += frame.body.length;
+          if (entry.size > ANSWER_MAX_BYTES) { waiting.delete(id); entry.reject(new InstanceLinkError("That SpaceApp's answer is over 64 MiB.")); }
+          else if (!frame.header.more) finish(id);
         }
       }
     } catch (error) {
@@ -155,11 +164,14 @@ export async function connectInstanceLink(keys: LinkKeys, appVersion: string): P
     get scopes() { return session.scopes; },
     rotated,
     closed: () => socket.closed() !== null,
-    request(method, path, body) {
+    request(method, path, body, requestId) {
       if (socket.closed() !== null) return Promise.reject(new InstanceLinkError("The link to that SpaceApp is closed."));
       const id = nextId++;
-      const answer = new Promise<{ status: number; body: unknown }>((resolve, reject) => waiting.set(id, { status: 0, parts: [], resolve, reject }));
-      const header = { id, m: method, p: path, ...(body === undefined ? {} : { h: { "content-type": "application/json" } }) };
+      const answer = new Promise<{ status: number; body: unknown }>((resolve, reject) => waiting.set(id, { status: 0, parts: [], size: 0, resolve, reject }));
+      // Its pings keep a hung request's socket alive: an answer not complete within the silence window fails, so no Nous turn or background read waits forever.
+      setTimeout(() => { const entry = waiting.get(id); if (entry) { waiting.delete(id); entry.reject(new InstanceLinkError("That SpaceApp did not answer in time.")); } }, SILENCE_MS).unref();
+      const h = { ...(body === undefined ? {} : { "content-type": "application/json" }), ...(requestId ? { "x-space-link-request": requestId } : {}) };
+      const header = { id, m: method, p: path, ...(Object.keys(h).length ? { h } : {}) };
       for (const frame of mobileFrames("req", header, body === undefined ? new Uint8Array(0) : utf8(JSON.stringify(body)))) send(frame);
       return answer;
     },

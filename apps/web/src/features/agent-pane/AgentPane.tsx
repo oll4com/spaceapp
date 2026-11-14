@@ -39,7 +39,7 @@ import { codexThreadNotWrittenYet, codexThreadPending } from "./codex-thread-rea
 import { TaskAcceptanceDialog } from "./TaskAcceptanceDialog.js";
 import { captureLiveVisual } from "../live-pane/live-visual-capture.js";
 import type { AgentPaneModelProvider } from "@space/contracts";
-import { CodexNotification, copyableCodexTranscript, visibleChatMessages, visibleCodexThreadItems } from "./CodexTranscript.js";
+import { CodexNotification, codexStepsByReply, copyableCodexTranscript, visibleChatMessages, visibleCodexThreadItems } from "./CodexTranscript.js";
 import { useTranscriptScroll } from "./useTranscriptScroll.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
@@ -528,6 +528,8 @@ export function AgentPane({
     const text = latest?.content.replace(/\s+/g, " ").trim() ?? "";
     return text ? (text.length > 240 ? `${text.slice(0, 239)}…` : text) : null;
   }, [isRunning, thread, selectedDot]);
+  const codexSteps = useMemo(() => thread ? codexStepsByReply(thread.items, feedItems.filter((item) => item.author === "DOT" && item.kind === "MESSAGE"
+    && item.sessionId === (session?.binding.sessionId ?? null))) : null, [thread, feedItems, session?.binding.sessionId]);
   const hasVisibleMessages = feedItems.length > 0 || visibleChatMessages(thread?.items ?? [], session?.messages ?? []).length > 0;
   const hasTranscriptContent = isRunning || hasVisibleMessages;
   const actionCanSend = session?.capabilities.canSend !== false;
@@ -1551,7 +1553,7 @@ export function AgentPane({
               items={feedItems} status={selectedDot ? feed.status : loading ? "loading" : "ready"}
               hasOlder={Boolean(feed.nextBefore)} loadingOlder={feed.loadingOlder} onLoadOlder={() => void feed.loadOlder()} onRetry={() => void feed.refresh()}
               running={isRunning ? { status: session?.runStatus ?? "RUNNING", elapsedSeconds, progress: runProgress } : null}
-              latestRun={session?.latestRun ?? null} />
+              latestRun={session?.latestRun ?? null} steps={codexSteps} />
           </div>
         {showJumpToLatest ? <button type="button" className="chat-jump-latest" onClick={jumpToLatest}><ArrowUp aria-hidden="true" />{t("Jump to latest")}</button> : null}
         </div>

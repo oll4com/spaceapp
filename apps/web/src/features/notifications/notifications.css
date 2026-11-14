@@ -53,3 +53,8 @@
 .notification-pane-children { grid-column: 1 / -1; margin: 0; padding: 0 0 0 12px; list-style: none; border-left: 2px solid color-mix(in srgb, var(--room-accent, #6db7aa) 35%, transparent); }
 .notification-pane-children .notification-item { padding: 0.45rem 0 0.2rem; border: 0; border-radius: 0; background: transparent; }
 .notification-item-files { grid-column: 1 / -1; margin: 0; font-size: 0.8rem; display: flex; flex-wrap: wrap; gap: 0.2rem 0.8rem; }
+/* An appointment reminder's join link (operator 13/11 16:00 BKK): a button, under the text the row or toast opens the pane with. */
+.notification-join { display: inline-flex; align-items: center; gap: 0.3rem; justify-self: start; padding: 0.15rem 0.6rem; border-radius: 7px; font-size: 0.78rem; font-weight: 600;
+  text-decoration: none; color: var(--modern-on-accent, #0b1412); background: var(--room-accent, #6db7aa); }
+.notification-join svg { width: 0.85rem; height: 0.85rem; }
+.notification-toast .notification-join { grid-column: 1 / -1; margin: 0 12px 10px 36px; }

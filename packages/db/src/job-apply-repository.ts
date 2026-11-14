@@ -16,6 +16,9 @@ export interface JobApplyProfileRecord {
   googleEmail: string | null;
   /** The last "Reset and start over"; null when counting from the first application. */
   campaignStartedAt: string | null;
+  dailyTarget: number;
+  /** Why each day (the owner's zone) fell behind the daily target: day → JobApplyTargetMiss codes. */
+  targetMisses: Record<string, string[]>;
   createdAt: string;
   updatedAt: string;
 }
@@ -29,6 +32,7 @@ export interface JobApplyProfilePatch {
   mailboxPasswordEncrypted?: string | null;
   mailboxVerifiedAt?: string | null;
   googleEmail?: string | null;
+  dailyTarget?: number;
 }
 export interface JobApplicationRecord {
   id: string;
@@ -222,6 +226,8 @@ export interface JobApplyRepository {
   /** Owners whose Job Copilot works with a Google account (mail triage runs for them). */
   listGoogleProfileOwners(): Promise<string[]>;
   upsertProfile(owner: string, patch: JobApplyProfilePatch): Promise<JobApplyProfileRecord>;
+  /** Adds a JobApplyTargetMiss code to the day's list (once). */
+  addTargetMiss(owner: string, day: string, code: string): Promise<void>;
   listApplications(owner: string, filter: { status?: string; /** No limit: every application. */ limit?: number }): Promise<JobApplicationRecord[]>;
   getApplication(owner: string, id: string): Promise<JobApplicationRecord | null>;
   getApplicationByUrl(owner: string, url: string): Promise<JobApplicationRecord | null>;
@@ -286,7 +292,8 @@ export function newJobApplyRunId(): string {
 
 const profileColumns = `owner_user_id AS "ownerUserId", candidate, qa_bank AS "qaBank", cv_artifact_id AS "cvArtifactId",
   cover_letter_artifact_id AS "coverLetterArtifactId", cv_text AS "cvText", mailbox, mailbox_password_encrypted AS "mailboxPasswordEncrypted",
-  mailbox_verified_at AS "mailboxVerifiedAt", google_email AS "googleEmail", campaign_started_at AS "campaignStartedAt", created_at AS "createdAt", updated_at AS "updatedAt"`;
+  mailbox_verified_at AS "mailboxVerifiedAt", google_email AS "googleEmail", campaign_started_at AS "campaignStartedAt", daily_target AS "dailyTarget",
+  target_misses AS "targetMisses", created_at AS "createdAt", updated_at AS "updatedAt"`;
 const applicationColumns = `id, owner_user_id AS "ownerUserId", pane_id AS "paneId", company, role, ats, url, status,
   evidence_artifact_ids AS "evidenceArtifactIds", external_confirmation AS "externalConfirmation", notes, applied_at AS "appliedAt",
   queue_position AS "queuePosition", not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt"`;
@@ -303,7 +310,8 @@ const runColumns = `id, owner_user_id AS "ownerUserId", pane_id AS "paneId", sta
 const iso = (value: unknown) => value === null || value === undefined ? null : new Date(value as string).toISOString();
 
 function profileRecord(row: Record<string, unknown>): JobApplyProfileRecord {
-  return { ...(row as unknown as JobApplyProfileRecord), mailboxVerifiedAt: iso(row.mailboxVerifiedAt), campaignStartedAt: iso(row.campaignStartedAt), createdAt: iso(row.createdAt)!, updatedAt: iso(row.updatedAt)! };
+  return { ...(row as unknown as JobApplyProfileRecord), mailboxVerifiedAt: iso(row.mailboxVerifiedAt), campaignStartedAt: iso(row.campaignStartedAt),
+    dailyTarget: Number(row.dailyTarget ?? 0), targetMisses: row.targetMisses && typeof row.targetMisses === "object" ? row.targetMisses as Record<string, string[]> : {}, createdAt: iso(row.createdAt)!, updatedAt: iso(row.updatedAt)! };
 }
 function applicationRecord(row: Record<string, unknown>): JobApplicationRecord {
   return { ...(row as unknown as JobApplicationRecord), evidenceArtifactIds: Array.isArray(row.evidenceArtifactIds) ? row.evidenceArtifactIds as string[] : [],
@@ -347,8 +355,8 @@ export class PostgresJobApplyRepository implements JobApplyRepository {
     // COALESCE keeps untouched columns; explicit nulls clear the mailbox and artifacts.
     const has = (key: keyof JobApplyProfilePatch) => Object.hasOwn(patch, key);
     const row = (await this.pool.query<Record<string, unknown>>(`INSERT INTO job_apply_profiles(owner_user_id, candidate, qa_bank, cv_artifact_id,
-        cover_letter_artifact_id, cv_text, mailbox, mailbox_password_encrypted, mailbox_verified_at, google_email)
-      VALUES ($1, COALESCE($2::jsonb, '{}'::jsonb), COALESCE($3::jsonb, '[]'::jsonb), $4, $5, $6, $7::jsonb, $8, $9, $18)
+        cover_letter_artifact_id, cv_text, mailbox, mailbox_password_encrypted, mailbox_verified_at, google_email, daily_target)
+      VALUES ($1, COALESCE($2::jsonb, '{}'::jsonb), COALESCE($3::jsonb, '[]'::jsonb), $4, $5, $6, $7::jsonb, $8, $9, $18, COALESCE($20::int, 0))
       ON CONFLICT (owner_user_id) DO UPDATE SET
         candidate = CASE WHEN $10 THEN COALESCE($2::jsonb, '{}'::jsonb) ELSE job_apply_profiles.candidate END,
         qa_bank = CASE WHEN $11 THEN COALESCE($3::jsonb, '[]'::jsonb) ELSE job_apply_profiles.qa_bank END,
@@ -359,14 +367,20 @@ export class PostgresJobApplyRepository implements JobApplyRepository {
         mailbox_password_encrypted = CASE WHEN $16 THEN $8 ELSE job_apply_profiles.mailbox_password_encrypted END,
         mailbox_verified_at = CASE WHEN $17 THEN $9 ELSE job_apply_profiles.mailbox_verified_at END,
         google_email = CASE WHEN $19 THEN $18 ELSE job_apply_profiles.google_email END,
+        daily_target = COALESCE($20::int, job_apply_profiles.daily_target),
         updated_at = now()
       RETURNING ${profileColumns}`, [owner,
       patch.candidate ? JSON.stringify(patch.candidate) : null, patch.qaBank ? JSON.stringify(patch.qaBank) : null,
       patch.cvArtifactId ?? null, patch.coverLetterArtifactId ?? null, patch.cvText ?? null,
       patch.mailbox ? JSON.stringify(patch.mailbox) : null, patch.mailboxPasswordEncrypted ?? null, patch.mailboxVerifiedAt ?? null,
       has("candidate"), has("qaBank"), has("cvArtifactId"), has("coverLetterArtifactId"), has("cvText"), has("mailbox"),
-      has("mailboxPasswordEncrypted"), has("mailboxVerifiedAt"), patch.googleEmail ?? null, has("googleEmail")])).rows[0]!;
+      has("mailboxPasswordEncrypted"), has("mailboxVerifiedAt"), patch.googleEmail ?? null, has("googleEmail"), patch.dailyTarget ?? null])).rows[0]!;
     return profileRecord(row);
+  }
+  async addTargetMiss(owner: string, day: string, code: string) {
+    // One statement, so the target keeper and a finishing run never drop each other's code.
+    await this.pool.query(`UPDATE job_apply_profiles SET target_misses = jsonb_set(target_misses, ARRAY[$2], COALESCE(target_misses->$2, '[]'::jsonb) || to_jsonb($3::text))
+      WHERE owner_user_id=$1 AND NOT COALESCE(target_misses->$2, '[]'::jsonb) ? $3`, [owner, day, code]);
   }
   async listApplications(owner: string, filter: { status?: string; /** No limit: every application. */ limit?: number }) {
     const rows = filter.status

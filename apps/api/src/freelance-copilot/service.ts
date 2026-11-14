@@ -166,7 +166,16 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
   }
   async function approvedDue(owner: string, pane: Pane | null): Promise<FreelanceMessage[]> {
     const settings = settingsOf(pane);
-    return (await repository.listMessages(owner, { status: ["APPROVED"] })).filter((message) => freelanceChannelSettings(settings, message.channel).enabled).reverse();
+    const due: FreelanceMessage[] = [];
+    for (const message of (await repository.listMessages(owner, { status: ["APPROVED"] })).reverse()) {
+      if (!freelanceChannelSettings(settings, message.channel).enabled) continue;
+      // 13/11 Dino/Emma (flmsg:OGcRFcyEljnY): a follow-up approved for later waits for its lead's follow-up time. Returned as SEND before it, it held
+      // the run open with nothing the agent could do, so the agent stopped and the briefs that came after waited 13 h.
+      const lead = message.kind === "FOLLOW_UP" ? await repository.getLead(owner, message.leadId) : null;
+      if (lead?.nextActionAt && Date.parse(lead.nextActionAt) > Date.parse(now())) continue;
+      due.push(message);
+    }
+    return due;
   }
 
   const service = {
@@ -300,6 +309,14 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
      * R24-3: the copilot closes its own message in review that went stale or a newer message replaced (`replacedBy`, newer and for the same
      * lead), with evidence; its review card resolves.
      */
+    /** The message a review sends, for a Nous decision's "What it sends" (as Mail's reviewDraft); null when unknown. */
+    async reviewDraft(owner: string, messageId: string) {
+      const message = await repository.getMessage(owner, messageId);
+      if (!message) return null;
+      const lead = await repository.getLead(owner, message.leadId);
+      return { headers: [["Channel", describe(message)], ["To", [lead?.client, lead?.title].filter(Boolean).join(": ")], ["Where", lead?.url ?? ""],
+        ["Bid", message.bid ? `$${message.bid.amount} ${message.bid.type === "HOURLY" ? "per hour" : "fixed"}` : ""], ["Connects", message.connects === null ? "" : String(message.connects)]] as Array<[string, string]>, body: message.body };
+    },
     async supersedeReview(owner: string, pane: Pane | null, input: { messageId: string; evidence: string; replacedBy?: string }) {
       const current = await messageOf(owner, input.messageId);
       if (input.replacedBy) {

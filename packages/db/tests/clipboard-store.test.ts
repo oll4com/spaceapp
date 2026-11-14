@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { PostgresSpaceStore, type PgClientLike, type PgPoolLike } from "../src/index.js";
+import { planParkedSchema } from "@space/contracts";
 
 interface QueryCall {
   sql: string;
@@ -26,6 +27,7 @@ const clipboardRow = {
   dependsOn: [],
   dueAt: null,
   waitsOn: null,
+  parked: null,
   occurrenceCount: 1,
   characterCount: 8,
   createdAt: "2026-07-15T10:00:00.000Z",
@@ -206,10 +208,30 @@ describe("PostgresSpaceStore plan map (operator request 2026-10-25)", () => {
     });
     const update = pool.calls.find((call) => call.sql.includes("UPDATE clipboard_items"));
     expect(update?.sql).toContain("depends_on = $11::jsonb");
-    expect(update?.values.slice(10)).toEqual(['["clipboard:free0001"]', "2026-10-30T09:00:00.000Z", '{"kind":"THIRD_PARTY","what":"the mail server","until":null}', null, null, null]);
+    expect(update?.values.slice(10)).toEqual(['["clipboard:free0001"]', "2026-10-30T09:00:00.000Z", '{"kind":"THIRD_PARTY","what":"the mail server","until":null}', null, null, null, null]);
     const reads = pool.calls.filter((call) => call.sql.includes("RETURNING") || call.sql.includes('steps_json AS "stepsJson"'));
     expect(reads.length).toBeGreaterThan(1);
     for (const call of reads) expect(call.sql).toContain('waits_on_json AS "waitsOn"');
+    for (const call of reads) expect(call.sql).toContain('parked_json AS "parked"');
+  });
+
+  it("parks a plan as a map-only update a managed plan takes, and re-parking keeps the parked clock (operator 13/11)", async () => {
+    const since = "2026-11-01T00:00:00.000Z";
+    class ParkedPool extends PlanPool {
+      override async query<T = unknown>(sql: string, values: unknown[] = []) {
+        const result = await super.query<T>(sql, values);
+        // The plan read back is parked since 1/11.
+        if (sql.includes('steps_json AS "stepsJson"') && !sql.includes("UPDATE")) return { ...result, rows: (result.rows as Array<Record<string, unknown>>).map((row) => ({ ...row, parked: PARKED })) as T[] };
+        return result;
+      }
+    }
+    const PARKED = { reason: "waits", since, conditions: [{ id: "c1", who: "OPERATOR", what: "answer", check: { kind: "MANUAL" }, state: "OPEN", checkedAt: null, metAt: null, evidence: null }], resumedAt: null };
+    const pool = new ParkedPool(true);
+    const store = new PostgresSpaceStore(pool);
+    await store.updateClipboardItemProgress("user:one", clipboardRow.id, { parked: planParkedSchema.parse({ reason: "the vendor", since: "2026-11-13T00:00:00.000Z", conditions: [{ who: "THIRD_PARTY", what: "the vendor fix" }] }) });
+    const update = pool.calls.find((call) => call.sql.includes("UPDATE clipboard_items"));
+    expect(update?.sql).toContain("parked_json = $6::jsonb");
+    expect(JSON.parse(update?.values[5] as string)).toMatchObject({ reason: "the vendor", since, conditions: [{ id: "c1", who: "THIRD_PARTY", state: "OPEN" }] });
   });
 
   it("edits a plan's title and text in place with the new content hash (Nous daily upgrade 2026-10-27)", async () => {
@@ -218,7 +240,7 @@ describe("PostgresSpaceStore plan map (operator request 2026-10-25)", () => {
     await store.updateClipboardItemProgress("user:one", clipboardRow.id, { title: "New title", text: "New text." });
     const update = pool.calls.find((call) => call.sql.includes("UPDATE clipboard_items"));
     expect(update?.sql).toContain("text = COALESCE($15, text)");
-    expect(update?.values.slice(13)).toEqual(["New title", "New text.", createHash("sha256").update("New text.").digest("hex")]);
+    expect(update?.values.slice(13)).toEqual(["New title", "New text.", createHash("sha256").update("New text.").digest("hex"), null]);
   });
 
   it("lets a managed plan take a map-only update and refuses a loop", async () => {
@@ -227,7 +249,7 @@ describe("PostgresSpaceStore plan map (operator request 2026-10-25)", () => {
     await expect(store.updateClipboardItemProgress("user:one", clipboardRow.id, { progressPercentage: 10 })).rejects.toThrow("Managed plan progress");
     await store.updateClipboardItemProgress("user:one", clipboardRow.id, { dueAt: "2026-10-30T09:00:00.000Z" });
     const update = pool.calls.find((call) => call.sql.includes("UPDATE clipboard_items"));
-    expect(update?.sql).toContain("SET depends_on = $3::jsonb, due_at = $4::timestamptz, waits_on_json = $5::jsonb, last_used_at = clock_timestamp()");
+    expect(update?.sql).toContain("SET depends_on = $3::jsonb, due_at = $4::timestamptz, waits_on_json = $5::jsonb, parked_json = $6::jsonb, last_used_at = clock_timestamp()");
     expect(update?.sql).not.toContain("last_progress_at = clock_timestamp()");
     await expect(store.updateClipboardItemProgress("user:one", clipboardRow.id, { dependsOn: ["clipboard:other001"] })).rejects.toThrow("would loop");
   });

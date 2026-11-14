@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { GATEWAY_PROGRAM_PROVIDERS, NOUS_PROGRAM_TAGS, nousProgramCategories, nousProgramGmailUrl, type GatewayPoolModels, type NousProgram, type NousProgramBenefit, type NousProgramPage, type NousProgramStatus, type NousProgramTag,
+import { GATEWAY_PROGRAM_PROVIDERS, NOUS_PROGRAM_TAGS, nousProgramCategories, nousProgramGmailUrl, type GatewayPoolModels, type NousProgram, type NousProgramAffiliate, type NousProgramBenefit, type NousProgramPage, type NousProgramStatus, type NousProgramTag,
   type NousProgramTier } from "@space/contracts";
 import { api } from "../../api.js";
 import { formatAppDate, formatAppDateTime } from "../date-time-settings/date-time-settings.js";
@@ -131,7 +131,7 @@ export function NousPrograms({ page, active }: { page: NousProgramPage; active: 
   }, [active, load]);
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const matching = (programs ?? []).filter((program) => words.every((word) => [program.parent, program.program, program.project, program.account,
-    program.statusReason, program.notes, program.nextAction, program.whatItIs, program.howWeUse, ...program.contacts].some((field) => field?.toLowerCase().includes(word))));
+    program.statusReason, program.notes, program.nextAction, program.whatItIs, program.howWeUse, program.affiliate?.network, program.affiliate?.publisherId, ...program.contacts].some((field) => field?.toLowerCase().includes(word))));
   // A type chip (6/11) and a status chip combine; the status counts follow the type, the type counts the status (operator 7/11, nous_msg:e7255379).
   const tagged = (list: NousProgram[]) => tag ? list.filter((program) => programTags(program).includes(tag)) : list;
   const inScope = tagged(matching);
@@ -157,7 +157,7 @@ export function NousPrograms({ page, active }: { page: NousProgramPage; active: 
       {programs?.length ? <>
         <DockChips label={t("Show programs")} value={filter} onChange={setFilter}
           options={FILTERS.map(([id, label, test]) => ({ id, label: t(label), count: inScope.filter(test).length, ...(id === "reapply" ? { tone: "attention" as const } : {}) }))} />
-        <div className="dock-kit-chips nous-programs-tags" role="group" aria-label={t("Program types")}>
+        {page === "startup" ? <div className="dock-kit-chips nous-programs-tags" role="group" aria-label={t("Program types")}>
           {NOUS_PROGRAM_TAGS.map((id) => {
             const count = inStatus.filter((program) => programTags(program).includes(id)).length;
             return (
@@ -167,7 +167,7 @@ export function NousPrograms({ page, active }: { page: NousProgramPage; active: 
               </button>
             );
           })}
-        </div>
+        </div> : null}
         {totals?.cash || totals?.credits ? <div className="nous-programs-total">
           <span>{t("Approved in total")}</span>
           <p>{t("Cash")}: <strong>{totals.cash ?? money(0, "USD")}</strong></p>
@@ -193,6 +193,17 @@ export function NousPrograms({ page, active }: { page: NousProgramPage; active: 
   );
 }
 
+/** What an affiliate approval gives (operator 14/11, nous_msg:de448bc711204fdb832cf926); the sign-in is a Vault handle only. */
+function Affiliate({ affiliate, t }: { affiliate: NousProgramAffiliate; t(text: string): string }) {
+  const fact = (label: string, value: string | number | null) => value === null || value === "" ? null : <><dt>{t(label)}</dt><dd>{value}</dd></>;
+  return (
+    <dl className="nous-goal-facts nous-program-use" aria-label={t("Affiliate")}>
+      {fact("Network", affiliate.network)}{fact("Publisher ID", affiliate.publisherId)}{fact("Commission", affiliate.commission)}{fact("Cookie days", affiliate.cookieDays)}
+      {fact("Tracking link", affiliate.trackingLink)}{fact("Coupons and feed", affiliate.couponFeed)}{fact("Payout", affiliate.payout)}{fact("Sign-in (Vault)", affiliate.signIn)}
+    </dl>
+  );
+}
+
 function ProgramRow({ program, other, pool, expanded, onToggle, t }: { program: NousProgram; other: string | null;
   pool: GatewayPoolModels["data"][number] | undefined; expanded: boolean; onToggle(): void;
   t(text: string, vars?: Record<string, string | number>): string }) {
@@ -206,7 +217,8 @@ function ProgramRow({ program, other, pool, expanded, onToggle, t }: { program: 
       <button type="button" className="nous-program-head" aria-expanded={expanded} aria-controls={bodyId} onClick={onToggle}>
         <span className="nous-program-chevron" aria-hidden="true">{expanded ? <ChevronDown /> : <ChevronRight />}</span>
         <span className="nous-program-name">{program.program}{other ? <small>{other}</small> : null}</span>
-        {programTags(program).map((id) => <span key={id} className={`nous-program-tag is-${id}`}>{TAG_LABELS[id as NousProgramTag] ? t(TAG_LABELS[id as NousProgramTag]) : id}</span>)}
+        {program.page === "startup" ? programTags(program).map((id) => <span key={id} className={`nous-program-tag is-${id}`}>{TAG_LABELS[id as NousProgramTag] ? t(TAG_LABELS[id as NousProgramTag]) : id}</span>) : null}
+        {program.affiliate?.network || program.affiliate?.commission ? <span className="nous-program-amount">{[program.affiliate.network, program.affiliate.commission].filter(Boolean).join(" · ")}</span> : null}
         <span className={`nous-program-status is-${program.status.toLowerCase()}`}>{t(awaitingCompletion(program) ? "Approved · waiting for completion" : STATUS_LABELS[program.status])}</span>
         {program.amount ? <span className="nous-program-amount">{program.amount.text}</span> : null}
         {value ? <span className="nous-program-worth" title={t("Indicative value of the whole grant")}>≈ {value}</span> : null}
@@ -220,6 +232,7 @@ function ProgramRow({ program, other, pool, expanded, onToggle, t }: { program: 
         <div id={bodyId} className="nous-program-body">
           {/* R73 (operator 4/11 15:09 BKK): what it is and how we use it, first. */}
           {program.whatItIs || program.howWeUse ? <dl className="nous-goal-facts nous-program-use">{fact("What it is", program.whatItIs)}{fact("How we use it", program.howWeUse)}</dl> : null}
+          {program.affiliate ? <Affiliate affiliate={program.affiliate} t={t} /> : null}
           <PoolModels entry={pool} />
           {program.tiers.length || program.nextAction ? <Tiers tiers={program.tiers} nextAction={program.nextAction} t={t} /> : null}
           {program.benefits.length ? <Benefits benefits={program.benefits} t={t} /> : null}

@@ -56,6 +56,7 @@ export const adminActionRoutes: Readonly<Record<string, readonly string[]>> = {
   "live-personal-memory-delete": ["DELETE /api/live/personal-memory/:key"],
   "job-apply-run": ["GET /api/panes/:pane/job-apply/run"],
   "job-apply-photo-from-cv": ["POST /api/job-apply/profile/photo-from-cv"],
+  "job-apply-target": ["PATCH /api/job-apply/profile"],
   "job-apply-events": ["GET /api/job-apply/events"],
   "job-apply-applications": ["GET /api/job-apply/applications"],
   "nous-job-report": ["GET /api/nous/job-report"],
@@ -145,6 +146,11 @@ export const adminActionRoutes: Readonly<Record<string, readonly string[]>> = {
   "vault-broker-audit": ["GET /api/space-vault/broker-audit"],
   "notifications-list": ["GET /api/notifications"],
   "browser-handoff": ["GET /api/panes/:pane/browser/handoff"],
+  "browser-teleport-check": ["GET /api/rooms", "GET /api/panes", "GET /api/panes/:pane/browser/session", "POST /api/panes/:pane/browser/session",
+    "POST /api/panes/:pane/browser/control/acquire",
+    "POST /api/panes/:pane/browser/control/release", "POST /api/panes/:pane/browser/teleport", "GET /api/panes/:pane/browser/teleport/frame",
+    "POST /api/panes/:pane/browser/teleport/input"],
+  "agent-file-chunks-check": ["GET /api/rooms", "POST /api/rooms/:id/agent-files/chunks", "GET /api/artifacts/:id/download", "DELETE /api/artifacts/:id"],
   "browser-census": ["GET /api/admin/browser-census"],
   "video-tools-status": ["GET /api/video/tools"]
 };

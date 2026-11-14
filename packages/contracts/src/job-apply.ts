@@ -276,6 +276,8 @@ export const jobApplyProfileSchema = z.object({
   googleAvailable: z.boolean().default(false),
   /** The last "Reset and start over": totals count from here; earlier applications are archived history. */
   campaignStartedAt: isoDateTime.nullable().default(null),
+  /** Applications a day the copilot works toward (operator 13/11: 200); 0 is off. Behind its pace, Space keeps a run going. */
+  dailyTarget: z.number().int().min(0).default(0),
   updatedAt: isoDateTime
 }).strict();
 export type JobApplyProfile = z.infer<typeof jobApplyProfileSchema>;
@@ -290,7 +292,8 @@ export const jobApplyProfileUpdateSchema = z.object({
   candidate: jobApplyCandidateSchema.optional(),
   qaBank: z.array(jobApplyQaEntrySchema).max(500).optional(),
   cvArtifactId: artifactIdSchema.nullable().optional(),
-  coverLetterArtifactId: artifactIdSchema.nullable().optional()
+  coverLetterArtifactId: artifactIdSchema.nullable().optional(),
+  dailyTarget: z.number().int().min(0).optional()
 }).strict();
 export type JobApplyProfileUpdate = z.infer<typeof jobApplyProfileUpdateSchema>;
 
@@ -333,6 +336,9 @@ const jobApplyDayCountsSchema = z.object({
   verified: z.number().int().min(0),
   failed: z.number().int().min(0)
 }).strict();
+/** Why a day fell behind its daily target, recorded by the target keeper and the run when they happen (operator 13/11). */
+export const JOB_APPLY_TARGET_MISSES = ["QUEUE_EMPTY", "QUEUE_DEFERRED", "CLI_BUSY", "WAITS_ON_OPERATOR", "NO_CLI", "MODEL_UNAVAILABLE"] as const;
+export type JobApplyTargetMiss = (typeof JOB_APPLY_TARGET_MISSES)[number];
 const jobApplyEarlierCountsSchema = z.object({ sent: z.number().int().min(0), failed: z.number().int().min(0) }).strict();
 /** Applications since the first day (or the last reset), per day, and the earlier history kept apart. */
 export const jobApplyStatsSchema = z.object({
@@ -342,7 +348,9 @@ export const jobApplyStatsSchema = z.object({
   today: jobApplyDayCountsSchema,
   totals: jobApplyDayCountsSchema.extend({ needsUser: z.number().int().min(0) }),
   /** Newest first. */
-  days: z.array(jobApplyDayCountsSchema.extend({ day: z.string() })),
+  days: z.array(jobApplyDayCountsSchema.extend({ day: z.string(), missed: z.array(z.enum(JOB_APPLY_TARGET_MISSES)).optional() })),
+  /** The profile's daily application target (0: off). */
+  target: z.number().int().min(0).default(0),
   earlier: z.object({ imported: jobApplyEarlierCountsSchema, archived: jobApplyEarlierCountsSchema }).strict()
 }).strict();
 export type JobApplyStats = z.infer<typeof jobApplyStatsSchema>;

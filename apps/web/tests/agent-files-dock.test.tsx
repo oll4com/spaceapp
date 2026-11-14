@@ -282,7 +282,7 @@ describe("AgentFilesDock", () => {
     expect(document.body.textContent).not.toContain("pane:codex");
     expect(screen.queryByText("input.txt")).toBeNull();
     expect(screen.getByRole("button", { name: "Download Complete Space Resume.docx" }).getAttribute("title"))
-      .toBe("Download and verify Complete Space Resume.docx");
+      .toBe("Download Complete Space Resume.docx");
 
     fireEvent.click(screen.getByRole("button", { name: "Preview final.txt" }));
     expect(await screen.findByText("<b>escaped text</b>")).toBeTruthy();
@@ -412,6 +412,27 @@ describe("AgentFilesDock", () => {
     }));
     expect(write).toHaveBeenCalledWith(expect.any(Blob));
     expect(screen.queryByText(/verification failed/i)).toBeNull();
+  });
+
+  it("downloads a large APK in a phone browser as a plain browser download, never fetching its bytes into the page", async () => {
+    const apk = artifact({
+      id: "artifact:phone-apk", mimeType: "application/vnd.android.package-archive",
+      storageUri: "space-artifact://agent-files/nous-0.2.38-arm64-v8a.apk", byteSize: 72_666_316,
+      metadata: { source: "AGENT_OUTPUT", originalFilename: "nous-0.2.38-arm64-v8a.apk" }
+    });
+    vi.spyOn(liveRuntime.api, "artifacts").mockResolvedValue(paginated([apk]));
+    vi.spyOn(liveRuntime.api, "signatureRequests").mockResolvedValue({ requests: [] });
+    const fetchBytes = vi.fn();
+    vi.stubGlobal("fetch", fetchBytes);
+    const clicked: Array<{ href: string; download: string }> = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clicked.push({ href: this.getAttribute("href") ?? "", download: this.download });
+    });
+    render(<AgentFilesDock activeRoom={room} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Download nous-0.2.38-arm64-v8a.apk" }));
+    await waitFor(() => expect(clicked).toEqual([{ href: "/api/artifacts/artifact%3Aphone-apk/download", download: "nous-0.2.38-arm64-v8a.apk" }]));
+    expect(fetchBytes).not.toHaveBeenCalled();
   });
 
   it.each([true, false])("hands a large APK to Android's URL downloader without fetching or encoding bytes (accepted: %s)", async (accepted) => {

@@ -125,6 +125,29 @@ describe("Freelance Copilot send gate", () => {
     expect(await service.waitForCode(owner, { pattern: "available", timeoutMs: 0 })).toMatchObject({ code: "available", subject: "New message from Acme" });
   });
 
+  it("holds a follow-up approved for later until its lead's follow-up time: briefs first, the run ends meanwhile, SEND when due (13/11 Dino/Emma)", async () => {
+    const { service, advance } = setup();
+    const target = pane();
+    const { lead } = await service.addLead(owner, target, { ...job, client: "Fares", description: null, score: null, notes: null }, "AGENT");
+    await service.recordIncoming(owner, target, { leadId: lead.id, body: "Thanks, let us talk tomorrow." });
+    await service.updateLead(owner, target, lead.id, { nextActionAt: "2026-10-15T12:00:00.000Z" });
+    const nudge = (await service.createMessage(owner, target, { leadId: lead.id, kind: "FOLLOW_UP", body: "Following up on our call.", bid: null, connects: null })).message;
+    await service.requestReview(owner, target, { messageId: nudge.id });
+    await service.decideReview(owner, target, nudge.id, { decision: "approve", note: "Scheduled for 15/10 12:00Z" });
+    await service.startRun(owner, target.id);
+    await service.createBrief(owner, target, { text: "Answer the fiverr-2 question" });
+    const brief = await service.nextItem(owner, target, { waitMs: 0 });
+    expect(brief).toMatchObject({ kind: "BRIEF", item: { message: "Answer the fiverr-2 question" } });
+    await service.reportItem(owner, target, { eventId: (brief as { item: { id: string } }).item.id, outcome: "done", summary: "Answered" });
+    // Not due: never a SEND the agent cannot send, so the run ends and a later brief starts the next one.
+    expect(await service.nextItem(owner, target, { waitMs: 0 })).toEqual({ done: true, reason: "QUEUE_EMPTY" });
+    expect((await service.runView(owner, target)).backlog).toBe(0);
+    advance(26 * 3_600_000);
+    expect((await service.runView(owner, target)).backlog).toBe(1);
+    await service.startRun(owner, target.id);
+    expect(await service.nextItem(owner, target, { waitMs: 0 })).toMatchObject({ kind: "SEND", message: { id: nudge.id } });
+  });
+
   // Marketing's twin (stable 2026-10-23): a brief given to one pane was taken by another pane of the same owner.
   it("gives a brief to the pane it names, and a brief without a pane to any", async () => {
     const { service } = setup();

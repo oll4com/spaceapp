@@ -1,7 +1,13 @@
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { MarketingMetric, MarketingPost } from "@space/contracts";
-import { buildMarketingReport, GA4_NEEDS, marketingNumbers, marketingPostScore, marketingSnapshot, marketingToolText } from "../src/nous/marketing.js";
-import { createMarketingStatsCollector, ga4ConfigFromEnv, parseGa4Report, parsePostStats, postStatsUrl } from "../src/marketing-copilot/stats.js";
+import { summarizeInstallPings } from "../src/install-telemetry-routes.js";
+import { summarizeSiteVisits } from "../src/site-visits.js";
+import { buildMarketingReport, GA4_NEEDS, GSC_NEEDS, marketingFunnel, marketingFunnelByRef, marketingNumbers, marketingPostScore, marketingSnapshot, marketingToolText } from "../src/nous/marketing.js";
+import { createMarketingStatsCollector, fetchGscMetrics, ga4ConfigFromEnv, parseGa4Report, parseGscReport, parsePostStats, postStatsUrl } from "../src/marketing-copilot/stats.js";
 
 // Nous › Marketing (operator 5/11 10:42 BKK, plan clipboard:netzt-nNvtBL): every post numbered, per platform, a score per post, platform and overall.
 const NOW = Date.parse("2026-11-05T12:00:00.000Z");
@@ -59,12 +65,13 @@ describe("marketing scoring", () => {
     expect(report.daysWithoutResult).toBe(5);
     expect(report).toMatchObject({ target: 50, daysBelowTarget: report.score! < 50 ? expect.any(Number) : 0 });
     expect(report.sources.find((source) => source.id === "GA4")).toMatchObject({ connected: false, detail: `Not connected: needs ${GA4_NEEDS}.` });
+    expect(report.sources.find((source) => source.id === "GSC")).toMatchObject({ connected: false, detail: `Not connected: needs ${GSC_NEEDS}.` });
     expect(report.sources.find((source) => source.id === "MAIL")?.values).toMatchObject({ campaigns: 1, sent: 40, replied: 3 });
     expect(marketingSnapshot(report, "2026-11-05")).toContainEqual({ day: "2026-11-05", source: "MARKETING_SCORE", key: "overall", value: report.score });
     const page = marketingToolText(report, { view: "posts", channel: "reddit" });
     expect(page).toMatch(/^2 posts on REDDIT/);
     expect(page).toContain("#4 2026-11-04T11:00 REDDIT PUBLISHED score 0");
-    expect(marketingToolText(report, {})).toContain("Sources not connected: Google Analytics 4, GitHub traffic");
+    expect(marketingToolText(report, {})).toContain("Sources not connected: Google Analytics 4, Google Search Console, GitHub traffic");
   });
   it("counts an unreadable post as not measured, waits for a new post's first read, and scores npm's typical week", () => {
     n = 0;
@@ -96,6 +103,33 @@ describe("marketing scoring", () => {
     // 50 stars more on the counter, none real in 30 days: outcomes 0.
     expect(report.outcomesScore).toBe(0);
   });
+
+  it("joins the site and the install pings into one funnel, leaving out a step without its source", () => {
+    const log = [
+      { t: "2026-11-02T10:00:00Z", uid: "u1", event: "install_started", install_id: "install-a1", ref: "reddit" },
+      { t: "2026-11-02T10:01:00Z", uid: "u2", event: "install_completed", install_id: "install-a1" },
+      { t: "2026-11-02T10:02:00Z", uid: "u3", event: "first_cli", install_id: "install-a1", cli: "claude" },
+      { t: "2026-11-02T10:03:00Z", uid: "u4", event: "active", install_id: "install-a1" },
+      { t: "2026-11-03T09:00:00Z", uid: "u5", event: "active", install_id: "install-a1" },
+      { t: "2026-11-02T11:00:00Z", uid: "u6", event: "install_started", install_id: "install-b2" },
+      { t: "2026-11-02T12:00:00Z", uid: "u7", event: "install_started", install_id: "install-c3", internal: true, ref: "x" }
+    ].map((ping) => JSON.stringify(ping)).join("\n");
+    const { installs } = summarizeInstallPings(log, NOW);
+    const site = summarizeSiteVisits([{ p: "/", id: "v1", ev: "install_copy" }, { p: "/install/", id: "v2" }, { p: "/", id: "v3" }]
+      .map((visit) => JSON.stringify({ t: "2026-11-02T09:00:00Z", n: 1, ...visit })).join("\n"), "2026-11-01T00:00:00.000Z");
+    expect(marketingFunnel(site, installs)).toEqual([
+      { step: "Site views", count: 3 }, { step: "Install interest", count: 2 }, { step: "Launcher started", count: 2 },
+      { step: "Install completed", count: 1 }, { step: "First CLI pane", count: 1 }, { step: "Active a second day", count: 1 }]);
+    expect(marketingFunnel(null, installs).map((step) => step.step)[0]).toBe("Launcher started");
+    const report = buildMarketingReport({ posts: [], metrics: [], mail: null, ga4Configured: false, trafficConfigured: false, site, installs: null, now: NOW });
+    expect(marketingToolText(report, {})).toContain("Funnel (history period): Site views 3 → Install interest 2.");
+    // Per --ref channel: our own addresses left out, the rest under "none"; nothing until one install carries a ref.
+    expect(marketingFunnelByRef(installs)).toEqual([
+      { ref: "none", started: 1, completed: 0, firstCli: 0, activeSecondDay: 0 }, { ref: "reddit", started: 1, completed: 1, firstCli: 1, activeSecondDay: 1 }]);
+    expect(marketingFunnelByRef(installs.map((row) => ({ ...row, ref: null })))).toEqual([]);
+    expect(marketingToolText(buildMarketingReport({ posts: [], metrics: [], mail: null, ga4Configured: false, trafficConfigured: false, site: null, installs, now: NOW }), {}))
+      .toContain("By channel (--ref): none started 1, completed 0, first CLI 0, second day 0; reddit started 1, completed 1, first CLI 1, second day 1.");
+  });
 });
 
 describe("marketing stats collector", () => {
@@ -112,8 +146,40 @@ describe("marketing stats collector", () => {
     expect(ga).toEqual([metric("2026-11-05", "GA4", "spaceapp.dev:users_30d", 40), metric("2026-11-05", "GA4", "spaceapp.dev:sessions_30d", 52),
       metric("2026-11-05", "GA4", "spaceapp.dev:views_30d", 130), metric("2026-11-05", "GA4", "spaceapp.dev:ref:reddit.com", 6)]);
     expect(ga4ConfigFromEnv({ SPACE_GA4_CREDENTIALS_FILE: "/k.json", SPACE_GA4_PROPERTIES: "spaceapp.dev=123, oll4.com=456,bad=x" }))
-      .toEqual({ credentialsFile: "/k.json", properties: { "spaceapp.dev": "123", "oll4.com": "456" } });
+      .toEqual({ credentialsFile: "/k.json", properties: { "spaceapp.dev": "123", "oll4.com": "456" }, gscSites: ["sc-domain:spaceapp.dev", "sc-domain:oll4.com"] });
+    expect(ga4ConfigFromEnv({ SPACE_GA4_CREDENTIALS_FILE: "/k.json", SPACE_GA4_PROPERTIES: "spaceapp.dev=123", SPACE_GSC_SITES: " https://oll4.com/ ," })?.gscSites).toEqual(["https://oll4.com/"]);
     expect(ga4ConfigFromEnv({ SPACE_GA4_PROPERTIES: "spaceapp.dev=123" })).toBeNull();
+  });
+  it("reads Search Console with the GA4 service account and names what a property is missing", async () => {
+    expect(parseGscReport({ rows: [{ clicks: 3, impressions: 120, ctr: 0.025, position: 18.4 }] },
+      { rows: [{ keys: ["self hosted\n claude code"], clicks: 1, impressions: 40 }, { keys: [""], impressions: 9 }] }, "2026-11-13", "https://spaceapp.dev/")).toEqual([
+      metric("2026-11-13", "GSC", "spaceapp.dev:clicks_28d", 3), metric("2026-11-13", "GSC", "spaceapp.dev:impressions_28d", 120), metric("2026-11-13", "GSC", "spaceapp.dev:ctr_28d", 0.025),
+      metric("2026-11-13", "GSC", "spaceapp.dev:position_28d", 18.4), metric("2026-11-13", "GSC", "spaceapp.dev:q:self hosted claude code", 40)]);
+    // A property with no search data yet answers no rows: zero clicks and impressions, no CTR or position.
+    expect(parseGscReport({}, {}, "2026-11-13", "sc-domain:oll4.com")).toEqual([metric("2026-11-13", "GSC", "oll4.com:clicks_28d", 0), metric("2026-11-13", "GSC", "oll4.com:impressions_28d", 0)]);
+    const credentialsFile = join(await mkdtemp(join(tmpdir(), "gsc-")), "key.json");
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    await writeFile(credentialsFile, JSON.stringify({ client_email: "sa@p.iam.gserviceaccount.com", private_key: privateKey.export({ type: "pkcs8", format: "pem" }) }));
+    const asked: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://oauth2.googleapis.com/token") {
+        const claims = JSON.parse(Buffer.from(new URLSearchParams(String(init?.body)).get("assertion")!.split(".")[1]!, "base64url").toString()) as { scope: string };
+        expect(claims.scope).toBe("https://www.googleapis.com/auth/webmasters.readonly");
+        return new Response(JSON.stringify({ access_token: "t" }));
+      }
+      expect(init?.headers).toMatchObject({ authorization: "Bearer t" });
+      asked.push({ url, body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      if (url.includes("oll4.com")) return new Response(JSON.stringify({ error: { message: "User does not have sufficient permission for site 'sc-domain:oll4.com'." } }), { status: 403 });
+      return new Response(JSON.stringify({ rows: [{ keys: ["spaceapp"], clicks: 2, impressions: 7, ctr: 0.28, position: 1.2 }] }));
+    }) as typeof fetch;
+    const got = await fetchGscMetrics({ credentialsFile, properties: {}, gscSites: ["sc-domain:spaceapp.dev", "sc-domain:oll4.com"] }, "2026-11-13", fetchImpl);
+    expect(got.errors).toEqual(["GSC sc-domain:oll4.com: HTTP 403 User does not have sufficient permission for site 'sc-domain:oll4.com'."]);
+    expect(got.metrics.map((entry) => entry.key)).toEqual(["spaceapp.dev:clicks_28d", "spaceapp.dev:impressions_28d", "spaceapp.dev:ctr_28d", "spaceapp.dev:position_28d", "spaceapp.dev:q:spaceapp"]);
+    expect(asked[0]).toEqual({ url: "https://www.googleapis.com/webmasters/v3/sites/sc-domain%3Aspaceapp.dev/searchAnalytics/query", body: { startDate: "2026-10-16", endDate: "2026-11-13" } });
+    expect(asked[1]!.body).toEqual({ startDate: "2026-10-16", endDate: "2026-11-13", dimensions: ["query"], rowLimit: 25_000 });
+    const report = buildMarketingReport({ posts: [], metrics: got.metrics, mail: null, ga4Configured: true, trafficConfigured: false, now: NOW });
+    expect(report.sources.find((source) => source.id === "GSC")).toMatchObject({ connected: true, day: "2026-11-13", values: { "spaceapp.dev:clicks_28d": 2, "spaceapp.dev:impressions_28d": 7, "spaceapp.dev:ctr_28d": 0.28, "spaceapp.dev:position_28d": 1.2 } });
   });
   it("refreshes the posts a public API answers for and records the day's snapshot", async () => {
     const hn = post("HACKER_NEWS", "PUBLISHED", "2026-11-04T14:19:00.000Z", {}, { publishedUrl: "https://news.ycombinator.com/item?id=50365885" });

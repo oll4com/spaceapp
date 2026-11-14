@@ -1,25 +1,28 @@
 import { useState } from "react";
 import { useOptionalVoiceInput } from "./VoiceInputProvider.js";
 import { readVoiceComposerSettings, writeVoiceComposerSettings, type VoiceComposerSettings } from "../../voice-settings.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { useUiText } from "../ui-language/ui-language.js";
 import { CliShortcutVisibilitySettings } from "../terminal-pane/CliShortcutVisibilitySettings.js";
 
 type ButtonSetting = "terminalShortcutsButton" | "terminalVariablesButton" | "terminalPlansButton"
   | "terminalVoiceButton" | "terminalModelPicker" | "terminalTurnControl" | "terminalAccountPicker" | "terminalLocalDraftButton";
 
-const buttons: Array<{ key: ButtonSetting; name: string; label: string; detail: string }> = [
-  { key: "terminalShortcutsButton", name: "float-shortcuts-button", label: "Shortcuts", detail: "A menu of quick commands, such as Plan mode, Model or Clear." },
-  { key: "terminalVariablesButton", name: "float-variables-button", label: "Prompt variables", detail: "Insert one of your saved #variables." },
-  { key: "terminalPlansButton", name: "float-plans-button", label: "Plans", detail: "Open your saved plans and send one to the agent." },
-  { key: "terminalVoiceButton", name: "float-voice-button", label: "Voice mic", detail: "Speak a prompt instead of typing it." },
-  { key: "terminalModelPicker", name: "float-model-picker", label: "Model choice", detail: "Switch the AI model and thinking depth of the pane." },
-  { key: "terminalTurnControl", name: "float-turn-control", label: "Turn control", detail: "A Stop button while the agent is working." },
-  { key: "terminalAccountPicker", name: "float-account-picker", label: "Account picker", detail: "The AI account the pane runs on, with each account's quota." },
-  { key: "terminalLocalDraftButton", name: "float-local-draft-button", label: "Local draft", detail: "Open a draft under the pane to write a prompt before sending it." }
+const buttons: Array<{ key: ButtonSetting; name: string; label: string; help: string }> = [
+  { key: "terminalShortcutsButton", name: "float-shortcuts-button", label: "Shortcuts", help: "A menu of quick commands, such as Plan mode, Model or Clear." },
+  { key: "terminalVariablesButton", name: "float-variables-button", label: "Prompt variables", help: "Insert one of your saved #variables." },
+  { key: "terminalPlansButton", name: "float-plans-button", label: "Plans", help: "Open your saved plans and send one to the agent." },
+  { key: "terminalVoiceButton", name: "float-voice-button", label: "Voice mic", help: "Speak a prompt instead of typing it." },
+  { key: "terminalModelPicker", name: "float-model-picker", label: "Model choice", help: "Switch the AI model and thinking depth of the pane." },
+  { key: "terminalTurnControl", name: "float-turn-control", label: "Turn control", help: "A Stop button while the agent is working." },
+  { key: "terminalAccountPicker", name: "float-account-picker", label: "Account picker", help: "The AI account the pane runs on, with each account's quota." },
+  { key: "terminalLocalDraftButton", name: "float-local-draft-button", label: "Local draft", help: "Open a draft under the pane to write a prompt before sending it." }
 ];
 
 /** The buttons and menus shown over CLI panes; saved with the voice preferences they share. */
 export function CliPaneControlsSettingsCard() {
+  const t = useUiText();
   // Outside the voice provider the card keeps its own copy of the saved settings.
   const voice = useOptionalVoiceInput();
   const [localSettings, setLocalSettings] = useState(() => readVoiceComposerSettings());
@@ -37,7 +40,7 @@ export function CliPaneControlsSettingsCard() {
         className="settings-flat-row settings-flat-toggle-row voice-toggle"
         name="terminal-context-menu"
         label="Right-click menu"
-        detail="Copy, paste and other actions when you right-click inside a pane."
+        help="Copy, paste and other actions when you right-click inside a pane."
         checked={Boolean(settings.terminalContextMenu ?? true)}
         onChange={(terminalContextMenu) => update({ terminalContextMenu })}
       />
@@ -45,21 +48,18 @@ export function CliPaneControlsSettingsCard() {
         className="settings-flat-row settings-flat-toggle-row voice-toggle"
         name="terminal-local-draft"
         label="Local draft open by default"
-        detail="CLI panes open with the local draft under them. A pane where you opened or closed the draft keeps that choice."
+        help="CLI panes open with the local draft under them. A pane where you opened or closed the draft keeps that choice."
         checked={Boolean(settings.terminalLocalDraft)}
         onChange={(terminalLocalDraft) => update({ terminalLocalDraft })}
       />
-      <div className="settings-flat-subheading">
-        <strong>Buttons</strong>
-        <small>Hiding a button only removes it from the pane; the feature keeps working.</small>
-      </div>
-      {buttons.map(({ key, name, label, detail }) => (
+      <div className="settings-flat-subheading"><SettingsLabel label="Buttons" help="The buttons shown over CLI panes. Hiding a button only removes it from the pane; the feature keeps working." /></div>
+      {buttons.map(({ key, name, label, help }) => (
         <SpaceToggle
           key={key}
           className="settings-flat-row settings-flat-toggle-row voice-toggle"
           name={name}
-          label={label}
-          detail={detail}
+          label={t(label)}
+          help={help}
           checked={settings[key] ?? true}
           onChange={(checked) => update({ [key]: checked })}
         />

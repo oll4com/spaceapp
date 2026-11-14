@@ -19,7 +19,7 @@ class FakeSocket extends EventEmitter {
 const livekit = { url: "wss://x.livekit.cloud", apiKey: "APIkey", apiSecret: "secret" };
 const keys: GrantKeys = { livekit, murf: "murf-key", assemblyai: "aai-key" };
 
-function setup(plan: GrantVoicePlan, fetchImpl?: typeof fetch) {
+function setup(plan: GrantVoicePlan, fetchImpl?: typeof fetch, meter?: (use: unknown) => void) {
   const client = new FakeSocket();
   client.readyState = 1;
   const upstreams: Array<{ url: string; headers: Record<string, string>; socket: FakeSocket }> = [];
@@ -28,6 +28,7 @@ function setup(plan: GrantVoicePlan, fetchImpl?: typeof fetch) {
     plan,
     connect: (url, headers) => { const socket = new FakeSocket(); upstreams.push({ url, headers, socket }); return socket as unknown as WebSocket; },
     fetch: fetchImpl,
+    meter,
     onClose: ({ reason }) => closes.push(reason)
   });
   const json = () => client.sent.filter((item) => typeof item.data === "string").map((item) => JSON.parse(item.data as string));
@@ -43,6 +44,12 @@ describe("startup voice grants", () => {
     expect(grantVoicePlan("assemblyai", "assemblyai/universal-streaming-sonic", keys).plan?.tts).toMatchObject({ engine: "livekit", model: "cartesia/sonic-3" });
     expect(grantVoicePlan("assemblyai", "assemblyai/universal-streaming-sonic", { ...keys, cartesia: "c" }).plan?.tts).toMatchObject({ engine: "cartesia" });
     expect(grantVoicePlan("cartesia", undefined, keys).missing).toMatch(/Cartesia/);
+    // The Live pane's "auto" is no hint (both STTs refuse it); with no hint Cartesia Ink listens when its key is there.
+    expect(grantVoicePlan("livekit", undefined, keys, "auto").plan).toMatchObject({ stt: { engine: "livekit", model: "deepgram/nova-3" } });
+    expect(grantVoicePlan("livekit", undefined, keys, "auto").plan).not.toHaveProperty("language");
+    expect(grantVoicePlan("livekit", undefined, { ...keys, cartesia: "c" }, "auto").plan).toMatchObject({
+      stt: { engine: "cartesia", model: "ink-whisper" }, tts: { engine: "livekit", model: "cartesia/sonic-3" } });
+    expect(grantVoicePlan("livekit", undefined, { ...keys, cartesia: "c" }, "el").plan?.stt).toMatchObject({ engine: "livekit" });
     expect(grantVoicePlan("murf", undefined, { murf: "m" }).missing).toMatch(/AssemblyAI or LiveKit/);
   });
 
@@ -89,6 +96,27 @@ describe("startup voice grants", () => {
     expect(tts.socket.readyState).toBe(3);
     tts.socket.receive({ type: "output_audio", audio: Buffer.from([9, 9]).toString("base64") });
     expect(client.sent.filter((item) => item.binary)).toHaveLength(1);
+  });
+
+  it("listens with Cartesia Ink on a LiveKit plan without a language and meters only LiveKit's voice", () => {
+    const uses: unknown[] = [];
+    const { client, upstreams, say } = setup(grantVoicePlan("livekit", undefined, { ...keys, cartesia: "c" }, "auto").plan!, undefined, (use) => uses.push(use));
+    expect(upstreams[0]!.url).toBe("wss://api.cartesia.ai/stt/websocket?model=ink-whisper&encoding=pcm_s16le&sample_rate=16000");
+    upstreams[0]!.socket.open();
+    client.emit("message", Buffer.alloc(16_000), true);
+    say("Hello there");
+    client.emit("close");
+    expect(uses).toEqual([{ kind: "tts", model: "cartesia/sonic-3", characters: 11 }]);
+  });
+
+  it("meters LiveKit Inference: the characters it speaks and the seconds of speech it hears", () => {
+    const uses: unknown[] = [];
+    const { client, upstreams, say } = setup(grantVoicePlan("livekit", "livekit/cartesia-sonic-3", keys).plan!, undefined, (use) => uses.push(use));
+    upstreams[0]!.socket.open();
+    client.emit("message", Buffer.alloc(16_000), true);
+    say("Hello there");
+    client.emit("close");
+    expect(uses).toEqual([{ kind: "tts", model: "cartesia/sonic-3", characters: 11 }, { kind: "stt", model: "deepgram/nova-3", seconds: 0.5 }]);
   });
 
   it("ends the session with AssemblyAI's error code, never its text", () => {

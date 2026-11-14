@@ -121,9 +121,11 @@ export interface NeedsYouCardProps {
   onLater?(): void;
   /** After an answer was sent (the peek shows it a moment, then lets the card go). */
   onAnswered?(): void;
+  /** A plan's card with no pane (the API's plan-needs-you.ts) opens its plan. */
+  onOpenPlan?(id: string): void;
 }
 
-export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openProp, onOpenChange, onLater, onAnswered }: NeedsYouCardProps) {
+export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openProp, onOpenChange, onLater, onAnswered, onOpenPlan }: NeedsYouCardProps) {
   const [ownOpen, setOwnOpen] = useState(false);
   const open = openProp ?? ownOpen;
   const setOpen = (next: boolean) => { if (onOpenChange) onOpenChange(next); else setOwnOpen(next); };
@@ -255,7 +257,9 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   const opensPane = place === "HERE" && !needsYouMail(item) && !/^(?:url|tab):/.test(item.link?.target ?? "") ? pane ?? null : null;
   // NousFocus goes only to a card with a place (needsYouHasPlace): a card about a CLI or studio pane names the pane's own default, "activity".
   const toPane = (roomId: string, paneId: string, target?: string) => goToNeedsYouPane({ ...item, roomId, paneId, link: { ...item.link, roomId, paneId, target: target ?? item.link.target ?? "activity" } });
-  const opens = place !== "HERE" ? null : needsYouMail(item) ? t("Open the mail") : /^(?:url|tab):/.test(item.link?.target ?? "") ? t("Open the page")
+  // A plan's card with no pane anywhere opens its plan (goToNeedsYouPane); in the dock its own "Open plan" link does.
+  const planOnly = !item.paneId && !item.link?.paneId && !item.link?.surface && typeof item.payload.planId === "string";
+  const opens = place !== "HERE" ? null : planOnly ? (onOpenPlan ? null : t("Open plan")) : needsYouMail(item) ? t("Open the mail") : /^(?:url|tab):/.test(item.link?.target ?? "") ? t("Open the page")
     : opensPane ? t("Open {name}", { name: opensPane.name }) : needsYouHasPlace(item, pane?.mode) ? t("Go to pane") : null;
   const Icon = kind === "off" ? Smartphone : kind === "review" ? ClipboardCheck : kind === "pane" ? MousePointer2
     : ask.code ? KeyRound : needsYouMail(item) ? Mail : CircleHelp;
@@ -277,7 +281,7 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   );
   // The closed card's one answer.
   // A one-time code goes in here even when its card is about a pane: the field leads, Go waits under Details.
-  const go = <DockButton tone={ask.code ? "default" : "primary"} onClick={() => goToNeedsYouPane(item)}>{t(item.link?.surface && item.link.target ? "Open" : /^(?:url|tab):/.test(item.link?.target ?? "") ? "Go now" : "Go to pane")}<ArrowUpRight aria-hidden="true" /></DockButton>;
+  const go = <DockButton tone={ask.code ? "default" : "primary"} onClick={() => goToNeedsYouPane(item)}>{t(planOnly ? "Open plan" : item.link?.surface && item.link.target ? "Open" : /^(?:url|tab):/.test(item.link?.target ?? "") ? "Go now" : "Go to pane")}<ArrowUpRight aria-hidden="true" /></DockButton>;
   const primary = ask.code ? codeForm
     : typed ? wordsForm
     : place === "PANE" ? go
@@ -384,6 +388,7 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
           ) : !ask.code && !decision ? wordsForm : null}
           <div className="ny-footer">
             {variant === "peek" ? <button type="button" className="ny-link" onClick={() => setOpen(false)}>{t("Less")}<ChevronUp aria-hidden="true" /></button> : null}
+            {onOpenPlan && !item.paneId && typeof item.payload.planId === "string" ? <button type="button" className="ny-link" onClick={() => onOpenPlan(item.payload.planId as string)}>{t("Open plan")}<ArrowUpRight aria-hidden="true" /></button> : null}
             {studio ? <button type="button" className="ny-link" onClick={() => toPane(studio.roomId, studio.paneId, studio.target)}>{t(studio.source === "DESIGN" ? "Open in Design" : "Open in Video")}<ArrowUpRight aria-hidden="true" /></button> : null}
             {opens && !(studio && opensPane?.paneId === studio.paneId) ? <button type="button" className="ny-link" data-sensitive-masked={opensPane ? "manual" : undefined}
               onClick={() => opensPane && item.roomId && item.paneId ? toPane(item.roomId, item.paneId) : goToNeedsYouPane(item)}>{opens}<ArrowUpRight aria-hidden="true" /></button> : null}

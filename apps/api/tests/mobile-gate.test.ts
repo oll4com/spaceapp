@@ -47,12 +47,12 @@ describe("the mobile gate", () => {
   // CODE-2 (MASVS L2, plan clipboard:kTV3y2lwO-99 step 7): an app session whose X-Space-Client names a Nous app below the floor gets 426,
   // except the routes its own update needs; the phone channel and the Google device session alike, never a web session.
   it("answers 426 to a Nous app below the update floor, except its update and sign-in routes", async () => {
-    const old = { "x-space-client": "app=NOUS_ANDROID; v=0.2.17; os=android; form=PHONE" };
+    const old = { "x-space-client": "app=NOUS_ANDROID; v=0.2.21; os=android; form=PHONE" };
     const response = await app.inject({ method: "GET", url: "/api/nous", headers: { ...phone(["read"]), ...old } });
     expect(response.statusCode).toBe(426);
-    expect(JSON.parse(response.body).error).toMatchObject({ code: "APP_UPDATE_REQUIRED", details: { minVersion: "0.2.18", minVersionCode: 218 } });
+    expect(JSON.parse(response.body).error).toMatchObject({ code: "APP_UPDATE_REQUIRED", details: { minVersion: "0.2.22", minVersionCode: 222 } });
     expect(code(await app.inject({ method: "GET", url: "/api/artifacts/artifact:x/file", headers: { ...phone(["read"]), ...old } }))).not.toBe("APP_UPDATE_REQUIRED");
-    expect(code(await app.inject({ method: "GET", url: "/api/nous", headers: { ...phone(["read"]), "x-space-client": "app=NOUS_ANDROID; v=0.2.18" } }))).not.toBe("APP_UPDATE_REQUIRED");
+    expect(code(await app.inject({ method: "GET", url: "/api/nous", headers: { ...phone(["read"]), "x-space-client": "app=NOUS_ANDROID; v=0.2.22" } }))).not.toBe("APP_UPDATE_REQUIRED");
     expect(code(await app.inject({ method: "GET", url: "/api/nous", headers: phone(["read"]) }))).not.toBe("APP_UPDATE_REQUIRED");
     const device = signSession(operator, secret, Date.now(), { sid: randomBytes(32).toString("hex"), app: "nous" });
     expect(code(await app.inject({ method: "GET", url: "/api/nous", headers: { cookie: `${cookieName}=${device}`, ...old } }))).toBe("APP_UPDATE_REQUIRED");
@@ -181,8 +181,11 @@ describe("the mobile gate", () => {
   it("refuses every registered route the allowlist does not name, whatever the scopes (plugin routes too)", async () => {
     const all = phone(["read", "act", "decide", "admin"]);
     const missed: string[] = [];
+    // printRoutes names a shared path segment's parameter after the first route that registered it (:roomId for /api/rooms/:id/agent-files/chunks).
+    const shape = (route: string) => route.replace(/:[A-Za-z0-9_]+/g, ":");
+    const allowed = new Set(Object.keys(MOBILE_ROUTE_SCOPES).map(shape));
     for (const route of registeredRoutes(app.printRoutes({ commonPrefix: false }))) {
-      if (Object.hasOwn(MOBILE_ROUTE_SCOPES, route)) continue;
+      if (allowed.has(shape(route))) continue;
       const [method, path] = route.split(" ") as [string, string];
       const url = path.replace(/:[A-Za-z0-9_]+/g, "x").replace(/\*/g, "x");
       const body = method === "GET" || method === "DELETE" ? {} : { payload: {} };

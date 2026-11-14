@@ -8,7 +8,7 @@ import { getLiveAudioProvider, SPACE_AGENT_HOME, SPACE_INSTALL_ROOT, type LiveAu
  * `~/.config/space` (where the grant signups saved them). They stay on the server.
  */
 export type LiveKitKeys = { url: string; apiKey: string; apiSecret: string };
-export type GrantKeys = { livekit?: LiveKitKeys; cartesia?: string; murf?: string; assemblyai?: string };
+export type GrantKeys = { livekit?: LiveKitKeys; cartesia?: string; cartesiaAdmin?: string; murf?: string; assemblyai?: string };
 export type GrantSttEngine = "assemblyai" | "cartesia" | "livekit";
 export type GrantTtsEngine = "murf" | "cartesia" | "livekit";
 export type GrantVoicePlan = {
@@ -23,6 +23,8 @@ export const isGrantLiveProvider = (id: string): id is (typeof GRANT_LIVE_PROVID
 const SOURCES = {
   livekit: { fileEnv: "SPACE_LIVEKIT_ENV_FILE", file: "space-livekit.env", home: "livekit.key", label: "LiveKit" },
   cartesia: { fileEnv: "SPACE_CARTESIA_KEY_FILE", keyEnv: "CARTESIA_API_KEY", file: "space-cartesia.key", home: "cartesia.key", label: "Cartesia" },
+  // Cartesia's usage API takes only an admin key (the Used meter, program-meters.ts).
+  cartesiaAdmin: { fileEnv: "SPACE_CARTESIA_ADMIN_KEY_FILE", keyEnv: "CARTESIA_ADMIN_API_KEY", file: "space-cartesia-admin.key", home: "cartesia-admin.key", label: "Cartesia admin" },
   murf: { fileEnv: "SPACE_MURF_KEY_FILE", keyEnv: "MURF_API_KEY", file: "space-murf.key", home: "murf.key", label: "Murf AI" },
   assemblyai: { fileEnv: "SPACE_ASSEMBLYAI_KEY_FILE", keyEnv: "ASSEMBLYAI_API_KEY", file: "space-assemblyai.key", home: "assemblyai.key", label: "AssemblyAI" }
 } as const;
@@ -47,7 +49,7 @@ export async function readGrantKeys(env: NodeJS.ProcessEnv = process.env): Promi
   keys.livekit = env.LIVEKIT_API_KEY && env.LIVEKIT_API_SECRET && env.LIVEKIT_URL
     ? { url: env.LIVEKIT_URL, apiKey: env.LIVEKIT_API_KEY, apiSecret: env.LIVEKIT_API_SECRET }
     : parseLiveKitEnv((await firstFile(grantFiles("livekit", env))) ?? "");
-  for (const grant of ["cartesia", "murf", "assemblyai"] as const) keys[grant] = env[SOURCES[grant].keyEnv]?.trim() || await firstFile(grantFiles(grant, env));
+  for (const grant of ["cartesia", "cartesiaAdmin", "murf", "assemblyai"] as const) keys[grant] = env[SOURCES[grant].keyEnv]?.trim() || await firstFile(grantFiles(grant, env));
   if (!keys.livekit) delete keys.livekit;
   return keys;
 }
@@ -62,12 +64,16 @@ export function grantVoicePlan(provider: LiveAudioProviderId, model: string | un
   { plan: GrantVoicePlan; missing?: undefined } | { plan?: undefined; missing: string } {
   const descriptor = getLiveAudioProvider(provider);
   const entry = descriptor.models.find((item) => item.id === model) ?? descriptor.models.find((item) => item.id === descriptor.defaultModel)!;
+  // The Live pane's "auto" is no hint: Deepgram and Cartesia both refuse `language=auto` (13/11 check with the keys).
+  const hint = language && language !== "auto" ? language : undefined;
   const plan = (stt: GrantVoicePlan["stt"], tts: Omit<GrantVoicePlan["tts"], "voice">): { plan: GrantVoicePlan } =>
-    ({ plan: { stt, tts: { ...tts, voice: entry.defaultVoice }, keys, ...(language ? { language } : {}) } });
+    ({ plan: { stt, tts: { ...tts, voice: entry.defaultVoice }, keys, ...(hint ? { language: hint } : {}) } });
   const lkStt = { engine: "livekit" as const, model: "deepgram/nova-3" };
+  const ink = { engine: "cartesia" as const, model: "ink-whisper" };
   const sonic = keys.cartesia ? { engine: "cartesia" as const, model: "sonic-3" } : { engine: "livekit" as const, model: "cartesia/sonic-3" };
-  if (provider === "livekit") return keys.livekit ? plan(lkStt, { engine: "livekit", model: LIVEKIT_TTS_MODELS[entry.id] ?? "cartesia/sonic-3" }) : { missing: need("LiveKit") };
-  if (provider === "cartesia") return keys.cartesia ? plan({ engine: "cartesia", model: "ink-whisper" }, { engine: "cartesia", model: "sonic-3" }) : { missing: need("Cartesia") };
+  // With no hint Deepgram hears no Greek while Cartesia Ink gives its meaning (in English): Ink listens and spends the Cartesia grant.
+  if (provider === "livekit") return keys.livekit ? plan(keys.cartesia && !hint ? ink : lkStt, { engine: "livekit", model: LIVEKIT_TTS_MODELS[entry.id] ?? "cartesia/sonic-3" }) : { missing: need("LiveKit") };
+  if (provider === "cartesia") return keys.cartesia ? plan(ink, { engine: "cartesia", model: "sonic-3" }) : { missing: need("Cartesia") };
   if (provider === "murf") {
     if (!keys.murf) return { missing: need("Murf AI") };
     if (keys.assemblyai) return plan({ engine: "assemblyai" }, { engine: "murf" });

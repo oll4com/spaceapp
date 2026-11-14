@@ -6,7 +6,7 @@ import { eventSchema, needsYouCardTexts, needsYouTranslation, type UiLanguage } 
 import { InMemorySpaceNotificationsRepository } from "@space/db";
 import { SpaceEventBus, makeSpaceId } from "@space/runtime";
 import { createNotificationService } from "../src/notifications/service.js";
-import { createCardTranslator } from "../src/notifications/translate.js";
+import { createCardTranslator, translateCard } from "../src/notifications/translate.js";
 import { GATEWAY_CLAUDE_MODEL } from "../src/room-agent-model-resolver.js";
 
 const GREEK: Record<string, string> = {
@@ -17,6 +17,12 @@ const GREEK: Record<string, string> = {
 
 // Operator 1/11 23:09 BKK «needs you να ειναι στην γλώσσα που εχω ορισει»: a card is translated once when raised, the original kept.
 describe("needs-you cards in the operator's language", () => {
+  it("goal 7365014c: Space's own start-now words read as Nous asked them, whatever the model wrote", async () => {
+    const record = { title: "Andy needs you", body: "Sign at https://a.test", payload: { ask: { question: "Start now?", options: ["Go now", "Later today"], answer: { kind: "PANE" } } } };
+    const out = await translateCard(async (texts) => texts.map((text) => text && `EL:${text}`), record, "el");
+    expect(out).toMatchObject({ question: "Ξεκινάς τώρα;", options: ["Πάμε τώρα", "Αργότερα σήμερα"], body: "EL:Sign at https://a.test" });
+  });
+
   const card = (body = "The backup at /var/backups/vzdump-qemu-207.vma.zst is 40 GB.\n\nChecked first:\nDisk usage at 91 %") => ({
     ownerUserId: "user:1", roomId: "room:1", paneId: "pane:1", source: "MONITORING_COPILOT" as const, kind: "MONITORING_REVIEW", severity: "ATTENTION" as const,
     title: "Monitoring Copilot needs you", body, link: { roomId: "room:1", paneId: "pane:1" }, dedupeKey: "monitoring:review:1", telegram: false,

@@ -22,6 +22,7 @@ import { grantVoicePlan, isGrantLiveProvider, readGrantKeys, type GrantKeys } fr
 import { configuredDelegateModel, estimateLiveCost } from "./live-model-policy.js";
 import { isGptLiveModel, resolveDelegatedModel, voiceForModel, voiceModelCandidates, voiceModelUnavailable, type LiveModelFallback } from "./live-openai-model-fallback.js";
 import { SPACE_INSTALL_ROOT } from "@space/contracts";
+import { LIVEKIT_GRANT_CLOSED, liveKitMeter } from "./livekit-meter.js";
 
 export { delegatedReasoningEffort } from "./live-openai-model-fallback.js";
 
@@ -560,8 +561,11 @@ export async function resolveLiveAudioCredentials(
   // Grant cascades: the credential is every grant key the server holds, as JSON, so a cascade can pair two grants.
   if (isGrantLiveProvider(provider)) {
     const keys = await readGrantKeys();
+    // Past 95% of the metered grant (or its expiry) LiveKit is left out, so no plan can reach LiveKit's card billing.
+    const open = !keys.livekit || await liveKitMeter.open();
+    if (!open) delete keys.livekit;
     const { missing } = grantVoicePlan(provider, undefined, keys);
-    return missing ? { configured: false, missingReason: missing } : { configured: true, apiKey: JSON.stringify(keys) };
+    return missing ? { configured: false, missingReason: provider === "livekit" && !open ? LIVEKIT_GRANT_CLOSED : missing } : { configured: true, apiKey: JSON.stringify(keys) };
   }
 
   return { configured: false, missingReason: `Unknown provider: ${provider}` };

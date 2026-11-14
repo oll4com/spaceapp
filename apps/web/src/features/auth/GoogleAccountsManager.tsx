@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { api, type GoogleAccountSummary } from "../../api.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
 
 const signInHint = "Select this account in a Browser or YouTube pane, then choose “Sign in to selected account” to connect its browser profile.";
 
@@ -102,8 +103,10 @@ export function GoogleAccountsManager({ enabled, onAuthRefresh }: { enabled: boo
 
   if (!enabled) return <p className="settings-flat-note">Configure Google OAuth to add accounts.</p>;
   return <section aria-label="Google accounts" className="google-accounts-manager">
-    <div className="settings-flat-row" style={{ gridTemplateColumns: "1fr auto" }}>
-      <span className="settings-flat-row-copy"><strong>Google accounts</strong><small>Use the same Space user with separate saved browser profiles.</small></span>
+    <div className="settings-flat-row" style={{ gridTemplateColumns: "1fr" }}>
+      <SettingsLabel label="Google accounts" help="Use the same Space user with separate saved browser profiles, one per Google account. Check browser verifies a profile's sign-in with Google." />
+    </div>
+    <div className="settings-flat-actions">
       <a className="button" href="/api/auth/google/accounts/link" aria-label="Add Google account">Add account</a>
     </div>
     {loading ? <p role="status">Loading Google accounts…</p> : null}
@@ -112,22 +115,24 @@ export function GoogleAccountsManager({ enabled, onAuthRefresh }: { enabled: boo
       const label = accountLabel(account);
       const checked = formatBrowserCheckTime(account.browserCheckedAt);
       const hint = browserStatusHint(account);
-      return <div className="settings-flat-row" key={account.id} style={{ gridTemplateColumns: "minmax(0, 1fr) auto", gap: "0.75rem" }}>
-        <span className="settings-flat-row-copy" style={{ minWidth: 0 }}>
-          <strong>{label}{account.isPrimary ? " · Default" : ""}</strong>
-          <small data-sensitive-masked="manual">{accountLabel({ ...account, displayName: null })}</small>
-          <small data-browser-status={account.browserStatus}>Space SSO linked · {browserStatusLabel(account)}{checked ? ` · ${checked}` : ""}</small>
-          {hint ? <small>{hint}</small> : null}
-          {checkNotices[account.id] ? <small role="status">{checkNotices[account.id]}</small> : null}
-        </span>
-        <span style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", justifyContent: "flex-end" }}>
+      return <Fragment key={account.id}>
+        <div className="settings-flat-row" style={{ gridTemplateColumns: "1fr" }}>
+          <span className="settings-flat-row-copy" style={{ minWidth: 0 }}>
+            <strong>{label}{account.isPrimary ? " · Default" : ""}</strong>
+            <small data-sensitive-masked="manual">{accountLabel({ ...account, displayName: null })}</small>
+            <small data-browser-status={account.browserStatus}>Space SSO linked · {browserStatusLabel(account)}{checked ? ` · ${checked}` : ""}</small>
+            {hint ? <small>{hint}</small> : null}
+            {checkNotices[account.id] ? <small role="status">{checkNotices[account.id]}</small> : null}
+          </span>
+        </div>
+        <div className="settings-flat-actions">
           <button type="button" className="button" disabled={pendingId !== null} aria-label={`Check browser session for ${label}`} onClick={() => void checkBrowser(account)}>
             {checkingId === account.id ? "Checking…" : "Check browser"}
           </button>
           {!account.isPrimary ? <button type="button" className="button" disabled={pendingId !== null} aria-label={`Make ${label} default`} onClick={() => void setDefault(account)}>Set default</button> : null}
           <button type="button" className="button" disabled={pendingId !== null} aria-label={`Remove ${label}`} onClick={() => void remove(account)}>Remove</button>
-        </span>
-      </div>;
+        </div>
+      </Fragment>;
     })}
     {error ? <p role="alert">{error}</p> : null}
   </section>;

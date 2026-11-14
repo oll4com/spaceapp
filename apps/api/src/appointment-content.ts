@@ -6,8 +6,9 @@ import { SpaceConflictError } from "@space/runtime";
 // space_appointment_add, the Job Copilot) writes everything the operator needs for it. Checked at the repository every writer goes through,
 // on the row as it would be stored; DONE and CANCELLED ones (and rows older than the rule) are read and closed as they are.
 // Operator 6/11 10:15 BKK (nous_msg:ea6f0792): also its format and timing, and a time we choose (FLEXIBLE) within the operator's hours in their zone.
+// Operator 13/11 16:00 BKK: an online one's location is its join link, not text.
 
-type Checked = Pick<Appointment, "status" | "notes" | "format" | "timing" | "deadlineAt" | "startsAt" | "endsAt">;
+type Checked = Pick<Appointment, "status" | "notes" | "location" | "format" | "timing" | "deadlineAt" | "startsAt" | "endsAt">;
 type Patch = Partial<{ [key in keyof Checked]: Checked[key] | undefined }>;
 
 function check(next: Checked, zone: string) {
@@ -23,7 +24,7 @@ function check(next: Checked, zone: string) {
 /** The row as the write would store it: the patch's defined fields over the current one. */
 const after = (patch: Patch, current: Checked | null | undefined): Checked => {
   const value = <K extends keyof Checked>(key: K): Checked[K] => (patch[key] === undefined ? current?.[key] ?? null : patch[key]) as Checked[K];
-  return { status: value("status") ?? "UPCOMING", notes: value("notes"), format: value("format"), timing: value("timing"), deadlineAt: value("deadlineAt"),
+  return { status: value("status") ?? "UPCOMING", notes: value("notes"), location: value("location"), format: value("format"), timing: value("timing"), deadlineAt: value("deadlineAt"),
     startsAt: value("startsAt"), endsAt: value("endsAt") };
 };
 

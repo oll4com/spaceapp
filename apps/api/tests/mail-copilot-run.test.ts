@@ -8,10 +8,13 @@ import { defaultMailCopilotPaneMetadata, eventSchema, type ConnectorCapability, 
 import { createApp } from "../src/app.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { getApiConfig } from "../src/config.js";
+import { reviewDraftFile } from "../src/nous/files.js";
 import { createMailCopilotService, type MailCopilotGoogleAccess } from "../src/mail-copilot/service.js";
 import { createMailCopilotKickoff } from "../src/mail-copilot/kickoff.js";
 import { notifyMailCopilotEvent } from "../src/mail-copilot/notify.js";
 import { createNotificationService } from "../src/notifications/service.js";
+import { buildCliAgentBootstrapMarkdown, SINGLE_MAIL_HINT } from "../src/agent-bootstrap.js";
+import { gmailWebNote } from "../src/cli-browser-bridge-routes.js";
 
 import type { RoomPaneObservation } from "../src/room-pane-control.js";
 
@@ -106,6 +109,37 @@ async function fixture(inbox: FakeMessage[]) {
 const cli = "/api/cli/mail-copilot";
 
 describe("mail copilot run loop", () => {
+  it("serves any other CLI pane read and review through the owner's Mail Copilot, never send (nous_msg:5321471cb6334fd6ab52a30f)", async () => {
+    const { app, store, pane, headers, gmail, paneUrl } = await fixture([
+      { id: "m1", threadId: "t1", from: "Shop <affiliate@shop.example>", subject: "Affiliate", minutesAgo: 30, labelIds: ["INBOX"], plain: "Your code is 123456" }
+    ]);
+    try {
+      const plain = store.createPane({ roomId: pane.roomId, title: "Felix/Andy", mode: "TERMINAL", terminalRuntimeId: "cli:codex" });
+      const session = store.createPaneCliSession({ paneId: plain.id, roomId: pane.roomId, runtimeId: "cli:codex", providerId: "codex", agentId: "codex", status: "RUNNING", purpose: "NORMAL" });
+      const config = getApiConfig({ SPACE_CLI_ENABLED: "true", SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true", SPACE_INTERNAL_API_TOKEN: "internal-token-for-mail-copilot-tests" });
+      const other = { [cliBrowserBridgeTokenHeader]: issueCliBrowserBridgeToken(config, { roomId: pane.roomId, paneId: plain.id, cliSessionId: session.sessionId })!, "content-type": "application/json" };
+      const read = await app.inject({ method: "GET", url: `${cli}/threads/t1?account=me%40gmail.com`, headers: other });
+      expect(read.json().thread.messages[0]).toMatchObject({ text: "Your code is 123456", html: null });
+      const draft = { account: "me@gmail.com", to: ["affiliate@shop.example"], subject: "Partnership", text: "Hello" };
+      expect((await app.inject({ method: "POST", url: `${cli}/send`, headers: other, payload: draft })).statusCode).toBe(409);
+      expect((await app.inject({ method: "POST", url: `${cli}/next`, headers: other, payload: { waitMs: 0 } })).statusCode).toBe(409);
+      const review = await app.inject({ method: "POST", url: `${cli}/review`, headers: other, payload: { draft, summary: "Affiliate application" } });
+      expect(review.statusCode).toBe(200);
+      const reviewId = review.json().reviewId as string;
+      const pending = (await app.inject({ method: "GET", url: `${paneUrl}/run`, headers })).json().pending as Array<{ id: string }>;
+      expect(pending).toEqual([expect.objectContaining({ kind: "REVIEW", id: reviewId })]);
+      expect(gmail.writes.some((write) => write.path === "/messages/send")).toBe(false);
+      expect((await app.inject({ method: "POST", url: `${paneUrl}/review`, headers, payload: { reviewId, decision: "approve" } })).json()).toMatchObject({ decision: "approve", sent: { threadId: "thread-new" } });
+      expect((await app.inject({ method: "POST", url: `${cli}/review/wait`, headers: other, payload: { reviewId, waitMs: 0 } })).json()).toMatchObject({ decided: true, decision: "approve" });
+      expect(buildCliAgentBootstrapMarkdown({ paneMode: "TERMINAL" })).toContain(SINGLE_MAIL_HINT);
+      expect(buildCliAgentBootstrapMarkdown({ paneMode: "MAIL_COPILOT" })).not.toContain(SINGLE_MAIL_HINT);
+      expect(gmailWebNote("https://mail.google.com/mail/u/0/#inbox")).toMatch(/space_mail_review_request/);
+      expect(gmailWebNote("https://accounts.google.com/signin")).toBe("");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("starts a run with a kickoff, serves the inbox backlog as triage items with context, holds Assist to reviews, learns from the operator's edit and finishes", async () => {
     const { app, pane, headers, agent, gmail, roomEvents, kickoffs, paneUrl } = await fixture([
       { id: "m1", threadId: "t1", from: "Anna Client <anna@acme.com>", subject: "Invoice question", minutesAgo: 30, labelIds: ["INBOX", "UNREAD"], plain: "Can you resend the invoice?" },
@@ -244,6 +278,8 @@ describe("mail copilot run loop", () => {
       const reviews = createMailCopilotService({ google: () => google, repository });
       expect(await reviews.reviewRequiredBy(owner, review.json().reviewId)).toMatchObject({ id: rule.id });
       expect(await reviews.reviewRequiredBy(owner, "mailrev:unknown00001")).toBeNull();
+      // Akamai 13/11: the review's card names that rule, so "May send" never holds it for Nous (isNousApproval).
+      expect((await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] }))[0]?.payload.operatorReads).toBe(rule.id);
     } finally {
       await app.close();
     }
@@ -412,6 +448,13 @@ describe("mail copilot run loop", () => {
     const { reviewId } = await review("d1");
     const raised = (await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] }))[0]!;
     expect(raised.message).toContain("[attachments: Nikolaos-CV.pdf]");
+    // A Nous decision on this review shows its own draft under "What it sends" (operator 13/11 21:43 BKK), and an edit the text it sends.
+    const action = { type: "COPILOT" as const, copilot: "MAIL" as const, item: "REVIEW" as const, itemId: reviewId, paneId: null, decision: "approve" };
+    expect(await reviewDraftFile(owner, action, { MAIL: service })).toEqual([{ ref: `${reviewId} (the review's own draft)`, truncated: false, total: expect.any(Number),
+      text: "From: me@gmail.com\nTo: tamara@bloomind.example\nSubject: Re: Your application at BlooMind\nAttachments: Nikolaos-CV.pdf\n\nHi Tamara, my CV is attached." }]);
+    expect((await reviewDraftFile(owner, { ...action, decision: "edit", text: "Hi Tamara, CV attached." }, { MAIL: service }))[0]!.text).toMatch(/\n\nHi Tamara, CV attached\.$/);
+    expect(await reviewDraftFile(owner, { ...action, itemId: "mailrev:unknown" }, { MAIL: service })).toEqual([expect.objectContaining({ text: null, error: "The copilot has no draft for this review." })]);
+    expect(await reviewDraftFile(owner, { ...action, copilot: "SECURITY" }, { MAIL: service })).toEqual([]);
     expect(raised.payload).toMatchObject({ attachmentsFrom: "d1", attachments: [{ filename: "Nikolaos-CV.pdf", mimeType: "application/pdf", size: Buffer.byteLength(pdf) }] });
     expect(await service.decideReview(owner, pane, { reviewId, decision: "approve" })).toMatchObject({ decision: "approve", sent: { messageId: expect.stringMatching(/^sent-/) } });
     const sends = gmail.writes.filter((write) => write.path === "/messages/send");

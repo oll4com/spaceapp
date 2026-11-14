@@ -16,9 +16,13 @@
 // --release-build marks the APK a release: it is filed in Agent Files › Apps/Android, which the Nous app's updater reads. Without it the
 // build is a test build, filed in Apps/Android/Builds (never offered as an update). --release is separate: it re-signs with the kept key.
 // A release build is refused before Gradle while a brief done since the last release has no preview proof (space_appstudio_done items).
+// Google Play (plan clipboard:kTV3y2lwO-99 step 18): `run <app dir> --aab --no-upload` also builds the Android App Bundle (bundleRelease,
+// same R8 compat flags); signRelease(<.aab>) re-signs it with jarsigner (Play's upload signature), and
+//   node /opt/spaceapp/scripts/space-app-studio-build.mjs pepk <app id> <pepk.jar> <encryption_public_key.pem> <out.zip>
+// exports the kept key encrypted for Play App Signing, so Play signs with the certificate MOBILE_APP_SIGNERS pins.
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { accessSync, closeSync, constants, existsSync, openAsBlob, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { randomBytes, X509Certificate } from "node:crypto";
+import { accessSync, closeSync, constants, existsSync, openAsBlob, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, sep } from "node:path";
@@ -127,11 +131,13 @@ function lockBuild(home) {
  * The build itself. Returns the APK's path, size, package and version, and (with upload) the room Media artifact the pane shows.
  * `log` gets one line per stage; the tools' output goes to logFd (the job's log file) or this process's own output.
  */
-export async function runBuild(dir, { upload = true, signing = "debug", releaseBuild = false, minify = releaseBuild, abi = "arm64-v8a", toolchainDir = process.env.SPACE_ANDROID_TOOLCHAIN_DIR || DEFAULT_TOOLCHAIN_DIR, log = () => {}, logFd = "inherit", env: baseEnv = process.env } = {}) {
+export async function runBuild(dir, { upload = true, signing = "debug", releaseBuild = false, minify = releaseBuild, abi = "arm64-v8a", bundle = false, toolchainDir = process.env.SPACE_ANDROID_TOOLCHAIN_DIR || DEFAULT_TOOLCHAIN_DIR, log = () => {}, logFd = "inherit", env: baseEnv = process.env } = {}) {
   const began = Date.now();
   if (!SIGNINGS.includes(signing)) throw new Error(`signing is debug or release, not ${signing}.`);
   // x86_64 only for the lab emulator (space-app-studio-apk-proof.mjs builds it without upload): phones run arm64.
   if (!ABIS.includes(abi) || (abi !== "arm64-v8a" && upload)) throw new Error(`abi is ${ABIS.join(" or ")}; x86_64 builds are for the lab emulator only (no upload).`);
+  // The pane shows APKs; a bundle is for Play Console, which the operator uploads to.
+  if (bundle && upload) throw new Error("An App Bundle (.aab) build is --no-upload: it is for Google Play, not the pane.");
   const app = await resolveAppDir(dir, baseEnv);
   const configured = await configuredPackage(app);
   if (signing === "release" && configured) releaseKeyFor(configured);
@@ -152,17 +158,21 @@ export async function runBuild(dir, { upload = true, signing = "debug", releaseB
     if (wrapper && wrapper !== MANIFEST.gradle.version) {
       throw new Error(`This app's Gradle is ${wrapper}; the toolchain pins ${MANIFEST.gradle.version} (Expo SDK ${MANIFEST.expoSdk}). Ask Nous to update scripts/android-toolchain/manifest.json.`);
     }
-    log(`gradle ${MANIFEST.gradle.version}: assembleRelease (debug keystore, ${abi}${minify ? ", R8" : ""}) through space-load-gate`);
+    log(`gradle ${MANIFEST.gradle.version}: assembleRelease${bundle ? " bundleRelease" : ""} (debug keystore, ${abi}${minify ? ", R8" : ""}) through space-load-gate`);
     // MASVS L2 RESILIENCE-3: a release build is shrunk and obfuscated with R8 (Expo's and the libraries' consumer keep rules, the app's
     // proguard-rules.pro); test builds keep it off for speed. space-app-studio-apk-proof.mjs builds with R8 too, so it opens what ships.
     // Compat mode, not full mode: libraries' rules are written for ProGuard (Room 2.5's `-keep class * extends RoomDatabase` keeps the
     // constructor WorkManager instantiates only in compat mode; full mode removed it and the Nous app crashed at start, lab 2/11).
-    await step(process.execPath, [loadGate, "--", paths.gradle, "-p", "android", "assembleRelease", "--no-daemon", "--console=plain", "--max-workers=4",
+    await step(process.execPath, [loadGate, "--", paths.gradle, "-p", "android", "assembleRelease", ...(bundle ? ["bundleRelease"] : []), "--no-daemon", "--console=plain", "--max-workers=4",
       `-PreactNativeArchitectures=${abi}`, `-Pandroid.enableMinifyInReleaseBuilds=${minify}`, "-Pandroid.enableR8.fullMode=false"], { cwd: app, env, logFd: fd });
     const apk = join(app, "android", "app", "build", "outputs", "apk", "release", "app-release.apk");
     if (!existsSync(apk)) throw new Error("Gradle finished without android/app/build/outputs/apk/release/app-release.apk.");
     const signers = spawnSync(join(paths.buildTools, "apksigner"), ["verify", "--print-certs", apk], { env, encoding: "utf8" });
     if (signers.status !== 0 || !DEBUG_SIGNER.test(signers.stdout)) throw new Error("Gradle's APK is not signed with the Android debug keystore; App Studio starts from a debug-signed build.");
+    const aab = bundle ? join(app, "android", "app", "build", "outputs", "bundle", "release", "app-release.aab") : null;
+    if (aab && !DEBUG_SIGNER.test(spawnSync(join(paths.javaHome, "bin", "keytool"), ["-printcert", "-jarfile", aab], { env, encoding: "utf8" }).stdout ?? "")) {
+      throw new Error("Gradle finished without a debug-signed android/app/build/outputs/bundle/release/app-release.aab.");
+    }
     const badging = parseBadging(spawnSync(join(paths.buildTools, "aapt2"), ["dump", "badging", apk], { encoding: "utf8" }).stdout ?? "");
     // B (Nous 31/10): a release of this exact version only once it was installed and opened on the lab emulator (space-app-studio-apk-proof.mjs).
     if (releaseBuild && upload) await assertReleaseProven(baseEnv, badging);
@@ -170,10 +180,11 @@ export async function runBuild(dir, { upload = true, signing = "debug", releaseB
     if (signing === "release") {
       log(`sign: ${badging.packageName} with its kept release key from the Vault`);
       signature = await signRelease(apk, badging.packageName, { paths, env });
+      if (aab) await signRelease(aab, badging.packageName, { paths, env });
     }
     const byteSize = (await stat(apk)).size;
     const buildMs = Date.now() - began;
-    const result = { apk, byteSize, ...badging, buildMs, ...signature, abi };
+    const result = { apk, byteSize, ...(aab ? { aab, aabByteSize: (await stat(aab)).size } : {}), ...badging, buildMs, ...signature, abi };
     if (!upload) return result;
     log("upload: the APK goes to the pane (room Media)");
     return { ...result, ...(await uploadApk(apk, { ...badging, buildMs, signedWith: signature.signedWith, release: releaseBuild }, baseEnv)) };
@@ -216,8 +227,12 @@ export function releaseKeyFor(packageName) {
   if (!key) throw new Error(`${packageName || "This app"} has no kept release key in the Vault: App Studio release-signs only ${Object.keys(RELEASE_KEYS).join(", ")}. Build it debug-signed (the default).`);
   return key;
 }
-/** Every certificate digest `apksigner verify --print-certs` names ("Signer #1 …" up to build-tools 36, "V3.0 Signer: …" in 37). */
-const signerDigests = (text) => [...text.matchAll(/certificate SHA-256 digest: ([0-9a-f]{64})/g)].map((match) => match[1]);
+/**
+ * Every certificate digest `apksigner verify --print-certs` names ("Signer #1 …" up to build-tools 36, "V3.0 Signer: …" in 37), or
+ * `keytool -printcert -jarfile` for a bundle ("SHA256: AB:CD:…", one per certificate of every signer).
+ */
+const signerDigests = (text) => [...text.matchAll(/certificate SHA-256 digest: ([0-9a-f]{64})|SHA256: ((?:[0-9A-F]{2}:){31}[0-9A-F]{2})/g)]
+  .map((match) => match[1] ?? match[2].replaceAll(":", "").toLowerCase());
 
 /** space_vault_key_install through the pane's capability bridge: Space writes the value into `path` (0600); this process never sees it in an answer. */
 export function vaultInstall(id, path, env = process.env) {
@@ -235,42 +250,97 @@ export function vaultInstall(id, path, env = process.env) {
 }
 
 /**
- * Re-signs `apk` in place with the app's kept release key (apksigner replaces the debug signature). The keystore and its password
- * come from the Vault into a 0700 folder of 0600 files under the pane's builds folder and are removed right after apksigner, whatever
- * it answered. apksigner's own output is never written anywhere. The new signer must be the key's certificate.
+ * Runs `use` with the app's kept keystore (PKCS12) and its password from the Vault, in a 0700 folder of 0600 files under the pane's
+ * builds folder that is removed right after, whatever happened. No tool's output is kept: it may name the key's files.
  */
-export async function signRelease(apk, packageName, { paths, env = process.env, install = vaultInstall, sign = null, verify = null } = {}) {
-  const key = releaseKeyFor(packageName);
+async function withReleaseKey(key, env, install, use) {
   await mkdir(buildsDir(env), { recursive: true, mode: 0o700 });
   // A build killed while it signed (no finally ran) left its key folder: it goes before anything else.
   for (const stale of (await readdir(buildsDir(env))).filter((name) => name.startsWith(".release-key-"))) await rm(join(buildsDir(env), stale), { recursive: true, force: true });
   const dir = await mkdtemp(join(buildsDir(env), ".release-key-"));
   await chmod(dir, 0o700);
   const keystoreText = join(dir, "keystore.b64"), keystore = join(dir, "keystore.p12"), password = join(dir, "password");
-  const signed = `${apk}.release-signed`;
-  const apksigner = paths ? join(paths.buildTools, "apksigner") : "apksigner";
-  // PKCS12 has one password: apksigner takes it for the key too. A --key-pass naming the same file would read past its end.
-  const runSign = sign ?? (() => spawnSync(apksigner, ["sign", "--ks", keystore, "--ks-type", "PKCS12", "--ks-key-alias", key.alias, "--ks-pass", `file:${password}`,
-    "--out", signed, apk], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).status === 0);
-  let ok = false;
   try {
     await install(key.keystoreKeyId, keystoreText, env);
     await install(key.passwordKeyId, password, env);
     await writeFile(keystore, Buffer.from((await readFile(keystoreText, "utf8")).trim(), "base64"), { mode: 0o600 });
-    ok = await runSign({ keystore, password, alias: key.alias, out: signed, apk });
+    return await use({ dir, keystore, password, alias: key.alias });
+  } finally {
+    // The key goes at once, also when the Vault, the decoding or the tool failed.
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+// Gradle signed the bundle with the debug key: its v1 signature files go first, or the bundle would carry two signers.
+const STRIP_JAR_SIGNATURES = `import re, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as src, zipfile.ZipFile(sys.argv[2], "w") as dst:
+    for info in src.infolist():
+        if not re.fullmatch(r"META-INF/(MANIFEST\\.MF|[^/]+\\.(SF|RSA|DSA|EC))", info.filename, re.I): dst.writestr(info, src.read(info))`;
+
+/**
+ * Re-signs `file` in place with the app's kept release key: an APK with apksigner (it replaces the debug signature), an .aab with
+ * jarsigner after its debug signature is stripped (Play's upload signature). The new signers must all be the key's certificate.
+ */
+export async function signRelease(file, packageName, { paths, env = process.env, install = vaultInstall, sign = null, verify = null } = {}) {
+  const key = releaseKeyFor(packageName);
+  const bundle = file.endsWith(".aab");
+  const signed = `${file}.release-signed`;
+  const apksigner = paths?.buildTools ? join(paths.buildTools, "apksigner") : "apksigner";
+  const jdk = (name) => (paths?.javaHome ? join(paths.javaHome, "bin", name) : name);
+  const quiet = { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] };
+  // PKCS12 has one password: apksigner and jarsigner take it for the key too. A --key-pass naming the same file would read past its end.
+  const runSign = sign ?? (bundle
+    ? ({ dir, keystore, password, alias }) => {
+      const unsigned = join(dir, "unsigned.aab");
+      return spawnSync("python3", ["-I", "-c", STRIP_JAR_SIGNATURES, file, unsigned], quiet).status === 0
+        && spawnSync(jdk("jarsigner"), ["-keystore", keystore, "-storetype", "PKCS12", "-storepass:file", password, "-signedjar", signed, unsigned, alias], quiet).status === 0;
+    }
+    : ({ keystore, password, alias }) => spawnSync(apksigner, ["sign", "--ks", keystore, "--ks-type", "PKCS12", "--ks-key-alias", alias, "--ks-pass", `file:${password}`,
+      "--out", signed, file], quiet).status === 0);
+  const tool = bundle ? "jarsigner" : "apksigner";
+  let ok = false;
+  try {
+    ok = await withReleaseKey(key, env, install, (k) => runSign({ ...k, out: signed, apk: file }));
   } catch (error) {
     await rm(signed, { force: true });
     throw error;
-  } finally {
-    // The key goes at once, also when the Vault, the decoding or apksigner failed.
-    await rm(dir, { recursive: true, force: true });
   }
-  if (!ok) { await rm(signed, { force: true }); throw new Error(`apksigner could not sign ${packageName} with its release key (its output is not kept: it may name the key's files).`); }
-  const printed = (verify ?? ((file) => spawnSync(apksigner, ["verify", "--print-certs", file], { env, encoding: "utf8" }).stdout ?? ""))(signed);
+  if (!ok) { await rm(signed, { force: true }); throw new Error(`${tool} could not sign ${packageName} with its release key (its output is not kept: it may name the key's files).`); }
+  const printed = (verify ?? (bundle
+    ? (path) => (spawnSync(jdk("jarsigner"), ["-verify", path], quiet).status === 0 ? spawnSync(jdk("keytool"), ["-printcert", "-jarfile", path], quiet).stdout ?? "" : "")
+    : (path) => spawnSync(apksigner, ["verify", "--print-certs", path], { env, encoding: "utf8" }).stdout ?? ""))(signed);
   const digests = signerDigests(printed);
-  if (!digests.length || digests.some((digest) => digest !== key.certSha256)) { await rm(signed, { force: true }); throw new Error(`The release-signed APK's signer is not ${packageName}'s kept certificate.`); }
-  await rename(signed, apk);
+  if (!digests.length || digests.some((digest) => digest !== key.certSha256)) { await rm(signed, { force: true }); throw new Error(`The release-signed ${bundle ? "bundle" : "APK"}'s signer is not ${packageName}'s kept certificate.`); }
+  await rename(signed, file);
   return { signedWith: "release", certSha256: key.certSha256 };
+}
+
+/**
+ * Play App Signing (plan clipboard:kTV3y2lwO-99 step 18): the kept key, encrypted by Google's pepk.jar with Play Console's
+ * encryption_public_key.pem, into `out` for "Export and upload a key from Java keystore". Play then signs with the same certificate,
+ * so MOBILE_APP_SIGNERS and phones that sideloaded the app stay valid. The zip's certificate must be the kept one.
+ */
+export async function exportForPlay(packageName, { pepk, encryptionKey, out, paths, env = process.env, install = vaultInstall, run = null, certificate = null } = {}) {
+  const key = releaseKeyFor(packageName);
+  for (const [name, path] of [["pepk.jar", pepk], ["encryption_public_key.pem", encryptionKey]]) if (!path || !existsSync(path)) throw new Error(`${name} not found: ${path}.`);
+  const jdk = (name) => (paths?.javaHome ? join(paths.javaHome, "bin", name) : name);
+  const quiet = { env, stdio: ["ignore", "ignore", "ignore"] };
+  await rm(out, { force: true });
+  // pepk takes a password only on its command line or a console: it gets a one-time copy of the key under a one-time password.
+  const ok = await withReleaseKey(key, env, install, run ?? (({ dir, keystore, password, alias }) => {
+    const once = randomBytes(24).toString("base64url"), oncePath = join(dir, "once"), copy = join(dir, "once.p12");
+    writeFileSync(oncePath, once, { mode: 0o600 });
+    return spawnSync(jdk("keytool"), ["-importkeystore", "-noprompt", "-srckeystore", keystore, "-srcstoretype", "PKCS12", "-srcstorepass:file", password, "-srcalias", alias,
+      "-destkeystore", copy, "-deststoretype", "PKCS12", "-deststorepass:file", oncePath, "-destalias", alias], quiet).status === 0
+      && spawnSync(jdk("java"), ["-jar", pepk, `--keystore=${copy}`, `--alias=${alias}`, `--keystore-pass=${once}`, `--output=${out}`, "--include-cert",
+        "--rsa-aes-encryption", `--encryption-key-path=${encryptionKey}`], quiet).status === 0;
+  }));
+  const pem = ok && existsSync(out) ? (certificate ?? ((zip) => spawnSync("unzip", ["-p", zip, "certificate.pem"], { env, encoding: "utf8" }).stdout ?? ""))(out) : "";
+  let digest = null;
+  try { digest = new X509Certificate(pem).fingerprint256.replaceAll(":", "").toLowerCase(); } catch { digest = null; }
+  if (digest !== key.certSha256) { await rm(out, { force: true }); throw new Error(ok ? `pepk's certificate is not ${packageName}'s kept certificate.` : `pepk could not export ${packageName}'s release key (its output is not kept).`); }
+  await chmod(out, 0o600);
+  return { out, certSha256: key.certSha256 };
 }
 
 /** The app id app.json names, when it names one (app.config.* may compute it; the build checks the APK's own id again). */
@@ -366,8 +436,9 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
       const wait = args.indexOf("--wait");
       console.log(JSON.stringify(await buildStatus(args.find((arg) => /^apk-/.test(arg ?? "")), { waitSeconds: wait >= 0 ? Number(args[wait + 1]) || 0 : 0 }), null, 2));
     } else if (command === "run" && flag("--job") >= 0) await runJob(target, rest[flag("--job") + 1], signing, releaseBuild);
-    else if (command === "run") console.log(JSON.stringify(await runBuild(target, { signing, releaseBuild, upload: flag("--no-upload") < 0, log: (line) => console.error(`space-app-studio-build: ${line}`) }), null, 2));
-    else throw new Error("Usage: space-app-studio-build.mjs start <app dir> [--release] [--release-build] | status [jobId] [--wait <s>] | run <app dir> [--release] [--release-build] [--no-upload]");
+    else if (command === "run") console.log(JSON.stringify(await runBuild(target, { signing, releaseBuild, bundle: flag("--aab") >= 0, upload: flag("--no-upload") < 0, log: (line) => console.error(`space-app-studio-build: ${line}`) }), null, 2));
+    else if (command === "pepk") console.log(JSON.stringify(await exportForPlay(target, { pepk: rest[0], encryptionKey: rest[1], out: rest[2] }), null, 2));
+    else throw new Error("Usage: space-app-studio-build.mjs start <app dir> [--release] [--release-build] | status [jobId] [--wait <s>] | run <app dir> [--release] [--release-build] [--no-upload [--aab]] | pepk <app id> <pepk.jar> <encryption_public_key.pem> <out.zip>");
   })().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

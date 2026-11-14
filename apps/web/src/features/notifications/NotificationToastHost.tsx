@@ -1,6 +1,6 @@
 import { createElement, useEffect, useRef } from "react";
-import { X } from "../ui-theme/app-icons.js";
-import { dismissNotificationToast, openNotification, useNotificationStore } from "./notification-store.js";
+import { ExternalLink, X } from "../ui-theme/app-icons.js";
+import { dismissNotificationToast, notificationJoinUrl, openNotification, useNotificationStore } from "./notification-store.js";
 import { notificationSourceIcons } from "./notification-source-icons.js";
 import { uiSourceLabel, uiText, useAgentLanguage, useUiLanguage } from "../ui-language/ui-language.js";
 import { needsYou, needsYouTranslation } from "@space/contracts";
@@ -41,6 +41,7 @@ export function NotificationToastHost() {
       {toasts.map(({ id, notification }) => {
         // A needs-you card in the operator's language once the server translated it (notifications/translate.ts; it lands a few seconds after the card).
         const translated = needsYouTranslation(items.find((item) => item.id === id) ?? notification, agents);
+        const join = notificationJoinUrl(notification);
         return (
         <aside key={id} className={`notification-toast severity-${notification.severity.toLowerCase()}`} role="status" data-notification-id={id}>
           <button type="button" className="notification-toast-main" onClick={() => openNotification(notification)}>
@@ -53,6 +54,7 @@ export function NotificationToastHost() {
             </span>
           </button>
           <button type="button" className="notification-toast-close" aria-label={uiText(language, "Dismiss notification")} onClick={() => dismissNotificationToast(id)}><X aria-hidden="true" /></button>
+          {join ? <a className="notification-join" href={join} target="_blank" rel="noreferrer noopener"><ExternalLink aria-hidden="true" />{uiText(language, "Join {host}", { host: new URL(join).hostname })}</a> : null}
         </aside>
         );
       })}

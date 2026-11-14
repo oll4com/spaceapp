@@ -158,8 +158,9 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     // Stable 2026-10-19: an approved X post slotted for 10-21 13:10 UTC went out two days early when the CLI began it itself.
     if (post.scheduledAt && Date.parse(post.scheduledAt) > Date.parse(now())) {
       throw new SpaceConflictError(`MARKETING_NOT_DUE: this post is scheduled for ${post.scheduledAt}; it publishes then, not before (it comes back as a PUBLISH item when due).`);
-    if (await sendStaleToNous(owner, pane, post)) throw new SpaceConflictError("MARKETING_STALE: this post did not go out within 24 hours of its time; it went to Nous, who rejects it, edits it or approves it with a new time.");
     }
+    // A CLI's direct publish meets the same 24-hour rule as the duePosts sweep (scheduled time, else approval; nous_msg:1b054fa1).
+    if (await sendStaleToNous(owner, pane, post)) throw new SpaceConflictError("MARKETING_STALE: this post did not go out within 24 hours of its time; it went to Nous, who rejects it, edits it or approves it with a new time.");
     const slot = await nextSlot(owner, pane, post);
     if (slot) throw new SpaceConflictError(`MARKETING_LIMIT: ${label} allows ${settings.channels[post.channel].posts} post(s) per ${settings.channels[post.channel].perDays} day(s); the next slot opens at ${slot}.`);
     if (await sendStaleApprovalBack(owner, pane, post)) throw new SpaceConflictError("MARKETING_NEEDS_REVIEW: the approval is older than 24 hours or the post changed since; it went back to review.");
@@ -339,6 +340,13 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
      * R24-3 (operator rule 5e8bc029, 1/11 11:50 BKK; mktpost:SUoAkMeF1xpR sat IN_REVIEW after it went stale): the copilot closes its own post
      * in review that went stale or a newer post replaced (`replacedBy`, newer and of the same channel), with evidence; its review card resolves.
      */
+    /** The post a review publishes, for a Nous decision's "What it sends" (as Mail's reviewDraft); null when unknown. */
+    async reviewDraft(owner: string, postId: string) {
+      const post = await repository.getPost(owner, postId);
+      if (!post) return null;
+      return { headers: [["Channel", `${MARKETING_CHANNEL_LABELS[post.channel]} ${post.kind.toLowerCase().replace("_", " ")}`], ["Where", post.target ?? ""], ["Title", post.title ?? ""],
+        ["Scheduled", post.scheduledAt ?? ""], ["Attachments", post.assets.map((asset) => asset.label).join(", ")]] as Array<[string, string]>, body: post.body };
+    },
     async supersedeReview(owner: string, pane: Pane | null, input: { postId: string; evidence: string; replacedBy?: string }) {
       const current = await postOf(owner, input.postId);
       if (input.replacedBy) {

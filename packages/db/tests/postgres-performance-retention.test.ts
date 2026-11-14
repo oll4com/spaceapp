@@ -18,7 +18,8 @@ describe("PostgreSQL Performance Tuning & Data Retention", () => {
   describe("Unix Domain Socket Dual-Mode Resolution", () => {
     it("detects socket absence correctly", () => {
       expect(isSocketAccessible("/nonexistent/path/to/socket")).toBe(false);
-      expect(isSocketAccessible(DEFAULT_SPACE_PG_SOCKET_PATH)).toBe(false);
+      // The dir docker-compose.yml mounts on the container's /var/run/postgresql (scripts/tests/space-operator-install.test.mjs).
+      expect(DEFAULT_SPACE_PG_SOCKET_PATH).toBe("/run/space-postgres/socket/.s.PGSQL.5432");
     });
 
     it("builds socket connection string from TCP URL", () => {
@@ -77,10 +78,13 @@ describe("PostgreSQL Performance Tuning & Data Retention", () => {
   });
 
   describe("Space socket only replaces loopback TCP", () => {
-    it("never redirects an explicit socket directory or a non-loopback host", async () => {
-      expect(prefersSpaceSocket("postgresql://space:secret@127.0.0.1:5432/space")).toBe(true);
-      expect(prefersSpaceSocket("postgresql://space:secret@localhost/space")).toBe(true);
-      expect(prefersSpaceSocket("postgresql://space:secret@[::1]:5432/space")).toBe(true);
+    it("never redirects an explicit socket directory, a non-loopback host or another port", async () => {
+      expect(prefersSpaceSocket("postgresql://space:secret@127.0.0.1:54329/space")).toBe(true);
+      expect(prefersSpaceSocket("postgresql://space:secret@localhost:54329/space")).toBe(true);
+      expect(prefersSpaceSocket("postgresql://space:secret@[::1]:54329/space_dev")).toBe(true);
+      // A disposable database on loopback (tests, restore drills) is another server.
+      expect(prefersSpaceSocket("postgresql://space:secret@127.0.0.1:5432/space")).toBe(false);
+      expect(prefersSpaceSocket("postgresql://space:secret@localhost/space")).toBe(false);
       expect(prefersSpaceSocket("postgresql://postgres@localhost/postgres?host=%2Ftmp%2Fowned")).toBe(false);
       expect(prefersSpaceSocket("postgresql://postgres@172.18.0.9:5432/postgres")).toBe(false);
       expect(prefersSpaceSocket("not a url")).toBe(false);
@@ -93,7 +97,8 @@ describe("PostgreSQL Performance Tuning & Data Retention", () => {
         expect(isSocketAccessible(liveLikeSocket)).toBe(true);
         for (const url of [
           "postgresql://postgres@localhost/postgres?host=%2Ftmp%2Fowned-test-socket",
-          "postgresql://postgres@172.18.0.9:5432/postgres"
+          "postgresql://postgres@172.18.0.9:5432/postgres",
+          "postgresql://postgres@127.0.0.1:55432/postgres"
         ]) {
           const pool = createSpacePgPool(url, { max: 1, socketPath: liveLikeSocket });
           expect((pool as unknown as { options: { connectionString: string } }).options.connectionString).toBe(url);

@@ -375,16 +375,18 @@ describe("U4: the top tool failures of 19/10", () => {
       listPanes: async (roomId: string) => roomId === "room:cleo0001" ? [cody] : [pane("pane:andy0001", "Andy")] });
     const send = (roomId: string, paneId: string) => f.tools.execute("space_ask_operator", { category: "EXTERNAL", title: "Send it", body: "Cody sends it.", recommendation: "Yes Πρόβλεψη: ναι (80%)",
       action: { type: "PANE_TEXT", mode: "PROMPT", roomId, paneId, text: "send it" }, checked: ["Cody's reports: the mail is ready"] }, ctx);
-    expect(await send("room:main0001", "Cody")).toMatchObject({ ok: false,
+    // Daily Nous errors 13/11: the answers name the ids, so they are refusals, not failed calls.
+    expect(await send("room:main0001", "Cody")).toMatchObject({ ok: false, refused: true,
       result: 'The action\'s pane "Cody" is not in that room. Found: Cody (pane:cody0001) in Cleo (room:cleo0001): use those ids.' });
-    expect(await send("Nowhere", "Cody")).toMatchObject({ ok: false,
+    expect(await send("Nowhere", "Cody")).toMatchObject({ ok: false, refused: true,
       result: 'The action\'s room "Nowhere" is not one of the operator\'s rooms (their ids: Main room:main0001, Cleo room:cleo0001). Found: Cody (pane:cody0001) in Cleo (room:cleo0001).' });
     // R83 (7/11 09:45 UTC): a room given by name is found even when its pane is not; the pane is named as what is missing.
     expect(await send("Cleo", "Nobody")).toMatchObject({ ok: false, result: expect.stringMatching(/^The action's pane "Nobody" is not in that room\./) });
     expect(ask).not.toHaveBeenCalled();
     // 2026-10-30 REVIEW (6 "Unknown room in the action" in 24 h): a room and pane named by name or bare id are resolved in that room, and the answer names the ids.
     // R19-2 (29/10 16:07: "room:Alex", the prefix with a name): read as the name too.
-    for (const [roomId, paneId] of [["Cleo", "Cody"], ["cleo0001", "cody0001"], ["room:Cleo", "Cody"]]) {
+    // Daily Nous errors 13/11 11:25 UTC (room "room_d633…", a browser profile folder's name): an unknown room with a pane id is that pane's room.
+    for (const [roomId, paneId] of [["Cleo", "Cody"], ["cleo0001", "cody0001"], ["room:Cleo", "Cody"], ["room_d633cfbe35531583e32c5866a0f2c580", "pane:cody0001"]]) {
       expect(await send(roomId!, paneId!)).toMatchObject({ ok: true, result: expect.stringContaining("The action goes to Cody (pane:cody0001) in Cleo (room:cleo0001).") });
       expect(ask).toHaveBeenLastCalledWith(expect.objectContaining({ action: expect.objectContaining({ roomId: "room:cleo0001", paneId: "pane:cody0001" }) }), expect.anything());
     }
@@ -406,8 +408,14 @@ describe("U4: the top tool failures of 19/10", () => {
     expect(message.length).toBeGreaterThan(1_000);
     const f = tools({ db: { query: vi.fn(async () => { throw new Error(message); }) } as never });
     const read = await f.tools.execute("space_db_query", { sql: "SELECT created_at FROM pane_reports" }, ctx);
-    expect(read).toMatchObject({ ok: false, display: "Reading the database failed" });
+    // Daily Nous errors 13/11 (4 of 13 failed reads in 48 h): a guessed column or table is answered with the real ones, a refusal; other errors still fail.
+    expect(read).toMatchObject({ ok: false, refused: true, display: "Reading the database failed" });
     expect(read.result).toContain("the_last_one");
+    // 14/11 slice 2: a syntax error names where (42601), so a refusal too; a read past the time limit (57014) still fails.
+    const broken = tools({ db: { query: vi.fn(async () => { throw new Error('Postgres: syntax error at or near "FORM" (code 42601)'); }) } as never });
+    expect((await broken.tools.execute("space_db_query", { sql: "SELECT 1 FORM x" }, ctx)).refused).toBe(true);
+    const slow = tools({ db: { query: vi.fn(async () => { throw new Error("Postgres: canceling statement due to statement timeout (code 57014)"); }) } as never });
+    expect((await slow.tools.execute("space_db_query", { sql: "SELECT 1" }, ctx)).refused).toBeFalsy();
   });
 
   it("edits a task's title and objective in place (queue item 23)", async () => {
@@ -662,6 +670,8 @@ describe("U4: the top tool failures of 19/10", () => {
     // Any other tool's unknown room lists each room with its id and open panes.
     const sent = await h.tools.execute("space_inspect", { room: "Bruno" }, ctx);
     expect(sent.result).toContain(`No room named "Bruno": a room the operator deleted or renamed keeps its old name in older plans, notes and reports. Rooms now: Cleo (room:cleo0001; open panes: Andy).`);
+    // Daily Nous errors 14/11 (19:19 pane_reports room "Bob"): the answer names every room and its panes, so the call is refused, not failed.
+    expect(sent.refused).toBe(true);
   });
 
   it("R84: the one argument a call named wrongly fills the one missing required argument, JSON text parsed", async () => {
@@ -884,6 +894,15 @@ describe("U4: the top tool failures of 19/10", () => {
     const written = { kind: "pane", operation: "stop", target: { paneIds: ["pane:andy0001"] } };
     expect(nousExecuteTarget(written)).toBe(written);
     expect(nousExecuteTarget({ kind: "resource", operation: "browser.reload", id: "pane:andy0001" })).toEqual({ kind: "resource", operation: "browser.reload", id: "pane:andy0001" });
+    // Daily Nous errors F: space_send_to_pane's when/priority (7-8/11 ×3) and a pane's name/input for its text (9/11, 11/11) parse.
+    expect(nousExecuteTarget({ kind: "pane", operation: "prompt", target: { paneIds: ["pane:andy0001"] }, text: "t", when: "after_turn", priority: "normal" }))
+      .toEqual({ kind: "pane", operation: "prompt", target: { paneIds: ["pane:andy0001"] }, text: "t", when: "AFTER_TURN" });
+    expect(nousExecuteTarget({ kind: "pane", operation: "prompt", target: { paneIds: ["pane:andy0001"] }, text: "t", when: "calm", priority: "high" })).toMatchObject({ when: "calm", priority: "high" });
+    expect(nousExecuteTarget({ kind: "pane", operation: "rename", target: { paneIds: ["pane:andy0001"] }, name: "Claude Re-login" })).toEqual({ kind: "pane", operation: "rename", target: { paneIds: ["pane:andy0001"] }, text: "Claude Re-login" });
+    expect(nousExecuteTarget({ kind: "pane", operation: "prompt", target: { paneIds: ["pane:andy0001"] }, input: "Go on" })).toMatchObject({ text: "Go on" });
+    expect(nousExecuteTarget({ kind: "resource", operation: "tasks.update", input: { id: "t" } })).toMatchObject({ input: { id: "t" } });
+    expect(await sent([{ kind: "pane", operation: "rename", target: { paneIds: ["pane:andy0001"] }, name: "Claude Re-login", when: "now" }])).not.toMatchObject({ result: expect.stringContaining("Invalid arguments") });
+    expect(last()).toMatchObject([{ operation: "rename", text: "Claude Re-login", when: "NOW" }]);
   });
 
   it("R53 (goal 7365014c, lesson lessons-1103-predict-from-known-rules): an operator rule that names one of the options answers the decision", async () => {
@@ -982,7 +1001,9 @@ describe("U4: the top tool failures of 19/10", () => {
       const f = tools({ held: { level: async () => "CALM", hold } as never,
         listPanes: async () => [{ ...pane("pane:andy0001", "Andy"), createdAt: new Date(Date.now() - 3 * 3_600_000).toISOString() }] }, { "pane:andy0001": "IDLE" });
       const failed = (detail: string) => ({ ok: false, display: "Could not set the model", result: JSON.stringify({ status: "FAILED", results: [{ paneId: "pane:andy0001", status: "FAILED", detail }] }) });
-      for (const [detail, why] of [["Native state is unknown.", "its CLI state could not be read"], ["Send or clear the current CLI draft before changing model settings.", "its composer holds a draft"]]) {
+      for (const [detail, why] of [["Native state is unknown.", "its CLI state could not be read"], ["Send or clear the current CLI draft before changing model settings.", "its composer holds a draft"],
+        ["Claude is working; change its model after the current turn.", "its turn is still running"],
+        ["The CLI session changed during the model switch.", "its CLI restarted during the switch"], ["Codex rejected the requested pre-thread model settings.", "its /model menu refused it for now"]]) {
         f.roomTool.mockResolvedValueOnce(failed(detail!));
         expect(await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "claude-opus-5-5" }, ctx))
           .toMatchObject({ ok: true, display: "Held Andy's model until its empty prompt", result: expect.stringContaining(`not at an empty prompt now (${why})`) });
@@ -991,7 +1012,7 @@ describe("U4: the top tool failures of 19/10", () => {
       f.roomTool.mockResolvedValueOnce(failed("Claude Code has not confirmed the model change. Check its terminal for the model menu."));
       expect(await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "claude-opus-5-5" }, ctx)).toMatchObject({ ok: false,
         result: expect.stringContaining("The pane keeps its current model: do not say it runs on claude-opus-5-5. Its model menu did not confirm the switch") });
-      expect(hold).toHaveBeenCalledTimes(2);
+      expect(hold).toHaveBeenCalledTimes(5);
       f.roomTool.mockResolvedValueOnce(failed("This model is not available in the CLI's current model menu. Choose another model."));
       const lacks = await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "claude-opus-5-5" }, ctx);
       expect(lacks).toMatchObject({ ok: false, result: expect.stringContaining("This CLI's model menu does not list claude-opus-5-5: do not retry it on this pane") });
@@ -1000,7 +1021,7 @@ describe("U4: the top tool failures of 19/10", () => {
       f.roomTool.mockResolvedValueOnce(failed('"gpt-6.1-sol" is no Claude model: Claude offers claude:sonnet (low/medium/high/xhigh/max).'));
       expect((await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "gpt-6.1-sol" }, ctx)).result)
         .toContain("This CLI's model menu does not list gpt-6.1-sol: do not retry it on this pane");
-      expect(hold).toHaveBeenCalledTimes(2);
+      expect(hold).toHaveBeenCalledTimes(5);
     });
 
     it("R34-1: holds a model change for a pane opened seconds ago whose CLI session does not exist yet", async () => {
@@ -1081,7 +1102,29 @@ describe("U4: the top tool failures of 19/10", () => {
       f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, status: "FAILED", detail: "Watch not found.", error: "Watch not found." }]))
         .mockResolvedValueOnce({ ok: false, display: "Space Control failed", result: "Operation not found." });
       expect(await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "watch", operation: "cancel", id: "b".repeat(64) }] }, ctx))
-        .toMatchObject({ ok: false, result: expect.stringContaining("is cancelled by its control_schedule: id") });
+        .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("is cancelled by its control_schedule: id") });
+    });
+
+    it("refuses a watch id that is none, and a model switch a CLI restart cut, with the fix (Daily Nous errors 13/11)", async () => {
+      // 12/11 06:25 and 13/11 04:36 UTC "status: Watch not found."; 12/11 06:24 "The CLI session changed during the model switch."
+      const f = tools();
+      const notFound = "Watch not found: w1. This room's watches: none (status with no id lists them).";
+      f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, status: "FAILED", detail: notFound, error: notFound }]));
+      expect(await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "watch", operation: "status", id: "w1" }] }, ctx))
+        .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("This room's watches: none") });
+      const changed = "The CLI session changed during the model switch.";
+      f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, paneId: "pane:andy0001", status: "FAILED", detail: changed, error: changed }]));
+      expect(await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "configure", target: { paneIds: ["pane:andy0001"] }, modelId: "claude-opus-5-5", accountProfileId: "acct:1" }] }, ctx))
+        .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("set the model once more with space_set_pane_model") });
+      // Daily Nous errors G (7/11 ×3): a configure model change Claude refused names space_set_pane_model.
+      for (const refusal of ["This Claude Code version cannot change the model for one pane only.", "Claude is working; change its model after the current turn."]) {
+        f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, paneId: "pane:andy0001", status: "FAILED", detail: refusal, error: refusal }]));
+        expect(await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "configure", target: { paneIds: ["pane:andy0001"] }, modelId: "claude-opus-5-5" }] }, ctx))
+          .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("A model change goes through space_set_pane_model") });
+      }
+      // Any other failure still counts.
+      f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, status: "FAILED", detail: "Boom.", error: "Boom." }]));
+      expect((await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "watch", operation: "status", id: "w1" }] }, ctx)).refused).toBeFalsy();
     });
   });
 
@@ -1564,6 +1607,16 @@ describe("Daily review 2026-10-21: errors that say the next step", () => {
       results: [{ paneId: "pane:andy0001", status: "COMPLETED", detail: "Sent." }, { paneId: "pane:bob00001", status: "FAILED", detail: "The CLI lease is held by another client." }] }) });
     const sent = await f.tools.execute("space_send_to_pane", { room: "Main", panes: ["Andy", "Bob"], text: "Next step." }, ctx);
     expect(sent.result).toMatch(/^Not sent: Bob: The CLI lease is held by another client\. \(the operator holds its terminal now: wait for them, do not take it over\)\.\n\{"status":"PARTIAL"/);
+    // 11/11 09:16 Andy: a CLI still starting is not closed; Nous reads it instead of reopening it.
+    f.roomTool.mockResolvedValueOnce({ ok: false, display: "Could not send to Andy", result: JSON.stringify({ status: "FAILED", operationId: "op:2",
+      results: [{ paneId: "pane:andy0001", status: "FAILED", detail: "The CLI has not opened its input yet (still starting, or waiting for sign-in or a question); no input was sent." }] }) });
+    const starting = await f.tools.execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text: "Next step." }, ctx);
+    expect(starting.result).toContain("no input was sent. (read the pane (space_read_pane) before sending again)");
+    expect(starting.result).not.toContain("reopen");
+    f.roomTool.mockResolvedValueOnce({ ok: false, display: "Could not send to Bob", result: JSON.stringify({ status: "FAILED", operationId: "op:3",
+      results: [{ paneId: "pane:bob00001", status: "FAILED", detail: "The CLI kept the text as an unsent draft after Enter; it was not submitted." }] }) });
+    const drafted = await f.tools.execute("space_send_to_pane", { room: "Main", panes: ["Bob"], text: "Next step." }, ctx);
+    expect(drafted).toMatchObject({ ok: false, result: expect.stringContaining("(the text waits in its composer, so sending again would double it: clear it with space_clear_pane_draft, then send once)") });
   });
 
   it("routes a copilot pane's answer (its QUESTION, its CLI's prompt, else the tool that reaches it), and a screen that did not change to reading the pane", async () => {
@@ -1588,6 +1641,9 @@ describe("Daily review 2026-10-21: errors that say the next step", () => {
     state["pane:cody0001"] = "IDLE";
     expect((await answer("Take the second proposal")).result).toContain("Cody is a copilot pane with no question and no CLI prompt waiting, so your answer went through space_send_to_pane.");
     expect(f.roomTool).not.toHaveBeenCalled();
+    // Daily Nous errors F (10/11 Leo ×2): a key to a copilot pane Space cannot read is refused (not counted), naming space_send_to_pane.
+    state["pane:cody0001"] = "UNKNOWN";
+    expect(await answer("1")).toMatchObject({ ok: false, refused: true, result: expect.stringMatching(/space_send_to_pane .*Nothing answered\.$/) });
 
     f.roomTool.mockResolvedValueOnce({ ok: false, display: "Could not answer Andy", result: "CLI command produced no observable response." });
     const same = await f.tools.execute("space_answer_pane", { room: "Main", pane: "Andy", answer: "1", submit: false }, ctx);

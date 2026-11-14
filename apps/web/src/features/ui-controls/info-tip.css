@@ -1,0 +1,51 @@
+/* The ⓘ beside a label and its help text (InfoTip.tsx). */
+.info-tip {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-inline-start: .3rem;
+}
+.space-shell .info-tip > .info-tip-button,
+.info-tip > .info-tip-button {
+  display: inline-grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  min-width: 0;
+  min-height: 0;
+  margin: -.25rem 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--room-muted, #a7a59e);
+  cursor: help;
+}
+.info-tip > .info-tip-button:hover,
+.info-tip > .info-tip-button[aria-expanded="true"] { color: var(--room-accent, #79b8ff); }
+.info-tip > .info-tip-button:focus-visible { outline: 2px solid var(--room-accent, #79b8ff); outline-offset: 0; }
+.info-tip > .info-tip-button > svg { width: .9rem; height: .9rem; }
+/* Fixed in the top layer, placed by InfoTip beside its button; the popover's own centering is undone. */
+.info-tip-text {
+  position: fixed;
+  z-index: 1000;
+  inset: auto;
+  margin: 0;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
+  padding: .55rem .7rem;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 8px;
+  background: var(--modern-surface, var(--room-surface, #141617));
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .35);
+  color: var(--room-text, #f4efe5);
+  font-size: .75rem;
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: normal;
+  text-transform: none;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.info-tip-text[hidden] { display: none; }

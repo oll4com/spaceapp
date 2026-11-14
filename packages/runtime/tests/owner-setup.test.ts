@@ -73,4 +73,16 @@ describe("single-owner setup", () => {
     })).toThrow(/expired/i);
     expect(store.getOwnerCredentials()).toBeNull();
   });
+
+  it("takes the token file again at every start until an owner is claimed (light browser step 6b)", () => {
+    const store = new InMemorySpaceStore();
+    store.initializeOwnerSetup({ tokenHash: "a".repeat(64), expiresAt: "2026-07-23T12:15:00.000Z" });
+    expect(store.initializeOwnerSetup({ tokenHash: "b".repeat(64), expiresAt: "2026-07-23T12:30:00.000Z" }))
+      .toEqual({ setupRequired: true, expiresAt: "2026-07-23T12:30:00.000Z" });
+    const claim = (tokenHash: string) => store.claimOwnerSetup({ tokenHash, email: "owner@example.com", passwordHash: "hash", now: "2026-07-23T12:20:00.000Z" });
+    expect(() => claim("a".repeat(64))).toThrow(/token/i);
+    claim("b".repeat(64));
+    expect(store.initializeOwnerSetup({ tokenHash: "c".repeat(64), expiresAt: "2026-07-23T13:00:00.000Z" }))
+      .toEqual({ setupRequired: false, expiresAt: null });
+  });
 });

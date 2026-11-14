@@ -513,7 +513,7 @@ describe("CliRuntimeSettingsCard", () => {
 
     const suggestions = screen.getByLabelText("Accounts from other CLIs to add to Gemini");
     // ntheo already exists here through pir's email; ops has no known email, so only lab is offered.
-    expect(within(suggestions).getAllByRole("button").map((button) => button.getAttribute("aria-label")))
+    expect(within(suggestions).getAllByRole("button", { name: /^Add / }).map((button) => button.getAttribute("aria-label")))
       .toEqual(["Add lab to Gemini"]);
     fireEvent.click(within(suggestions).getByRole("button", { name: "Add lab to Gemini" }));
     await waitFor(() => expect(createCliAccountProfile).toHaveBeenCalledWith({

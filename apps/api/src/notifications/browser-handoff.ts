@@ -1,10 +1,11 @@
 import { makeNeedsYouAsk, NEEDS_YOU_GO_NOW, needsYouTargetSchema, type PaneBrowserSession } from "@space/contracts";
 import { SpaceNotFoundError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
 import { NOUS_PANE_NOTICE_PREFIX } from "../nous/pane-notices.js";
+import { createPlanNeedsYou } from "../nous/plan-needs-you.js";
 import { agentNeedsYouKey } from "../pane-reports.js";
 import type { NotificationService } from "./service.js";
 
-type HandoffStore = Pick<SpaceStore, "getPane" | "listBrowserHandoffRequests" | "getActiveBrowserHandoffRequest" | "getBrowserHandoffRequest"> & Partial<Pick<SpaceStore, "getPaneBrowserSession" | "getPaneCliSession">>;
+type HandoffStore = Pick<SpaceStore, "getPane" | "listBrowserHandoffRequests" | "getActiveBrowserHandoffRequest" | "getBrowserHandoffRequest"> & Partial<Pick<SpaceStore, "getPaneBrowserSession" | "getPaneCliSession" | "listClipboardItems">>;
 interface SettleDeps { store: HandoffStore; notifications: Pick<NotificationService, "unresolvedBySource" | "resolve"> }
 
 /** One notification per pane: a new handoff request in the pane refreshes it. */
@@ -92,10 +93,23 @@ export function startBrowserHandoffNotifications(deps: SettleDeps & {
 }): () => void {
   const settle = (paneId?: string) => void settleBrowserHandoffNotifications(deps, paneId)
     .catch((error: unknown) => deps.log.warn({ err: error, paneId }, "Browser handoff notifications could not be settled."));
+  // Operator 13/11 nous_msg:2e24947d: a closing pane's open asks move to the item of the plan it worked on first (plan-needs-you.ts), never vanish.
+  const list = deps.notifications.list;
+  const listPlans = deps.store.listClipboardItems;
+  const plans = list && listPlans ? createPlanNeedsYou({ notifications: { list, raise: deps.notifications.raise, resolve: deps.notifications.resolve }, decisions: async () => [],
+    plans: async (owner) => {
+      const out = [];
+      for (let page = 1; ; page += 1) {
+        const result = await Promise.resolve(listPlans.call(deps.store, owner, { source: "PLAN", includeCompleted: false, page, pageSize: 100 }));
+        out.push(...result.items);
+        if (!result.items.length || out.length >= result.total) return out;
+      }
+    } }) : null;
   // A closed pane needs nobody: its needs-you cards (a CLI's and Nous's) resolve at once (Needs you, operator request 2026-10-24).
   const closedPaneNeedsYou = async (roomId: string | null, paneId: string) => {
     const owner = roomId ? await deps.roomOwner(roomId) : null;
     if (!owner) return;
+    await plans?.carry(owner, paneId).catch((error: unknown) => deps.log.warn({ err: error, paneId }, "A closed pane's needs-you cards could not move to their plan."));
     for (const key of [agentNeedsYouKey(paneId), `${NOUS_PANE_NOTICE_PREFIX}${paneId}`]) {
       await deps.notifications.resolve(owner, key, "its pane was closed").catch((error: unknown) => deps.log.warn({ err: error, paneId }, "A closed pane's needs-you card could not be resolved."));
     }

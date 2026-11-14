@@ -40,7 +40,8 @@ export const nousWebSearchArgsSchema = z.object({
   why: z.string().trim().max(300).optional().describe("What the answer is for: it helps pick the pages.")
 });
 export const nousNetCheckArgsSchema = z.object({
-  check: z.enum(["dns", "whois", "tls", "http", "tcp"]).describe("dns: records; whois: the registry record; tls: the certificate; http: status and headers; tcp: is the port open."),
+  // Daily Nous errors 13/11 17:48 (no check for example.invalid; asked again with http at once): http is the default, the most used.
+  check: z.enum(["dns", "whois", "tls", "http", "tcp"]).default("http").describe("dns: records; whois: the registry record; tls: the certificate; http (default): status and headers; tcp: is the port open."),
   host: z.string().trim().min(1).max(2_000).describe("A public host name or IP (whois: a domain or IP; http: a host or a full http(s) URL)."),
   type: z.enum(["A", "AAAA", "MX", "TXT", "PTR", "NS", "CAA", "SOA"]).optional().describe("dns: the record type (default A); PTR takes an IP address."),
   port: z.number().int().optional().describe(`tls (default 443) and tcp: one of ${NOUS_NET_PORTS.join(", ")}.`)
@@ -66,6 +67,7 @@ export interface NousWebDeps {
   readPdf?: (data: Buffer) => ReturnType<typeof readBufferText>;
   /** Tests only: a page's timeout and the pause before its one retry (R13-8). */
   pageTimeoutMs?: number;
+  checkTimeoutMs?: number;
   wait?: (ms: number) => Promise<void>;
 }
 const TIMED_OUT = /abort|timed? ?out/i;
@@ -231,6 +233,8 @@ export function createNousWeb(deps: NousWebDeps = {}) {
       if (error.code === "ENODATA" || error.code === "ENOTFOUND") return [] as string[];
       // Plan ro5ukMcJnIk4 step 2 (3/11: 6 domain checks failed "ESERVFAIL"): SERVFAIL is what the public resolvers answer for a broken or absent zone.
       if (error.code === "ESERVFAIL") return ["SERVFAIL: the public resolvers got no answer from the name's servers (no working zone, lame delegation or a DNSSEC failure)"];
+      // Daily Nous errors 12/11 (DNS A spaceapp.example, MX example.invalid: ETIMEOUT): no answer in time is what the check found, as tcp's "not reachable".
+      if (error.code === "ETIMEOUT") return ["no answer from the public resolvers in time (ETIMEOUT, two tries of 4 s): the name's servers are slow or unreachable; check again later"];
       throw new Error(`DNS ${type} ${host} failed: ${error.code ?? error.message}.`);
     });
     return lines(`${type} ${host}`, rows);
@@ -298,8 +302,14 @@ export function createNousWeb(deps: NousWebDeps = {}) {
 
   async function http(raw: string): Promise<string> {
     const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
-    const response = await fetchPublicUrl(url, { timeoutMs: CHECK_TIMEOUT_MS, maxBytes: 16 * 1024, maxRedirects: 5, headers: { "User-Agent": USER_AGENT },
-      ...(deps.resolve ? { resolver: deps.resolve } : {}), allowAddress: allow });
+    const timeoutMs = deps.checkTimeoutMs ?? CHECK_TIMEOUT_MS;
+    const response = await fetchPublicUrl(url, { timeoutMs, maxBytes: 16 * 1024, maxRedirects: 5, headers: { "User-Agent": USER_AGENT },
+      ...(deps.resolve ? { resolver: deps.resolve } : {}), allowAddress: allow }).catch((error: unknown) => {
+      // Daily Nous errors 13/11 09:55 (https://example.invalid: "The operation was aborted"): a site that does not answer in time is the check's finding.
+      if (TIMED_OUT.test(error instanceof Error ? error.message : String(error))) return null;
+      throw error;
+    });
+    if (!response) return `GET ${url} → no answer within ${timeoutMs / 1_000} s from public-host (timed out): the site is down or very slow; check again later.`;
     // Cookie values are sessions: only their names are shown.
     const headers = Object.entries(response.headers).map(([name, value]) => `${name}: ${name === "set-cookie"
       ? (Array.isArray(value) ? value : [String(value)]).map((cookie) => `${cookie.split("=")[0]}=…`).join(", ") : Array.isArray(value) ? value.join(", ") : String(value)}`);

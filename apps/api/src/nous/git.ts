@@ -23,7 +23,7 @@ const WORKTREE = /^wt-[a-z0-9]+-[a-f0-9]+$/;
 
 const rev = z.string().trim().regex(REV, "a branch, tag, commit or HEAD~N (no spaces, no leading -)");
 export const nousGitArgsSchema = z.object({
-  repo: z.string().trim().min(1).max(300).describe(`"stable" (${SPACE_INSTALL_ROOT}), "dev" (${SPACE_INSTALL_ROOT}-dev) or a Space worktree: its folder name (wt-...) or full path.`),
+  repo: z.string().trim().min(1).max(300).describe(`"stable" (${SPACE_INSTALL_ROOT}, also "space" or "main"), "dev" (${SPACE_INSTALL_ROOT}-dev) or a Space worktree: its folder name (wt-...) or full path.`),
   op: z.enum(["log", "show", "diff", "stat", "branches", "file", "blame"])
     .describe("log: commits (newest first); show: one commit with its patch; diff/stat: what rev changed since it left base; branches; file: a file's text at rev; blame: who last changed each line."),
   rev: rev.optional().describe("The commit, branch or tag (default HEAD); for log also a range like dev..HEAD."),
@@ -43,7 +43,9 @@ export function createNousGit(deps: NousGitDeps = {}) {
   const worktrees = resolve(deps.worktrees ?? `${SPACE_INSTALL_ROOT}/var/worktrees/space`);
 
   async function repoPath(ref: string): Promise<string> {
-    if (repos[ref]) return repos[ref]!;
+    // 13/11 07:51 UTC (repo "space"): stable and dev by their folder, its path or stable's branch name.
+    const alias = ref.startsWith("/") ? Object.keys(repos).find((key) => ref.replace(/\/+$/, "") === repos[key]) : ({ space: "stable", main: "stable", "space-dev": "dev" } as Record<string, string>)[ref.toLowerCase()] ?? ref.toLowerCase();
+    if (alias && repos[alias]) return repos[alias]!;
     let name = ref.startsWith("/") ? (resolve(ref).startsWith(`${worktrees}${sep}`) ? basename(resolve(ref)) : "") : ref;
     // R83 (8/11 05:59 UTC ×2: worktrees named snip-held-video-paste, gateway-cloud-claude-pools): the worktree that has that branch checked out.
     if (name && !WORKTREE.test(name)) name = await checkedOut(name) ?? name;

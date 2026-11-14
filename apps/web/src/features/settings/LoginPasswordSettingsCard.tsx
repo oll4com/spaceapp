@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, SpaceApiError } from "../../api.js";
 import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
+import { InfoTip } from "../ui-controls/InfoTip.js";
 
 const STEP_UP_KEY = "space:password-after-step-up";
 const STEP_UP_URL = "/api/auth/google/start?stepUp=mobile";
@@ -25,6 +26,7 @@ const WRAP = { display: "flex", flexWrap: "wrap", gap: 8 } as const;
 export function LoginPasswordSettingsCard() {
   const language = useUiLanguage();
   const t = (text: string) => uiText(language, text);
+  const about = (label: string) => uiText(language, "About {label}", { label: t(label) });
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -63,16 +65,18 @@ export function LoginPasswordSettingsCard() {
   return <form className="agent-settings-card settings-flat-card" aria-label={t("Login password")} onSubmit={(event) => { event.preventDefault(); void save(); }}>
     <div className="settings-flat-row" style={WRAP}>
       <label className="settings-flat-row-copy" style={{ flex: "1 1 100%" }}><small>{t("Current password")}</small>
-        <input type="password" name="current-password" autoComplete="current-password" value={current} onChange={(event) => setCurrent(event.target.value)} /></label>
-      {google ? <span className="settings-flat-row-copy" style={{ flex: "1 1 100%" }}>
-        <small>{t("Forgot it? Confirm it is you with Google, then leave this empty for 5 minutes.")}</small>
-        <button type="button" className="settings-flat-button" disabled={busy} onClick={goToGoogle}>{t("Confirm with Google")}</button>
-      </span> : null}
+        <InfoTip text={google ? t("Proves it is you. Forgot it? Confirm it is you with Google, then leave this empty for 5 minutes.") : t("Proves it is you.")}
+          label={about("Current password")} />
+        <input type="password" name="current-password" autoComplete="current-password" aria-label={t("Current password")} value={current} onChange={(event) => setCurrent(event.target.value)} /></label>
       <label className="settings-flat-row-copy" style={{ flex: "1 1 100%" }}><small>{t("New password")}</small>
-        <input type="password" name="new-password" autoComplete="new-password" minLength={12} maxLength={500} required value={next} onChange={(event) => setNext(event.target.value)} /></label>
+        <InfoTip text={t("At least 12 characters. Saving it signs out your other sessions.")} label={about("New password")} />
+        <input type="password" name="new-password" autoComplete="new-password" aria-label={t("New password")} minLength={12} maxLength={500} required value={next} onChange={(event) => setNext(event.target.value)} /></label>
       <label className="settings-flat-row-copy" style={{ flex: "1 1 100%" }}><small>{t("Confirm new password")}</small>
         <input type="password" name="confirm-password" autoComplete="new-password" minLength={12} maxLength={500} required value={confirm} onChange={(event) => setConfirm(event.target.value)} /></label>
+    </div>
+    <div className="settings-flat-actions">
       <button type="submit" className="settings-flat-button" disabled={busy || !next || !confirm}>{t("Save password")}</button>
+      {google ? <button type="button" className="settings-flat-button" disabled={busy} onClick={goToGoogle}>{t("Confirm with Google")}</button> : null}
     </div>
     {done ? <p className="settings-flat-note" role="status">{t("Password changed. Your other sessions are signed out.")}</p> : null}
     {error ? <p className="settings-flat-note" role="alert">{error}</p> : null}

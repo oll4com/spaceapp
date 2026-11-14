@@ -41,7 +41,8 @@ import { RequestLogWriter } from "./request-log-writer.js";
 import { startWarmupRunner } from "./warmup/warmup-runner.js";
 import { createGatewayServer } from "./server.js";
 import { DRAIN_MESSAGE, heldCredentialKey, holdCredentialKey } from "./supervisor.js";
-import { gcpKmsKeyProvider } from "./nous/kms.js";
+import { gcpKmsDecrypter, gcpKmsKeyProvider } from "./nous/kms.js";
+import { loadBilling, registerCheckoutRoute, registerStripeWebhook, type BillingConfig } from "./nous/subscriptions.js";
 import { startAdminListener } from "./nous/admin.js";
 import { createNgwMetrics } from "./nous/metrics.js";
 import { createSwitchReader, type SwitchReader } from "./nous/switches.js";
@@ -151,6 +152,9 @@ async function main() {
       GEMINI: { accounts: () => antigravityPool.accounts(), toBalancerState: (account) => antigravityPool.toBalancerState(account, "gemini") } }, metrics: ngwMetrics, switches: ngwSwitches,
       onError: (error) => process.stderr.write(`nous-gateway settlement failed: ${error instanceof Error ? error.message : "unknown"}\n`) });
   }
+  // K4-billing, test mode only: a missing or refused setting leaves billing off and AI serving on.
+  const billing: BillingConfig | null = config.ngw ? await loadBilling(process.env, config.ngw.kms ? gcpKmsDecrypter(config.ngw.kms) : null)
+    .catch((error: unknown) => { process.stderr.write(`nous-gateway billing is off: ${error instanceof Error ? error.message : "unknown"}\n`); return null; }) : null;
   const settleKeyUsage = tenancy ? undefined : (keyId: string, usage: Parameters<typeof repository.settleApiKeyUsage>[1]) =>
     trackKeySettlement(keyId, usage, () => repository.settleApiKeyUsage(keyId, usage));
   const compression = { run: compressionPool.run, cache: compressionCache, rawBlocks, record: (rows: Parameters<typeof repository.recordCompression>[0]) => repository.recordCompression(rows),
@@ -218,6 +222,7 @@ async function main() {
         reload: typeof process.send === "function" ? () => { setTimeout(() => process.kill(process.ppid, "SIGHUP"), 200).unref(); return true; } : undefined });
       registerStatsRoute(app, { repository, internalToken: config.internalToken, cache: compressionCache, compressionMode: async () => (await settings()).compressionMode });
       registerAnthropicAdminRoutes(app, { repository, cipher: () => cipher, internalToken: config.internalToken, sync: () => anthropicBilling });
+      if (billing && ngwDb) registerStripeWebhook(app, { db: ngwDb, billing });
     }
   });
   await server.app.listen({ host: config.host, port: config.port });
@@ -228,7 +233,8 @@ async function main() {
     const admin = config.ngw.admin;
     const [cert, key, ca] = await Promise.all([readFile(admin.certFile), readFile(admin.keyFile), readFile(admin.caFile)]);
     adminServer = await startAdminListener({ tls: { cert, key, ca }, db: ngwDb, main: server.app, internalToken: config.internalToken!, status: () => server.status(),
-      metrics: async () => ngwMetrics.render(await tenancy!.gauges()) },
+      metrics: async () => ngwMetrics.render(await tenancy!.gauges()),
+      routes: billing ? (app, helpers) => registerCheckoutRoute(app, { db: ngwDb!, billing, ...helpers }) : undefined },
       { host: admin.host, port: admin.port });
     process.stdout.write(`nous-gateway admin listener (mTLS) on ${admin.host}:${admin.port}\n`);
   }

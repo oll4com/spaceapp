@@ -116,7 +116,9 @@ const frameHeaderSchemas = {
   req: z.object({ id: z.number().int().nonnegative().max(0xffff_ffff), m: methodSchema, p: z.string().min(5).max(2048),
     // x-space-client: where the operator writes from (nous-client.ts); it only describes, the device session's app claim decides.
     h: z.object({ "content-type": z.string().max(200).optional(), accept: z.string().max(200).optional(), range: z.string().max(100).optional(),
-      "x-space-client": z.string().max(300).optional() }).strict().optional(),
+      "x-space-client": z.string().max(300).optional(),
+      // A linked SpaceApp's id for one act, audited under the same trace on both sides (Space Link Λ4); lnk: never names this side's own req: ids.
+      "x-space-link-request": z.string().regex(/^lnk:[A-Za-z0-9_-]{16,64}$/).optional() }).strict().optional(),
     more: z.literal(true).optional(), sig: z.string().regex(/^[A-Za-z0-9_-]{64,200}$/).optional(),
     // A signed answer's Play Integrity token, requestHash mobileIntegrityRequestHash("decide", its signing input).
     int: integrityTokenSchema.optional() }).strict(),
@@ -203,10 +205,14 @@ export const MOBILE_ROUTE_SCOPES: Readonly<Record<string, MobileRouteRule>> = {
   "POST /api/signatures": actPerson, "PATCH /api/signatures/:id": actPerson, "DELETE /api/signatures/:id": actPerson,
   "POST /api/signature-requests/:id/sign": actPerson, "POST /api/signature-requests/:id/cancel": act,
   "GET /api/tasks/runs": read,
+  // Space Link's Remote mark in the Nous app (ADR-014 Λ9): read who manages this SpaceApp, and take management back (it only narrows).
+  "GET /api/instance-links/status": read, "POST /api/instance-links/status/take-back": actPerson,
   "GET /api/notifications": read, "GET /api/notifications/pending": read, "GET /api/notifications/:id": read,
   "GET /api/clipboard-items": { scope: "read", query: { source: "PLAN" } },
   "GET /api/artifacts": { scope: "read", query: { collection: "AGENT_FILES" } },
   "GET /api/artifacts/:id/preview": artifact, "GET /api/artifacts/:id/file": artifact, "GET /api/artifacts/:id/metadata": artifact,
+  // Agent Files upload from the Nous app (operator 13/11 nous_msg:0093b06f): pick the room, then send the file in pieces under the channel's body limit.
+  "GET /api/rooms": read, "POST /api/rooms/:id/agent-files/chunks": act,
   "GET /api/admin/codex-usage-accounts": read, "GET /api/admin/claude-usage-accounts": read, "GET /api/admin/antigravity-usage-accounts": read,
   "GET /api/admin/api-provider-accounts": read, "GET /api/admin/deploy-queue/tickets/:id": read,
   "POST /api/nous/messages": actPerson, "DELETE /api/nous/messages": act, "POST /api/nous/stop": act, "POST /api/nous/attachments": act,
@@ -215,6 +221,12 @@ export const MOBILE_ROUTE_SCOPES: Readonly<Record<string, MobileRouteRule>> = {
   "POST /api/notifications/:id/read": act, "POST /api/notifications/:id/ack": act, "POST /api/notifications/read-all": act,
   "POST /api/nous/pane-board/:paneId/answer": { scope: "act", person: true, body: "noAlways" }, "POST /api/nous/pane-board/refresh": act,
   "POST /api/nous/decisions/:id/feedback": act,
+  // Teleport (operator 13/11 nous_msg:6d87d2a6): Go now finds the card's page, and the phone drives that pane browser by touch as the operator.
+  "POST /api/notifications/:id/place": act, "GET /api/panes/:id/browser/pages": read,
+  "POST /api/panes/:id/browser/teleport": actPerson, "GET /api/panes/:id/browser/teleport/frame": read,
+  "POST /api/panes/:id/browser/teleport/input": actPerson, "POST /api/panes/:id/browser/teleport/upload": actPerson,
+  "POST /api/panes/:id/browser/control/acquire": actPerson, "POST /api/panes/:id/browser/control/heartbeat": actPerson,
+  "POST /api/panes/:id/browser/control/release": actPerson,
   "POST /api/nous/goals": actPerson, "PATCH /api/nous/goals/:id": actPerson, "POST /api/nous/goals/reorder": actPerson,
   "DELETE /api/nous/shared-files/:shareId": act,
   "PATCH /api/nous/settings": { scope: "act", person: true, body: "settingsEnabledAndTabs" },
@@ -244,7 +256,7 @@ export const LINK_ROUTE_SCOPES: Readonly<Record<string, MobileRouteRule>> = {
   "GET /api/auth/me": read, "GET /api/rooms": read,
   "GET /api/control/v1/capabilities": read, "GET /api/control/v1/layout/:roomId": read, "GET /api/control/v1/pane-types": read,
   "POST /api/control/v1/inspect": { scope: "read", body: "linkInspect" },
-  "GET /api/nous/overview": read, "GET /api/nous/score": read, "GET /api/nous/pane-board": read, "GET /api/nous/progress": read,
+  "GET /api/nous/overview": read, "GET /api/nous/load": read, "GET /api/nous/score": read, "GET /api/nous/pane-board": read, "GET /api/nous/progress": read,
   "POST /api/control/v1/commands": { scope: "act", body: "linkExecute" }, "POST /api/control/v1/operations": act
 };
 
@@ -276,7 +288,7 @@ export function mobileBodyProblem(rule: MobileBodyRule, body: unknown): string |
     if ("userExplicitlyAuthorized" in object || actions.some((action) => action && typeof action === "object" && approval(action))) return "A SpaceApp link cannot approve for this SpaceApp's operator; they approve here.";
     // A missing kind is a pane action (sanitizeControlExecute) or refused by the schema.
     const refused = actions.find((action) => !action || typeof action !== "object" || (action.kind !== undefined && !LINK_EXECUTE_KINDS.includes(action.kind as string))
-      || (action.kind === "resource" && !LINK_RESOURCE_OPERATIONS.includes(action.operation as string)) || "captureScreenshot" in action || action.operation === "visual_audit");
+      || (action.kind === "resource" && !LINK_RESOURCE_OPERATIONS.includes(action.operation as string)) || "captureScreenshot" in action || action.operation === "visual_audit" || action.action === "visual_audit");
     return refused === undefined ? null : "A SpaceApp link runs rooms, panes, their models, layout and tasks only, without screenshots; the rest is set on this SpaceApp.";
   }
   return "always" in object ? "Always answers are set on a computer." : null;
@@ -348,10 +360,10 @@ export function verifyMobileRotation(statement: MobileRotationStatement, signatu
 
 /**
  * CODE-2: the oldest Nous app SpaceApp serves; an older one gets 426 APP_UPDATE_REQUIRED on the API and close code 4426 on the channel.
- * shortcut: 0.2.18, the operator's phone on 2/11, because no Nous app before the one that shows the update screen understands the 426;
- * raise it in a reviewed commit with each security release once that app ships.
+ * 0.2.22 is the first Nous app that shows the update screen (plan step 18, before the first Play build 1.0.0 / 10000).
+ * shortcut: a fixed floor, raise it in a reviewed commit with each security release.
  */
-export const NOUS_APP_MIN_VERSION = "0.2.18";
+export const NOUS_APP_MIN_VERSION = "0.2.22";
 export const MOBILE_UPDATE_REQUIRED_CLOSE = 4426;
 /** The Nous app's versionCode for "X.Y.Z": MAJOR * 10000 + MINOR * 100 + PATCH (its scripts/bump-version.mjs); null for anything else. */
 export function mobileAppVersionCode(version: string): number | null {

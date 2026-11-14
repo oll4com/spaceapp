@@ -74,6 +74,9 @@ const historyCacheMs = 30_000;
 // samples every third tick, 30 s; 25 s leaves half a tick for the collection time. The rollup is per minute (CPU phase 5).
 const readerWindowMs = 60_000;
 const idleSampleAgeMs = 25_000;
+// models() reads only the live sessions (the health rail polls it every 29 s on every open Space tab, Nous reads usage): a
+// sample up to 35 s old (the idle 30 s plus the collection) serves it, and it keeps no 10 s rate.
+const sessionsOnlySampleAgeMs = 35_000;
 const modelErrorsMax = 20;
 
 const rangeSettings: Record<SystemAnalyticsRange, { durationMs: number; resolutionSeconds: 10 | 60 | 900 }> = {
@@ -1583,9 +1586,10 @@ export class SystemAnalyticsService {
     }
   }
 
-  private async ensureFresh(): Promise<CurrentSnapshot> {
-    this.lastReadAt = this.now().getTime();
-    if (!this.current || this.now().getTime() - Date.parse(this.current.sampledAt) > 15_000) await this.sample();
+  private async ensureFresh(sessionsOnly = false): Promise<CurrentSnapshot> {
+    if (!sessionsOnly) this.lastReadAt = this.now().getTime();
+    const maxAgeMs = sessionsOnly ? sessionsOnlySampleAgeMs : 15_000;
+    if (!this.current || this.now().getTime() - Date.parse(this.current.sampledAt) > maxAgeMs) await this.sample();
     if (!this.current) throw new Error("System analytics have not produced a host sample yet.");
     return this.current;
   }
@@ -1599,7 +1603,7 @@ export class SystemAnalyticsService {
   }
 
   async models(range: SystemAnalyticsRange, route: SystemAnalyticsTokenRoute = "all"): Promise<SystemAnalyticsModelsResponse> {
-    const current = await this.ensureFresh();
+    const current = await this.ensureFresh(true);
     if (this.now().getTime() - this.lastModelIngestAt >= modelIngestIntervalMs) await this.ingestModels();
     const currentSessionIds = new Set(current.sessions.map((identity) => identity.live.cliSessionId));
     // Groups, not events: 30 days are ~300k events on stable (2026-10-19), too many to hold in the API's heap.

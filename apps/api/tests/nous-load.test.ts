@@ -178,6 +178,25 @@ describe("the Load monitor", () => {
     expect(none.view).toMatchObject({ target: 90, targetMode: null });
   });
 
+  it("counts the time under the target by the mean of the newest points, so one 10 s spike over it does not restart the count (13/11 02:32-14:07 UTC: no push at 81-89%)", async () => {
+    let clock = start;
+    const load = createNousLoad({ repository: new InMemoryNousRepository(), owners: async () => [owner], zone: async () => "UTC", now: () => clock, loadavg: () => [0, 0, 0],
+      read: async () => { throw new Error("no PSI here"); },
+      ownerParts: async () => ({ target: { percent: 40, mode: "NORMAL" }, tokens: null, panes: { working: 1, open: 2 }, helpers: { live: 0, max: 5 } }) });
+    // overall 30 with one point a minute at 45 (cpu 85), over the target 40
+    for (let step = 0; step < 66; step += 1) { clock = start + step * 10_000; await load.tick(sample(clock, step % 6 === 3 ? 85 : 40)); }
+    const summary = (await load.summary(owner))!;
+    expect(summary.underForMs).toBe(650_000);
+    expect(utilizationPushOn(summary, "NORMAL")).toBe(true);
+    // Over the target now: nothing under it.
+    clock += 10_000; await load.tick(sample(clock, 85));
+    expect((await load.summary(owner))!.underForMs).toBe(0);
+    // A minute at 30 after 4 minutes at 50: the rolling minute reaches 40 at the third 50 back.
+    for (let step = 0; step < 24; step += 1) { clock += 10_000; await load.tick(sample(clock, 100)); }
+    for (let step = 0; step < 6; step += 1) { clock += 10_000; await load.tick(sample(clock, 40)); }
+    expect((await load.summary(owner))!.underForMs).toBe(70_000);
+  });
+
   it("names local days in the owner's zone", () => {
     expect(localDay(Date.parse("2026-10-31T18:00:00Z"), "Asia/Bangkok")).toBe("2026-11-01");
   });
@@ -217,12 +236,24 @@ describe("utilizationPushOn", () => {
     expect(utilizationPushOn(summary(), "NORMAL")).toBe(true);
   });
 
-  it("stays silent on CRITICAL, every pool at its pace, no account with room, an OVERLOADED server, busy panes or a short dip", () => {
+  it("runs with the tokens part at 100 while a pool has room and panes idle (13/11 20:05 BKK: pace 100 silenced it 12:00-12:51 UTC)", () => {
+    const paced = summary({ tokens: { claude: 100, codex: 100, noRoom: null }, panes: { working: 1, open: 6 } });
+    expect(paced.parts.find((part) => part.key === "tokens")?.percent).toBe(100);
+    expect(utilizationPushOn(paced, "LOW")).toBe(true);
+    expect(utilizationPushOn(paced, "CRITICAL")).toBe(false);
+  });
+
+  it("stays silent on CRITICAL, no account with room, an OVERLOADED server, busy panes or a short dip", () => {
     expect(utilizationPushOn(summary(), "CRITICAL")).toBe(false);
-    expect(utilizationPushOn(summary({ tokens: { claude: 100, codex: 100, noRoom: null } }), "LOW")).toBe(false);
     expect(utilizationPushOn(summary({ tokens: { claude: 100, codex: 100, noRoom: "no account with room" } }), "LOW")).toBe(false);
     expect(utilizationPushOn(summary({ host: { percent: 95, host: "pve", at: null, error: null } }), "NORMAL")).toBe(false);
     expect(utilizationPushOn(summary({ panes: { working: 6, open: 6 } }), "NORMAL")).toBe(false);
     expect(utilizationPushOn(summary({}, 9 * 60_000), "NORMAL")).toBe(false);
+  });
+
+  it("runs at once for a pane that just finished while utilization is under the target (13/11 23:03 BKK), never above it", () => {
+    expect(utilizationPushOn(summary({}, 0), "NORMAL", true)).toBe(true);
+    expect(utilizationPushOn({ ...summary({}, 0), target: 10 }, "NORMAL", true)).toBe(false);
+    expect(utilizationPushOn(summary({}, 0), "CRITICAL", true)).toBe(false);
   });
 });

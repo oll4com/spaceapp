@@ -50,6 +50,12 @@ export type MobileWake = (owner: string, urgent: boolean) => Promise<void>;
 export const NOUS_APPROVAL_ALLOWANCE = "maySend";
 /** How long a copilot's question waits for Nous before it reaches the operator anyway (Ask Last step 7); a covered approval's re-wake period. */
 export const NOUS_QUESTION_HOLD_MS = 60 * 60_000;
+/**
+ * 13/11 19:25 BKK (Iris, public-host Space Link): the operator answered the pane's card "Ready now", its next needs-you carried a 2-minute pairing code,
+ * was held for Nous and expired unseen. A card the operator is waiting for (an answer on its pane this recent) or a code this short-lived shows at once.
+ */
+export const OPERATOR_JUST_ANSWERED_MS = 10 * 60_000;
+const EXPIRING_CODE = /\b(?:[1-9]|1[0-5])[- ]?(?:minutes?|mins?|λεπτ\p{L}*)\s+(?:\p{L}+\s+){0,2}(?:codes?|κωδικ\p{L}*)|(?:codes?|κωδικ\p{L}*)[^\n]{0,120}?(?:expires?|valid|λ[ηή]γει|ισχ[υύ]ει)[^.\n]{0,30}?\b(?:[1-9]|1[0-5])\s*(?:minutes?|mins?|λεπτ)|\b\d+\s*(?:(?:s|secs?|seconds?)\b|δευτερ\p{L}*)[^\n]{0,60}?(?:codes?|κωδικ\p{L}*)|(?:codes?|κωδικ\p{L}*)[^\n]{0,120}?\b\d+\s*(?:(?:s|secs?|seconds?)\b|δευτερ\p{L}*)|\bQR\b/iu;
 
 /** Kept for 30 days, then pruned, except unresolved ATTENTION and URGENT items, which stay until resolved (Record Retention Invariant). */
 export const NOTIFICATION_RETENTION_MS = 30 * 24 * 3_600_000;
@@ -196,18 +202,25 @@ export function createNotificationService(deps: NotificationServiceDeps) {
         if (base) parsed = { ...parsed, body: notificationRaiseInputSchema.shape.body.parse(`${parsed.body}\n\nRecommended "${base.option}" by your last ${base.answers} answers.`),
           payload: { ...parsed.payload, ask: { ...asked, recommended: base.option }, baseRate: base } };
       }
+      // Read before the raise: a refresh of the answered record would replace its answer. Before the refresh too, which then drops its hold.
+      const awaited = isNousFirstCard(parsed) && (EXPIRING_CODE.test(`${parsed.title}\n${parsed.body}`) || Boolean(parsed.paneId
+        && (await everyRecord(parsed.ownerUserId, { status: "ALL", paneId: parsed.paneId }).catch(() => [] as SpaceNotification[])).some((item) => {
+          const at = Date.parse(String((item.payload.answer as { at?: unknown } | undefined)?.at ?? ""));
+          return Date.parse(now()) - at < OPERATOR_JUST_ANSWERED_MS;
+        })));
       // 2/11 (operator 10:16 BKK: two Mail Copilot cards for one Google Cloud billing account): a card about what an open one of its source,
       // kind and pane is about refreshes that one (its key joins `mergedKeys`, so resolving either key closes it); and a refreshed card held
       // for Nous stays held (a raise replaces the payload, which let an agent's second ask skip Nous).
       let prior: SpaceNotification | undefined;
-      if (parsed.dedupeKey && needsYou(parsed) && (isNousFirstCard(parsed) || NEEDS_YOU_TOPIC_KINDS.test(parsed.kind))) {
+      // A plan's own card (plan-needs-you.ts, no pane) is one per plan: never merged into another plan's by topic.
+      if (parsed.dedupeKey && !parsed.dedupeKey.startsWith("nous:plan:") && needsYou(parsed) && (isNousFirstCard(parsed) || NEEDS_YOU_TOPIC_KINDS.test(parsed.kind))) {
         const open = await everyRecord(parsed.ownerUserId, { status: "WAITING", source: parsed.source }).catch(() => [] as SpaceNotification[]);
         prior = open.find((item) => item.dedupeKey === parsed.dedupeKey) ?? open.find((item) => item.dedupeKey && sameNeedsYouTopic(item, parsed));
         if (prior) {
           const merged = [...new Set([...(Array.isArray(prior.payload.mergedKeys) ? prior.payload.mergedKeys as string[] : []), ...(prior.dedupeKey === parsed.dedupeKey ? [] : [parsed.dedupeKey])])];
           parsed = { ...parsed, dedupeKey: prior.dedupeKey, payload: { ...parsed.payload, ...(merged.length ? { mergedKeys: merged } : {}),
             // A release is no refresh; an allowance hold is set again below only while it still covers the card.
-            ...(heldForNous(prior, Date.parse(now())) && !heldUnderAllowance(prior) && !parsed.payload.releasedFromNous ? { heldForNous: prior.payload.heldForNous } : {}) } };
+            ...(heldForNous(prior, Date.parse(now())) && !heldUnderAllowance(prior) && !parsed.payload.releasedFromNous && !awaited ? { heldForNous: prior.payload.heldForNous } : {}) } };
         }
       }
       // Operator 2/11 15:08 BKK («να μην φτανει σε εμενα το aprove»): an approval "May send" covers is held for Nous with no time limit while
@@ -230,7 +243,7 @@ export function createNotificationService(deps: NotificationServiceDeps) {
       if (answered) notification = answered;
       // Ask Last step 7: a new copilot question goes to Nous first (its inbox line below), up to an hour; only a new record is held, so
       // a producer refreshing a released question never holds it again.
-      const forNous = !covered && created && !answered && Boolean(notification.dedupeKey) && isNousFirstCard(notification) && parsed.severity !== "URGENT"
+      const forNous = !covered && created && !answered && Boolean(notification.dedupeKey) && isNousFirstCard(notification) && parsed.severity !== "URGENT" && !awaited
         && Boolean(await deps.nous?.holdsCopilotQuestions?.(input.ownerUserId).catch(() => false));
       if (forNous) notification = (await deps.repository.raise({ ...input, payload: { ...input.payload,
         heldForNous: { until: new Date(Date.parse(now()) + NOUS_QUESTION_HOLD_MS).toISOString() } } })).notification;
@@ -239,7 +252,7 @@ export function createNotificationService(deps: NotificationServiceDeps) {
         const channels = resolveNotificationSettings(settings?.notifications);
         // What only the operator's hands can do (handoff, CAPTCHA, sign-in, NEEDS_USER) never waits for Nous.
         const hands = input.severity === "URGENT" || needsOperatorHands(input.source, input.kind);
-        const forNousNow = forNous || keptHold || (input.severity === "ATTENTION" && input.source !== "NOUS" && !hands && Boolean(await deps.nous?.held(input.ownerUserId).catch(() => false)));
+        const forNousNow = forNous || keptHold || (input.severity === "ATTENTION" && input.source !== "NOUS" && !hands && !awaited && Boolean(await deps.nous?.held(input.ownerUserId).catch(() => false)));
         const quietHeld = options.held === true || night?.quiet === true;
         const held = quietHeld || forNousNow;
         // N2/R6: a card Nous leaves to the operator (released while Nous is on) reaches NOUS and ALL phones; ALL phones also get what waits
@@ -335,12 +348,13 @@ export function createNotificationService(deps: NotificationServiceDeps) {
      * A copilot question held for Nous goes to the operator: Nous put it on a card, its hour ended, or Nous is off or paused. The usual
      * needs-you path follows, alerted once (`alertAt` makes the web deliver the same record again). Null when it was not held or is done.
      */
-    async releaseHeldForNous(owner: string, id: string): Promise<SpaceNotification | null> {
+    /** `add` is what Nous forwards with it (its note in the body, its recommendation in the payload). */
+    async releaseHeldForNous(owner: string, id: string, add: { body?: string; payload?: Record<string, unknown> } = {}): Promise<SpaceNotification | null> {
       const item = await deps.repository.get(owner, id);
       if (!item?.dedupeKey || !item.payload.heldForNous || (item.status !== "OPEN" && item.status !== "READ")) return null;
       const { heldForNous: _held, ...payload } = item.payload;
       return service.raise({ ownerUserId: owner, roomId: item.roomId, paneId: item.paneId, source: item.source, kind: item.kind, severity: item.severity,
-        title: item.title, body: item.body, link: item.link, dedupeKey: item.dedupeKey, payload: { ...payload, alertAt: now(), releasedFromNous: now() }, telegram: null }, { realert: true });
+        title: item.title, body: add.body ?? item.body, link: item.link, dedupeKey: item.dedupeKey, payload: { ...payload, ...add.payload, alertAt: now(), releasedFromNous: now() }, telegram: null }, { realert: true });
     },
     /** A question answered or a thread handled resolves its open notification. */
     async resolve(owner: string, dedupeKey: string, reason = "resolved"): Promise<number> {

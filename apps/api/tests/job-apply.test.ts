@@ -510,6 +510,7 @@ describe("job copilot data", () => {
       today: { applied: 1, verified: 1, failed: 0 },
       totals: { applied: 3, verified: 2, failed: 0, needsUser: 1 },
       days: [{ day: "2026-10-14", applied: 1, verified: 1, failed: 0 }, { day: "2026-10-13", applied: 2, verified: 1, failed: 0 }],
+      target: 0,
       earlier: { imported: { sent: 1, failed: 0 }, archived: { sent: 0, failed: 0 } }
     });
     // The same sends fall on other days in UTC.

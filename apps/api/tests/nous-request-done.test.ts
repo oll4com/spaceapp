@@ -14,6 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Fastify from "fastify";
 import { registerNotificationRoutes } from "../src/notifications/routes.js";
+import { createPlanNeedsYou } from "../src/nous/plan-needs-you.js";
+import { DONE_WAITS_ON_OPERATOR, paneProgressSchema } from "../src/pane-reports.js";
 
 const owner = "user:operator";
 const ctx = { owner, turnId: "turn:operator001", callId: "call:done0001", traceId: "trace:done0001", turn: { reason: "OPERATOR", operatorMessage: { id: "nous_msg:operator001", content: "Build a Done tab", person: true } } };
@@ -232,6 +234,21 @@ describe("Nous Done", () => {
       // Its real end in a later outcome closes it too (here: it is the operator's now).
       await f.tools.execute("space_nous_outcome", { requests: [{ summary: "Move the Telegram buttons", outcome: "OPERATOR", id: `${m2}-2` }] }, turnCtx);
       expect(await f.done.openList(owner)).toEqual([]);
+    });
+
+    it("binds a request reported without id to the earlier message whose open request it is, not the one this turn answers (correction nous_msg:4258ef8d 13/11)", async () => {
+      const f = fixture();
+      await f.tools.execute("space_nous_outcome", { requests: [{ summary: "LiveKit voice for the Nous dock", outcome: "PENDING" }] }, { ...ctx, turn: { ...ctx.turn, replyTo: [m1] } });
+      const later = { ...ctx, turn: { ...ctx.turn, operatorMessage: { ...ctx.turn.operatorMessage, id: m2 }, replyTo: [m2] } };
+      const requests = [{ summary: "LiveKit voice for the Nous dock works on stable", outcome: "SELF" as const }];
+      const held = await f.tools.execute("space_nous_outcome", { requests }, later);
+      expect(held.result).toContain(`"id":"${m1}"`);
+      await f.tools.execute("space_request_done", { request: "LiveKit", summary: "LiveKit voice for the Nous dock works on stable.", where: "stable", id: m1, verified: "Checked on the surface the operator uses" }, later);
+      expect(await f.tools.execute("space_nous_outcome", { requests }, later)).toMatchObject({ ok: true, outcomes: [{ id: m1, messageIds: [m1] }] });
+      expect(await f.done.openList(owner)).toEqual([]);
+      // A request no open one matches still answers this turn's message.
+      expect(await f.tools.execute("space_nous_outcome", { requests: [{ summary: "Answered which panes are open", outcome: "SELF", answerOnly: true }] }, later))
+        .toMatchObject({ outcomes: [{ messageIds: [m2] }] });
     });
 
     it("brings an open request back once when its plan, pane or ticket finishes, and the quiet ones in one line a day", async () => {
@@ -594,5 +611,39 @@ describe("priority panes for Space Gateway's pace cap (operator rule 31/10, 6/11
       note("d", { pane: "pane:finn0001", closedAt: "2026-11-06T04:00:00.000Z" }), note("e", {}), note("f", { pane: "Emma" }),
       { key: "other:note", text: JSON.stringify({ pane: "pane:cody0001", summary: "x" }) }
     ])).toEqual(["pane:emma0001", "pane:hugo0001"]);
+  });
+});
+
+describe("Done never carries what waits on the operator (operator 13/11 14:39 BKK)", () => {
+  // Bruno/Bob's report of plan clipboard:YqhRIXfLAnfK reached Done with Got it while six decisions waited on the operator.
+  const bob = { plan: "clipboard:YqhRIXfLAnfK", request: "Ελαφριοί τύποι CLI", where: "no code" as const,
+    summary: "Ολοκληρώθηκε η μελέτη. Οι αποφάσεις Α–ΣΤ που είναι δικές σου βρίσκονται στην §7 του αρχείου." };
+  it("refuses the Done record, keeps the plan open waiting on the operator and has Nous ask them on a card instead", async () => {
+    const { notifications } = fixture();
+    let plan = { id: bob.plan, source: "PLAN", title: "Light CLI types", text: "Light CLI types", progressPercentage: 100, executionStatus: "COMPLETED", isCompleted: true,
+      steps: [], waitsOn: null, roomId: "room:bob00001", paneId: null } as unknown as ClipboardItem;
+    const planNeedsYou = createPlanNeedsYou({ notifications, plans: async () => [plan], decisions: async () => [] });
+    const done = createNousRequestDone({ notes: new InMemoryNousRepository(), notifications, plan: async (_who, id) => id === plan.id ? plan : null, notice: async () => undefined,
+      // The wiring's hold, in memory: open under 100 % with the wait, then the plan's Needs you sync.
+      holdForOperator: async (who, held, what) => { plan = { ...held, waitsOn: { kind: "OPERATOR", what, until: null }, progressPercentage: 99, executionStatus: "IN_PROGRESS", isCompleted: false }; await planNeedsYou.sync(who); } });
+    const result = await done.run(owner, bob);
+    expect(result).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("Not recorded in Done") });
+    expect(await notifications.list(owner, notificationListQuerySchema.parse({ source: "NOUS", kind: "REQUEST_DONE", status: "ALL" }))).toEqual([]);
+    expect(plan).toMatchObject({ isCompleted: false, progressPercentage: 99, waitsOn: { kind: "OPERATOR", what: expect.stringContaining("δικές σου") } });
+    expect(result.result).toContain(`space_notify_operator with plan ${bob.plan}`);
+    // Operator 13/11 23:56 BKK: the plan's Needs you item is there at once (Space's card until Nous raises a real one; plan-needs-you.ts).
+    expect((await notifications.list(owner, { status: "NEEDS_YOU", limit: 200 })).map((card) => card.dedupeKey)).toEqual([`nous:plan:${bob.plan}`]);
+    // A plan already waiting on the operator is refused whatever the summary says; a plain completion still records.
+    expect(await done.run(owner, { ...bob, summary: "Έτοιμο." })).toMatchObject({ refused: true });
+    plan = { ...plan, waitsOn: null };
+    expect(await done.run(owner, { ...bob, summary: "Έτοιμο, τίποτα δεν περιμένει από σένα." })).toMatchObject({ ok: true });
+  });
+
+  it("refuses a pane's done report that leaves decisions to the operator; needs-you and a plain done pass", () => {
+    const refused = paneProgressSchema.safeParse({ status: "done", summary: "Plan finished", report: bob.summary });
+    expect(refused.success ? null : refused.error.issues[0]?.message).toBe(DONE_WAITS_ON_OPERATOR);
+    expect(paneProgressSchema.safeParse({ status: "done", summary: "Done; two operator decisions pending in §7" }).success).toBe(false);
+    expect(paneProgressSchema.safeParse({ status: "needs-you", summary: bob.summary, needs: "Αποφάσεις Α–ΣΤ", checked: ["file §7: the six decisions"] }).success).toBe(true);
+    expect(paneProgressSchema.safeParse({ status: "done", summary: "Deployed; δεν υπάρχουν αποφάσεις δικές σου." }).success).toBe(true);
   });
 });

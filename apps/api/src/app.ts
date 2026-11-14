@@ -21,18 +21,16 @@ import { createUsageProviders } from "./usage-providers-wiring.js";
 import { createCliTaskHistory } from "./cli-task-history-wiring.js";
 import { registerCliRoutes } from "./cli-routes-wiring.js";
 import { describeCoverage, readAttachments } from "./attachment-readers.js";
-import { type ChannelsRepository, type DotEvalsRepository, type AutoRouteShadowRepository, PostgresDotMemoryRepository, PostgresDotsRepository, PostgresDotHomeRepository } from "@space/db";
+import { PostgresDotMemoryRepository, PostgresDotsRepository, PostgresDotHomeRepository } from "@space/db";
 import { createDotMemoryService } from "./dot-memory.js";
-import { InMemoryRoomAgentMonitorRepository, PostgresRoomAgentMonitorRepository, type RoomAgentMonitorRepository } from "@space/db";
-import { InMemorySpaceNotificationsRepository, PostgresSpaceNotificationsRepository, type SpaceNotificationsRepository } from "@space/db";
+import { InMemoryRoomAgentMonitorRepository, PostgresRoomAgentMonitorRepository } from "@space/db";
+import { InMemorySpaceNotificationsRepository, PostgresSpaceNotificationsRepository } from "@space/db";
 import { createCardTranslator, createNotificationService } from "./notifications/service.js";
-import { createFcmSender, loadFcmServiceAccount, type FcmSender } from "./notifications/fcm.js";
+import { createFcmSender, loadFcmServiceAccount } from "./notifications/fcm.js";
 import { type NousWiring } from "./nous/wiring.js";
 import { createRoomAgentEventRouting } from "./room-agent-event-routing.js";
-import type { NousRunner } from "./nous/service.js";
-import type { PaneSummaryRunner } from "./nous/pane-board.js";
 import { createRoomAgentMonitor } from "./room-agent-monitor.js";
-import { createConnectorCrypto, readConnectorKey } from "./dot-connectors.js";
+import { createConnectorCrypto, ensureConnectorKey, readConnectorKey } from "./dot-connectors.js";
 import { registerSwarmRoutes } from "./swarm-routes.js";
 import { getPaneById, getLatestRoomEvent } from "./pane-guards.js";
 import { createPublicCredentialHost } from "./cli-auth-transfer.js";
@@ -40,25 +38,15 @@ import { recordAudit } from "./request-audit.js";
 import { createInstallTelemetry } from "./install-telemetry.js";
 import { createSessionAccess } from "./session-access.js";
 import { createGatewayCodexResetCreditsService, createGatewayCodexUsageProvider } from "./gateway/gateway-codex-services.js";
-import { type MailboxFactory } from "./job-apply/mailbox.js";
-import type { JobApplyGoogleAccess, JobApplyService } from "./job-apply/service.js";
-import { type MailCopilotGoogleAccess } from "./mail-copilot/service.js";
 import { internalTokenHeader, isAllowedAppDiagnosticsAutomationMutation, isCliBrowserBridgeRequest, isInternalApiRequest, publicPaths, requiresCsrf } from "./api-request-classes.js";
-import { type MailCopilotRepository } from "@space/db";
-import { marketingPaneCloseGuard, type MarketingCopilotWiring } from "./marketing-copilot/wiring.js";
-import { type FreelanceCopilotWiring } from "./freelance-copilot/wiring.js";
-import type { DesignWiring } from "./design/wiring.js";
-import { type VideoWiring } from "./video/wiring.js";
-import { type AppStudioWiring } from "./app-studio/wiring.js";
-import type { SecurityCopilotWiring } from "./security-copilot/wiring.js"; import type { MonitoringCopilotWiring } from "./monitoring-copilot/wiring.js";
+import { marketingPaneCloseGuard } from "./marketing-copilot/wiring.js";
 import { collectStorageReadiness } from "./storage-readiness.js";
 import { createCliSessionAccounts } from "./cli-session-account-profile.js";
 import { gatewayKeyJoiner, gatewayVaultKeyReconciler, type GatewayAdminService } from "./gateway/gateway-service.js";
 import { apiLoggerOptions } from "./request-logging.js";
 export { redactRequestUrlForLog } from "./request-logging.js";
-import { sendApiError } from "./http-errors.js";
+import { apiErrorText, sendApiError } from "./http-errors.js";
 import { registerApiErrorHandler } from "./api-error-handler.js";
-import type { ReleasesOptions } from "./instance-releases.js";
 import { localArtifactFilePath } from "./artifact-storage.js";
 export { sweepExpiredBrowserArtifacts, type BrowserArtifactRetentionSweepResult } from "./artifact-storage.js";
 import { createRetentionSweeps } from "./retention-sweeps.js";
@@ -67,15 +55,14 @@ import { createCliDashboardActivityReader, createDashboardAgentsReader, readDash
 import { createRoomAgentSnapshotProvider } from "./room-agent-snapshot.js";
 import { startPaneCli } from "./nous/copilot-control.js";
 import { PostgresSessionRevocationRepository } from "@space/db";
-import { installMobileGate } from "./app-signin.js";
+import { installMobileGate, mobileUpdateBridge } from "./app-signin.js";
 import { brokerScopeAllows, DOT_TOOL_GATEWAY_VERSION, dotWorkspacePath } from "@space/contracts";
-import { findCodexWriterThreads } from "./codex-thread-writer.js";
 import { controlExecuteSchema, controlOperationSchema } from "@space/contracts";
-import { createCliAccountProfileCommands, type CliAccountProfileCommandOptions } from "./cli-account-profile-commands.js";
-import { createCliAccountBalancer, type CliAccountBalancer } from "./cli-account-balancer.js";
+import { createCliAccountProfileCommands } from "./cli-account-profile-commands.js";
+import { createCliAccountBalancer } from "./cli-account-balancer.js";
 import { createCliAccountAutoSwitch } from "./cli-account-auto-switch.js";
 import { controlTokenHeader, spaceControlInvokeHeader, verifyControlToken } from "./space-control-token.js";
-import { harnessAgentPrincipal, isHarnessAgentSessionId } from "./harness-agent-tokens.js";
+import { agentPanePrincipal } from "./light-codex-agent.js";
 import { PANE_CATALOG_VERSION, paneCountsSchema } from "@space/contracts";
 import { createSpaceControl, supportsControlRuntime } from "./space-control.js";
 import { createCaptureTerminalFit, createControlScreenshotCapture } from "./space-control-capture.js";
@@ -83,7 +70,7 @@ import { pluginsService } from "./plugins-service.js";
 import { InMemorySourceControlRepository, PostgresSourceControlRepository } from "@space/db";
 import { SourceControlService } from "./source-control/service.js";
 import { WorktreeService } from "./worktrees/worktree-service.js";
-import { type VaultOverrides, vaultKeyReader } from "./vault/wiring.js";
+import { vaultKeptKeyReader, vaultKeyReader } from "./vault/wiring.js";
 import { InMemoryControlRepository, PostgresControlRepository } from "@space/db";
 import { createRoomRoutedActions } from "./room-routed-actions.js";
 import { createRoomPaneCommands } from "./room-pane-commands.js";
@@ -92,9 +79,6 @@ import { InMemoryTaskTitleRepository, PostgresTaskTitleRepository } from "@space
 import { TaskTitleProviders } from "./task-title-providers.js";
 import { TaskTitleService, taskTitleFailureCode } from "./task-title-service.js";
 import { createRoomQuickActions } from "./room-quick-actions.js";
-import { SystemHealthMonitor } from "./system-health-service.js";
-import { SystemTopologyService } from "./system-topology-service.js";
-import type { MemoryEmbeddingBackfill } from "./memory-embedding-backfill.js";
 import { createMemoryEmbeddingIndexing } from "./memory-embedding-indexing.js";
 import cookie from "@fastify/cookie";
 import compress from "@fastify/compress";
@@ -110,32 +94,19 @@ import { z } from "zod";
 import {
   buildCodexAppServerProcessEnv,
   createCodexAppServerControlService,
-  createCodexAppServerSocketControlService,
-  type CodexAppServerSocketControlService
+  createCodexAppServerSocketControlService
 } from "@space/codex-app-server";
 import {
   agentPaneGoalSchema,
-  type CliToggleRuntimeId,
-  type ApiProviderAccountList,
   imageArtifactMaxBytes,
   paneCliUploadMaxBytes,
   type AgentRuntime,
-  type CliSessionStats,
-  type CodexLbSpeedDefaultsResponse,
-  type CodexLbSpeedTier,
-  type AntigravityUsageAccountList,
-  type ClaudeUsageAccountList,
-  type CodexUsageAccountList,
   type Event,
   voiceTranscriptionMaxBytes,
-  type StorageReadiness,
-  type HostMemoryDetails,
   type PaneCliSession,
   type Pane,
   turnArtifactMaxCount,
   eventSchema,
-  type JobApplyRun,
-  type MailCopilotRun,
   type RoomAgentEvent
 } from "@space/contracts";
 import {
@@ -153,10 +124,7 @@ import {
   createCanonicalSpaceMemoryBridge,
   createCodexGoalsAdapter,
   makeSpaceId,
-  nowIso,
-  type CanonicalMemoryBridge,
-  type CodexGoalsAdapter,
-  type SpaceStore
+  nowIso
 } from "@space/runtime";
 import {
   createCsrfToken,
@@ -167,28 +135,19 @@ import {
   operatorSessionTtlSeconds,
   renewSessionIfDue,
   signSession,
-  verifyCsrfToken,
-  type AuthConfig
+  verifyCsrfToken
 } from "./auth.js";
-import {
-  AppDiagnosticsService
-} from "./app-diagnostics.js";
-import { ActivityLogService } from "./activity-log.js";
 import { createDefaultActivityLogService, createDefaultAppDiagnosticsService, createDefaultStore } from "./default-app-services.js";
 import { DemoCredentialStore } from "./demo-projects/credentials.js";
 import { t3PublicOrigins } from "./t3code/access.js";
 import { isOtherSiteBrowserRequest, requiresSameSiteBrowser } from "./http-origin-guard.js";
-import { type T3CodeServiceController } from "./t3code/service-control.js";
 import { harnessSameOriginRequest, readHarnessTaskTitle, renameHarnessTaskTitle } from "./harness-proxy.js";
 import { createAutoRouteFactsLoader } from "./auto-route-facts.js";
 import { createRoomCoordination } from "./room-coordination.js";
 import { projectRoutingState } from "./tool-routing.js";
+import { agentFileMaxBytes } from "./cli-agent-files.js";
 import {
-  type AgentFileDocxNormalizer
-} from "./cli-agent-files.js";
-import {
-  createBrowserEvidenceCapture,
-  type BrowserEvidenceCaptureHandler
+  createBrowserEvidenceCapture
 } from "./browser-evidence.js";
 import { withHostBoundBrowserInput } from "./browser-input-client.js";
 import { withBrowserPageLifecycle } from "./browser-page-lifecycle.js";
@@ -196,9 +155,6 @@ import {
   createConfiguredBrowserSessionManager,
   type BrowserSessionManagerWithHostHealth
 } from "./browser-host-proxy.js";
-import {
-  type BrowserSessionManager
-} from "./browser-sessions.js";
 import {
   codexDirectParityCodexHome,
   isCodexDirectParityRuntime,
@@ -216,22 +172,16 @@ import { createSpaceControlIntegration } from "./space-control-integration.js";
 import { cliPromptNotReady } from "./cli-prompt-submit.js";
 import { fetchOpenCodeSessionMessages } from "@space/opencode-control";
 import { findCodexCliPlanState } from "./codex-rollout-diagnostics.js";
-import type { CodexResetCreditsService } from "./codex-reset-credits.js";
-import {
-  type CodexParityService
-} from "./codex-parity.js";
 import { resolvePaneCodexThreadId } from "./pane-codex-thread.js";
 import {
   CliRuntimeVisibilityPolicy
 } from "./cli-runtime-visibility.js";
 import {
   countRuntimeProcesses as countRuntimeProcessesDefault,
-  sweepRuntimeProcesses as sweepRuntimeProcessesDefault,
-  type RuntimeProcessSweepResult
+  sweepRuntimeProcesses as sweepRuntimeProcessesDefault
 } from "./cli-runtime-process-sweeper.js";
 import {
-  CliVpnBrokerClient,
-  type CliVpnBroker
+  CliVpnBrokerClient
 } from "./cli-vpn.js";
 import {
   readOpenCodeNativeSessionId,
@@ -252,32 +202,22 @@ import {
 } from "@space/opencode-control";
 import { createOpenCodeServerControlResolver } from "./opencode-server-control.js";
 import { createOpenCodeChatControl } from "./opencode-chat-control.js";
-import { createCodexLbSpeedDefaultsService, type CodexLbSpeedModelId } from "./codex-lb-speed-defaults.js";
+import { createCodexLbSpeedDefaultsService } from "./codex-lb-speed-defaults.js";
 import {
-  createCodexCliModeDefaultsService,
-  type CodexCliModeDefaultsService
+  createCodexCliModeDefaultsService
 } from "./codex-cli-mode-defaults.js";
 import {
   createCodexHistoryAccessCoordinator,
-  createCodexHistoryPurgeService,
-  type CodexHistoryAccessCoordinator,
-  type CodexHistoryPurgeService
+  createCodexHistoryPurgeService
 } from "./codex-history-purge.js";
 import {
-  createCliSessionCleanupService,
-  type CliSessionCleanupService
+  createCliSessionCleanupService
 } from "./cli-session-cleanup.js";
 import {
   CliTerminalManager,
   codexPrivateAppServerSocketPath,
   resolveCodexCliLaunchSettings,
-  type CliHostGateway,
-  type CliHostReapAggregate,
-  type CliTerminalManagerTelemetryEvent,
-  type CodexCliCurrentTurnActivityFinder,
-  type CodexCliTurnActivityFinder,
-  type CodexThreadFinder,
-  type CodexThreadResumeSettingsFinder
+  type CliTerminalManagerTelemetryEvent
 } from "./cli-terminal.js";
 import {
   checkCliRuntimeCredential,
@@ -291,17 +231,14 @@ import {
 import {
   CliMaintenanceManager
 } from "./cli-maintenance.js";
-import { createCliUpdateAllRunner, type CliUpdateAllRunner } from "./cli-maintenance.js";
-import type { MaintenanceAutopilot } from "./maintenance-autopilot.js";
-import { type AgentToolsOptions } from "./agent-tools.js";
-import { getApiConfig, type SpaceApiConfig } from "./config.js";
+import { createCliUpdateAllRunner } from "./cli-maintenance.js";
+import { getApiConfig } from "./config.js";
 import {
   cliChatProviderEnabledByRuntimeToggle,
   cliChatRuntimeName,
   cliRuntimeModelsChatProviderAdapter
 } from "./chat-providers.js";
 import { opencodeDirectParityRoot } from "@space/opencode-control";
-import type { OwnerSetupBootstrap } from "./owner-setup.js";
 import {
   createSetupConnectionsService,
   type SetupConnectionsService
@@ -309,31 +246,12 @@ import {
 import {
   SetupConnectionCheckRunManager
 } from "./setup-connection-check-runs.js";
-import type { HostStatsProvider } from "./host-stats.js";
 import {
-  type SystemServicesRunner
-} from "./service-services.js";
-import {
-  runKernelCacheReclaim,
-  type InvalidatableProvider,
-  type KernelCacheReclaimResult
+  runKernelCacheReclaim
 } from "./toolbar-system-services.js";
 import {
-  type ToolbarModelStatsCollector
-} from "./toolbar-model-stats.js";
-import { SystemAnalyticsService } from "./system-analytics-service.js";
-import { OpencodeModelBenchService } from "./opencode-model-bench.js";
-import {
-  StreamingService
-} from "./streaming-service.js";
-import {
-  StreamingBotService
-} from "./streaming-bot-service.js";
-import {
   createDeepSeekHarnessServiceController,
-  runCoreServiceRestart,
-  type CoreServiceRestarter,
-  type DeepSeekHarnessServiceController
+  runCoreServiceRestart
 } from "./service-restarts.js";
 import {
   SourceControlPublishingManager
@@ -343,14 +261,12 @@ import {
 } from "./release-publishing.js";
 import { createAppVersionReader } from "./app-version.js";
 import { createMemoryEmbedding } from "./memory-embedding-smoke.js";
-import { createMemoryGraphService, type MemoryGraphApiService } from "./memory-graph-service.js";
+import { createMemoryGraphService } from "./memory-graph-service.js";
 import {
-  createMemoryConsolidationCoordinator,
-  type MemoryConsolidationCoordinator
+  createMemoryConsolidationCoordinator
 } from "./memory-consolidation-coordinator.js";
 import {
-  createMemoryMutationCoordinator,
-  type MemoryMutationCoordinator
+  createMemoryMutationCoordinator
 } from "./memory-mutation-coordinator.js";
 import { createHttpObservability } from "./observability.js";
 import { requestTraceContexts, traceContextForRawRequest } from "./trace-context.js";
@@ -358,12 +274,12 @@ import { createCodexThreadSettings } from "./codex-thread-settings.js";
 import { agentTokenSecret } from "./cli-browser-bridge.js";
 import { CliTerminalControlRequiredError, parseCliHttpControlAuthority } from "./cli-http-control.js";
 import { registerRoomAgentRoutes } from "./room-agent-routes.js";
-import { isSemanticMemoryReady, searchDefaultSpaceMemory, type SpaceMemorySearcher } from "./memory-search.js";
+import { isSemanticMemoryReady, searchDefaultSpaceMemory } from "./memory-search.js";
 export { type SpaceMemorySearcher } from "./memory-search.js";
 import {
   paneArtifactUploadMaxBytes
 } from "./upload-media.js";
-import { collectDefaultSpaceCapabilityInventory, type SpaceCapabilityInventoryCollector } from "./space-capability-inventory.js";
+import { collectDefaultSpaceCapabilityInventory } from "./space-capability-inventory.js";
 export { type SpaceCapabilityInventoryCollector } from "./space-capability-inventory.js";
 import { type DashboardAgentsSample } from "./room-routes.js";
 import { createOwnedResourceGuard } from "./owned-resource-access.js";
@@ -373,190 +289,27 @@ import { buildSharedCliTaskContext } from "./codex-history-titles.js";
 export { buildSharedCliTaskContext } from "./codex-history-titles.js";
 import { isLoopbackRequest, requestIpForLog, requestRoutePath, requestSessionUser, secureTokenMatches } from "./request-helpers.js";
 import { createCliModelsExecutors } from "./cli-models-executors.js";
-import { createSpaceAgentAdapter, type SpaceAgentAdapter, type SpaceAgentControl } from "./space-agent.js";
+import { createSpaceAgentAdapter } from "./space-agent.js";
 import {
   completeRoomAgentPrompt,
   createRoomAgentService,
-  createRoomAgentWorkflowCoordinator,
-  type RoomAgentWorkflowCoordinator
+  createRoomAgentWorkflowCoordinator
 } from "./room-agent.js";
 import { createCachedModelSelection, runOpenCodeText } from "./room-agent-model-resolver.js";
-import { createGatewayChatModel, createOpenCodeTextModel, createRoomAgentChat, type RoomAgentChatModel } from "./room-agent-chat.js";
+import { createGatewayChatModel, createOpenCodeTextModel, createRoomAgentChat } from "./room-agent-chat.js";
 import { createRoomAgentTools } from "./room-agent-tools.js";
 import { createRoomAgentAutopilot } from "./room-agent-autopilot.js";
-import { createRoomActionExecutor, type RoomActionExecutor } from "./room-actions.js";
-import { createRoomPlanInventoryProvider, type RoomPlanInventoryProvider } from "./room-plan-inventory.js";
-import { createRoomTaskEvaluator, type RoomTaskEvaluator } from "./room-task-evaluator.js";
+import { createRoomActionExecutor } from "./room-actions.js";
+import { createRoomPlanInventoryProvider } from "./room-plan-inventory.js";
+import { createRoomTaskEvaluator } from "./room-task-evaluator.js";
 import {
   createDurableEventRelay
 } from "./sse.js";
-import { createCodexAppServerTurnStarter, createTurnStarter, type TurnStarter } from "./turns.js";
+import { createCodexAppServerTurnStarter, createTurnStarter } from "./turns.js";
 import { createWorkerReadinessChecker, type WorkerReadinessChecker } from "./worker-readiness.js";
-import { createDecisionsService, type DecisionsService } from "./decisions-service.js";
-import type { FirstSetupAppOptions } from "./setup-wiring.js";
-
-export interface CreateAppOptions extends FirstSetupAppOptions, CliAccountProfileCommandOptions {
-  /** Where the API log goes instead of stdout (tests read it). */
-  logStream?: { write(message: string): void };
-  /** The production server continues a chess tournament its restart interrupted (tests never do). */
-  resumeChessTournament?: boolean;
-  decisionsService?: DecisionsService;
-  store?: SpaceStore;
-  t3CodeServiceController?: T3CodeServiceController;
-  agentFileDocxNormalizer?: AgentFileDocxNormalizer;
-  appDiagnosticsService?: AppDiagnosticsService;
-  activityLogService?: ActivityLogService;
-  eventBus?: SpaceEventBus;
-  turnStarter?: TurnStarter;
-  codexTurnStarter?: TurnStarter;
-  browserEvidenceCapture?: BrowserEvidenceCaptureHandler;
-  browserSessionManager?: BrowserSessionManager;
-  memoryEmbeddingGenerator?: (input: string, purpose?: "document" | "query") => Promise<number[]>;
-  /** null turns the backfill off (tests); absent builds it from the config. */
-  memoryEmbeddingBackfill?: MemoryEmbeddingBackfill | null;
-  spaceAgentAdapter?: SpaceAgentAdapter;
-  /** Stage 7 tests: Auto shadow evidence without a database. */
-  autoRouteShadowRepository?: AutoRouteShadowRepository;
-  /** Stage 7 tests: evaluation runs without a database. */
-  dotEvalsRepository?: DotEvalsRepository;
-  /** Stage 6 tests: Slack and Teams threads without a database. */
-  channelsRepository?: ChannelsRepository;
-  /** Room Agent conversation model; tests inject a scripted stream. */
-  roomAgentChatModel?: RoomAgentChatModel;
-  nousRunner?: NousRunner;
-  /** The Vault broker's root reinstall a Nous decision runs (tests). */
-  vaultBrokerReinstall?: () => Promise<string>;
-  /** The pane board's summary model (nous/pane-board.ts); tests inject one, the live instance uses stable's worker. */
-  paneBoardRunner?: PaneSummaryRunner;
-  /** Room Agent monitor storage; defaults to Postgres with a database URL, else memory. */
-  roomAgentMonitorRepository?: RoomAgentMonitorRepository;
-  /** Tests replace the notification store (Postgres on the live instances). */
-  notificationsRepository?: SpaceNotificationsRepository;
-  /** Tests replace the FCM sender (the configured service account key on the live instances). */
-  notificationPush?: FcmSender | null;
-  /** Start the room monitor loop on ready; defaults to on for the production store and off for injected test stores. */
-  startRoomAgentMonitor?: boolean;
-  roomAgentWorkflow?: RoomAgentWorkflowCoordinator;
-  dotGoalWorkflow?: import("./dot-goals.js").DotGoalWorkflowCoordinator | null;
-  roomActionExecutor?: RoomActionExecutor;
-  roomPlanInventoryProvider?: RoomPlanInventoryProvider;
-  roomTaskEvaluator?: RoomTaskEvaluator;
-  codexAgentControl?: SpaceAgentControl | null;
-  codexCliModeDefaultsService?: CodexCliModeDefaultsService;
-  workerReadinessChecker?: WorkerReadinessChecker;
-  storageReadinessChecker?: () => Promise<StorageReadiness>;
-  spaceCapabilityInventoryCollector?: SpaceCapabilityInventoryCollector;
-  spaceMemorySearcher?: SpaceMemorySearcher;
-  canonicalMemory?: CanonicalMemoryBridge;
-  memoryGraphService?: MemoryGraphApiService;
-  memoryConsolidationCoordinator?: MemoryConsolidationCoordinator;
-  memoryMutationCoordinator?: MemoryMutationCoordinator;
-  codexGoals?: CodexGoalsAdapter;
-  codexParity?: CodexParityService;
-  cliHostClient?: CliHostGateway;
-  cliAdminHostClient?: CliHostGateway;
-  cliModelSelectionTimeoutMs?: number;
-  opencodeStateRoot?: string;
-  cliLoginTimeoutMs?: number;
-  cliLoginObservationIntervalMs?: number;
-  agentToolsOptions?: AgentToolsOptions;
-  /** Directory of the merge queue state (space-merge-queue.service); read-only for the API. */
-  deployQueueRoot?: string;
-  releasesOptions?: Partial<ReleasesOptions>;
-  cliRuntimeSessionTerminator?: (sessionId: string) => Promise<boolean>;
-  cliVpnBroker?: CliVpnBroker;
-  cliVpnSessionPidResolver?: (sessions: readonly PaneCliSession[]) => Promise<Map<string, number>>;
-  cliVpnSessionRestarter?: (
-    session: PaneCliSession,
-    runtime: AgentRuntime,
-    traceId: string
-  ) => Promise<PaneCliSession>;
-  codexMasterChatInterrupter?: (paneId: string, reason: string, traceId: string) => Promise<boolean>;
-  codexMasterRoomAgentStopper?: (
-    roomId: string,
-    missionId: string,
-    reason: string,
-    traceId: string
-  ) => Promise<boolean>;
-  killRuntimeProcesses?: (runtimeId: CliToggleRuntimeId, traceId: string) => Promise<RuntimeProcessSweepResult>;
-  countRuntimeProcesses?: (runtimeId: CliToggleRuntimeId) => Promise<number>;
-  findCodexCliTurnActivity?: CodexCliTurnActivityFinder;
-  findCurrentCodexCliTurnActivity?: CodexCliCurrentTurnActivityFinder;
-  findCodexThreadId?: CodexThreadFinder;
-  findCodexModelControlThreads?: typeof findCodexWriterThreads;
-  findCodexThreadResumeSettings?: CodexThreadResumeSettingsFinder;
-  codexSessionSocketProbe?: (socketPath: string) => Promise<boolean>;
-  codexSocketControlFactory?: (socketPath: string) => CodexAppServerSocketControlService;
-  hostStatsProvider?: HostStatsProvider;
-  requirementsCacheTtlMs?: number;
-  modelCatalogCacheMaxAgeMs?: number;
-  cancelWorkflow?: (workflowId: string) => Promise<void>;
-  antigravityUsageProvider?: () => Promise<AntigravityUsageAccountList>;
-  claudeUsageProvider?: () => Promise<ClaudeUsageAccountList>;
-  apiProviderAccountsProvider?: () => Promise<ApiProviderAccountList>;
-  toolbarUsageProvider?: () => Promise<CodexUsageAccountList>;
-  codexResetCreditsService?: CodexResetCreditsService;
-  toolbarCliSessionStatsProvider?: InvalidatableProvider<CliSessionStats> | (() => Promise<CliSessionStats>);
-  systemServicesProvider?: SystemServicesRunner;
-  toolbarHostMemoryProvider?: InvalidatableProvider<HostMemoryDetails> | (() => Promise<HostMemoryDetails>);
-  toolbarModelStatsCollector?: ToolbarModelStatsCollector;
-  systemAnalyticsService?: SystemAnalyticsService;
-  jobApplyService?: JobApplyService;
-  jobApplyMailboxes?: MailboxFactory;
-  /** Tests replace the Google connector behind Job Copilot's Gmail and Calendar, and the Gmail API. */
-  jobApplyGoogle?: JobApplyGoogleAccess;
-  jobApplyGmailFetch?: typeof fetch;
-  /** False keeps the periodic Job Copilot mail triage off (tests drive triageMail directly). */
-  jobApplyMailTriage?: boolean;
-  /** Tests replace the pane CLI kickoff (the live path types the prompt into the pane host session). */
-  jobApplyKickoff?: (pane: Pane, run: JobApplyRun, discover: boolean) => Promise<void>;
-  /** Tests replace the Google connector behind Mail Copilot's mailboxes, and the Gmail API. */
-  mailCopilotGoogle?: MailCopilotGoogleAccess;
-  mailCopilotGmailFetch?: typeof fetch; passwordResetMail?: Parameters<typeof registerSignInRoutes>[1]["passwordResetMail"];
-  mailCopilotRepository?: MailCopilotRepository;
-  vault?: VaultOverrides; marketingCopilotRepository?: MarketingCopilotWiring["repository"]; marketingCopilotKickoff?: MarketingCopilotWiring["kickoff"]; marketingCopilotScheduler?: boolean; marketingCopilotMetrics?: boolean; freelanceCopilotRepository?: FreelanceCopilotWiring["repository"]; freelanceCopilotKickoff?: FreelanceCopilotWiring["kickoff"]; freelanceCopilotScheduler?: boolean; freelanceCopilotMailboxes?: FreelanceCopilotWiring["mailboxes"];
-  /** Tests replace the Design pane's repository, gateway client, template renderer and CLI kickoff. */
-  designRepository?: DesignWiring["repository"]; designGenerate?: DesignWiring["generate"]; designRender?: DesignWiring["render"]; designKickoff?: DesignWiring["kickoff"]; appStudioRepository?: AppStudioWiring["repository"]; appStudioKickoff?: AppStudioWiring["kickoff"]; securityCopilotRepository?: SecurityCopilotWiring["repository"]; securityCopilotFeeds?: SecurityCopilotWiring["feeds"]; securityCopilotKickoff?: SecurityCopilotWiring["kickoff"]; securityCopilotWatch?: boolean; monitoringCopilotRepository?: MonitoringCopilotWiring["repository"]; monitoringCopilotCollector?: MonitoringCopilotWiring["collector"]; monitoringCopilotKickoff?: MonitoringCopilotWiring["kickoff"]; monitoringCopilotWatch?: boolean; mailCampaignsRepository?: import("@space/db").MailCampaignsRepository; mailCampaignsSmtp?: import("./mail-campaigns/transports.js").MailTransportDeps["smtp"]; mailCampaignsSender?: boolean; videoRepository?: VideoWiring["repository"]; videoEngine?: VideoWiring["engine"]; videoKickoff?: VideoWiring["kickoff"];
-  /** Tests replace the pane CLI kickoff of a Mail Copilot run. */
-  mailCopilotKickoff?: (pane: Pane, run: MailCopilotRun) => Promise<void>;
-  /** false: no Gmail history polling (tests call the sync themselves). */
-  mailCopilotSync?: boolean;
-  opencodeModelBenchService?: OpencodeModelBenchService | null;
-  healthMonitor?: SystemHealthMonitor;
-  systemTopologyService?: SystemTopologyService;
-  streamingService?: StreamingService;
-  streamingBotService?: StreamingBotService;
-  toolbarCliSessionReaper?: () => Promise<CliHostReapAggregate>;
-  toolbarCliSessionTerminator?: (sessionId: string, traceId?: string) => Promise<boolean>;
-  toolbarKernelCacheReclaimer?: () => Promise<KernelCacheReclaimResult>;
-  codexLbSpeedDefaultsProvider?: () => Promise<CodexLbSpeedDefaultsResponse>;
-  gatewayAdminService?: GatewayAdminService;
-  codexLbSpeedDefaultUpdater?: (modelId: CodexLbSpeedModelId, tier: CodexLbSpeedTier) => Promise<CodexLbSpeedDefaultsResponse>;
-  codexHistoryPurgeService?: CodexHistoryPurgeService;
-  cliSessionCleanupService?: CliSessionCleanupService;
-  codexHistoryAccessCoordinator?: CodexHistoryAccessCoordinator;
-  maintenanceAutopilot?: MaintenanceAutopilot;
-  serviceRestarter?: CoreServiceRestarter;
-  deepSeekHarnessServiceController?: DeepSeekHarnessServiceController;
-  serviceRestartCooldownPath?: string;
-  telegramIntegrationManager?: TelegramIntegrationManager;
-  sourceControlPublishingManager?: SourceControlPublishingManager;
-  sourceControlService?: SourceControlService;
-  cliMaintenanceManager?: CliMaintenanceManager;
-  cliUpdateAllRunner?: CliUpdateAllRunner; serverOpsRunner?: import("./server-ops-routes.js").ServerOpsRunner;
-  cliRecoveryLoginOpener?: (input: {
-    roomId: string;
-    runtimeId: string;
-    requestId: string;
-  }) => Promise<{ paneId: string }>;
-  cliAccountBalancer?: CliAccountBalancer;
-  releasePublishingManager?: ReleasePublishingManager;
-  auth?: AuthConfig;
-  config?: SpaceApiConfig;
-  setup?: OwnerSetupBootstrap | null;
-  setupConnections?: SetupConnectionsService;
-  setupConnectionCheckRuns?: SetupConnectionCheckRunManager;
-}
+import { createDecisionsService } from "./decisions-service.js";
+import type { CreateAppOptions } from "./app-options.js";
+export type { CreateAppOptions };
 
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
   const apiStartedAt = new Date().toISOString();
@@ -914,7 +667,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const runOpenCode = publicCredentialHost?.openCodeText ?? runOpenCodeText;
   const cliTerminalManager = new CliTerminalManager({
     store,
-    config,
+    config, wakeHibernatedPane: (pane, traceId) => cliPaneReopener.reopen(pane.id, () => pane, traceId).resumed,
     credentialHost: publicCredentialHost,
     observeOnly: (pane, userId) => roomShares.observeOnly(pane, userId), ...cliUserHosting.terminal,
     discoverRuntimes: () => cliRuntimeRegistryCache.read(),
@@ -1451,7 +1204,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       [csrfHeaderName]:createCsrfToken(token,auth.sessionSecret)!,...(payload===undefined?{}:{"content-type":"application/json"})},
       ...(payload===undefined?{}:{payload:JSON.stringify(payload)})});
     const body = response.headers["content-type"]?.includes("application/json") ? response.json() : {content:response.body.slice(0,100_000),mimeType:response.headers["content-type"]};
-    if(response.statusCode>=400)throw new SpaceConflictError(body.error?.message??"Protected control failed.");
+    if(response.statusCode>=400)throw new SpaceConflictError(apiErrorText(body,response.statusCode));
     return body;
   }
   const controlCliRooms = new WeakMap<FastifyRequest,string>();
@@ -1801,7 +1554,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   await app.register(multipart, {
     throwFileSizeLimit: false,
     limits: {
-      fileSize: Math.max(imageArtifactMaxBytes, paneCliUploadMaxBytes, paneArtifactUploadMaxBytes, voiceTranscriptionMaxBytes, config.videoSourceMaxBytes) + 1,
+      fileSize: Math.max(agentFileMaxBytes, imageArtifactMaxBytes, paneCliUploadMaxBytes, paneArtifactUploadMaxBytes, voiceTranscriptionMaxBytes, config.videoSourceMaxBytes) + 1,
       files: turnArtifactMaxCount + 1,
       fields: 4,
       parts: turnArtifactMaxCount + 5
@@ -1843,9 +1596,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const sessionAccess = createSessionAccess({ store });
   // Connector tokens and copilot mailbox passwords: sealed with the dedicated connector key; older values open with the
   // secrets they were sealed with (SPACE_CONNECTOR_SECRET, else the session secret).
+  if (config.publicDistribution) ensureConnectorKey(config.connectorKeyFile);
   const connectorCrypto = createConnectorCrypto({ key: readConnectorKey(config.connectorKeyFile), legacySecrets: [process.env.SPACE_CONNECTOR_SECRET, auth.sessionSecret] });
   const userRoleCache = sessionAccess.roleCache;
 
+  app.addHook("onRequest", async (request) => mobileUpdateBridge(app, request)); // Before the session: Nous 0.2.37's update download (mobile/channel.ts).
   app.addHook("onRequest", async (request, reply) => {
     observability.onRequest(request);
     request.requestIdForSpace = request.id;
@@ -2051,10 +1806,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (requestRoutePath(request)==="/api/cli/control/mcp") {
       const claims=verifyControlToken(agentTokenSecret(config),request.headers[controlTokenHeader]);
       if(!claims)return sendApiError(reply,401,"CONTROL_TOKEN_INVALID","An active Space control token is required.");
-      // A Harness agent acts for its open Harness pane (harness-agent-tokens.ts); every other token for its CLI session.
-      if(isHarnessAgentSessionId(claims.cliSessionId)){
-        if(!await harnessAgentPrincipal(store,claims))return sendApiError(reply,403,"CONTROL_SESSION_INACTIVE","The Harness pane is no longer eligible for control.");
-      }else{
+      // A Harness or Codex light agent acts for its open pane (agentPanePrincipal); every other token for its CLI session.
+      const panePrincipal=await agentPanePrincipal(store,claims);
+      if(panePrincipal===false)return sendApiError(reply,403,"CONTROL_SESSION_INACTIVE","The agent's pane is no longer eligible for control.");
+      if(panePrincipal===null){
         const session=await store.getPaneCliSession(claims.cliSessionId);
         if(!session||!supportsControlRuntime({mode:"TERMINAL",terminalRuntimeId:session.runtimeId} as any)||!session.isActive||session.purpose!=="NORMAL"||session.roomId!==claims.roomId||session.paneId!==claims.paneId||["EXITED","ERROR"].includes(session.status))
           return sendApiError(reply,403,"CONTROL_SESSION_INACTIVE","CLI session is no longer eligible for control.");
@@ -2113,7 +1868,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   // Sign-in support, auth and admin user routes; then the user's own tool routes, the shared gateway repository's close between them (user-routes-wiring.ts).
   const { googleAccountBrowserStatuses, dotsAuthenticatedOwner, connectorStateTools, connectorServiceRef } = registerSignInRoutes(app, { store, config, auth,
-    browserSessionManager, persistRevocation, userRoleCache, nousRef, connectorCrypto, eventBus, notificationService, sessionAccess, defaultRouteRateLimitOptions, mailCopilotGoogle: options.mailCopilotGoogle, mailCopilotGmailFetch: options.mailCopilotGmailFetch, passwordResetMail: options.passwordResetMail, mailCampaigns: () => mailCampaignsService });
+    browserSessionManager, persistRevocation, userRoleCache, nousRef, connectorCrypto, eventBus, notificationService, sessionAccess, defaultRouteRateLimitOptions, mailCopilotGoogle: options.mailCopilotGoogle, mailCopilotGmailFetch: options.mailCopilotGmailFetch, passwordResetMail: options.passwordResetMail, mailCampaigns: () => mailCampaignsService, vaultKeptKey: vaultKeptKeyReader(() => vault, connectorCrypto, "instance-link") });
 
   app.addHook("onClose", async () => { await sharedGatewayRepository?.dispose(); });
   const { gatewayAdminService, reopenClosedPane, taskBrief } = registerUserToolRoutes(app, { store, config, options, auth, nousRef, cliTerminalManager, cliRuntimeVisibility,

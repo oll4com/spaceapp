@@ -462,6 +462,57 @@ describe("Agent Files API", () => {
     await app.close();
   });
 
+  it("takes an Agent File in resumable pieces and finishes it once, retries included (Nous app upload, 13/11)", async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), "space-agent-files-chunks-"));
+    temporaryRoots.push(artifactRoot);
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Phone Uploads", initialPaneCount: 0 });
+    const { app, cookie, csrfToken } = await createTestApp(store, artifactRoot);
+    const body = Buffer.from("0123456789abcdefghij");
+    const piece = (offset: number, bytes: Buffer, total = body.length) => app.inject({
+      method: "POST",
+      url: `/api/rooms/${encodeURIComponent(room.id)}/agent-files/chunks?uploadId=upload-0001&offset=${offset}&total=${total}&name=clip.txt&type=text/plain&folder=Phone`,
+      headers: { cookie, [csrfHeaderName]: csrfToken, "content-type": "application/octet-stream" }, payload: bytes
+    });
+    expect((await piece(0, body.subarray(0, 8))).json()).toEqual({ received: 8 });
+    // A retried piece and one from the wrong offset write nothing and say where to continue.
+    expect((await piece(0, body.subarray(0, 8))).json()).toEqual({ received: 8 });
+    expect((await piece(12, body.subarray(12))).json()).toEqual({ received: 8 });
+    expect(store.listArtifacts({ roomId: room.id })).toHaveLength(0);
+    const last = await piece(8, body.subarray(8));
+    expect(last.statusCode).toBe(200);
+    const artifact = last.json().artifact;
+    expect(artifact).toMatchObject({ roomId: room.id, metadata: expect.objectContaining({ folder: "Phone" }) });
+    const download = await app.inject({ method: "GET", url: `/api/artifacts/${encodeURIComponent(artifact.id)}/file`, headers: { cookie } });
+    expect(download.body).toBe(body.toString());
+    // The last piece again (its answer lost): the same artifact, no second copy.
+    expect((await piece(8, body.subarray(8))).json()).toMatchObject({ received: body.length, artifact: { id: artifact.id } });
+    expect(store.listArtifacts({ roomId: room.id })).toHaveLength(1);
+    expect(store.listAuditEvents()).toEqual(expect.arrayContaining([expect.objectContaining({ action: "agent_file.upload", targetId: room.id })]));
+    // Pieces longer than the declared total are refused and the part is dropped.
+    const over = await app.inject({
+      method: "POST", url: `/api/rooms/${encodeURIComponent(room.id)}/agent-files/chunks?uploadId=upload-0002&offset=0&total=4&name=x.txt`,
+      headers: { cookie, [csrfHeaderName]: csrfToken, "content-type": "application/octet-stream" }, payload: body
+    });
+    expect(over.statusCode).toBe(400);
+    // A phone video past the multipart cap (100 MiB then, operator 13/11): the chunks route takes it whole.
+    const total = 101 * 1024 * 1024;
+    const step = 16 * 1024 * 1024;
+    let answer: { received: number; artifact?: { id: string } } = { received: 0 };
+    for (let offset = 0; offset < total; offset += step) {
+      const response = await app.inject({
+        method: "POST", url: `/api/rooms/${encodeURIComponent(room.id)}/agent-files/chunks?uploadId=upload-0003&offset=${offset}&total=${total}&name=walk.mp4&type=video/mp4`,
+        headers: { cookie, [csrfHeaderName]: csrfToken, "content-type": "application/octet-stream" }, payload: Buffer.alloc(Math.min(step, total - offset), 7)
+      });
+      expect(response.statusCode, `${offset}: ${response.body}`).toBe(200);
+      answer = response.json();
+    }
+    expect(answer.received).toBe(total);
+    expect(answer.artifact?.id).toBeTruthy();
+    expect(store.listArtifacts({ roomId: room.id }).find((entry) => entry.id === answer.artifact!.id)?.byteSize).toBe(total);
+    await app.close();
+  }, 120_000);
+
   it("rebuilds DOCX files before persistence and fails closed when Word compatibility cannot be produced", async () => {
     const artifactRoot = await mkdtemp(join(tmpdir(), "space-agent-files-docx-publish-"));
     temporaryRoots.push(artifactRoot);

@@ -2,8 +2,10 @@ import type {} from "./request-context.js";
 import type { FastifyInstance, RouteShorthandOptions } from "fastify";
 import {
   spaceAgentBrowserActionBridgeRequestSchema, spaceAgentBrowserActionBridgeResponseSchema,
-  spaceAgentRoomActionBridgeRequestSchema, spaceAgentRoomActionBridgeResponseSchema
+  spaceAgentRoomActionBridgeRequestSchema, spaceAgentRoomActionBridgeResponseSchema, isLightCodexPane, LIGHT_CODEX_RUNTIME_ID
 } from "@space/contracts";
+import { z } from "zod";
+import { buildLightCodexEnvironment } from "./light-codex-agent.js";
 import { redactMemoryText, SpaceFeatureDisabledError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import { BrowserControlHeldError } from "./browser-errors.js";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
@@ -33,6 +35,14 @@ export function registerInternalAgentActionRoutes(app: FastifyInstance, options:
 }) {
   const { config, store, browserSessionManager, cliRuntimeVisibility, roomActionExecutor, vaultProtection,
     routeOptions: defaultRouteRateLimitOptions } = options;
+  // The worker's light Codex turn asks for its launch env by pane id only; everything else comes from the pane record.
+  app.post("/api/internal/agent/light-codex-env", defaultRouteRateLimitOptions, async (request) => {
+    const { paneId } = parseBody(z.object({ paneId: z.string().trim().min(1).max(200) }).strict(), request.body ?? {});
+    await cliRuntimeVisibility.assertEnabled(LIGHT_CODEX_RUNTIME_ID);
+    const pane = await getPaneById(store, paneId);
+    if (!isLightCodexPane(pane) || pane.isClosed) throw new SpaceNotFoundError(`Codex light pane ${paneId} was not found.`);
+    return { env: buildLightCodexEnvironment(config, pane) };
+  });
   app.post("/api/internal/agent/browser-actions", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     if (!config.browserToolBridgeEnabled) {

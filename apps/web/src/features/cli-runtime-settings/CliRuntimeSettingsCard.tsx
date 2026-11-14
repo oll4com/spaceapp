@@ -44,6 +44,7 @@ import { CliAccountsPanel } from "../cli-accounts/CliAccountsPanel.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { readStoredSuppressNotifications } from "../../notifications-settings.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
 import { DockNotice, DockState } from "../dock-kit/DockKit.js";
 import "./cli-runtime-settings.css";
 
@@ -304,6 +305,7 @@ function DisableRuntimeDialog({
             checked={acknowledged}
             disabled={pending}
             onChange={(checked) => setAcknowledgedToken(checked ? dialog.preview.confirmationToken : null)}
+            help="Confirms that you accept the panes closing and the work stopping listed above. Disable stays unavailable until you switch it on."
             label={closingPanes > 0
               ? `Close ${closingPanes} open ${closingPanes === 1 ? "pane" : "panes"} and stop their work`
               : `Stop ${stoppingWork} active ${stoppingWork === 1 ? "task" : "tasks"}`}
@@ -964,10 +966,9 @@ export function CliRuntimeSettingsCard({
             <div><dt>Leak guard</dt><dd>Protected</dd></div>
           </dl>
           <label className="settings-flat-row cli-egress-route-select">
-            <span className="settings-flat-row-copy">
-              <strong>Route</strong>
-              <small>{pendingEgressRoute ? `Applying ${cliEgressRouteLabel(pendingEgressRoute)}…` : "Used by every CLI whose VPN switch is on."}</small>
-            </span>
+            <SettingsLabel label="Route" help="The network route used by every CLI whose VPN switch is on. Only connected routes can be chosen.">
+              {pendingEgressRoute ? `Applying ${cliEgressRouteLabel(pendingEgressRoute)}…` : null}
+            </SettingsLabel>
             <select
               id="cli-egress-route"
               name="cli-egress-route"
@@ -988,10 +989,7 @@ export function CliRuntimeSettingsCard({
             ) : (
               <>
                 <label className="settings-flat-row cli-egress-route-select">
-                  <span className="settings-flat-row-copy">
-                    <strong>Profile</strong>
-                    <small>Select the WireGuard profile to inspect or manage.</small>
-                  </span>
+                  <SettingsLabel label="Profile" help="Select the WireGuard profile to inspect or manage. Its settings are stored on the server." />
                   <select
                     id="cli-egress-profile"
                     name="cli-egress-profile"
@@ -1124,6 +1122,7 @@ export function CliRuntimeSettingsCard({
                 className="cli-runtime-switch cli-runtime-vpn-switch"
                 name={`cli-runtime-vpn-${presentation.brand}`}
                 ariaLabel={`Use VPN for ${presentation.displayName}`}
+                help="Sends this CLI's traffic through the VPN route chosen in CLI VPN route. Choose a route there first."
                 label={pendingVpnRuntimeId === runtimeId ? <Loader2 className="spin" aria-hidden="true" /> : "VPN"}
                 title={selectedRoute === "direct" && !vpnEnabled
                   ? "Choose a VPN route before enabling this CLI."
@@ -1137,6 +1136,7 @@ export function CliRuntimeSettingsCard({
                 name={isHarness ? "cli-runtime-enabled-harness" : `cli-runtime-enabled-${presentation.brand}`}
                 ariaLabel={`Enable ${presentation.displayName}`}
                 label="Active"
+                help="Turns this CLI on or off for everyone. Turning it off stops its active sessions; saved task history stays."
                 title={isHarness ? `DeepSeek Harness ${enabled ? "active" : "inactive"}` : `${presentation.displayName} ${enabled ? "on" : "off"}`}
                 checked={enabled}
                 disabled={!response || runtimeActionsPending || restartAllPending}
@@ -1200,6 +1200,7 @@ export function CliRuntimeSettingsCard({
           description="Turn CLIs on or off, restart them and choose which use the VPN."
           scope="Installation"
           icon={Terminal}
+          help="Turn each CLI on or off for everyone, restart it, and choose which CLIs send their traffic through the VPN route."
         >
           <section className="agent-settings-card settings-flat-card cli-runtime-settings-card" aria-label="CLI runtime visibility settings" aria-busy={loading || !response}>
             <div className="agent-settings-section-title settings-flat-heading cli-runtime-settings-title">
@@ -1227,6 +1228,7 @@ export function CliRuntimeSettingsCard({
           description="Send CLI traffic through a VPN route of your choice."
           scope="Installation"
           icon={Shield}
+          help="Choose one route, then turn VPN on for each CLI that should use it in CLI runtimes. You also add, inspect and remove the WireGuard profiles here."
         >
           <section className="agent-settings-card settings-flat-card cli-vpn-settings-card" aria-label="CLI VPN route settings">
             {loadState}
@@ -1239,6 +1241,7 @@ export function CliRuntimeSettingsCard({
           description="Manage isolated Gemini, Claude, GitHub Copilot, and Cursor account profiles."
           scope="Installation"
           icon={Users}
+          help="Add and manage separate Gemini, Claude, GitHub Copilot and Cursor account profiles, so CLI panes can sign in with different accounts."
         >
           <section className="agent-settings-card settings-flat-card cli-gemini-accounts-card" aria-label="CLI account profile settings">
             {accountProfilesContent}

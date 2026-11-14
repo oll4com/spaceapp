@@ -61,7 +61,17 @@ describe("typing a prompt into a CLI pane", () => {
     const cli = terminal(empty, draft(kickoff));
     await expect(submitCliPrompt(cli, "cli_session:1", kickoff, "trace:1", "trace:1:kickoff", { delayMs: 0 }))
       .rejects.toThrow(/unsent draft/);
-    expect(cli.typed.filter((data) => data === "\r")).toHaveLength(3);
+    expect(cli.typed.filter((data) => data === "\r")).toHaveLength(4);
+  });
+
+  // 13/11 Cody, Jack and Bob: Claude took Nous's text, its rebuilt room screen still showed it in the composer.
+  it("trusts Claude's own transcript over a screen that still shows the sent prompt", async () => {
+    const before = Date.now();
+    const started = vi.fn(async (_session: string, sinceMs: number) => sinceMs >= before);
+    await submitCliPrompt({ ...terminal(empty, draft(kickoff)), claudeTurnStartedSince: started }, "cli_session:1", kickoff, "trace:1", "trace:1:kickoff", { delayMs: 0 });
+    expect(started).toHaveBeenCalledTimes(1);
+    await expect(submitCliPrompt({ ...terminal(empty, draft(kickoff)), claudeTurnStartedSince: async () => false }, "cli_session:1", kickoff, "trace:2", "trace:2:kickoff", { delayMs: 0 }))
+      .rejects.toThrow(/unsent draft/);
   });
 
   // The pinned Claude Code 2.1.307 in a PTY (2026-10-23), projected like observeRoomScreenUndimmed: a paste that reached it
@@ -143,7 +153,7 @@ describe("typing a prompt into a CLI pane", () => {
     const idle = codex("›");
     const cli = terminal(idle, codex(`› ${kickoff}`));
     await expect(submitCliPrompt(cli, "cli_session:codex", kickoff, "trace:1", "trace:1:nous", { delayMs: 0 })).rejects.toThrow(/unsent draft/);
-    expect(cli.typed.filter((data) => data === "\r")).toHaveLength(3);
+    expect(cli.typed.filter((data) => data === "\r")).toHaveLength(4);
     const pasted = terminal(idle, codex("› [Pasted Content 1532 chars]"), idle);
     await submitCliPrompt(pasted, "cli_session:codex", kickoff, "trace:2", "trace:2:nous", { delayMs: 0 });
     expect(pasted.typed.slice(1)).toEqual(["\r", "\r"]);

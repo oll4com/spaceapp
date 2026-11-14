@@ -86,6 +86,7 @@
 .settings-flat-heading-actions {
   min-width: 0;
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 0.35rem;
@@ -166,6 +167,22 @@
   color: var(--room-muted, #a7a59e);
   font-size: 0.68rem;
   line-height: 1.4;
+}
+
+/* A card's buttons: one row that wraps; in the narrow dock each button takes the row's width it gets, never squeezing text beside it. */
+.settings-flat-actions {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  border-top: 1px solid var(--room-border, #303437);
+  padding: 0.5rem 0;
+}
+
+.agent-settings-dock:not(.is-fullscreen) .settings-flat-actions > :is(button, a) {
+  flex: 1 1 auto;
+  justify-content: center;
 }
 
 .settings-flat-note {

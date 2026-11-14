@@ -1,7 +1,14 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { InMemorySiteSigninsRepository } from "@space/db";
 import Fastify from "fastify";
+import { JSDOM } from "jsdom";
 import { describe, expect, it, vi } from "vitest";
-import { generateVaultTransportKey, newVaultHandle, openWithVaultPrivateKey, sealVaultEnvelope, vaultBase64url, vaultHostSignupRequestSchema, vaultRandomBytes, type Pane, type VaultHostTarget } from "@space/contracts";
+import { generateVaultTransportKey, newVaultHandle, openWithVaultPrivateKey, sealVaultEnvelope, vaultBase64url, vaultHostSignupRequestSchema, vaultRandomBytes, VAULT_CARD_ROLES, type Pane, type VaultHostTarget } from "@space/contracts";
+import { createBrowserControlActivity } from "../src/browser-control-activity.js";
+import { pageReadout } from "../src/browser-page-readout.js";
+import { captureMaskedScreenshot } from "../src/browser-sessions.js";
 import { issueCliBrowserBridgeToken, cliBrowserBridgeTokenHeader } from "../src/cli-browser-bridge.js";
 import { getApiConfig } from "../src/config.js";
 import { createVaultAgent } from "../src/vault/agent.js";
@@ -287,6 +294,74 @@ describe("Vault protected browser", () => {
     expect(await protection.protect("user:bob", PROTECTED, { targetId: "target-1", origin: LOGIN, document: null })).toBe(false);
     expect(await protection.ownerOf(PROTECTED)).toBe("user:alice");
   });
+
+  it("gives the CLI that drives the fenced browser pane the masked view, never the filled value, and a CLI that does not drive it nothing (13/11 Nous, plan clipboard:R4ypY6u56pAb)", async () => {
+    // A fence that names no viewer (a Nous fill, a handoff Nous asked for, this pane's earlier CLI session): only its driver is known.
+    const { protection } = memoryProtection();
+    await protection.protect("user:alice", PROTECTED, { targetId: "target-1", origin: LOGIN, document: "doc-1" });
+    const activity = createBrowserControlActivity();
+    activity.noteAgent(PROTECTED, "pane:cliterminal1");
+    // The fenced page, a real DOM: the secret in a password box, the same box shown as text, a text area and an editable area.
+    const dom = new JSDOM(`<!doctype html><title>Sign In</title><h1>Sign in</h1><form><input type="email" value="alice@example.com">
+      <input type="password" value="${SENTINEL}"><input type="text" value="${SENTINEL}"><textarea>${SENTINEL}</textarea><div contenteditable="true">${SENTINEL}</div></form>
+      <div role="alert">Invalid username or password.</div>`, { runScripts: "outside-only", url: `${LOGIN}/signin` });
+    const window = dom.window;
+    window.Element.prototype.getBoundingClientRect = () => ({ width: 120, height: 24 }) as DOMRect;
+    Object.defineProperty(window.HTMLElement.prototype, "innerText", { get(this: HTMLElement) { return this.textContent; } });
+    // What a shot draws: the page's text, with each field's text as dots where the page's style hides it (-webkit-text-security).
+    const draw = () => [window.document.title, ...[...window.document.querySelectorAll<HTMLElement>("h1,[role=alert],input,textarea,[contenteditable]")].map((el) => {
+      const text = "value" in el ? String((el as HTMLInputElement).value) : el.textContent ?? "";
+      return window.getComputedStyle(el).getPropertyValue("-webkit-text-security") === "disc" ? "•".repeat(text.length) : text;
+    })].join("\n");
+    expect(draw()).toContain(SENTINEL);
+    const cdp = { close: () => undefined, async send(method: string, params: Record<string, unknown> = {}) {
+      if (method === "Target.attachToTarget") return { sessionId: "s1" };
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame-1" } } };
+      if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
+      if (method === "Runtime.evaluate") return { result: { value: window.eval(String(params.expression)) } };
+      if (method === "Page.captureScreenshot") return { data: Buffer.from(draw()).toString("base64") };
+      return {};
+    } };
+    const profile = await mkdtemp(join(tmpdir(), "space-fence-driver-"));
+    await writeFile(join(profile, "DevToolsActivePort"), "9222\n/devtools/browser/fake\n");
+    // The real hook in front of the real masked screenshot and masked readout.
+    const fences = Fastify();
+    registerVaultFences(fences, { protection, config, controlActivity: activity });
+    fences.post("/api/cli/browser/actions", async () => ({ shot: Buffer.from(await captureMaskedScreenshot(cdp.send as never), "base64").toString() }));
+    fences.post("/api/cli/browser/commands", async () => pageReadout({ config: { browserSessionsProfileRoot: profile },
+      pane: { id: PROTECTED, roomId: "room:vaultroom1" } as never, session: { activePageId: "target-1", pages: [{ pageId: "target-1" }], profilePath: profile } as never }, async () => cdp as never));
+    const as = (paneId: string, cliSessionId: string) => ({ [cliBrowserBridgeTokenHeader]: issueCliBrowserBridgeToken(config, { roomId: "room:vaultroom1", paneId, cliSessionId })!,
+      "content-type": "application/json" });
+    const action = (headers: Record<string, string>, type: string) => fences.inject({ method: "POST", url: "/api/cli/browser/actions", headers,
+      payload: { actions: [{ targetPaneId: PROTECTED, action: { type } }] } });
+    const readout = (headers: Record<string, string>) => fences.inject({ method: "POST", url: "/api/cli/browser/commands", headers,
+      payload: { targetPaneId: PROTECTED, command: { type: "PAGE_READOUT" } } });
+    try {
+      // (1) The driving CLI (a later session of the pane that drives it) sees the page and the site's error, never the filled value.
+      const driver = as("pane:cliterminal1", "cli_session:resumed05");
+      const shot = await action(driver, "masked_screenshot");
+      expect(shot.statusCode).toBe(200);
+      expect(shot.body).toContain("Invalid username or password.");
+      const read = await readout(driver);
+      expect(read.statusCode).toBe(200);
+      expect(read.json()).toMatchObject({ host: "login.example", path: "/signin", title: "Sign In", messages: expect.arrayContaining(["Invalid username or password."]) });
+      expect(shot.body + read.body).not.toContain(SENTINEL);
+      expect(window.document.getElementById("__space_vault_mask")).toBeNull();
+      // Only masked: every read that could carry the value stays refused to the driver too.
+      for (const type of ["screenshot", "extract_text", "record", "diagnostics"]) expect((await action(driver, type)).json().error.code, type).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+      // (2) A CLI that does not drive the fenced pane gets nothing; nor does any CLI once another pane drives it.
+      for (const other of [as("pane:cliterminal2", "cli_session:other003"), as(OTHER, "cli_session:other002")]) {
+        expect((await action(other, "masked_screenshot")).json().error.code).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+        expect((await readout(other)).json().error.code).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+      }
+      activity.noteAgent(PROTECTED, "pane:cliterminal2");
+      expect((await action(driver, "masked_screenshot")).json().error.code).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+      expect((await readout(driver)).json().error.code).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+    } finally {
+      await fences.close();
+      await rm(profile, { recursive: true });
+    }
+  });
 });
 
 describe("Vault fill path for agents and Nous", () => {
@@ -300,7 +375,9 @@ describe("Vault fill path for agents and Nous", () => {
     /** Whether the host says it takes freshDocument (default: when the marks are given); an older host never gets the field. */
     hostAcceptsFresh?: boolean;
     /** Whether the host says it takes a generate policy (queue item 37: after its guarded restart). */
-    hostTakesPolicy?: boolean } = {}) {
+    hostTakesPolicy?: boolean;
+    /** The item is a payment card (plan clipboard:qf0P640vyLp2); hostCards: the host fills cards. */
+    card?: boolean; hostCards?: boolean } = {}) {
     const repository = fakeRepository() as ReturnType<typeof fakeRepository> & Record<string, any>;
     const { body } = await enrollment((await generateVaultTransportKey()).publicKey, "user:alice");
     const { sealedServerShare: _sealed, ...rest } = body;
@@ -309,10 +386,13 @@ describe("Vault fill path for agents and Nous", () => {
     const inbox = await generateVaultTransportKey();
     await repository.setInbox("user:alice", { publicKey: vaultBase64url.encode(inbox.publicKey), privateKeyEnvelope: {} });
     const record = await itemRecord("user:alice", body.vaultId);
-    await repository.saveItem("user:alice", { ...record, metadata: { ...record.metadata, origins: [LOGIN], policy: { ...record.metadata.policy, agentUse: options.agentUse ?? true } } });
+    const kind = options.card ? { origins: [], fieldRoles: [...VAULT_CARD_ROLES], card: { brand: "VISA", last4: "4242" } } : { origins: [LOGIN] };
+    await repository.saveItem("user:alice", { ...record, metadata: { ...record.metadata, ...kind, policy: { ...record.metadata.policy, agentUse: options.agentUse ?? true } } });
     const handle = record.metadata.id;
-    if (options.delegation !== false) await repository.createDelegation("user:alice", { keyEnvelope: { sealed: "key" }, fillEnvelopes: { [handle]: { PASSWORD: { sealed: "field" } } },
-      certificate: { claims: { generation: 1, vaultId: body.vaultId, items: [{ handle, origins: [LOGIN], fields: ["USERNAME", "PASSWORD"], approvalMode: options.approvalMode ?? "FULL", submit: true }] } } });
+    const delegated = options.card ? { origins: [], fields: [...VAULT_CARD_ROLES], submit: false } : { origins: [LOGIN], fields: ["USERNAME", "PASSWORD"], submit: true };
+    if (options.delegation !== false) await repository.createDelegation("user:alice", { keyEnvelope: { sealed: "key" },
+      fillEnvelopes: { [handle]: Object.fromEntries(delegated.fields.filter((field) => field !== "USERNAME").map((field) => [field, { sealed: "field" }])) },
+      certificate: { claims: { generation: 1, vaultId: body.vaultId, items: [{ handle, ...delegated, approvalMode: options.approvalMode ?? "FULL" }] } } });
     for (const sites of options.grants ?? []) {
       await repository.addSignupGrant("user:alice", { claims: { grantId: newVaultHandle("vault_grant"), ownerUserId: "user:alice", sites, dailyCap: 3, issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString() } });
     }
@@ -335,7 +415,7 @@ describe("Vault fill path for agents and Nous", () => {
       return { status, reason: status === "FILLED" ? null : "FIELD_NOT_FOUND", sealedGenerated: status === "FILLED" && (request.mode === "GENERATE" || request.mode === "SIGNUP") ? sealed : null, ...reported };
     });
     const vaultTarget = vi.fn(async () => page({ origin: options.origin ?? LOGIN, ...((options.hostAcceptsFresh ?? Boolean(options.documentDirty)) ? { freshDocument: true } : {}),
-      ...(options.hostTakesPolicy ? { generatePolicy: true } : {}) }));
+      ...(options.hostTakesPolicy ? { generatePolicy: true } : {}), ...(options.hostCards ? { cards: true } : {}) }));
     const panes = [{ id: "pane:cliterminal1", roomId: "room:vaultroom1", mode: "TERMINAL", isClosed: false }, { id: PROTECTED, roomId: "room:vaultroom1", mode: "BROWSER", isClosed: false },
       { id: OTHER, roomId: "room:vaultroom1", mode: "BROWSER", isClosed: false }, { id: "pane:bobsbrowser", roomId: "room:vaultroom1", mode: "BROWSER", isClosed: false }] as Pane[];
     const siteSignins = new InMemorySiteSigninsRepository();
@@ -343,7 +423,7 @@ describe("Vault fill path for agents and Nous", () => {
       paneOwner: async (paneId) => paneId === "pane:bobsbrowser" ? "user:bob" : "user:alice", documentDirty: options.documentDirty, documentDirtiedBy: options.documentDirtiedBy });
     const vault = { repository, protection, broker: { issueUse }, agent } as unknown as VaultModule;
     const app = Fastify();
-    registerVaultAgentBridge(app, vault, { store: { getRoom: () => ({ ownerUserId: "user:alice" }) }, requireBridge: async () => ({ claims: { roomId: "room:vaultroom1", paneId: "pane:cliterminal1" } }) });
+    registerVaultAgentBridge(app, vault, { store: { getRoom: () => ({ ownerUserId: "user:alice" }) }, requireBridge: async () => ({ claims: { roomId: "room:vaultroom1", paneId: "pane:cliterminal1", cliSessionId: "cli_session:vault01" } }) });
     const post = (path: string, payload: unknown) => app.inject({ method: "POST", url: `/api/cli/space-vault/${path}`, payload: payload as never });
     const fill = (patch: Record<string, unknown> = {}) => post("fill", { handle, fields: ["PASSWORD"], ...patch });
     const generate = (purpose: "NEW_ACCOUNT" | "CHANGE_PASSWORD") => post("generate-fill",
@@ -384,9 +464,73 @@ describe("Vault fill path for agents and Nous", () => {
     for (let index = 0; index < 8; index += 1) expect((await fill({ submit: true })).json()).toMatchObject({ status: "FILLED" });
     expect(issueUse).toHaveBeenCalledWith(expect.objectContaining({ paneId: PROTECTED, targetId: "target-1", frameId: "frame-1", origin: LOGIN, fields: ["PASSWORD"], submit: true, epoch: 1 }));
     expect(vaultFill).toHaveBeenCalledWith(expect.objectContaining({ id: PROTECTED }), expect.objectContaining({ mode: "FILL", keyEnvelope: { sealed: "key" } }), expect.any(String));
-    expect(rows.get(PROTECTED)).toEqual({ owner: "user:alice", fill: { targetId: "target-1", origin: LOGIN, document: "doc-1" } });
+    expect(rows.get(PROTECTED)).toEqual({ owner: "user:alice", fill: { targetId: "target-1", origin: LOGIN, document: "doc-1", viewer: "cli:cli_session:vault01" } });
     expect((await audits())[0]).toMatchObject({ actor: "AGENT", action: "FILL", result: "FILLED", paneId: "pane:cliterminal1" });
     await app.close();
+  });
+
+  it("gives the CLI that filled the browser pane it drives the masked view of that page, nothing unmasked, and no other pane anything (13/11 Felix/Hugo)", async () => {
+    const { fill, vault, app, rows, audits } = await bridgeApp();
+    const answer = await fill({ submit: false });
+    expect(answer.json()).toMatchObject({ status: "FILLED" });
+    // The same fence the bridge just set, behind the real hook: the terminal pane filled PROTECTED, the room browser it drives.
+    const fences = Fastify();
+    registerVaultFences(fences, { protection: vault.protection, config });
+    fences.post("/api/cli/browser/actions", async () => ({ ok: true }));
+    fences.post("/api/cli/browser/commands", async () => ({ ok: true }));
+    const as = (paneId: string, cliSessionId: string) => ({ [cliBrowserBridgeTokenHeader]: issueCliBrowserBridgeToken(config, { roomId: "room:vaultroom1", paneId, cliSessionId })!,
+      "content-type": "application/json" });
+    const filler = as("pane:cliterminal1", "cli_session:vault01");
+    const action = (headers: Record<string, string>, type: string) => fences.inject({ method: "POST", url: "/api/cli/browser/actions", headers,
+      payload: { actions: [{ targetPaneId: PROTECTED, action: { type } }] } });
+    const readout = (headers: Record<string, string>) => fences.inject({ method: "POST", url: "/api/cli/browser/commands", headers,
+      payload: { targetPaneId: PROTECTED, command: { type: "PAGE_READOUT" } } });
+    // (a) The filling CLI gets the masked screenshot and the masked readout of the page it filled.
+    expect((await action(filler, "masked_screenshot")).statusCode).toBe(200);
+    expect((await readout(filler)).statusCode).toBe(200);
+    // (b) Only masked: every read that could carry the filled value stays refused for it too, and no answer carries the value.
+    for (const type of ["screenshot", "extract_text", "record", "diagnostics"]) expect((await action(filler, type)).json().error.code, type).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+    expect(answer.body + JSON.stringify(rows.get(PROTECTED)) + JSON.stringify(await audits())).not.toContain(SENTINEL);
+    // (c) By the viewer alone, any other pane or another CLI session in the same pane gets nothing (clicks stay open to it); the CLI pane
+    // that drives the browser gets the masked view by the driver rule (the "drives the fenced browser pane" case).
+    for (const other of [as(OTHER, "cli_session:other002"), as("pane:cliterminal2", "cli_session:other003"), as("pane:cliterminal1", "cli_session:later04")]) {
+      expect((await action(other, "click")).statusCode).toBe(200);
+      expect((await action(other, "masked_screenshot")).json().error.code).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+      expect((await readout(other)).json().error.code).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+    }
+    await fences.close();
+    await app.close();
+  });
+
+  it("fills a card at any clean https checkout, never submitting, fenced and audited with where (plan clipboard:qf0P640vyLp2)", async () => {
+    const checkout = "https://checkout.shop.example";
+    const shop = await bridgeApp({ card: true, hostCards: true, origin: checkout });
+    try {
+      const answer = await shop.post("card-fill", { handle: shop.handle });
+      expect(answer.json()).toEqual({ status: "FILLED", auditId: expect.stringMatching(/^vault_audit:/), reason: null });
+      expect(shop.issueUse).toHaveBeenCalledWith(expect.objectContaining({ handle: shop.handle, origin: checkout, fields: [...VAULT_CARD_ROLES], submit: false, paneId: PROTECTED }));
+      expect(shop.issueUse.mock.calls[0]![0]).not.toHaveProperty("generate");
+      expect(shop.vaultFill).toHaveBeenCalledWith(expect.objectContaining({ id: PROTECTED }), expect.objectContaining({ mode: "CARD", fieldEnvelopes: expect.objectContaining({ CARD_NUMBER: { sealed: "field" } }) }), expect.any(String));
+      expect((await shop.audits())[0]).toMatchObject({ actor: "AGENT", action: "FILL", result: "FILLED", itemId: shop.handle, origin: checkout, paneId: "pane:cliterminal1" });
+      expect(shop.rows.get(PROTECTED)).toMatchObject({ owner: "user:alice", fill: { origin: checkout } });
+      // The list names the card by brand and last four only; a site filter still lists it.
+      expect((await shop.post("list", { site: "checkout.shop.example" })).json().items).toEqual([{ handle: shop.handle, label: "Synthetic", origins: [], fields: [...VAULT_CARD_ROLES], card: "VISA ••4242" }]);
+      // A login fill with the card's handle asks for fields the card does not hold.
+      expect((await shop.fill()).json()).toMatchObject({ status: "BLOCKED", reason: "NOT_DELEGATED" });
+      expect(answer.body + JSON.stringify(await shop.audits())).not.toContain(SENTINEL);
+    } finally { await shop.app.close(); }
+    // An older host, a page that is not clean https, a login's handle: refused before the broker is asked, nothing fenced.
+    for (const [options, status, reason] of [[{ card: true, origin: checkout }, "BLOCKED", "CARD_NEEDS_HOST_RESTART"],
+      [{ card: true, hostCards: true, origin: "http://shop.example" }, "ORIGIN_MISMATCH", "CARD_NEEDS_HTTPS"], [{ card: true, hostCards: true, origin: "https://10.0.0.1" }, "ORIGIN_MISMATCH", "CARD_NEEDS_HTTPS"],
+      [{ hostCards: true }, "BLOCKED", "NOT_A_CARD"], [{ card: true, hostCards: true, agentUse: false, origin: checkout }, "BLOCKED", "NOT_DELEGATED"]] as const) {
+      const refused = await bridgeApp(options);
+      try {
+        expect((await refused.post("card-fill", { handle: refused.handle })).json(), reason).toMatchObject({ status, reason });
+        expect(refused.issueUse).not.toHaveBeenCalled();
+        expect(refused.vaultFill).not.toHaveBeenCalled();
+        expect(refused.rows.size).toBe(0);
+      } finally { await refused.app.close(); }
+    }
   });
 
   it("refuses while agent access is off, at another origin, for a hidden item or another owner's browser, before the broker is asked", async () => {
@@ -422,7 +566,7 @@ describe("Vault fill path for agents and Nous", () => {
     // The host reloads the page before typing: the fence moves to that document instead of lifting on the next release check.
     const reloaded = await bridgeApp({ hostDocument: "doc-2" });
     expect((await reloaded.fill()).json().status).toBe("FILLED");
-    expect(reloaded.rows.get(PROTECTED)).toEqual({ owner: "user:alice", fill: { targetId: "target-1", origin: LOGIN, document: "doc-2" } });
+    expect(reloaded.rows.get(PROTECTED)).toEqual({ owner: "user:alice", fill: { targetId: "target-1", origin: LOGIN, document: "doc-2", viewer: "cli:cli_session:vault01" } });
     await reloaded.app.close();
     // NEW_ACCOUNT through the sign-up path reports the same way.
     const signup = await bridgeApp({ grants: [[LOGIN]], signup: () => ({ status: "BLOCKED", reason: "FOCUS_LOST" }), hostTyped: true });
@@ -520,6 +664,19 @@ describe("Vault fill path for agents and Nous", () => {
     expect(await granted.repository.listPending("user:alice")).toEqual([expect.objectContaining({ kind: "NEW_ACCOUNT", label: "Synthetic new", origin: LOGIN, sealedPassword: granted.sealed, paneId: PROTECTED })]);
     expect(granted.rows.has(PROTECTED)).toBe(true);
     await granted.app.close();
+  });
+
+  it("13/11 DCM: a retried sign-up waits for no reset and changes its own login instead of making a second item", async () => {
+    const retry = await bridgeApp({ grants: [[LOGIN]], signup: () => ({ status: "FILLED", reason: null }) });
+    expect((await retry.generate("NEW_ACCOUNT")).json().status).toBe("FILLED");
+    expect((await retry.generate("NEW_ACCOUNT")).json().status).toBe("FILLED");
+    const [first, second] = await retry.repository.listPending("user:alice");
+    expect(first).toMatchObject({ kind: "NEW_ACCOUNT", origin: LOGIN });
+    expect(second).toMatchObject({ kind: "CHANGE_PASSWORD", handle: first!.handle, origin: LOGIN });
+    // A real reset at the site still waits (7/11 Oracle); another label is another account.
+    expect((await retry.generate("CHANGE_PASSWORD")).json().reason).toBe("RESET_PENDING");
+    expect((await retry.post("generate-fill", { purpose: "NEW_ACCOUNT", label: "Other account" })).json().reason).toBe("RESET_PENDING");
+    await retry.app.close();
   });
 
   it("generates a changed password into the operator's inbox", async () => {

@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { findFileMentions, NOTIFICATION_SOURCES, NOTIFICATION_SOURCE_LABELS, type NotificationSource, type SpaceNotification } from "@space/contracts";
 import { AgentFileMentions, FileMentionText } from "../terminal-pane/AgentFileLinks.js";
 import { DockButton, DockChips, DockIconButton, DockState, DockToolbar } from "../dock-kit/DockKit.js";
-import { Bell, Check, CheckCircle2 } from "../ui-theme/app-icons.js";
+import { Bell, Check, CheckCircle2, ExternalLink } from "../ui-theme/app-icons.js";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
-import { ackNotification, isNousPaneCard, loadEarlierNotifications, openNotification, readAllNotifications, refreshNotifications, useNotificationStore } from "./notification-store.js";
+import { ackNotification, isNousPaneCard, loadEarlierNotifications, notificationJoinUrl, openNotification, readAllNotifications, refreshNotifications, useNotificationStore } from "./notification-store.js";
 import { notificationSourceIcons } from "./notification-source-icons.js";
 import "./notifications.css";
 
@@ -21,6 +21,7 @@ function when(iso: string, now = Date.now()): string {
 
 function notificationRow(item: SpaceNotification) {
   const Icon = notificationSourceIcons[item.source];
+  const join = notificationJoinUrl(item);
   return (
     <>
       <button type="button" className="notification-item-main" onClick={() => openNotification(item)} aria-label={`${item.status === "OPEN" ? "Unread: " : ""}${NOTIFICATION_SOURCE_LABELS[item.source]}: ${item.title}`}>
@@ -38,6 +39,7 @@ function notificationRow(item: SpaceNotification) {
         <DockIconButton label="Acknowledge" icon={Check} title="Acknowledge" onClick={() => void ackNotification(item.id)} />
       ) : null}
       {/* nous_msg:8e7e6c25: the files a reminder or card names open from here (the row itself is a button, so they sit under it). */}
+      {join ? <p className="notification-item-files"><a className="notification-join" href={join} target="_blank" rel="noreferrer noopener"><ExternalLink aria-hidden="true" />Join {new URL(join).hostname}</a></p> : null}
       {findFileMentions(item.body).length ? <p className="notification-item-files"><FileMentionText text={findFileMentions(item.body).map((mention) => mention.text).join("  ")} /></p> : null}
     </>
   );

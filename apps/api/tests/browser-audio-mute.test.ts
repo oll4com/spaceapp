@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
-import { audibleMessagePaneIds, createBrowserAudioMute, pulseBrowserAudioMuteDeps } from "../src/browser-audio-mute.js";
+import { audibleMessagePaneIds, createBrowserAudioMute, pulseBrowserAudioMuteDeps, soundingChromeProfiles } from "../src/browser-audio-mute.js";
 
 // Operator 2/11 14:22 BKK: a Twitch tab in a browser pane nobody looked at played on their computer.
 describe("browser audio mute at the source", () => {
@@ -28,6 +28,18 @@ describe("browser audio mute at the source", () => {
     const sets = () => calls.filter((args) => args[0] === "set-sink-input-mute").map((args) => args.slice(1).join("="));
     return { inputs, mute, sets, stopWatch, onNew };
   }
+
+  it("names the Chromes playing sound, muted or not, so the idle sweep never freezes them (light browser step 4)", async () => {
+    const inputs = [
+      { index: 1, mute: true, corked: false, properties: { "application.process.id": "100" } }, // plays, muted at the source
+      { index: 2, mute: false, corked: true, properties: { "application.process.id": "200" } }, // paused
+      { index: 3, mute: false, properties: { "application.process.id": "300" } }, // no corked field: counts as playing
+      { index: 4, mute: false, corked: false, properties: { "application.process.id": "400" } } // not a managed Chrome
+    ];
+    const profiles: Record<number, string> = { 100: "/profiles/twitch/", 200: "/profiles/idle", 300: "/profiles/radio" };
+    const sounding = await soundingChromeProfiles({ pactl: async () => JSON.stringify(inputs), chromeProfileOf: async (pid) => profiles[pid] ?? null });
+    expect([...sounding].sort()).toEqual(["/profiles/radio", "/profiles/twitch"]);
+  });
 
   it("mutes every Chrome but the audible panes', all of them while no socket is open, and leaves unknown streams", async () => {
     const { inputs, mute, sets, stopWatch, onNew } = fixture();

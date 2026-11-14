@@ -72,7 +72,7 @@ describe("workspace files named in Space's texts go to Agent Files (nous_msg:8e7
     const service = createAppointmentsService({ store: { getUserSettings: async () => null } as never, annotate });
     // The sections every upcoming appointment needs (nous_msg:a6016259), the file in its last one.
     const sections = "ΤΙ ΕΙΝΑΙ: γνωριμία\nΕΙΣΟΔΟΣ: Teams, χωρίς λογαριασμό\nΓΙΑΤΙ ΑΞΙΖΕΙ: στάδιο 1\nΠΗΓΗ: mail\nΤΙ ΧΡΕΙΑΖΕΣΑΙ: ";
-    const item = await service.add("user:operator", { title: "WIM", startsAt: "2026-11-05T05:00:00.000Z", kind: "INTERVIEW", format: "LIVE_HUMAN_VIDEO", timing: "FIXED",
+    const item = await service.add("user:operator", { title: "WIM", startsAt: "2026-11-05T05:00:00.000Z", kind: "INTERVIEW", format: "LIVE_HUMAN_VIDEO", timing: "FIXED", location: "https://teams.microsoft.com/l/w",
       notes: `${sections}nous/job/interview-prep/w.md` });
     expect(item.notes).toBe(`${sections}nous/job/interview-prep/w.md (artifact:prepINTERVIEW)`);
     expect((await service.update("user:operator", item.id, { notes: `${sections}nous/a.md` })).notes).toBe(`${sections}nous/a.md (artifact:prep)`);

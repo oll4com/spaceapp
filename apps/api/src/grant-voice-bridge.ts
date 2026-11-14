@@ -62,7 +62,7 @@ function openSpeech(plan: GrantVoicePlan, connect: GrantConnect, on: Events): Sp
     return { socket, audio: (pcm) => socket.send(pcm), end: () => socket.send(JSON.stringify({ type: "Terminate" })) };
   }
   if (engine === "cartesia") {
-    // shortcut: built from Cartesia's published STT docs without a key to test against; check it once the grant key is installed.
+    // Checked with the grant key 13/11: a final transcript comes on its own about 0-0.3 s into silence; with no language Ink writes English.
     const query = new URLSearchParams({ model: plan.stt.model ?? "ink-whisper", encoding: "pcm_s16le", sample_rate: "16000", ...(language ? { language } : {}) });
     const socket = connect(`${CARTESIA_STT_URL}?${query}`, { "X-API-Key": plan.keys.cartesia ?? "", "Cartesia-Version": CARTESIA_VERSION });
     socket.on("open", () => on.started());
@@ -134,11 +134,14 @@ export function bridgeGrantVoice(client: WebSocket, options: {
   connect?: GrantConnect;
   fetch?: typeof fetch;
   onClose?: (metadata: { reason: string; replies: number }) => void;
+  /** LiveKit Inference use, for the grant's meter (livekit-meter.ts): the session's speech seconds at its end, each reply's characters as it is sent. */
+  meter?: (use: { kind: "stt" | "tts"; model: string; seconds?: number; characters?: number }) => void;
 }): () => void {
   const deps = { connect: options.connect ?? connectGrant, fetch: options.fetch ?? fetch };
   const { plan } = options;
   let stopped = false;
   let replies = 0;
+  let speechBytes = 0;
   let cancelReply: (() => void) | null = null;
   const toClient = (data: Buffer | string) => {
     if (stopped || client.readyState !== 1) return;
@@ -158,11 +161,14 @@ export function bridgeGrantVoice(client: WebSocket, options: {
     if (ended) { const cut = setTimeout(() => speech.socket.terminate(), END_GRACE_MS); speech.socket.once("close", () => clearTimeout(cut)); }
     else if (speech.socket.readyState < 2) speech.socket.terminate();
     if (client.readyState < 2) client.close(code, reason);
+    // 16 kHz s16le mono: 32,000 bytes a second.
+    if (plan.stt.engine === "livekit" && speechBytes) options.meter?.({ kind: "stt", model: plan.stt.model ?? "deepgram/nova-3", seconds: speechBytes / 32_000 });
     options.onClose?.({ reason, replies });
   };
   const say = (text: string, voice: string) => {
     endReply();
     replies += 1;
+    if (plan.tts.engine === "livekit") options.meter?.({ kind: "tts", model: plan.tts.model ?? "cartesia/sonic-3", characters: text.length });
     let finished = false;
     const cancel = speak(plan, text, voice, deps, (pcm) => { if (!finished && cancelReply === cancel) toClient(pcm); }, (reason) => {
       if (finished || cancelReply !== cancel) return;
@@ -186,7 +192,7 @@ export function bridgeGrantVoice(client: WebSocket, options: {
     if (stopped) return;
     const frame = asBuffer(data);
     if (frame.length > MAX_CLIENT_FRAME) { stop("voice_frame_too_large", 1009); return; }
-    if (isBinary) { if (speech.socket.readyState === 1) speech.audio(frame); return; }
+    if (isBinary) { if (speech.socket.readyState === 1) { speech.audio(frame); speechBytes += frame.length; } return; }
     let message: { type?: unknown; text?: unknown; voice?: unknown; speaking?: unknown };
     try { message = JSON.parse(frame.toString("utf8")); } catch { stop("voice_invalid_message", 1008); return; }
     if (message.type === "say" && typeof message.text === "string" && message.text.trim()) say(message.text.slice(0, MAX_SAY_CHARS), grantVoice(plan.tts, message.voice));

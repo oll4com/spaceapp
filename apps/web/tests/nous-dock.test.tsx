@@ -197,11 +197,11 @@ describe("Nous dock", () => {
     const savedViews = await screen.findByRole("group", { name: "Nous views" });
     await waitFor(() => expect(within(savedViews).queryByRole("button", { name: "Done" })).toBeNull());
     expect(within(savedViews).queryByRole("button", { name: "Quotas" })).toBeNull();
-    expect(within(savedViews).getAllByRole("button")).toHaveLength(16);
+    expect(within(savedViews).getAllByRole("button")).toHaveLength(17);
   });
 
   it("shows Conversation alone when every optional tab is off", async () => {
-    serve({ state: state({ settings: { ...state().settings, dockTabs: { needs: false, done: false, updates: false, requests: false, shared: false, decisions: false, overview: false, panes: false, plans: false, goals: false, startup: false, funding: false, jobs: false, crypto: false, marketing: false, quotas: false, load: false, score: false } } }) });
+    serve({ state: state({ settings: { ...state().settings, dockTabs: { needs: false, done: false, updates: false, requests: false, shared: false, decisions: false, overview: false, panes: false, plans: false, goals: false, startup: false, affiliate: false, funding: false, jobs: false, crypto: false, marketing: false, quotas: false, load: false, score: false } } }) });
     render(<NousDock canRun />);
     const views = await screen.findByRole("group", { name: "Nous views" });
     await waitFor(() => expect(within(views).getAllByRole("button")).toHaveLength(1));
@@ -1318,11 +1318,11 @@ describe("Nous dock", () => {
     expect(calls.filter((call) => call.url.startsWith("/api/nous/score"))).toHaveLength(2);
   });
 
-  it("has eighteen views (Updates 2026-11-04, Marketing 2026-11-05, oll4.com funding gone 2026-11-07), no Tokens view (operator request 2026-10-21; Needs you 2026-10-24; Goals 2026-10-27; Quotas 2026-10-29; Shared, Requests and Load 2026-10-31; Startup programs, Job applications, Crypto and Score 2026-11-03)", async () => {
+  it("has nineteen views (Affiliate 2026-11-14, Updates 2026-11-04, Marketing 2026-11-05, oll4.com funding gone 2026-11-07), no Tokens view (operator request 2026-10-21; Needs you 2026-10-24; Goals 2026-10-27; Quotas 2026-10-29; Shared, Requests and Load 2026-10-31; Startup programs, Job applications, Crypto and Score 2026-11-03)", async () => {
     const calls = serve();
     render(<NousDock canRun />);
     const views = await screen.findByRole("group", { name: "Nous views" });
-    expect(within(views).getAllByRole("button").map((button) => button.querySelector(".dock-kit-chip-label")?.textContent)).toEqual(["Conversation", "Needs you", "Done", "Updates", "Requests", "Shared", "Decisions", "Overview", "Panes", "Plans", "Goals", "Startup programs", "Job applications", "Crypto", "Marketing", "Quotas", "Load", "Score"]);
+    expect(within(views).getAllByRole("button").map((button) => button.querySelector(".dock-kit-chip-label")?.textContent)).toEqual(["Conversation", "Needs you", "Done", "Updates", "Requests", "Shared", "Decisions", "Overview", "Panes", "Plans", "Goals", "Startup programs", "Affiliate", "Job applications", "Crypto", "Marketing", "Quotas", "Load", "Score"]);
     // One line of icon tabs (operator request 2026-10-27): every tab has its icon, its name as the tooltip, and the chosen one is pressed.
     expect(within(views).getAllByRole("button").every((button) => button.querySelector("svg.dock-kit-chip-icon") && button.getAttribute("title") === button.querySelector(".dock-kit-chip-label")?.textContent)).toBe(true);
     expect(within(views).getByRole("button", { name: "Conversation" }).getAttribute("aria-pressed")).toBe("true");
@@ -1492,6 +1492,19 @@ describe("Nous dock", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
+  it("shows a mail review's own draft under What it sends when Nous named no files (operator 13/11 21:43 BKK)", async () => {
+    const review: NousDecision = { ...decision, id: "nous_decision:mailrev00001", category: "EXTERNAL", title: "Send the reply to Fares?", refs: {},
+      action: { type: "COPILOT", copilot: "MAIL", item: "REVIEW", itemId: "mailrev:lddyXCl-tHDS", paneId: null, decision: "approve" } };
+    const calls = serve({ decisions: [review], decisionFiles: [{ ref: "mailrev:lddyXCl-tHDS (the review's own draft)",
+      text: "From: me@gmail.com\nTo: fares@example.com\nSubject: Re: Offer\n\nHi Fares, the whole reply.", total: 70, truncated: false }] });
+    render(<NousDock canRun />);
+    fireEvent.click(within(await screen.findByRole("article", { name: review.title })).getByRole("button", { name: "Show everything" }));
+    const everything = screen.getByRole("dialog", { name: `Everything about: ${review.title}` });
+    expect(await within(everything).findByText(/Hi Fares, the whole reply\./)).toBeTruthy();
+    expect(within(everything).queryByText(/Nous named no files/)).toBeNull();
+    expect(calls.some((call) => call.url === "/api/nous/decisions/nous_decision%3Amailrev00001/files")).toBe(true);
+  });
+
   it("says so when a decision names no files, without asking for any", async () => {
     const calls = serve();
     render(<NousDock canRun />);
@@ -1581,7 +1594,7 @@ describe("Nous dock", () => {
     const views = screen.getByRole("group", { name: "Nous views" });
     const section = (name: string) => [...within(views).getByRole("group", { name }).querySelectorAll(".dock-kit-chip-label")].map((label) => label.textContent);
     expect(section("Me")).toEqual(["Conversation", "Needs you", "Decisions", "Done", "Updates", "Requests", "Shared"]);
-    expect(section("Work")).toEqual(["Overview", "Panes", "Plans", "Goals", "Startup programs", "Job applications", "Crypto", "Marketing"]);
+    expect(section("Work")).toEqual(["Overview", "Panes", "Plans", "Goals", "Startup programs", "Affiliate", "Job applications", "Crypto", "Marketing"]);
     expect(section("System")).toEqual(["Quotas", "Load", "Score", "Task runs"]);
     const decisions = await within(views).findByRole("button", { name: /^Decisions\s*1$/ });
     expect(decisions.querySelector(".dock-kit-chip-count")!.classList.contains("is-attention")).toBe(true);

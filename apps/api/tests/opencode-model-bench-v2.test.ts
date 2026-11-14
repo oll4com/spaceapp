@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { InMemorySystemAnalyticsRepository } from "@space/db";
-import { benchProviderIds, openCode2Models, openCode2VerboseModel, OpencodeModelBenchService } from "../src/opencode-model-bench.js";
+import { benchProviderIds, benchRefreshesInBackground, openCode2Models, openCode2VerboseModel, OpencodeModelBenchService } from "../src/opencode-model-bench.js";
 
 describe("OpenCode model bench on OpenCode 2", () => {
   it("reads an /api/model entry as the v1 verbose model the bench lists", () => {
@@ -49,4 +49,23 @@ describe("OpenCode model bench history", () => {
     await bench.get("7d");
     expect(calls).toEqual([benchProviderIds]);
   });
+  it("lists the providers one opencode at a time (three at once OOM-killed a 2 GB install's core, light browser step 6)", async () => {
+    let running = 0;
+    let most = 0;
+    const execVerbose = async () => {
+      most = Math.max(most, ++running);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      running -= 1;
+      return [];
+    };
+    const bench = new OpencodeModelBenchService({ repository: new InMemorySystemAnalyticsRepository(), execVerbose, probeLatency: async () => ({ ok: true, latencyMs: 1 }) });
+    await bench.get("7d");
+    expect(most).toBe(1);
+  });
+});
+
+it("runs the bench only on demand on 3 GiB or less (a 2 GB light install's cold-start OOM, light browser step 6b)", () => {
+  expect(benchRefreshesInBackground(1966 * 1024 ** 2)).toBe(false); // a 2 GB VM's MemTotal
+  expect(benchRefreshesInBackground(3 * 1024 ** 3)).toBe(false);
+  expect(benchRefreshesInBackground(3915 * 1024 ** 2)).toBe(true); // a 4 GB VM's
 });

@@ -89,6 +89,23 @@ export function NousMarketing({ active }: { active: boolean }) {
             {" "}{source.detail}{Object.keys(source.values).length ? <> <small>{Object.entries(source.values).map(([key, value]) => `${key} ${value.toLocaleString()}`).join(" · ")}{source.day ? ` (${source.day})` : ""}</small></> : null}</li>
         ))}</ul>
       </details>
+      {report.funnel?.length ? (
+        <section className="nous-report-funnel" aria-label={t("Visit to active install")}>
+          <h3>{t("Visit to active install (history period)")}</h3>
+          {report.funnel.map((step) => <Bar key={step.step} label={t(step.step)} value={step.count} base={Math.max(...report.funnel!.map((entry) => entry.count))} />)}
+        </section>
+      ) : null}
+      {report.funnelByRef?.length ? (
+        <details className="nous-report-section">
+          <summary>{t("Installs by channel (--ref)")} <span>{report.funnelByRef.length}</span></summary>
+          <div className="nous-report-table"><table>
+            <thead><tr>{["Channel", "Launcher started", "Install completed", "First CLI pane", "Active a second day"].map((label) => <th key={label} scope="col">{t(label)}</th>)}</tr></thead>
+            <tbody>{report.funnelByRef.map((row) => (
+              <tr key={row.ref}><th scope="row">{row.ref === "none" ? t("No channel") : row.ref}</th>{[row.started, row.completed, row.firstCli, row.activeSecondDay].map((value, index) => <td key={index}>{value}</td>)}</tr>
+            ))}</tbody>
+          </table></div>
+        </details>
+      ) : null}
       {report.site ? <SiteFunnel site={report.site} t={t} /> : null}
       <DockChips label={t("Show posts")} value={channel} onChange={setChannel} options={[
         { id: "all", label: t("All"), count: report.posts.length },

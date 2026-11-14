@@ -461,8 +461,9 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     videoWorkRoot: env.SPACE_VIDEO_WORK_ROOT || join(dirname(artifactRoot), "video"),
     videoToolsDir: env.SPACE_VIDEO_TOOLS_DIR || `${SPACE_INSTALL_ROOT}/var/models/video`,
     videoSourceMaxBytes: Number.parseInt(env.SPACE_VIDEO_SOURCE_MAX_BYTES || "", 10) || 480 * 1024 * 1024,
-    // Dev never reads stable's key: it has its own under its var directory.
-    connectorKeyFile: env.SPACE_CONNECTOR_KEY_FILE || (env.SPACE_INSTANCE === "dev" ? `${SPACE_INSTALL_ROOT}-dev/var/connector/space-connector.key` : `${SPACE_INSTALL_ROOT}/secrets/space-connector.key`),
+    // Dev never reads stable's key: it has its own under its var directory. A public install keeps it on its spaceapp-data volume.
+    connectorKeyFile: env.SPACE_CONNECTOR_KEY_FILE || (env.SPACE_INSTANCE === "dev" ? `${SPACE_INSTALL_ROOT}-dev/var/connector/space-connector.key`
+      : env.SPACE_PUBLIC_DISTRIBUTION === "true" ? "/var/lib/spaceapp/connector/space-connector.key" : `${SPACE_INSTALL_ROOT}/secrets/space-connector.key`),
     memoryEmbeddingKeyName: env.SPACE_MEMORY_EMBEDDING_KEY_NAME || null,
     memoryEmbeddingTimeoutMs: Math.min(parsePositiveInt(env.SPACE_MEMORY_EMBEDDING_TIMEOUT_MS, 10000), 30000),
     memoryGraphEnabled: env.SPACE_MEMORY_GRAPH_ENABLED === "true",

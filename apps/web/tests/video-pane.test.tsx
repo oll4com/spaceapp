@@ -127,7 +127,7 @@ describe("VideoPane", () => {
     await waitFor(() => expect(apiMock.createVideoRequest).toHaveBeenCalledWith(pane.id, {
       brief: "Three highlights, upbeat", sources: [{ artifactId: source.artifactId }], formatIds: ["youtube-short", "x"],
       // Kokoro has no Greek, so the request names Murf, the first engine that speaks it, instead of the pane's Kokoro.
-      options: { technique: "scene", transition: "auto", filter: "none", captions: "bold-center", narration: { language: "el", voice: "af_heart", engine: "murf" }, music: { artifactId: music.artifactId } }
+      options: { technique: "scene", transition: "auto", filter: "none", captions: "bold-center", narration: { language: "el", voice: "af_heart" }, music: { artifactId: music.artifactId } }
     }));
     expect(await within(studio).findByText("Queued: the editor is working on it.")).toBeTruthy();
   });

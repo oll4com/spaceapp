@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chooseOpenBrowserSelectOption, readOpenBrowserSelect } from "../src/browser-sessions.js";
+import { chooseOpenBrowserSelectOption, readOpenBrowserSelect, typeIntoBrowserPage } from "../src/browser-sessions.js";
 
 // Option D (plan clipboard:gHaiX_8yanVA): Chrome draws an open native dropdown in a popup no live-view frame shows, so the
 // Browser Host reads it in an isolated world and picks an option with real keys.
@@ -60,6 +60,22 @@ describe("the live view's own dropdown list", () => {
     const closed = fakePage(null);
     await expect(chooseOpenBrowserSelectOption(closed.client, "session-1", 1)).rejects.toThrow("The dropdown is no longer open.");
     expect(closed.keys()).toEqual([]);
+  });
+
+  it("types into an open dropdown by picking the option the text names, never into the field focused before it (AvantLink, 13/11)", async () => {
+    const page = fakePage(countries);
+    expect(await typeIntoBrowserPage(page.client, "session-1", "thai")).toBe('Chose "Thailand".');
+    expect(page.calls.some((call) => call.method === "Input.insertText")).toBe(false);
+    expect(await typeIntoBrowserPage(fakePage(countries).client, "session-1", " Greece ")).toBe('Chose "Greece".');
+    // Oman is disabled and nothing starts with "Fr": refused, nothing typed.
+    for (const text of ["Oman", "Fr"]) {
+      const refused = fakePage(countries);
+      await expect(typeIntoBrowserPage(refused.client, "session-1", text)).rejects.toThrow("nothing was typed");
+      expect(refused.calls.some((call) => call.method === "Input.insertText")).toBe(false);
+    }
+    const field = fakePage(null);
+    expect(await typeIntoBrowserPage(field.client, "session-1", "+30 210")).toBeNull();
+    expect(field.calls.filter((call) => call.method === "Input.insertText").map((call) => call.params?.text)).toEqual(["+30 210"]);
   });
 });
 

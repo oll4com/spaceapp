@@ -54,4 +54,11 @@ describe("Room Agent approval guardrails", () => {
     expect(roomPromptFingerprint(`\n\n${prompt("Bash:   ls")}  \n`)).toBe(a);
     expect(roomPromptFingerprint(prompt("Bash: rm -rf /tmp/x"))).not.toBe(a);
   });
+
+  it("ignores Claude's auto-block countdown, wrapped or not", () => {
+    const box = (left: string) => `${prompt("Bash: rm -rf $WT/x")}\n⚠ Claude Code will automatically block this request in ${left}, to avoid holding up an unattended\nsession`;
+    expect(roomPromptFingerprint(box("0:41"))).toBe(roomPromptFingerprint(box("0:28")));
+    expect(roomPromptFingerprint(box("0:41").replace("request in", "request\nin"))).toBe(roomPromptFingerprint(box("0:12").replace("request in", "request\nin")));
+    expect(roomPromptFingerprint(box("0:41"))).not.toBe(roomPromptFingerprint(box("0:41").replace("$WT/x", "$WT/y")));
+  });
 });

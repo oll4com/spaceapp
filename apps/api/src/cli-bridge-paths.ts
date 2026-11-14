@@ -28,7 +28,8 @@ const cliBrowserBridgePaths = new Set([
   "/api/cli/browser/actions",
   "/api/cli/browser/commands",
   "/api/cli/browser/cdp",
-  "/api/cli/browser/cdp/status"
+  "/api/cli/browser/cdp/status",
+  "/api/cli/browser/cdp/challenge"
 ]);
 // Nous's MCP route checks its own turn token (nous/mcp.ts).
 const cliBridgePathPrefixes = [cliJobApplyPathPrefix, cliMailCopilotPathPrefix, cliMarketingCopilotPathPrefix, cliFreelanceCopilotPathPrefix, cliDesignPathPrefix, cliVideoPathPrefix, cliAppStudioPathPrefix, cliSecurityCopilotPathPrefix, cliMonitoringCopilotPathPrefix, cliMailCampaignsPathPrefix, cliTaskItemsPathPrefix, cliNousPathPrefix, cliVaultPathPrefix, cliProgressPath, cliTestResourcePath, queueOperatorGrantPath];

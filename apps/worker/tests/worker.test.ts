@@ -99,6 +99,52 @@ class FakeCodexAppServerProcess extends EventEmitter implements CodexAppServerSt
   }
 }
 
+/** A light turn whose turn/start asks one server request; records the worker's reply before completing. */
+class ServerRequestCodexAppServerProcess extends EventEmitter implements CodexAppServerStdioProcess {
+  readonly stdout = new EventEmitter();
+  readonly stderr = new EventEmitter();
+  killed = false;
+  reply: unknown = null;
+
+  constructor(private readonly method: string) {
+    super();
+  }
+
+  readonly stdin = {
+    write: (chunk: string) => {
+      for (const line of chunk.split("\n")) {
+        if (!line.trim()) continue;
+        const message = JSON.parse(line) as { id?: number | string; method?: string } & Record<string, unknown>;
+        if (message.method === "initialize") this.emitJson({ id: message.id, result: { userAgent: "fake-codex" } });
+        if (message.method === "configRequirements/read") this.emitJson({ id: message.id, result: { requirements: null } });
+        if (message.method === "thread/start") this.emitJson({ id: message.id, result: { thread: { id: "thread:light" } } });
+        if (message.method === "thread/resume" || message.method === "thread/read") {
+          this.emitJson({ id: message.id, result: { thread: { id: "thread:light", turns: [] } } });
+        }
+        if (message.method === "turn/start") {
+          this.emitJson({ id: message.id, result: { turn: { id: "turn:light", status: "inProgress" } } });
+          this.emitJson({ id: "request:light", method: this.method, params: { threadId: "thread:light", turnId: "turn:light", itemId: "item:light",
+            command: "rm -rf /tmp/x", questions: [{ id: "q1", header: "Pick", question: "Which?", isOther: false, isSecret: false, options: [] }] } });
+        }
+        if (message.id === "request:light") {
+          this.reply = message;
+          this.emitJson({ method: "turn/completed", params: { threadId: "thread:light", turn: { id: "turn:light", status: "completed" } } });
+        }
+      }
+      return true;
+    }
+  };
+
+  kill(): boolean {
+    this.killed = true;
+    return true;
+  }
+
+  private emitJson(message: unknown) {
+    queueMicrotask(() => this.stdout.emit("data", `${JSON.stringify(message)}\n`));
+  }
+}
+
 class StaleThreadCodexAppServerProcess extends EventEmitter implements CodexAppServerStdioProcess {
   readonly stdout = new EventEmitter();
   readonly stderr = new EventEmitter();
@@ -2031,6 +2077,66 @@ describe("Space Temporal worker foundation", () => {
     } });
     expect(spawned).toBe(true);
     expect(result.status).toBe("COMPLETED");
+  });
+
+  it("runs a Codex light pane's turn through the CLI broker with the pane's own launch env and keeps its token out of the result", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Light turn", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, mode: "CHAT", title: "Codex light", terminalRuntimeId: "cli:codex" });
+    const session = store.createSpaceAgentSession({ paneId: pane.id, roomId: room.id, title: "Codex light",
+      selectedProviderId: null, selectedModelId: null, selectedModelConfigId: null,
+      selectedProviderName: null, selectedModelName: null, selectedReasoningKey: null });
+    const turnInput = (suffix: string) => {
+      const input = dummyTurnInputSchema.parse({ roomId: room.id, paneId: pane.id, prompt: "Light turn.", traceId: `trace:light-${suffix}`,
+        agentSessionId: session.sessionId, agentUserMessageId: `agent_msg:light-user-${suffix}`, agentAssistantMessageId: `agent_msg:light-answer-${suffix}` });
+      store.createSpaceAgentSubmission({ content: input.prompt, run: { sessionId: session.sessionId, paneId: pane.id, roomId: room.id,
+        workflowId: buildCodexAppServerTurnWorkflowId(input), status: "QUEUED", promptMessageId: input.agentUserMessageId!, responseMessageId: input.agentAssistantMessageId! } });
+      return input;
+    };
+    const token = "synthetic-light-control-token";
+    const env = { SPACE_ENABLE_CODEX_TURNS: "true", SPACE_CODEX_APP_SERVER_ENABLED: "true", SPACE_CODEX_APP_SERVER_ALLOW_STDIO_SPAWN: "true",
+      SPACE_CODEX_APP_SERVER_ALLOW_TURN_EXECUTION: "true", SPACE_INTERNAL_API_TOKEN: "synthetic-internal", SPACE_CLI_VPN_BROKER: "/opt/broker",
+      OPENAI_API_KEY: "synthetic-worker-key" };
+    const requests: Array<{ url: string; body: unknown; internal: string | null }> = [];
+    let status = 200;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      requests.push({ url: String(url), body: JSON.parse(String(init?.body)), internal: new Headers(init?.headers).get("x-space-internal-token") });
+      return new Response(JSON.stringify(status === 200 ? { env: { SPACE_CONTROL_TOKEN: token, SPACE_CLI_WORKSPACE: "/srv/light", SPACE_PANE_ID: pane.id } }
+        : { error: { message: `leak ${token}` } }), { status });
+    });
+    try {
+      let spawned: { command: string; args: readonly string[]; cwd?: string; env: Record<string, string | undefined> } | null = null;
+      const result = await runCodexAppServerTurn(turnInput("ok"), { completionStore: store, env, spawnProcess: (command, args, options) => {
+        spawned = { command, args, cwd: options.cwd, env: options.env };
+        return new FakeCodexAppServerProcess();
+      } });
+      expect(result.status).toBe("COMPLETED");
+      expect(requests).toEqual([{ url: "http://127.0.0.1:4910/api/internal/agent/light-codex-env", body: { paneId: pane.id }, internal: "synthetic-internal" }]);
+      expect(spawned).toMatchObject({ command: "/usr/bin/sudo", args: ["-n", "/opt/broker", "exec", "cli:codex", "app-server"], cwd: "/" });
+      expect(spawned!.env.SPACE_CONTROL_TOKEN).toBe(token);
+      expect(spawned!.env.OPENAI_API_KEY).toBeUndefined();
+      expect(JSON.stringify(result)).not.toContain(token);
+
+      // S3: a question gets Native Chat's empty answers; an approval request fails the turn closed, nothing is approved.
+      const asked = new ServerRequestCodexAppServerProcess("item/tool/requestUserInput");
+      expect((await runCodexAppServerTurn(turnInput("ask"), { completionStore: store, env, spawnProcess: () => asked })).status).toBe("COMPLETED");
+      expect(asked.reply).toMatchObject({ id: "request:light", result: { answers: { q1: { answers: [] } } } });
+      const approval = new ServerRequestCodexAppServerProcess("item/commandExecution/requestApproval");
+      const refused = await runCodexAppServerTurn(turnInput("approve"), { completionStore: store, env, spawnProcess: () => approval })
+        .catch((error: unknown) => error);
+      expect((refused as { status?: string }).status).not.toBe("COMPLETED");
+      expect(approval.reply).toBeNull();
+
+      status = 500;
+      const failed = await runCodexAppServerTurn(turnInput("fail"), { completionStore: store, env, spawnProcess: () => {
+        throw new Error("a light turn without its env must not spawn");
+      } }).catch((error: unknown) => error);
+      expect(requests).toHaveLength(4);
+      expect(JSON.stringify(failed instanceof Error ? failed.message : failed)).not.toContain(token);
+      expect(JSON.stringify(store.listSpaceAgentMessages(session.sessionId))).not.toContain(token);
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it("keeps Room Agent turns on the bounded non-Goal protocol", async () => {

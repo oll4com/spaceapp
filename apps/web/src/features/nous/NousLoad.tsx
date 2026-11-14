@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { NousLoad as NousLoadView, NousLoadAverage, NousLoadRange } from "@space/contracts";
-import { api } from "../../api.js";
+import { api, type InstanceLink } from "../../api.js";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
 import { DockChips, DockState } from "../dock-kit/DockKit.js";
 import { AnimatedNumber } from "../ui-controls/AnimatedNumber.js";
@@ -85,6 +85,7 @@ export function NousLoad({ active }: { active: boolean }) {
           </li>
         ))}
       </ul>
+      <LinkedLoads active={active} range={range} local={load.overall} />
       <dl className="nous-load-averages" aria-label="Averages">
         <Average label="Last hour" average={averages.hour} versus="the hour before" />
         <Average label="Today" average={averages.today} versus="yesterday" />
@@ -95,6 +96,46 @@ export function NousLoad({ active }: { active: boolean }) {
         <span>{averages.bestDay ? `Best day ${averages.bestDay.day}: ${Math.round(averages.bestDay.value)}%` : "No full day yet"}</span>
         <span>{error ? error : load.at ? `Updated ${formatUserTime(load.at)}` : "No sample yet"}</span>
       </footer>
+    </section>
+  );
+}
+
+type LinkedLoad = { link: InstanceLink; load: NousLoadView | null; error: string | null; last: NousLoadView | null };
+/** A linked SpaceApp answers through its link's round trip (instance-link/routes.ts), so it is read less often than this one. */
+const LINK_POLL_MS = 30_000;
+
+/**
+ * Space Link Λ7 (ADR-014): each SpaceApp this Nous manages, with its own load, and the average over all of them. One that does not
+ * answer keeps its last reading, marked stale. Nothing shows without links.
+ * shortcut: an equal-weight average and no token-pool deduplication across SpaceApps on the same accounts; upgrade when pools are shared.
+ */
+function LinkedLoads({ active, range, local }: { active: boolean; range: NousLoadRange; local: number | null }) {
+  const [rows, setRows] = useState<LinkedLoad[]>([]);
+  useEffect(() => {
+    if (!active) return;
+    let stopped = false;
+    const read = () => void api.linkedLoads(range).then(({ instances }) => {
+      if (!stopped) setRows((before) => (instances ?? []).map((row) => ({ ...row, last: row.load ?? before.find((old) => old.link.id === row.link.id)?.last ?? null })));
+    }, () => undefined);
+    read();
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") read(); }, LINK_POLL_MS);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [active, range]);
+  if (!rows.length) return null;
+  const readings = [local, ...rows.map((row) => row.load?.overall ?? null)].filter((value): value is number => value !== null);
+  const total = readings.length ? readings.reduce((sum, value) => sum + value, 0) / readings.length : null;
+  return (
+    <section className="nous-load-linked" aria-label="Linked SpaceApps">
+      <p><strong>{whole(total)}</strong> average over this SpaceApp and {rows.length} linked</p>
+      <ul>
+        {rows.map(({ link, load, error, last }) => (
+          <li key={link.id} title={link.origins.join(", ")}>
+            <span>{link.label}</span>
+            {load ? <span>{whole(load.overall)}{load.level ? ` · ${load.level}` : ""}{load.at ? ` · ${formatUserTime(load.at)}` : ""}</span>
+              : <span className="nous-load-stale">{last ? `${whole(last.overall)}${last.at ? ` at ${formatUserTime(last.at)}` : ""}, stale: ` : ""}{error}</span>}
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

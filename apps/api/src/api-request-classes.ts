@@ -2,6 +2,7 @@ import type { FastifyRequest } from "fastify";
 import { isCliBridgeRoutePath } from "./cli-bridge-paths.js";
 import { isHarnessRootHttpPath } from "./harness-proxy.js";
 import { requestPathname, requestRoutePath } from "./request-helpers.js";
+import { MAKE_APP_PATHS } from "./make-app-routes.js";
 
 // How the API's request hooks classify a request: routes that need no session, the internal API and its token header,
 // the CLI bridge, the mutations app-diagnostics automation may make, and which requests need a CSRF token.
@@ -44,7 +45,9 @@ export const publicPaths = new Set([
   "/api/admin/streaming/providers/:provider/oauth/callback",
   // Slack and Teams deliveries: verified by their signatures inside the routes.
   "/api/channels/slack/events",
-  "/api/channels/teams/messages"
+  "/api/channels/teams/messages",
+  // The SpaceApp app in Make: its Bearer key is checked inside the routes (make-app-routes.ts).
+  ...MAKE_APP_PATHS
 ]);
 const internalApiPrefix = "/api/internal/";
 export const internalTokenHeader = "x-space-internal-token";

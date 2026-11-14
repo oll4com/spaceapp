@@ -431,6 +431,25 @@ it("uses date/time settings on both surfaces and regroups calendars immediately 
   expect(list.getByText(Intl.DateTimeFormat().resolvedOptions().timeZone)).toBeTruthy();
 });
 
+it("opens the join link from the location or the ΕΙΣΟΔΟΣ line as a button in the pane, the record and Nous's card (operator 13/11 16:00 BKK)", async () => {
+  const notes = "ΤΙ ΕΙΝΑΙ: webinar\nΕΙΣΟΔΟΣ: Κουμπί «Join My Webinar» στο mail: https://attendee.gotowebinar.com/register/123.\nΛογαριασμός: lab@example.invalid";
+  upcoming.appointments.push(at("2026-11-09T16:00:00.000Z", { id: "appointment:nvidia", title: "NVIDIA webinar", kind: "WEBINAR", location: "Link «Join My Webinar» στο mail", notes }));
+  const href = "https://attendee.gotowebinar.com/register/123";
+  try {
+    serve();
+    const { unmount } = render(<AppointmentsPane />);
+    expect((await screen.findByRole("link", { name: "Join on attendee.gotowebinar.com" })).getAttribute("href")).toBe(href);
+    fireEvent.click(screen.getByRole("button", { name: "NVIDIA webinar: open details" }));
+    expect(within(screen.getByRole("article", { name: "NVIDIA webinar: details" })).getByRole("link", { name: "Open attendee.gotowebinar.com" }).getAttribute("href")).toBe(href);
+    unmount();
+    render(<NousAppointments />);
+    fireEvent.click(await screen.findByRole("button", { name: /^NVIDIA webinar, / }));
+    expect(screen.getByRole("link", { name: "Open attendee.gotowebinar.com" }).getAttribute("href")).toBe(href);
+  } finally {
+    upcoming.appointments.pop();
+  }
+});
+
 it("opens an appointment's whole record from its row: every section, its links, the account and the mail it came from", async () => {
   // Operator 4/11 14:39 BKK (nous_msg:a60162597d984866b79b9a2f): the card showed one line; the record holds all he needs.
   const notes = ["ΤΙ ΕΙΝΑΙ: Προαιρετικό webinar του Future Health Challenge. ΔΕΝ είναι τεστ ούτε συνέντευξη.", "ΩΡΑ: Τετ 4/11 17:00 Μπανγκόκ (14:00 GST Ντουμπάι), μπες 5 λεπτά νωρίτερα.",

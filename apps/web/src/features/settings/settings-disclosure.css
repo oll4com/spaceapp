@@ -54,17 +54,21 @@
   background: var(--room-surface, #141617);
   overflow: clip;
 }
-.settings-disclosure h3 { margin: 0; }
+/* The header button and the section's ⓘ sit side by side; scroll-margin keeps a revealed header clear of the sticky search bar. */
+.settings-disclosure h3 { margin: 0; display: flex; align-items: center; min-width: 0; }
+.settings-disclosure { scroll-margin-top: 3.5rem; }
+.agent-settings-dock.is-fullscreen .settings-disclosure { scroll-margin-top: 6rem; }
+.settings-disclosure h3 > .info-tip { flex: none; margin: 0 .7rem 0 .1rem; }
 .settings-disclosure[hidden] { display: none; }
 .settings-disclosure h3 > button {
-  width: 100%; display: grid; grid-template-columns: 1.2rem minmax(0, 1fr) 1rem;
+  flex: 1 1 auto; min-width: 0; width: 100%; display: grid; grid-template-columns: 1.2rem minmax(0, 1fr) 1rem;
   align-items: center; gap: .7rem; padding: .85rem;
   border: 0; border-radius: 0; background: transparent; color: var(--room-text, #f4efe5); text-align: left;
 }
 .settings-disclosure h3 > button:hover { background: var(--room-surface-soft, #202425); }
 .settings-disclosure h3 > button:focus-visible { outline: 2px solid var(--room-accent, #79b8ff); outline-offset: -3px; }
-.settings-disclosure h3 svg { width: 1.1rem; height: 1.1rem; }
-.settings-disclosure h3 span { display: grid; gap: .2rem; }
+.settings-disclosure h3 > button svg { width: 1.1rem; height: 1.1rem; }
+.settings-disclosure h3 > button span { display: grid; gap: .2rem; }
 .settings-disclosure h3 strong { font-size: .85rem; font-weight: 600; }
 .settings-disclosure h3 small { font-size: .75rem; line-height: 1.45; color: var(--room-muted, #a2a7ad); font-weight: 400; }
 .settings-disclosure[data-open="true"] > h3 > button > svg:last-child { transform: rotate(90deg); }
@@ -76,9 +80,12 @@
   border-color: color-mix(in srgb, var(--room-accent, #79b8ff) 70%, var(--room-border, #343638));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--room-accent, #79b8ff) 35%, transparent), 0 10px 28px rgba(0, 0, 0, .28);
 }
-.space-shell .agent-settings-dock .settings-disclosure[data-open="true"] > h3 > button {
+.space-shell .agent-settings-dock .settings-disclosure[data-open="true"] > h3 {
   border-bottom: 1px solid color-mix(in srgb, var(--room-accent, #79b8ff) 40%, var(--room-border, #343638));
   background: color-mix(in srgb, var(--room-accent, #79b8ff) 13%, transparent);
+}
+.space-shell .agent-settings-dock .settings-disclosure[data-open="true"] > h3 > button {
+  background: transparent;
   /* Not the app-wide red ring of expanded icon buttons. */
   box-shadow: none;
 }
@@ -127,15 +134,6 @@
   .settings-dock-nav { display: none; }
 }
 .settings-disclosure-content[hidden] { display: none; }
-.settings-help {
-  display: grid; grid-template-columns: 1rem minmax(0, 1fr); gap: .5rem; align-items: start;
-  margin: .1rem 0 .45rem; padding: .55rem .65rem;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--room-accent, #79b8ff) 10%, transparent);
-  color: var(--room-text, #f4efe5);
-  font-size: .76rem; line-height: 1.45;
-}
-.settings-help > svg { width: 1rem; height: 1rem; margin-top: .05rem; color: var(--room-accent, #79b8ff); }
 .settings-scope { color: var(--room-muted, #a2a7ad); font-size: .7rem; margin: 0 0 .6rem; }
 .settings-scope strong { font-weight: 650; }
 .settings-disclosure-content > .settings-flat-card { border: 0; background: transparent; padding: 0; }
@@ -164,9 +162,12 @@
 /* A card's own heading repeats its section's icon and title: inside a section keep only the
    heading's status line and actions (reset, menu, status pill). */
 .agent-settings-dock .settings-disclosure-content > .settings-flat-card > .settings-flat-heading:first-child {
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex; flex-wrap: wrap; align-items: center; column-gap: .5rem; row-gap: .4rem;
   padding-top: 0;
 }
+/* The status line keeps at least 12rem; narrower, the actions (status pill, menu) drop to their own row instead of squeezing it. */
+.agent-settings-dock .settings-disclosure-content > .settings-flat-card > .settings-flat-heading:first-child > span { flex: 1 1 12rem; min-width: 0; }
+.agent-settings-dock .settings-disclosure-content > .settings-flat-card > .settings-flat-heading:first-child > .settings-flat-heading-actions { flex: 0 0 auto; margin-inline-start: auto; }
 .agent-settings-dock .settings-disclosure-content > .settings-flat-card > .settings-flat-heading:first-child > svg:first-child,
 .agent-settings-dock .settings-disclosure-content > .settings-flat-card > .settings-flat-heading:first-child > span > strong {
   display: none;

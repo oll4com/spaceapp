@@ -72,8 +72,8 @@ const GROUP_TITLES: Record<NeedsYouGroup, string> = { OFF_SPACE: "Off Space", QU
  * by where the work is (off Space, questions with Nous's decisions, approvals, in a pane), the nearest deadline then the newest first, one open
  * at a time; `focus` opens the card a toast, the window or a pop-up was clicked for (a new object each click, so the same card reopens).
  */
-export function NousNeedsYou({ requests, decisions = [], renderDecision, plans = [], part = false, focus = null }: {
-  requests: SpaceNotification[] | null; decisions?: NousDecision[]; renderDecision?(decision: NousDecision): ReactNode;
+export function NousNeedsYou({ requests, decisions = [], renderDecision, plans = [], part = false, focus = null, onOpenPlan }: {
+  requests: SpaceNotification[] | null; decisions?: NousDecision[]; renderDecision?(decision: NousDecision): ReactNode; onOpenPlan?(id: string): void;
   plans?: NousOverview["plans"]; part?: boolean; focus?: { id: string | null } | null;
 }) {
   const [board, setBoard] = useState<NousPaneBoard | null>(null);
@@ -105,7 +105,7 @@ export function NousNeedsYou({ requests, decisions = [], renderDecision, plans =
       const unblocks = plans.filter((plan) => planIds.includes(plan.id));
       const pane = item.paneId ? panes.get(item.paneId) : undefined;
       return { id: item.id, at: item.createdAt, due: soonestDue(unblocks)?.dueAt ?? null, group: needsYouGroup(item, pane?.mode),
-        node: <NeedsYouCard key={item.id} variant="row" item={item} pane={pane} unblocks={unblocks} open={openId === item.id} onOpenChange={(open) => setOpenId(open ? item.id : null)} /> };
+        node: <NeedsYouCard key={item.id} variant="row" item={item} pane={pane} unblocks={unblocks} open={openId === item.id} onOpenChange={(open) => setOpenId(open ? item.id : null)} onOpenPlan={onOpenPlan} /> };
     }),
     ...decisions.map((decision): Row => ({ id: decision.id, at: decision.createdAt, due: null, group: "QUESTIONS",
       node: <div key={decision.id} style={{ display: "contents" }} data-sensitive-masked="manual">{renderDecision?.(decision)}</div> }))

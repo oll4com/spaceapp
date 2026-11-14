@@ -29,7 +29,7 @@ export function parseNousTurnOutput(stdout: string): NousTurnResult {
   if (!line) throw new Error(stdout.trim().slice(0, 180) || "Claude Code gave no answer.");
   const parsed = JSON.parse(line) as { type?: unknown; provider?: unknown; result?: unknown; is_error?: unknown; num_turns?: unknown; subtype?: unknown; total_cost_usd?: unknown; modelUsage?: unknown };
   if (!parsed || parsed.type !== "result") throw new Error("The CLI stopped before returning a result.");
-  const provider = ({ codex: "Codex", gemini: "Gemini", openrouter: "OpenRouter", deepseek: "DeepSeek" } as Record<string, string>)[String(parsed.provider)] ?? "Claude Code";
+  const provider = ({ codex: "Codex", gemini: "Gemini", openrouter: "OpenRouter", deepseek: "DeepSeek", opencode: "OpenCode" } as Record<string, string>)[String(parsed.provider)] ?? "Claude Code";
   const text = typeof parsed.result === "string" ? parsed.result : "";
   const isError = parsed.is_error === true || (typeof parsed.subtype === "string" && parsed.subtype !== "success");
   const usage = parsed.modelUsage && typeof parsed.modelUsage === "object" && !Array.isArray(parsed.modelUsage) ? parsed.modelUsage as Record<string, unknown> : null;

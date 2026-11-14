@@ -55,8 +55,8 @@ const fromVaultRow = (row: VaultRow): VaultState => ({
   agentAccess: row.agentAccess === true
 });
 
-interface ItemRow { id: string; label: string; origins: string[]; fieldRoles: string[]; policy: unknown; status: string; googleAccountId: string | null; loginKey: string | null; loginPage: string | null; keyVersion: number; dekEnvelope: unknown; fields: unknown; history: unknown }
-const itemColumns = `i.id, i.label, i.origins, i.field_roles AS "fieldRoles", i.policy, i.status, i.google_account_id AS "googleAccountId", i.login_key AS "loginKey", i.login_page AS "loginPage", i.key_version AS "keyVersion", i.dek_envelope AS "dekEnvelope", i.fields, i.history`;
+interface ItemRow { id: string; label: string; origins: string[]; fieldRoles: string[]; policy: unknown; status: string; googleAccountId: string | null; loginKey: string | null; loginPage: string | null; card: unknown; keyVersion: number; dekEnvelope: unknown; fields: unknown; history: unknown }
+const itemColumns = `i.id, i.label, i.origins, i.field_roles AS "fieldRoles", i.policy, i.status, i.google_account_id AS "googleAccountId", i.login_key AS "loginKey", i.login_page AS "loginPage", i.card, i.key_version AS "keyVersion", i.dek_envelope AS "dekEnvelope", i.fields, i.history`;
 // One over-long label once emptied the whole list (13/11): the routes refuse it, and this last guard cuts any that still reach a save
 // or a stored row to the schema's 80 code points, with a warning naming the id and length (never the label).
 const fitLabel = (label: string, id: string) => {
@@ -73,7 +73,7 @@ const readable = <R extends { id: unknown }, T>(rows: R[], read: (row: R) => T):
   }
 });
 const fromItemRow = (row: ItemRow): VaultItemRecord => vaultItemRecordSchema.parse({
-  metadata: { id: row.id, label: fitLabel(row.label, row.id), origins: row.origins, fieldRoles: row.fieldRoles, policy: row.policy, status: row.status, googleAccountId: row.googleAccountId, loginKey: row.loginKey, loginPage: row.loginPage },
+  metadata: { id: row.id, label: fitLabel(row.label, row.id), origins: row.origins, fieldRoles: row.fieldRoles, policy: row.policy, status: row.status, googleAccountId: row.googleAccountId, loginKey: row.loginKey, loginPage: row.loginPage, card: row.card ?? null },
   keyVersion: row.keyVersion, dekEnvelope: row.dekEnvelope, fields: row.fields, history: row.history
 });
 
@@ -197,15 +197,15 @@ export class PostgresVaultRepository {
       for (const item of items) {
         const { metadata } = item;
         // A handle belongs to one owner for good: another owner's id is never overwritten.
-        const saved = await client.query<ItemRow>(`INSERT INTO vault_items AS i (id, vault_id, owner_user_id, label, origins, field_roles, policy, key_version, dek_envelope, fields, status, history, google_account_id, login_key, login_page)
-          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10::jsonb, $11, $12::jsonb, $13, $14, $15)
+        const saved = await client.query<ItemRow>(`INSERT INTO vault_items AS i (id, vault_id, owner_user_id, label, origins, field_roles, policy, key_version, dek_envelope, fields, status, history, google_account_id, login_key, login_page, card)
+          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10::jsonb, $11, $12::jsonb, $13, $14, $15, $16::jsonb)
           ON CONFLICT (id) DO UPDATE SET label = EXCLUDED.label, origins = EXCLUDED.origins, field_roles = EXCLUDED.field_roles, policy = EXCLUDED.policy,
             key_version = EXCLUDED.key_version, dek_envelope = EXCLUDED.dek_envelope, fields = EXCLUDED.fields, status = EXCLUDED.status, history = EXCLUDED.history,
-            google_account_id = EXCLUDED.google_account_id, login_key = EXCLUDED.login_key, login_page = EXCLUDED.login_page, updated_at = now()
+            google_account_id = EXCLUDED.google_account_id, login_key = EXCLUDED.login_key, login_page = EXCLUDED.login_page, card = EXCLUDED.card, updated_at = now()
           WHERE i.owner_user_id = EXCLUDED.owner_user_id AND i.vault_id = EXCLUDED.vault_id
           RETURNING ${itemColumns}`,
         [metadata.id, vault.id, owner, metadata.label, metadata.origins, metadata.fieldRoles, JSON.stringify(metadata.policy), item.keyVersion,
-          JSON.stringify(item.dekEnvelope), JSON.stringify(item.fields), metadata.status, JSON.stringify(item.history), metadata.googleAccountId, metadata.loginKey, metadata.loginPage]);
+          JSON.stringify(item.dekEnvelope), JSON.stringify(item.fields), metadata.status, JSON.stringify(item.history), metadata.googleAccountId, metadata.loginKey, metadata.loginPage, metadata.card ? JSON.stringify(metadata.card) : null]);
         if (!saved.rows[0]) { results.push(null); continue; }
         await this.audit(client, vault, { actor: "OPERATOR", action: "ITEM_SAVE", result: "OK", itemId: metadata.id });
         results.push(fromItemRow(saved.rows[0]));

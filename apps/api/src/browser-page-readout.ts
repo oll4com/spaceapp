@@ -77,6 +77,18 @@ export async function pageReadout(options: TabOptions, connect: Connect = CdpCli
     note: "Field values are never read; words that could be a secret, token or code show as •••. Act on these messages: an error means the step failed." };
 }
 
+// A shown, editable text-like field whose value differs from the page's own default: someone typed it. Only the boolean leaves the page.
+const TYPED_SCRIPT = `(() => ({ typed: [...document.querySelectorAll('input,textarea')].some((el) => {
+  if (el.disabled || el.readOnly || /^(?:hidden|search|submit|button|reset|image|checkbox|radio|range|color|file)$/i.test(el.type || '')) return false;
+  const box = el.getBoundingClientRect();
+  return box.width > 0 && box.height > 0 && el.value !== '' && el.value !== el.defaultValue;
+}) }))()`;
+/** Whether the active tab's form holds typed text (a filled form waiting for the operator, browser-reaper.ts); never a field's value. */
+export async function pageHasTypedText(options: TabOptions, connect: Connect = CdpClient.connect): Promise<boolean> {
+  // shortcut: the active tab's top document; a form in another tab or an iframe is not seen, read every tab when one is lost that way.
+  return (await evaluateActiveTab<{ typed: boolean }>(options, TYPED_SCRIPT, connect)).typed === true;
+}
+
 // A real bot check: reCAPTCHA, hCaptcha and Turnstile (Go now's own selectors), or a puzzle (Arkose/FunCaptcha, GeeTest, AWS WAF).
 const CAPTCHA_WIDGET = [...BROWSER_REVEAL_TARGETS.filter(([kind]) => ["recaptcha", "hcaptcha", "turnstile"].includes(kind)).map(([, selector]) => selector),
   'iframe[src*="arkoselabs"], iframe[src*="funcaptcha"], [class*="geetest_"], awswaf-captcha'].join(", ");

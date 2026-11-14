@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryNousRepository } from "@space/db";
 import { createNousService, type NousServiceDeps } from "../src/nous/service.js";
-import { NOUS_TURN_FAILED_NO_ERROR, type NousDecision, type NousTurnFacts, type RoomAgentEvent } from "@space/contracts";
+import { NOUS_TURN_FAILED_NO_ERROR, type NousDecision, type SpaceNotification, type NousTurnFacts, type RoomAgentEvent } from "@space/contracts";
 import { NOUS_BASELINE, NOUS_CATALOG_V1, addToolErrorSample, failureCauses, nousCatalogCoverage, nousProgressText, nousScorecard } from "../src/nous/progress.js";
 import { createNousTools, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
-import { coordinationLine, renderDailyReview, waitLines } from "../src/nous/daily-review.js";
+import { coordinationLine, operatorAsksByDay, renderDailyReview, waitLines } from "../src/nous/daily-review.js";
 
 // The 2026-10-17 sample (08:48-09:13 UTC) the baseline was measured on: plan clipboard:L7RgHsveHbcR.
 const now = Date.parse("2026-10-17T09:13:10.000Z");
@@ -308,5 +308,22 @@ describe("Brief tool-error-samples (8/11): error texts per tool in the turn fact
     const text = nousProgressText(card);
     expect(text).toContain("Failed tools: space_db_query 5, space_files_read 2, space_execute 2");
     expect(text).toContain('- space_db_query errors (sampled up to 3 per turn; same text with other ids or numbers counted together): "column "is_active" does not exist" ×2;');
+  });
+
+  it("goal 7365014c criterion 4: the operator's asks per day by source, Space's own answers and Nous-held cards left out", () => {
+    let n = 0;
+    const card = (over: Partial<SpaceNotification>): SpaceNotification => ({ id: `notification:c${n++}`, ownerUserId: "user:operator", roomId: "room:a", paneId: "pane:a",
+      source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION", title: "t", body: "", link: {}, dedupeKey: null, status: "OPEN", payload: {}, createdAt: "2026-11-12T03:00:00.000Z",
+      updatedAt: "2026-11-12T03:00:00.000Z", readAt: null, ackedAt: null, resolvedAt: null, ...over }) as SpaceNotification;
+    const agent = card({});
+    const records = [agent, agent, card({ payload: { alertAt: "2026-11-13T02:00:00.000Z" } }), card({ payload: { heldForNous: { until: "x" } } }),
+      card({ source: "MAIL_COPILOT", kind: "QUESTION", payload: { heldForNous: { until: "x" }, releasedFromNous: "y" } }), card({ source: "NOUS", kind: "NEEDS_HANDS" }),
+      card({ source: "BROWSER_HANDOFF", kind: "HANDOFF", payload: { repeat: true } }), card({ payload: { answer: { by: "ALWAYS" } } }), card({ createdAt: "2026-11-01T00:00:00.000Z" })];
+    const decisions = [decision("Asked", "2026-11-12T04:00:00.000Z", {}), decision("Allowance", "2026-11-12T04:00:00.000Z", { answer: "Approved by allowance x" }),
+      decision("Withdrawn", "2026-11-12T04:00:00.000Z", { answer: "Withdrawn by Space: gone" })];
+    expect(operatorAsksByDay(records, decisions, "2026-11-10T00:00:00.000Z", (iso) => iso.slice(0, 10))).toEqual([
+      { day: "2026-11-12", decisions: 1, nous: 1, agents: 1, copilots: 1, total: 4 }, { day: "2026-11-13", decisions: 0, nous: 0, agents: 1, copilots: 0, total: 1 }]);
+    const review = renderDailyReview({ facts: [], decisions, needsYou: records, since: "2026-11-12T00:00:00.000Z", day: "2026-11-12", hour: 3 });
+    expect(review).toContain("- Operator asks (goal 7365014c criterion 4, target at most 5 a day): 5 (decisions 1, Nous cards 1, agent cards 2, copilot questions 1)");
   });
 });

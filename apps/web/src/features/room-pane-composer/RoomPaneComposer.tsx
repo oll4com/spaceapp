@@ -36,7 +36,7 @@ const runtimeDefinitions = CLI_RUNTIME_PRESENTATIONS;
 export const ROOM_PANE_COMPOSER_COLLAPSED_KEY = "space.roomPaneComposer.collapsed.v1";
 const harnessId = "harness" as const;
 const utilityDefinitions = PANE_TYPES.filter(
-  (type): type is Extract<(typeof PANE_TYPES)[number], { mode: "CHAT" }> => type.typeId === "chat"
+  (type): type is Extract<(typeof PANE_TYPES)[number], { typeId: "chat" }> => type.typeId === "chat"
 );
 type UtilityTypeId = typeof utilityDefinitions[number]["typeId"];
 const utilityIcons: Record<UtilityTypeId, LucideIcon> = {

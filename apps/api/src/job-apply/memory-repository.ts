@@ -63,11 +63,15 @@ export class InMemoryJobApplyRepository implements JobApplyRepository {
     const timestamp = this.now();
     const current = this.profiles.get(owner) ?? {
       ownerUserId: owner, candidate: {}, qaBank: [], cvArtifactId: null, coverLetterArtifactId: null, cvText: null,
-      mailbox: null, mailboxPasswordEncrypted: null, mailboxVerifiedAt: null, googleEmail: null, campaignStartedAt: null, createdAt: timestamp, updatedAt: timestamp
+      mailbox: null, mailboxPasswordEncrypted: null, mailboxVerifiedAt: null, googleEmail: null, campaignStartedAt: null, dailyTarget: 0, targetMisses: {}, createdAt: timestamp, updatedAt: timestamp
     };
     const next: JobApplyProfileRecord = { ...current, ...structuredClone(defined(patch)), updatedAt: timestamp } as JobApplyProfileRecord;
     this.profiles.set(owner, next);
     return structuredClone(next);
+  }
+  async addTargetMiss(owner: string, day: string, code: string) {
+    const current = this.profiles.get(owner);
+    if (current && !(current.targetMisses[day] ?? []).includes(code)) current.targetMisses = { ...current.targetMisses, [day]: [...(current.targetMisses[day] ?? []), code] };
   }
   async resetCampaign(owner: string, expected: string | null) {
     const current = this.profiles.get(owner);

@@ -28,6 +28,10 @@ const userAgentClients: [RegExp, string][] = [
   [/anthropic-sdk|Anthropic\/JS|anthropic-python/i, "Anthropic SDK"]
 ];
 
+/** The clients `detectClient` names that write code: they never spend Make credits or a background-only credit pool. */
+export const CODE_CLIENTS = new Set(["Claude Code", "Claude Code (VS Code)", "Anthropic CLI", "Codex CLI", "Cursor", "Grok Build", "Zed", "Aider", "Droid",
+  "OpenCode", "Copilot", "Antigravity", "Reasonix", "Oh My Pi", "Kilo Code"]);
+
 const clean = (value: string) => value.replace(/[^\x20-\x7e]/g, "").trim();
 
 export function detectClient(headers: FastifyRequest["headers"]): string | null {

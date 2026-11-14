@@ -63,7 +63,7 @@ export function PanesSettingsCard({
 
           let isChecked = isPaneVisible(pane.id);
           let isDisabled = false;
-          let detail = t(pane.description);
+          let detail: string | undefined;
           let title: string | undefined;
           let badge = null;
 
@@ -80,6 +80,7 @@ export function PanesSettingsCard({
               <SpaceToggle
                 className="settings-flat-row settings-flat-toggle-row dock-visibility-row"
                 name={`pane-visibility-${pane.id}`}
+                help={pane.description}
                 ariaLabel={t("Toggle {label} pane visibility", { label: t(pane.label) })}
                 label={
                   <span className="docks-toggle-label-wrap">

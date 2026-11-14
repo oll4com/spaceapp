@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { screenSharedMemory, type SharedMemoryContent, type SharedMemoryEntry, type SharedMemoryPolicy } from "@space/contracts";
 import { api } from "../../api.js";
 import { DockButton } from "../dock-kit/DockKit.js";
+import { InfoTip } from "../ui-controls/InfoTip.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { useUiText } from "../ui-language/ui-language.js";
 import "./nous-shared-memory.css";
 
 const empty = (): SharedMemoryContent => ({ title: "", body: "", tags: [] });
@@ -18,6 +20,7 @@ export function NousSharedMemory() {
   const [deleting, setDeleting] = useState<string | null>(null);
   const alert = useRef<HTMLParagraphElement>(null);
   const title = useRef<HTMLInputElement>(null);
+  const t = useUiText();
   useEffect(() => {
     let live = true;
     void api.nousSharedMemory().then((result) => { if (live) { setEntries(result.entries); setPolicy(result.policy); } })
@@ -36,14 +39,14 @@ export function NousSharedMemory() {
   const check = () => { const result = screenSharedMemory(draft); setValidation(result.ok ? null : result.reason); return result.ok; };
   const changeStatus = (entry: SharedMemoryEntry, status: SharedMemoryEntry["status"]) => void run(async () => replace((await api.updateNousSharedMemory(entry.id, { revision: entry.revision, status })).entry));
   return <section className="nous-shared-memory" aria-label="Shared Nous memory" aria-busy={busy || (!entries && !error)}>
-    <div className="nous-shared-memory-heading"><div><h3>Shared memory</h3><p>Generic working knowledge for your team. You review what Nous learns.</p></div>
+    <div className="nous-shared-memory-heading"><div><h3>Shared memory<InfoTip text={t("Generic working knowledge for your team. You review what Nous learns.")} label={t("About {label}", { label: "Shared memory" })} /></h3></div>
       <DockButton disabled={busy || !entries || editing !== null} onClick={() => startEdit("new")}>Add entry</DockButton></div>
     {error ? <div><p ref={alert} role="alert" tabIndex={-1}>{error}</p><DockButton disabled={busy} onClick={() => void run(async () => { const result = await api.nousSharedMemory(); setEntries(result.entries); setPolicy(result.policy); setEditing(null); setDeleting(null); setValidation(null); })}>{editing ? "Discard edits and reload" : "Reload entries"}</DockButton></div> : null}
     {!entries && !error ? <p role="status">Loading shared memory…</p> : null}
     {policy ? <>
-      <SpaceToggle className="settings-flat-row" label="Daily upgrade" ariaLabel="Daily shared memory upgrade" detail="Once a day, Nous proposes reusable lessons for your team. Private memory stays personal."
+      <SpaceToggle className="settings-flat-row" label="Daily upgrade" ariaLabel="Daily shared memory upgrade" help="Once a day, Nous proposes reusable lessons for your team. Private memory stays personal."
         checked={policy.dailyUpgrade} disabled={busy} onChange={(dailyUpgrade) => void run(async () => setPolicy((await api.updateNousSharedMemoryPolicy({ dailyUpgrade })).policy))} />
-      <SpaceToggle className="settings-flat-row" label="Auto-approve proposals" ariaLabel="Auto-approve shared memory proposals" detail="Activate screened proposals immediately. Off: you review each proposal first. Privacy checks always apply."
+      <SpaceToggle className="settings-flat-row" label="Auto-approve proposals" ariaLabel="Auto-approve shared memory proposals" help="Activates screened proposals immediately. Off: you review each proposal first. Privacy checks always apply."
         checked={policy.autoApprove} disabled={busy} onChange={(autoApprove) => void run(async () => setPolicy((await api.updateNousSharedMemoryPolicy({ autoApprove })).policy))} />
     </> : null}
     {editing ? <form className="nous-shared-memory-editor" onSubmit={(event) => { event.preventDefault(); if (!check()) return; void run(async () => {

@@ -486,7 +486,9 @@ still unmeasured.
     are never deleted; search only filters them out.
   - `POST /api/memory` does not invalidate the all-months archive snapshot.
 - **Hazard in older tests.** `createSpacePgPool` rewrites the host to
-  `/var/run/space-postgres` whenever that socket is accessible. Older
+  `/run/space-postgres/socket` when that socket is accessible, but only for a
+  loopback URL on Space's published port 54329 (`prefersSpaceSocket`); a URL
+  with `?host=`, another host or another port is used as given. Older
   Docker-based tests (`dots-postgres`, `room-deletion-postgres`) pass an owned
   socket through it. The new tests and the drill use `pg.Pool` directly.
 - **Flaky existing tests.** `apps/api/tests/memory-graph-service.test.ts` times

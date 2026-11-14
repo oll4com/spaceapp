@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Appointment, AppointmentList, UiLanguage } from "@space/contracts";
+import { appointmentJoinUrl, type Appointment, type AppointmentList, type UiLanguage } from "@space/contracts";
 import { api } from "../../api.js";
 import { Calendar, Phone, Timer, Users, Video, type LucideIcon } from "../ui-theme/app-icons.js";
 import { browserTimeZone, formatAppDate, formatAppTime, useDateTimeSettings, type DateTimeSettings } from "../date-time-settings/date-time-settings.js";
@@ -86,11 +86,13 @@ export function zonedInputToIso(value: string, zone: string): string {
 }
 export const isoToZonedInput = (iso: string, zone: string) => { const local = wall(Date.parse(iso), zone); return `${local.date}T${local.time}`; };
 
-/** The location's first web address (a Teams link followed by its meeting ID and passcode stays a link) and the text around it. */
-export function appointmentLink(location: string | null): { href: string; host: string; rest: string } | null {
-  const href = location?.match(/https?:\/\/\S+/i)?.[0].replace(/[),.;:]+$/, "");
-  if (!location || !href) return null;
-  try { return { href, host: new URL(href).hostname, rest: location.replace(href, "").trim() }; } catch { return null; }
+/**
+ * The join link: the location's first web address (a Teams link followed by its meeting ID and passcode stays a link), else the HOW TO JOIN
+ * (ΕΙΣΟΔΟΣ) line's (operator 13/11 16:00 BKK: a button to open, never the link as text), and the location's other text.
+ */
+export function appointmentLink(item: Pick<Appointment, "location" | "notes">): { href: string; host: string; rest: string } | null {
+  const href = appointmentJoinUrl(item);
+  return href ? { href, host: new URL(href).hostname, rest: (item.location ?? "").replace(href, "").trim() } : null;
 }
 
 /** The list, read again every minute while shown, and a clock for the countdowns. */

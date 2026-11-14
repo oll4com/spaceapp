@@ -281,12 +281,12 @@ describe("SystemAnalyticsWorkspace", () => {
         installId: "a1b2c3d4-0000-4000-8000-000000000001", linked: true, internal: false, firstSeenAt: "2026-10-20T10:00:00Z", lastSeenAt: "2026-10-20T10:09:00Z",
         status: "COMPLETED", failedStage: null, durationSeconds: 240, country: "GR", os: "windows", osVersion: "10.0.26100", arch: "x64",
         cpus: 8, ramGb: 16, profile: "light", access: "isolated", version: "1.1.5", screen: "1920x1080", dpr: "1.5", browser: "chrome 141",
-        lang: "el-GR", firstCli: "opencode", setupCompletedAt: "2026-10-20T10:06:00Z", firstAnswerAt: null, lastActiveAt: "2026-10-20T10:07:00Z", activeDays: 1
+        lang: "el-GR", firstCli: "opencode", ref: null, setupCompletedAt: "2026-10-20T10:06:00Z", firstAnswerAt: null, lastActiveAt: "2026-10-20T10:07:00Z", activeDays: 1
       }, {
         installId: "lab-ping-0001", linked: false, internal: true, firstSeenAt: "2026-10-19T10:00:00Z", lastSeenAt: "2026-10-19T10:00:00Z",
         status: "COMPLETED", failedStage: null, durationSeconds: null, country: null, os: "macos", osVersion: null, arch: "x64",
         cpus: null, ramGb: null, profile: null, access: null, version: "1.1.4", screen: null, dpr: null, browser: null,
-        lang: null, firstCli: null, setupCompletedAt: null, firstAnswerAt: null, lastActiveAt: null, activeDays: 0
+        lang: null, firstCli: null, ref: null, setupCompletedAt: null, firstAnswerAt: null, lastActiveAt: null, activeDays: 0
       }]
     });
     render(<SystemAnalyticsWorkspace shellMode="desktop" initialTab="overview" onClose={() => undefined} />);

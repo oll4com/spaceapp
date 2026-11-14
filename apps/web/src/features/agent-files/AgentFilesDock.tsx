@@ -567,7 +567,9 @@ function kindIcon(kind: AgentFilePreviewKind) {
   return File;
 }
 
-/** Downloads an Agent File after checking its size, type and SHA-256 against the record. */
+/** Downloads an Agent File: Android's native downloader, the Windows DOCX save picker (bytes checked against the record), or else a
+ * plain browser download, streamed by the browser's own download manager with the session cookie and resumable (/download answers
+ * Range on its ETag). Never fetch() the bytes into the page: a 69 MB APK on a phone died at 20 MB as "Failed to fetch" (13/11). */
 async function saveAgentFile(entry: AgentFileEntry): Promise<void> {
   const spaceNative = (window as unknown as { SpaceNative?: { downloadUrl?: (url: string, name: string, mime: string) => boolean } }).SpaceNative;
   if (typeof spaceNative?.downloadUrl === "function") {
@@ -592,6 +594,14 @@ async function saveAgentFile(entry: AgentFileEntry): Promise<void> {
       if (pickerError instanceof DOMException && pickerError.name === "AbortError") return;
       throw pickerError;
     }
+  }
+  if (!fileHandle) {
+    const anchor = document.createElement("a");
+    anchor.href = api.agentFileDownloadUrl(entry.artifact.id);
+    anchor.download = entry.filename;
+    anchor.rel = "noopener";
+    anchor.click();
+    return;
   }
 
   const response = await fetch(api.agentFileDownloadUrl(entry.artifact.id), {
@@ -621,21 +631,9 @@ async function saveAgentFile(entry: AgentFileEntry): Promise<void> {
     throw new Error("Download integrity verification failed.");
   }
 
-  const blob = new Blob([buffer], { type: entry.artifact.mimeType });
-  if (fileHandle) {
-    const writable = await fileHandle.createWritable();
-    await writable.write(blob);
-    await writable.close();
-    return;
-  }
-
-  const objectUrl = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = entry.filename;
-  anchor.rel = "noopener";
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+  const writable = await fileHandle.createWritable();
+  await writable.write(new Blob([buffer], { type: entry.artifact.mimeType }));
+  await writable.close();
 }
 
 /** The Agent Files preview. CLI panes open it over the pane for a file an agent names (AgentFileLinks.tsx). */
@@ -672,7 +670,7 @@ export function AgentFilePreviewDialog({ artifact, paneTitles, onClose }: {
         {entry.previewKind === "PDF" ? <SignButton artifactId={entry.artifact.id} filename={entry.filename} /> : null}
         <DockIconButton
           label={`Download ${entry.filename}`}
-          title={`Download and verify ${entry.filename}`}
+          title={`Download ${entry.filename}`}
           icon={Download}
           busy={downloading}
           disabled={downloading}
@@ -1855,7 +1853,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
                   />
                   <DockIconButton
                     label={`Download ${entry.filename}`}
-                    title={`Download and verify ${entry.filename}`}
+                    title={`Download ${entry.filename}`}
                     icon={Download}
                     busy={downloadingId === entry.artifact.id}
                     disabled={Boolean(downloadingId) || clearingAll}

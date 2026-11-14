@@ -8,7 +8,7 @@ import { createApp } from "../src/app.js";
 import { getApiConfig } from "../src/config.js";
 import { buildMime, parseParticipants, parsePayload } from "../src/mail-copilot/gmail-mime.js";
 import { sanitizeMailHtml } from "../src/mail-copilot/html-sanitizer.js";
-import { createMailCopilotService, type MailCopilotGoogleAccess } from "../src/mail-copilot/service.js";
+import { agentThread, createMailCopilotService, type MailCopilotGoogleAccess } from "../src/mail-copilot/service.js";
 import { InMemoryMailCopilotRepository } from "@space/db";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -321,6 +321,16 @@ describe("mail copilot mailbox", () => {
     expect(sanitized.html).toBe("<p>Hi</p><a target=\"_blank\" rel=\"noopener noreferrer nofollow\">bad</a><img alt=\"\" />");
     expect(sanitized.blockedImages).toBe(false);
   });
+
+  it("13/11 Daisycon: the agent gets the HTML's links its text part leaves out, never the HTML", () => {
+    const parsed = parsePayload({ mimeType: "multipart/alternative", parts: [
+      { mimeType: "text/plain", body: { data: b64(" Please click the link bellow. Confirm your email address Kind Regards, https://www.daisycon.com ") } },
+      { mimeType: "text/html", body: { data: b64('<a href="https://login.daisycon.com/confirm?id=1&amp;h=2"><b>Confirm</b> your email address</a> <a href="https://www.daisycon.com">site</a> <a href="mailto:x@y.z">mail</a>') } }
+    ] });
+    const sanitized = sanitizeMailHtml(parsed.html!, { loadImages: false, cidUrl: () => null });
+    const [message] = agentThread({ messages: [{ text: parsed.text, html: sanitized.html } as never] }).messages;
+    expect(message).toMatchObject({ html: null, links: [{ text: "Confirm your email address", url: "https://login.daisycon.com/confirm?id=1&h=2" }] });
+  });
 });
 
 describe("mail copilot attachments", () => {
@@ -367,6 +377,16 @@ describe("mail copilot attachments", () => {
     expect(await service.threadSend(owner, "me@gmail.com", "t2", ask)).toBe("BOUNCED");
     expect(await service.threadSend(owner, "me@gmail.com", "t1", "2026-11-05T11:00:00.000Z")).toBeNull();
     expect(await service.threadSend(owner, "me@gmail.com", "t3", ask)).toBeNull();
+    // 13/11 (3fac478d, 2f27149c, 453972c2): a review the operator approved went out with no REPLY logged (its draft had no in-reply-to);
+    // its REVIEW_DECIDED with payload.sent, or our SENT event in the thread, is the send. A rejected review (sent null) is none.
+    const event = (threadId: string, type: "SENT" | "REVIEW_DECIDED", payload: Record<string, unknown>) => repository.createEvent({ ownerUserId: owner, paneId: null, runId: null,
+      accountEmail: "me@gmail.com", threadId, messageId: null, type, status: null, message: type, payload });
+    await event("t4", "REVIEW_DECIDED", { reviewId: "mailrev:abcdef", decision: "approve", sent: { messageId: "1a1b1a72", threadId: "t4" } });
+    await event("t5", "SENT", { by: "review", to: ["them@x.com"], cc: [] });
+    await event("t6", "REVIEW_DECIDED", { reviewId: "mailrev:ghijkl", decision: "reject", sent: null });
+    expect(await service.threadSend(owner, "me@gmail.com", "t4", ask)).toBe("SENT");
+    expect(await service.threadSend(owner, "me@gmail.com", "t5", ask)).toBe("SENT");
+    expect(await service.threadSend(owner, "me@gmail.com", "t6", ask)).toBeNull();
     expect(gmailFetch).not.toHaveBeenCalled();
   });
 

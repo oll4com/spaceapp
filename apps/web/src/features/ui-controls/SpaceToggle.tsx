@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import { InfoTip } from "./InfoTip.js";
+import { useUiText } from "../ui-language/ui-language.js";
 import "./space-toggle.css";
 
 export type SpaceToggleProps = {
@@ -10,6 +12,8 @@ export type SpaceToggleProps = {
   /** Switch and label only: no "Enabled/Disabled" state text (dense bars). */
   compact?: boolean;
   detail?: ReactNode;
+  /** English help behind an ⓘ beside the label (Settings rows); shown in the interface language. */
+  help?: string;
   disabled?: boolean;
   id?: string;
   name?: string;
@@ -24,6 +28,7 @@ export function SpaceToggle({
   compact = false,
   detail,
   disabled = false,
+  help,
   id,
   label,
   name,
@@ -50,7 +55,7 @@ export function SpaceToggle({
         }}
       />
       <span className="space-toggle-copy">
-        <span className="space-toggle-label">{label}</span>
+        <span className="space-toggle-label">{label}{help ? <ToggleHelp help={help} label={accessibleLabel ?? ""} /> : null}</span>
         {detail ? <small>{detail}</small> : null}
       </span>
       <span className="space-toggle-control" aria-hidden="true">
@@ -59,4 +64,10 @@ export function SpaceToggle({
       </span>
     </label>
   );
+}
+
+/** Only a switch with help reads the interface language, so switches outside Settings load no user settings. */
+function ToggleHelp({ help, label }: { help: string; label: string }) {
+  const t = useUiText();
+  return <InfoTip text={t(help)} label={t("About {label}", { label })} />;
 }

@@ -1,9 +1,10 @@
 import { z } from "zod";
-import { artifactIdsIn, NEEDS_YOU_GO_NOW, NEEDS_YOU_QUESTION_MORE, needsYouTargetSchema, type NotificationRaiseInput, type Pane, type Room, type RoomAgentEvent } from "@space/contracts";
+import { artifactIdsIn, NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY, NEEDS_YOU_QUESTION_MORE, NEEDS_YOU_START_NOW, needsYouTargetSchema, type NotificationRaiseInput, type Pane, type Room, type RoomAgentEvent, type SpaceNotification } from "@space/contracts";
 import { redactMemoryText, type SpaceStore } from "@space/runtime";
 import type { NewPaneReport, PaneReport, PaneReportStatus, PaneReportsRepository } from "@space/db";
 import type { NotificationService } from "./notifications/service.js";
 import { withCheckedBlock } from "./nous/pane-notices.js";
+import { waitsOnOperatorClaim } from "./nous/pane-watch.js";
 
 /**
  * Pane reports to Nous (operator request 2026-10-17, plan clipboard:ot6-jLKOWDNC): every CLI pane's progress, so Nous has the
@@ -53,6 +54,8 @@ export function withoutAnswered(text: string, answered: readonly AnsweredQuestio
   return { text: kept.join("\n").trim(), dropped: [...dropped] };
 }
 
+export const DONE_WAITS_ON_OPERATOR = "This report leaves decisions or answers to the operator, so it is not done: report needs-you with the question (--needs, --options, --recommended, --checked) and --plan, "
+  + "keep the plan under 100% waiting on the operator, and report done only after they have answered.";
 /** An agent's report (POST /api/cli/progress), the pane's own words. */
 export const paneProgressSchema = z.object({
   status: z.enum(PANE_PROGRESS_STATUSES),
@@ -78,7 +81,10 @@ export const paneProgressSchema = z.object({
   .refine((input) => !input.options?.length || Boolean(input.recommended), { message: "with options, name the one you recommend (--recommended): every question carries a prediction", path: ["recommended"] })
   // Ask last (goal ee5a573e): an ask names what was checked first, like Nous's own cards (NOUS_ASK_LAST_RULE); "--needs none" asks nothing.
   .refine((input) => input.status !== "needs-you" || /^(?:none|nothing|-)$/i.test(input.needs?.trim() ?? "") || Boolean(input.checked?.length),
-    { message: AGENT_ASK_LAST_RULE, path: ["checked"] });
+    { message: AGENT_ASK_LAST_RULE, path: ["checked"] })
+  // Operator 13/11 14:39 BKK: a "done" that leaves decisions to the operator reached Done with Got it, which buries them.
+  .refine((input) => input.status !== "done" || !waitsOnOperatorClaim([input.summary, input.report, input.next, input.needs].filter(Boolean).join("\n")),
+    { message: DONE_WAITS_ON_OPERATOR, path: ["status"] });
 export type PaneProgressInput = z.infer<typeof paneProgressSchema>;
 const RETENTION_MS = 14 * 86_400_000;
 /** A working pane gets a heartbeat when it has been silent this long (and is tried again no sooner). */
@@ -103,6 +109,8 @@ export interface PaneReportsDeps {
   onReport?(owner: string, report: PaneReport): void;
   /** A `needs-you` report is the operator's notification (Needs you, operator request 2026-10-24); the next report resolves it. */
   notifications?: Pick<NotificationService, "raise" | "resolve">;
+  /** The pane's open needs-you card (its dedupe key), so the same ask within a day refreshes it without alerting again (goal 7365014c). */
+  openCard?(owner: string, dedupeKey: string): Promise<SpaceNotification | null>;
   /** A sign-in card's Google account against the tab it opens (site-signin-account.ts): why no card forms, or null. */
   signinCard?(input: NotificationRaiseInput): Promise<string | null>;
   /** The pane's copilot questions that no longer wait, so its card update drops them (step 4 of plan clipboard:7L5KyWp3kQsP). */
@@ -261,7 +269,7 @@ export function createPaneReports(deps: PaneReportsDeps) {
         // A needs-you that clears the ask ("--needs none") raises nothing, so no sign-in check holds it.
         const refused = /^(?:none|nothing|-)$/i.test(input.needs?.trim() ?? "") ? null : await deps.signinCard?.({ ownerUserId: owner, roomId: room.id, paneId: pane.id, source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION",
           title: `${pane.paneName ?? pane.title} needs you`, body: [input.summary, input.needs ?? "", ...(input.options ?? [])].join("\n"),
-          link: { roomId: room.id, paneId: pane.id, ...(input.target ? { target: input.target } : {}) }, dedupeKey: null, payload: { checked: input.checked ?? [], ...(input.report ? { report: input.report } : {}) }, telegram: null })
+          link: { roomId: room.id, paneId: pane.id, ...(input.target ? { target: input.target } : {}) }, dedupeKey: null, payload: { checked: input.checked ?? [], ...(input.report ? { report: input.report } : {}), ...(input.options?.length ? { options: input.options } : {}) }, telegram: null })
           .catch((error: unknown) => { deps.log?.warn(error, "The sign-in card check failed."); return null; });
         if (refused) throw Object.assign(new Error(refused.replace(/Nothing raised\.$/, "Nothing reported.")), { statusCode: 409 });
       }
@@ -285,8 +293,6 @@ export function createPaneReports(deps: PaneReportsDeps) {
         const given = (input.options ?? []).map((option) => cleanText(option, 80)).filter(Boolean);
         // R37-2 (2/11: agent cards 81404235 and 9e39e296 asked with no options, so the operator's answer could not be scored): an ask without
         // options takes R27-2's, "Go now" recommended; Go now opens the pane (and the first page the ask links), the others go to the pane.
-        const options = given.length ? given : [NEEDS_YOU_GO_NOW, "Failed", "Need links/steps"];
-        const recommended = given.length ? (input.recommended ? cleanText(input.recommended, 80) : null) : NEEDS_YOU_GO_NOW;
         // R9-12 (28/10: the operator read "(2) Te…"): the card carries the whole ask, its full summary, what it needs and the report file,
         // up to the notification's 2,000 characters; the question itself keeps the card's 300. Each once (operator 1/11 23:09 BKK: a card
         // showed its report twice): the question is not repeated, a report that leads with the whole summary (space-progress past 300) stands
@@ -295,7 +301,15 @@ export function createPaneReports(deps: PaneReportsDeps) {
         const needs = needsLeft?.text || null;
         const page = /https:\/\/[^\s"'<>()[\]]+/.exec(`${needs ?? ""} ${summary}`)?.[0]?.replace(/[.,;:!?]+$/, "");
         const target = input.target ?? (page ? needsYouTargetSchema.safeParse(`url:${page}`).data : undefined);
-        const question = askQuestion(needs ?? summary);
+        // Goal 7365014c (Nous 13/11): a hands card for a page asks whether to start now, never "when will you"; the ask itself stays in the body.
+        const hands = !given.length && /^(?:url|tab):/.test(target ?? "");
+        const options = given.length ? given : hands ? [NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY] : [NEEDS_YOU_GO_NOW, "Failed", "Need links/steps"];
+        const recommended = given.length ? (input.recommended ? cleanText(input.recommended, 80) : null) : NEEDS_YOU_GO_NOW;
+        const question = hands ? NEEDS_YOU_START_NOW : askQuestion(needs ?? summary);
+        // The same target asked again within 24 h of its alert is the open card refreshed, not a new ask: no second alert, counted once.
+        const open = target ? await deps.openCard?.(owner, agentNeedsYouKey(pane.id)).catch(() => null) : null;
+        const priorAlert = typeof open?.payload.alertAt === "string" ? open.payload.alertAt : open?.createdAt;
+        const repeat = Boolean(open && open.link.target === target && priorAlert && at - Date.parse(priorAlert) < 86_400_000);
         const leads = Boolean(summary && report.body?.replace(/\s+/g, " ").startsWith(summary.replace(/…$/, "")));
         const checked = (input.checked ?? []).map((item) => cleanText(item, 200)).filter(Boolean);
         const body = withCheckedBlock([!summary || summary === question || leads ? null : summary, needs && needs !== question ? needs : null, report.body]
@@ -305,8 +319,8 @@ export function createPaneReports(deps: PaneReportsDeps) {
           link: { roomId: room.id, paneId: pane.id, ...(target ? { target } : {}) }, dedupeKey: agentNeedsYouKey(pane.id), telegram: null,
           // The question the operator answers from the card; the answer becomes this pane's next prompt.
           // `checked` structured too, like Nous's cards (payload.checked), so a check on the card reads the list, not the body text.
-          payload: { alertAt: report.at, ...(checked.length ? { checked } : {}), ...(input.files ? { files: input.files } : {}), ...(report.planId ? { planId: report.planId } : {}), ...(dropped.length ? { answeredSince: dropped } : {}), ask: { question, ...(options.length ? { options } : {}),
-            ...(recommended && options.includes(recommended) ? { recommended } : {}), answer: { kind: "PANE" } } } }, { realert: true })
+          payload: { alertAt: repeat ? priorAlert : report.at, ...(checked.length ? { checked } : {}), ...(input.files ? { files: input.files } : {}), ...(report.planId ? { planId: report.planId } : {}), ...(dropped.length ? { answeredSince: dropped } : {}), ask: { question, ...(options.length ? { options } : {}),
+            ...(recommended && options.includes(recommended) ? { recommended } : {}), answer: { kind: "PANE" } } } }, { realert: !repeat })
           .catch((error: unknown) => deps.log?.warn(error, "The needs-you notification could not be raised."));
       } else if (cleared || ((report.status === "DONE" || report.status === "FAILED") && await namesOpenAsk(owner, pane.id, report))) {
         await deps.notifications?.resolve(owner, agentNeedsYouKey(pane.id), cleared ? "the pane said it no longer needs the operator (needs-you --needs none)"
@@ -328,7 +342,7 @@ export function createPaneReports(deps: PaneReportsDeps) {
       add(ownerOf(room), { roomId: room.id, paneId: pane.id, at: new Date(now()).toISOString(), source: "AUTO", status, summary: cleanText(summary, PANE_REPORT_SUMMARY_MAX) }),
     latest: (owner: string) => deps.repository.latest(owner),
     latestPlans: (owner: string) => deps.repository.latestPlans(owner),
-    list: (owner: string, paneId: string, limit: number) => deps.repository.list(owner, paneId, limit)
+    list: (owner: string, paneId: string, limit?: number) => deps.repository.list(owner, paneId, limit)
   };
   return reports;
 }

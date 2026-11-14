@@ -12,6 +12,7 @@ import { paneLabel } from "./digest.js";
 const MINUTE = 60_000;
 /** A KEEP_OPEN check given no nextCheckInMinutes looks again after this long. */
 export const KEEP_OPEN_DEFAULT_MINUTES = 30;
+export const WAITING_DATE_DEFAULT_MINUTES = 60;
 export const PANE_DUE_IDLE_MS = 30 * MINUTE;
 export const PANE_DUE_WORKING_MS = 60 * MINUTE;
 
@@ -20,22 +21,29 @@ export const PANE_DUE_WORKING_MS = 60 * MINUTE;
  * sentence saying something waits for the operator, or null. Negated ones ("δεν σε περιμένει τίποτα", "nothing waits for you") say none.
  * Here, not in service.ts, because tools.ts uses it too (service.ts imports tools.ts).
  */
-const WAITS_ON_OPERATOR = /(?<!\p{L})(?:περιμεν(?:ει|ουν) (?:εσενα|δικες σου|τα χερια σου|απο ε?σενα|τον (?:operator|χειριστη))|σε περιμεν(?:ει|ουν))(?!\p{L})|\bwait(?:s|ing)? (?:for|on) (?:your?|the operator)\b|\bneeds? (?:your (?:hands|actions?)|the operator)\b/gu;
+// Operator 13/11 14:39 BKK: decisions or answers left to the operator ("Οι αποφάσεις Α–ΣΤ που είναι δικές σου") wait on them too.
+const WAITS_ON_OPERATOR = /(?<!\p{L})(?:περιμεν(?:ει|ουν) (?:εσενα|δικες σου|τα χερια σου|απο ε?σενα|τον (?:operator|χειριστη))|σε περιμεν(?:ει|ουν)|αποφασ(?:η|εις)[^.;!?\n]{0,60}δικες σου|δικες σου αποφασεις|(?:περιμενω|χρειαζ(?:ομαι|εται|ονται)) (?:την |τις )?(?:αποφαση|αποφασεις|απαντηση|απαντησεις) σου)(?!\p{L})|\bwait(?:s|ing)? (?:for|on) (?:your?|the operator)\b|\bneeds? (?:your (?:hands|actions?|answers?|decisions?)|the operator)\b|\b(?:pending|outstanding) operator decisions?\b|\boperator decisions? (?:pending|needed|required|left)\b|\bdecisions? (?:for|left to|up to) (?:you|the operator)\b|\bawaiting your (?:answers?|decisions?)\b/gu;
+// Daily Nous errors 13/11 (corrections 188, 190; «Η κάρτα για τον κωδικό είναι ήδη στο Needs you» 4 times 11:45-11:49 UTC while Space held it for Nous):
+// a card said to be in Needs you, or visible to the operator, is a claim the operator's Needs you list must back too.
+const IN_NEEDS_YOU = /(?<!\p{L})(?:ειναι|μπηκ\p{L}*|ανεβηκ\p{L}*|βρισκ\p{L}*|εμφανιζ\p{L}*)(?: (?!δεν |οχι )\S+){0,6}? (?:στ(?:ο|α|ις)|σε) needs you\b|(?<!\p{L})(?:ειναι|εγιν\p{L}*) (?:\S+ )?ορατ\p{L}* (?:σε σενα|σου|στον χειριστη)|\b(?:is|are|'s|'re|sits?|shows?|showing)(?: (?!not\b|never\b|no\b)\S+){0,4}? (?:in|on) (?:your |the )?needs you\b|\bvisible to (?:you|the operator)\b/gu;
 const NOT_WAITING = /(?:^|\s)(?:δεν|μην|ουτε|τιποτα|nothing|no|not|never|doesn't|don't|isn't)(?: \S+){0,2} $/u;
-export function waitsOnOperatorClaim(text: string): string | null {
+function firstClaim(text: string, pattern: RegExp): string | null {
   const fold = (value: string) => value.normalize("NFD").replace(/\p{M}/gu, "").replace(/’/g, "'").replace(/[*_`]/g, "").toLowerCase();
   return text.split(/(?<=[.!?;…])\s+|\n+/).map((sentence) => sentence.trim()).find((sentence) => {
     const plain = fold(sentence);
-    return [...plain.matchAll(WAITS_ON_OPERATOR)].some((match) => !NOT_WAITING.test(plain.slice(0, match.index)));
+    return [...plain.matchAll(pattern)].some((match) => !NOT_WAITING.test(plain.slice(0, match.index)));
   }) ?? null;
 }
+export const waitsOnOperatorClaim = (text: string) => firstClaim(text, WAITS_ON_OPERATOR);
+/** Only Nous's answers are checked for it: a Done summary may well say a card went to Needs you and was answered. */
+export const inNeedsYouClaim = (text: string) => firstClaim(text, IN_NEEDS_YOU);
 
 export const paneCheckedArgsSchema = z.object({
   room: z.string().trim().min(1).max(200).describe("The room's name as shown in the world (or its id)."),
   pane: z.string().trim().min(1).max(160).describe("The pane's name in that room."),
   verdict: z.enum(NOUS_PANE_VERDICTS).describe("OK_WORKING, WAITING_OPERATOR, WAITING_DATE (give nextCheckInMinutes), NEEDS_ACTION, BLOCKED, OPERATOR_TEST (the operator's own test pane: drive it while its task runs; once that task is done it is saved and closed like any finished pane), or KEEP_OPEN (a finished pane Space must not list for closing until nextCheckInMinutes: say why in the note)."),
   note: z.string().trim().optional().describe("One line: what you saw or what it waits for."),
-  nextCheckInMinutes: z.number().int().min(1).max(20_160).optional().describe("When to look again. Required with WAITING_DATE; KEEP_OPEN without it looks again in 30 minutes; other verdicts without it follow the 30/60-minute rule.")
+  nextCheckInMinutes: z.number().int().min(1).max(20_160).optional().describe("When to look again. WAITING_DATE without it looks again in 60 minutes; KEEP_OPEN without it looks again in 30 minutes; other verdicts without it follow the 30/60-minute rule.")
 });
 export type PaneCheckedArgs = z.infer<typeof paneCheckedArgsSchema>;
 
@@ -114,18 +122,17 @@ export function createNousPaneWatch(deps: { repository: NousPaneChecksRepository
     },
     /** Any read of a pane by Nous. */
     read: (owner: string, roomId: string, paneId: string) => deps.repository.record(owner, { paneId, roomId, at: new Date(now()).toISOString() }),
-    async checked(owner: string, room: Room, pane: Pane, args: PaneCheckedArgs): Promise<{ ok: boolean; display: string; result: string }> {
+    async checked(owner: string, room: Room, pane: Pane, args: PaneCheckedArgs): Promise<{ ok: boolean; display: string; result: string; refused?: boolean }> {
       const at = now();
       // 2026-11-06 REVIEW (10 of 18 failed checks: KEEP_OPEN without nextCheckInMinutes): KEEP_OPEN looks again in 30 minutes by default.
-      const minutes = args.nextCheckInMinutes ?? (args.verdict === "KEEP_OPEN" ? KEEP_OPEN_DEFAULT_MINUTES : undefined);
+      // Daily Nous errors 14/11 (13/11 19:00 ×2 WAITING_DATE without it): WAITING_DATE looks again in 60 minutes, and the answer says so.
+      const defaulted = args.nextCheckInMinutes === undefined && args.verdict === "WAITING_DATE";
+      const minutes = args.nextCheckInMinutes ?? (args.verdict === "KEEP_OPEN" ? KEEP_OPEN_DEFAULT_MINUTES : defaulted ? WAITING_DATE_DEFAULT_MINUTES : undefined);
       const nextCheckAt = minutes ? new Date(at + minutes * MINUTE).toISOString() : null;
-      if (args.verdict === "WAITING_DATE" && !nextCheckAt) {
-        return { ok: false, display: "Give the next check", result: `${args.verdict} needs nextCheckInMinutes: when to look again.` };
-      }
       await deps.repository.record(owner, { paneId: pane.id, roomId: room.id, at: new Date(at).toISOString(),
         verdict: { verdict: args.verdict, note: args.note?.trim() || null, nextCheckAt } });
       return { ok: true, display: `Checked ${paneLabel(pane)} in ${room.name}: ${verdictText(args.verdict)}`,
-        result: `Recorded${nextCheckAt ? `; next check ${nextCheckAt}` : "; next check by the 30/60-minute rule"}.` };
+        result: `Recorded${nextCheckAt ? `; next check ${nextCheckAt}` : "; next check by the 30/60-minute rule"}${defaulted ? ` (no nextCheckInMinutes: WAITING_DATE looks again in ${WAITING_DATE_DEFAULT_MINUTES} minutes; give it for another time)` : ""}.` };
     }
   };
 }

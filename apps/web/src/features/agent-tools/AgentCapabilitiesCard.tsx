@@ -138,6 +138,7 @@ export function AgentCapabilitiesCard() {
               label={`Only unused in 30 days (${unusedCount})`}
               checked={unusedOnly}
               onChange={setUnusedOnly}
+              help="Shows only the skills no agent used in the last 30 days, to find ones you can switch off."
             />
             {drafts.size || applying ? (
               <button type="button" className="agent-capabilities-apply" disabled={applying} onClick={() => void apply()}>
@@ -163,7 +164,8 @@ export function AgentCapabilitiesCard() {
                   </div>
                   <SpaceToggle compact className={pending ? "agent-capabilities-pending" : undefined} checked={enabled}
                     label={pending ? "Pending" : enabled ? "On" : "Off"} ariaLabel={`${skill.name} for every agent`}
-                    onChange={() => toggle(skill.toolId, skill.enabled)} />
+                    onChange={() => toggle(skill.toolId, skill.enabled)}
+                    help="Switch a skill off to stop every agent from using it. The change waits until you press Apply; new CLI sessions pick it up." />
                 </li>
               );
             })}

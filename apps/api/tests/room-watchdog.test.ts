@@ -435,6 +435,14 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
     }
   });
 
+  // 14/11 audit: a finished watch published a bare { type, roomId, watch } event and every bus subscriber reading payload threw (146×).
+  it("publishes no payload-less event when a watch ends", async () => {
+    const c = lockFixture([5_000, 5_000, 5_000, 5_000]);
+    await c.service.watches({ id: "operator:one", role: "ADMIN" }, c.room.id, "register", { paneId: c.closed.id });
+    await c.service.tick();
+    expect(c.published.filter((event) => !event.payload)).toEqual([]);
+  });
+
   it("runs a schedule's checks and its prompt outside the room lock: the prompt holds only its pane's lock (R9-10)", async () => {
     const c = lockFixture([5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000]);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

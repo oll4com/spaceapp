@@ -4,8 +4,8 @@ import { CLI_PANE_TYPES, PANE_TYPES, PANE_CATALOG_VERSION, cliTurnInterruptKey, 
 describe("room command catalog", () => {
   it("contains every menu type and separates Harness from DeepSeek CLI", () => {
     expect(CLI_PANE_TYPES).toHaveLength(16);
-    expect(PANE_TYPES).toHaveLength(36);
-    expect(new Set(PANE_TYPES.map(type => type.typeId)).size).toBe(36);
+    expect(PANE_TYPES).toHaveLength(37);
+    expect(new Set(PANE_TYPES.map(type => type.typeId)).size).toBe(37);
     expect(PANE_TYPES.find(type => type.typeId === "deepseek")?.mode).toBe("TERMINAL");
     expect(PANE_TYPES.find(type => type.typeId === "harness")?.mode).toBe("HARNESS");
     expect(PANE_TYPES.find(type => type.typeId === "live")?.mode).toBe("LIVE");
@@ -13,6 +13,7 @@ describe("room command catalog", () => {
     expect(PANE_TYPES.find(type => type.typeId === "databases")?.mode).toBe("DATABASES");
     expect(PANE_TYPES.find(type => type.typeId === "demos")?.mode).toBe("DEMOS");
     expect(PANE_TYPES.find(type => type.typeId === "appointments")?.mode).toBe("APPOINTMENTS");
+    expect(PANE_TYPES.find(type => type.typeId === "codex-light")?.mode).toBe("CHAT");
     expect(PANE_TYPES.find(type => type.typeId === "t3code")?.mode).toBe("T3CODE");
     expect(PANE_TYPES.find(type => type.typeId === "jobs")?.mode).toBe("JOB_APPLY");
     expect(PANE_TYPES.find(type => type.typeId === "mail")?.mode).toBe("MAIL_COPILOT");

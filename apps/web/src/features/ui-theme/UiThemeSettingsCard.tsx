@@ -1,5 +1,6 @@
 import { AlertTriangle, AppIconProvider, CircleAlert, Globe, Mail, Palette, Pencil, Settings, Terminal, Trash2 } from "./app-icons.js";
 import type { ModernAppearance, ModernIconPack, UiBackground, UiTheme } from "../../ui-theme.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
 import "./ui-theme-settings-card.css";
 
 const ICON_PACKS: Array<[ModernIconPack, string]> = [
@@ -73,10 +74,7 @@ export function UiThemeSettingsCard({
       </div>
 
       <label className="settings-flat-row">
-        <span className="settings-flat-row-copy">
-          <strong>Interface theme</strong>
-          <small>Choose the overall Space layout.</small>
-        </span>
+        <SettingsLabel label="Interface theme" help="Choose the overall Space layout. Choosing a theme reloads the app; the previews below show each one first." />
         <select
           aria-label="Interface theme"
           name="space-ui-theme"
@@ -99,10 +97,7 @@ export function UiThemeSettingsCard({
       </div>
 
       <label className="settings-flat-row">
-        <span className="settings-flat-row-copy">
-          <strong>Color mode</strong>
-          <small>Modern and Liquid Glass support light and dark. Classic, Graphite, Motion, Aurora, Jarvis and Aira use dark colors.</small>
-        </span>
+        <SettingsLabel label="Color mode" help="Light, dark or the same as your system. Modern and Liquid Glass support light and dark; Classic, Graphite, Motion, Aurora, Jarvis and Aira use dark colors." />
         <select
           aria-label="Modern color mode"
           name="modern-color-mode"
@@ -123,10 +118,7 @@ export function UiThemeSettingsCard({
 
       {currentTheme === "liquid-glass" && onGlassTintChange ? (
         <label className="settings-flat-row">
-          <span className="settings-flat-row-copy">
-            <strong>Liquid Glass</strong>
-            <small>From clear glass to a tinted material, as in iOS 27. Changes apply as you slide.</small>
-          </span>
+          <SettingsLabel label="Liquid Glass" help="From clear glass to a tinted material, as in iOS 27. Changes apply as you slide." />
           <span className="ui-theme-glass-tint">
             <span aria-hidden="true">Clear</span>
             <input type="range" min={0} max={100} step={1} aria-label="Liquid Glass tint" aria-valuetext={`${currentGlassTint}% tinted`}
@@ -137,10 +129,7 @@ export function UiThemeSettingsCard({
       ) : null}
 
       <label className="settings-flat-row">
-        <span className="settings-flat-row-copy">
-          <strong>Icon pack</strong>
-          <small>Available in every interface theme.</small>
-        </span>
+        <SettingsLabel label="Icon pack" help="The icons used across Space, in every interface theme. Choosing a pack reloads the app; the preview below shows each one first." />
         <select
           aria-label="Icon pack"
           name="modern-icon-pack"
@@ -169,10 +158,7 @@ export function UiThemeSettingsCard({
       </div>
 
       <label className="settings-flat-row">
-        <span className="settings-flat-row-copy">
-          <strong>Background</strong>
-          <small>SpaceApp artwork, the animated Aurora sky, the Glass Planet wallpaper, the Jarvis HUD, the Aira Core or clean theme default.</small>
-        </span>
+        <SettingsLabel label="Background" help="The picture behind your rooms: SpaceApp artwork, the animated Aurora sky, the Glass Planet wallpaper, the Jarvis HUD, the Aira Core or the theme's plain default." />
         <select
           aria-label="Background"
           name="space-ui-background"

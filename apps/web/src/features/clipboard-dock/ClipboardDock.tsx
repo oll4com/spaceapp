@@ -16,7 +16,8 @@ import {
 } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClipboardItem, ClipboardSource, PlanStep } from "@space/contracts";
-import { clipboardTextMaxCharacters } from "@space/contracts";
+import { clipboardTextMaxCharacters, planIsParked } from "@space/contracts";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import { api } from "../../api.js";
 import { fetchEveryPage } from "../../paged.js";
 import { loadPlanCompletion, PlanCompletionBar } from "./PlanCompletionBar.js";
@@ -131,6 +132,7 @@ function readStoredSourceFilter(storage: Storage): SourceFilter {
 
 export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStickyNote, onClose }: ClipboardDockProps) {
   const runtime = getSpaceRuntime();
+  const language = useUiLanguage();
   const isDockActive = useIsDockActive();
   const { confirm, confirmDialog } = useDockConfirm();
   const [items, setItems] = useState<ClipboardItem[]>(() => cachedClipboardItems ?? []);
@@ -451,6 +453,13 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
                         style={{ width: `${planProgress}%` }}
                       />
                     </div>
+                    {planIsParked(item) ? (
+                      <div className="clipboard-plan-assignee clipboard-plan-parked" data-sensitive-masked="manual"
+                        title={item.parked.conditions.map((condition) => `${condition.state} ${condition.who}: ${condition.what}`).join("\n")}>
+                        {uiText(language, "Parked: {reason} · {met}/{total} conditions met", { reason: item.parked.reason,
+                          met: item.parked.conditions.filter((condition) => condition.state === "MET").length, total: item.parked.conditions.length })}
+                      </div>
+                    ) : null}
                     {assignee || item.activeAgent ? (
                       <div className="clipboard-plan-assignee"
                         title={[item.activeAgent ? `Current agent: ${item.activeAgent}` : null, assignee ? `Linked to ${assignee}` : null].filter(Boolean).join("; ")}>

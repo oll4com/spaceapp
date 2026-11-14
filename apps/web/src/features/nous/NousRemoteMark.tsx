@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { LINK_APP } from "@space/contracts";
 import { api, type InstanceLink, type LiveDevices } from "../../api.js";
 import { openSettingsSection } from "../settings/settings-section-request.js";
@@ -12,12 +12,14 @@ const time = (value: string) => new Date(value).toLocaleString("en-US", { month:
  * do, its last request and the round trip; a click opens Settings > Account, where Devices revokes a link and Linked SpaceApps removes one.
  * Take back holds every link at reading (and lets this Nous work on its own again) until Give back (lease.ts).
  * Nothing shows where neither answers (no link, or a USER account). Refreshed every 30 s while the dock is open, like the overview.
+ * The same text is each button's accessible description (title alone reaches neither the keyboard nor a screen reader).
  */
 export function NousRemoteMark({ active }: { active: boolean }) {
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [live, setLive] = useState<LiveDevices>({ sessions: [], lease: null, takenBackAt: null });
   const [managed, setManaged] = useState<InstanceLink[]>([]);
+  const id = useId();
 
   useEffect(() => {
     if (!active) return;
@@ -49,9 +51,11 @@ export function NousRemoteMark({ active }: { active: boolean }) {
 
   return (
     <p className="nous-remote-line">
-      {remote.length ? <button type="button" className="nous-remote-mark is-remote" title={remoteInfo} onClick={() => openSettingsSection("account")}>
+      {remote.length ? <span id={`${id}-remote`} className="sr-only">{remoteInfo}</span> : null}
+      {managed.length ? <span id={`${id}-managed`} className="sr-only">{managedInfo}</span> : null}
+      {remote.length ? <button type="button" className="nous-remote-mark is-remote" title={remoteInfo} aria-describedby={`${id}-remote`} onClick={() => openSettingsSection("account")}>
         {remote.length > 1 ? t("Remote ({count})", { count: remote.length }) : t("Remote")}</button> : null}
-      {managed.length ? <button type="button" className="nous-remote-mark" title={managedInfo} onClick={() => openSettingsSection("account")}>
+      {managed.length ? <button type="button" className="nous-remote-mark" title={managedInfo} aria-describedby={`${id}-managed`} onClick={() => openSettingsSection("account")}>
         {t("Managing {count}", { count: managed.length })}</button> : null}
       {live.takenBackAt ? <button type="button" className="nous-remote-mark" title={t("You took management back at {time}: linked SpaceApps only read.", { time: time(live.takenBackAt) })}
         onClick={() => manage("give-back")}>{t("Give back")}</button>

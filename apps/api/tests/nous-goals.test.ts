@@ -2,7 +2,7 @@
 // GOAL turns in their own slot («όλα θα τρέχουν παράλληλα», «δεν θα σταματάς ποτέ»), with back-off, the spend policy and person-only gates.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { nousSettingsSchema, type ClipboardItem, type NousGoal, type NousSettings, type NousSpendMode } from "@space/contracts";
+import { nousSettingsSchema, type ClipboardItem, type NousGoal, type NousSettings, type NousSpendMode, type Pane } from "@space/contracts";
 import { InMemoryNousGoalsRepository, InMemoryNousRepository } from "@space/db";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
@@ -409,6 +409,43 @@ describe("Nous goals: tools, world and persona", () => {
     expect((await repository.get(owner, goal.id))!.waitsOn).toBeNull();
     expect(await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "read the lab results", until: in6h }, reason: "the lab VM boots at night" }, ctx)).toMatchObject({ ok: true });
     expect((await repository.get(owner, goal.id))!.waitsOn).toMatchObject({ what: "read the lab results (reason: the lab VM boots at night)" });
+    // 14/11 REVIEW item 6: a wait whose time already passed is refused, even with a hold in its words or a reason.
+    const past = new Date(Date.now() - 3_600_000).toISOString();
+    const over = await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "morning batch 09:00 (operator)", until: past }, reason: "batch" }, ctx);
+    expect(over).toMatchObject({ refused: true, display: "Run it now" });
+    expect(over.result).toContain(`${past} already passed`);
+  });
+
+  it("1057 (13/11 REVIEW): a plan's or goal's DATE wait on a ticket or on its working pane's job wakes Nous when the job ends; other waits keep their time", async () => {
+    const repository = new InMemoryNousGoalsRepository();
+    const goals = createNousGoals({ repository, plans: async () => [], turnFacts: async () => [], timeZone: async () => "Asia/Bangkok", now: () => Date.now() });
+    const in6h = new Date(Date.now() + 6 * 3_600_000).toISOString();
+    const plan = { id: "clipboard:plan1057", source: "PLAN", title: "Cut", executionStatus: "IN_PROGRESS", progressPercentage: 40, roomId: "room:main0001", paneId: "pane:hugo0001",
+      steps: [{ order: 1, title: "Cut", status: "IN_PROGRESS" }, { order: 2, title: "Verify", status: "PENDING" }], waitsOn: null } as unknown as ClipboardItem;
+    const hugo = { id: "pane:hugo0001", roomId: "room:main0001", paneName: "Hugo", isClosed: false } as unknown as Pane;
+    let state = "RUNNING";
+    const set: Array<{ args: { note?: string; ticket?: string }; pane: { paneId: string } | null }> = [];
+    const tools = createNousTools({ ownerTimeZone: async () => "Asia/Bangkok", listPanes: async () => [hugo], inspectPane: async () => ({ state }),
+      plans: { get: async () => plan, update: async (_who: string, _id: string, input: { waitsOn?: unknown }) => Object.assign(plan, input) },
+      followups: { run: async (_who: string, args: { note?: string; ticket?: string }, pane: { paneId: string } | null) => { set.push({ args, pane }); return { ok: true, display: "Follow-up set", result: "set" }; } },
+      goals: { list: (who, options) => goals.list(who, options), recordUpdate: (who, args, turnId) => goals.recordUpdate(who, args, turnId) } } as unknown as NousToolDeps);
+    const onTicket = await tools.execute("space_plan_update", { plan: plan.id, waitsOn: { kind: "DATE", what: "verify after q-20261113-061804-f3cc deploys", until: in6h } }, ctx);
+    expect(onTicket.result).toContain("It wakes you when ticket q-20261113-061804-f3cc ends, before that time.");
+    expect(set[0]).toMatchObject({ args: { op: "add", ticket: "q-20261113-061804-f3cc" }, pane: null });
+    expect(set[0]!.args.note).toMatch(/^Plan clipboard:plan1057 waits until .* that job ended, so check it and continue now/);
+    // PwkYdTi30QkQ "until CUT DONE": the plan's own pane works on the job, so its finishing wakes Nous.
+    const onPane = await tools.execute("space_plan_update", { plan: plan.id, waitsOn: { kind: "DATE", what: "the cut is still running", until: in6h } }, ctx);
+    expect(onPane.result).toContain("It wakes you when Hugo finishes");
+    expect(set[1]).toMatchObject({ args: { op: "add" }, pane: { paneId: "pane:hugo0001" } });
+    expect(set[1]!.args).not.toHaveProperty("ticket");
+    state = "IDLE";
+    expect((await tools.execute("space_plan_update", { plan: plan.id, waitsOn: { kind: "DATE", what: "the cut is still running", until: in6h } }, ctx)).result).not.toContain("It wakes you");
+    expect((await tools.execute("space_plan_update", { plan: plan.id, waitsOn: { kind: "DATE", what: "public-host reboot window 04:30-05:00", until: in6h } }, ctx)).result).not.toContain("It wakes you");
+    const goal = await goals.create(owner, "Ship public Nous", "the operator");
+    expect((await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "ticket q-20261113-061804-f3cc deploys", until: in6h } }, ctx)).result)
+      .toContain("It wakes you when ticket q-20261113-061804-f3cc ends");
+    expect(set).toHaveLength(3);
+    expect(set[2]!.args.note).toMatch(/^Goal nous_goal:/);
   });
 
   it("keeps a long note and criteria whole (31/10), and reads a waitsOn.until without an offset in the operator's zone, a date alone at 09:00 (R11-2 (2))", async () => {
@@ -423,18 +460,18 @@ describe("Nous goals: tools, world and persona", () => {
     expect(noted.ok).toBe(true);
     expect(noted.result).not.toContain("Clipped to fit");
     expect((await repository.get(owner, goal.id))!).toMatchObject({ note: long.trim(), criteria: long.trim() });
-    await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "the 1.1.10 train", until: "2026-10-30T14:00" } }, ctx);
-    expect((await repository.get(owner, goal.id))!.waitsOn).toMatchObject({ until: "2026-10-30T07:00:00.000Z" });
-    await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "the lab", until: "2026-10-31" } }, ctx);
-    expect((await repository.get(owner, goal.id))!.waitsOn).toMatchObject({ until: "2026-10-31T02:00:00.000Z" });
+    await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "the 1.1.10 train", until: "2099-10-30T14:00" }, reason: "the train ships then" }, ctx);
+    expect((await repository.get(owner, goal.id))!.waitsOn).toMatchObject({ until: "2099-10-30T07:00:00.000Z" });
+    await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "the lab", until: "2099-10-31" }, reason: "the lab boots then" }, ctx);
+    expect((await repository.get(owner, goal.id))!.waitsOn).toMatchObject({ until: "2099-10-31T02:00:00.000Z" });
     // A limit's date reads the same way (plan clipboard:ESIzQb7rHGQM); null clears it.
     await tools.execute("space_goal_update", { goal: goal.id, limit: { kind: "DATE", until: "2026-11-30" } }, ctx);
     expect((await repository.get(owner, goal.id))!.limit).toEqual({ kind: "DATE", until: "2026-11-30T02:00:00.000Z" });
     expect(await tools.execute("space_goal_update", { goal: goal.id, limit: null }, ctx)).toMatchObject({ ok: true, display: expect.stringContaining("limit no limit") });
     expect((await repository.get(owner, goal.id))!.limit).toBeNull();
     // An offset stays as written; something that is no date still fails, naming the field.
-    await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "the lab", until: "2026-10-31T09:00:00+02:00" } }, ctx);
-    expect((await repository.get(owner, goal.id))!.waitsOn).toMatchObject({ until: "2026-10-31T09:00:00+02:00" });
+    await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "the lab", until: "2099-10-31T09:00:00+02:00" }, reason: "the lab boots then" }, ctx);
+    expect((await repository.get(owner, goal.id))!.waitsOn).toMatchObject({ until: "2099-10-31T09:00:00+02:00" });
     expect(await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "the lab", until: "tomorrow" } }, ctx))
       .toMatchObject({ ok: false, display: expect.stringContaining("invalid waitsOn.until") });
   });

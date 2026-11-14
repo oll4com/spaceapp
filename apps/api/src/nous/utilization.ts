@@ -112,11 +112,13 @@ export function renderNousUtilization(summary: NousLoadSummary): string {
 /**
  * Whether the 90 % push may run: under the target for 10 minutes on a CALM server, CLI panes under 90 % working (operator 3/11 23:11 BKK) and a
  * pool with room. Operator 13/11 07:09 BKK (nous_msg:5c0e7a6e): LOW (Nous's own pool ahead of its pace) is no stop, it silenced the push 13 h on
- * 11/11 while Codex and Gemini had room; only CRITICAL, no account with room (`limit`) or every pool at its pace (the tokens part at 100) stop it.
+ * 11/11 while Codex and Gemini had room; only CRITICAL or no account with room (`limit`) stop it. Operator 13/11 20:05 BKK (nous_msg:5eab08b0): the
+ * pace-based tokens part is no stop either, 12:00-12:51 UTC it read 100 (every account ahead of its week pace) while Claude Max had 5 h and week room.
  */
-export function utilizationPushOn(summary: NousLoadSummary, mode: NousSpendMode): boolean {
+export function utilizationPushOn(summary: NousLoadSummary, mode: NousSpendMode, freed = false): boolean {
   const part = (key: NousLoadPartKey) => summary.parts.find((entry) => entry.key === key)?.percent ?? null;
-  return summary.underForMs >= 10 * 60_000 && summary.level === "CALM" && !summary.limit && mode !== "CRITICAL" && (part("tokens") ?? 0) < 100 && (part("panes") ?? 0) < 90;
+  // Operator 13/11 23:03 BKK: a CLI pane that just finished (`freed`) is pushed at once while utilization is under the Load target, not after 10 min.
+  return (summary.underForMs >= 10 * 60_000 || (freed && summary.overall < summary.target)) && summary.level === "CALM" && !summary.limit && mode !== "CRITICAL" && (part("panes") ?? 0) < 90;
 }
 
 /** The standing orders' inbox line (every 10 minutes, or at once for a pane that just finished) when the capacity stayed idle while work waits. */
@@ -288,11 +290,16 @@ export function createNousLoad(deps: NousLoadDeps) {
       const entry = states.get(owner);
       if (!entry?.last) return null;
       const kept = await history(owner, entry);
-      // How long the 10 s points stayed under the target, newest first (an hour at most: the ring's length).
+      // How long the rolling minute mean (6 points of 10 s) stayed under the target, newest first (an hour at most: the ring's length).
+      // Not "every point under": near the target one 10 s spike over it restarted the count and no push reached Nous 13/11 02:32-14:07 UTC (nous_msg:afe974ae).
       // Target 0 never pushes: nothing is under it.
       const target = targetOf(entry).percent;
       let since = entry.last.at;
-      for (let index = entry.ring.length - 1; index >= 0 && entry.ring[index]!.value < target; index -= 1) since = entry.ring[index]!.at;
+      for (let index = entry.ring.length - 1; index >= 0; index -= 1) {
+        const minute = entry.ring.slice(index, index + 6);
+        if (minute.reduce((sum, point) => sum + point.value, 0) / minute.length >= target) break;
+        since = entry.ring[index]!.at;
+      }
       return { ...entry.last, target, averages: averages(entry, kept, now()), underForMs: entry.last.overall < target ? entry.last.at - since : 0 };
     },
     /** The daily REVIEW's line: yesterday's average (the reviewed day) against the day before, from the stored day sums. */

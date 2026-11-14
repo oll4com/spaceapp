@@ -6,6 +6,8 @@ import { CheckCircle2, GitBranch, Loader2, RefreshCw, Unplug, Lock } from "../ui
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../../api.js";
 import { SettingsActionMenu } from "../settings/SettingsActionMenu.js";
+import { InfoTip } from "../ui-controls/InfoTip.js";
+import { useUiText } from "../ui-language/ui-language.js";
 import "./source-control-publishing.css";
 
 export interface SourceControlPublishingClient {
@@ -47,6 +49,7 @@ export function SourceControlPublishingCard({
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const requestIdRef = useRef(0);
+  const t = useUiText();
 
   const load = useCallback(async () => {
     if (!canManage) return;
@@ -137,8 +140,8 @@ export function SourceControlPublishingCard({
       <div className="agent-settings-section-title settings-flat-heading source-control-publishing-title">
         <GitBranch aria-hidden="true" />
         <span>
-          <strong>Source control publishing</strong>
-          <small>Lets Space publish its own code to these repositories.</small>
+          <strong>Source control publishing<InfoTip text={t("Lets Space publish its own code to these repositories. Space checks each token before saving it and never shows it again.")}
+            label={t("About {label}", { label: t("Source control publishing") })} /></strong>
         </span>
         <SettingsActionMenu
           label="Source control publishing actions"
@@ -211,7 +214,8 @@ export function SourceControlPublishingCard({
 
               {editingProvider === provider ? <form aria-label={`Connect ${label} publishing`} onSubmit={(event) => void save(provider, event)}>
                 <label>
-                  <span>{label} access token</span>
+                  <span>{label} access token<InfoTip text={t("Create an access token in that account's settings and paste it here (at least 20 characters).")}
+                    label={t("About {label}", { label: `${label} access token` })} /></span>
                   <input
                     type="password"
                     name={`source-control-${provider}-token`}
@@ -226,7 +230,6 @@ export function SourceControlPublishingCard({
                       setTokens((current) => ({ ...current, [provider]: value }));
                     }}
                   />
-                  <small>Create an access token in your {label} account settings and paste it here (at least 20 characters).</small>
                 </label>
                 <button
                   type="submit"
@@ -273,9 +276,6 @@ export function SourceControlPublishingCard({
 
       {error ? <p className="source-control-feedback error" role="alert">{error}</p> : null}
       {feedback ? <p className="source-control-feedback success" role="status" aria-live="polite">{feedback}</p> : null}
-      <p className="settings-flat-note">
-        Space checks each token before saving it and never shows it again.
-      </p>
     </section>
   );
 }

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
 import {
-  agentLanguageOf, appointmentInputSchema, appointmentListQuerySchema, appointmentUpcoming, appointmentUpdateSchema, historySince, ownerWorkingTimeZone,
+  agentLanguageOf, appointmentInputSchema, appointmentJoinUrl, appointmentListQuerySchema, appointmentUpcoming, appointmentUpdateSchema, historySince, ownerWorkingTimeZone,
   resolveNotificationSettings, type Appointment, type AppointmentInput, type AppointmentList, type AppointmentUpdate, type AppointmentsPaneRef,
   type NotificationRaiseInput, type UserSettings
 } from "@space/contracts";
@@ -153,7 +153,7 @@ export function createAppointmentsService(deps: AppointmentsDeps): AppointmentsS
           // Source NOUS: other sources' ATTENTION alerts wait for Nous instead of Telegram and push while it works; a reminder must not.
           await deps.notifications.raise({ ownerUserId: item.ownerUserId, roomId: where?.roomId ?? null, paneId: where?.paneId ?? null, source: "NOUS",
             kind: "APPOINTMENT_REMINDER", severity: "ATTENTION", title, body, link: where ? { roomId: where.roomId, paneId: where.paneId } : {}, dedupeKey: reminderKey(item, latest.leads),
-            payload: { appointmentId: item.id, startsAt: item.startsAt }, telegram: null });
+            payload: { appointmentId: item.id, startsAt: item.startsAt, joinUrl: appointmentJoinUrl(item) }, telegram: null });
           await repository.markReminded(item.id, due.flatMap((step) => step.leads));
           for (const step of due.slice(0, -1)) await deps.notifications.resolve(item.ownerUserId, reminderKey(item, step.leads)).catch(() => 0);
           sent += 1;

@@ -107,6 +107,7 @@ export function CliProvidersSettingsCard({ canManage, client, initialOpen = fals
       description="Choose which model providers OpenCode and the CLI tools can use."
       scope="Installation"
       icon={Boxes}
+      help="Switch a provider off to hide its models from OpenCode and the CLI tools. Changes update the OpenCode configuration and refresh the shared CLI model catalog at once."
       initialOpen={initialOpen}
     >
       <section className="agent-settings-card settings-flat-card cli-providers-settings-card" aria-label="CLI provider settings">
@@ -169,6 +170,7 @@ export function CliProvidersSettingsCard({ canManage, client, initialOpen = fals
               </span>
             }
             detail={provider.description ?? provider.id}
+            help="Lets OpenCode and the CLI tools use this provider's models. Switch it off to remove them from the shared model catalog."
             checked={provider.enabled}
             disabled={!canManage || loading || pendingBulk || pendingId === provider.id}
             onChange={(checked) => void handleToggle(provider.id, checked)}
@@ -179,9 +181,6 @@ export function CliProvidersSettingsCard({ canManage, client, initialOpen = fals
           <p className="settings-flat-note">No providers discovered.</p>
         ) : null}
 
-        <p className="settings-flat-note">
-          Changes update OpenCode configuration and immediately refresh the shared CLI model catalog.
-        </p>
       </section>
     </SettingsDisclosure>
   );

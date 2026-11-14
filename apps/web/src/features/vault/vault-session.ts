@@ -49,7 +49,10 @@ export async function handOverToAgents(current: UnlockedVault | null = keys): Pr
   const delegate = (list: typeof records) => delegateVaultItems(api, current, { records: list, delegationGeneration: state.vault?.delegationGeneration ?? 0, epoch: state.vault?.epoch, inbox });
   // Every login is offered (no count limit, operator rule 2026-10-20); a broker or API from before that refuses more than 200
   // as a whole, so the 200 most recent go instead of none, and the dock shows how many wait.
-  await delegate(records).catch((error) => records.length > VAULT_OLD_BROKER_DELEGATION_MAX ? delegate(records.slice(0, VAULT_OLD_BROKER_DELEGATION_MAX)) : Promise.reject(error));
+  const older = (list: typeof records, error: unknown) => list.length > VAULT_OLD_BROKER_DELEGATION_MAX ? delegate(list.slice(0, VAULT_OLD_BROKER_DELEGATION_MAX)) : Promise.reject(error);
+  // A broker from before cards (until its reinstall, plan clipboard:qf0P640vyLp2) refuses a delegation with one: logins go without.
+  const logins = records.filter((record) => !record.metadata.card);
+  await delegate(records).catch((error) => logins.length < records.length ? delegate(logins).catch((again) => older(logins, again)) : older(records, error));
 }
 
 /** The last inbox problem, kept so a dock opened after the 30 s import failed still shows it; a clean import clears it. */

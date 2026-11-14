@@ -5,6 +5,7 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { withStagedAgentFiles } from "../src/agent-file-upload.js";
+import { agentFileMaxBytes } from "../src/cli-agent-files.js";
 
 let root: string;
 let app: FastifyInstance;
@@ -55,4 +56,14 @@ it("rejects empty and malformed uploads with no residual staging", async () => {
   expect((await upload(["partial"], false)).statusCode).toBeGreaterThanOrEqual(400);
   expect(persisted).toEqual([]);
   expect(await readdir(root)).toEqual([]);
+});
+
+// Operator 13/11 (nous_msg:0093b06f): big phone videos failed at the old 100 MB cap while nginx took 500m.
+it("caps an Agent File at nginx's request body limit, and the multipart plugin lets that size through", async () => {
+  const repo = path.resolve(import.meta.dirname, "../../..");
+  for (const conf of ["deploy/nginx/space-oll4.conf", "deploy/space-dev/nginx-space-dev.conf"]) {
+    const megabytes = Number(/client_max_body_size\s+(\d+)m;/.exec(await readFile(path.join(repo, conf), "utf8"))?.[1]);
+    expect(agentFileMaxBytes, conf).toBe(megabytes * 1024 * 1024);
+  }
+  expect(await readFile(path.join(repo, "apps/api/src/app.ts"), "utf8")).toMatch(/fileSize: Math\.max\(agentFileMaxBytes,/);
 });

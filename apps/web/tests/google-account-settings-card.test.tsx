@@ -86,6 +86,6 @@ describe("GoogleAccountSettingsCard and email masking", () => {
 
     const linkBtn = screen.getByRole("link", { name: /Connect Google Account/i });
     expect(linkBtn.getAttribute("href")).toBe("/api/auth/google/start?link=true");
-    expect(screen.getByText("Then you can sign in with Google in one click.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "About Link a Google account" })).toBeTruthy();
   });
 });

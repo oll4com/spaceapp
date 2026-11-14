@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Keyboard, Volume2, RotateCcw } from "../ui-theme/app-icons.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import {
   defaultKeyboardAutocorrectSettings,
@@ -59,11 +60,7 @@ export function KeyboardAutocorrectSettingsCard() {
         className="settings-flat-row settings-flat-toggle-row keyboard-autocorrect-master-toggle"
         name="keyboard-autocorrect-master"
         label="Enable layout autocorrection"
-        detail={
-          settings.enabled
-            ? "Detects wrong keyboard layout and suggests corrections (Alt+G)."
-            : "Layout mismatch detection is disabled."
-        }
+        help="Detects text typed in the wrong keyboard layout and suggests the corrected text (Alt+G)."
         checked={settings.enabled}
         onChange={(checked) => updateSettings({ enabled: checked })}
       />
@@ -74,11 +71,7 @@ export function KeyboardAutocorrectSettingsCard() {
             className="settings-flat-row settings-flat-toggle-row keyboard-autocorrect-banner-toggle"
             name="keyboard-autocorrect-banner"
             label="Show suggestion banner"
-            detail={
-              settings.showSuggestionBar
-                ? "Displays conversion preview with Alt+G above composers."
-                : "Suggestion banner is hidden (Alt+G shortcut remains active)."
-            }
+            help="Shows the converted text above composers; Alt+G keeps working when it is hidden."
             checked={settings.showSuggestionBar}
             onChange={(checked) => updateSettings({ showSuggestionBar: checked })}
           />
@@ -87,11 +80,7 @@ export function KeyboardAutocorrectSettingsCard() {
             className="settings-flat-row settings-flat-toggle-row keyboard-autocorrect-icon-toggle"
             name="keyboard-autocorrect-icon"
             label="Show composer keyboard icon"
-            detail={
-              settings.showComposerIcon
-                ? "Displays the Alt+G toggle button in composer action bars."
-                : "Hides the layout toggle button from composer toolbars."
-            }
+            help="Shows the Alt+G layout button in composer action bars."
             checked={settings.showComposerIcon}
             onChange={(checked) => updateSettings({ showComposerIcon: checked })}
           />
@@ -100,21 +89,14 @@ export function KeyboardAutocorrectSettingsCard() {
             className="settings-flat-row settings-flat-toggle-row keyboard-autocorrect-sound-toggle"
             name="keyboard-autocorrect-sound"
             label="Audio alert on detection"
-            detail={
-              settings.soundEnabled
-                ? "Plays a subtle chime when wrong layout is detected."
-                : "Layout detection is silent without audio chime."
-            }
+            help="Plays a subtle chime when a wrong layout is detected."
             checked={settings.soundEnabled}
             onChange={(checked) => updateSettings({ soundEnabled: checked })}
           />
 
           {settings.soundEnabled ? (
             <div className="settings-flat-row keyboard-autocorrect-sound-preview-row">
-              <span className="settings-flat-row-copy">
-                <strong>Chime preview</strong>
-                <small>Test the notification sound.</small>
-              </span>
+              <SettingsLabel label="Chime preview" help="Plays the detection chime so you can hear it." />
               <button
                 type="button"
                 className="settings-flat-control keyboard-autocorrect-test-btn"
@@ -132,16 +114,13 @@ export function KeyboardAutocorrectSettingsCard() {
             </div>
           ) : null}
 
-          <div className="settings-flat-subheading">
-            <strong>Supported languages</strong>
-            <small>Select layouts to monitor and convert between.</small>
-          </div>
+          <div className="settings-flat-subheading"><SettingsLabel label="Supported languages" help="The layouts to monitor and convert between. At least one stays on." /></div>
 
           <SpaceToggle
             className="settings-flat-row settings-flat-toggle-row language-toggle-el"
             name="language-toggle-el"
             label="Greek"
-            detail="Detects Greek typed on QWERTY and converts tonos & dialytika."
+            help="Detects Greek typed on QWERTY and converts tonos & dialytika."
             checked={isGreekEnabled}
             onChange={(checked) => toggleLanguage("el", checked)}
           />
@@ -150,7 +129,7 @@ export function KeyboardAutocorrectSettingsCard() {
             className="settings-flat-row settings-flat-toggle-row language-toggle-en"
             name="language-toggle-en"
             label="English (QWERTY Latin)"
-            detail="Detects English commands typed on Greek layout (e.g. μψπ → mcp)."
+            help="Detects English commands typed on Greek layout (e.g. μψπ → mcp)."
             checked={isEnglishEnabled}
             onChange={(checked) => toggleLanguage("en", checked)}
           />

@@ -13,7 +13,7 @@ const owner = "user:programs";
 const program = (id: string, parent: string, name: string, extra: Partial<NousProgram> = {}): NousProgram => ({
   id, page: "startup", parent, program: name, project: "SpaceApp", url: null, status: "APPLIED", statusReason: null, appliedAt: "2026-10-20T00:00:00.000Z",
   decidedAt: null, expectedReplyBy: null, validUntil: null, amount: null, commitments: null, account: "ntheo@spaceapp.dev", contacts: [], mails: [],
-  nextAction: null, reapply: null, sources: [], notes: null, givesMoney: null, tags: [], whatItIs: null, howWeUse: null, benefits: [], tiers: [], locked: [], awaitingCompletion: false, createdAt: "2026-11-03T10:00:00.000Z", updatedAt: "2026-11-03T10:00:00.000Z", ...extra
+  nextAction: null, reapply: null, sources: [], notes: null, givesMoney: null, tags: [], whatItIs: null, howWeUse: null, benefits: [], tiers: [], locked: [], awaitingCompletion: false, affiliate: null, createdAt: "2026-11-03T10:00:00.000Z", updatedAt: "2026-11-03T10:00:00.000Z", ...extra
 });
 
 async function behaves(repository: NousProgramsRepository) {
@@ -33,6 +33,15 @@ async function behaves(repository: NousProgramsRepository) {
   expect((await repository.list(owner)).map((row) => row.id)).toEqual(["anthropic-startups", "meta-hackathon", "nvidia-inception"]);
   expect((await repository.list(owner, "startup")).map((row) => row.id)).toEqual(["anthropic-startups", "meta-hackathon", "nvidia-inception"]);
   expect(await repository.get(owner, "nvidia-dli")).toBeNull();
+  // The Affiliate page (migration 0333): its own rows with what the approval gives, apart from startup's.
+  const banggood = program("banggood-affiliate", "Banggood", "Affiliate Program", { page: "affiliate", project: null, status: "APPROVED",
+    affiliate: { network: "Direct", publisherId: "BG111421424", commission: "Up to 8%", cookieDays: 30, trackingLink: "https://www.banggood.com/?p=YJ0321",
+      couponFeed: null, payout: "PayPal", signIn: "vault_item:6OAgXDcmj74EV27JrFjuuA" } });
+  await repository.put(owner, banggood);
+  expect(await repository.get(owner, "banggood-affiliate")).toEqual(banggood);
+  expect((await repository.list(owner, "affiliate")).map((row) => row.id)).toEqual(["banggood-affiliate"]);
+  expect((await repository.list(owner, "startup")).map((row) => row.id)).toEqual(["anthropic-startups", "meta-hackathon", "nvidia-inception"]);
+  expect(await repository.delete(owner, "banggood-affiliate")).toBe(true);
   const rewritten = await repository.put(owner, { ...inception, status: "EXPIRED", createdAt: "2026-11-04T00:00:00.000Z", updatedAt: "2026-11-04T00:00:00.000Z" });
   expect(rewritten).toMatchObject({ status: "EXPIRED", createdAt: inception.createdAt, updatedAt: "2026-11-04T00:00:00.000Z" });
   expect(await repository.get(owner, "nvidia-inception")).toEqual(rewritten);

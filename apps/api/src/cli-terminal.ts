@@ -52,6 +52,7 @@ import {
   type CliTerminalTelemetryReason,
   type CodexCliModeDefaultPair,
   type CreatePaneCliHostOutputInput,
+  isHibernatedSession,
   type Pane,
   type PaneCliClientMode,
   type PaneCliSession,
@@ -85,6 +86,7 @@ import {
   codexDirectParityHome,
   isDirectOperatorParityRuntime,
   isCodexDirectParityRuntime,
+  isClaudeDirectParityRuntime,
   pathInside,
   publicPaneCwd,
   resolveDirectOperatorParityCwd
@@ -96,7 +98,7 @@ import { isCliRenderProofSession } from "./cli-render-proof-fixture.js";
 import { opencodeNativeSessionIdPattern } from "./opencode-native-session.js";
 import { reasonixNativeSessionRefPattern, resolveReasonixNativeSessionRef } from "./reasonix-native-session.js";
 import { recordCliHostHealth } from "./host-metrics.js";
-import { claudeNativeSessionIdPattern } from "./claude-native-turns.js";
+import { claudeNativeSessionIdPattern, loadClaudeNativeTurns } from "./claude-native-turns.js";
 import { ompNativeSessionIdPattern } from "./omp-native-model.js";
 import { museNativeSessionIdPattern } from "./muse-native-session.js";
 import { hermesNativeSessionIdPattern, qwenNativeSessionIdPattern } from "./task-title-native.js";
@@ -690,6 +692,8 @@ export interface CliLoginVerificationEvidence {
 
 export interface CliTerminalManagerOptions {
   store: SpaceStore;
+  /** Resumes a pane's last task in the same conversation; called only for a pane the hibernate sweep stopped (pane-hibernate-sweep.ts). */
+  wakeHibernatedPane?: (pane: Pane, traceId: string) => Promise<boolean>;
   config: SpaceApiConfig;
   /** Public installs: runs credential-smoke in the CLI container (cli-auth-transfer.ts). */
   credentialHost?: Pick<CredentialHost, "execute"> | null;
@@ -2209,6 +2213,20 @@ export class CliTerminalManager {
     return new Map(resolved.filter((item): item is readonly [string, number] => item !== null));
   }
 
+  private readonly hibernatedPanesWaking = new Map<string, Promise<boolean>>();
+
+  /** Plan clipboard:YqhRIXfLAnfK step 2β: a pane the hibernate sweep stopped resumes on its next message; one wake per pane at a time. */
+  wakeHibernatedPane(pane: Pane, traceId: string): Promise<boolean> {
+    const wakeHook = this.options.wakeHibernatedPane;
+    if (!wakeHook) return Promise.resolve(false);
+    const pending = this.hibernatedPanesWaking.get(pane.id);
+    if (pending) return pending;
+    const wake = (async () => isHibernatedSession((await this.options.store.listPaneCliSessions(pane.id, 1))[0]) && wakeHook(pane, traceId))()
+      .finally(() => this.hibernatedPanesWaking.delete(pane.id));
+    this.hibernatedPanesWaking.set(pane.id, wake);
+    return wake;
+  }
+
   async ensurePaneTransportReady(
     pane: Pane,
     traceId: string,
@@ -2226,6 +2244,8 @@ export class CliTerminalManager {
       throw new SpaceFeatureDisabledError("CLI_RUNTIME_DISABLED", runtime.statusReason, { runtimeId: runtime.id });
     }
     let session = await this.options.store.getActivePaneCliSession(pane.id);
+    // A hibernated pane continues its conversation on the next message; an explicit launch mode is the caller's own choice.
+    if (!session && !selection.launchMode && await this.wakeHibernatedPane(pane, traceId)) session = await this.options.store.getActivePaneCliSession(pane.id);
     if (!session) {
       let modelId = pane.modelId ?? runtime.defaultModelId;
       let reasoningEffort = pane.reasoningEffort;
@@ -2787,6 +2807,15 @@ export class CliTerminalManager {
     const host = await this.inspectSessionHost(session).catch(() => null);
     // Prompt delivery waits on this read; never answer it from the shared cache.
     return loadGeminiNativeTurns({ paneId: session.paneId, sessionId: session.sessionId, rootPid: host?.pid ?? null }, { fresh: true }).catch(() => null);
+  }
+
+  /** Claude's own transcript has a turn begun at or after `sinceMs` (R9-9: its session is authoritative over the rebuilt room screen). */
+  async claudeTurnStartedSince(sessionId: string, sinceMs: number): Promise<boolean> {
+    const session = await this.options.store.getPaneCliSession(sessionId);
+    if (!session || session.purpose !== "NORMAL" || !isClaudeDirectParityRuntime(session.runtimeId)) return false;
+    const host = await this.inspectSessionHost(session).catch(() => null);
+    const native = await loadClaudeNativeTurns({ paneId: session.paneId, sessionId, rootPid: host?.pid ?? null }, { fresh: true }).catch(() => null);
+    return native?.tasks.some((task) => Date.parse(task.timing.startedAt ?? "") >= sinceMs) ?? false;
   }
 
   async getCurrentTurnActivity(sessionId: string): Promise<CodexCliTurnActivity> {

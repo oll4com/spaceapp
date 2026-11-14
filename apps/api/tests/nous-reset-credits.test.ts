@@ -57,6 +57,7 @@ describe("Codex reset credits", () => {
     const refused = await nous.redeem("user:operator", { account: fresh.label });
     expect(refused).toMatchObject({ ok: false });
     expect(refused.result).toMatch(/not used up.*Nothing spent/);
+    expect(refused.refused).toBe(true);
     expect(redeem).not.toHaveBeenCalled();
 
     const spent = await nous.redeem("user:operator", { account: "ntheogr" });

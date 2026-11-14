@@ -3,6 +3,7 @@ export * from "./nous-shared-memory.js";
 export * from "./nous-shared-memory-seed.js";
 export * from "./schemas.js";
 export * from "./history-period.js";
+export * from "./pane-hibernate.js";
 export * from "./token-usage-breakdown.js";
 export * from "./ui-language.js";
 export * from "./plan-map.js";

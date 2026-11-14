@@ -11,7 +11,7 @@ import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { ArrowLeft, Eye, EyeOff, FileUp, Lock, Pencil, Plus, RefreshCw, ShieldOff, Trash2, Unlink, Unlock, Vault } from "../ui-theme/app-icons.js";
 import {
   VAULT_AGENT_POLICY, changeMasterPassword, confirmVaultItem, decryptVaultItem, deleteVaultItems, encryptVaultItem, planDuplicateRemoval, revealHandoffKey, setUpVault,
-  createTransferReseal, recoverVault, unlockVault, type UnlockedVault, type VaultItemSecrets
+  createTransferReseal, recoverVault, unlockVault, vaultCardExpiry, vaultCardMetadata, vaultCardNumberValid, type UnlockedVault, type VaultItemSecrets
 } from "./vault-client.js";
 import { ChromeImportError, parseChromePasswords, planChromeImport, runChromeImport, type ChromeExport, type ChromeImportPlan } from "./chrome-import.js";
 import { handOverToAgents, holdVaultKeys, lockVaultSession, openVaultInbox, subscribeVaultSession, vaultInboxProblem, vaultInboxRowProblem, vaultSessionKeys } from "./vault-session.js";
@@ -26,9 +26,13 @@ import "./vault.css";
 // each unlock and item change, and the logins agents saved are added on unlock.
 
 type View = "items" | "keys" | "audit" | "settings";
-interface Draft { id?: string; label: string; origins: string; loginPage: string; acceptedRisks: string[]; secrets: VaultItemSecrets; agentUse: boolean; previous?: VaultItemRecord }
+interface Draft { id?: string; label: string; origins: string; loginPage: string; acceptedRisks: string[]; secrets: VaultItemSecrets; agentUse: boolean; card?: boolean; previous?: VaultItemRecord }
 const MIN_MASTER = 12;
-const emptyDraft = (): Draft => ({ label: "", origins: "", loginPage: "", acceptedRisks: [], secrets: {}, agentUse: true });
+const emptyDraft = (card = false): Draft => ({ label: "", origins: "", loginPage: "", acceptedRisks: [], secrets: {}, agentUse: true, card });
+const CARD_BRAND_NAMES: Record<NonNullable<VaultItemMetadata["card"]>["brand"], string> = { VISA: "Visa", MASTERCARD: "Mastercard", AMEX: "American Express",
+  MAESTRO: "Maestro", DISCOVER: "Discover", DINERS: "Diners Club", JCB: "JCB", UNIONPAY: "UnionPay", OTHER: "Card" };
+/** The only clear facts of a card: its brand and last four digits. */
+const cardLine = (card: NonNullable<VaultItemMetadata["card"]>) => `${CARD_BRAND_NAMES[card.brand]} ••${card.last4}`;
 /** The origins the editor saves (each address as its origin); the login page must be on one of them. */
 const draftOrigins = (text: string) => text.split(/\s+/).filter(Boolean).map((origin) => canonicalVaultOrigin(origin)?.origin ?? origin);
 const warningText = { INSECURE_HTTP: "not encrypted (http)", IP_LITERAL: "an IP address", PUNYCODE: "an international (punycode) name that can imitate another site" } as const;
@@ -230,7 +234,7 @@ function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultC
   const newPassword = useMemo(() => new Map(waiting.filter((entry) => entry.kind === "CHANGE_PASSWORD" && itemIds.has(entry.handle)).reverse().map((entry) => [entry.handle, entry])), [waiting, itemIds]);
   const waitingRows = waiting.filter((entry) => (entry.kind === "NEW_ACCOUNT" || !itemIds.has(entry.handle)) && matches(`${entry.label} ${entry.origin}`)
     && (!accountFilter || accountFilter === "none"));
-  const shown = useMemo(() => (items ?? []).filter((item) => matches(`${item.label} ${item.origins.join(" ")}`)
+  const shown = useMemo(() => (items ?? []).filter((item) => matches(`${item.label} ${item.origins.join(" ")} ${item.card ? cardLine(item.card) : ""}`)
     && (!accountFilter || (accountFilter === "none" ? !item.googleAccountId : item.googleAccountId === accountFilter))), [items, search, accountFilter]);
   // Every change reaches agents and Nous at once while agent access is on.
   const changed = async () => { await reload(); await handOverToAgents(keys.current!); await onVaultChanged(); };
@@ -246,6 +250,14 @@ function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultC
     await changed();
   });
 
+  if (draft?.card) {
+    return <CardEditor draft={draft} onCancel={() => setDraft(null)} onSave={(next) => run(async () => {
+      const policy = { ...(next.previous?.metadata.policy ?? VAULT_AGENT_POLICY), agentUse: next.agentUse, acceptedOriginRisks: [] };
+      await api.vaultSaveItem(await encryptVaultItem(keys.current!, { id: next.id, label: next.label.trim(), origins: [], loginPage: null, secrets: next.secrets, status: "ACTIVE", policy,
+        card: vaultCardMetadata(next.secrets.CARD_NUMBER!) }, next.previous));
+      setDraft(null); await changed();
+    })} />;
+  }
   if (draft) {
     return <ItemEditor draft={draft} generator={defaults.generator} onCancel={() => setDraft(null)} onSave={(next) => run(async () => {
       const origins = draftOrigins(next.origins);
@@ -256,7 +268,7 @@ function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultC
   }
   if (importing) return <ChromeImport keys={keys} accounts={accounts} run={run} onClose={() => setImporting(false)} onImported={changed} />;
   if (!items) return <DockState kind="loading" title="Opening your items" />;
-  if (checkingSites) return <SiteCheck items={items} keys={keys} run={run} confirm={confirm} onClose={() => setCheckingSites(false)} onDeleted={changed} />;
+  if (checkingSites) return <SiteCheck items={items.filter((item) => !item.card)} keys={keys} run={run} confirm={confirm} onClose={() => setCheckingSites(false)} onDeleted={changed} />;
   return (
     <div className="vault-items">
       <AgentAccess vaultState={vaultState} run={run} delegable={items.filter((item) => item.policy.agentUse && item.status === "ACTIVE").length} onChange={async (enabled) => {
@@ -269,8 +281,9 @@ function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultC
       <div className="vault-items-bar">
         <DockSearch value={search} onChange={setSearch} label="Search the Vault" placeholder="Search by name or address" />
         <DockButton icon={Plus} tone="primary" onClick={() => setDraft(emptyDraft())}>Add item</DockButton>
+          <DockButton icon={Plus} onClick={() => setDraft(emptyDraft(true))}>Add card</DockButton>
           <DockButton icon={FileUp} onClick={() => setImporting(true)}>Import from Chrome</DockButton>
-          <DockButton icon={Unlink} disabled={!items.length} onClick={() => setCheckingSites(true)}>Check sites</DockButton>
+          <DockButton icon={Unlink} disabled={!items.some((item) => !item.card)} onClick={() => setCheckingSites(true)}>Check sites</DockButton>
           <DockButton icon={Trash2} disabled={items.length < 2} onClick={() => void removeDuplicates()}>Remove duplicates</DockButton>
       </div>
       {accounts.length ? <label className="vault-filter">Google account
@@ -302,8 +315,9 @@ function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultC
               <div className="vault-row-main">
                 <strong>{item.label}</strong>
                 {/* nous_msg:cc5aba71: the login page when the item has one (Shopflix's origin answers 500), else its first origin. */}
-                <span className="vault-origins"><a href={vaultItemLink(item)!} target="_blank" rel="noreferrer noopener">{vaultItemLink(item)}</a>
-                  {item.origins.length > 1 ? `, ${item.origins.slice(1).join(", ")}` : ""}</span>
+                {item.card ? <span className="vault-origins">{cardLine(item.card)}</span>
+                  : <span className="vault-origins"><a href={vaultItemLink(item)!} target="_blank" rel="noreferrer noopener">{vaultItemLink(item)}</a>
+                    {item.origins.length > 1 ? `, ${item.origins.slice(1).join(", ")}` : ""}</span>}
                 {stats[item.id] ? <span className="vault-meta">{itemStatsLine(stats[item.id]!)}</span> : null}
                 {fresh ? <span className="vault-meta">{`New password from an agent · ${formatUserTime(fresh.createdAt, { withDate: true })}`}</span> : null}
                 <span className="vault-tags">
@@ -316,7 +330,7 @@ function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultC
                 <DockButton icon={Pencil} aria-label={`Edit ${item.label}`} onClick={() => void run(async () => {
                   const full = (await api.vaultItem(item.id)).item;
                   const secrets = await decryptVaultItem(keys.current!, full);
-                  setDraft({ id: item.id, label: item.label, origins: item.origins.join("\n"), loginPage: item.loginPage ?? "", acceptedRisks: item.policy.acceptedOriginRisks, secrets, agentUse: item.policy.agentUse, previous: full });
+                  setDraft({ id: item.id, label: item.label, origins: item.origins.join("\n"), loginPage: item.loginPage ?? "", acceptedRisks: item.policy.acceptedOriginRisks, secrets, agentUse: item.policy.agentUse, card: Boolean(item.card), previous: full });
                 })} />
                 <DockButton icon={Trash2} tone="danger" aria-label={`Delete ${item.label}`} onClick={() => void (async () => {
                   if (await confirm({ title: `Delete ${item.label}?`, message: "Its encrypted fields are deleted for good.", confirmLabel: "Delete" })) await remove(item.id);
@@ -393,6 +407,49 @@ function ItemEditor({ draft: initial, generator, onCancel, onSave }: { draft: Dr
         <summary>More options</summary>
         <label>Authenticator key<input type="password" autoComplete="off" value={draft.secrets.OTP ?? ""} onChange={(event) => setSecret("OTP", event.target.value.replace(/\s+/g, ""))} /></label>
       </details>
+      <DockButton type="submit" tone="primary" disabled={!canSave}>Save</DockButton>
+    </form>
+  );
+}
+
+/**
+ * A debit or credit card (plan clipboard:qf0P640vyLp2): encrypted here like a login, with only its brand and last four in the
+ * clear. Agents never see it; the broker types it into a checkout's card fields and the operator approves the payment in the bank's app.
+ */
+function CardEditor({ draft: initial, onCancel, onSave }: { draft: Draft; onCancel: () => void; onSave: (draft: Draft) => void }) {
+  const [draft, setDraft] = useState(initial);
+  const [reveal, setReveal] = useState(false);
+  const set = (patch: Partial<Draft>) => setDraft((current) => ({ ...current, ...patch }));
+  const setSecret = (role: keyof VaultItemSecrets, value: string) => set({ secrets: { ...draft.secrets, [role]: value || undefined } });
+  const digits = (draft.secrets.CARD_NUMBER ?? "").replace(/[\s-]/g, "");
+  const expiry = vaultCardExpiry(draft.secrets.CARD_EXPIRY ?? "");
+  const cvc = draft.secrets.CARD_CVC ?? "";
+  const numberOk = vaultCardNumberValid(digits);
+  const cvcOk = /^[0-9]{3,4}$/.test(cvc);
+  const canSave = draft.label.trim() && numberOk && expiry && cvcOk;
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (canSave) onSave({ ...draft, secrets: { CARD_NUMBER: digits, CARD_EXPIRY: expiry!, CARD_CVC: cvc, CARDHOLDER_NAME: draft.secrets.CARDHOLDER_NAME?.trim() || undefined } });
+  };
+  return (
+    <form className="vault-card vault-form vault-editor" onSubmit={submit}>
+      <div className="vault-editor-head">
+        <h3>{draft.id ? "Edit card" : "Add card"}</h3>
+        <DockIconButton label="Back" icon={ArrowLeft} onClick={onCancel} />
+      </div>
+      <label>Name<input value={draft.label} maxLength={80} placeholder="Revolut" onChange={(event) => set({ label: event.target.value })} /></label>
+      <div className="vault-password-row">
+        <label>Card number<input type={reveal ? "text" : "password"} inputMode="numeric" autoComplete="cc-number" value={draft.secrets.CARD_NUMBER ?? ""} onChange={(event) => setSecret("CARD_NUMBER", event.target.value)} /></label>
+        <DockIconButton icon={reveal ? EyeOff : Eye} label={reveal ? "Hide card number and security code" : "Show card number and security code"} onClick={() => setReveal(!reveal)} />
+      </div>
+      {digits && !numberOk ? <p className="vault-hint is-error">This card number is not valid.</p> : null}
+      <label>Expiry date<input inputMode="numeric" autoComplete="cc-exp" placeholder="MM/YY" maxLength={7} value={draft.secrets.CARD_EXPIRY ?? ""} onChange={(event) => setSecret("CARD_EXPIRY", event.target.value)} /></label>
+      {draft.secrets.CARD_EXPIRY && !expiry ? <p className="vault-hint is-error">Use the month and year on the card (MM/YY); the card must not have expired.</p> : null}
+      <label>Security code (CVC)<input type={reveal ? "text" : "password"} inputMode="numeric" autoComplete="cc-csc" maxLength={4} value={cvc} onChange={(event) => setSecret("CARD_CVC", event.target.value)} /></label>
+      {cvc && !cvcOk ? <p className="vault-hint is-error">The security code has 3 or 4 digits.</p> : null}
+      <label>Name on card (optional)<input autoComplete="cc-name" value={draft.secrets.CARDHOLDER_NAME ?? ""} onChange={(event) => setSecret("CARDHOLDER_NAME", event.target.value)} /></label>
+      <SpaceToggle compact checked={draft.agentUse} label="Agents and Nous can use this card"
+        detail="When agent access is on. Space types it into a checkout's card fields; they never see it, and you approve each payment in your bank's app." onChange={(agentUse) => set({ agentUse })} />
       <DockButton type="submit" tone="primary" disabled={!canSave}>Save</DockButton>
     </form>
   );

@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { VaultHostTarget } from "@space/contracts";
+import type { BrowserControlActivity } from "../browser-control-activity.js";
 import type { PostgresVaultRepository, VaultFillTarget } from "@space/db";
 import { cliBrowserBridgeTokenHeader, verifyCliBrowserBridgeToken } from "../cli-browser-bridge.js";
 import type { SpaceApiConfig } from "../config.js";
@@ -14,7 +15,7 @@ import { SpaceConflictError } from "@space/runtime";
 // only a closed tab, or the tab itself showing another document, origin or no web page, counts as gone (2026-10-19).
 
 export type VaultProtectionStore = Pick<PostgresVaultRepository, "protectPane" | "unprotectPane" | "protectedPane">;
-/** The stored fence (jsonb): the fill target, plus the agent (`cli:<session>`) that asked for the handoff behind it, which
+/** The stored fence (jsonb): the fill target, plus the agent (`cli:<session>`) that made the fill or asked for the handoff behind it, which
  *  gets masked screenshots (operator decision 2026-10-25). */
 type FenceFill = VaultFillTarget & { viewer?: string };
 type Entry = { owner: string; fill: FenceFill | null } | null;
@@ -105,7 +106,7 @@ export function createVaultProtection(repository: VaultProtectionStore | null, l
       }
       return false;
     },
-    /** The agent (`cli:<session>`) that asked for the handoff behind this pane's fence, if any. */
+    /** The agent (`cli:<session>`) that made the fill or asked for the handoff behind this pane's fence, if any. */
     viewerOf: async (paneId: string): Promise<string | null> => (await entryOf(paneId))?.fill?.viewer ?? null,
     /** The tabs this pane's fence covers (none when it has no fence). */
     async fencedTargets(paneId: string): Promise<string[]> {
@@ -136,7 +137,9 @@ export async function assertVaultBrowserActionAllowed(protection: Pick<VaultProt
   throw new SpaceConflictError("This page is locked after a Vault fill or a browser handoff: until the tab shows another page (navigate or reload it), it can only be navigated, clicked, typed into and scrolled.");
 }
 
-export function registerVaultFences(app: FastifyInstance, deps: { protection: VaultProtection; config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret"> }): void {
+export function registerVaultFences(app: FastifyInstance, deps: { protection: VaultProtection; config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret">;
+  /** Who drives each pane browser: its driving CLI pane gets the masked view too. */
+  controlActivity?: Pick<BrowserControlActivity, "agentFor"> }): void {
   const refuse = (reply: FastifyReply, code: "VAULT_PROTECTED_PANE_PRIVATE" | "VAULT_PROTECTED_SESSION_REQUIRED", message: string) =>
     sendApiError(reply, code === "VAULT_PROTECTED_PANE_PRIVATE" ? 403 : 409, code, message);
   const fencedCloses = new WeakSet<FastifyRequest>();
@@ -173,11 +176,13 @@ export function registerVaultFences(app: FastifyInstance, deps: { protection: Va
       if (protectedPanes.size === 0) return;
       // Actions that return no page content stay open, so a login can go on (Next, Sign in, a mail code, Verify) while the
       // fill is in the page; the pane that holds the fence also gets masked screenshots of it (fields drawn as dots), never
-      // another pane (2026-10-19, Nous decision on the Alstom report), except the agent that asked for the handoff behind the
-      // fence, so it can see where the operator left the page (operator decision 2026-10-25).
+      // another pane (2026-10-19, Nous decision on the Alstom report), except the fence's viewer: the agent that asked for the
+      // handoff behind it (operator decision 2026-10-25), or the CLI that made the fill into a browser pane it drives (13/11), and the
+      // CLI pane that drives that browser now (13/11 Nous, plan clipboard:R4ypY6u56pAb: a Nous fill or a resumed session left it blind).
       const viewers = new Map<string, string | null>();
       for (const id of protectedPanes) viewers.set(id, await deps.protection.viewerOf(id));
-      const maskedFor = (paneId: string) => paneId === claims.paneId || viewers.get(paneId) === `cli:${claims.cliSessionId}`;
+      const maskedFor = (paneId: string) => paneId === claims.paneId || viewers.get(paneId) === `cli:${claims.cliSessionId}`
+        || deps.controlActivity?.agentFor(paneId)?.paneId === claims.paneId;
       const onlyInteraction = route === "/api/cli/browser/actions" && Array.isArray(body.actions) && body.actions.length > 0
         && body.actions.every((entry) => !protectedPanes.has(String(entry?.targetPaneId)) || interactionActions.has(String(entry?.action?.type))
           || (entry?.action?.type === "masked_screenshot" && maskedFor(String(entry?.targetPaneId))));
@@ -203,7 +208,7 @@ export function registerVaultFences(app: FastifyInstance, deps: { protection: Va
       let released = true;
       for (const id of protectedPanes) released = await deps.protection.release(id) && released;
       if (released) return;
-      return refuse(reply, "VAULT_PROTECTED_SESSION_REQUIRED", "This page is locked for agents after a Vault fill or an operator browser handoff, so nothing typed there is read back. It unlocks when the tab shows another page (navigate or reload it); until then agents can navigate, click, type and scroll it, the pane holding the browser can upload its own files into it (space_browser_upload_file), and only that pane or the agent that asked for the handoff gets masked screenshots and the masked readout (space_browser_page_readout: path, title and the page's error or success text; no field values, DevTools or Playwright).");
+      return refuse(reply, "VAULT_PROTECTED_SESSION_REQUIRED", "This page is locked for agents after a Vault fill or an operator browser handoff, so nothing typed there is read back. It unlocks when the tab shows another page (navigate or reload it); until then agents can navigate, click, type and scroll it, the pane holding the browser can upload its own files into it (space_browser_upload_file), and only that pane, the agent that made the fill, the agent that asked for the handoff or the CLI that drives that browser gets masked screenshots and the masked readout (space_browser_page_readout: path, title and the page's error or success text; no field values, DevTools or Playwright).");
     }
   });
 }

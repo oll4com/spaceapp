@@ -15,8 +15,8 @@ const bkk = (local: string) => new Date(`${local}+07:00`).getTime();
 // Every section an upcoming appointment needs (operator 4/11, nous_msg:a6016259), as the operator's records write them.
 const NOTES = ["ΤΙ ΕΙΝΑΙ: Turing, 3 τεστ αξιολόγησης (όχι συνέντευξη).", "ΩΡΑ: 15:05 Μπανγκόκ.", "ΕΙΣΟΔΟΣ: https://work.turing.com/dashboard\nΛογαριασμός: work@example.invalid.",
   "ΓΙΑΤΙ ΑΞΙΖΕΙ: το επόμενο βήμα της αίτησης.", "ΤΙ ΧΡΕΙΑΖΕΣΑΙ: 90 λεπτά ησυχίας.", "ΠΗΓΗ: task:1roMnBz-yIz6."].join("\n\n");
-// Its format and timing (operator 6/11, nous_msg:ea6f0792); a FIXED time is kept whatever the hour.
-const FIXED = { format: "TEST", timing: "FIXED" } as const;
+// Its format and timing (operator 6/11, nous_msg:ea6f0792); a FIXED time is kept whatever the hour. An online one's location is its link (operator 13/11).
+const FIXED = { format: "TEST", timing: "FIXED", location: "https://work.turing.com/dashboard" } as const;
 
 describe("appointment reminders", () => {
   it("goes 1 day, 3 h and 1 h before, and moves a reminder in quiet hours to 22:55 before them", () => {
@@ -78,7 +78,7 @@ describe("appointments routes", () => {
       expect(await service.remind()).toBe(0);
       const notes = (await app.inject({ method: "GET", url: "/api/notifications", headers })).json();
       const reminder = (notes.notifications ?? notes.items ?? notes).find((note: { kind: string }) => note.kind === "APPOINTMENT_REMINDER");
-      expect(reminder).toMatchObject({ source: "NOUS", severity: "ATTENTION", payload: { appointmentId: created.json().id } });
+      expect(reminder).toMatchObject({ source: "NOUS", severity: "ATTENTION", payload: { appointmentId: created.json().id, joinUrl: "https://work.turing.com/dashboard" } });
       expect(reminder.title).toMatch(/^Υπενθύμιση: Turing tests \(2\) σε \d+ λεπτά$/);
       expect((await service.repository.get(created.json().ownerUserId, created.json().id))!.remindersSent.sort((a, b) => a - b)).toEqual([60, 180, 1440]);
 
@@ -133,7 +133,7 @@ describe("appointments routes", () => {
       // Its chosen slot, 12:00-13:00 Bangkok yesterday (within the 11:00-18:00 rule), is over; its deadline is in 6 days.
       const yesterday = new Date(Date.now() + 7 * hour - 24 * hour).toISOString().slice(0, 10);
       await service.repository.create(owner, { title: "FutureGrid", startsAt: new Date(bkk(`${yesterday}T12:00:00`)).toISOString(), endsAt: new Date(bkk(`${yesterday}T13:00:00`)).toISOString(),
-        notes: NOTES, format: "RECORDED_VIDEO", timing: "FLEXIBLE", deadlineAt: iso(6 * 24 * hour), timeZone: "Asia/Bangkok" });
+        notes: NOTES, format: "RECORDED_VIDEO", timing: "FLEXIBLE", deadlineAt: iso(6 * 24 * hour), timeZone: "Asia/Bangkok", location: "https://futuregrid.test/r" });
       await service.repository.create(owner, { title: "Missed call", startsAt: iso(-2 * hour), notes: NOTES, ...FIXED, timeZone: "Asia/Bangkok" });
       const listed = (await app.inject({ method: "GET", url: "/api/appointments", headers })).json().appointments as Appointment[];
       expect(listed.map((a) => a.title)).toEqual(["FutureGrid", "Missed call"]);
@@ -201,7 +201,7 @@ describe("appointments routes", () => {
       const refusal = async (payload: Record<string, unknown>) => { const answer = await add(payload); expect(answer.statusCode).toBe(409); return answer.json().error.message as string; };
       const ten = "2099-11-07T10:00:00+07:00";
       expect(await refusal({ startsAt: ten })).toContain("it needs: format (AI_INTERVIEW | RECORDED_VIDEO | LIVE_HUMAN_VIDEO | PHONE | IN_PERSON | WEBINAR | TEST | OTHER); timing (FIXED or FLEXIBLE).");
-      const flexible = { format: "RECORDED_VIDEO", timing: "FLEXIBLE" };
+      const flexible = { format: "RECORDED_VIDEO", timing: "FLEXIBLE", location: "https://app.hireflix.com/x" };
       expect(await refusal({ startsAt: "2099-11-07T11:00:00+07:00", ...flexible })).toContain("it needs: deadlineAt");
       // We choose a FLEXIBLE one's time: 10:00 Bangkok is refused with the rule, and 19:00 too unless a time zone forces it.
       const early = await refusal({ startsAt: ten, ...flexible, deadlineAt: "2099-11-07T13:42:00Z" });
@@ -215,6 +215,18 @@ describe("appointments routes", () => {
       expect((await add({ startsAt: ten, ...FIXED })).json()).toMatchObject({ format: "TEST", timing: "FIXED", deadlineAt: null });
       expect((await add({ startsAt: "2099-11-07T11:00:00+07:00", ...flexible, deadlineAt: "2099-11-07T13:42:00Z" })).json())
         .toMatchObject({ format: "RECORDED_VIDEO", timing: "FLEXIBLE", deadlineAt: "2099-11-07T13:42:00.000Z" });
+
+      // Operator 13/11 16:00 BKK: an online one's location is its real join link, never "link in the mail"; a phone number or a place stays text.
+      const text = await refusal({ startsAt: ten, ...FIXED, format: "WEBINAR", location: "Link «Join My Webinar» στο mail" });
+      expect(text).toContain("it needs: location that starts with the real join link as an http(s) URL (WEBINAR is joined online");
+      expect(text).toContain("for a button that exists only in the mail, the Gmail thread URL");
+      expect(await refusal({ startsAt: ten, ...FIXED, format: "AI_INTERVIEW", location: null })).toContain("location that starts with the real join link");
+      expect((await add({ startsAt: ten, ...FIXED, format: "PHONE", location: "+30 210 000 0000" })).statusCode).toBe(201);
+      const meet = await add({ startsAt: ten, ...FIXED, format: "LIVE_HUMAN_VIDEO", location: "https://meet.google.com/abc-defg-hij" });
+      expect(meet.statusCode).toBe(201);
+      const patch = (payload: Record<string, unknown>) => app.inject({ method: "PATCH", url: `/api/appointments/${encodeURIComponent(meet.json().id)}`, headers, payload });
+      expect((await patch({ location: "Google Meet (link in the calendar invite)" })).statusCode).toBe(409);
+      expect((await patch({ status: "DONE", location: "Google Meet" })).statusCode).toBe(200);
     } finally {
       await app.close();
     }

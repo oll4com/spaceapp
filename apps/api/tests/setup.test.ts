@@ -43,6 +43,24 @@ describe("public single-owner setup API", () => {
     // Public profile controls cannot turn off the live/private readiness requirement.
     expect(getApiConfig({ SPACEAPP_WORKFLOWS_ENABLED: "false" }).workflowsEnabled).toBe(true);
   }, 2 * APP_LIFECYCLE_TIMEOUT_MS);
+  it("an owner set only in .env needs no setup: sign-in shows, and no claim can make a second owner (B, 13/11)", async () => {
+    const store = new InMemorySpaceStore();
+    const claimSpy = vi.spyOn(store, "claimOwnerSetup");
+    const app = await createApp({
+      store,
+      auth: { sessionSecret: "test-session-secret-with-enough-length", operatorEmail: "operator@example.com",
+        operatorPasswordHash: await hashPassword("env operator password"), devLogin: false, secureCookies: false },
+      config: getApiConfig({ SPACE_BROWSER_EVIDENCE_ENABLED: "false", SPACE_BROWSER_SESSIONS_ENABLED: "false" })
+    });
+    try {
+      expect((await app.inject({ method: "GET", url: "/api/setup/status" })).json()).toEqual({ setupRequired: false, expiresAt: null });
+      expect((await app.inject({ method: "GET", url: "/api/auth/me" })).json()).toMatchObject({ isSetupRequired: false });
+      const claim = await app.inject({ method: "POST", url: "/api/setup/claim",
+        payload: { token: "setup-token-value-with-at-least-thirty-two-characters", email: "other@example.com", password: "another correct horse battery" } });
+      expect(claim.statusCode).toBe(409);
+      expect(claimSpy).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  }, APP_LIFECYCLE_TIMEOUT_MS);
   it("claims an expiring token once, creates a session, and enables later owner login", async () => {
     const token = "setup-token-value-with-at-least-thirty-two-characters";
     const legacyPassword = "legacy operator password";

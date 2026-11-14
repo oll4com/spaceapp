@@ -146,6 +146,10 @@ async function nousDbErrorText(client: pg.PoolClient, error: unknown, sql: strin
     // Goal 401b115b (9/11: 2201B ×3 in 7 d): a { meant as text starts a repeat; escape it.
     if (pgError.code === "2201B" && !repeats.length && /repetition count/.test(pgError.message ?? "")) lines.push("A { followed by a digit starts a repeat {n} or {n,m} with n ≤ m ≤ 255: to match a brace as text escape it (\\{ and \\}, or [{] and [}]); or compare plain text with ILIKE or position(), where a brace needs no escape.");
     if (repeats.length) lines.push(`A regex repeat counts to 255 at most in PostgreSQL (${repeats.map((match) => match[0]).join(", ")} here): compare length(<column>) >= ${repeats[0]![1]} for a length, or split it into repeats of 255 or fewer.`);
+    // Daily Nous errors 13/11 02:08 UTC (57014, nothing else in the answer): say how to make the read fit the limit.
+    if (pgError.code === "57014") lines.push(`The read ran past ${TIMEOUT_MS / 1_000} s, the limit that keeps the database answering everyone: narrow it to recent rows (created_at > now() - interval '1 day'), filter on an id, drop a join or a text search over a whole table, or count first.`);
+    // Daily Nous errors 14/11 (20:16 UTC 21000, nothing else in the answer): say which forms take several rows.
+    if (pgError.code === "21000") lines.push("A subquery used as one value returned several rows: compare with IN (SELECT ...) or = ANY(ARRAY(SELECT ...)), or make it one row with LIMIT 1 or an aggregate (max, count, string_agg).");
     if (pgError.code === "42883" || pgError.code === "42804") {
       // R13-1: the statement's own text holds the query after the wrapper; PostgreSQL's position counts from 1 in the statement.
       const inner = statement.startsWith(WRAP_HEAD) ? statement.slice(WRAP_HEAD.length, statement.lastIndexOf(WRAP_TAIL)) : statement;
@@ -261,7 +265,9 @@ export const NOUS_DB_COLUMN_SYNONYMS: Record<string, string[]> = {
   // R84 12/11 (42703 in 7 d still uncorrected: nous_messages.body, marketing_copilot_posts.message ×2, space_gateway_request_logs.error,
   // space_gateway_accounts.account_name and .refresh_token_expires_at, space_gateway_api_keys.models; text, metadata, detail above).
   body: ["content", "text", "message"], message: ["body", "content", "text"], error: ["error_message"], account_name: ["label", "account_label"],
-  refresh_token_expires_at: ["credentials_expires_at"], models: ["allowed_models"]
+  refresh_token_expires_at: ["credentials_expires_at"], models: ["allowed_models"],
+  // Daily Nous errors 13/11 10:21 UTC (42703 subject): a mail or post subject is its title elsewhere.
+  subject: ["title", "summary", "name", "text"]
 };
 /**
  * R66 (7 d to 4/11: 6 reads asked a marketing post for its account or metadata, 2 a job application for its payload, 2 a gateway account
@@ -538,8 +544,9 @@ export function createNousDb(deps: { pool: pg.Pool }) {
           tried.add(corrected.sql);
           ran = corrected.sql;
           retry = await read({ ...args, sql: ran }).catch(() => null);
-          if (retry?.out !== undefined || (retry?.corrected?.code !== "42703" && retry?.corrected?.code !== "42702")) break;
-          corrected = retry.corrected;
+          // 13/11 08:38 UTC (answer ->> 'by', answer ->> 'source'): a cast corrects one operator at a time too.
+          if (retry?.out !== undefined || !["42703", "42702", "42883", "42804"].includes(retry?.corrected?.code ?? "")) break;
+          corrected = retry?.corrected ?? null;
         }
         // R51-1 (3/11 13:33 UTC: marketing_posts ran as marketing_copilot_posts and failed on "account"; Nous saw only the first error and
         // failed on account 2 minutes later): a corrected run that fails too answers with what is still wrong in it, then the first error.

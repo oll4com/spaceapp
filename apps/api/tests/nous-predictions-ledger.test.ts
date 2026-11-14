@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { nousAnswerIntent, type NousDecision } from "@space/contracts";
 import { InMemoryNousRepository } from "@space/db";
-import { cardAnswerMatched, cardTextMatched, cardWordsConfirm, decisionPredictedOption, optionPredictionMatched, predictionAccuracy, writtenPredictionMatched } from "../src/nous/predictions.js";
+import { cardAnswerMatched, cardTextMatched, cardWordsConfirm, decisionPredictedOption, optionPredictionMatched, predictionAccuracy, writtenPredictionMatched, yesNoPredictionMatched } from "../src/nous/predictions.js";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -150,6 +150,28 @@ describe("decision ledger: option predictions and the copilot rails (R11-3)", ()
       decision({ ...written, id: "nous_decision:d2", status: "ANSWERED", answer: "όχι", answeredAt: at })], [], "2026-11-06T00:00:00.000Z").decisions).toEqual({ matched: 1, total: 2 });
   });
 
+  it("14/11: a yes or no prediction matches a written answer that leads with the same yes or no (13-14/11 ledger phrasings)", () => {
+    for (const answer of ["Ναι, 12:15 στο PC μου", "Ναι, έχω ταϊλανδέζικο δίπλωμα/ID", "Yes, send as written", "οκ, το βλέπω αύριο", "ok, after lunch"]) {
+      expect(yesNoPredictionMatched("APPROVE", "ANSWERED", answer)).toBe(true);
+      expect(yesNoPredictionMatched("DECLINE", "ANSWERED", answer)).toBe(false);
+    }
+    const no = "Όχι τώρα: το GitHub μένει, συνεχίζω με Stripe";
+    expect(yesNoPredictionMatched("DECLINE", "ANSWERED", no)).toBe(true);
+    expect(yesNoPredictionMatched("APPROVE", "ANSWERED", no)).toBe(false);
+    // No leading yes or no: scored as before, a miss either way.
+    for (const answer of ["Δεν απέκλεισα τίποτα!!", "θελω με χρονικα σημεια μεσα στο chat"]) {
+      expect(yesNoPredictionMatched("APPROVE", "ANSWERED", answer)).toBe(false);
+      expect(yesNoPredictionMatched("DECLINE", "ANSWERED", answer)).toBe(false);
+    }
+    expect(yesNoPredictionMatched("APPROVE", "APPROVED", null)).toBe(true);
+    expect(yesNoPredictionMatched("APPROVE", "DECLINED", "ναι αλλά όχι έτσι")).toBe(false);
+    const at = "2026-11-14T01:00:00.000Z";
+    const yes = { refs: { prediction: { answer: "yes", confidence: 85 } } };
+    expect(predictionAccuracy([decision({ ...yes, status: "ANSWERED", answer: "Ναι, ξεκίνα το τώρα", answeredAt: at }),
+      decision({ ...yes, id: "nous_decision:d2", status: "ANSWERED", answer: "Δεν απέκλεισα τίποτα!!", answeredAt: at })], [], "2026-11-14T00:00:00.000Z").decisions)
+      .toEqual({ matched: 1, total: 2 });
+  });
+
   it("goal 7365014c step 2: the server marks couldHaveDecided on a send May send covers, never on another decision", async () => {
     // 6/11 measurement: couldHaveDecided read 0 because only the operator's feedback button set it.
     const repository = new InMemoryNousRepository();
@@ -164,6 +186,10 @@ describe("decision ledger: option predictions and the copilot rails (R11-3)", ()
     maySend = true;
     expect((await service.answer(owner, send.id, { answer: "APPROVE" })).couldHaveDecided).toBe(true);
     expect((await service.answer(owner, other.id, { answer: "ANSWER", text: "left" })).couldHaveDecided).toBe(false);
+    // 13/11 (Kevin's mail, the wrong meeting time): a declined send needed the ask.
+    const wrong = await service.ask({ ownerUserId: owner, category: "EXTERNAL", title: "Send the correction to Kevin", body: "Mon 17:00", options: [],
+      recommendation: "Prediction: yes (90 %)", refs: { sendKind: "mail-reply" }, action: null });
+    expect((await service.answer(owner, wrong.id, { answer: "DECLINE" })).couldHaveDecided).toBe(false);
     await service.idle(owner);
   });
 

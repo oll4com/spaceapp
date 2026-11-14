@@ -16,9 +16,13 @@ export interface InstanceLinkRecord {
   sealedDevicePrivate: string;
   /** What the other side last said this link may do: read only until its person allows the link. */
   scopes: string[];
+  /** Cloudflare Access service token in front of its channel (migration 0327): Vault key ids, never values; null when none. */
+  accessKeys: InstanceLinkAccessKeys | null;
   createdAt: string;
   lastSeenAt: string | null;
 }
+
+export interface InstanceLinkAccessKeys { clientId: string; clientSecret: string }
 
 type NewLink = Omit<InstanceLinkRecord, "createdAt" | "lastSeenAt">;
 /** A connect's news: the time, the scopes it answered and, after its routine key rotation, its new keys. */
@@ -61,7 +65,7 @@ export class InMemoryInstanceLinkRepository implements InstanceLinkRepository {
 
 interface Row extends Omit<InstanceLinkRecord, "createdAt" | "lastSeenAt"> { createdAt: Date; lastSeenAt: Date | null }
 const columns = `id, owner_user_id AS "ownerUserId", label, origins, noise_public AS "noisePublic", identity_public AS "identityPublic",
-  device_id AS "deviceId", sealed_device_private AS "sealedDevicePrivate", scopes, created_at AS "createdAt", last_seen_at AS "lastSeenAt"`;
+  device_id AS "deviceId", sealed_device_private AS "sealedDevicePrivate", scopes, access_keys AS "accessKeys", created_at AS "createdAt", last_seen_at AS "lastSeenAt"`;
 const toRecord = (row: Row): InstanceLinkRecord => ({ ...row, createdAt: new Date(row.createdAt).toISOString(), lastSeenAt: row.lastSeenAt && new Date(row.lastSeenAt).toISOString() });
 
 export class PostgresInstanceLinkRepository implements InstanceLinkRepository {
@@ -70,9 +74,9 @@ export class PostgresInstanceLinkRepository implements InstanceLinkRepository {
     return new PostgresInstanceLinkRepository(createSpacePgPool(url, { max: 2 }));
   }
   async create(input: NewLink) {
-    const result = await this.pool.query<Row>(`INSERT INTO instance_links (id, owner_user_id, label, origins, noise_public, identity_public, device_id, sealed_device_private, scopes)
-      VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9::jsonb) RETURNING ${columns}`, [input.id, input.ownerUserId, input.label, JSON.stringify(input.origins),
-      input.noisePublic, input.identityPublic, input.deviceId, input.sealedDevicePrivate, JSON.stringify(input.scopes)]);
+    const result = await this.pool.query<Row>(`INSERT INTO instance_links (id, owner_user_id, label, origins, noise_public, identity_public, device_id, sealed_device_private, scopes, access_keys)
+      VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9::jsonb, $10::jsonb) RETURNING ${columns}`, [input.id, input.ownerUserId, input.label, JSON.stringify(input.origins),
+      input.noisePublic, input.identityPublic, input.deviceId, input.sealedDevicePrivate, JSON.stringify(input.scopes), input.accessKeys ? JSON.stringify(input.accessKeys) : null]);
     return toRecord(result.rows[0]!);
   }
   async list(ownerUserId: string) {

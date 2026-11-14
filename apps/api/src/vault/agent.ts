@@ -3,7 +3,7 @@ import type { SiteSigninsRepository, VaultAuditEntry } from "@space/db";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { z } from "zod";
 import {
-  newVaultHandle, sealToVaultPublicKey, vaultAgentAuditRequestSchema, vaultAgentAuditResultSchema, vaultAgentEmptyRequestSchema, vaultAgentFillRequestSchema,
+  newVaultHandle, sealToVaultPublicKey, vaultAgentAuditRequestSchema, vaultAgentAuditResultSchema, vaultAgentCardFillRequestSchema, vaultAgentEmptyRequestSchema, vaultAgentFillRequestSchema, canonicalVaultOrigin, isVaultCardRole,
   vaultAgentGenerateRequestSchema, vaultAgentListRequestSchema, vaultDirtiedBySchema, vaultAgentListResultSchema, vaultAgentResultSchema, vaultAgentSaveRequestSchema, vaultAgentSaveSite, vaultAgentStatusResultSchema, vaultLoginPageProblem, vaultOriginCovers,
   vaultAgentTotpRequestSchema, vaultBase64url, vaultAgentKeyRequestSchema, vaultAgentKeyTakeResultSchema, vaultAgentKeyListRequestSchema, vaultAgentKeyListResultSchema,
   vaultAgentKeySaveRequestSchema, vaultAgentKeySaveResultSchema, vaultPasswordPolicyForField, vaultPolicyConstraints,
@@ -25,10 +25,10 @@ import { markSignin, resetHold, resetRefusal, VAULT_RESET_REASON } from "../sign
 // the filled page is gone, and every answer is a status, a reason in the audit and, for a list, handles and origins only.
 // Nous calls the same paths as the agents' bridge, so both have identical access.
 
-export const VAULT_AGENT_PATHS = ["status", "list", "audit", "fill", "totp-fill", "generate-fill", "save", "key-take", "key-used", "key-list", "key-save"] as const;
+export const VAULT_AGENT_PATHS = ["status", "list", "audit", "fill", "card-fill", "totp-fill", "generate-fill", "save", "key-take", "key-used", "key-list", "key-save"] as const;
 export type VaultAgentPath = (typeof VAULT_AGENT_PATHS)[number];
 const actions: Record<VaultAgentPath, VaultAuditEvent["action"]> = {
-  status: "AGENT_LIST", list: "AGENT_LIST", audit: "AGENT_LIST", fill: "FILL", "totp-fill": "FILL", "generate-fill": "GENERATE", save: "ITEM_SAVE",
+  status: "AGENT_LIST", list: "AGENT_LIST", audit: "AGENT_LIST", fill: "FILL", "card-fill": "FILL", "totp-fill": "FILL", "generate-fill": "GENERATE", save: "ITEM_SAVE",
   "key-take": "KEY_HANDOFF", "key-used": "KEY_HANDOFF", "key-list": "KEY_HANDOFF", "key-save": "KEY_HANDOFF"
 };
 /** The calls that need the delegation to hold every saved login (joinMissing). */
@@ -38,7 +38,7 @@ const RETRIES_HAND_OVER = new Set<VaultAgentPath>(["status", "list", "fill", "to
  * `itemId`: the item a new login or generated password becomes, so the audit (and the dock's Activity) names it. `typed` and
  * `document` come from the Browser Host (never to the caller): a value entered the page, and the document it ran in.
  */
-type Outcome = { status: VaultAgentResult["status"]; reason: string | null; itemId?: string; extra?: Record<string, unknown>; typed?: boolean; document?: string | null };
+type Outcome = { status: VaultAgentResult["status"]; reason: string | null; itemId?: string; extra?: Record<string, unknown>; typed?: boolean; document?: string | null; origin?: string };
 export interface VaultAgentCall {
   owner: string;
   /** The calling pane (a CLI pane, or the pane Nous named). */
@@ -47,6 +47,8 @@ export interface VaultAgentCall {
   path: VaultAgentPath;
   body: Record<string, unknown>;
   traceId: string;
+  /** The calling CLI (`cli:<session>`): a fill makes it the fence's viewer, so it gets the masked view of the page it filled. */
+  viewer?: string;
 }
 
 export function createVaultAgent(deps: {
@@ -117,7 +119,7 @@ export function createVaultAgent(deps: {
       const target = await vaultTarget(pane);
       return target.eligible && target.targetId && target.frameId && target.origin
         ? { targetId: target.targetId, frameId: target.frameId, origin: target.origin, document: target.document ?? null, freshDocument: target.freshDocument === true,
-          generatePolicy: target.generatePolicy === true } : target.reason ?? "NOT_ELIGIBLE";
+          generatePolicy: target.generatePolicy === true, cards: target.cards === true } : target.reason ?? "NOT_ELIGIBLE";
     };
     // Queue item 37: the site's stated password rules go only to a host that takes them (after its guarded restart); an older one
     // would type a password the site refuses, so the call stops here with the reason. A policy nothing satisfies stops too.
@@ -135,7 +137,7 @@ export function createVaultAgent(deps: {
     const wasProtected = await deps.protection.ownerOf(pane.id) === owner;
     const guarded = async (target: { targetId: string; origin: string; document: string | null; freshDocument: boolean }, fresh: { freshDocument?: boolean },
       run: () => Promise<Outcome>): Promise<Outcome> => {
-      if (!await deps.protection.protect(owner, pane.id, { targetId: target.targetId, origin: target.origin, document: target.document })) return blocked("PANE_PROTECTED_ELSEWHERE");
+      if (!await deps.protection.protect(owner, pane.id, { targetId: target.targetId, origin: target.origin, document: target.document }, call.viewer)) return blocked("PANE_PROTECTED_ELSEWHERE");
       const outcome = await run().catch((): Outcome => blocked("FILL_FAILED"));
       if (outcome.status === "SUBMITTED" && path !== "totp-fill" && siteSigninKeySchema.safeParse({site: target.origin}).success) {
         await deps.siteSignins?.record(owner, {site: target.origin, accountLabel: "main", outcome: "PENDING", method: "VAULT_LOGIN",
@@ -151,13 +153,13 @@ export function createVaultAgent(deps: {
       const kept = entered || outcome.typed === true;
       // The host reloaded the page before typing (a fresh document, with no script an agent left in it): the fence follows that document.
       if (kept && outcome.document && outcome.document !== target.document) {
-        await deps.protection.protect(owner, pane.id, { targetId: target.targetId, origin: target.origin, document: outcome.document });
+        await deps.protection.protect(owner, pane.id, { targetId: target.targetId, origin: target.origin, document: outcome.document }, call.viewer);
       }
       if (!wasProtected && !kept) await deps.protection.unprotect(owner, pane.id);
       // The reload lost the field: say which command made the page dirty, so the agent redoes the steps without it. R20-7 (30/10 13:15 BKK,
       // Cleo/Finn on Allianz: FILLED, nothing said, every other field emptied by the reload): a fill after a reload says so too.
       const reloaded = kept && target.freshDocument && fresh.freshDocument !== false;
-      const by = outcome.reason === "FIELD_NOT_FOUND_AFTER_RELOAD" || reloaded
+      const by = outcome.reason === "FIELD_NOT_FOUND_AFTER_RELOAD" || outcome.reason === "RELOAD_WOULD_RESUBMIT" || reloaded
         ? await Promise.resolve(deps.documentDirtiedBy?.(pane.id, target.targetId, target.document)).catch(() => null) : null;
       const extra = { ...(reloaded ? { reloaded: true } : {}), ...(by && vaultDirtiedBySchema.safeParse(by).success ? { dirtiedBy: by } : {}) };
       return Object.keys(extra).length ? { ...outcome, extra: { ...outcome.extra, ...extra } } : outcome;
@@ -166,12 +168,13 @@ export function createVaultAgent(deps: {
     // 7/11 Oracle (reset after reset, each never tried): another password reset waits RESET_WAIT_MS and until the last one was filled and read back.
     // nous_msg:fe72e061 (Reddit, Oracle, Upwork): no reset while the stored sign-in works, unless the operator's order (nous_msg id) is passed.
     let operatorOrder: string | null = null;
-    const resetRefused = async (origin: string): Promise<Outcome | null> => {
+    const resetRefused = async (origin: string, retryOf?: { createdAt: string }): Promise<Outcome | null> => {
       if (path !== "generate-fill" || !deps.siteSignins || !siteSigninKeySchema.safeParse({site: origin}).success) return null;
       const signin = await deps.siteSignins.get(owner, origin);
       const works = resetRefusal(signin, typeof body.operatorOrder === "string" ? body.operatorOrder : null);
       if (works.refusal) return { status: "BLOCKED", reason: "SIGNIN_WORKS", extra: { message: works.refusal } };
-      const hold = resetHold(owner, origin, signin);
+      // 13/11 DCM: retrying a sign-up the site never accepted (no SUCCESS since it) is no reset to wait for.
+      const hold = retryOf && !(signin?.lastSuccessAt && signin.lastSuccessAt > retryOf.createdAt) ? null : resetHold(owner, origin, signin);
       if (hold) return blocked(hold);
       if (works.override) {
         operatorOrder = works.override;
@@ -186,7 +189,11 @@ export function createVaultAgent(deps: {
     if (path === "generate-fill" && body.purpose === "NEW_ACCOUNT") {
       const target = await live();
       if (typeof target === "string") return blocked(target);
-      const resetWait = await resetRefused(target.origin);
+      // 13/11 DCM (the site refused the first generated password, the retry made a second item): a sign-up at this site under the same
+      // label the dock has not filed yet is retried on its handle; its new password arrives as that login's change, the old one kept in history.
+      const label = String(body.label);
+      const retryOf = (await repository.listPending(owner)).findLast((entry) => entry.kind === "NEW_ACCOUNT" && entry.origin === target.origin && entry.label === label.trim());
+      const resetWait = await resetRefused(target.origin, retryOf);
       if (resetWait) return resetWait;
       const delegation = await repository.getActiveDelegation(owner);
       // Neither: refused before the browser's automation connections are closed.
@@ -197,16 +204,19 @@ export function createVaultAgent(deps: {
       const rules = withPolicy(target);
       if (!rules) return blocked("POLICY_NEEDS_HOST_RESTART");
       const created = await guarded(target, fresh, () => runVaultSignup({ repository, fill: (request) => vaultFill(pane, { mode: "SIGNUP", ...request, ...fresh, ...rules }, traceId), autoGrant },
-        { owner, paneId: pane.id, target, label: String(body.label), username: typeof body.username === "string" ? body.username : null,
+        { owner, paneId: pane.id, target, label, handle: retryOf?.handle, username: typeof body.username === "string" ? body.username : null,
           roles: Array.isArray(body.roles) && body.roles.length ? body.roles as Array<"NEW_PASSWORD" | "CONFIRM_PASSWORD"> : ["NEW_PASSWORD"], submit: body.submit === true }));
       if (created.itemId) await handOverPending(repository, owner, created.itemId);
       return ordered(created);
     }
     const handle = path === "generate-fill" ? String(body.handle) : await paneAccountLogin(repository, owner, pane, String(body.handle));
-    const fields = path === "totp-fill" ? ["OTP"] : path === "generate-fill" ? ["PASSWORD"] : (body.fields as string[]);
+    const card = path === "card-fill";
     const delegation = await repository.getActiveDelegation(owner);
     const delegated = delegation?.certificate.claims.items.find((item) => item.handle === handle);
+    // A card fills every field it holds; a login only the ones asked for.
+    const fields = path === "totp-fill" ? ["OTP"] : path === "generate-fill" ? ["PASSWORD"] : card ? delegated?.fields ?? [] : (body.fields as string[]);
     if (!delegation || !delegated || fields.some((field) => !delegated.fields.includes(field as never))) return blocked("NOT_DELEGATED");
+    if (card && !delegated.fields.every(isVaultCardRole)) return blocked("NOT_A_CARD");
     // Deleted or hidden since the dock last delegated: the stale envelopes are never used. A login agents saved since the
     // last unlock is no item yet, only its inbox entry.
     const item = await repository.getItem(owner, handle);
@@ -217,7 +227,13 @@ export function createVaultAgent(deps: {
     if (submit && !delegated.submit) return blocked("SUBMIT_NOT_ALLOWED");
     const target = await live();
     if (typeof target === "string") return blocked(target);
-    if (!vaultOriginCovers(delegated.origins, target.origin)) return { status: "ORIGIN_MISMATCH", reason: "ORIGIN_NOT_DELEGATED" };
+    if (card) {
+      // An older Browser Host has no CARD mode (its strict schema would refuse it): stop before the broker issues a capability.
+      if (!target.cards) return blocked("CARD_NEEDS_HOST_RESTART");
+      // A card pays at any merchant, but only on a clean https page (the broker checks the same).
+      const site = canonicalVaultOrigin(target.origin);
+      if (site?.origin !== target.origin || site.warnings.length > 0) return { status: "ORIGIN_MISMATCH", reason: "CARD_NEEDS_HTTPS", origin: site?.origin };
+    } else if (!vaultOriginCovers(delegated.origins, target.origin)) return { status: "ORIGIN_MISMATCH", reason: "ORIGIN_NOT_DELEGATED" };
     const resetWait = await resetRefused(target.origin);
     if (resetWait) return resetWait;
     // A generated password is sealed by the Browser Host to the operator's inbox key and joins the delegation at once.
@@ -232,16 +248,19 @@ export function createVaultAgent(deps: {
     const fresh = await freshness(target);
     const rules = withPolicy(target);
     if (!rules) return blocked("POLICY_NEEDS_HOST_RESTART");
-    return ordered(await guarded(target, fresh, async () => {
-      const result = await vaultFill(pane, { mode: path === "totp-fill" ? "TOTP" : path === "generate-fill" ? "GENERATE" : "FILL", capability,
+    const done = ordered(await guarded(target, fresh, async () => {
+      const result = await vaultFill(pane, { mode: path === "totp-fill" ? "TOTP" : path === "generate-fill" ? "GENERATE" : card ? "CARD" : "FILL", capability,
         keyEnvelope: delegation.keyEnvelope, fieldEnvelopes: delegation.fillEnvelopes[handle] ?? {}, ...fresh, ...rules }, traceId);
       if (result.sealedGenerated && (result.status === "FILLED" || result.status === "SUBMITTED")) {
         await repository.addPending(owner, { id: newVaultHandle("vault_pending"), kind: "CHANGE_PASSWORD", handle, label,
           origin: target.origin, sealedUsername: null, sealedPassword: result.sealedGenerated, paneId: pane.id, createdAt: new Date().toISOString(), loginPage: null });
         await handOverPending(repository, owner, handle);
       }
-      return { status: result.status, reason: result.reason, itemId: handle, typed: result.typed, document: result.document, ...(result.fields && { extra: { fields: result.fields } }) };
+      return { status: result.status, reason: result.reason, itemId: handle, typed: result.typed, document: result.document,
+        ...(result.fields && { extra: { fields: result.fields } }) };
     }));
+    // A card fills at any merchant: its audit names where.
+    return card ? { ...done, origin: target.origin } : done;
   }
 
   /**
@@ -358,9 +377,11 @@ export function createVaultAgent(deps: {
           : pending.find((entry) => entry.handle === item.handle)?.label ?? null;
         const account = stored?.googleAccountId ? accounts.get(stored.googleAccountId) : undefined;
         if (filter.account && account?.toLowerCase() !== filter.account) continue;
-        if (filter.host && !vaultOriginCovers(item.origins, `https://${filter.host}`) && !item.origins.some((origin) => { const host = new URL(origin).hostname; return host === filter.host || host.endsWith(`.${filter.host}`); })) continue;
+        // A card has no site: it is listed for any site.
+        if (filter.host && stored?.card == null && !vaultOriginCovers(item.origins, `https://${filter.host}`) && !item.origins.some((origin) => { const host = new URL(origin).hostname; return host === filter.host || host.endsWith(`.${filter.host}`); })) continue;
         const loginPage = stored ? stored.loginPage : pending.find((entry) => entry.handle === item.handle)?.loginPage;
-        if (label) items.push({ handle: item.handle, label, origins: item.origins, fields: item.fields, ...(account ? { account } : {}), ...(loginPage ? { loginPage } : {}) });
+        if (label) items.push({ handle: item.handle, label, origins: item.origins, fields: item.fields, ...(stored?.card ? { card: `${stored.card.brand} ••${stored.card.last4}` } : {}),
+          ...(account ? { account } : {}), ...(loginPage ? { loginPage } : {}) });
       }
       return { status: "LISTED", reason: null, extra: { items } };
     }
@@ -374,7 +395,7 @@ export function createVaultAgent(deps: {
       if (!repository) return vaultAgentResultSchema.parse({ status: "BLOCKED", auditId: null });
       const result = await outcome(repository, call).catch((): Outcome => blocked("FILL_FAILED"));
       const audited = await repository.appendAudit(call.owner, { actor: "AGENT", action: actions[call.path], result: result.status, reason: result.reason,
-        itemId: result.itemId ?? (typeof call.body.handle === "string" ? call.body.handle : null), paneId: call.paneId });
+        itemId: result.itemId ?? (typeof call.body.handle === "string" ? call.body.handle : null), paneId: call.paneId, origin: result.origin ?? null });
       const answer = { status: result.status, auditId: audited?.id ?? null, ...result.extra };
       // The one answer that carries a value: the relay writes it into the file and never shows it to the agent.
       if (call.path === "key-take" && result.status === "TAKEN") return vaultAgentKeyTakeResultSchema.parse({ ...answer, reason: null });
@@ -399,13 +420,13 @@ function listFilter(body: Record<string, unknown>): { host: string | null; accou
 export interface VaultAgentRouteDependencies {
   agent: VaultAgent;
   /** The verified bridge's pane owner (the pane's explicit owner, else the room's); null when the pane has none. */
-  requireOwner(request: FastifyRequest, reply: FastifyReply): Promise<{ owner: string | null; paneId: string; roomId: string } | null>;
+  requireOwner(request: FastifyRequest, reply: FastifyReply): Promise<{ owner: string | null; paneId: string; roomId: string; viewer?: string } | null>;
   routeOptions: Record<string, unknown>;
   parseBody<TSchema extends z.ZodTypeAny>(schema: TSchema, body: unknown): z.infer<TSchema>;
 }
 
 const agentSchemas: Record<VaultAgentPath, z.ZodTypeAny> = {
-  status: vaultAgentEmptyRequestSchema, list: vaultAgentListRequestSchema, audit: vaultAgentAuditRequestSchema, fill: vaultAgentFillRequestSchema,
+  status: vaultAgentEmptyRequestSchema, list: vaultAgentListRequestSchema, audit: vaultAgentAuditRequestSchema, fill: vaultAgentFillRequestSchema, "card-fill": vaultAgentCardFillRequestSchema,
   "totp-fill": vaultAgentTotpRequestSchema, "generate-fill": vaultAgentGenerateRequestSchema, save: vaultAgentSaveRequestSchema,
   "key-take": vaultAgentKeyRequestSchema, "key-used": vaultAgentKeyRequestSchema, "key-list": vaultAgentKeyListRequestSchema, "key-save": vaultAgentKeySaveRequestSchema
 };
@@ -418,7 +439,7 @@ export function registerVaultAgentRoutes(app: FastifyInstance, deps: VaultAgentR
       if (!context) return reply;
       const body = deps.parseBody(schema, request.body ?? {}) as Record<string, unknown>;
       if (!context.owner) return vaultAgentResultSchema.parse({ status: "BLOCKED", auditId: null });
-      return deps.agent.call({ owner: context.owner, paneId: context.paneId, roomId: context.roomId, path, body, traceId: request.requestIdForSpace ?? "" });
+      return deps.agent.call({ owner: context.owner, paneId: context.paneId, roomId: context.roomId, path, body, traceId: request.requestIdForSpace ?? "", viewer: context.viewer });
     });
   }
 }

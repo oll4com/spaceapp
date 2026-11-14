@@ -57,7 +57,7 @@ export async function notifyMailCopilotEvent(event: MailCopilotEvent, input: { r
   await notifications.raise({ ownerUserId: owner, roomId, paneId: pane.id, source: "MAIL_COPILOT", kind: event.type, severity: "ATTENTION",
     title: `Mail Copilot needs you (${pane.title})`, body: event.type === "NEEDS_USER" ? withCheckedBlock(event.message, mailChecked(event, pane), 2_000) : event.message,
     link: { roomId, paneId: pane.id, target: event.threadId && event.accountEmail ? `thread:${event.accountEmail}:${event.threadId}` : `event:${event.id}` },
-    dedupeKey: mailCopilotNoticeKey(key), payload: { eventId: event.id, ask: mailAsk(event) }, telegram });
+    dedupeKey: mailCopilotNoticeKey(key), payload: { eventId: event.id, ask: mailAsk(event), ...(event.payload.operatorReads ? { operatorReads: event.payload.operatorReads } : {}) }, telegram });
 }
 
 /** Goal ee5a573e: what the copilot read before it handed a mail to the operator (its card's "Checked first:", counted by the daily REVIEW). */

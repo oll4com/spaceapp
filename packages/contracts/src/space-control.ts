@@ -11,7 +11,7 @@ export const controlScreenshotViewports = ["desktop", "desktop-hd", "desktop-4k"
 export const controlCaptureAspects = { "16:9": "desktop-hd", "1:1": "square", "4:5": "portrait", "9:16": "story", full: "desktop" } as const;
 // The engine's DOCKS (plus "none": the dock closed), SETTINGS_SECTIONS and HEALTH_SECTIONS (scripts/tests/space-media-capture.test.mjs keeps them equal).
 export const controlCaptureDocks = ["rooms", "notifications", "room-agent", "shared-chat", "media", "streaming", "source-control", "agent-files",
-  "clipboard", "tasks", "links", "settings", "health", "cli", "agent-sessions", "nous", "nous-fullscreen", "nous-load", "nous-quotas", "nous-task-runs", "nous-goals", "nous-needs-you", "nous-startup", "nous-funding" /* alias of nous-startup since 7/11 */, "nous-jobs", "nous-crypto", "nous-marketing", "nous-score", "nous-requests", "none"] as const;
+  "clipboard", "tasks", "links", "settings", "health", "cli", "agent-sessions", "nous", "nous-fullscreen", "nous-load", "nous-quotas", "nous-task-runs", "nous-goals", "nous-needs-you", "nous-startup", "nous-funding" /* alias of nous-startup since 7/11 */, "nous-jobs", "nous-crypto", "nous-marketing", "nous-score", "nous-requests", "nous-affiliate", "nous-affiliate-fullscreen", "none"] as const;
 export const controlCaptureSettingsSections = ["appearance", "docks", "panes", "widgets", "notifications", "dots", "plugins", "agent-capabilities",
   "default-provider", "voice-input", "releases", "cli-pane-controls", "date-time", "image-previews", "prompt-variables", "room-cache", "git-worktrees",
   "diagnostics", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "nous", "history"] as const;

@@ -76,6 +76,7 @@ import {
   type JobApplyResetResult,
   type JobApplySite,
   type JobApplyStats,
+  type JobApplyTargetMiss,
   ownerWorkingTimeZone,
   type NousJobReport,
   type TaskItem
@@ -162,8 +163,18 @@ function toProfile(record: JobApplyProfileRecord, google: JobApplyGoogleAccount 
     googleAccounts,
     googleAvailable,
     campaignStartedAt: record.campaignStartedAt ?? null,
+    dailyTarget: record.dailyTarget ?? 0,
     updatedAt: record.updatedAt
   });
+}
+
+/** YYYY-MM-DD of `at` in `tz`. */
+const dayIn = (tz: string, at: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(at);
+/** How much of `at`'s day in `tz` has passed, 0 to 1. */
+function dayElapsed(tz: string, at: Date): number {
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(at);
+  const part = (type: string) => Number(parts.find((entry) => entry.type === type)?.value ?? 0);
+  return (part("hour") * 60 + part("minute") + 1) / 1440;
 }
 
 function toApplication(record: JobApplicationRecord): JobApplication {
@@ -474,6 +485,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       if (update.qaBank) patch.qaBank = update.qaBank;
       if (update.cvArtifactId !== undefined) patch.cvArtifactId = update.cvArtifactId;
       if (update.coverLetterArtifactId !== undefined) patch.coverLetterArtifactId = update.coverLetterArtifactId;
+      if (update.dailyTarget !== undefined) patch.dailyTarget = update.dailyTarget;
       return profileOf(owner, await repository.upsertProfile(owner, patch));
     },
     /** Extracts the CV text (PDF, DOCX, text) from an Agent Files artifact and remembers both. */
@@ -954,7 +966,9 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     },
     /** Totals since the first day, per-day history in the operator's zone, and the earlier history kept apart. */
     async stats(owner: string, tz: string): Promise<JobApplyStats> {
-      const campaignStartedAt = (await repository.getProfile(owner))?.campaignStartedAt ?? null;
+      const profile = await repository.getProfile(owner);
+      const campaignStartedAt = profile?.campaignStartedAt ?? null;
+      const dailyTarget = profile?.dailyTarget ?? 0;
       let rows: Awaited<ReturnType<JobApplyRepository["applicationStats"]>>;
       try {
         rows = await repository.applicationStats(owner, { tz, since: campaignStartedAt, importedUrlPrefix: JOB_APPLY_IMPORTED_URL_PREFIX });
@@ -965,7 +979,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       }
       const dayOf = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
       const totals = { applied: 0, verified: 0, failed: 0, needsUser: 0 };
-      const days = new Map<string, { day: string; applied: number; verified: number; failed: number }>();
+      const days = new Map<string, { day: string; applied: number; verified: number; failed: number; missed?: JobApplyTargetMiss[] }>();
       const earlier = { imported: { sent: 0, failed: 0 }, archived: { sent: 0, failed: 0 } };
       for (const row of rows) {
         const sent = row.status === "SUBMITTED" || row.status === "VERIFIED";
@@ -985,16 +999,37 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
           if (row.status === "FAILED") target.failed += row.count;
         }
       }
+      const firstDay = campaignStartedAt ? dayOf.format(new Date(campaignStartedAt)) : [...days.keys()].sort()[0] ?? null;
+      // A day behind the target names why (recorded in the owner's zone); a day with none sent still shows its reasons.
+      for (const [day, codes] of Object.entries(dailyTarget ? profile?.targetMisses ?? {} : {})) {
+        if (firstDay && day < firstDay) continue;
+        const entry = days.get(day) ?? { day, applied: 0, verified: 0, failed: 0 };
+        if (entry.applied < dailyTarget && codes.length) days.set(day, { ...entry, missed: codes as JobApplyTargetMiss[] });
+      }
       const history = [...days.values()].sort((left, right) => right.day.localeCompare(left.day));
       const today = days.get(dayOf.format(new Date(now())));
       return {
         campaignStartedAt,
-        firstDay: campaignStartedAt ? dayOf.format(new Date(campaignStartedAt)) : history.at(-1)?.day ?? null,
+        firstDay,
         today: { applied: today?.applied ?? 0, verified: today?.verified ?? 0, failed: today?.failed ?? 0 },
         totals,
         days: history,
+        target: dailyTarget,
         earlier
       };
+    },
+    /** Today in the owner's working zone (Settings → Date & time) against the daily target: `due` is the target's share of the day gone. */
+    async targetPace(owner: string): Promise<{ target: number; applied: number; due: number }> {
+      const target = (await repository.getProfile(owner))?.dailyTarget ?? 0;
+      if (!target) return { target, applied: 0, due: 0 };
+      const tz = ownerWorkingTimeZone(await options.store.getUserSettings(owner));
+      const at = new Date(now());
+      return { target, applied: (await this.stats(owner, tz)).today.applied, due: Math.ceil(target * dayElapsed(tz, at)) };
+    },
+    /** Why today falls behind the daily target, once per reason a day; nothing without a target. */
+    async noteTargetMiss(owner: string, code: JobApplyTargetMiss): Promise<void> {
+      if (!(await repository.getProfile(owner))?.dailyTarget) return;
+      await repository.addTargetMiss(owner, dayIn(ownerWorkingTimeZone(await options.store.getUserSettings(owner)), new Date(now())), code);
     },
     async getApplication(owner: string, id: string): Promise<JobApplication> {
       const record = await repository.getApplication(owner, id);
@@ -1260,11 +1295,12 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       await record(owner, { paneId, runId: active.id, type: "RUN_PAUSED", message: "Run paused: the copilot finishes the current application and waits", payload: { counters: active.counters } });
       return toRun(paused!);
     },
-    async stopRun(owner: string, paneId: string): Promise<JobApplyRun> {
+    /** `keeper`: the daily-target keeper undoes a run whose kickoff it could not type; only the operator's Stop holds the keeper. */
+    async stopRun(owner: string, paneId: string, keeper = false): Promise<JobApplyRun> {
       const active = await repository.getActiveRun(paneId);
       if (!active || active.ownerUserId !== owner) throw new SpaceConflictError("No run is active in this pane.");
       const stopped = await repository.updateRun(owner, active.id, { status: "STOPPED", stoppedAt: now(), lastActivityAt: now(), currentApplicationId: null });
-      await record(owner, { paneId, runId: active.id, type: "RUN_STOPPED", message: `Run stopped: ${summarizeCounters(active.counters)}`, payload: { counters: active.counters } });
+      await record(owner, { paneId, runId: active.id, type: "RUN_STOPPED", message: `Run stopped: ${summarizeCounters(active.counters)}`, payload: { counters: active.counters, ...(keeper ? { keeper: true } : {}) } });
       return toRun(stopped!);
     },
     /**
@@ -1290,6 +1326,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
               const finished = await repository.updateRun(owner, run.id, { status: "STOPPED", stoppedAt: now(), lastActivityAt: now(), currentApplicationId: null });
               const deferred = all.length > 0 && nextDeferredAt ? `; ${all.length} deferred, the next on ${nextDeferredAt.slice(0, 10)}` : "";
               await record(owner, { paneId, runId: run.id, type: "RUN_FINISHED", message: `Run finished: ${summarizeCounters(run.counters)}${deferred}`, payload: { counters: run.counters, deferred: all.length, nextDeferredAt } });
+              await this.noteTargetMiss(owner, all.length > 0 ? "QUEUE_DEFERRED" : "QUEUE_EMPTY").catch(() => undefined);
               return all.length > 0
                 ? { done: true as const, reason: "QUEUE_DEFERRED" as const, nextDeferredAt, application: null, run: toRun(finished!) }
                 : { done: true as const, reason: "QUEUE_EMPTY" as const, application: null, run: toRun(finished!) };

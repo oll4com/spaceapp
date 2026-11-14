@@ -8,7 +8,8 @@ import type { SpaceStore } from "@space/runtime";
 import type { AppDiagnosticsService } from "./app-diagnostics.js";
 import type { AppVersionReader } from "./app-version.js";
 import { defaultSessionRevocationStore } from "./auth.js";
-import { browserHostReadiness, type BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
+import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
+import type { ChromeSandboxState } from "./browser-sandbox.js";
 import type { CliTerminalManager } from "./cli-terminal.js";
 import type { SpaceApiConfig } from "./config.js";
 import type { WorkerReadinessChecker } from "./worker-readiness.js";
@@ -129,12 +130,19 @@ export function registerHealthRoutes(app: FastifyInstance, options: {
     let browserHost: "in-process" | "RUNNING" | "UNAVAILABLE" | "DISABLED" | "CAPACITY_MISMATCH" = "in-process";
     let browserHostBuildCommit: string | null = null;
     let browserHostCaptureMetrics: BrowserHostCaptureMetrics | null = null;
+    // INT5-C-F3: where the sandbox ladder ends, health names --no-sandbox (NO_SANDBOX); `run-spaceapp doctor` reads it here.
+    let browserSandbox: string | null = null;
     if (browserHostCheck) {
       try {
-        const [health, git] = await browserHostCheck;
+        const [health] = await browserHostCheck;
         browserHostBuildCommit = health.buildCommit;
         browserHostCaptureMetrics = health.captureMetrics;
-        browserHost = browserHostReadiness(health, git?.commit ?? null);
+        // The host sends its BrowserSessionStatus; BrowserHostStatus (packages/browser-host, a host-restart path) does not type sandbox.
+        browserSandbox = (health.status as { sandbox?: ChromeSandboxState }).sandbox?.state ?? null;
+        // The host's session cap follows its memory (browserSessionCap, at least 1: a 2-4 GB container gets 1), so one session is ready
+        // (light browser step 6); browserHostReadiness in browser-host-proxy.ts, a host-restart path, still wants 8 and is no longer called.
+        browserHost = !health.status.enabled ? "DISABLED"
+          : health.capacity && health.capacity.maxSessions >= 1 && health.capacity.maxLiveWorkloads >= 4 ? "RUNNING" : "CAPACITY_MISMATCH";
       } catch {
         browserHost = "UNAVAILABLE";
       }
@@ -165,6 +173,7 @@ export function registerHealthRoutes(app: FastifyInstance, options: {
         browserHost,
         browserHostBuildCommit,
         browserHostCaptureMetrics,
+        browserSandbox,
         appDiagnostics: {
           isEnabled: appDiagnostics.isEnabled,
           captureId: appDiagnostics.captureId,

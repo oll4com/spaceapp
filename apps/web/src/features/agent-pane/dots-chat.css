@@ -71,6 +71,15 @@
 .dots-feed-event[data-origin="APPROVAL"] > svg { color: #4fbf7f; }
 .dots-chat-shell .dots-feed-event button { padding: 0 4px; color: var(--room-muted); background: none; border: 0; font: inherit; text-decoration: underline; cursor: pointer; }
 .dots-feed-event-details { flex-basis: 100%; margin: 4px 0 0; padding: 8px 10px; border: 1px solid var(--room-border); border-radius: 10px; font-size: .75rem; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dots-feed-steps { align-self: flex-start; max-width: 92%; margin: 0 0 4px; font-size: .78rem; color: var(--room-muted); }
+.dots-bubble.working .dots-feed-steps { grid-column: 1 / -1; max-width: none; }
+.dots-feed-steps > summary { cursor: pointer; }
+.dots-feed-steps ol { display: grid; gap: 6px; margin: 6px 0 0; padding: 0; list-style: none; }
+.dots-feed-steps li { padding: 6px 8px; border: 1px solid var(--room-border); border-radius: 8px; }
+.dots-feed-steps li[data-failed="true"] { border-color: #d65f5f; }
+.dots-feed-steps strong { display: block; color: var(--room-text); font-weight: 600; }
+.dots-feed-steps pre, .dots-feed-steps p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dots-feed-steps pre { max-height: 16rem; overflow: auto; font-size: .74rem; }
 .dots-bubble.working { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 8px; color: var(--room-muted); font-size: .82rem; }
 .dots-working-avatar { grid-row: span 3; align-self: center; }
 .dots-working-progress { margin: 0; color: var(--room-text); font-size: .82rem; }

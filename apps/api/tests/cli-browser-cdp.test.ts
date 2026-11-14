@@ -10,7 +10,7 @@ import { createApp } from "../src/app.js";
 import { browserAccountTabsFile, googleBrowserProfilePathFor, type BrowserSessionManager } from "../src/browser-sessions.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import {
-  cliBrowserCdpCloseCodes, cliBrowserCdpPath, cliBrowserCdpProxyIdBase, cliBrowserCdpStatusPath, cliBrowserPasswordRedaction, createCliBrowserCdpTargetFilter,
+  cliBrowserCdpChallengePath, cliBrowserCdpCloseCodes, cliBrowserCdpPath, cliBrowserCdpProxyIdBase, cliBrowserCdpStatusPath, cliBrowserPasswordRedaction, createCliBrowserCdpTargetFilter,
   createCliBrowserDocumentMarks, readChromeAutomationEndpoint
 } from "../src/cli-browser-cdp.js";
 import { getApiConfig } from "../src/config.js";
@@ -57,6 +57,7 @@ function fakeManager(store: InMemorySpaceStore, session: PaneBrowserSession): Br
     setViewport: async () => response,
     action: async () => ({ session, frame: null, text: null }),
     captureFrame: unused,
+    diagnostics: vi.fn(async () => ({ sessionId: session.sessionId, events: [] })),
     stopPane: async () => undefined,
     stopRoom: async () => undefined,
     closeAll: async () => undefined,
@@ -97,9 +98,10 @@ async function fixture(chromePort: number, options: { vault?: Parameters<typeof 
   const session = store.createPaneBrowserSession({
     paneId: jobPane.id, roomId: room.id, agentNumber: 1, profileId: "profile:test", profilePath: profile, viewport: "desktop"
   });
+  const manager = fakeManager(store, session);
   const app = await createApp({
     store,
-    browserSessionManager: fakeManager(store, session),
+    browserSessionManager: manager,
     config,
     auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false },
     ...(options.vault ? { vault: options.vault } : {})
@@ -108,7 +110,7 @@ async function fixture(chromePort: number, options: { vault?: Parameters<typeof 
   const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { email: "space@space.local", password: "space-dev" } });
   const cookie = `space_session=${login.cookies.find((entry) => entry.name === "space_session")?.value}`;
   const csrf = await app.inject({ method: "GET", url: "/api/auth/csrf", headers: { cookie } });
-  return { app, store, config, room, token, cliPane, jobPane, session, cookie, csrfToken: csrf.json().csrfToken as string };
+  return { app, store, manager, config, room, token, cliPane, jobPane, session, cookie, csrfToken: csrf.json().csrfToken as string };
 }
 
 function closeCode(socket: WebSocket): Promise<number> {
@@ -148,7 +150,7 @@ describe("CLI browser CDP proxy", () => {
 
   it("pipes CDP messages to the pane browser for a valid pane token and refuses the rest", async () => {
     const chrome = await fakeChrome();
-    const { app, token, jobPane, cliPane, session } = await fixture(chrome.port);
+    const { app, manager, token, jobPane, cliPane, session } = await fixture(chrome.port);
     try {
       const status = await app.inject({ method: "GET", url: `${cliBrowserCdpStatusPath}?paneId=${encodeURIComponent(jobPane.id)}`, headers: { [cliBrowserBridgeTokenHeader]: token } });
       expect(status.json()).toMatchObject({ ready: true, paneId: jobPane.id, sessionId: session.sessionId });
@@ -158,6 +160,11 @@ describe("CLI browser CDP proxy", () => {
       const reply = await waitFor(() => client.messages[0], "the echoed CDP reply");
       expect(JSON.parse(reply)).toEqual({ id: 7, result: { echo: "Browser.getVersion" } });
       expect(chrome.received).toEqual([JSON.stringify({ id: 7, method: "Browser.getVersion" })]);
+      // The agent's commands reach the Browser Host as one diagnostics read per 30 s, which brings an idle window back.
+      client.socket.send(JSON.stringify({ id: 8, method: "Browser.getVersion" }));
+      await waitFor(() => client.messages[1], "the second echoed CDP reply");
+      expect(manager.diagnostics).toHaveBeenCalledTimes(1);
+      expect(manager.diagnostics).toHaveBeenCalledWith(expect.objectContaining({ id: jobPane.id }), false, 1);
       client.socket.close(1000, "done");
       expect(await client.closed).toBe(1000);
       expect(await (await attach(app, jobPane.id, null)).closed).toBe(cliBrowserCdpCloseCodes.TOKEN_INVALID);
@@ -166,6 +173,46 @@ describe("CLI browser CDP proxy", () => {
       const unauthenticated = await app.inject({ method: "GET", url: cliBrowserCdpStatusPath });
       expect(unauthenticated.statusCode).toBe(401);
       expect(unauthenticated.json()).toMatchObject({ ready: false, reason: "TOKEN_INVALID" });
+    } finally {
+      await app.close();
+      await chrome.close();
+    }
+  });
+
+  it("holds the agent's first commands until the Browser Host thawed the pane (light browser step 4: thaw-before-command)", async () => {
+    const chrome = await fakeChrome();
+    const { app, manager, token, jobPane, session } = await fixture(chrome.port);
+    let thawed!: () => void;
+    vi.mocked(manager.diagnostics!).mockImplementationOnce(() => new Promise((done) => { thawed = () => done({ sessionId: session.sessionId, events: [] }); }));
+    try {
+      const client = await attach(app, jobPane.id, token);
+      client.socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate" }));
+      await waitFor(() => (vi.mocked(manager.diagnostics!).mock.calls.length ? true : undefined), "the thawing diagnostics read");
+      client.socket.send(JSON.stringify({ id: 2, method: "Input.dispatchKeyEvent" }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(chrome.received).toEqual([]);
+      thawed();
+      await waitFor(() => client.messages[1], "both echoed CDP replies");
+      expect(chrome.received.map((raw) => JSON.parse(raw).id)).toEqual([1, 2]);
+      client.socket.close(1000, "done");
+    } finally {
+      await app.close();
+      await chrome.close();
+    }
+  });
+
+  it("records a solver run on the CLI pane and its browser pane, without the page's query (operator rule 13/11 nous_msg:83c0acb8)", async () => {
+    const chrome = await fakeChrome();
+    const { app, store, token, jobPane } = await fixture(chrome.port);
+    try {
+      const url = `${cliBrowserCdpChallengePath}?paneId=${encodeURIComponent(jobPane.id)}`;
+      const post = (payload: unknown, headers: Record<string, string> = { [cliBrowserBridgeTokenHeader]: token }) => app.inject({ method: "POST", url, headers, payload: payload as Record<string, unknown> });
+      const run = { solver: "hCaptcha", status: "BLOCKED", pageId: "page-1", url: "https://signup.example.com/register?token=secret#x" };
+      expect((await post(run, {})).statusCode).toBe(401);
+      expect((await post({ ...run, status: "blocked; drop" })).statusCode).toBe(400);
+      expect((await post(run)).json()).toEqual({ recorded: true });
+      const event = await store.findLatestAuditEvent({ action: "browser.challenge.attempt", targetType: "pane", targetId: jobPane.id });
+      expect(event?.metadata).toMatchObject({ solver: "hCaptcha", status: "BLOCKED", pageId: "page-1", url: "https://signup.example.com/register" });
     } finally {
       await app.close();
       await chrome.close();

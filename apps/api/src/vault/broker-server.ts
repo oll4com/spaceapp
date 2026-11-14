@@ -10,7 +10,7 @@ import {
   vaultKeyFromSeed, vaultPublicKeyOf, vaultRandomBytes, vaultSymmetricEnvelopeSchema, vaultTransportEnvelopeSchema, generateVaultPassword, VAULT_PASSWORD_DEFAULTS,
   vaultSignupGrantCertificateSchema, vaultSignupGrantOperatorMessage, vaultSignupGrantRequestSchema, VAULT_SIGNUP_GRANT_LIMITS,
   vaultSignupSite, vaultUnlockChallengeMessage, vaultUseCapabilitySchema, verifyVaultCertificate, verifyVaultMessage, wipeVaultBytes, VAULT_FIELD_ROLES,
-  VAULT_BROKER_API_MAX_BYTES, VAULT_DELEGATION_TECHNICAL_MAX_ITEMS,
+  VAULT_BROKER_API_MAX_BYTES, VAULT_CARD_ROLES, VAULT_DELEGATION_TECHNICAL_MAX_ITEMS, isVaultCardRole, vaultDelegationClaimsSchema,
   VaultCryptoError, canonicalVaultOrigin, vaultOriginCovers, type VaultUseClaims
 } from "@space/contracts";
 
@@ -76,13 +76,14 @@ const schemas = {
   }).strict(),
   delegate: z.object({
     ownerUserId: owner, vaultId, generation: z.number().int().min(1), unlockEpoch: z.number().int().min(1), envelopeDigest: z.string().length(43), expiresAt: z.string().datetime(),
-    items: z.array(z.object({ handle: z.string(), origins: z.array(z.string()).min(1), fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1), approvalMode: z.string(), submit: z.boolean() }).strict()).min(1).max(VAULT_DELEGATION_TECHNICAL_MAX_ITEMS),
+    // The certificate's own item rules (a login, or a card with no origins that never submits), so nothing it would refuse is signed.
+    items: vaultDelegationClaimsSchema.shape.items,
     sealedFillKey: vaultTransportEnvelopeSchema, operatorSignature: z.string().length(86), unlockPublicKey: key, serverShareEnvelope: vaultSymmetricEnvelopeSchema,
     /** The inbox's private key sealed to the transport key, so logins agents save join this delegation without an unlock. */
     sealedInboxKey: vaultTransportEnvelopeSchema.optional()
   }).strict(),
   use: z.object({
-    ownerUserId: owner, vaultId, certificate: vaultDelegationCertificateSchema, epoch: z.number().int().min(1), handle: z.string(), fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(3),
+    ownerUserId: owner, vaultId, certificate: vaultDelegationCertificateSchema, epoch: z.number().int().min(1), handle: z.string(), fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(VAULT_CARD_ROLES.length),
     submit: z.boolean(), paneId: z.string().min(1).max(200), targetId: z.string().min(1).max(128), pageId: z.string().min(1).max(128), frameId: z.string().min(1).max(128),
     origin: z.string().max(300), generate: z.object({ roles: z.array(z.enum(["NEW_PASSWORD", "CONFIRM_PASSWORD"])).min(1).max(2), inboxPublicKey: key }).strict().optional()
   }).strict(),
@@ -283,7 +284,13 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
       if (delegation.ownerUserId !== input.ownerUserId || delegation.vaultId !== input.vaultId) throw new VaultBrokerRefusal("CERTIFICATE_REFUSED");
       if (delegation.generation < (floors[floorKey(input)] ?? 0)) throw new VaultBrokerRefusal("GENERATION_RETIRED");
       const item = delegation.items.find((entry) => entry.handle === input.handle);
-      if (!item || input.fields.some((field) => !item.fields.includes(field)) || !vaultOriginCovers(item.origins, input.origin) || (input.submit && !item.submit)) {
+      // A card (plan clipboard:qf0P640vyLp2) fills at the checkout the pane is on: any exact https origin with no lookalike or IP
+      // warning, never submitted or generated (the agent presses Pay); a login only at its own origins.
+      const site = canonicalVaultOrigin(input.origin);
+      const card = item?.fields.every(isVaultCardRole);
+      if (!item || input.fields.some((field) => !item.fields.includes(field)) || (card
+        ? site?.origin !== input.origin || site.warnings.length > 0 || input.submit || input.generate
+        : !vaultOriginCovers(item.origins, input.origin) || (input.submit && !item.submit))) {
         throw new VaultBrokerRefusal("NOT_DELEGATED");
       }
       const issuedAt = now();

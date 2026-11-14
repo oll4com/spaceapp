@@ -202,7 +202,7 @@ export async function itemRecord(owner: string, vaultId: string, id = newVaultHa
   const scope = { ownerUserId: owner, vaultId, keyVersion: 1, itemId: id };
   const dek = vaultRandomBytes(32);
   return {
-    metadata: { id, label: "Synthetic", origins: ["https://example.com"], fieldRoles: ["PASSWORD"], policy: { agentUse: true, approvalMode: "FULL", submitAllowed: true, maxFillsPerHour: 6, acceptedOriginRisks: [] }, status: "ACTIVE", googleAccountId: null, loginKey: null, loginPage: null },
+    metadata: { id, label: "Synthetic", origins: ["https://example.com"], fieldRoles: ["PASSWORD"], policy: { agentUse: true, approvalMode: "FULL", submitAllowed: true, maxFillsPerHour: 6, acceptedOriginRisks: [] }, status: "ACTIVE", googleAccountId: null, loginKey: null, loginPage: null, card: null },
     keyVersion: 1, history: [], dekEnvelope: await sealVaultEnvelope(vaultRandomBytes(32), dek, { ...scope, purpose: "ITEM_KEY" }),
     fields: { PASSWORD: await sealVaultEnvelope(dek, new TextEncoder().encode(SENTINEL), { ...scope, purpose: "ITEM_FIELD", field: "PASSWORD" }) }
   };

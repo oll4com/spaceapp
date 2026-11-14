@@ -223,8 +223,9 @@ describe("Nous on a public install (operator decision 2026-10-27, B+C3)", () => 
     });
     await new Promise<void>((resolve) => agent.listen(join(root, "credentials.sock"), resolve));
     const host = createPublicCredentialHost({ publicDistribution: true, cliEnabled: true, cliHostSocketPath: join(root, "host.sock") })!;
-    const request = { model: "claude-sonnet-5-5", effort: "medium", system: "You are Nous.", prompt: "What waits?", mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp",
-      mcpToken: "tok_0123456789abcdefghij", maxTurns: 40, shell: false, stream: true, fallbackModel: null };
+    const free = { system: "You are Nous.", prompt: "What waits?", mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp",
+      mcpToken: "tok_0123456789abcdefghij", maxTurns: 40, shell: false, stream: true };
+    const request = { model: "claude-sonnet-5-5", effort: "medium", ...free, fallbackModel: null };
     try {
       const events: unknown[] = [];
       expect(await host.claudeAgentTools(request, new AbortController().signal, (event) => events.push(event)))
@@ -241,6 +242,10 @@ describe("Nous on a public install (operator decision 2026-10-27, B+C3)", () => 
       stop.abort();
       await expect(held).rejects.toThrow("The turn was stopped.");
       await vi.waitFor(() => expect(left).toBe(1));
+      // The same turn on OpenCode's free model (no Claude Code signed in): its own wrapper and action, no Claude model in the request.
+      mode = "answer";
+      expect((await host.openCodeAgentTools(free, new AbortController().signal)).text).toBe("All moving.");
+      expect(requests.at(-1)).toEqual({ command: "opencode-vscode-parity", action: "opencode-nous", input: JSON.stringify(free) });
       mode = "busy";
       await expect(host.claudeAgentTools(request, new AbortController().signal)).rejects.toThrow("The CLI container could not start the turn (FAILED busy).");
       expect(await host.claudeAgentChat({ model: "claude-haiku-5-5", effort: "low", prompt: "Summarize." })).toBe("One line.");

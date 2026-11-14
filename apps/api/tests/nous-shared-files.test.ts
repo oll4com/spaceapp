@@ -45,6 +45,8 @@ it("shares only the owner's Agent Files, lists them in the app's shape, renews i
   expect((await files.share(owner, { artifactId: theirs.id })).ok).toBe(false);
   expect((await files.share(owner, { artifactId: media.id })).ok).toBe(false);
   expect((await files.share(owner, { artifactId: "artifact:missing0001" })).ok).toBe(false);
+  // 13/11 15:40: an id without its "artifact:" prefix names the same file.
+  expect(await files.share(owner, { artifactId: icon.id.replace(/^artifact:/, "") })).toMatchObject({ ok: true });
   const shared = await files.share(owner, { artifactId: icon.id, note: "Pick one of the three icons" });
   expect(shared).toMatchObject({ ok: true, display: "Shared icon-options.txt to the Nous app" });
   const [file] = await files.list(owner);

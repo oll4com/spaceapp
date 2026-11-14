@@ -338,6 +338,11 @@ describe("space_db_query statements", () => {
     const tools = createNousTools({ db: { query: async () => { throw new Error('Postgres: column "kind" does not exist (code 42703)'); } } } as unknown as NousToolDeps);
     expect(await tools.execute("space_db_query", { sql: "SELECT kind FROM security_copilot_events" }, { owner: "user:operator", turnId: "t", callId: "c", traceId: "x" }))
       .toMatchObject({ ok: false, display: "Reading the database failed", meta: { dbCode: "42703", dbGuess: "kind" } });
+    // Daily Nous errors 14/11 (18:06 42702, 20:16 21000): the answer says the forms to use, so these are refusals too; a timeout is not.
+    for (const [error, refused] of [['Postgres: column reference "status" is ambiguous (code 42702)', true], ["Postgres: more than one row returned by a subquery used as an expression (code 21000)", true], ["Postgres: canceling statement due to statement timeout (code 57014)", undefined]] as const) {
+      const failing = createNousTools({ db: { query: async () => { throw new Error(error); } } } as unknown as NousToolDeps);
+      expect((await failing.execute("space_db_query", { sql: "SELECT 1" }, { owner: "user:operator", turnId: "t", callId: "c", traceId: "x" })).refused).toBe(refused);
+    }
     expect(dbFailureLines([{ dbCode: "42703", dbGuess: "kind" }, { dbCode: "42703", dbGuess: "kind" }, { dbCode: "42703", dbGuess: "s.id" }, { dbCode: "42P01", dbGuess: "cli_sessions" }]))
       .toEqual(["- 42703 (wrong column): 3; guessed: kind ×2, s.id", "- 42P01 (no such table): 1; guessed: cli_sessions"]);
     expect(dbFailureLines([])).toEqual(["- No database read failed."]);
@@ -401,6 +406,8 @@ describe.skipIf(unavailable !== null)(`space_db_query on PostgreSQL${unavailable
     const table = await db.query({ sql: "SELECT * FROM note" }).catch((error: Error) => error.message);
     expect(table).toContain('relation "note" does not exist (code 42P01)');
     expect(table).toContain("Nearest tables: notes, note_tags");
+    // Daily Nous errors 14/11 (20:16 21000): a many-row subquery names IN, = ANY, LIMIT 1 and the aggregates.
+    expect(await db.query({ sql: "SELECT (SELECT id FROM notes) AS one" }).catch((error: Error) => error.message)).toContain("compare with IN (SELECT ...) or = ANY(ARRAY(SELECT ...))");
     // R36-b (1/11 20:32 UTC): a memory table that does not exist names space_memory_recall.
     expect(await db.query({ sql: "SELECT * FROM space_memory" }).catch((error: Error) => error.message)).toContain("Space Memory is files, not a table: read it with space_memory_recall");
     expect(table).not.toContain("space_memory_recall");
@@ -451,6 +458,12 @@ describe.skipIf(unavailable !== null)(`space_db_query on PostgreSQL${unavailable
     const left = await db.query({ sql: "SELECT id, colour FROM note_records" }).catch((error: Error) => error.message);
     expect(left).toMatch(/^Postgres: column "colour" does not exist \(code 42703\)\nColumns of note_records: record_key, updated_at, value\n/);
     expect(left).toContain('(Space corrected your query and ran: SELECT record_key, colour FROM note_records\nPostgreSQL first said: column "id" does not exist (code 42703)');
+  });
+
+  it("13/11 08:38 UTC (text ->> twice in one query): casts every JSON operator on text, one PostgreSQL answer at a time", async () => {
+    const both = await createNousDb({ pool }).query({ sql: "SELECT coalesce(x ->> 'by', x ->> 'source') AS who FROM (VALUES ('{\"source\":\"rail\"}'::text)) v(x)" });
+    expect(both).toContain("Corrected and run: SELECT coalesce((x)::jsonb ->> 'by', (x)::jsonb ->> 'source') AS who");
+    expect(both).toContain('{"who":"rail"}');
   });
 
   it("names a syntax error's token and position on PostgreSQL itself (R17-3)", async () => {

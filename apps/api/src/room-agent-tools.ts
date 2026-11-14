@@ -1,6 +1,6 @@
 import { z } from "zod";
 import {
-  PANE_TYPES, paneTypeIdSchema, roomAgentControlTools,
+  NOUS_GATEWAY_UNREACHABLE, PANE_TYPES, paneTypeIdSchema, roomAgentControlTools,
   type ControlOperation, type Pane, type RoomAgentEvent, type RoomAgentEventStatus
 } from "@space/contracts";
 import { releaseTrainInputSchema, type ReleaseTrainActor, type ReleaseTrainInput } from "./release-trains.js";
@@ -173,6 +173,8 @@ function errorText(error: unknown): string {
 
 /** PostgreSQL not answering or its pool full: Space's own outage (Nous turns stopped by it are no Daily Nous error, service.ts). */
 export const SPACE_DATABASE_DOWN = /timeout exceeded when trying to connect|Connection terminated|ECONNREFUSED|database system is (?:starting up|shutting down|in recovery)|too many clients|statement timeout|\b(?:57P0[13]|53300)\b/i;
+/** 12/11: a turn error (its "(earlier: ...)" part cut off) of Space's own restart or database, not of Space Gateway: not Nous failing. */
+export const spaceFailedUnderTurn = (error: string) => /The CLI was stopped by SIG(?:TERM|KILL)\b/.test(error) || (SPACE_DATABASE_DOWN.test(error) && !NOUS_GATEWAY_UNREACHABLE.test(error));
 
 /** 12/11 (8 min after a boot every Nous pane tool failed with a bare pool timeout): a tool error's cause, and when to retry it. */
 export function errorCause(message: string): string {

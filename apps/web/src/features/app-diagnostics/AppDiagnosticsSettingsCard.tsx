@@ -150,7 +150,8 @@ export function AppDiagnosticsSettingsCard({
         name="app-diagnostics-enabled"
         ariaLabel="Enable global app diagnostics"
         label="Debug capture"
-        detail={pending ? "Updating…" : "Keeps the last 24 hours of technical details. Turn it off when you are done."}
+        detail={pending ? "Updating…" : undefined}
+        help="Records technical details from every open Space tab and keeps the last 24 hours, to help find a problem. Turn it off when you are done."
         checked={isEnabled}
         disabled={!canManage || pending || !status}
         onChange={(nextEnabled) => void toggle(nextEnabled)}

@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryNousFollowupsRepository } from "@space/db";
-import { createNousFollowups } from "../src/nous/followups.js";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createNousFollowups, ticketMergedOnMain } from "../src/nous/followups.js";
 
 // Nous's follow-ups (plan clipboard:8s0ZNiO3q5ZT S3).
 const owner = "user:operator";
@@ -18,7 +22,8 @@ describe("Nous's follow-ups", () => {
     const f = fixture();
     const add = (args: object, pane: { paneId: string; paneLabel: string } | null = null) => f.followups.run(owner, { op: "add", ...args } as never, pane);
     expect((await add({ inMinutes: 30 })).result).toContain("Give the note");
-    expect((await add({ note: "x" })).result).toContain("exactly one trigger");
+    // Daily Nous errors 14/11 slice 5: an argument mistake is a refusal naming the fix, not a failed tool.
+    expect(await add({ note: "x" })).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("exactly one trigger") });
     expect((await add({ note: "x", inMinutes: 5, ticket: "q-20261017-124353-7e46" })).result).toContain("exactly one trigger");
     expect((await add({ note: "x", at: "2026-10-17T12:00:00.000Z" })).result).toContain("in the future");
     expect((await add({ note: "x", at: "2026-12-01T12:00:00.000Z" })).ok).toBe(true);
@@ -228,5 +233,21 @@ describe("Nous's follow-ups", () => {
     // The oldest one, behind 249 open rows: cancel finds it by id, also once it has ended (the old 200-row window missed it).
     expect((await f.followups.run(owner, { op: "cancel", followup: first.id }, null)).ok).toBe(true);
     expect(await f.followups.run(owner, { op: "cancel", followup: first.id }, null)).toMatchObject({ ok: true, result: expect.stringContaining("Already cancelled") });
+  });
+});
+
+describe("ticketMergedOnMain", () => {
+  it("finds a pruned ticket by its queue merge commit on main only", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ticket-main-"));
+    try {
+      const git = (...args: string[]) => execFileSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@t", ...args]);
+      git("init", "-q", "-b", "main");
+      git("commit", "-q", "--allow-empty", "-m", "Merge queue q-20261105-134554-e18f: fix");
+      git("checkout", "-q", "-b", "dev");
+      git("commit", "-q", "--allow-empty", "-m", "Merge queue q-20261113-162136-1eb2: dev only");
+      expect(await ticketMergedOnMain("q-20261105-134554-e18f", root)).toBe(true);
+      expect(await ticketMergedOnMain("q-20261113-162136-1eb2", root)).toBe(false);
+      expect(await ticketMergedOnMain("q-20261105-134554-e18f", join(root, "missing"))).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

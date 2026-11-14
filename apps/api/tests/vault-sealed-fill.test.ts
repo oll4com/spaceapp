@@ -18,12 +18,17 @@ function fakePage(html: string, options: { url?: string } = {}) {
   const window = dom.window;
   window.Element.prototype.getBoundingClientRect = () => ({ width: 120, height: 24 }) as DOMRect;
   const submitted = vi.fn();
-  window.HTMLFormElement.prototype.requestSubmit = function () { submitted(); };
+  // Like the browser's: a scripted requestSubmit fires the form's submit event; `submits` counts the ones no page handler stopped.
+  window.HTMLFormElement.prototype.requestSubmit = function (this: HTMLFormElement) { submitted(); this.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })); };
+  window.addEventListener("submit", (event) => { state.submits++; event.preventDefault(); });
   const state = { url: options.url ?? `${ORIGIN}/signin`, frameId: "frame-1", loaderId: "loader-1", sent: [] as string[], onInsert: null as null | (() => void), focusEmulated: false,
+    keys: [] as string[], submits: 0, transition: "typed",
     // A reload gives the top frame a new loader (document); `stuck` is a page that never settles after Page.reload.
     stuck: false, onReload: null as null | (() => void) };
   // Like a pane's Chrome on Xvfb: the window never has focus unless the fill emulates it.
   window.document.hasFocus = () => state.focusEmulated;
+  // Chrome types and presses keys in the focused element, also one inside a shadow root.
+  const deepActive = () => { let active = window.document.activeElement; while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement; return active as HTMLInputElement | null; };
   const page: SealedFillPage = {
     targetId: "target-1", sessionId: "session-1", paneId: "pane:vault",
     cdp: {
@@ -31,11 +36,22 @@ function fakePage(html: string, options: { url?: string } = {}) {
         state.sent.push(method);
         if (method === "Page.getFrameTree") return { frameTree: { frame: { id: state.frameId, url: state.url, loaderId: state.loaderId } } } as never;
         if (method === "Page.reload") { if (!state.stuck) { state.loaderId = `loader-${state.sent.filter((sent) => sent === "Page.reload").length + 1}`; state.onReload?.(); } return {} as never; }
+        if (method === "Page.getNavigationHistory") return { currentIndex: 0, entries: [{ id: 1, url: state.url, transitionType: state.transition }] } as never;
         if (method === "Page.createIsolatedWorld") return { executionContextId: 7 } as never;
+        if (method === "Input.dispatchKeyEvent") {
+          state.keys.push(`${params.type} ${params.key}`);
+          const active = deepActive();
+          // Chrome's implicit submission: an Enter the page did not cancel clicks the form's default button, else submits the form.
+          if (params.type === "keyDown" && params.key === "Enter" && active && active.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })) && active.form) {
+            const button = active.form.querySelector<HTMLElement>('button:not([type]),button[type="submit"],input[type="submit"]');
+            if (button) button.click(); else active.form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+          }
+          return {} as never;
+        }
         if (method === "Emulation.setFocusEmulationEnabled") { state.focusEmulated = params.enabled === true; return {} as never; }
         if (method === "Runtime.evaluate") return { result: { value: window.eval(String(params.expression)) } } as never;
         if (method === "Input.insertText") {
-          const active = window.document.activeElement as HTMLInputElement;
+          const active = deepActive()!;
           active.value = String(params.text);
           state.onInsert?.();
           return {} as never;
@@ -47,7 +63,7 @@ function fakePage(html: string, options: { url?: string } = {}) {
   return { page, window, state, submitted };
 }
 
-async function harness(fields: Array<"USERNAME" | "PASSWORD" | "OTP">, overrides: Partial<VaultUseClaims> = {}) {
+async function harness(fields: VaultUseClaims["fields"], overrides: Partial<VaultUseClaims> = {}) {
   const claims: VaultUseClaims = {
     v: 1, kind: "USE", certId: newVaultHandle("vault_delegation"), ownerUserId: "user:alice", vaultId: newVaultHandle("vault"), generation: 1, epoch: 1,
     handle: newVaultHandle("vault_item"), origin: ORIGIN, fields, submit: false, paneId: "pane:vault", targetId: "target-1", pageId: "target-1", frameId: "frame-1",
@@ -58,15 +74,45 @@ async function harness(fields: Array<"USERNAME" | "PASSWORD" | "OTP">, overrides
     verifyUse: async (capability) => { if ((capability as { sig: string }).sig.startsWith("f")) throw new Error("BAD_SIGNATURE"); return claims; },
     openFill: async ({ replyPublicKey }) => {
       opened();
-      const secrets = JSON.stringify({ USERNAME: "synthetic@example.com", PASSWORD: SECRET, OTP: BASE32_SEED });
+      const secrets = JSON.stringify({ USERNAME: "synthetic@example.com", PASSWORD: SECRET, OTP: BASE32_SEED, ...CARD });
       return sealToVaultPublicKey(vaultBase64url.decode(replyPublicKey), new TextEncoder().encode(secrets), { ownerUserId: claims.ownerUserId, vaultId: claims.vaultId, keyVersion: 1 });
     }
   };
   const envelope = { v: 1, alg: "A256GCM", purpose: "FILL_FIELD", keyVersion: 1, nonce: "A".repeat(16), ct: "B".repeat(40) } as const;
-  const request = (mode: "FILL" | "TOTP" | "GENERATE", capability: Record<string, unknown> = {}) => ({
+  const request = (mode: "FILL" | "TOTP" | "GENERATE" | "CARD", capability: Record<string, unknown> = {}) => ({
     mode, capability: { claims, sig: "s".repeat(86), keyVersion: 1, ...capability }, keyEnvelope: { ...envelope, purpose: "FILL_KEY" }, fieldEnvelopes: { PASSWORD: envelope }
   });
   return { claims, broker, opened, request };
+}
+
+// Stripe's public test number; the rest synthetic.
+const CARD = { CARD_NUMBER: "4242424242424242", CARD_EXPIRY: "07/28", CARD_CVC: "123", CARDHOLDER_NAME: "Synthetic Holder" };
+const CARD_ROLES = ["CARD_NUMBER", "CARD_EXPIRY", "CARD_CVC", "CARDHOLDER_NAME"] as const;
+const STRIPE = '<input name="cardnumber" autocomplete="cc-number"><input name="exp-date" autocomplete="cc-exp" placeholder="MM / YY"><input name="cvc" autocomplete="cc-csc">';
+
+/**
+ * A checkout whose card boxes live in a cross-site payment frame (Stripe's js.stripe.com, an OOPIF): Chrome lists it as an
+ * iframe target of the page's frame and the fill reaches it through its own session, with its own DOM.
+ */
+function fakeCheckout(frameHtml: string, options: { topHtml?: string; frameUrl?: string } = {}) {
+  const top = fakePage(options.topHtml ?? '<h1>Checkout</h1><form><input id="holder" autocomplete="cc-name"><button>Pay</button></form>');
+  const frame = fakePage(frameHtml, { url: options.frameUrl ?? "https://js.stripe.com/v3/elements-inner-card.html" });
+  const sent: Array<{ method: string; sessionId?: string }> = [];
+  const own = top.page.cdp;
+  top.page.cdp = {
+    async send<T>(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<T> {
+      sent.push({ method, sessionId });
+      // Another tab's payment frame is listed too; only this page's frame children are attached.
+      if (method === "Target.getTargets") return { targetInfos: [{ targetId: "stripe-frame", type: "iframe", parentFrameId: "frame-1" }, { targetId: "elsewhere", type: "iframe", parentFrameId: "other-tab" }] } as T;
+      if (method === "Target.attachToTarget") return { sessionId: `session-${String(params.targetId)}` } as T;
+      if (method === "Target.detachFromTarget") return {} as T;
+      if (sessionId !== "session-stripe-frame") return own.send<T>(method, params, sessionId);
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "stripe-frame", url: frame.state.url } } } as T;
+      return frame.page.cdp.send<T>(method, params, sessionId);
+    }
+  };
+  const box = (name: string) => (frame.window.document.querySelector(`[name="${name}"]`) as HTMLInputElement).value;
+  return { ...top, frame, sent, box };
 }
 
 const LOGIN = '<form><input id="user" autocomplete="username"><input id="pass" type="password" autocomplete="current-password"><button>Sign in</button></form>';
@@ -111,7 +157,7 @@ describe("Vault sealed fill (Browser Host)", () => {
     expect(await runSealedFill(fakePage(LOGIN).page, broker, { ...request("FILL"), selector: "#pass" }, now)).toMatchObject({ reason: "BAD_REQUEST" });
     expect(opened).not.toHaveBeenCalled();
     // A shared Chrome or a second tab no longer refuses (operator decision 2026-10-18): the API fences the filled browser instead.
-    expect(await readVaultTarget(fakePage(LOGIN).page)).toEqual({ eligible: true, reason: null, targetId: "target-1", frameId: "frame-1", origin: ORIGIN, document: "loader-1", freshDocument: true, generatePolicy: true });
+    expect(await readVaultTarget(fakePage(LOGIN).page)).toEqual({ eligible: true, reason: null, targetId: "target-1", frameId: "frame-1", origin: ORIGIN, document: "loader-1", freshDocument: true, generatePolicy: true, cards: true });
   });
 
   it("stops and clears what it typed when the page navigates away in the middle", async () => {
@@ -196,6 +242,34 @@ describe("Vault sealed fill (Browser Host)", () => {
     expect(password.opened).not.toHaveBeenCalled();
   });
 
+  it("fills a login's only password field even when the site marks it new-password, never a new/confirm pair (Skimlinks Hub, 14/11)", async () => {
+    const { broker, request, opened } = await harness(["USERNAME", "PASSWORD"]);
+    const skimlinks = fakePage('<form><input id="user" type="email"><input id="pass" type="password" autocomplete="new-password"><button>Log in</button></form>');
+    expect(await runSealedFill(skimlinks.page, broker, request("FILL"), now)).toMatchObject({ status: "FILLED", typed: true });
+    expect(value(skimlinks.window, "pass")).toBe(SECRET);
+    const password = await harness(["PASSWORD"]);
+    const pair = fakePage('<form><input id="n1" type="password" autocomplete="new-password"><input id="n2" type="password" autocomplete="new-password"></form>');
+    expect(await runSealedFill(pair.page, password.broker, password.request("FILL"), now)).toMatchObject({ reason: "FIELD_NOT_FOUND_AFTER_RELOAD", typed: false });
+    expect(value(pair.window, "n1") + value(pair.window, "n2")).toBe("");
+    expect(password.opened).not.toHaveBeenCalled();
+    expect(opened).toHaveBeenCalledTimes(1);
+  });
+
+  it("fills and submits a login whose inputs live in open shadow roots (Reddit's faceplate-text-input, FIELD_NOT_FOUND 13/11)", async () => {
+    const { page, window, state } = fakePage('<form id="login"><faceplate-text-input id="login-username"></faceplate-text-input><faceplate-text-input id="login-password"></faceplate-text-input><button>Log In</button></form>');
+    const inner = (host: string, html: string) => { const root = window.document.getElementById(host)!.attachShadow({ mode: "open" }); root.innerHTML = html; return root.querySelector("input")!; };
+    const user = inner("login-username", '<input type="text" name="username" autocomplete="username webauthn">');
+    const pass = inner("login-password", '<input type="password" name="password" autocomplete="current-password">');
+    // Like faceplate: the shadow input belongs to no form, so its own Enter handler submits the form around its host.
+    pass.addEventListener("keydown", (event) => { if ((event as KeyboardEvent).key === "Enter") window.document.getElementById("login")!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })); });
+    const { broker, request } = await harness(["USERNAME", "PASSWORD"], { submit: true });
+    expect(await runSealedFill(page, broker, request("FILL"), now)).toMatchObject({ status: "SUBMITTED", reason: null, typed: true, fields: { filled: ["USERNAME", "PASSWORD"] } });
+    expect(user.value).toBe("synthetic@example.com");
+    expect(pass.value).toBe(SECRET);
+    expect(state.keys).toEqual(["keyDown Enter", "keyUp Enter"]);
+    expect(state.submits).toBe(1);
+  });
+
   it("submits only when the capability allows it", async () => {
     const plain = fakePage(LOGIN);
     const { broker, request } = await harness(["PASSWORD"]);
@@ -204,7 +278,61 @@ describe("Vault sealed fill (Browser Host)", () => {
     const allowed = fakePage(LOGIN);
     const submitting = await harness(["PASSWORD"], { submit: true });
     expect((await runSealedFill(allowed.page, submitting.broker, submitting.request("FILL"), now)).status).toBe("SUBMITTED");
-    expect(allowed.submitted).toHaveBeenCalledTimes(1);
+    expect(plain.state.keys).toEqual([]);
+    expect(allowed.state.keys).toEqual(["keyDown Enter", "keyUp Enter"]);
+    expect(allowed.state.submits).toBe(1);
+    expect(allowed.submitted).not.toHaveBeenCalled();
+  });
+
+  it("submits with a person's Enter, never a scripted requestSubmit the page's own JS does not handle (AWS sign-in 400, 13/11)", async () => {
+    // Like AWS sign-in: Next runs the page's own step in its click handler; a submit that reaches the form is the browser's own
+    // post, which AWS answered 400 Bad Request.
+    const aws = '<form action="/signin" method="post"><input id="user" type="email" autocomplete="username"><button id="next">Next</button></form><p id="step"></p>';
+    const { page, window, state, submitted } = fakePage(aws);
+    const step = window.document.getElementById("step")!;
+    window.document.getElementById("next")!.addEventListener("click", (event) => { event.preventDefault(); step.textContent = "PASSWORD_STEP"; });
+    window.document.querySelector("form")!.addEventListener("submit", () => { step.textContent = "400 Bad Request"; });
+    const { broker, request } = await harness(["USERNAME"], { submit: true });
+    expect(await runSealedFill(page, broker, { ...request("FILL"), freshDocument: false }, now)).toMatchObject({ status: "SUBMITTED", reason: null, typed: true });
+    expect(step.textContent).toBe("PASSWORD_STEP");
+    expect(state.submits).toBe(0);
+    expect(submitted).not.toHaveBeenCalled();
+    expect(value(window, "user")).toBe("synthetic@example.com");
+    // A field outside any form is typed and left for the agent to press: no key is sent.
+    const loose = fakePage('<input id="user" type="email" autocomplete="username">');
+    expect(await runSealedFill(loose.page, broker, { ...request("FILL"), freshDocument: false }, now)).toMatchObject({ status: "FILLED", reason: "NO_FORM", typed: true });
+    expect(loose.state.keys).toEqual([]);
+  });
+
+  it("clicks the one sign-in button of a form Enter cannot submit (DCMnetwork's input type=button, 13/11)", async () => {
+    const dcm = '<form id="form" action="send-log-in-link"><input id="user" type="email" autocomplete="username"><input type="button" value="Send login link">'
+      + '<input id="login" type="button" value="Log In"></form><p id="step"></p>';
+    const { page, window, state } = fakePage(dcm);
+    window.document.getElementById("login")!.addEventListener("click", () => { window.document.getElementById("step")!.textContent = "SIGNED_IN"; });
+    const { broker, request } = await harness(["USERNAME"], { submit: true });
+    expect(await runSealedFill(page, broker, { ...request("FILL"), freshDocument: false }, now)).toMatchObject({ status: "SUBMITTED", reason: null, typed: true });
+    expect(window.document.getElementById("step")!.textContent).toBe("SIGNED_IN");
+    expect(state.keys).toEqual([]);
+    // No button named for signing in (or two of them): typed, nothing pressed, and the agent is told why.
+    const vague = fakePage('<form><input id="user" type="email" autocomplete="username"><input type="button" value="Go"></form>');
+    expect(await runSealedFill(vague.page, broker, { ...request("FILL"), freshDocument: false }, now)).toMatchObject({ status: "FILLED", reason: "NO_SUBMIT_BUTTON", typed: true });
+    expect(vague.state.keys).toEqual([]);
+  });
+
+  it("never reloads a dirty page a form submission made, so a sign-in step is not posted again, and fills a clean one as it is (13/11)", async () => {
+    const posted = fakePage(LOGIN);
+    posted.state.transition = "form_submit";
+    const { broker, request, opened } = await harness(["PASSWORD"], { submit: true });
+    expect(await runSealedFill(posted.page, broker, request("FILL"), now)).toMatchObject({ status: "BLOCKED", reason: "RELOAD_WOULD_RESUBMIT", typed: false });
+    expect(posted.state.sent).not.toContain("Page.reload");
+    expect(posted.state.keys).toEqual([]);
+    expect(opened).not.toHaveBeenCalled();
+    // The same step with no agent script in it (freshDocument false, as on AWS 13/11): no history read, no reload, one Enter.
+    posted.state.sent.length = 0;
+    expect(await runSealedFill(posted.page, broker, { ...request("FILL"), freshDocument: false }, now)).toMatchObject({ status: "SUBMITTED", typed: true });
+    expect(posted.state.sent).not.toContain("Page.reload");
+    expect(posted.state.sent).not.toContain("Page.getNavigationHistory");
+    expect(posted.state.keys).toEqual(["keyDown Enter", "keyUp Enter"]);
   });
 
   it("computes the one-time code where it is filled", async () => {
@@ -345,5 +473,45 @@ describe("Vault sealed fill (Browser Host)", () => {
     expect(await runSealedFill(capped.page, broker, request({ certificate }))).toEqual({ status: "BLOCKED", reason: "DAILY_CAP", sealedGenerated: null, typed: false, document: "loader-2" });
     expect(value(capped.window, "n1")).toBe("");
   });
-});
 
+  it("fills a card in the checkout's cross-site payment frame, never submits it and answers no digit (plan clipboard:qf0P640vyLp2)", async () => {
+    const checkout = fakeCheckout(STRIPE);
+    // Like Stripe, the frame groups the number as it is typed: the check counts digits.
+    checkout.frame.state.onInsert = () => { const el = checkout.frame.window.document.activeElement as HTMLInputElement;
+      if (el.name === "cardnumber") el.value = el.value.replace(/(\d{4})(?=\d)/g, "$1 "); };
+    const { broker, request } = await harness([...CARD_ROLES], { submit: true });
+    const answer = await runSealedFill(checkout.page, broker, request("CARD"), now);
+    expect(answer).toEqual({ status: "FILLED", reason: null, sealedGenerated: null, typed: true, document: "loader-2", fields: { filled: [...CARD_ROLES], disabled: [] } });
+    expect(checkout.box("cardnumber")).toBe("4242 4242 4242 4242");
+    expect(checkout.box("exp-date")).toBe("07/28");
+    expect(checkout.box("cvc")).toBe("123");
+    expect(value(checkout.window, "holder")).toBe("Synthetic Holder");
+    expect(checkout.submitted).not.toHaveBeenCalled();
+    for (const secret of Object.values(CARD)) expect(JSON.stringify(answer)).not.toContain(secret);
+    // Typed through the frame's own session, focus emulated there too; only this page's frame attached, and detached after.
+    expect(checkout.sent).toContainEqual({ method: "Input.insertText", sessionId: "session-stripe-frame" });
+    expect(checkout.sent).toContainEqual({ method: "Emulation.setFocusEmulationEnabled", sessionId: "session-stripe-frame" });
+    expect(checkout.sent.filter((call) => call.method === "Target.attachToTarget")).toHaveLength(1);
+    expect(checkout.sent.at(-1)).toEqual({ method: "Target.detachFromTarget" });
+    expect(checkout.frame.state.focusEmulated).toBe(false);
+  });
+
+  it("types a card expiry kept in two boxes as month and year, as the boxes ask", async () => {
+    const checkout = fakeCheckout('<input id="number" name="cardNumber"><input id="month" name="expMonth" maxlength="2"><input id="year" name="expYear" placeholder="YYYY"><input id="cvv" name="cvv">');
+    const { broker, request } = await harness(["CARD_NUMBER", "CARD_EXPIRY", "CARD_CVC"]);
+    expect(await runSealedFill(checkout.page, broker, request("CARD"), now)).toMatchObject({ status: "FILLED", fields: { filled: ["CARD_NUMBER", "CARD_EXPIRY", "CARD_CVC"], disabled: [] } });
+    expect([value(checkout.frame.window, "month"), value(checkout.frame.window, "year"), value(checkout.frame.window, "cvv")]).toEqual(["07", "2028", "123"]);
+  });
+
+  it("keeps cards and logins apart and finds no card outside an https frame, before the broker opens anything", async () => {
+    const { broker, request, opened } = await harness([...CARD_ROLES]);
+    expect(await runSealedFill(fakeCheckout(STRIPE).page, broker, request("FILL"), now)).toMatchObject({ status: "BLOCKED", reason: "MODE_MISMATCH" });
+    const login = await harness(["USERNAME", "PASSWORD"]);
+    expect(await runSealedFill(fakePage(LOGIN).page, login.broker, login.request("CARD"), now)).toMatchObject({ status: "BLOCKED", reason: "MODE_MISMATCH" });
+    const plain = fakeCheckout(STRIPE, { frameUrl: "http://pay.example/card" });
+    expect(await runSealedFill(plain.page, broker, request("CARD"), now)).toMatchObject({ status: "BLOCKED", reason: "FIELD_NOT_FOUND_AFTER_RELOAD", typed: false });
+    expect(plain.box("cardnumber")).toBe("");
+    expect(opened).not.toHaveBeenCalled();
+    expect(login.opened).not.toHaveBeenCalled();
+  });
+});

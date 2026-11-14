@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import {
-  APP_DEVICE_SESSION_TTL_SECONDS, APP_DEVICE_SESSIONS_MAX, APP_HANDOFF_CODE_TTL_MS, APP_SIGNIN_REDIRECT_URIS, appDeviceSessionIdSchema, appHandoffRedeemSchema,
+  APP_DEVICE_SESSION_TTL_SECONDS, APP_DEVICE_SESSIONS_MAX, LINK_APP, APP_HANDOFF_CODE_TTL_MS, APP_SIGNIN_REDIRECT_URIS, appDeviceSessionIdSchema, appHandoffRedeemSchema,
   appSignInChallengeSchema, appSignInIdSchema, appSignInStateSchema, type AppDeviceSession, type AppSignInId, type AuthUser, type NotificationRaiseInput, type SpaceNotification
 } from "@space/contracts";
 import { InMemoryAppDeviceSessionRepository, PostgresAppDeviceSessionRepository, type AppDeviceSessionRecord, type AppDeviceSessionRepository } from "@space/db";
@@ -12,6 +12,7 @@ import type { ConnectorCrypto } from "./dot-connectors.js";
 import { sendApiError } from "./http-errors.js";
 export { installMobileGate } from "./mobile/gate.js";
 import { MOBILE_PAIRING_CONFIRM_MS, registerMobileChannel } from "./mobile/channel.js";
+export { mobileUpdateBridge } from "./mobile/channel.js"; // app.ts runs it before the session hook.
 import { createMobileChecks } from "./mobile/checks.js";
 import { createPlayIntegrity } from "./mobile/integrity.js";
 import { setMobileChecks } from "./mobile/gate.js";
@@ -60,7 +61,7 @@ const publicRow = (row: AppDeviceSessionRecord): AppDeviceSession => ({ id: row.
   ...(row.noisePublic ? { paired: { scopes: row.scopes ?? [], requestedScopes: row.requestedScopes ?? [], allowedAt: row.confirmedAt, lastSeenAt: row.lastSeenAt, decide: row.decideSecurityLevel } } : {}) });
 
 export interface AppSignInOptions {
-  store: Pick<SpaceStore, "upsertUser" | "recordAuditEvent" | "getControlActor" | "getArtifact" | "getOwnerCredentials">;
+  store: Pick<SpaceStore, "upsertUser" | "recordAuditEvent" | "getControlActor" | "getPane" | "getArtifact" | "getOwnerCredentials">;
   repository: AppDeviceSessionRepository;
   revocations: Pick<SessionRevocationStore, "revokeSessionHash">;
   sessionSecret: string;
@@ -87,6 +88,8 @@ export type AppSignIn = ReturnType<typeof createAppSignIn>;
 export function registerAppSignIn(app: FastifyInstance, options: Omit<AppSignInOptions, "repository"> & { databaseUrl: string | null | undefined; crypto?: ConnectorCrypto;
   /** This SpaceApp's version, sent as a link's appVersion to the SpaceApps it manages (Space Link, ADR-014). */
   version?: string;
+  /** A kept Vault key's value: a linked SpaceApp's Cloudflare Access service token (instance-link/routes.ts). */
+  linkVaultKey?: (owner: string, id: string) => Promise<string | null>;
   events?: Parameters<typeof registerMobileChannel>[1]["events"] } & Pick<Parameters<typeof registerMobileChannel>[1], "google" | "gmailFetch">): AppSignIn {
   const repository = options.databaseUrl ? PostgresAppDeviceSessionRepository.fromConnectionString(options.databaseUrl) : new InMemoryAppDeviceSessionRepository();
   const signIn = createAppSignIn({ ...options, repository });
@@ -133,8 +136,31 @@ export function registerAppSignIn(app: FastifyInstance, options: Omit<AppSignInO
       notification: async (owner, id) => (await options.notifications?.get(owner, id)) ?? null, decision: options.decision ?? (async () => null),
       goal: options.goal ?? (async () => null), integrity }));
     // Space Link (ADR-014): the other SpaceApps this one manages, each paired as a spaceapp-link device of it.
-    registerInstanceLinks(app, { store: options.store, crypto: options.crypto, databaseUrl: options.databaseUrl, routeOptions: options.routeOptions,
-      assertPerson: signIn.assertPerson, version: options.version ?? "0.0.0" });
+    const links = registerInstanceLinks(app, { store: options.store, crypto: options.crypto, databaseUrl: options.databaseUrl, routeOptions: options.routeOptions,
+      assertPerson: signIn.assertPerson, version: options.version ?? "0.0.0", vaultKey: options.linkVaultKey });
+    // The Nous app's Remote mark (Λ9, MOBILE_ROUTE_SCOPES): the links connected here without their addresses, the lease, and the
+    // SpaceApps this one manages. A phone may take management back (it only narrows); Give back and revoking stay on a computer.
+    const statusOwner = (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) return void sendApiError(reply, 401, "UNAUTHORIZED", "Sign in to see your linked SpaceApps.");
+      if (!request.mobileDevice) signIn.assertPerson(request);
+      return request.user.id;
+    };
+    const linkStatus = async (owner: string) => ({
+      remote: channel!.live(owner).filter((session) => session.app === LINK_APP).map((session) => ({ ...session, ip: undefined })),
+      lease: lease.holder(owner), takenBackAt: lease.takenBackAt(owner),
+      managing: (await links.repository.list(owner)).map(({ id, label, scopes, lastSeenAt }) => ({ id, label, scopes, lastSeenAt }))
+    });
+    app.get("/api/instance-links/status", options.routeOptions, async (request, reply) => {
+      const owner = statusOwner(request, reply);
+      return owner ? linkStatus(owner) : reply;
+    });
+    app.post("/api/instance-links/status/take-back", options.routeOptions, async (request, reply) => {
+      const owner = statusOwner(request, reply);
+      if (!owner) return reply;
+      lease.takeBack(owner);
+      await recordAudit(options.store, request, { action: "instance_link.taken_back", targetType: "user", targetId: owner });
+      return linkStatus(owner);
+    });
   }
   return signIn;
 }

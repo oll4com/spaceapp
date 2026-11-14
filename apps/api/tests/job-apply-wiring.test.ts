@@ -200,12 +200,14 @@ describe("Job Copilot wiring", () => {
     const live = wire({ session: { sessionId: "cli:2", purpose: "NORMAL", isActive: true, status: "RUNNING" } });
     await live.routes[0]!.kickoff(jobPane(), run, true);
     expect(live.mutations).toEqual(["cli:2"]);
-    expect(captured.prompts[0]).toEqual([expect.anything(), "cli:2", expect.stringContaining("first find new postings"), "job-apply:jobrun:1", "job-apply:jobrun:1:kickoff"]);
+    expect(captured.prompts[0]).toEqual([expect.anything(), "cli:2", expect.stringContaining("first find new postings"), "job-apply:jobrun:1", expect.stringMatching(/^job-apply:jobrun:1:kickoff:/)]);
     expect(captured.prompts[0]![2]).toContain("Job Copilot run jobrun:1 started");
     // Plan clipboard:qH5emwVaV6yO step 4: a run with no application in progress starts a fresh session; one resuming an application keeps it.
     expect(captured.clears).toHaveLength(1);
     await live.routes[0]!.kickoff(jobPane(), { ...run, currentApplicationId: "jobapp:1" }, false);
     expect(captured.clears).toHaveLength(1);
+    // Daily Nous errors F: a re-kick of the same run (the other prompt, 13/11 19:10) types under a new input key, never the first one's.
+    expect(captured.prompts[1]![4]).not.toBe(captured.prompts[0]![4]);
   });
 
   it("answers 401 without a valid session and the stored user id with one", async () => {

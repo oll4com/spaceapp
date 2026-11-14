@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { ChevronRight, CircleHelp, type LucideIcon } from "../ui-theme/app-icons.js";
+import { ChevronRight, type LucideIcon } from "../ui-theme/app-icons.js";
 import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
+import { InfoTip } from "../ui-controls/InfoTip.js";
 import "./settings-disclosure.css";
 
 /** Opens the section with this key; a new nonce opens it again (for example from a Dot pane). */
@@ -93,7 +94,7 @@ export function SettingsDisclosure({ title, description, help, keywords, scope, 
   initialOpen?: boolean;
   title: string;
   description: string;
-  /** Plain-language help shown first when the section is open: what it does and when to change it. */
+  /** Plain-language help behind the header's ⓘ: what it does and when to change it. */
   help?: string;
   /** Extra words that find this section in search. */
   keywords?: string;
@@ -103,7 +104,7 @@ export function SettingsDisclosure({ title, description, help, keywords, scope, 
 }) {
   const id = useId();
   const language = useUiLanguage();
-  const t = (text: string) => uiText(language, text);
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const sections = useContext(SectionsContext);
   const [localOpen, setLocalOpen] = useState(initialOpen);
   const [visited, setVisited] = useState(initialOpen);
@@ -126,7 +127,7 @@ export function SettingsDisclosure({ title, description, help, keywords, scope, 
     if (sections?.revealOnOpen) headerRef.current?.scrollIntoView?.({ block: "nearest" });
   }, [open]);
   return (
-    <section ref={sectionRef} className="settings-disclosure" data-open={open} data-section={sectionKey} hidden={hidden || !matches}>
+    <section ref={sectionRef} className="settings-disclosure" data-title={title} data-open={open} data-section={sectionKey} hidden={hidden || !matches}>
       <h3 ref={headerRef}>
         <button type="button" aria-label={t(title)} aria-describedby={`${id}-description`} aria-expanded={open} aria-controls={id} onClick={() => {
           setVisited(true);
@@ -138,11 +139,10 @@ export function SettingsDisclosure({ title, description, help, keywords, scope, 
           <span><strong>{t(title)}</strong><small id={`${id}-description`}>{t(description)}</small></span>
           <ChevronRight aria-hidden="true" />
         </button>
+        {help ? <InfoTip text={t(help)} label={t("About {label}", { label: t(title) })} /> : null}
       </h3>
       <div id={id} hidden={!open} className="settings-disclosure-content">
         {visited ? <>
-          {/* Divs, not paragraphs: the Modern theme makes dock paragraphs inherit their colour. */}
-          {help ? <div className="settings-help"><CircleHelp aria-hidden="true" /><div>{t(help)}</div></div> : null}
           <div className="settings-scope">{t("Affects:")} <strong>{t(settingsScopeText[scope])}</strong></div>
           {children}
         </> : null}

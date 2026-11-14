@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isLightCodexPane,
   browserSelectStateSchema,
   spaceAgentBrowserActionRequestSchema,
   artifactSchema,
@@ -686,6 +687,12 @@ describe("Space contracts", () => {
         terminalRuntimeId: "cli:root"
       })
     ).toThrow("Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN, APP_STUDIO, VIDEO, SECURITY_COPILOT or MONITORING_COPILOT mode");
+    // Codex light pane: only cli:codex on a CHAT pane.
+    expect(createPaneInputSchema.parse({ roomId: "room:test-1", title: "Codex", mode: "CHAT", terminalRuntimeId: "cli:codex" })).toMatchObject({ mode: "CHAT", terminalRuntimeId: "cli:codex" });
+    expect(isLightCodexPane({ mode: "CHAT", terminalRuntimeId: "cli:codex" })).toBe(true);
+    expect(isLightCodexPane({ mode: "TERMINAL", terminalRuntimeId: "cli:codex" })).toBe(false);
+    expect(isLightCodexPane({ mode: "CHAT", terminalRuntimeId: null })).toBe(false);
+    expect(() => createPaneInputSchema.parse({ roomId: "room:test-1", title: "Claude", mode: "CHAT", terminalRuntimeId: "cli:claude" })).toThrow("Terminal runtime selection requires");
     expect(updatePaneInputSchema.parse({ terminalRuntimeId: "cli:root" })).toEqual({
       terminalRuntimeId: "cli:root"
     });

@@ -66,7 +66,7 @@ describe("Nous's pane watch", () => {
 
     expect(await tools.execute("space_pane_checked", { room: "Bruno", pane: "Andy", verdict: "OPERATOR_TEST", note: "The operator's login test" }, ctx))
       .toMatchObject({ ok: true, display: "Checked Andy in Bruno: operator test" });
-    expect((await tools.execute("space_pane_checked", { room: "Bruno", pane: "Bob", verdict: "WAITING_DATE" }, ctx)).result).toContain("needs nextCheckInMinutes");
+    expect((await tools.execute("space_pane_checked", { room: "Bruno", pane: "Bob", verdict: "WAITING_DATE" }, ctx)).result).toContain("WAITING_DATE looks again in 60 minutes");
     await tools.execute("space_pane_checked", { room: "Bruno", pane: "Bob", verdict: "WAITING_DATE", nextCheckInMinutes: 90 }, ctx);
     const checks = new Map((await repository.list(owner)).map((check) => [check.paneId, check]));
     expect(checks.get(andy.id)).toMatchObject({ verdict: "OPERATOR_TEST", note: "The operator's login test", nextCheckAt: null });

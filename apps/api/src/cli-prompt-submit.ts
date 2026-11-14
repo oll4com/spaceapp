@@ -4,7 +4,7 @@ import type { CliTerminalManager } from "./cli-terminal.js";
 import { noteSpacePrompt } from "./space-prompts.js";
 import { roomAnswerInput, roomComposerEmpty, roomComposerHolds, roomComposerNotReady, roomComposerShowsOnly } from "./room-terminal-screen.js";
 
-type PromptTerminal = Pick<CliTerminalManager, "sendInput" | "observeRoomScreenUndimmed">;
+type PromptTerminal = Pick<CliTerminalManager, "sendInput" | "observeRoomScreenUndimmed"> & Partial<Pick<CliTerminalManager, "claudeTurnStartedSince">>;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -31,13 +31,14 @@ export async function submitCliPrompt(terminal: PromptTerminal, sessionId: strin
   const requestId = /^[\x21-\x7e]{1,120}$/.test(asked) ? asked : undefined;
   rememberSpaceTyped(sessionId, text, Date.now(), requestId);
   if (options.paneId) noteSpacePrompt(options.paneId);
+  const sinceMs = Date.now();
   await terminal.sendInput(sessionId, roomAnswerInput(text, true), traceId, null, `${key}:prompt`, options.waitForComposer ?? true, options.signal);
   // Logged once the text reached the CLI: before, a composer wait that failed still read as typed (7/11 Bruno/Kate).
   console.info(JSON.stringify({ level: 30, time: Date.now(), event: "cli_prompt.typed", requestId: requestId ?? null, paneId: options.paneId ?? null, sessionId }));
   await wait(options.gapMs ?? 200);
   await options.assertCurrent?.();
   await terminal.sendInput(sessionId, "\r", traceId, null, `${key}:submit`);
-  if (confirm) await confirmCliPromptSubmitted(terminal, sessionId, text, traceId, key, options);
+  if (confirm) await confirmCliPromptSubmitted(terminal, sessionId, text, traceId, key, { ...options, sinceMs });
 }
 
 /**
@@ -58,14 +59,21 @@ export async function clearIdleClaudeSession(terminal: PromptTerminal, session: 
   return true;
 }
 
-/** Presses Enter again (at most twice) while the composer still holds the typed text; fails if it stays a draft. */
+/**
+ * Presses Enter again (at most three times, the last a second later) while the composer still holds the typed text; fails if it stays a draft, unless Claude's own
+ * transcript started a turn since `sinceMs`: 13/11 Cody, Jack and Bob took Nous's texts 0.6-1.1 s after they were typed, yet their
+ * screens rebuilt from the output tail still showed them in the composer, so Nous was told to clear a draft that was already sent.
+ */
 export async function confirmCliPromptSubmitted(terminal: PromptTerminal, sessionId: string, typed: string, traceId: string, key: string,
-  options: { delayMs?: number; assertCurrent?: () => Promise<unknown> } = {}): Promise<void> {
+  options: { delayMs?: number; assertCurrent?: () => Promise<unknown>; sinceMs?: number } = {}): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     await wait(options.delayMs ?? 500);
     await options.assertCurrent?.();
     if (!roomComposerHolds(await terminal.observeRoomScreenUndimmed(sessionId), typed)) return;
-    if (attempt === 2) throw new SpaceConflictError("The CLI kept the text as an unsent draft after Enter; it was not submitted.");
+    if (attempt >= 2 && options.sinceMs !== undefined && await terminal.claudeTurnStartedSince?.(sessionId, options.sinceMs)) return;
+    if (attempt === 3) throw new SpaceConflictError("The CLI kept the text as an unsent draft after Enter; it was not submitted.");
+    // Daily Nous errors 14/11 (space_send_to_pane ×2): one more Enter a second later, then the last read back, before a draft is reported.
+    if (attempt === 2) await wait(2 * (options.delayMs ?? 500));
     await terminal.sendInput(sessionId, "\r", traceId, null, `${key}:resubmit-${attempt}`);
   }
 }

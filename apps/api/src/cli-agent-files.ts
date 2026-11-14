@@ -18,9 +18,9 @@ import { agentTokenLive, agentTokenSecret, agentTokenTtlMs } from "./cli-browser
 import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export const cliAgentFilesTokenHeader = "x-space-cli-agent-files-token";
-export const agentFileMaxBytes = 100 * 1024 * 1024;
+// Technical bound: nginx's client_max_body_size (500m, deploy/nginx/space-oll4.conf).
+export const agentFileMaxBytes = 500 * 1024 * 1024;
 export const agentFileMaxCount = 8;
-export const agentFileMaxRequestBytes = 250 * 1024 * 1024;
 export const agentFileTextPreviewMaxBytes = 512 * 1024;
 export const agentFileDocxPreviewMaxBytes = 20 * 1024 * 1024;
 export const agentFileDocxNormalizationTimeoutMs = 30_000;
@@ -462,6 +462,8 @@ export async function persistAgentFile(input: PersistAgentFileInput) {
     if (shouldNormalizeDocx) {
       // The existing DOCX normalizer requires a buffer. Only this bounded format
       // is materialized; ordinary files stream end-to-end from private staging.
+      // Technical bound (memory): a DOCX past agentFileMaxBytes (only the chunks route allows that) is never read into one buffer.
+      if (sourceSize > agentFileMaxBytes) throw new AgentFileDocxNormalizationError(`A DOCX over ${agentFileMaxBytes / 1024 / 1024} MiB cannot be rebuilt for Word.`);
       const docxSource = input.buffer ?? Buffer.alloc(sourceSize);
       if (sourceHandle) {
         let offset = 0;
@@ -649,7 +651,7 @@ export async function backfillAgentFile(input: BackfillAgentFileInput): Promise<
     throw new Error("Agent File backfill source must be a regular, non-symlink file.");
   }
   if (sourceStat.size <= 0 || sourceStat.size > agentFileMaxBytes) {
-    throw new Error("Agent File backfill source must be between 1 byte and 100 MiB.");
+    throw new Error(`Agent File backfill source must be between 1 byte and ${agentFileMaxBytes / 1024 / 1024} MiB.`);
   }
 
   const resolvedArtifactRoot = await realpath(input.artifactRoot);

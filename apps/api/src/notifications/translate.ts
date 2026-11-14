@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { NEEDS_YOU_CHECKED_HEADER, needsYouCardTexts, type NeedsYouTranslation, type SpaceNotification, type UiLanguage } from "@space/contracts";
+import { NEEDS_YOU_CHECKED_HEADER, NEEDS_YOU_FIXED_WORDS, needsYouCardTexts, type NeedsYouTranslation, type SpaceNotification, type UiLanguage } from "@space/contracts";
 import { gatewayRequestIdHeader } from "../gateway-request-id.js";
 import { codexServiceRoot, GATEWAY_CLAUDE_MODEL } from "../room-agent-model-resolver.js";
 
@@ -84,5 +84,7 @@ export async function translateCard(translate: CardTranslate, record: Pick<Space
   const out = await translate(texts, language, record.id);
   if (!out) return null;
   const [title, main, checked, question, ...options] = out as [string, string, string, string, ...string[]];
-  return { language, from, title, body: checked.trim() ? `${main}${NEEDS_YOU_CHECKED_HEADER}${checked}` : main, question, options, version: CARD_TRANSLATOR_VERSION };
+  const fixed = (index: number, translated: string) => NEEDS_YOU_FIXED_WORDS[language]?.[texts[index]!] ?? translated;
+  return { language, from, title, body: checked.trim() ? `${main}${NEEDS_YOU_CHECKED_HEADER}${checked}` : main, question: fixed(3, question),
+    options: options.map((option, index) => fixed(4 + index, option)), version: CARD_TRANSLATOR_VERSION };
 }

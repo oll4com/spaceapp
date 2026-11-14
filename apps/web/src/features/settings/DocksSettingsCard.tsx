@@ -169,20 +169,17 @@ export function DocksSettingsCard({
 
           let isChecked = isDockVisible(dock.id);
           let isDisabled = false;
-          let detail = t(dock.description);
           let title: string | undefined;
           let badge = null;
 
           if (isLocked) {
             isChecked = true;
             isDisabled = true;
-            detail = `${t(dock.description)} ${t("Always visible to ensure you never lose access to workspace settings.")}`;
             title = t("Always visible. Settings dock cannot be hidden.");
             badge = <span className="dock-status-badge is-muted">{t("Always visible")}</span>;
           } else if (isGitDisabled) {
             isChecked = false;
             isDisabled = true;
-            detail = t("Default hidden: required plugin is not active. Cannot be enabled until it is activated.");
             title = t("Default hidden because the required plugin is not active. Cannot be enabled until it is activated.");
             badge = <span className="dock-status-badge is-warning">{t("Default hidden")}</span>;
           } else if (isGitDock && internalGitActive) {
@@ -208,6 +205,7 @@ export function DocksSettingsCard({
               <SpaceToggle
                 className="settings-flat-row settings-flat-toggle-row dock-visibility-row"
                 name={`dock-visibility-${dock.id}`}
+                help={dock.description}
                 ariaLabel={t("Toggle {label} dock visibility", { label: t(dock.label) })}
                 label={
                   <span className="docks-toggle-label-wrap">
@@ -216,7 +214,6 @@ export function DocksSettingsCard({
                     {badge}
                   </span>
                 }
-                detail={detail}
                 checked={isChecked}
                 disabled={isDisabled}
                 title={title}

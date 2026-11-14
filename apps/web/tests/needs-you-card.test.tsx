@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { needsYouHasPlace, type SpaceNotification } from "@space/contracts";
 import { NeedsYouCard, type NeedsYouBoardPane } from "../src/features/needs-you/NeedsYouCard.js";
 import { NOUS_FOCUS_EVENT } from "../src/features/nous-focus/nous-focus-events.js";
+import { consumePlanView, NOUS_DONE_OPEN_EVENT } from "../src/features/nous/nous-done-events.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 
@@ -102,6 +103,40 @@ describe("NeedsYouCard", () => {
       expect(seen).toEqual([expect.objectContaining({ roomId: "room:work000001", paneId: "pane:iris0000001", immediate: true })]);
     } finally {
       window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
+    }
+  });
+
+  it("operator 13/11 15:37 BKK (card 9ef2254f): Go on a plan's card goes to its plan's pane, else opens the plan: never a dead click", () => {
+    const seen: unknown[] = [];
+    const onFocus = (event: Event) => seen.push((event as CustomEvent).detail);
+    const opened: unknown[] = [];
+    const onOpen = () => opened.push(consumePlanView());
+    window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
+    window.addEventListener(NOUS_DONE_OPEN_EVENT, onOpen);
+    const plan = (link: SpaceNotification["link"]) => card({ source: "NOUS", kind: "NEEDS_HANDS", paneId: null, dedupeKey: "nous:plan:clipboard:S6PyXKwpBrit", link, title: "Partner Advantage case",
+      body: "Submit the Partner Advantage case", payload: { planId: "clipboard:S6PyXKwpBrit", ask: { question: "Submit it now?", options: ["Go now", "Failed", "Need links/steps"], recommended: "Go now", answer: { kind: "NOUS" } } } });
+    try {
+      render(<NeedsYouCard variant="row" item={plan({ roomId: "room:bruno00001", paneId: "pane:hugo000001" })} />);
+      fireEvent.click(screen.getByRole("button", { name: "Go to pane" }));
+      expect(seen).toEqual([expect.objectContaining({ roomId: "room:bruno00001", paneId: "pane:hugo000001", immediate: true,
+        notification: expect.objectContaining({ paneId: "pane:hugo000001", link: expect.objectContaining({ target: "activity" }) }) })]);
+      cleanup();
+      render(<NeedsYouCard variant="row" item={plan({ roomId: "room:bruno00001" })} />);
+      fireEvent.click(screen.getByRole("button", { name: "Open plan" }));
+      expect([seen.length, opened]).toEqual([1, ["clipboard:S6PyXKwpBrit"]]);
+      // nous_msg:0fa7d370: a Nous card on no pane and no plan has nowhere to go, closed or in Details (its Go only reopened Needs you).
+      cleanup();
+      const general = { ...plan({ roomId: "room:bruno00001" }), dedupeKey: "nous:general" } as SpaceNotification;
+      render(<NeedsYouCard variant="peek" item={{ ...general, payload: { ask: { question: "Submit it now?", answerKind: "text", answer: { kind: "NOUS" } } } }} />);
+      fireEvent.click(screen.getByRole("button", { name: "Details" }));
+      expect(screen.queryByRole("button", { name: /Go to pane|Open plan/ })).toBeNull();
+      cleanup();
+      render(<NeedsYouCard variant="peek" item={{ ...general, payload: { ask: general.payload.ask } }} />);
+      expect(screen.getByRole("article").dataset.needsYouPlace).toBe("OFF_SPACE");
+      expect(screen.queryByRole("button", { name: /Go to pane|Open plan/ })).toBeNull();
+    } finally {
+      window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
+      window.removeEventListener(NOUS_DONE_OPEN_EVENT, onOpen);
     }
   });
 

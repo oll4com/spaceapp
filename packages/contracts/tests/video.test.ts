@@ -30,7 +30,7 @@ describe("Video pane contracts", () => {
     const metadata = defaultVideoPaneMetadata();
     expect(metadata.settings).toEqual({
       defaultFormatIds: ["youtube-short"], technique: "highlights", reframe: "FACE", transition: "auto", filter: "none", captions: "karaoke",
-      narration: { engine: "kokoro", voice: "af_heart", language: "en" }, music: { volumeDb: -18, duckDb: -12 }, requestAutonomy: "AUTO", paused: false,
+      narration: { engine: "murf", voice: "af_heart", language: "en" }, music: { volumeDb: -18, duckDb: -12 }, requestAutonomy: "AUTO", paused: false,
       notifications: { needsYou: true, delivered: true, telegram: false }
     });
     expect(resolveVideoPaneMetadata(null)).toEqual(metadata);

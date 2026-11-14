@@ -38,6 +38,13 @@
 - Exclude postings already in the tracker (same URL) before building a pool;
   `space_job_discover_search` already marks them.
 
+## When the daily target is behind
+- A kickoff that asks for discovery means today's target cannot be reached from the queue. Search the sites
+  whose daily limit still has room first (`settings.dailyCaps` against today's count), not boards that are
+  already full or postings whose company is in its 180-day cooldown.
+- Queue only postings the run will take: before `space_job_application_start`, check the CV's region and
+  work-authorization rules, seniority and stack, so the run does not reject them later as not eligible.
+
 ## Pool discipline
 - Verify one application fully (fill → submit → evidence) before running a batch on a board.
 - Size batches to the pacing caps; failures do not consume the cap, so a batch can touch

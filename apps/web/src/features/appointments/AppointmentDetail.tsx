@@ -33,7 +33,7 @@ export function appointmentSourceHref(sourceRef: string | null): string | null {
 export function AppointmentDetail({ item, settings, zone, hoursZone = zone, now, onBack, onEdit }: {
   item: Appointment; settings: DateTimeSettings; zone: string; hoursZone?: string; now: number; onBack(): void; onEdit?(): void;
 }) {
-  const link = appointmentLink(item.location);
+  const link = appointmentLink(item);
   const source = appointmentSourceHref(item.sourceRef);
   const span = (at: DateTimeSettings) => `${appointmentClock(item.startsAt, at)}${item.endsAt ? `–${appointmentClock(item.endsAt, at)}` : ""}`;
   const booked = { ...settings, timeZone: item.timeZone };
@@ -54,7 +54,7 @@ export function AppointmentDetail({ item, settings, zone, hoursZone = zone, now,
       {link ? (
         <p className="appointments-where">
           <a className="appointments-join" href={link.href} target="_blank" rel="noreferrer noopener"><ExternalLink aria-hidden="true" />Open {link.host}</a>
-          <span className="appointments-meta"><LinkedText text={item.location!} /></span>
+          {item.location ? <span className="appointments-meta"><LinkedText text={item.location} /></span> : null}
         </p>
       ) : item.location ? <p className="appointments-where">{item.location}</p> : null}
       <dl className="appointments-detail-sections">

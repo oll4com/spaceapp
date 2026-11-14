@@ -50,7 +50,8 @@ export function createMobileOffers(now: () => number = Date.now) {
       const expiresAt = (Math.floor(now() / DAY_MS) + 1) * DAY_MS + MOBILE_OFFER_TTL_MS;
       const today = [...offers.values()].find((offer) => offer.standing && offer.owner === owner && offer.expiresAt === expiresAt);
       if (today) return today;
-      const offer: MobilePairingOffer = { offerId: randomBytes(8), owner, code: randomBytes(16), scopes: ["read", "act", "decide"], label, rid: null, expiresAt, standing: true };
+      // Read only (operator 13/11, plan step 18): a store reviewer sees Northwind Labs but starts no paid model turn and answers nothing.
+      const offer: MobilePairingOffer = { offerId: randomBytes(8), owner, code: randomBytes(16), scopes: ["read"], label, rid: null, expiresAt, standing: true };
       offers.set(key(offer.offerId), offer);
       return offer;
     },

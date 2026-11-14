@@ -17,12 +17,13 @@ function openAIHarness() {
     getSenders: () => [], close: vi.fn()
   };
   const inspectRoomMission = vi.fn(async (roomId: string) => ({ roomId, snapshot: null }));
-  installSpaceRuntime({ ...liveRuntime, api: { createVoiceRealtimeCall: vi.fn(async () => ({ answerSdp: "v=0" })),
+  const createVoiceRealtimeCall = vi.fn<(request: Record<string, unknown>) => Promise<{ answerSdp: string }>>(async () => ({ answerSdp: "v=0" }));
+  installSpaceRuntime({ ...liveRuntime, api: { createVoiceRealtimeCall,
     inspectRoomMission, reportLiveVoiceLog: vi.fn(async () => ({})) } as any,
     platform: { ...liveRuntime.platform, userMediaSupported: true, peerConnectionSupported: true,
       getUserMedia: vi.fn(async () => stream as any), createPeerConnection: () => connection as any } });
   const emitTrack = (event: object) => connection.addEventListener.mock.calls.filter(([type]) => type === "track").forEach(([, fn]) => (fn as (event: object) => void)(event));
-  return { sent: channel.send, channel, inspectRoomMission, emitTrack, open: () => handlers.get("open")?.({}), receive: (data: object) => handlers.get("message")?.({ data: JSON.stringify(data) }) };
+  return { sent: channel.send, channel, createVoiceRealtimeCall, inspectRoomMission, emitTrack, open: () => handlers.get("open")?.({}), receive: (data: object) => handlers.get("message")?.({ data: JSON.stringify(data) }) };
 }
 
 function harness(protocol: "google-live" | "gateway-realtime" | "fish-cascade" | "grant-cascade") {
@@ -826,9 +827,13 @@ describe("startup voice grant providers", () => {
     } finally { session.close(); }
   });
 
-  it("refuses a Fish protocol answer for a grant provider", async () => {
-    harness("fish-cascade");
-    await expect(openLiveConversationSession({ provider: "livekit", model: "livekit/rime-arcana", getCommandRoom: () => "room:a" }))
-      .rejects.toThrow("LiveKit Inference returned an incompatible voice protocol.");
+  it("opens on OpenAI by itself when LiveKit Inference cannot start", async () => {
+    const h = openAIHarness(), onLogEvent = vi.fn();
+    h.createVoiceRealtimeCall.mockRejectedValueOnce(new Error("Space stopped using the LiveKit Inference grant"));
+    const session = await openLiveConversationSession({ provider: "livekit", model: "livekit/rime-arcana", voice: "celeste", getCommandRoom: () => "room:a" }, { onLogEvent });
+    try {
+      expect(h.createVoiceRealtimeCall.mock.calls.map(([request]) => [request.provider, request.model])).toEqual([["livekit", "livekit/rime-arcana"], ["openai", "gpt-live-1"]]);
+      expect(onLogEvent).toHaveBeenCalledWith("livekit-fallback", { reason: "Space stopped using the LiveKit Inference grant" });
+    } finally { session.close(); }
   });
 });

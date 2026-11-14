@@ -2,7 +2,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from "fastify";
 import type { WebSocket } from "ws";
 import {
-  LINK_APP, MOBILE_PAIRING_CONFIRM_MS, MOBILE_UPDATE_REQUIRED_CLOSE, MobileNoiseHandshake, decodeMobileFrame, encodeMobileFrame, mobileAppUpdateRequired, mobileFrames, mobileHandshakePrologue, mobileHelloSchema,
+  LINK_APP, MOBILE_PAIRING_CONFIRM_MS, isAgentFileArtifact, MOBILE_UPDATE_REQUIRED_CLOSE, MobileNoiseHandshake, decodeMobileFrame, encodeMobileFrame, mobileAppUpdateRequired, mobileFrames, mobileHandshakePrologue, mobileHelloSchema,
   mobileIntegrityRequestHash, mobilePairRequestSchema, mobilePairingPsk, vaultBase64url, type MobileUpdateRequired, type MobileFrame, type MobileNoiseTransport, type NotificationRaiseInput
 } from "@space/contracts";
 import type { AppDeviceSessionRecord, AppDeviceSessionRepository, MobileDeviceScope, MobileInstanceKeyRepository } from "@space/db";
@@ -10,7 +10,8 @@ import { makeSpaceId, type SpaceEventBus, type SpaceStore } from "@space/runtime
 import { cookieName, createCsrfToken, csrfHeaderName, sessionIdHash, signMobileSession } from "../auth.js";
 import { recordAudit } from "../request-audit.js";
 import { requestIpForLog } from "../request-helpers.js";
-import { linkLease } from "../instance-link/lease.js";
+import { heldPaneReached, linkLease } from "../instance-link/lease.js";
+import { OPERATOR_TURN_GRACE_MS, operatorHeldPanes } from "../queue-operator-grants.js";
 import { linkRoute } from "../instance-link/routes.js";
 import { attestationSerials, createAttestationStatusList, recheckDecideKeys, verifyDecideKeyAttestation, type AttestationStatusList } from "./attestation.js";
 import { mailPairingNotice } from "./pairing-mail.js";
@@ -39,7 +40,9 @@ const NOISE_MESSAGE_MAX = 65_535;
 const HELLO_WINDOW_MS = 300_000;
 const REPLAY_WINDOW_MS = 600_000;
 const IN_FLIGHT_MAX = 16;
-const RESPONSE_MAX_BYTES = 32 * 1024 * 1024;
+/** The Nous app's own limit for one answer (RESPONSE_MAX in its mobile-channel.ts, every version so far): more it refuses, so a larger file
+ * comes in Range pieces (13/11: 0.2.37 saves a whole file from Shared in one GET, so 32 MiB here stopped every APK). */
+const RESPONSE_MAX_BYTES = 64 * 1024 * 1024;
 const ROW_RECHECK_MS = 10_000;
 /** How often the paired decide keys meet Google's status list again (C6); the list itself is fetched at most daily. */
 const DECIDE_RECHECK_MS = 3600_000;
@@ -70,9 +73,14 @@ type Peer = { request: FastifyRequest | null; ip: string };
 export type LiveChannel = { deviceId: string; app: string; name: string; ip: string; since: string; scopes: string[];
   last: { method: string; path: string; at: string } | null; rttMs: number | null };
 
+const bridges = new WeakMap<FastifyInstance, (request: FastifyRequest) => Promise<void>>();
+/** Runs before the session hook (app.ts): Nous 0.2.37's update download as its channel's own request (registerMobileChannel). */
+export const mobileUpdateBridge = async (app: FastifyInstance, request: FastifyRequest) => { await bridges.get(app)?.(request); };
+const CHANNEL_COOKIE = "mobile:";
+
 export function registerMobileChannel(app: FastifyInstance, options: {
   keys: MobileInstanceKeys; keyRepository: MobileInstanceKeyRepository; offers: MobileOffers; devices: AppDeviceSessionRepository;
-  store: Pick<SpaceStore, "recordAuditEvent" | "upsertUser" | "getControlActor">; notifications?: { raise(input: NotificationRaiseInput): Promise<unknown> };
+  store: Pick<SpaceStore, "recordAuditEvent" | "upsertUser" | "getControlActor" | "getPane" | "getArtifact">; notifications?: { raise(input: NotificationRaiseInput): Promise<unknown> };
   sessionSecret: string; routeOptions: Pick<RouteShorthandOptions, "config">; events?: Pick<SpaceEventBus, "subscribe">;
   /** Google's attestation status list (tests give their own). */
   attestationStatus?: AttestationStatusList;
@@ -94,13 +102,30 @@ export function registerMobileChannel(app: FastifyInstance, options: {
   const attestationStatus = options.attestationStatus ?? createAttestationStatusList();
   const sidHashOf = (deviceId: string) => sessionIdHash(mobileDeviceSid(options.sessionSecret, deviceId));
   const live = (row: AppDeviceSessionRecord | null): row is AppDeviceSessionRecord => Boolean(row && !row.revokedAt && row.expiresAt > iso() && row.sidSha256 === sidHashOf(row.id));
-  const channels = new Set<{ socket: WebSocket; inbound: () => number; deviceId: string; owner: string; live: LiveChannel }>();
+  const channels = new Set<{ socket: WebSocket; inbound: () => number; deviceId: string; owner: string; live: LiveChannel; session: () => Promise<string | null> }>();
   const lease = linkLease(options.store, now);
   const buffered = () => [...channels].reduce((sum, channel) => sum + channel.socket.bufferedAmount + channel.inbound(), 0);
   const overdue = (row: AppDeviceSessionRecord) => !row.confirmedAt && Date.parse(row.createdAt) + MOBILE_PAIRING_CONFIRM_MS <= now();
 
   // The real peer, read before the upgrade detaches the socket: injected requests carry it, so none counts as loopback (review P2-1, P3-3).
   const peers = new WeakMap<FastifyRequest, string>();
+  // shortcut: Nous 0.2.37 downloads its update APK over plain HTTPS with the cookie `mobile:<device id>` (apk-install.ts), which no session
+  // matches (401, nous_msg:268bc034). That one request runs as its channel's own injected request when the device's channel is open from the
+  // same address and the file is a Nous APK in Agent Files › Apps/Android; remove once the update floor reaches 0.2.38 (it downloads over the channel).
+  bridges.set(app, async (request) => {
+    const value = request.cookies[cookieName];
+    if (request.method !== "GET" || request.routeOptions.url !== "/api/artifacts/:id/file" || !value?.startsWith(CHANNEL_COOKIE)) return;
+    const ip = requestIpForLog(request);
+    const channel = [...channels].find((one) => one.deviceId === value.slice(CHANNEL_COOKIE.length) && one.live.ip === ip);
+    const artifact = channel ? await Promise.resolve().then(() => options.store.getArtifact((request.params as { id: string }).id)).catch(() => null) : null;
+    const meta = artifact?.metadata ?? {};
+    if (!channel || !artifact || !isAgentFileArtifact(artifact) || String(meta.folder ?? "").replace(/^\/+|\/+$/g, "").toLowerCase() !== "apps/android"
+      || !/^Nous-Android-\d+\.\d+\.\d+\.apk$/i.test(String(meta.originalFilename ?? ""))) return;
+    const session = await channel.session();
+    if (!session) return;
+    request.cookies[cookieName] = session;
+    request.headers[MOBILE_INVOKE_HEADER] = mobileInvokeSecret(app)!;
+  });
   const onRequest = async (request: FastifyRequest) => { peers.set(request, requestIpForLog(request) ?? "0.0.0.0"); };
   app.get("/api/mobile/channel", { ...options.routeOptions, websocket: true, onRequest }, (socket, request) => {
     const query = request.query as { m?: string; o?: string };
@@ -266,7 +291,7 @@ export function registerMobileChannel(app: FastifyInstance, options: {
       answer();
     };
     const channel = { socket, inbound, deviceId: first.id, owner: first.ownerUserId, live: { deviceId: first.id, app: first.app, name: first.deviceName, ip: peer.ip,
-      since: iso(), scopes: first.scopes ?? ["read"], last: null, rttMs: null } as LiveChannel };
+      since: iso(), scopes: first.scopes ?? ["read"], last: null, rttMs: null } as LiveChannel, session };
     channels.add(channel);
     const opened = now();
     const send = (frame: MobileFrame) => { if (socket.readyState === socket.OPEN) socket.send(transport.encrypt(encodeMobileFrame(frame))); };
@@ -307,6 +332,20 @@ export function registerMobileChannel(app: FastifyInstance, options: {
       channel.live.scopes = row.scopes ?? ["read"];
       return device = row;
     }
+    /** The channel session of this device's row now (renewed like an injected request's), or null once it is revoked or expired. */
+    async function session(): Promise<string | null> {
+      const row = await fresh();
+      const user = row ? await options.store.getControlActor(row.ownerUserId) : null;
+      return row && user ? mint(row, user) : null;
+    }
+    function mint(row: AppDeviceSessionRecord, user: Parameters<typeof signMobileSession>[0]) {
+      const scopes = row.scopes ?? ["read"];
+      if (token.scopes !== String(scopes) || now() - token.at > TOKEN_RENEW_MS) {
+        token = { value: signMobileSession(user, options.sessionSecret, { sid: mobileDeviceSid(options.sessionSecret, row.id), app: row.app, device: row.id, scopes }, now()),
+          scopes: String(scopes), at: now() };
+      }
+      return token.value;
+    }
     async function dispatch(header: { id: number; m: string; p: string; h?: Record<string, string>; more?: true; sig?: string; int?: string }, body: Uint8Array) {
       if (pathProblem(header.p)) return refuse(header.id, 400, "MOBILE_BAD_PATH", "Only /api/ paths without traversal.");
       const row = await fresh();
@@ -315,12 +354,32 @@ export function registerMobileChannel(app: FastifyInstance, options: {
       const scopes = row.scopes ?? ["read"];
       channel.live.last = { method: header.m, path: header.p.split("?")[0]!, at: iso() };
       // One linked SpaceApp acts here at a time, and never once this SpaceApp's person took management back (lease.ts).
-      const refused = row.app === LINK_APP && scopes.includes("act") && linkRoute(header.m, header.p)?.scope === "act" ? lease.claim(row.ownerUserId, row.id, row.deviceName) : null;
-      if (refused) return refuse(header.id, 409, refused.code, refused.message);
-      if (token.scopes !== String(scopes) || now() - token.at > TOKEN_RENEW_MS) {
-        token = { value: signMobileSession(user, options.sessionSecret, { sid: mobileDeviceSid(options.sessionSecret, row.id), app: row.app, device: row.id, scopes }, now()),
-          scopes: String(scopes), at: now() };
+      const rule = row.app === LINK_APP ? linkRoute(header.m, header.p) : null;
+      const acts = !!rule && rule.scope === "act" && scopes.includes("act");
+      // A link's act (or a try at a route links never reach) is audited here and on the linking SpaceApp under one trace (Λ4).
+      // Its reads are not: the live view shows the last one, and Load reads every 30 s.
+      const linkAudit = (status: number) => void (row.app === LINK_APP && rule?.scope !== "read" ? Promise.resolve(options.store.recordAuditEvent({
+        actorUserId: row.ownerUserId, traceId: header.h?.["x-space-link-request"] ?? makeSpaceId("trace"), action: "instance_link.request", targetType: "app_device",
+        targetId: row.id, metadata: { via: "link", method: header.m, path: header.p.split("?")[0], status, device: row.deviceName } })).catch(() => undefined) : undefined);
+      // The gate matches the decoded route, the lease the raw path: a link reaches only what linkRoute names, so comm%61nds never gets round the lease.
+      if (row.app === LINK_APP && !rule) { linkAudit(403); return refuse(header.id, 403, "MOBILE_SCOPE_DENIED", "A SpaceApp link does not reach this route."); }
+      // Human wins per pane (Λ5): a link's act never reaches a pane the operator in person sent a line to (typed, local composer or pane
+      // board) within OPERATOR_TURN_GRACE_MS. shortcut: an AFTER_TURN action accepted before that line still runs after the turn, and a turn
+      // longer than the grace is open to links again; check in Space Control's own select() when that matters.
+      const heldIds = acts && row.app === LINK_APP && body.length ? operatorHeldPanes() : [];
+      if (heldIds.length) {
+        const held = (await Promise.all(heldIds.map((id) => Promise.resolve().then(() => options.store.getPane(id)).catch(() => null)))).filter((pane) => pane !== null);
+        let json: unknown = null;
+        try { json = parse(body); } catch { /* not JSON: the gate's body rule refuses it */ }
+        const pane = heldPaneReached(json, held);
+        if (pane) {
+          linkAudit(409);
+          return refuse(header.id, 409, "HELD_BY_OPERATOR", `${pane.paneName ?? pane.id} is the operator's now: links reach it again ${OPERATOR_TURN_GRACE_MS / 60_000} minutes after their last line there.`);
+        }
       }
+      const refused = acts ? lease.claim(row.ownerUserId, row.id, row.deviceName) : null;
+      if (refused) { linkAudit(409); return refuse(header.id, 409, refused.code, refused.message); }
+      mint(row, user);
       let payload: string | Buffer | undefined = body.length ? Buffer.from(body) : undefined;
       // A JSON body is parsed once and injected re-serialized, never the phone's bytes (security review P2-3).
       // The media type whatever its parameters (C8); the frame schema pins header names to lower case.
@@ -330,6 +389,7 @@ export function registerMobileChannel(app: FastifyInstance, options: {
       const response = await app.inject({ method: header.m as "GET", url: header.p, payload, remoteAddress: peer.ip,
         headers: { ...header.h, cookie: `${cookieName}=${token.value}`, [csrfHeaderName]: createCsrfToken(token.value, options.sessionSecret)!,
           [MOBILE_INVOKE_HEADER]: mobileInvokeSecret(app)!, ...(header.sig ? { [MOBILE_SIG_HEADER]: header.sig } : {}), ...(header.int ? { [MOBILE_INTEGRITY_HEADER]: header.int } : {}) } });
+      linkAudit(response.statusCode);
       if (response.rawPayload.length > RESPONSE_MAX_BYTES) return refuse(header.id, 413, "MOBILE_TOO_LARGE", "Open it on a computer.");
       const headers = Object.fromEntries((["content-type", "content-length", "content-range"] as const)
         .flatMap((name) => (response.headers[name] === undefined ? [] : [[name, String(response.headers[name])]])));

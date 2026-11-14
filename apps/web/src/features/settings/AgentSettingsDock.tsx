@@ -44,6 +44,7 @@ import { VoiceSettingsCard } from "../voice-input/VoiceSettingsCard.js";
 import { YouTubeSettingsCard } from "../browser-pane/YouTubeSummarySettingsCard.js";
 import { RoomLimitSettingsCard } from "../rooms-dock/RoomLimitSettingsCard.js";
 import { HistoryPeriodSettingsCard } from "../history-period/HistoryPeriodSettingsCard.js";
+import { PaneHibernateSettingsCard } from "../pane-hibernate/PaneHibernateSettingsCard.js";
 import { UiLanguageSettingsCard } from "../ui-language/UiLanguageSettingsCard.js";
 import { WireGuardFileSettingsCard, desktopWireGuardBridge } from "./WireGuardFileSettingsCard.js";
 import { LoginPasswordSettingsCard } from "./LoginPasswordSettingsCard.js";
@@ -52,6 +53,7 @@ import { SignatureLibrary } from "../agent-files/SignatureLibrary.js";
 import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import type { ModernAppearance, ModernIconPack, UiBackground, UiTheme } from "../../ui-theme.js";
 import { SettingsDisclosure, SettingsGroup, SettingsSearchable, SettingsSections } from "./SettingsDisclosure.js";
+import { SettingsLabel } from "./SettingsLabel.js";
 import type { EnvironmentPresetCard } from "./EnvironmentPresetCard.js";
 import type { GoogleAccountSettingsCard } from "../auth/GoogleAccountSettingsCard.js";
 import type { UiThemeSettingsCard } from "../ui-theme/UiThemeSettingsCard.js";
@@ -307,6 +309,12 @@ export function AgentSettingsDock({
           <RoomLimitSettingsCard />
         </SettingsDisclosure>
 
+        <SettingsDisclosure sectionKey="pane-sleep" title="Sleeping panes" description="Idle CLI panes free their memory." scope="Your account" icon={PanelLeft}
+          help="An idle CLI pane stops after this long (30 minutes unless you change it) and keeps its conversation; the next message, or Start, resumes it. Panes that are working, waiting for you or running a background job never sleep. Off keeps every pane running."
+          keywords="sleep hibernate idle pane memory cli suspend resume">
+          <PaneHibernateSettingsCard />
+        </SettingsDisclosure>
+
         <SettingsDisclosure title="Docks" description="Side panels in your menu and toolbar." scope="Your account" icon={Grid2X2}
           help="Docks are the side panels, such as Files, Clipboard or Source Control. Turn off the ones you never use to keep your menu short. Nothing is deleted, and you can turn them back on at any time."
           keywords="side panel menu toolbar files clipboard source control">
@@ -474,13 +482,10 @@ export function AgentSettingsDock({
           keywords="ai service openai model chat agent">
           <section className="agent-settings-card settings-flat-card settings-provider-card" aria-label={t("Global provider settings")}>
             <label className="provider-default-select settings-flat-row">
-              <span className="settings-flat-row-copy">
-                <strong>{t("Provider")}</strong>
-                <small>
-                  {!isCodexEnabled ? t("Codex is turned off, so the provider can't be changed.")
-                    : defaultProvider ? t("Route: {route}", { route: providerRouteLabel(defaultProvider) }) : t("Loading providers…")}
-                </small>
-              </span>
+              <SettingsLabel label="Provider" help="The AI service new chats and agents start with. Chats that already exist keep theirs; change it when you want new work to run on another service.">
+                {!isCodexEnabled ? t("Codex is turned off, so the provider can't be changed.")
+                  : defaultProvider ? t("Route: {route}", { route: providerRouteLabel(defaultProvider) }) : t("Loading providers…")}
+              </SettingsLabel>
               <select
                 aria-label={t("Default provider")}
                 name="settings-default-provider"

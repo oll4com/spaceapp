@@ -732,6 +732,23 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
     };
   }, []);
 
+  // A provider Space has no credentials for is shown disabled with the API's reason, so it can never be picked and fail.
+  const [providerStatus, setProviderStatus] = useState<Record<string, { configured?: boolean; missingReason?: string }>>({});
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await api.liveAudioProviders();
+        if (active) setProviderStatus(Object.fromEntries(res.providers.map((p) => [p.id, p])));
+      } catch {
+        // The registry list stays selectable when the status cannot be read
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   useEffect(() => {
     if (!modelPickerOpen) return;
     function handleClickOutside(event: MouseEvent) {
@@ -1491,11 +1508,14 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                     onChange={(e) => handleProviderChange(e.target.value as LiveAudioProviderId)}
                     disabled={isLive}
                   >
-                    {getAllLiveAudioProviders().filter((p) => !streamingMode || p.id === "openai" || p.id === "google" || p.id === "vercel").map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.displayName} ({p.transport.toUpperCase()})
-                      </option>
-                    ))}
+                    {getAllLiveAudioProviders().filter((p) => !streamingMode || p.id === "openai" || p.id === "google" || p.id === "vercel").map((p) => {
+                      const off = providerStatus[p.id]?.configured === false;
+                      return (
+                        <option key={p.id} value={p.id} disabled={off}>
+                          {p.displayName} ({p.transport.toUpperCase()}){off && providerStatus[p.id]?.missingReason ? ` — ${providerStatus[p.id]?.missingReason}` : ""}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
 

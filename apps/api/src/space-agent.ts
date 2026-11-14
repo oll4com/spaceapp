@@ -29,6 +29,7 @@ import {
   type CollaborationMode,
   type DummyTurnInput,
   imageArtifactMimeTypeSchema,
+  isLightCodexPane,
   type Pane,
   type PaneBrowserSession,
   type PermissionMode,
@@ -1672,9 +1673,11 @@ export function createSpaceAgentAdapter(options: {
       ...(dotTurn?.toolGateway ? { toolGateway: "space-dot-tools-v1" as const, developerContext: dotTurn.developerContext } : {}),
       ...(proactive ? { dotWorkMode: "PROACTIVE" as const } : {}),
       artifactIds: attachedArtifacts.filter(isImageTurnArtifact).map((artifact) => artifact.id),
-      providerId: session.selectedProviderId ?? null,
+      // A Codex light pane runs the operator's own Codex (its config picks the provider); another provider's model stays out.
+      providerId: isLightCodexPane(input.pane) ? null : session.selectedProviderId ?? null,
       providerSessionId,
-      modelId: session.selectedModelId === "codex-app-server-default" ? null : session.selectedModelId,
+      modelId: session.selectedModelId === "codex-app-server-default" || (isLightCodexPane(input.pane) && session.selectedProviderId)
+        ? null : session.selectedModelId,
       reasoningEffort: toReasoningEffort(session.selectedReasoningKey),
       agentSessionId: session.sessionId,
       agentUserMessageId: userMessageId,

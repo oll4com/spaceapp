@@ -3,11 +3,14 @@ import type { SavedSignature } from "@space/contracts";
 import { api } from "../../api.js";
 import { DockButton, DockNotice } from "../dock-kit/DockKit.js";
 import { PenLine, Star, Trash2 } from "../ui-theme/app-icons.js";
+import { InfoTip } from "../ui-controls/InfoTip.js";
+import { useUiText } from "../ui-language/ui-language.js";
 import { SignaturePad } from "./SignaturePad.js";
 
 /** Every saved signature (operator 6/11 01:15 BKK, nous_msg:781819c5ba0440fbbee8682c): name, default, delete, and a new one drawn here.
  * Each one also has a PNG copy in Agent Files › Signatures. */
 export function SignatureLibrary() {
+  const t = useUiText();
   const [items, setItems] = useState<SavedSignature[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -35,7 +38,7 @@ export function SignatureLibrary() {
               <li key={item.id} className="sign-library-item">
                 <img className="sign-saved" src={api.savedSignatureImageUrl(item.id)} alt={`Signature ${item.label}`} />
                 <label className="sign-field">
-                  <span>Name{item.isDefault ? <small> · default</small> : null}</span>
+                  <span>Name<InfoTip text={t("The name you pick this signature by when you sign a document; the default one comes first.")} label={t("About {label}", { label: t("Name") })} />{item.isDefault ? <small> · default</small> : null}</span>
                   <input defaultValue={item.label} maxLength={80} onBlur={(event) => {
                     const next = event.target.value.trim();
                     if (next && next !== item.label) void run(() => api.updateSignature(item.id, { label: next }));
@@ -54,7 +57,7 @@ export function SignatureLibrary() {
       {adding ? (
         <div className="sign-library-new">
           <SignaturePad onChange={(png) => setDrawn(png)} />
-          <label className="sign-field"><span>Name</span>
+          <label className="sign-field"><span>Name<InfoTip text={t("The name you pick this signature by when you sign a document; the default one comes first.")} label={t("About {label}", { label: t("Name") })} /></span>
             <input value={label} maxLength={80} placeholder={`Signature ${(items?.length ?? 0) + 1}`} onChange={(event) => setLabel(event.target.value)} /></label>
           <div className="sign-library-actions">
             <DockButton tone="primary" icon={PenLine} disabled={!drawn || busy} busy={busy} onClick={() => void run(async () => {
@@ -65,7 +68,6 @@ export function SignatureLibrary() {
           </div>
         </div>
       ) : <DockButton icon={PenLine} onClick={() => setAdding(true)}>New signature</DockButton>}
-      <p className="dock-kit-meta-text">Each saved signature is also in Agent Files › Signatures. When you sign a document you pick one for every spot; the default comes first.</p>
     </div>
   );
 }

@@ -41,7 +41,7 @@ interface ManagedSession {
   exitCode: number | null;
   signal: number | null;
   nextOutputSequence: number;
-  outputBuffer: CliHostOutputEvent[];
+  outputBuffer: Array<Omit<CliHostOutputEvent, "data"> & { data: string | Buffer }>;
   outputBufferBytes: number;
   attachments: Map<string, CliHostEventListener | null>;
   detachedAtMs: number | null;
@@ -164,7 +164,7 @@ export class CliHostSessionRegistry {
     return {
       attachmentId,
       session: this.summarize(managed),
-      replay: managed.outputBuffer.filter((event) => event.sequence > afterSequence).map((event) => ({ ...event }))
+      replay: managed.outputBuffer.filter((event) => event.sequence > afterSequence).map((event) => ({ ...event, data: event.data.toString() }))
     };
   }
 
@@ -415,7 +415,7 @@ export class CliHostSessionRegistry {
       managed.endedAt = new Date().toISOString();
       if (managed.outputBuffer.length > 50) {
         managed.outputBuffer = managed.outputBuffer.slice(-50);
-        managed.outputBufferBytes = managed.outputBuffer.reduce((sum, item) => sum + (item.data?.length ?? 0), 0);
+        managed.outputBufferBytes = managed.outputBuffer.reduce((sum, item) => sum + Buffer.byteLength(item.data, "utf8"), 0);
       }
       managed.pendingHiddenEchoes = [];
       managed.acceptedInputs.clear();
@@ -473,8 +473,12 @@ export class CliHostSessionRegistry {
       data: visibleData
     };
     managed.nextOutputSequence += 1;
-    managed.outputBuffer.push(event);
-    managed.outputBufferBytes += Buffer.byteLength(visibleData, "utf8");
+    const bytes = Buffer.byteLength(visibleData, "utf8");
+    // V8 keeps a string with any char above U+00FF at 2 bytes per char: mostly-ASCII TUI output with one glyph is held as UTF-8.
+    // Surrogates stay strings: the 8,000-char split can cut a pair, and UTF-8 would turn the half into U+FFFD on replay.
+    const smallerAsUtf8 = bytes < visibleData.length * 1.5 && /[\u0100-\uffff]/.test(visibleData) && !/[\ud800-\udfff]/.test(visibleData);
+    managed.outputBuffer.push({ ...event, data: smallerAsUtf8 ? Buffer.from(visibleData, "utf8") : visibleData });
+    managed.outputBufferBytes += bytes;
     while (managed.outputBuffer.length > 1 && managed.outputBufferBytes > this.outputBufferBytes) {
       const removed = managed.outputBuffer.shift();
       if (removed) managed.outputBufferBytes -= Buffer.byteLength(removed.data, "utf8");

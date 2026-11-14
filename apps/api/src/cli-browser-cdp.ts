@@ -11,6 +11,9 @@ import {
   type CliBrowserBridgeTokenPayload
 } from "./cli-browser-bridge.js";
 import type { SpaceApiConfig } from "./config.js";
+import { z } from "zod";
+import { recordAudit } from "./request-audit.js";
+import { CHALLENGE_ATTEMPT_ACTION, pageAddress } from "./browser-challenge-attempt.js";
 import { browserProfilePathForIdentity, readBrowserAccountTabIdentities } from "./browser-sessions.js";
 import { ownBrowserPane, type BrowserControlActivity } from "./browser-control-activity.js";
 import { isT3AgentSessionId, t3AgentPrincipal } from "./t3code/agent-tokens.js";
@@ -26,6 +29,8 @@ import type { VaultProtection } from "./vault/protection.js";
 // dropped while an operator holds the control lease.
 export const cliBrowserCdpPath = "/api/cli/browser/cdp";
 export const cliBrowserCdpStatusPath = "/api/cli/browser/cdp/status";
+/** Operator rule 13/11 (focus-need.ts): a challenge solver run (its status on a page) is recorded, so a CAPTCHA card can show the solver failed. */
+export const cliBrowserCdpChallengePath = "/api/cli/browser/cdp/challenge";
 
 /** Application close codes mirror the HTTP status an operator would expect. */
 export const cliBrowserCdpCloseCodes = Object.freeze({
@@ -105,6 +110,8 @@ export interface CliBrowserCdpProxyOptions {
   /** The Vault fence of the pane a connection lands in (vault/protection.ts); without it no fence is checked here. */
   vaultProtection?: Pick<VaultProtection, "ownerOf" | "release">;
   onConnected?(request: FastifyRequest, resolution: CliBrowserCdpResolution): Promise<void> | void;
+  /** An agent's commands on a connection, at most every 30 s: the Browser Host sees none of them (CPU plan 5.1). */
+  onActivity?(resolution: CliBrowserCdpResolution): void | Promise<unknown>;
   log?: { warn(obj: unknown, msg?: string): void };
 }
 
@@ -507,6 +514,9 @@ async function foreignPageIds(store: SpaceStore, paneId: string, profilePath: st
   return [...listed, ...fenced.flat()];
 }
 
+const challengeAttemptSchema = z.object({ solver: z.string().trim().min(1).max(60), status: z.string().trim().regex(/^[A-Z_]{2,60}$/),
+  pageId: z.string().min(1).max(200).nullable(), url: z.string().max(2000).nullable() }).strict();
+
 export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): CliBrowserCdpProxy {
   const profileRoot = options.config.browserSessionsProfileRoot;
   const connections = new Map<string, Set<WsSocket>>();
@@ -603,6 +613,9 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
     // The pane is known only after resolve(); the first client frames are buffered until Chrome answers, after resolve().
     let paneId: string | null = null;
     let principal: CliBrowserBridgeTokenPayload | null = null;
+    let resolved: CliBrowserCdpResolution | null = null;
+    let activityAt = 0;
+    let thawing = false;
     const filter = createCliBrowserCdpTargetFilter((message) => {
       if (upstream && upstream.readyState === upstream.OPEN) upstream.send(JSON.stringify(message));
     }, { get paneId() { return paneId ?? ""; }, marks,
@@ -611,6 +624,22 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
         cliSessionId: principal?.cliSessionId, ...source }, "CLI browser document marked dirty.") });
     const forward = (data: RawData, isBinary: boolean) => {
       if (!upstream) return;
+      if (thawing) { pending.push({ data, isBinary }); return; }
+      if (resolved && Date.now() - activityAt >= 30_000) {
+        activityAt = Date.now();
+        const use = options.onActivity?.(resolved);
+        // An idle pane's pages may be frozen (browser-sessions.ts): this frame and the ones after it wait, in order, for the
+        // thaw. Technical bound 5 s: a stuck host must not stall the agent; a frozen page still answers CDP, only its scripts wait.
+        if (use instanceof Promise) {
+          thawing = true;
+          pending.push({ data, isBinary });
+          void Promise.race([use.catch(() => undefined), new Promise((done) => setTimeout(done, 5_000).unref())]).then(() => {
+            thawing = false;
+            if (upstream && upstream.readyState === upstream.OPEN) for (const message of pending.splice(0)) forward(message.data, message.isBinary);
+          });
+          return;
+        }
+      }
       if (!isBinary) {
         const decision = filter.fromClient(rawText(data));
         if (!decision.forward) {
@@ -635,6 +664,7 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
     // can drop this socket; the lease is re-read afterwards to close the gap.
     paneId = resolution.pane.id;
     principal = resolution.claims;
+    resolved = resolution;
     socketCliSession.set(socket, resolution.claims.cliSessionId);
     const untrack = track(resolution.pane.id, socket);
     const profilePath = await activeTabProfilePath(profileRoot, resolution.pane, resolution.session);
@@ -735,6 +765,16 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
           return { ready: false, reason: resolution.refused, detail: resolution.reason, paneId: null, sessionId: null };
         }
         return { ready: true, reason: null, detail: null, paneId: resolution.pane.id, sessionId: resolution.session.sessionId };
+      });
+      app.post(cliBrowserCdpChallengePath, routeOptions, async (request, reply) => {
+        const resolution = await resolve(request);
+        if ("refused" in resolution) return reply.code(resolution.refused === "TOKEN_INVALID" ? 401 : 409).send({ recorded: false, reason: resolution.refused });
+        const body = challengeAttemptSchema.safeParse(request.body);
+        if (!body.success) return reply.code(400).send({ recorded: false, reason: "INVALID_BODY" });
+        for (const paneId of new Set([resolution.claims.paneId, resolution.pane.id])) {
+          await recordAudit(options.store, request, { action: CHALLENGE_ATTEMPT_ACTION, targetType: "pane", targetId: paneId, metadata: { ...body.data, url: pageAddress(body.data.url) } });
+        }
+        return { recorded: true };
       });
     },
     closeForPane(paneId, refusal, reason, keepCliSessionId) {

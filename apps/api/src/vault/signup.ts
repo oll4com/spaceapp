@@ -17,7 +17,7 @@ export async function runVaultSignup(deps: {
   fill(request: Omit<VaultHostSignupRequest, "mode">): Promise<VaultHostFillResult>;
   autoGrant?(): Promise<{ certificate: VaultHostSignupRequest["certificate"] }>;
 }, input: {
-  owner: string; paneId: string; target: { targetId: string; frameId: string; origin: string }; label: string; username: string | null;
+  owner: string; paneId: string; target: { targetId: string; frameId: string; origin: string }; label: string; username: string | null; handle?: string;
   roles: Array<"NEW_PASSWORD" | "CONFIRM_PASSWORD">; submit: boolean;
 }): Promise<{ status: VaultAgentResult["status"]; reason: string | null; itemId?: string; typed?: boolean; document?: string | null; extra?: Record<string, unknown> }> {
   const { repository } = deps;
@@ -39,8 +39,9 @@ export async function runVaultSignup(deps: {
       roles: input.roles, inboxPublicKey: inbox.publicKey, submit: input.submit });
     if ((result.status === "FILLED" || result.status === "SUBMITTED") && result.sealedGenerated) {
       const scope = { ownerUserId: input.owner, vaultId: vault.vaultId, keyVersion: 1 };
-      const handle = newVaultHandle("vault_item");
-      await repository.addPending(input.owner, { id: newVaultHandle("vault_pending"), kind: "NEW_ACCOUNT", handle, label: input.label,
+      // A retried sign-up (`handle`, agent.ts) changes the password of the login it already made instead of making another.
+      const handle = input.handle ?? newVaultHandle("vault_item");
+      await repository.addPending(input.owner, { id: newVaultHandle("vault_pending"), kind: input.handle ? "CHANGE_PASSWORD" : "NEW_ACCOUNT", handle, label: input.label,
         origin: input.target.origin, paneId: input.paneId, sealedPassword: result.sealedGenerated, createdAt: new Date().toISOString(), loginPage: null,
         sealedUsername: input.username ? await sealToVaultPublicKey(vaultBase64url.decode(inbox.publicKey), new TextEncoder().encode(input.username), scope) : null });
       return { status: result.status, reason: result.reason, itemId: handle, typed: result.typed, document: result.document, ...(result.fields && { extra: { fields: result.fields } }) };

@@ -20,6 +20,8 @@ import {
 } from "./use-telegram-integration.js";
 import { SettingsActionMenu, type SettingsActionMenuItem } from "../settings/SettingsActionMenu.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { InfoTip } from "../ui-controls/InfoTip.js";
+import { useUiText } from "../ui-language/ui-language.js";
 
 const statusPresentation: Record<
   TelegramIntegrationStatus["connectionStatus"],
@@ -65,6 +67,7 @@ function TelegramSetupGuide({
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const botFatherHref = resolveExternalResource("https://t.me/BotFather") ?? "#";
+  const t = useUiText();
   return (
     <div className="telegram-setup-guide">
       <div className="telegram-setup-step">
@@ -89,7 +92,8 @@ function TelegramSetupGuide({
       <form className="telegram-token-form" aria-label="Connect Telegram bot" onSubmit={onSubmit}>
         <div className="telegram-token-input-row">
           <label>
-            <span>Bot token</span>
+            <span>Bot token<InfoTip text={t("Space checks the token and never shows it again. Then pair your private chat in the next step.")}
+              label={t("About {label}", { label: t("Bot token") })} /></span>
             <input
               type="password"
               name="telegram-bot-token"
@@ -117,7 +121,6 @@ function TelegramSetupGuide({
             <span>{hasPairedBot ? "Reconnect" : "Connect"}</span>
           </button>
         </div>
-        <small>Space checks the token and never shows it again. Then pair your private chat in the next step.</small>
       </form>
     </div>
   );
@@ -133,11 +136,12 @@ function TelegramPairingPanel({
   pairingExpiresAt: string | null;
 }) {
   const pairingHref = pairing ? resolveExternalResource(pairing.pairingUrl) ?? "#" : null;
+  const t = useUiText();
   return (
     <div className="telegram-pairing-panel">
       <div>
-        <strong>Finish in a private Telegram chat</strong>
-        <small>The pairing code is single-use and expires after ten minutes.</small>
+        <strong>Finish in a private Telegram chat<InfoTip text={t("The pairing code is single-use and expires after ten minutes.")}
+          label={t("About {label}", { label: t("Finish in a private Telegram chat") })} /></strong>
       </div>
       {pairingExpiresAt ? (
         <small>
@@ -195,7 +199,7 @@ function TelegramConnectedControls({
         name="telegram-completion-notifications"
         ariaLabel="Enable completion notifications"
         label="Completion notifications"
-        detail="Send a private Telegram message when a Codex task finishes."
+        help="Send a private Telegram message when a Codex task finishes."
         checked={status.isEnabled}
         onChange={onToggle}
         disabled={disabled || isBusy}

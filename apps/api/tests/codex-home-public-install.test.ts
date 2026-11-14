@@ -46,7 +46,7 @@ describe("Codex home of the install the pane runs in", () => {
       const manager = new CliTerminalManager({ store, config: getApiConfig({}), discoverRuntimes: vi.fn() });
       expect(await manager.getCurrentTurnActivity(session.sessionId)).toEqual({ status: "RUNNING", turnId: "turn-1" });
       await writeFile(rollout, `${JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-1" } })}\n`, { flag: "a" });
-      expect(await manager.getCurrentTurnActivity(session.sessionId)).toEqual({ status: "COMPLETED", turnId: "turn-1" });
+      expect(await manager.getCurrentTurnActivity(session.sessionId)).toMatchObject({ status: "COMPLETED", turnId: "turn-1", lastActivityAtMs: expect.any(Number) });
     } finally {
       await rm(home, { recursive: true, force: true });
     }

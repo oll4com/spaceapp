@@ -32,6 +32,7 @@ vi.mock("../src/security-copilot/wiring.js", async (orig) => ({ ...await orig<ob
 vi.mock("../src/monitoring-copilot/wiring.js", async (orig) => ({ ...await orig<object>(), registerMonitoringCopilot: rec("monitoring", "monitoring-service") }));
 vi.mock("../src/mail-campaigns/wiring.js", async (orig) => ({ ...await orig<object>(), registerMailCampaigns: rec("mailCampaigns", "campaigns-service") }));
 vi.mock("../src/video/wiring.js", async (orig) => ({ ...await orig<object>(), registerVideo: rec("video", "video-service") }));
+vi.mock("../src/make-app-routes.js", async (orig) => ({ ...await orig<object>(), registerMakeAppRoutes: rec("makeApp") }));
 vi.mock("../src/nous/copilot-control.js", async (orig) => ({ ...await orig<object>(), startPaneCli: async (deps: unknown, owner: string, pane: unknown) => { captured.started.push({ deps, owner, pane }); return "started"; } }));
 
 const { registerCopilotPaneRoutes } = await import("../src/copilot-pane-routes-wiring.js");
@@ -83,7 +84,7 @@ describe("copilot pane routes wiring (ARCH-001 step 77)", () => {
   it("registers in app.ts's order and returns the services app.ts reads afterwards", () => {
     const { result } = wire();
     expect(captured.order).toEqual(["handoffNotices", "appointments", "signatures", "jobApply", "mailKickoff", "mailService", "notificationRoutes", "mailSync", "quotaWatch",
-      "gatewayWatch", "memoryWatch", "mailRoutes", "marketing", "freelance", "design", "appStudio", "security", "monitoring", "mailCampaigns", "video"]);
+      "gatewayWatch", "memoryWatch", "mailRoutes", "marketing", "freelance", "design", "appStudio", "security", "monitoring", "mailCampaigns", "video", "makeApp"]);
     expect(result).toMatchObject({ jobApplyRepository: "job-repo", jobApplyService: "job-service", freelanceCopilotService: "freelance-service",
       designService: "design-service", appStudioService: "app-studio-service", securityCopilotService: "security-service",
       monitoringCopilotService: "monitoring-service", mailCampaignsService: "campaigns-service", videoService: "video-service" });
@@ -93,11 +94,12 @@ describe("copilot pane routes wiring (ARCH-001 step 77)", () => {
     expect(arg("mailRoutes", 2).kickoff).toBe("kickoff-send");
     expect(arg("jobApply").telegramIntegrationManager).toBeDefined();
     expect(arg("signatures").routeOptions).toEqual({ config: { rateLimit: 1 } });
+    expect(typeof arg("makeApp").brief()).toBe("function");
   });
 
   it("skips every optional pane module that is off", () => {
     const { result } = wire({ modules: [] });
-    expect(captured.order).toEqual(["handoffNotices", "appointments", "signatures", "jobApply", "mailKickoff", "mailService", "notificationRoutes", "mailSync", "quotaWatch", "gatewayWatch", "memoryWatch"]);
+    expect(captured.order).toEqual(["handoffNotices", "appointments", "signatures", "jobApply", "mailKickoff", "mailService", "notificationRoutes", "mailSync", "quotaWatch", "gatewayWatch", "memoryWatch", "makeApp"]);
     expect([result.marketingCopilotService, result.freelanceCopilotService, result.designService, result.appStudioService, result.securityCopilotService,
       result.monitoringCopilotService, result.mailCampaignsService, result.videoService]).toEqual(Array(8).fill(undefined));
   });

@@ -28,6 +28,12 @@ describe("needsYouPlace", () => {
     // A card raised before the mode was stamped keeps its Go.
     expect(needsYouPlace(card({ payload: {} }))).toBe("PANE");
   });
+  it("offers no Go on a Nous card with no pane, surface or plan (operator 13/11 nous_msg:0fa7d370: Go only reopened Needs you)", () => {
+    expect(needsYouPlace(card({ source: "NOUS", kind: "NEEDS_HANDS", link: { roomId: "room:a" }, payload: {} }))).toBe("OFF_SPACE");
+    expect(needsYouPlace(card({ source: "NOUS", kind: "NEEDS_HANDS", link: { roomId: "room:a" }, payload: { planId: "clipboard:plan0001" } }))).toBe("PANE");
+    expect(needsYouPlace(card({ source: "NOUS", kind: "NEEDS_HANDS", link: { surface: "nous" }, payload: {} }))).toBe("PANE");
+    expect(needsYouPlace({ ...card({ source: "NOUS", kind: "NEEDS_HANDS", link: {}, payload: {} }), paneId: "pane:iris" } as Card)).toBe("PANE");
+  });
   it("sends handoffs and sign-ins to the pane, and answers questions, reviews and rules here", () => {
     expect(needsYouPlace(card({ source: "BROWSER_HANDOFF", kind: "BROWSER_HANDOFF_REQUESTED" }))).toBe("PANE");
     expect(needsYouPlace(card({ source: "JOB_COPILOT", kind: "SIGN_IN" }))).toBe("PANE");

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PAIRING_MASK_APPLY, VAULT_MASK_APPLY, VAULT_MASK_REMOVE, assertBrowserHostPressKey, captureMaskedScreenshot, capturePairingMasked, pressBrowserKey } from "../src/browser-sessions.js";
+import { PAIRING_MASK_APPLY, VAULT_MASK_APPLY, VAULT_MASK_REMOVE, assertBrowserHostPressKey, captureMaskedScreenshot, capturePairingMasked, pressBrowserKey, scrollBrowserPage } from "../src/browser-sessions.js";
 
 // Vault fence 2026-10-19 (Nous decision on the Alstom report): the pane that filled a Vault page may press keys and take
 // masked screenshots of it; every field is drawn as dots for the shot, also a password a "show password" toggle revealed.
@@ -54,6 +54,38 @@ describe("Vault masked screenshot and key presses", () => {
     const order = page.calls.map((call) => call.method);
     expect(order.indexOf("Page.captureScreenshot")).toBeGreaterThan(order.lastIndexOf("Page.createIsolatedWorld"));
     expect(page.calls.filter((call) => call.method === "Runtime.evaluate" && call.params?.expression === VAULT_MASK_REMOVE)).toHaveLength(2);
+  });
+
+  // Card fills (plan clipboard:qf0P640vyLp2): a checkout's card boxes live in a cross-site payment frame, another process.
+  function fakeCheckout(options: { failPay?: boolean } = {}) {
+    const page = fakePage();
+    const calls: Array<{ method: string; sessionId?: string; frameId?: unknown }> = [];
+    const cdp = { send: async <T,>(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<T> => {
+      calls.push({ method, sessionId, frameId: params.frameId });
+      if (method === "Target.getTargets") return { targetInfos: [{ targetId: "pay", type: "iframe", parentFrameId: "main" }, { targetId: "other-tab", type: "iframe", parentFrameId: "elsewhere" }] } as T;
+      if (method === "Target.attachToTarget") return { sessionId: `s-${String(params.targetId)}` } as T;
+      if (method === "Page.getFrameTree" && sessionId === "s-pay") return { frameTree: { frame: { id: "pay", url: "https://js.stripe.com/v3/elements" } } } as T;
+      if (method === "Page.createIsolatedWorld" && sessionId === "s-pay" && options.failPay) throw new Error("No frame for given id found");
+      return page.send<T>(method, params);
+    } };
+    return { page, calls, cdp };
+  }
+
+  it("masks a cross-site payment frame through its own session and detaches it after the shot", async () => {
+    const { page, calls, cdp } = fakeCheckout();
+    expect(await captureMaskedScreenshot(page.send, { cdp, sessionId: "s-top" })).toBe("UE5H");
+    expect(page.maskedDuringShot()).toBe(true);
+    expect(calls).toContainEqual({ method: "Page.createIsolatedWorld", sessionId: "s-pay", frameId: "pay" });
+    expect(calls.filter((call) => call.method === "Runtime.evaluate" && call.sessionId === "s-pay")).toHaveLength(2);
+    expect(calls.filter((call) => call.method === "Target.attachToTarget")).toHaveLength(1);
+    expect(calls.at(-1)).toMatchObject({ method: "Target.detachFromTarget" });
+  });
+
+  it("captures nothing when a cross-site payment frame cannot be masked", async () => {
+    const { page, calls, cdp } = fakeCheckout({ failPay: true });
+    await expect(captureMaskedScreenshot(page.send, { cdp, sessionId: "s-top" })).rejects.toThrow(/could not mask the page/);
+    expect(page.calls.some((call) => call.method === "Page.captureScreenshot")).toBe(false);
+    expect(calls.at(-1)).toMatchObject({ method: "Target.detachFromTarget" });
   });
 
   it("captures nothing when the page's own frame cannot be masked", async () => {
@@ -117,5 +149,19 @@ describe("Vault masked screenshot and key presses", () => {
     await expect(assertBrowserHostPressKey({ ...oldHost, browserHostHealth: async () => ({ status: { pressKeys: true } }) }, { type: "press", key: "Control+A" }))
       .resolves.toBeUndefined();
     await expect(assertBrowserHostPressKey({ status: () => ({ ...oldHost.status(), pressKeys: true }) }, { type: "press", key: "Escape" })).resolves.toBeUndefined();
+  });
+
+  it("scrolls what is under a point with the wheel, only on a host that says it can (an old one scrolls the page instead)", async () => {
+    const sent: Array<[string, Record<string, unknown> | undefined]> = [];
+    const client = { send: async <T,>(method: string, params?: Record<string, unknown>) => { sent.push([method, params]); return {} as T; } };
+    await scrollBrowserPage(client, "session-1", { deltaX: 0, deltaY: 300, x: 120, y: 480 });
+    await scrollBrowserPage(client, "session-1", { deltaX: 0, deltaY: -200 });
+    expect(sent).toEqual([["Input.dispatchMouseEvent", { type: "mouseWheel", x: 120, y: 480, deltaX: 0, deltaY: 300 }],
+      ["Runtime.evaluate", { expression: "window.scrollBy(0, -200)", returnByValue: true }]]);
+    await expect(scrollBrowserPage(client, "session-1", { deltaX: 0, deltaY: 300, x: 120 })).rejects.toThrow("needs both x and y");
+    const oldHost = { status: () => ({ enabled: true, statusReason: "", defaultUrl: "", checkedAt: "", pressKeys: true }) };
+    await expect(assertBrowserHostPressKey(oldHost, { type: "scroll", deltaX: 0, deltaY: 300 })).resolves.toBeUndefined();
+    await expect(assertBrowserHostPressKey(oldHost, { type: "scroll", deltaX: 0, deltaY: 300, x: 120, y: 480 })).rejects.toThrow("scroll at a point needs the Browser Host restart");
+    await expect(assertBrowserHostPressKey({ status: () => ({ ...oldHost.status(), scrollAt: true }) }, { type: "scroll", deltaX: 0, deltaY: 300, x: 120, y: 480 })).resolves.toBeUndefined();
   });
 });

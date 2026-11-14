@@ -13,6 +13,8 @@ import { InMemoryJobApplyRepository } from "./job-apply/memory-repository.js";
 import { registerJobApplyRoutes } from "./job-apply/routes.js";
 import { createJobApplyService, jobApplyNeedsYouAsk, type JobApplyGoogleAccess, type JobApplyService, type JobApplyServiceOptions } from "./job-apply/service.js";
 import { browserHandoffFocus } from "./notifications/browser-handoff.js";
+import { NOUS_PANE_NOTICE_PREFIX } from "./nous/pane-notices.js";
+import { agentNeedsYouKey } from "./pane-reports.js";
 import type { NotificationService } from "./notifications/service.js";
 import { recordAudit } from "./request-audit.js";
 import type { createRoomPaneCliController } from "./room-pane-cli-controller.js";
@@ -133,6 +135,19 @@ export function registerJobApply(app: FastifyInstance, deps: JobApplyWiringDeps)
   scheduleJobApplyMailTriage(app, { enabled: config.instanceJobs["job-apply-mail-triage"] && options.jobApplyMailTriage !== false && config.optionalModules.has("job-copilot"), triage: (onError) => jobApplyService.triageMailForAllOwners(onError) });
   if (config.optionalModules.has("job-copilot")) registerJobApplyRoutes(app, jobApplyService, {
     store, ...(config.instanceJobs["job-apply-mail-triage"] ? { inspect: (pane: Pane) => roomPaneController.inspect(pane, { fresh: true }), log: app.log } : {}),
+    // A side task's open ask (13/11: Bob's Alignerr 2FA code) holds the run kick: typing over it would break its browser step.
+    holds: async (owner, pane) => {
+      const keys = [agentNeedsYouKey(pane.id), `${NOUS_PANE_NOTICE_PREFIX}${pane.id}`];
+      const open = await Promise.all(keys.map((dedupeKey) => notificationService.list(owner, { status: "WAITING", dedupeKey, limit: 200 })));
+      return open.flat().some((item) => keys.includes(item.dedupeKey ?? "") && (item.status === "OPEN" || item.status === "READ"));
+    },
+    waited: async (owner, pane, reason) => {
+      const why = { NO_CLI: "its terminal has no running CLI", MODEL_UNAVAILABLE: "its model is unavailable or at a usage limit",
+        WAITS_ON_OPERATOR: "it waits on you for a side task", CLI_BUSY: "its CLI is busy with other work" }[reason];
+      await notificationService.raise({ ownerUserId: owner, roomId: pane.roomId, paneId: pane.id, source: "JOB_COPILOT", kind: "RUN_WAITING", severity: "INFO",
+        title: `${pane.title}: applications wait`, body: `Job Copilot could not start or continue its run for 30 minutes: ${why}.`,
+        link: { roomId: pane.roomId, paneId: pane.id }, dedupeKey: `job-apply:run-wait:${pane.id}`, payload: { reason }, telegram: false });
+    },
     routeOptions: defaultRouteRateLimitOptions,
     // The run's kickoff goes through the pane CLI input path Room Agent uses (typed line + Enter).
     kickoff: options.jobApplyKickoff ?? (async (pane, run, discover) => {
@@ -140,13 +155,15 @@ export function registerJobApply(app: FastifyInstance, deps: JobApplyWiringDeps)
       if (!session || session.purpose !== "NORMAL" || !session.isActive || session.status === "EXITED" || session.status === "ERROR") {
         throw new SpaceConflictError("Open the copilot's terminal first: the pane has no running CLI session to receive the run.");
       }
-      const prompt = `Job Copilot run ${run.id} started in this pane. Read the space-job-applications skill (SKILL.md), then ${discover ? "first find new postings, because nothing queued can be taken now (the queue is empty or every posting waits for an employer limit): follow references/discovery.md (space_job_discover_search with the operator's PREFERENCE filters, score each against the CV) and queue each one scoring 3 or more with space_job_application_start status QUEUED; then " : ""}call space_jobapply space_job_next (again while it answers waiting=true) until it hands you one application or returns done=true (without MCP tools in this session, call them on demand: JSON {"serverId","toolName","arguments"} on stdin to space-capability call); follow the skill's steps for that one application (space_job_memory_recall before asking, space_job_fields_record on every step, evidence before VERIFIED), close it with space_job_report and end your turn: Space starts a fresh session for the next one.`;
+      const prompt = `Job Copilot run ${run.id} started in this pane. Read the space-job-applications skill (SKILL.md), then ${discover ? "first find new postings, because nothing queued can be taken now (the queue is empty or every posting waits for an employer limit or the 180-day company cooldown), so today's application target cannot be reached: follow references/discovery.md (space_job_discover_search with the operator's PREFERENCE filters, sites whose daily limit still has room first, score each against the CV) and queue each one scoring 3 or more that passes the CV's region, work-authorization, seniority and stack rules with space_job_application_start status QUEUED; then " : ""}call space_jobapply space_job_next (again while it answers waiting=true) until it hands you one application or returns done=true (without MCP tools in this session, call them on demand: JSON {"serverId","toolName","arguments"} on stdin to space-capability call); follow the skill's steps for that one application (space_job_memory_recall before asking, space_job_fields_record on every step, evidence before VERIFIED), close it with space_job_report and end your turn: Space starts a fresh session for the next one.`;
       const traceId = `job-apply:${run.id}`;
       await cliTerminalManager.runSerializedTerminalMutation(session.sessionId, async () => {
         // A run with no application in progress starts a fresh Claude session (plan clipboard:qH5emwVaV6yO step 4); one application a turn (step 6:
         // one turn looping over every application re-sent ~200k tokens a request), so each application starts fresh.
         if (!run.currentApplicationId) await clearIdleClaudeSession(cliTerminalManager, session, traceId, traceId);
-        await submitCliPrompt(cliTerminalManager, session.sessionId, prompt, traceId, `${traceId}:kickoff`);
+        // Daily Nous errors F (13/11 19:10, space_copilot_control 500): the host keeps an input key until the CLI exits, so one key per run made a
+        // re-kick with the other prompt CLI_HOST_IDEMPOTENCY_CONFLICT and the same prompt a silent no-op; each kickoff gets its own key.
+        await submitCliPrompt(cliTerminalManager, session.sessionId, prompt, traceId, `${traceId}:${makeSpaceId("kickoff")}`);
       });
     }),
     authenticatedOwner: async (request) => {

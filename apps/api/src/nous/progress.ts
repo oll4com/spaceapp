@@ -137,6 +137,10 @@ export interface NousWaitRow {
   /** R10-4: closed by the pane's CLI within 3 minutes, out of the adjusted share. */
   closedByCli?: boolean;
 }
+/** Goal 7365014c criterion (4): one local day of operator asks by source (`operatorAsksByDay` in daily-review.ts). */
+export interface OperatorAsksDay { day: string; decisions: number; nous: number; agents: number; copilots: number; total: number }
+export const operatorAsksText = (row: Pick<OperatorAsksDay, "decisions" | "nous" | "agents" | "copilots" | "total">) =>
+  `${row.total} (decisions ${row.decisions}, Nous cards ${row.nous}, agent cards ${row.agents}, copilot questions ${row.copilots})`;
 export interface NousScorecard {
   version: 1;
   baselineDate: string;
@@ -149,6 +153,8 @@ export interface NousScorecard {
   score?: string;
   /** Goal 7365014c-a: answers as Nous predicted over the window (its own dimension, outside the frozen v1 weights). */
   predictions?: { decisions: { matched: number; total: number }; cards: { matched: number; total: number } };
+  /** Goal 7365014c criterion (4): the operator's asks per local day over the window, by source (`operatorAsksByDay`). */
+  operatorAsks?: OperatorAsksDay[];
   /** Round 9 item 3: every wait in the unblocking sample, newest first (at most 40). */
   waits?: NousWaitRow[];
   /** R10-4: unblocking without the waits the CLI closed itself within 3 minutes (the v1 dimension stays the raw figure). */
@@ -359,6 +365,7 @@ export function nousProgressText(card: NousScorecard): string {
   if (card.unblockingAdjusted) lines.push(`- unblocking adjusted ${card.unblockingAdjusted.score} (raw ${card.dimensions.unblocking.score}; not in the v1 score): ${card.unblockingAdjusted.note}`);
   if (card.reliabilityAdjusted) lines.push(`- reliability adjusted ${card.reliabilityAdjusted.score} (raw ${card.dimensions.reliability.score}; not in the v1 score): ${card.reliabilityAdjusted.note}`);
   if (card.coordination) lines.push(`- coordination (OVERLAP notices: coordination, not waits; outside the waits list and the adjusted score): ${coordinationText(card.coordination)}`);
+  if (card.operatorAsks) lines.push(`- operator asks a day (target at most 5; not in the v1 score): ${card.operatorAsks.length ? card.operatorAsks.map((row) => `${row.day} ${operatorAsksText(row)}`).join("; ") : "none"}`);
   if (card.predictions) lines.push(`- prediction (own dimension, not in the v1 score): decisions ${predictionText(card.predictions.decisions)}, cards ${predictionText(card.predictions.cards)}`);
   if (card.waits?.length) {
     // Round 9 item 3: each wait of the unblocking sample, so every one nobody answered becomes a queue item.

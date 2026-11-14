@@ -3,6 +3,7 @@ import { NOUS_ATTACHMENTS_MARKER, nousRequestStatusSchema, type ClipboardItem, t
 import type { NousAnswerLink, NousNote, NousRepository, NousTurnOutcomes } from "@space/db";
 import type { NotificationService } from "../notifications/service.js";
 import { titleWords } from "./pane-notices.js";
+import { waitsOnOperatorClaim } from "./pane-watch.js";
 import { closedRequestsOf, OPEN_REQUEST_PREFIX, openRequestsOf, reopenedAtOf, REQUEST_DONE_NOTE_PREFIX, requestDoneReceiptKey } from "./request-done.js";
 
 /**
@@ -26,6 +27,19 @@ export type NousRequestPlans = Map<string, PlanInfo>;
 const DONE_KEY = "nous:done:";
 const payloadOf = (record: SpaceNotification) => record.payload as Partial<RequestDonePayload>;
 const push = <T>(map: Map<string, T[]>, key: string, value: T) => { const list = map.get(key); if (list) list.push(value); else map.set(key, [value]); };
+/**
+ * How long a request waited on the operator alone between `from` and its Done (Score 13/11: Nous-app requests kept open on the operator's phone
+ * test read as Nous's slow Done): from an outcome whose every item is OPERATOR or says it waits on the operator to the next outcome that does not.
+ */
+// shortcut: a wait no later outcome ends runs on to the Done, so work after the operator's reply reads as waiting; upgrade by ending it at their reply.
+function operatorWaitMs(reported: Array<{ endedAt: string; items: NousTurnOutcome[] }>, from: string, to: string) {
+  let total = 0, start: string | null = null;
+  for (const entry of [...reported].sort((a, b) => a.endedAt.localeCompare(b.endedAt))) if (entry.endedAt > from && entry.endedAt <= to) {
+    if (entry.items.every((item) => item.outcome === "OPERATOR" || waitsOnOperatorClaim(item.summary) !== null)) start ??= entry.endedAt;
+    else if (start) { total += Date.parse(entry.endedAt) - Date.parse(start); start = null; }
+  }
+  return total + (start ? Date.parse(to) - Date.parse(start) : 0);
+}
 const textOf = (content: string) => { const at = content.indexOf(NOUS_ATTACHMENTS_MARKER); return (at < 0 ? content : content.slice(0, at)).trim(); };
 // Search (operator 6/11 13:02 BKK): case and accents folded, so «αιτηματα» finds «αιτήματα».
 const fold = (text: string) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
@@ -142,16 +156,15 @@ export function deriveNousRequests(messages: NousMessage[], links: NousRequestLi
   // Indexed once (stable 4/11: scanning every turn, Done record and answer for each message held the API's main thread ~1 s a call).
   const messageTurns = new Map<string, string[]>();
   for (const [turnId, ids] of turnMessages) for (const id of new Set(ids)) push(messageTurns, id, turnId);
-  // The first Done record whose identity or plan is a value; "-N" (one of several requests in a message) is cut only to name the message.
-  const doneByValue = new Map<string, number>();
-  const doneByMessage = new Map<string, number>();
-  links.done.forEach((record, at) => {
-    for (const value of [identity(record), payloadOf(record).planId]) if (typeof value === "string" && value) {
-      if (!doneByValue.has(value)) doneByValue.set(value, at);
-      const base = value.replace(/-\d+$/, "");
-      if (!doneByMessage.has(base)) doneByMessage.set(base, at);
+  // The Done records whose identity or plan is a value; "-N" (one of several requests in a message) is cut only to name the message.
+  const doneByValue = new Map<string, SpaceNotification[]>();
+  const doneByMessage = new Map<string, SpaceNotification[]>();
+  for (const record of links.done) {
+    for (const value of new Set([identity(record), payloadOf(record).planId])) if (typeof value === "string" && value) {
+      push(doneByValue, value, record);
+      push(doneByMessage, value.replace(/-\d+$/, ""), record);
     }
-  });
+  }
   let byWords: ReturnType<typeof wordMatcher> | undefined;
   const answerOf = firstAnswers(links.answers);
   return messages.map((message) => {
@@ -164,14 +177,18 @@ export function deriveNousRequests(messages: NousMessage[], links: NousRequestLi
     // A reopened message (space_open_requests reopen): what recorded it before then no longer counts.
     const since = reopened.get(id);
     // Exact: the record's identity is this message (one of several requests in it: "-N"), a turn that answered it or a completed plan linked to it.
-    const exact = Math.min(doneByValue.get(id) ?? Infinity, doneByMessage.get(id) ?? Infinity, ...[...turns, ...donePlans].map((value) => doneByValue.get(value) ?? Infinity));
-    let done: SpaceNotification | undefined = since && links.done[exact] && links.done[exact]!.createdAt <= since ? undefined : links.done[exact];
+    // The earliest after a reopen: Done when first recorded (13/11 nous_msg:c2e652ba, own record 05:18, its plan's 13:25 read 9.5 h on the Score).
+    let done = [...doneByValue.get(id) ?? [], ...doneByMessage.get(id) ?? [], ...[...turns, ...donePlans].flatMap((value) => doneByValue.get(value) ?? [])]
+      // 13/11: a plan completed 9/11 15:48 read 51 later messages linked to it Done, up to 59 h before they were written; a turn that
+      // carried a message mid-way may have recorded its earlier request. Nothing written before a message is its Done.
+      .filter((record) => record.createdAt >= message.createdAt && (!since || record.createdAt > since))
+      .reduce<SpaceNotification | undefined>((first, record) => first && first.createdAt <= record.createdAt ? first : record, undefined);
     const reported = outcomes.get(id) ?? [];
     if (!done && !since && !reported.length && !linkedPlans.length) {
       byWords ??= wordMatcher(links.done, claimed);
       done = byWords(titleWords(textOf(message.content)), message.createdAt);
     }
-    const receipted = !done && [id, ...turns, ...donePlans].some((value) => { const at = receipts.get(requestDoneReceiptKey(value)); return at !== undefined && (!since || at > since); });
+    const receipted = !done && [id, ...turns, ...donePlans].some((value) => { const at = receipts.get(requestDoneReceiptKey(value)); return at !== undefined && at >= message.createdAt && (!since || at > since); });
     const last = reported.at(-1);
     const latest = last?.items.map((item) => item.outcome) ?? [];
     // An OPERATOR outcome waits while the decision that turn asked is open, or until the operator writes again (their reply is the answer).
@@ -196,11 +213,13 @@ export function deriveNousRequests(messages: NousMessage[], links: NousRequestLi
       : answered ? "ANSWERED"
       : covered || closed || last ? "NOT_DONE" : "NOT_ANSWERED";
     const payload = done ? payloadOf(done) : null;
+    const waited = done ? operatorWaitMs(reported, since && since > message.createdAt ? since : message.createdAt, done.createdAt) : 0;
     return {
       messageId: id, createdAt: message.createdAt, text: textOf(message.content), status,
       ...(payload?.summary ? { doneSummary: payload.summary } : {}), ...(payload?.where ? { where: payload.where } : {}), ...(payload?.tickets?.length ? { tickets: payload.tickets } : {}),
       ...(plan ? { planId: plan, planPercent: planInfo.get(plan)!.progressPercentage } : payload?.planId ? { planId: payload.planId } : {}),
-      ...(covered ? { answeredAt: covered } : {}), ...(replied ?? covered ? { repliedAt: [replied, covered].filter(Boolean).sort()[0] } : {}), ...(done ? { doneAt: done.createdAt } : {})
+      ...(covered ? { answeredAt: covered } : {}), ...(replied ?? covered ? { repliedAt: [replied, covered].filter(Boolean).sort()[0] } : {}), ...(done ? { doneAt: done.createdAt, doneId: done.id } : {}),
+      ...(waited ? { operatorWaitMs: waited } : {})
     };
   });
 }

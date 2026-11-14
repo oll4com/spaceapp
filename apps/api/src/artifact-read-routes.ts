@@ -16,7 +16,10 @@ const idParamSchema = z.object({ id: idSchema });
 async function sendBytes(request: FastifyRequest, reply: FastifyReply, handle: FileHandle, size: number) {
   reply.header("accept-ranges", "bytes");
   const range = /^bytes=(\d*)-(\d*)$/.exec(String(request.headers.range ?? ""));
-  if (range && size > 0 && (range[1] || range[2])) {
+  // A resumed download sends If-Range with the validator it saw; a mismatch gets the whole file (RFC 9110 13.1.5).
+  const ifRange = request.headers["if-range"];
+  const rangeValid = !ifRange || ifRange === reply.getHeader("etag") || ifRange === reply.getHeader("last-modified");
+  if (range && rangeValid && size > 0 && (range[1] || range[2])) {
     const start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
     const end = range[1] && range[2] ? Math.min(size - 1, Number(range[2])) : size - 1;
     if (start > end || start >= size) {
@@ -101,7 +104,9 @@ export function registerArtifactReadRoutes(app: FastifyInstance, options: {
       image, embedded, design
     };
   });
-  app.get("/api/artifacts/:id/download", routeOptions, async (request, reply) => {
+  // A plain browser download (the Agent Files dock): streamed, uncompressed so its length and byte ranges are the file's, and
+  // resumable after a phone's dropped connection (Chrome resumes with Range + If-Range on the ETag; operator 13/11, 69 MB APK).
+  app.get("/api/artifacts/:id/download", { ...routeOptions, compress: false }, async (request, reply) => {
     const params = idParamSchema.parse(request.params);
     const artifact = await store.getArtifact(params.id);
     if (artifact.deletedAt || !isAgentFileArtifact(artifact)) {
@@ -113,8 +118,8 @@ export function registerArtifactReadRoutes(app: FastifyInstance, options: {
       const fileStat = await handle.stat();
       const filename = artifactFilename(artifact);
       applyFileResponsePolicy(reply, artifact.mimeType, filename, true);
-      reply.header("content-length", String(fileStat.size));
-      return reply.send(handle.createReadStream());
+      reply.header("etag", `"${artifact.sha256.toLowerCase()}"`).header("last-modified", fileStat.mtime.toUTCString());
+      return await sendBytes(request, reply, handle, fileStat.size);
     } catch (error) { await handle.close(); throw error; }
   });
   app.get("/api/artifacts/:id/preview", routeOptions, async (request, reply) => {

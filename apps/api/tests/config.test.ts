@@ -3,6 +3,16 @@ import { getApiConfig } from "../src/config.js";
 import { readFileSync } from "node:fs";
 
 describe("Space API config", () => {
+  it("has no implicit harness upstream, including when only enabled (F11)", () => {
+    for (const env of [{}, { SPACE_PUBLIC_DISTRIBUTION: "true" }, { SPACE_HARNESS_ENABLED: "true" }]) {
+      expect(getApiConfig(env)).toMatchObject({ harnessEnabled: false, harnessOrigin: "" });
+    }
+    expect(getApiConfig({ SPACE_HARNESS_ORIGIN: "http://127.0.0.1:8100" }))
+      .toMatchObject({ harnessEnabled: false, harnessOrigin: "http://127.0.0.1:8100" });
+    expect(getApiConfig({ SPACE_HARNESS_ENABLED: "true", SPACE_HARNESS_ORIGIN: "http://127.0.0.1:8100" }))
+      .toMatchObject({ harnessEnabled: true, harnessOrigin: "http://127.0.0.1:8100" });
+  });
+
   it("uses its own package version without npm or with stale parent npm metadata", () => {
     const expected = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
     expect(getApiConfig({}).version).toBe(expected);
@@ -70,6 +80,7 @@ describe("Space API config", () => {
     expect(getApiConfig({ SPACE_MOBILE_DEMO: "1" }).mobileDemo).toBe(false);
     expect(getApiConfig({ SPACE_PUBLIC_DISTRIBUTION: "true" }).mobileDemo).toBe(false);
     expect(getApiConfig({ SPACE_MOBILE_DEMO: "1", SPACE_PUBLIC_DISTRIBUTION: "true" }).mobileDemo).toBe(true);
+    expect(getApiConfig({ SPACE_PUBLIC_DISTRIBUTION: "true" }).connectorKeyFile).toBe("/var/lib/spaceapp/connector/space-connector.key");
   });
 
   it("uses bounded Postgres pool defaults and accepts explicit API overrides", () => {

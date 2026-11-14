@@ -14,6 +14,7 @@ import {
 } from "./auth.js";
 import type { SpaceApiConfig } from "./config.js";
 import { sendApiError } from "./http-errors.js";
+import { ownerSetupStatus } from "./setup-routes.js";
 
 /**
  * The signed-in session: who the caller is (refreshing the role from the database and re-signing the
@@ -30,7 +31,7 @@ export function registerAuthSessionRoutes(app: FastifyInstance, options: {
   app.get("/api/auth/me", defaultRouteRateLimitOptions, async (request, reply) => {
     const setupStatus = auth.devLogin
       ? { setupRequired: false }
-      : await store.getOwnerSetupStatus();
+      : await ownerSetupStatus(store, auth);
     let user = request.user;
     if (user && store.getControlActor) {
       const dbActor = await store.getControlActor(user.id);

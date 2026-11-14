@@ -199,6 +199,21 @@ describe("Claude proxy", () => {
     const { error } = response.json() as { error: { type: string; code: string; message: string } };
     expect(error).toMatchObject({ type: "rate_limit_error", code: "usage_limit_reached" });
     expect(error.message).toMatch(/^All 2 Claude accounts in Space Gateway reached their usage limit\. The first one is back in 40m \(at \d\d:\d\d\)\.$/);
+    // 13/11: a bare 429 had Claude Code retry for ~3 min; the block lasts until the reset, so it is told not to retry.
+    expect(response.headers["x-should-retry"]).toBe("false");
+    expect(response.headers["retry-after"]).toBe("2400");
+  });
+
+  it("leaves a reset within Claude Code's own retries to them", async () => {
+    const { post, repository } = await setup(() => streamResponse(messageStream("never")));
+    for (const accountId of [accountA, accountB]) {
+      const resetAt = new Date(nowMs + 60_000).toISOString();
+      await repository.saveUsageWindows(accountId, [{ window: "PRIMARY", usedPercent: 100, resetAt, windowMinutes: 300 }]);
+      await repository.recordAccountState(accountId, { status: "RATE_LIMITED", statusReason: "rate limit", blockedUntil: resetAt });
+    }
+    const response = await post({ model: "claude-sonnet-4-5", max_tokens: 10, messages: [{ role: "user", content: "hi" }] });
+    expect(response.statusCode).toBe(429);
+    expect(response.headers["x-should-retry"]).toBeUndefined();
   });
 
   // Operator 3/11 13:09 BKK: fill first, and the last account with room serves Nous's OPERATOR and DECISION turns only.

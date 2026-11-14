@@ -45,6 +45,7 @@ import type { SpaceApiConfig } from "./config.js";
 import { sendApiError } from "./http-errors.js";
 import { assertBrowserPaneCompatible, getActiveBrowserSessionForPane, getPaneById } from "./pane-guards.js";
 import { recordAudit } from "./request-audit.js";
+import { CHALLENGE_ATTEMPT_ACTION, pageAddress } from "./browser-challenge-attempt.js";
 import { headerString } from "./request-helpers.js";
 import { parseBody, parseQuery } from "./route-parsing.js";
 import { registerJobApplyAgentRoutes } from "./job-apply/agent-routes.js";
@@ -76,11 +77,29 @@ import type { FreelanceCopilotService } from "./freelance-copilot/service.js";
 import type { JobApplyService } from "./job-apply/service.js";
 import { isT3AgentSessionId, t3AgentPrincipal, T3_AGENT_RUNTIME_ID } from "./t3code/agent-tokens.js";
 import { harnessAgentPrincipal, HARNESS_AGENT_RUNTIME_ID, isHarnessAgentSessionId } from "./harness-agent-tokens.js";
+import { refusalOf } from "./browser-reaper.js";
 
 /**
  * Browser status and the CLI bridge routes (Agent Files publishing, browser context, session, actions and commands
  * for CLI panes); the parent retains authentication, CSRF, errors and rate limits.
  */
+/** nous_msg:5321471cb6334fd6ab52a30f (13/11: a CLI pane sent mails through Gmail web): a Gmail web visit is told the mail path; never blocked (Google sign-ins). */
+export function gmailWebNote(url: string): string {
+  let host = "";
+  try { host = new URL(url).hostname; } catch { return ""; }
+  return host === "mail.google.com" ? "Gmail web is not the mail path: read with space_mailcopilot space_mail_search/space_mail_thread_read and hand a mail to send to the Mail Copilot with space_mail_review_request. " : "";
+}
+
+/** 13/11 (Score lever Daily tasks): a scheduled browser task that found the browser limit or no free display failed only inside its pane; Nous
+ * hears it, one inbox line per CLI pane (the key replaces the last one). */
+export async function tellBrowserRefused(error: unknown, deps: { store: Pick<SpaceStore, "getRoom">; notice?: (owner: string, key: string, line: string) => Promise<unknown> },
+  claims: { roomId: string; paneId: string }, browserPaneId: string) {
+  if (!deps.notice || refusalOf(error) !== "CAPACITY") return;
+  const owner = await Promise.resolve().then(() => deps.store.getRoom(claims.roomId)).then((room) => room.ownerUserId, () => null);
+  if (owner) await deps.notice(owner, `browser-no-display:${claims.paneId}`, `pane ${claims.paneId} could not start its browser (${browserPaneId}): `
+    + `${error instanceof Error ? error.message.slice(0, 200) : "no browser capacity"} Its task did not get a browser; close idle browsers, then rerun it.`).catch(() => undefined);
+}
+
 export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
   options: { agentFileDocxNormalizer?: AgentFileDocxNormalizer };
   config: SpaceApiConfig;
@@ -111,7 +130,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
   /** Operator input per control lease (shared with the browser routes); RECLAIM_CONTROL reads it. */
   controlActivity?: BrowserControlActivity;
   /** Set once Nous is registered; panes report their progress to it (/api/cli/progress), and its allowances cover what agents may do. */
-  nous?: { current: { paneReports: PaneReports; coversApproval?(owner: string): Promise<boolean> } | null };
+  nous?: { current: { paneReports: PaneReports; coversApproval?(owner: string): Promise<boolean>; service?: { notice(owner: string, key: string, line: string): Promise<unknown> } } | null };
   /** Drops the pane's Playwright connections but the requester's when its handoff starts (the CDP proxy is created after these routes). */
   dropOtherAgents?(paneId: string, keepCliSessionId: string): void;
 }) {
@@ -526,7 +545,10 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       streamMode: input.streamMode,
       ownerAgentId: `cli:${bridge.claims.cliSessionId}`,
       traceId: request.requestIdForSpace
-    }, { holderType: "AGENT", holderId: `cli:${bridge.claims.cliSessionId}` });
+    }, { holderType: "AGENT", holderId: `cli:${bridge.claims.cliSessionId}` }).catch(async (error: unknown) => {
+      await tellBrowserRefused(error, { store, notice: async (owner, key, line) => deps.nous?.current?.service?.notice(owner, key, line) }, bridge.claims, browserPane.id);
+      throw error;
+    });
     controlActivity?.noteAgent(browserPane.id, bridge.claims.paneId);
     await recordAudit(store, request, {
       action: "pane.cli.browser_session",
@@ -561,6 +583,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         await assertNoForeignHandoff(browserPane.id, bridge.claims.cliSessionId);
         // A site whose sign-in lives in another Google account opens in that account's browser, not in the pane's default one.
         let accountNote: string | null = null;
+        const gmailNote = actionRequest.action.type === "navigate" ? gmailWebNote(actionRequest.action.url) : "";
         // nous_msg:fe72e061: no reset or forgot-password page while the stored sign-in works, unless the operator's order is passed.
         if (actionRequest.action.type === "navigate" && RESET_URL.test(actionRequest.action.url)) {
           const owner = (await store.getRoom(bridge.claims.roomId)).ownerUserId;
@@ -582,7 +605,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
               results.push({
                 request: safeBrowserActionRequestForResponse(actionRequest),
                 status: "EXECUTED" as const,
-                statusReason: `Opened in the site's Google account. ${accountNote}`.slice(0, 500),
+                statusReason: `${gmailNote}Opened in the site's Google account. ${accountNote}`.slice(0, 500),
                 observation: { sessionId: moved.sessionId, paneId: moved.paneId, roomId: moved.roomId, actionType: actionRequest.action.type,
                   viewport: moved.viewport, currentUrl: safeBrowserObservationUrl(moved.currentUrl ?? actionRequest.action.url),
                   title: moved.title ? redactMemoryText(moved.title).slice(0, 500) : null, text: null, capturedAt: moved.lastFrameAt ?? null }
@@ -620,7 +643,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         results.push({
           request: safeBrowserActionRequestForResponse(actionRequest),
           status: "EXECUTED" as const,
-          statusReason: `Browser action executed through Space CLI mediation.${google ? ` Tab's Google account: google: ${google}.` : ""}${accountNote ? ` ${accountNote}` : ""}`.slice(0, 500),
+          statusReason: `${gmailNote}Browser action executed through Space CLI mediation.${google ? ` Tab's Google account: google: ${google}.` : ""}${accountNote ? ` ${accountNote}` : ""}`.slice(0, 500),
           observation
         });
         await recordAudit(store, request, {
@@ -740,6 +763,14 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         throw new SpaceConflictError("The active browser tab/session changed; inspect the CAPTCHA again.");
       }
       if (await store.getActiveBrowserControlLease(session.sessionId)) throw new SpaceConflictError("An operator holds browser control; wait for the handoff to finish.");
+    };
+    // Operator rule 13/11 (focus-need.ts): each run is recorded on both panes, so a CAPTCHA card can show the solver could not pass it.
+    const recordChallengeAttempt = async (solver: string) => {
+      const status = (result as { status?: unknown }).status;
+      for (const paneId of new Set([bridge.claims.paneId, pane.id])) {
+        await recordAudit(store, request, { action: CHALLENGE_ATTEMPT_ACTION, targetType: "pane", targetId: paneId,
+          metadata: { solver, status: typeof status === "string" ? status : "UNKNOWN", pageId: session.activePageId ?? null, url: pageAddress(session.currentUrl) } });
+      }
     };
     let result: unknown;
 
@@ -996,10 +1027,12 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       }
       case "TEXT_CAPTCHA": {
         result = await textCaptcha({ config, pane, session, actor: actorId, command: input.command, checkControl: captchaControl });
+        await recordChallengeAttempt("Text CAPTCHA");
         break;
       }
       case "SLIDER_CAPTCHA": {
         result = await sliderCaptcha({ config, pane, session, command: input.command, checkControl: captchaControl });
+        await recordChallengeAttempt("Slider CAPTCHA");
         break;
       }
       case "UPLOAD_FILE": {

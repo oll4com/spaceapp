@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { MOBILE_PAIRING_CONFIRM_MS, type AppDeviceSession } from "@space/contracts";
 import { api } from "../../api.js";
 import { NOTIFICATION_STREAM_EVENT } from "../notifications/useNotifications.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
 
 const APP_LABELS: Record<string, string> = { nous: "Nous app", spaceapp: "SpaceApp app", "spaceapp-link": "SpaceApp link" };
 const day = (value: string) => new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -60,23 +61,27 @@ export function AppDevicesManager() {
   const live = (devices ?? []).filter((device) => !device.revokedAt && Date.parse(device.expiresAt) > Date.now());
   return <section aria-label="Devices" className="google-accounts-manager">
     <div className="settings-flat-row" style={{ gridTemplateColumns: "1fr" }}>
-      <span className="settings-flat-row-copy"><strong>Devices</strong><small>Phone apps signed in to this account. Each sign-in lasts 30 days; revoke a lost or replaced phone.</small></span>
+      <SettingsLabel label="Devices" help="Phone apps signed in to this account. Each sign-in lasts 30 days; revoke a lost or replaced phone. A newly paired phone only reads until you allow it here, within 10 minutes." />
     </div>
     {devices !== null && live.length === 0 ? <p className="settings-flat-note">No phone app is signed in.</p> : null}
     {live.map((device) => {
       const label = `${APP_LABELS[device.app] ?? device.app} on ${device.deviceName}`;
       const paired = device.paired, held = paired && !paired.allowedAt;
       const left = Math.ceil((Date.parse(device.createdAt) + MOBILE_PAIRING_CONFIRM_MS - now) / 60_000);
-      return <div className="settings-flat-row" key={device.id} style={paired ? { display: "flex", flexWrap: "wrap", gap: "0.5rem 0.75rem", alignItems: "center" } : { gridTemplateColumns: "minmax(0, 1fr) auto", gap: "0.75rem" }}>
-        <span className="settings-flat-row-copy" style={{ minWidth: 0, flex: "1 1 12rem" }}>
-          <strong>{label}</strong>
-          <small>{!paired ? `Signed in ${day(device.createdAt)} · until ${day(device.expiresAt)}`
-            : held ? `Paired ${day(device.createdAt)} · it only reads until you allow it; it asks to ${paired.requestedScopes.join(", ")} · ${left > 0 ? `${left} min left to allow` : "its 10 minutes to allow are up"}`
-              : `Paired ${day(device.createdAt)} · may ${paired.scopes.join(", ")}${paired.decide ? " (decisions signed with a hardware key)" : ""} · until ${day(device.expiresAt)}`}</small>
-        </span>
-        {held ? <button type="button" className="button" disabled={pendingId !== null} aria-label={`Allow ${label}`} onClick={() => void change(device, "allow")}>Allow</button> : null}
-        <button type="button" className="button" disabled={pendingId !== null} aria-label={`Revoke ${label}`} onClick={() => void change(device, "revoke")}>Revoke</button>
-      </div>;
+      return <Fragment key={device.id}>
+        <div className="settings-flat-row" style={{ gridTemplateColumns: "1fr" }}>
+          <span className="settings-flat-row-copy" style={{ minWidth: 0 }}>
+            <strong>{label}</strong>
+            <small>{!paired ? `Signed in ${day(device.createdAt)} · until ${day(device.expiresAt)}`
+              : held ? `Paired ${day(device.createdAt)} · it only reads until you allow it; it asks to ${paired.requestedScopes.join(", ")} · ${left > 0 ? `${left} min left to allow` : "its 10 minutes to allow are up"}`
+                : `Paired ${day(device.createdAt)} · may ${paired.scopes.join(", ")}${paired.decide ? " (decisions signed with a hardware key)" : ""} · until ${day(device.expiresAt)}`}</small>
+          </span>
+        </div>
+        <div className="settings-flat-actions">
+          {held ? <button type="button" className="button" disabled={pendingId !== null} aria-label={`Allow ${label}`} onClick={() => void change(device, "allow")}>Allow</button> : null}
+          <button type="button" className="button" disabled={pendingId !== null} aria-label={`Revoke ${label}`} onClick={() => void change(device, "revoke")}>Revoke</button>
+        </div>
+      </Fragment>;
     })}
     {error ? <p className="settings-flat-note" role="alert">{error}</p> : null}
   </section>;

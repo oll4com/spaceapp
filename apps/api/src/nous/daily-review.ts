@@ -1,8 +1,8 @@
-import { needsYou, type NousDecision, type NousTurnFacts, type RoomAgentEvent, type SpaceNotification } from "@space/contracts";
+import { isCopilotQuestion, needsYou, type NousDecision, type NousTurnFacts, type RoomAgentEvent, type SpaceNotification } from "@space/contracts";
 import type { NousLedgerRow, RailDecisionCount } from "@space/db";
 import { NOUS_GENERAL_NOTICE_KEY, NOUS_PANE_NOTICE_PREFIX, sameCardSubject } from "./pane-notices.js";
 import { cardAnswerMatched, predictionAccuracy, predictionText, textPrediction } from "./predictions.js";
-import { coordinationOf, coordinationText, failureCauses, failureCausesText, NOUS_CLI_CLOSED_MS, NOUS_TOOL_ERROR_SAMPLES, toolErrorSamples, waitCloser, waitQuestion } from "./progress.js";
+import { coordinationOf, coordinationText, failureCauses, failureCausesText, NOUS_CLI_CLOSED_MS, NOUS_TOOL_ERROR_SAMPLES, operatorAsksText, toolErrorSamples, type OperatorAsksDay, waitCloser, waitQuestion } from "./progress.js";
 
 /**
  * Nous's daily self-review (operator decision 2026-10-24): Space itself brings Nous, once a day at the operator's chosen hour, the
@@ -69,10 +69,12 @@ export function askLines(asks: SpaceNotification[], since: string): string[] {
 
 /** R22-5: one deferral Nous made: a plan's or goal's DATE wait, or a follow-up on a time; `at` is when it was set. */
 export interface NousDeferral { at: string; kind: "PLAN" | "GOAL" | "FOLLOWUP"; id: string; until: string | null; what: string }
-/** A follow-up an hour or less ahead is a check, not a deferral. */
+/** A wait an hour or less ahead is a check, not a deferral (tools.ts runNowProblem lets it through; 14/11 REVIEW item 6: plans and goals too). */
 export const DEFERRAL_FOLLOWUP_MIN_MS = 60 * 60_000;
 /** The hold a quota reset names; tools.ts refuses it while the pool the wait names has room now (2026-11-06 REVIEW). */
 export const QUOTA_RESET_HOLD = "a cap or quota reset";
+/** The hold a running job's words name; tools.ts wakes a plan's wait on it when the plan's pane finishes (1057). */
+export const RUNNING_JOB_HOLD = "a running job's ETA";
 // R22-5's heuristic: a reason naming one of these is a real hold; anything else could have run the same day.
 const DEFERRAL_HOLDS: Array<[string, RegExp]> = [
   ["the operator's hands", /\boperator\b|\bapprov|χειριστ|έγκρισ/i],
@@ -86,7 +88,8 @@ const DEFERRAL_HOLDS: Array<[string, RegExp]> = [
   ["a real date", /\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\/\d{1,2}\b|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|deadline|\bdue (?:on|by|at)\b|προθεσμ/i],
   // Queue items 846 + 915 (goal 35813e48): a fixed window ("reboot window 04:30-05:00") and a running job's ETA are real holds too.
   ["a fixed time window", /\b\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}\b|\b(?:maintenance|reboot|backup|release|change) window\b/i],
-  ["a running job's ETA", /\beta\b|\b(?:finish|complet|end)(?:es|s)? (?:at|by|around)\b|still running/i],
+  // 14/11 REVIEW item 6 (plan bpqbhztxAFG3: "Bob's battery measurement owns it until ~19:57 UTC"): another job holding the slot is one too.
+  [RUNNING_JOB_HOLD, /\beta\b|\b(?:finish|complet|end)(?:es|s)? (?:at|by|around)\b|still running|\b(?:owns|holds|occupies) (?:it|the \w+) until\b|\bbusy until\b/i],
   // 5/11 (3 of 5 refusals: a goal's next pendings list at its own «ανά 3 ώρες» rhythm): a set cadence is a real hold.
   ["a set cadence", /\bevery \d+ (?:min|hour|day|week)|(?:ανά|κάθε) \d+ (?:λεπτ|ώρ|μέρ|ημέρ|εβδομ)/i]
 ];
@@ -97,7 +100,7 @@ export const deferralHold = (what: string) => DEFERRAL_HOLDS.find(([, words]) =>
 
 /** R22-5 (goal 35813e48, operator «Μην αφήνεις για αύριο ότι μπορείς να κάνεις σήμερα τώρα!!»): each deferral of the day, justified or not, then the misses. */
 export function deferralLines(deferrals: NousDeferral[], since: string): string[] {
-  const day = deferrals.filter((item) => item.at >= since && (item.kind !== "FOLLOWUP" || !item.until || Date.parse(item.until) - Date.parse(item.at) > DEFERRAL_FOLLOWUP_MIN_MS))
+  const day = deferrals.filter((item) => item.at >= since && (!item.until || Date.parse(item.until) - Date.parse(item.at) > DEFERRAL_FOLLOWUP_MIN_MS))
     .sort((left, right) => left.at.localeCompare(right.at));
   let missed = 0;
   let reasoned = 0;
@@ -214,6 +217,34 @@ export function needsYouLines(records: SpaceNotification[], since: string): stri
     + `; still waiting on him: ${reached.filter((item) => item.status === "OPEN" || item.status === "READ").length}. Every card that reached him and an agent could have done is a miss: name why.`];
 }
 
+/** A decision Space answered or withdrew without the operator (a standing answer, an away grant, an allowance). */
+const AUTO_DECISION_ANSWER = /^(?:Approved by (?:your "Always approve"|away grant|allowance )|Withdrawn by Space)/;
+/**
+ * Goal 7365014c criterion (4), target at most 5 a day: what reached the operator per local day (`dayOf`), by source: decisions not answered by
+ * Space, Nous's cards, agents' cards and browser handoffs, copilot questions. A card counts once, on its last alert (a repeat within 24 h keeps the first).
+ */
+export function operatorAsksByDay(records: SpaceNotification[], decisions: NousDecision[], since: string, dayOf: (iso: string) => string): OperatorAsksDay[] {
+  const days = new Map<string, OperatorAsksDay>();
+  const add = (at: string, key: "decisions" | "nous" | "agents" | "copilots") => {
+    const day = dayOf(at);
+    const row = days.get(day) ?? { day, decisions: 0, nous: 0, agents: 0, copilots: 0, total: 0 };
+    row[key] += 1; row.total += 1; days.set(day, row);
+  };
+  for (const decision of decisions) if (decision.createdAt >= since && !AUTO_DECISION_ANSWER.test(decision.answer ?? "")) add(decision.createdAt, "decisions");
+  const seen = new Set<string>();
+  for (const item of records) {
+    const at = String(item.payload.alertAt ?? item.createdAt);
+    if (seen.has(item.id) || at < since) continue;
+    seen.add(item.id);
+    const auto = typeof (item.payload.answer as { by?: unknown } | undefined)?.by === "string";
+    if (auto || (item.payload.heldForNous && !item.payload.releasedFromNous)) continue;
+    if (isCopilotQuestion(item)) add(at, "copilots");
+    else if (item.source === "BROWSER_HANDOFF" ? item.payload.repeat !== true : item.source === "AGENT" && needsYou(item)) add(at, "agents");
+    else if (item.source === "NOUS" && (needsYou(item) || item.dedupeKey?.startsWith(NOUS_PANE_NOTICE_PREFIX) || item.dedupeKey === NOUS_GENERAL_NOTICE_KEY)) add(at, "nous");
+  }
+  return [...days.values()].sort((a, b) => a.day.localeCompare(b.day));
+}
+
 /** The review turn's text: the figures Space can count, then the orders. */
 export function renderDailyReview({ facts, decisions, cards = [], rails, ledger, waits, dbFailures, mailFailures, handoffs, needsYou: needsYouRecords, requests, deferrals, asks, cardHolds, sentry, since, day, hour }: DailyReviewInput): string {
   const window = facts.filter((turn) => turn.startedAt >= since && turn.reason !== "REVIEW");
@@ -282,6 +313,8 @@ export function renderDailyReview({ facts, decisions, cards = [], rails, ledger,
       `- In progress (the Requests tab): ${requests.progress.length ? requests.progress.map((entry) => `${entry.day} ${entry.slot} ${entry.count}`).join(", ") : "no count kept"}; `
         + `open now: ${requests.open}; open more than 6 h with no act: ${requests.quiet}${requests.quiet ? " (each one is a miss: move it in this turn and name the cause)" : ""}`] : []),
     "## Questions to the operator (ask last, goal ee5a573e)",
+    `- Operator asks (goal 7365014c criterion 4, target at most 5 a day): ${operatorAsksText(operatorAsksByDay([...needsYouRecords ?? [], ...cards, ...handoffs ?? [], ...asks ?? []], decisions, since, () => day)[0]
+      ?? { decisions: 0, nous: 0, agents: 0, copilots: 0, total: 0 })}`,
     `- Cards and focus requests raised: ${raised}`,
     ...(cardHolds ? [`- Cards held because Space already had the answer (R65, R66): ${cardHolds.rule + cardHolds.memory + (cardHolds.signin ?? 0) + (cardHolds.records ?? 0) + (cardHolds.duplicate ?? 0)} `
       + `(a rule or earlier answer ${cardHolds.rule}, a memory ${cardHolds.memory}, a stored sign-in ${cardHolds.signin ?? 0}, Space's records ${cardHolds.records ?? 0}, `
@@ -310,7 +343,7 @@ export function renderDailyReview({ facts, decisions, cards = [], rails, ledger,
     ...(dbFailures === undefined ? [] : ["## Failed database reads by PostgreSQL code (space_db_query; put a repeated guess in the description's \"Guessed wrong most\" queue item)", ...dbFailureLines(dbFailures)]),
     ...(mailFailures === undefined ? [] : ["## Failed mail reads by cause (space_mail_read)", ...mailFailureLines(mailFailures)]),
     ...(sentry === undefined ? [] : ["## Sentry: new issues per release deployed since then (a release with new issues is a cause to fix; the Monitoring Copilot's cards name them)", ...sentry]),
-    ...(deferrals === undefined ? [] : ["## Deferrals today (goal 35813e48: nothing left for tomorrow that can run today; DATE waits on plans and goals, follow-ups over an hour ahead)", ...deferralLines(deferrals, since)]),
+    ...(deferrals === undefined ? [] : ["## Deferrals today (goal 35813e48: nothing left for tomorrow that can run today; DATE waits on plans and goals and follow-ups, over an hour ahead)", ...deferralLines(deferrals, since)]),
     "## Orders",
     "1. Read space_nous_progress (your scorecard) and space_nous_decisions (approved actions that failed).",
     "2. Find the repeated causes behind the failed tool calls and the corrections above (read the tool rows of those turns in the conversation if needed). For each cause, keep one lesson (space_note, key lessons-<cause>: what went wrong, why it mattered, what to do instead); a lesson of an existing cause joins it as an incident. "

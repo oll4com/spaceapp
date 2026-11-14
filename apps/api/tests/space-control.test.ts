@@ -147,6 +147,9 @@ describe("Space control",()=>{
   const c=fixture(),pane=c.panes[0]!;
   const read=await c.execute([{kind:"watch",operation:"status",target:{paneIds:[pane.id]}}],"status-no-id");
   expect(read.results[0]).toMatchObject({status:"COMPLETED",evidence:{result:[]}});
+  // 12/11 06:25: an unknown id names the room's watches.
+  const unknown=await c.execute([{kind:"watch",operation:"status",id:"control_watch:gone",target:{paneIds:[pane.id]}}],"status-unknown");
+  expect(JSON.stringify(unknown.results[0])).toContain("Watch not found: control_watch:gone. This room's watches: none (status with no id lists them).");
  });
  it("an omp stop whose first Escape ended only a pty:true command interrupts once more and confirms the turn's end (step 9, 3/11)",async()=>{
   const c=fixture(),pane=c.panes[0]!;

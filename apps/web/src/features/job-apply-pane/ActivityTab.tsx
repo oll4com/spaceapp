@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import type { JobApplication, JobApplyEvent, JobApplyPendingItem, JobApplyStats } from "@space/contracts";
+import type { JobApplication, JobApplyEvent, JobApplyPendingItem, JobApplyStats, JobApplyTargetMiss } from "@space/contracts";
 import { api } from "../../api.js";
 import { AlertTriangle, Archive, Camera, Check, CheckCircle2, CircleHelp, FileText, Flame, Pause, Play, Send, Square, Upload, UserCheck, X } from "../ui-theme/app-icons.js";
 import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
@@ -91,12 +91,23 @@ function PendingCard({ item, application, onDone, nousReviewing = false }: { ite
   );
 }
 
+/** Why a day ended under the daily target (recorded by the API as it happened). */
+const TARGET_MISS_LABELS: Record<JobApplyTargetMiss, string> = {
+  QUEUE_EMPTY: "Nothing queued",
+  QUEUE_DEFERRED: "Every posting deferred",
+  CLI_BUSY: "CLI busy with other work",
+  WAITS_ON_OPERATOR: "Waited on you",
+  NO_CLI: "No CLI running",
+  MODEL_UNAVAILABLE: "Model unavailable"
+};
+
 /** The whole picture: totals since the first day (or the last reset), per day, and the earlier history apart. */
 function OverviewCard({ stats }: { stats: JobApplyStats }) {
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const activeDays = stats.days.filter((day) => day.applied > 0).length;
   const { imported, archived } = stats.earlier;
+  const missedShown = stats.days.some((day) => day.missed?.length);
   return (
     <section className="jc-card jc-overview" aria-label={t("Overview")}>
       <header className="jc-overview-head">
@@ -107,16 +118,18 @@ function OverviewCard({ stats }: { stats: JobApplyStats }) {
         <span className="jc-counter"><Counted t={t} text="{count} applied" count={stats.totals.applied} /></span>
         <span className="jc-counter ok"><Counted t={t} text="{count} verified" count={stats.totals.verified} /></span>
         {stats.totals.failed ? <span className="jc-counter bad"><Counted t={t} text="{count} failed" count={stats.totals.failed} /></span> : null}
-        <span className="jc-counter"><Counted t={t} text="Today {count}" count={stats.today.applied} /></span>
+        {stats.target > 0
+          ? <span className={`jc-counter${stats.today.applied >= stats.target ? " ok" : ""}`}><Counted t={(text, vars) => t(text, { ...vars, target: stats.target })} text="Today {count} / {target}" count={stats.today.applied} /></span>
+          : <span className="jc-counter"><Counted t={t} text="Today {count}" count={stats.today.applied} /></span>}
       </div>
       {stats.days.length > 0 ? (
         <details className="jc-overview-days" open>
           <summary>{t("Per day")}</summary>
           <table>
-            <thead><tr><th scope="col">{t("Day")}</th><th scope="col">{t("Applied")}</th><th scope="col">{t("Verified")}</th><th scope="col">{t("Failed")}</th></tr></thead>
+            <thead><tr><th scope="col">{t("Day")}</th><th scope="col">{t("Applied")}</th><th scope="col">{t("Verified")}</th><th scope="col">{t("Failed")}</th>{missedShown ? <th scope="col">{t("Short of target")}</th> : null}</tr></thead>
             <tbody>
               {stats.days.map((day) => (
-                <tr key={day.day}><th scope="row">{shortDay(day.day, language)}</th><td>{day.applied}</td><td>{day.verified}</td><td>{day.failed}</td></tr>
+                <tr key={day.day}><th scope="row">{shortDay(day.day, language)}</th><td>{day.applied}</td><td>{day.verified}</td><td>{day.failed}</td>{missedShown ? <td>{(day.missed ?? []).map((code) => t(TARGET_MISS_LABELS[code])).join(" · ")}</td> : null}</tr>
               ))}
             </tbody>
           </table>

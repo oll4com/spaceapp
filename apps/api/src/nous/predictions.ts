@@ -70,8 +70,11 @@ export function optionPredictionMatched(predicted: string, decision: Pick<NousDe
 const YES_NO = new Set(["yes", "ναι", "οχι"]);
 const lead = (text: string): "APPROVE" | "DECLINE" | null => {
   const word = text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().match(/\p{L}+/u)?.[0];
-  return word === "yes" || word === "ναι" || word === "ok" ? "APPROVE" : word === "no" || word === "οχι" ? "DECLINE" : null;
+  return word === "yes" || word === "ναι" || word === "ok" || word === "οκ" ? "APPROVE" : word === "no" || word === "οχι" ? "DECLINE" : null;
 };
+// What the operator said: the button, else their words read as a bare yes or no, else the yes or no their words lead with.
+const answerLead = (status: string, answer: string | null) =>
+  status === "APPROVED" ? "APPROVE" : status === "DECLINED" ? "DECLINE" : answer ? nousAnswerIntent(answer) ?? lead(answer) : null;
 const stems = (text: string) => new Set(foldWords(text).filter((word) => !YES_NO.has(word)).map((word) => word.slice(0, 5)));
 
 /**
@@ -80,13 +83,18 @@ const stems = (text: string) => new Set(foldWords(text).filter((word) => !YES_NO
  */
 export function writtenPredictionMatched(predicted: string, status: string, answer: string | null): boolean | null {
   const want = lead(predicted);
-  const got = status === "APPROVED" ? "APPROVE" : status === "DECLINED" ? "DECLINE" : answer ? nousAnswerIntent(answer) ?? lead(answer) : null;
+  const got = answerLead(status, answer);
   if (want && got && want !== got) return false;
   const words = stems(predicted);
   if (!words.size) return want && got ? want === got : null;
   const said = stems(answer ?? "");
   if (!said.size) return status === "ANSWERED" ? null : false;
   return [...words].filter((word) => said.has(word)).length * 2 >= words.size;
+}
+
+/** 14/11: a yes or no prediction matches a written answer that leads with the same yes or no («Ναι, 12:15 στο PC μου»), not only the buttons. */
+export function yesNoPredictionMatched(predicted: "APPROVE" | "DECLINE", status: string, answer: string | null): boolean {
+  return answerLead(status, answer) === predicted;
 }
 
 export interface PredictionScore { matched: number; total: number }
@@ -108,7 +116,7 @@ export function predictionAccuracy(decisions: NousDecision[], cards: SpaceNotifi
       continue;
     }
     scored.decisions.total += 1;
-    if (decision.status === (predicted === "APPROVE" ? "APPROVED" : "DECLINED")) scored.decisions.matched += 1;
+    if (yesNoPredictionMatched(predicted, decision.status, decision.answer)) scored.decisions.matched += 1;
   }
   for (const card of cards) {
     const matched = cardAnswerMatched(card, since);

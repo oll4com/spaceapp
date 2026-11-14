@@ -1,6 +1,7 @@
-import type { VideoJobOp } from "@space/contracts";
+import { VIDEO_TTS_LANGUAGES, type VideoJobOp } from "@space/contracts";
 import { SpaceConflictError } from "@space/runtime";
 import { classifyLoad, createHostSwap, type HostSwapReader } from "../nous/server-load.js";
+import { liveKitMeter, type LiveKitMeter } from "../livekit-meter.js";
 import { spawn } from "../safe-child-process.js";
 
 // The Video pane's engine runner (plan clipboard:-HpLbbtWKj53, Phase 3): one engine process per op, like the Design renderer,
@@ -25,6 +26,15 @@ export interface VideoEngineOptions {
   load?(): { level: string; reasons: string[] } | Promise<{ level: string; reasons: string[] }>;
   /** The physical host's swap (Nous's rule: only its swap past 90% is OVERLOADED); without it, this machine's. */
   hostSwap?: HostSwapReader;
+  /** Test seam: the LiveKit Inference grant's meter and stop (livekit-meter.ts). */
+  liveKit?: LiveKitMeter;
+}
+
+/** Today's default narration for the job's language (Kokoro, else Chatterbox), keeping the job's voice only when it is a Kokoro voice. */
+export function localNarration(job: VideoEngineJob): VideoEngineJob {
+  const base = String(job.language ?? "en").split("-")[0]!.toLowerCase();
+  const engine = VIDEO_TTS_LANGUAGES[base]?.find((item) => item === "kokoro" || item === "chatterbox") ?? "kokoro";
+  return { ...job, engine, voice: /^[a-z]{2}_[a-z]+$/.test(String(job.voice)) ? job.voice : undefined };
 }
 
 /** Runs the engine in its own process group so a timeout also ends the ffmpeg and Python it started. */
@@ -80,12 +90,26 @@ export function createVideoEngine(options: VideoEngineOptions = {}): VideoEngine
     const load = await (options.load ?? currentLoad)();
     if (load.level === "OVERLOADED") throw new SpaceConflictError(`The server is overloaded (${load.reasons.join(", ")}); try the video job again in a few minutes.`);
     if (running >= VIDEO_ENGINE_MAX_CONCURRENT) throw new SpaceConflictError("Two video jobs are already running; try again when one ends.");
+    const liveKit = options.liveKit ?? liveKitMeter;
+    const speaks = job.op === "tts" || job.op === "transcribe";
+    // Past 95% of the metered LiveKit grant (or its expiry) a LiveKit job runs on today's local default, never on LiveKit's card billing.
+    if (speaks && job.engine === "livekit" && !(await liveKit.open())) job = job.op === "tts" ? localNarration(job) : { ...job, engine: "whisper" };
     running += 1;
-    try {
-      const stdout = await (options.run ?? runEngine)(JSON.stringify(job), VIDEO_OP_TIMEOUT_MS[job.op], onProgress ?? (() => undefined));
+    const run = async (current: VideoEngineJob) => {
+      const stdout = await (options.run ?? runEngine)(JSON.stringify(current), VIDEO_OP_TIMEOUT_MS[current.op], onProgress ?? (() => undefined));
       const parsed = JSON.parse(stdout) as { result?: Record<string, unknown> };
       if (!parsed.result || typeof parsed.result !== "object") throw new SpaceConflictError("The video engine returned no result.");
       return parsed.result;
+    };
+    try {
+      // Murf's credits are prepaid and Cartesia's overages are off (both refuse once the credits are spent, no card is billed): a failure falls back to the local voice.
+      const result = await run(job).catch((error) => job.op === "tts" && (job.engine === "murf" || job.engine === "cartesia") ? run(localNarration(job)) : Promise.reject(error));
+      if (speaks && job.engine === "livekit") {
+        await liveKit.record(job.op === "tts" ? { source: "video", kind: "tts", model: "cartesia/sonic-3", characters: String(job.text ?? "").length }
+          : { source: "video", kind: "stt", model: "deepgram/nova-3", seconds: Number(result.durationSec) || 0 })
+          .catch((error) => console.warn("[video] LiveKit Inference use not metered", error));
+      }
+      return result;
     } finally {
       running -= 1;
     }

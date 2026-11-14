@@ -29,7 +29,8 @@ import {
   type JobApplyRun,
   type Pane
 } from "@space/contracts";
-import { createCopilotRunKick } from "../copilot-run-kick.js";
+import { createCopilotRunKick, type CopilotKickWait } from "../copilot-run-kick.js";
+import { atEmptyPrompt } from "../room-agent-autopilot.js";
 import type { RoomPaneObservation } from "../room-pane-control.js";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 import type { JobApplyService } from "./service.js";
@@ -48,6 +49,10 @@ export interface JobApplyRouteDependencies {
   /** The pane's CLI as the Room Agent sees it; with it, a stalled RUNNING run is kicked again (app.ts passes it with stable's job-apply-mail-triage job). */
   inspect?(pane: Pane): Promise<RoomPaneObservation>;
   log?: { warn(details: unknown, message: string): void };
+  /** The pane waits on the operator (an open needs-you): the run kick types nothing into it. */
+  holds?(owner: string, pane: Pane): Promise<boolean>;
+  /** The run kick has waited 30 minutes on this pane (see createCopilotRunKick). */
+  waited?(owner: string, pane: Pane, reason: CopilotKickWait): Promise<void>;
 }
 
 /** A RUNNING run with no activity this long, whose CLI sits at an empty prompt with postings queued, lost its loop. */
@@ -56,17 +61,58 @@ const RUN_IDLE_MS = 10 * 60_000;
 const BETWEEN_APPLICATIONS_MS = 60_000;
 
 /** The stalled-run kick of Job Copilot panes (see registerJobApplyRoutes); `now` for tests. */
-export function createJobApplyRunKick(service: Pick<JobApplyService, "runView" | "markKickoff" | "pacing">, deps: Pick<JobApplyRouteDependencies, "store" | "kickoff">
+export function createJobApplyRunKick(service: Pick<JobApplyService, "runView" | "markKickoff" | "pacing" | "targetPace" | "startRun" | "stopRun" | "noteTargetMiss" | "listEvents">,
+  deps: Pick<JobApplyRouteDependencies, "store" | "kickoff" | "holds" | "waited">
   & { inspect(pane: Pane): Promise<RoomPaneObservation>; log: { warn(details: unknown, message: string): void }; now?: () => number }) {
   const now = deps.now ?? Date.now;
+  // Behind the daily target's pace (operator 13/11: 200 a day), a pane with no run gets one, unless the operator's Stop was its last
+  // word or another Job Copilot pane of the owner already runs (one run at a time keeps the per-site caps and duplicate checks simple).
+  async function behind(owner: string, pane: Pane): Promise<boolean> {
+    const pace = await service.targetPace(owner);
+    if (!pace.target || pace.applied >= pace.due) return false;
+    const [latest] = await service.listEvents(owner, { paneId: pane.id, types: ["RUN_STARTED", "RUN_STOPPED", "RUN_FINISHED"], limit: 1 });
+    if (latest?.type === "RUN_STOPPED" && !latest.payload.keeper) return false;
+    for (const room of await deps.store.listRooms()) {
+      if (room.ownerUserId !== owner) continue;
+      for (const other of await deps.store.listPanes(room.id)) {
+        if (other.id !== pane.id && other.mode === "JOB_APPLY" && !other.isClosed && (await service.runView(owner, other.id)).run) return false;
+      }
+    }
+    return true;
+  }
   return createCopilotRunKick<JobApplyRun>({ mode: "JOB_APPLY", store: deps.store, log: deps.log, inspect: deps.inspect, now,
     paused: (pane) => resolveJobApplyPaneMetadata(pane.jobApplyMetadata).settings.paused,
+    ...(deps.holds ? { holds: deps.holds } : {}),
+    waited: async (owner, pane, reason) => {
+      await service.noteTargetMiss(owner, reason);
+      await deps.waited?.(owner, pane, reason);
+    },
+    start: async (owner, pane) => {
+      const started = await service.startRun(owner, pane.id);
+      try {
+        await deps.kickoff(pane, started.run, started.discover);
+        await service.markKickoff(owner, started.run.id);
+      } catch (error) {
+        await service.stopRun(owner, pane.id, true);
+        throw error;
+      }
+    },
     runView: async (owner, pane) => {
       const { run, queue } = await service.runView(owner, pane.id);
-      if (run === null || now() - Date.parse(run.lastActivityAt) < (run.currentApplicationId ? RUN_IDLE_MS : BETWEEN_APPLICATIONS_MS)) return { run, backlog: 0 };
+      if (run === null) return { run, backlog: 0, start: await behind(owner, pane) };
+      if (now() - Date.parse(run.lastActivityAt) < (run.currentApplicationId ? RUN_IDLE_MS : BETWEEN_APPLICATIONS_MS)) return { run, backlog: 0 };
       // 27/10 (queue item 22): with every site at its daily cap the kick re-typed all night and the agent answered PACING; a capped
       // site's postings wait for 00:00 UTC, when the count changes and the kick fires again.
       const eligible = jobApplicationQueueHolds(queue, new Date(now()).toISOString()).eligible;
+      // 13/11 (jobrun:ez_x261xkw30, 23 of 200): a RUNNING run with nothing to take whose agent ended its turn never calls space_job_next, so
+      // it never finished and the keeper never found postings. Behind pace and idle at an empty prompt (not mid-discovery), the keeper ends
+      // it (keeper: true does not hold) and starts the next run, which finds postings first, at most hourly.
+      if (!eligible.length && run.status === "RUNNING" && !run.currentApplicationId && now() - Date.parse(run.lastActivityAt) >= RUN_IDLE_MS
+        && await behind(owner, pane) && atEmptyPrompt(await deps.inspect(pane))) {
+        await service.stopRun(owner, pane.id, true);
+        await service.noteTargetMiss(owner, queue.length ? "QUEUE_DEFERRED" : "QUEUE_EMPTY");
+        return { run: null, backlog: 0, start: true };
+      }
       const capped = new Set<string>();
       for (const site of new Set(eligible.map((row) => row.ats))) {
         if ((await service.pacing(owner, site, pane.jobApplyMetadata)).nextAllowedAt === "tomorrow") capped.add(site);

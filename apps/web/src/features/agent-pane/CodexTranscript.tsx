@@ -41,6 +41,60 @@ export function visibleChatMessages(
   });
 }
 
+export interface CodexReplySteps { byReply: Map<string, CodexThreadItem[]>; pending: CodexThreadItem[] }
+
+const replyKey = (content: string) => visibleAssistantContent(content).replace(/\s+/g, " ");
+
+/** The work Codex did before each reply (commands and their output, reasoning summaries, notes between them), keyed by the
+ * reply's feed id. The feed holds stored rows, not rollout items, so replies are matched by text from the newest back: a
+ * repeated reply ("Done.") keeps its own steps. `pending` is the current turn's work after its last reply. */
+export function codexStepsByReply(items: CodexThreadItem[], replies: Array<{ id: string; content: string }>): CodexReplySteps {
+  const keys = new Set(replies.map((reply) => replyKey(reply.content)));
+  const groups: Array<{ key: string; steps: CodexThreadItem[] }> = [];
+  let steps: CodexThreadItem[] = [];
+  for (const item of items) {
+    if (item.role === "user" && item.kind === "message") { steps = []; continue; }
+    if (item.role === "assistant" && item.kind === "message") {
+      const key = replyKey(item.content);
+      if (keys.has(key)) { groups.push({ key, steps }); steps = []; }
+      else if (key) steps.push({ ...item, content: visibleAssistantContent(item.content) });
+      continue;
+    }
+    if (item.kind === "tool_call" || item.kind === "tool_result" || (item.kind === "reasoning" && item.content !== "Reasoning")) steps.push(item);
+  }
+  const byReply = new Map<string, CodexThreadItem[]>();
+  let end = groups.length;
+  for (let index = replies.length - 1; index >= 0; index -= 1) {
+    const key = replyKey(replies[index]!.content);
+    let match = end - 1;
+    while (match >= 0 && groups[match]!.key !== key) match -= 1;
+    if (match < 0) continue;
+    end = match;
+    if (groups[match]!.steps.length) byReply.set(replies[index]!.id, groups[match]!.steps);
+  }
+  return { byReply, pending: steps };
+}
+
+const exitCodePattern = /(?:Exit code:?|exited with code)\s*(-?\d+)/i;
+
+/** A closed list of the steps behind a reply; long outputs scroll inside their box. */
+export function CodexSteps({ steps }: { steps: CodexThreadItem[] }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
+  return <details className="dots-feed-steps">
+    <summary>{steps.length === 1 ? t("1 step") : t("{count} steps", { count: steps.length })}</summary>
+    <ol>{steps.map((step) => {
+      const exitCode = step.kind === "tool_result" ? exitCodePattern.exec(step.content)?.[1] : undefined;
+      return <li key={step.id} data-kind={step.kind} data-failed={exitCode !== undefined && exitCode !== "0" ? "true" : undefined}>
+        {step.kind === "tool_call" ? <><strong>{step.toolName ?? t("Command")}</strong><pre>{step.content}</pre></>
+          : step.kind === "tool_result" ? <><strong>{t("Output")}{exitCode !== undefined ? ` · ${t("Exit code {code}", { code: exitCode })}` : ""}</strong><pre>{step.content}</pre></>
+          : step.kind === "reasoning" ? <><strong>{t("Thinking")}</strong><p>{step.content}</p></>
+          : <p>{step.content}</p>}
+      </li>;
+    })}</ol>
+  </details>;
+}
+
 export function copyableCodexTranscript(items: CodexThreadItem[], messages: AgentPaneMessage[] = []): string {
   return visibleChatMessages(items, messages)
     .map((item) => `${item.role === "user" ? "User" : "Assistant"}:\n${item.content}`)

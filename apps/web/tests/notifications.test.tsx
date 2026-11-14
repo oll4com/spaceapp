@@ -319,6 +319,23 @@ describe("Space notifications (web)", () => {
     await waitFor(() => expect(apiMock.readAllNotifications).toHaveBeenCalled());
   });
 
+  it("gives an appointment reminder a Join button with its link in the Center and its toast (operator 13/11 16:00 BKK)", async () => {
+    const reminder = notification("r", { source: "NOUS", kind: "APPOINTMENT_REMINDER", title: "Reminder: Lexroom in 60 min", body: "Interview · Fri 14 Nov",
+      payload: { appointmentId: "appointment:lexroom", joinUrl: "https://meet.google.com/abc-defg-hij" } });
+    const plain = notification("p", { source: "NOUS", kind: "APPOINTMENT_REMINDER", title: "Reminder: Bank in 60 min", payload: { joinUrl: "javascript:alert(1)" } });
+    apiMock.notificationsPending.mockResolvedValue(pending([reminder, plain]));
+    apiMock.notifications.mockResolvedValue({ notifications: [reminder, plain] });
+    render(<NotificationCenterDock />);
+    const join = await screen.findByRole("link", { name: "Join meet.google.com" });
+    expect(join.getAttribute("href")).toBe("https://meet.google.com/abc-defg-hij");
+    expect(join.getAttribute("target")).toBe("_blank");
+    expect(screen.getAllByRole("link", { name: /^Join / })).toHaveLength(1);
+    cleanup();
+    render(<NotificationToastHost />);
+    act(() => { deliverNotifications([reminder], null); });
+    expect((await screen.findByRole("link", { name: "Join meet.google.com" })).getAttribute("href")).toBe("https://meet.google.com/abc-defg-hij");
+  });
+
   it("loads earlier notifications on demand past the newest 100 (31/10: the Center held only the newest 100)", async () => {
     const newest = Array.from({ length: 100 }, (_, index) => notification(`n${index}`, { status: "READ", createdAt: new Date(Date.parse(now) - index * 1_000).toISOString() }));
     const older = notification("old", { status: "READ", title: "An old invoice", createdAt: new Date(Date.parse(now) - 500_000).toISOString() });

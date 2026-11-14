@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
+import { SettingsLabel } from "./SettingsLabel.js";
 
 export interface WireGuardFileStatus {
   set: boolean;
@@ -49,16 +50,15 @@ export function WireGuardFileSettingsCard({ bridge }: { bridge: WireGuardBridge 
   const state = !status ? t("Loading…") : !status.set ? t("Not set: SpaceApp connects directly.") : status.active ? t("Set and connected.") : t("Set.");
   const problem = error ?? status?.lastError ?? null;
   return <section className="agent-settings-card settings-flat-card" aria-label={t("WireGuard file")}>
-    <div className="settings-flat-row">
-      <span className="settings-flat-row-copy">
-        <strong>{t("WireGuard file")}</strong>
-        <small data-wireguard-state={status ? (status.set ? "set" : "unset") : "loading"}>{state}</small>
-        {problem ? <small role="alert">{t("Last error:")} {problem}</small> : null}
-      </span>
-      <span>
-        <button type="button" className="settings-flat-button" disabled={pending} onClick={() => void run(bridge.choose)}>{t("Choose WireGuard file…")}</button>
-        {status?.set ? <button type="button" className="settings-flat-button" disabled={pending} onClick={() => void run(bridge.remove)}>{t("Remove")}</button> : null}
-      </span>
+    <div className="settings-flat-row" style={{ gridTemplateColumns: "1fr" }}>
+      <SettingsLabel label="WireGuard file" help="The desktop app's own WireGuard tunnel file: with one set, SpaceApp connects through that tunnel; without one, it connects directly.">
+        <span data-wireguard-state={status ? (status.set ? "set" : "unset") : "loading"}>{state}</span>
+      </SettingsLabel>
+    </div>
+    {problem ? <p className="settings-flat-note" role="alert">{t("Last error:")} {problem}</p> : null}
+    <div className="settings-flat-actions">
+      <button type="button" className="settings-flat-button" disabled={pending} onClick={() => void run(bridge.choose)}>{t("Choose WireGuard file…")}</button>
+      {status?.set ? <button type="button" className="settings-flat-button" disabled={pending} onClick={() => void run(bridge.remove)}>{t("Remove")}</button> : null}
     </div>
   </section>;
 }

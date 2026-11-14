@@ -2,12 +2,13 @@
 // its ask routes the answer (a pane's next prompt, a copilot's question or decision, Mail Copilot's Send to AI, Nous, or a plain acknowledgement).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
-import { eventSchema, makeNeedsYouAsk, type NeedsYouAsk, type NousMessage, type Pane, type Room } from "@space/contracts";
+import { eventSchema, makeNeedsYouAsk, type ClipboardItem, type NeedsYouAsk, type NousMessage, type Pane, type Room } from "@space/contracts";
 import { InMemorySpaceNotificationsRepository } from "@space/db";
 import { makeSpaceId, SpaceConflictError, SpaceEventBus, SpaceNotFoundError } from "@space/runtime";
 import { ZodError } from "zod";
 import { createNotificationService } from "../src/notifications/service.js";
 import { registerNousPaneBoardRoutes, type PaneBoardRouteDeps } from "../src/nous/pane-board-routes.js";
+import { createPlanNeedsYou } from "../src/nous/plan-needs-you.js";
 import { parseBody, parseQuery } from "../src/route-parsing.js";
 
 const owner = "user:operator";
@@ -34,7 +35,9 @@ describe("answering a needs-you record from its card", () => {
       requestMailFix: vi.fn<NonNullable<PaneBoardRouteDeps["requestMailFix"]>>(async () => {}),
       briefCopilot: vi.fn<NonNullable<PaneBoardRouteDeps["briefCopilot"]>>(async () => "The Freelance Copilot has the brief."),
       ledger: vi.fn<NonNullable<PaneBoardRouteDeps["ledger"]>>(async () => {}),
-      inbox: vi.fn<NonNullable<PaneBoardRouteDeps["inbox"]>>(async () => {})
+      inbox: vi.fn<NonNullable<PaneBoardRouteDeps["inbox"]>>(async () => {}),
+      unblockPlan: vi.fn<NonNullable<PaneBoardRouteDeps["unblockPlan"]>>(async () => true),
+      planWait: vi.fn<NonNullable<PaneBoardRouteDeps["planWait"]>>(async () => null)
     };
     const app = Fastify();
     apps.push(app);
@@ -65,6 +68,90 @@ describe("answering a needs-you record from its card", () => {
     // A copilot decision keeps its route; the channel itself asks for decide and the signature (1b-5).
     const review = await f.raise({ question: "Send the reply to Maria?", options: ["Approve", "Decline"], answer: { kind: "COPILOT_DECISION", copilot: "MAIL", item: "REVIEW", itemId: "mailrev:abc000002" } });
     expect((await f.answer(review, { option: "Decline" })).json()).toMatchObject({ routed: "COPILOT_DECISION" });
+  });
+
+  it("operator 13/11 14:41 BKK: Approve on a plan's card unblocks the plan and tells Nous; Reject only tells Nous", async () => {
+    const f = await fixture();
+    const raisePlan = async () => (await f.notifications.raise({ ownerUserId: owner, roomId: room.id, paneId: null, source: "NOUS", kind: "NEEDS_YOU", severity: "ATTENTION",
+      title: "Legal case", body: "Submit the case?", link: { roomId: room.id }, dedupeKey: `nous:plan:clipboard:S6PyXKwpBrit`, telegram: null,
+      payload: { planId: "clipboard:S6PyXKwpBrit", ask: { question: "Should Bruno submit the case?", options: ["Approve", "Reject"], recommended: "Approve", answer: { kind: "NOUS" } } } })).id;
+    const id = await raisePlan();
+    expect((await f.answer(id, { option: "Approve" })).json()).toMatchObject({ routed: "NOUS", display: "Approved: the plan no longer waits on you, and Nous carries on." });
+    expect(f.deps.unblockPlan).toHaveBeenCalledWith(owner, "clipboard:S6PyXKwpBrit");
+    expect(f.deps.send).toHaveBeenLastCalledWith(owner, expect.stringMatching(/^\[Plan Legal case · clipboard:S6PyXKwpBrit\] My answer to "Should Bruno submit the case\?": Approve\n\(Space cleared/), expect.anything());
+    const again = await raisePlan();
+    expect((await f.answer(again, { option: "Reject" })).statusCode).toBe(200);
+    expect(f.deps.unblockPlan).toHaveBeenCalledTimes(1);
+    expect(f.deps.send).toHaveBeenLastCalledWith(owner, expect.stringContaining(": Reject"), expect.anything());
+  });
+
+  it("operator 14/11 00:41 BKK (nous_msg:f8a4d2df): Space's own plan card leaves Needs you on every answer; Done also clears the plan's wait", async () => {
+    const f = await fixture();
+    const raisePlan = async () => (await f.notifications.raise({ ownerUserId: owner, roomId: room.id, paneId: null, source: "NOUS", kind: "NEEDS_YOU", severity: "ATTENTION",
+      title: "Hetzner move", body: "Pay the invoice", link: { roomId: room.id }, dedupeKey: "nous:plan:clipboard:a1HyMJ9g-0eC", telegram: null,
+      payload: { planId: "clipboard:a1HyMJ9g-0eC", derived: true, what: "Pay the invoice",
+        ask: { question: "This plan waits on you: Pay the invoice", options: ["Done", "Need help from an agent", "Not now"], answer: { kind: "NOUS" } } } })).id;
+    f.deps.planWait.mockResolvedValue("Pay the invoice");
+    const notNow = await raisePlan();
+    expect((await f.answer(notNow, { option: "Not now" })).json()).toMatchObject({ display: "Not now: it leaves Needs you and comes back only when the plan's wait changes." });
+    expect(f.deps.send).not.toHaveBeenCalled();
+    expect(await f.notifications.get(owner, notNow)).toMatchObject({ status: "ACKED", payload: { answer: { text: "Not now" }, answeredWait: "Pay the invoice" } });
+    for (const input of [{ option: "Need help from an agent" }, { text: "I paid it by bank transfer" }]) {
+      const id = await raisePlan();
+      expect((await f.answer(id, input)).json()).toMatchObject({ routed: "NOUS", display: "Sent to Nous." });
+      expect(f.deps.send).toHaveBeenLastCalledWith(owner, expect.stringContaining(`: ${input.option ?? input.text}`), expect.anything());
+      expect(await f.notifications.get(owner, id)).toMatchObject({ status: "ACKED", payload: { answeredWait: "Pay the invoice" } });
+    }
+    expect(f.deps.unblockPlan).not.toHaveBeenCalled();
+    const done = await raisePlan();
+    expect((await f.answer(done, { option: "Done" })).json()).toMatchObject({ display: "Done: the plan no longer waits on you, and Nous carries on." });
+    expect(f.deps.unblockPlan).toHaveBeenCalledWith(owner, "clipboard:a1HyMJ9g-0eC");
+    // Done ended the wait: if it is set again, it is asked again.
+    expect(await f.notifications.get(owner, done)).toMatchObject({ status: "ACKED", payload: { answeredWait: null } });
+    expect(await f.notifications.list(owner, { status: "NEEDS_YOU", limit: 200 })).toEqual([]);
+  });
+
+  it("operator 14/11 00:41 BKK: an answered plan item (a parked plan's condition, or Nous's card) leaves Needs you and Space does not raise it again", async () => {
+    const f = await fixture();
+    const condition = (what: string) => ({ reason: "Waits", since: "2026-11-13T05:00:00.000Z", resumedAt: null,
+      conditions: [{ id: "c2", who: "OPERATOR", what, check: { kind: "MANUAL" }, state: "OPEN", checkedAt: null, metAt: null, evidence: null }] });
+    const planOf = (what: string, paneId: string | null = null) => ({ id: "clipboard:-VCYK0c2heK9", title: "Step 8", text: "", roomId: room.id, paneId, isCompleted: true,
+      executionStatus: "COMPLETED", waitsOn: null, parked: condition(what) }) as unknown as ClipboardItem;
+    const state = { plans: [planOf("Sign the contract")] };
+    const needs = createPlanNeedsYou({ notifications: f.notifications, plans: async () => state.plans, decisions: async () => [] });
+    f.deps.planWait.mockImplementation((who, record) => needs.waitOf(who, record));
+    const waiting = () => f.notifications.list(owner, { status: "NEEDS_YOU", limit: 200 });
+    // The in-memory store orders by the millisecond: a later card on the same key must not share its predecessor's.
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 2));
+    expect((await needs.sync(owner)).raised).toBe(1);
+    const [item] = await waiting();
+    expect((await f.answer(item!.id, { text: "I signed it this morning" })).json()).toMatchObject({ routed: "NOUS", display: "Sent to Nous." });
+    expect(f.deps.send).toHaveBeenLastCalledWith(owner, expect.stringContaining("I signed it this morning"), expect.anything());
+    expect(await waiting()).toEqual([]);
+    // Until Nous marks the condition met, the next syncs (the Nous turn the answer starts) raise nothing for it.
+    expect(await needs.sync(owner)).toEqual({ raised: 0, resolved: 0, missing: [] });
+    expect(await waiting()).toEqual([]);
+    // New words, or the same wait reopened, ask again.
+    state.plans = [planOf("Sign the new contract")];
+    await tick();
+    expect((await needs.sync(owner)).raised).toBe(1);
+    const [renewed] = await waiting();
+    await f.answer(renewed!.id, { option: "Not now" });
+    expect(await needs.sync(owner)).toEqual({ raised: 0, resolved: 0, missing: [] });
+    await tick();
+    expect((await needs.sync(owner, ["clipboard:-VCYK0c2heK9"])).raised).toBe(1);
+    // Nous's card on the plan's pane (space_notify_operator): answered, it goes and Space's own does not take its place.
+    state.plans = [planOf("Pick the colour", pane.id)];
+    await f.notifications.raise({ ownerUserId: owner, roomId: room.id, paneId: pane.id, source: "NOUS", kind: "NEEDS_YOU", severity: "ATTENTION", title: "Colour",
+      body: "Pick the colour", link: { roomId: room.id, paneId: pane.id }, dedupeKey: `nous:pane:${pane.id}`, telegram: null,
+      payload: { ask: { question: "Red or blue?", options: ["red", "blue"], answer: { kind: "NOUS" } } } });
+    expect((await needs.sync(owner)).resolved).toBe(1);
+    const [notice] = await waiting();
+    expect(notice!.dedupeKey).toBe(`nous:pane:${pane.id}`);
+    expect((await f.answer(notice!.id, { option: "red" })).json()).toMatchObject({ routed: "NOUS" });
+    expect(await f.notifications.get(owner, notice!.id)).toMatchObject({ status: "ACKED", payload: { answeredWait: "Pick the colour" } });
+    expect(await needs.sync(owner)).toEqual({ raised: 0, resolved: 0, missing: [] });
+    expect(await waiting()).toEqual([]);
   });
 
   it("R27-2: Go now on a Nous hands card keeps it READ for the visit, is scored once and starts no Nous turn", async () => {

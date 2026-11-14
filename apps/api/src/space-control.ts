@@ -1418,7 +1418,9 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    // 31/10: a request moved off a busy pane takes its after-turn text with it (Nous cancels the schedule by the id its send answered).
    if(op==="cancel"&&params.id?.startsWith("control_schedule:"))return schedules(actor,roomId,"cancel",params.id);
    if(op==="status"||op==="get"){
-    const record=required(await repository.get("watch",actor.id,required(params.id,"Watch ID is required.")),"Watch not found.");
+    // 12/11 06:25 (a failed Nous call "Watch not found."): the error names the room's watches, so the next call is right.
+    const record=await repository.get("watch",actor.id,params.id!);
+    if(!record)throw new SpaceConflictError(`Watch not found: ${params.id}. This room's watches: ${(await repository.list("watch",actor.id,roomId)).map(r=>controlWatchSchema.parse(r.value).id).join(", ")||"none"} (status with no id lists them).`);
     if(record.roomId!==roomId)throw new SpaceConflictError("Watch belongs to another room.");
     return controlWatchSchema.parse(record.value);
    }
@@ -1525,7 +1527,6 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     };
     const notifyQueued = async (roomId: string, watch: any) => {
       try {
-        options.publishEvent?.({ type: "control.watch.queued", roomId, watch } as any);
         await options.publish(roomId);
       } catch {}
     };

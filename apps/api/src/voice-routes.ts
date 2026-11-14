@@ -27,6 +27,7 @@ import {
 import { bridgeFishVoice } from "./fish-voice-bridge.js";
 import { bridgeSenseVoice } from "./sensevoice-voice-bridge.js";
 import { bridgeGrantVoice } from "./grant-voice-bridge.js";
+import { liveKitMeter } from "./livekit-meter.js";
 import { isGrantLiveProvider, type GrantVoicePlan } from "./voice-grants.js";
 import { relayVoiceSockets, voiceProxyLimits, VoiceProxyTickets } from "./voice-ws-proxy.js";
 
@@ -286,7 +287,9 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
       return;
     }
     if (session.provider && isGrantLiveProvider(session.provider)) {
-      const stop = bridgeGrantVoice(clientSocket, { plan: JSON.parse(session.token ?? "{}") as GrantVoicePlan, onClose: (metadata) => {
+      const stop = bridgeGrantVoice(clientSocket, { plan: JSON.parse(session.token ?? "{}") as GrantVoicePlan,
+        meter: (use) => void liveKitMeter.record({ source: "live", ...use }).catch((error) => request.log.warn({ err: error }, "LiveKit Inference use not metered")),
+        onClose: (metadata) => {
         activeVoiceProxies.delete(stop);
         request.log.info({ sessionId, provider: session.provider, ...metadata, event: "voice_ws_proxy_closed" }, "Voice relay closed");
       } });

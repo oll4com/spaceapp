@@ -399,10 +399,10 @@ describe("VoiceInputProvider with the browser's free speech recognition (operato
       this.onresult?.({ results: parts.map(([transcript, isFinal]) => Object.assign([{ transcript }], { isFinal })) });
     }
   }
-  const renderHarness = (onA = vi.fn()) => {
+  const renderHarness = (onA = vi.fn(), onB = vi.fn()) => {
     render(
       <SpaceRuntimeProvider runtime={liveRuntime}>
-        <VoiceInputProvider><Harness onA={onA} onB={vi.fn()} /></VoiceInputProvider>
+        <VoiceInputProvider><Harness onA={onA} onB={onB} /></VoiceInputProvider>
       </SpaceRuntimeProvider>
     );
     return onA;
@@ -461,6 +461,82 @@ describe("VoiceInputProvider with the browser's free speech recognition (operato
     await waitFor(() => expect(screen.getByTestId("voice-error").textContent).toContain("This browser has no speech recognition"));
     expect(screen.getByTestId("voice-state").textContent).toBe("a:idle");
     expect(realtime.open).not.toHaveBeenCalled();
+  });
+
+  describe("inside SpaceApp Desktop (Web Speech there always ends in network: Whisper runs on the PC)", () => {
+    const processors: Array<{ onaudioprocess: ((event: unknown) => void) | null }> = [];
+    class FakeAudioContext {
+      sampleRate = 16000;
+      destination = {};
+      close = vi.fn(async () => undefined);
+      createMediaStreamSource() { return { connect: vi.fn(), disconnect: vi.fn() }; }
+      createScriptProcessor() {
+        const processor = { connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null };
+        processors.push(processor);
+        return processor;
+      }
+    }
+    const stopTrack = vi.fn();
+    const desktop = (speech?: object) => Object.defineProperty(window, "spaceDesktop", { configurable: true, value: { isDesktop: true, speech } });
+    beforeEach(() => {
+      processors.length = 0;
+      vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+      vi.stubGlobal("AudioContext", FakeAudioContext);
+      Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] })) } });
+    });
+    afterEach(() => {
+      Reflect.deleteProperty(window, "spaceDesktop");
+      Reflect.deleteProperty(navigator, "mediaDevices");
+    });
+
+    it("records, hands the take to the PC's recognizer and never opens Web Speech or the relay", async () => {
+      const transcribe = vi.fn(async () => ({ text: " Γεια σου Nous " }));
+      desktop({ prepare: vi.fn(async () => ({ ready: true, progress: 1 })), transcribe });
+      const onA = vi.fn();
+      const onB = vi.fn();
+      renderHarness(onA, onB);
+      fireEvent.click(screen.getByRole("button", { name: "Start A" }));
+      await waitFor(() => expect(screen.getByTestId("voice-state").textContent).toBe("a:recording"));
+      act(() => processors[0]!.onaudioprocess?.({ inputBuffer: { getChannelData: () => new Float32Array([0.5, -0.5, 0]) } }));
+      fireEvent.click(screen.getByRole("button", { name: "Start B" }));
+      await waitFor(() => expect(screen.getByTestId("voice-state").textContent).toBe("b:recording"));
+      expect(stopTrack).toHaveBeenCalled();
+      act(() => processors[1]!.onaudioprocess?.({ inputBuffer: { getChannelData: () => new Float32Array([0.25, 0.25]) } }));
+      fireEvent.click(screen.getByRole("button", { name: "Stop B" }));
+      await waitFor(() => expect(transcribe).toHaveBeenCalledOnce());
+      const [pcm, lang] = transcribe.mock.calls[0] as unknown as [Uint8Array, string];
+      expect(lang).toBe("el");
+      // Only B's take (two samples), at 16 kHz 16-bit: A's was dropped with its microphone.
+      expect(pcm.byteLength).toBe(4);
+      await waitFor(() => expect(onB).toHaveBeenCalledWith("Γεια σου Nous"));
+      expect(onA).not.toHaveBeenCalled();
+      expect(FakeRecognition.last).toBeNull();
+      expect(realtime.open).not.toHaveBeenCalled();
+    });
+
+    it("leaves Auto to Whisper, whatever languages the PC lists", async () => {
+      window.localStorage.setItem("space.voiceTranscription.settings", JSON.stringify({ enabled: true, language: "auto" }));
+      const transcribe = vi.fn(async () => ({ text: "hello" }));
+      desktop({ prepare: vi.fn(async () => ({ ready: true, progress: 1 })), transcribe });
+      renderHarness();
+      fireEvent.click(screen.getByRole("button", { name: "Start B" }));
+      await waitFor(() => expect(screen.getByTestId("voice-state").textContent).toBe("b:recording"));
+      act(() => processors[0]!.onaudioprocess?.({ inputBuffer: { getChannelData: () => new Float32Array([0.5]) } }));
+      fireEvent.click(screen.getByRole("button", { name: "Stop B" }));
+      await waitFor(() => expect(transcribe).toHaveBeenCalledWith(expect.any(Uint8Array), "auto"));
+    });
+
+    it("tells how far the one-time download is, and that an older desktop needs an update", async () => {
+      desktop({ prepare: vi.fn(async () => ({ ready: false, progress: 0.426 })), transcribe: vi.fn() });
+      renderHarness();
+      fireEvent.click(screen.getByRole("button", { name: "Start A" }));
+      await waitFor(() => expect(screen.getByTestId("voice-error").textContent).toContain("downloading its free speech recognition for this PC, once (42% of 590 MB)"));
+
+      desktop();
+      fireEvent.click(screen.getByRole("button", { name: "Start A" }));
+      await waitFor(() => expect(screen.getByTestId("voice-error").textContent).toContain("This SpaceApp Desktop version has no free speech recognition"));
+      expect(FakeRecognition.last).toBeNull();
+    });
   });
 
   it("names a denied microphone and ignores a take with no speech", async () => {

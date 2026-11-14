@@ -4,6 +4,8 @@
 // shortcut: a restart also gives back what the person took back; revoking the link (Settings > Account > Devices) stops it for good. Persist
 // "taken back" when a person needs it to survive a restart.
 
+import { resolvePaneByName } from "@space/contracts";
+
 /** Technical: a link that has not acted for this long stops holding this SpaceApp's own Nous back; its next act takes the lease again. */
 export const LINK_LEASE_IDLE_MS = 15 * 60_000;
 
@@ -36,4 +38,20 @@ export function linkLease(store: object, now: () => number = Date.now) {
     takeBack(owner: string) { leases.delete(owner); takenBack.set(owner, new Date(now()).toISOString()); },
     giveBack(owner: string) { takenBack.delete(owner); }
   };
+}
+
+type HeldPane = { id: string; roomId: string; paneName?: string | null; isClosed?: boolean };
+/**
+ * Per-pane "human wins" (Λ5): the pane, of those the operator in person is at, that a link's Space Control body reaches, or null. A body
+ * reaches a pane that it names by id anywhere (targets, resource inputs, placements) or by name in a target, or whose room it targets by
+ * runtime or state alone.
+ */
+export function heldPaneReached(body: unknown, held: readonly HeldPane[]): HeldPane | null {
+  if (!held.length || !body || typeof body !== "object") return null;
+  const { roomId, actions } = body as { roomId?: unknown; actions?: unknown };
+  const targets = (Array.isArray(actions) ? actions : []).map((action) => (action as { target?: unknown } | null)?.target)
+    .filter((target): target is { paneIds?: unknown; paneNames?: unknown } => !!target && typeof target === "object");
+  const text = JSON.stringify(body);
+  return held.find((pane) => text.includes(pane.id) || (pane.roomId === roomId && targets.some(({ paneIds, paneNames }) => Array.isArray(paneNames)
+    ? paneNames.some((name) => typeof name === "string" && resolvePaneByName([pane], name) !== null) : !Array.isArray(paneIds)))) ?? null;
 }

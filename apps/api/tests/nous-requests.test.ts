@@ -26,7 +26,7 @@ describe("Nous Requests", () => {
         { key: requestDoneReceiptKey("turn:d"), text: "notification:pruned", updatedAt: "2026-10-31T04:20:00.000Z" }]
     });
     const result = status([a, b, c, d], value, new Map([["clipboard:plan0000c", { progressPercentage: 100, isCompleted: true, executionStatus: "COMPLETED" }]]));
-    expect(result[a.id]).toEqual({ messageId: a.id, createdAt: a.createdAt, text: "Πρόσθεσε το tab", status: "DONE", doneSummary: "Το tab υπάρχει.", where: "stable", tickets: ["q-20261031-020000-abcd"], answeredAt: "2026-10-31T02:10:00.000Z", repliedAt: "2026-10-31T02:10:00.000Z", doneAt: "2026-10-31T09:30:00.000Z" });
+    expect(result[a.id]).toEqual({ messageId: a.id, createdAt: a.createdAt, text: "Πρόσθεσε το tab", status: "DONE", doneSummary: "Το tab υπάρχει.", where: "stable", tickets: ["q-20261031-020000-abcd"], answeredAt: "2026-10-31T02:10:00.000Z", repliedAt: "2026-10-31T02:10:00.000Z", doneAt: "2026-10-31T09:30:00.000Z", doneId: "notification:000001-2" });
     expect(result[b.id]).toMatchObject({ status: "DONE", doneSummary: "Bug fixed.", answeredAt: "2026-10-31T02:10:00.000Z" });
     expect(result[c.id]).toMatchObject({ status: "DONE", doneSummary: "Plan done.", planId: "clipboard:plan0000c", planPercent: 100 });
     // A record pruned 30 days after Got it leaves its receipt: still Done, without a summary.
@@ -53,6 +53,56 @@ describe("Nous Requests", () => {
     const completed = status([c, d], value, new Map([[plan, { progressPercentage: 100, isCompleted: true, executionStatus: "COMPLETED" }]]));
     expect(completed[c.id]).toMatchObject({ status: "DONE", doneSummary: "Plan done." });
     expect(completed[d.id]).toMatchObject({ status: "DONE" });
+  });
+
+  it("dates Done by the earliest exact record after a reopen, not a later plan's (13/11: own Done 05:18 read 13:25 through its plan, 9.5 h on the Score)", () => {
+    const [c] = [message(3, "Ξεκίνα το plan")];
+    const plan = "clipboard:planLate0003";
+    const value = links({
+      answers: [answer("turn:c", [c.id], "2026-10-31T03:10:00.000Z")],
+      // Newest first, as listed.
+      done: [done(`nous:done:${plan}`, { planId: plan, summary: "Plan done." }, "2026-10-31T13:25:00.000Z"),
+        done(`nous:done:${c.id}`, { summary: "Message done." }, "2026-10-31T05:18:00.000Z")],
+      notes: [{ key: `request-done:plan:${plan}`, text: JSON.stringify({ planId: plan, title: "c", operatorTurn: "turn:c" }), updatedAt: "2026-10-31T03:00:00.000Z" }]
+    });
+    const plans: NousRequestPlans = new Map([[plan, { progressPercentage: 100, isCompleted: true, executionStatus: "COMPLETED" }]]);
+    expect(status([c], value, plans)[c.id]).toMatchObject({ status: "DONE", doneAt: "2026-10-31T05:18:00.000Z", doneSummary: "Message done." });
+    // Reopened at 06:00: the 05:18 record no longer counts, the plan's 13:25 does.
+    const reopen = { key: "request-done:open:r1", text: JSON.stringify({ summary: "c", messageId: c.id, reopens: true, openedAt: "2026-10-31T06:00:00.000Z", reportedAt: "2026-10-31T06:00:00.000Z" }), updatedAt: "2026-10-31T06:00:00.000Z" };
+    expect(status([c], links({ ...value, notes: [...value.notes, reopen] }), plans)[c.id]).toMatchObject({ status: "DONE", doneAt: "2026-10-31T13:25:00.000Z" });
+  });
+
+  it("measures how long a Done request waited on the operator alone: from an OPERATOR or waits-on-the-operator outcome to the next other one or the Done", () => {
+    const [m] = [message(1, "Φτιάξε το Nous app")];
+    const turn = (n: string, endedAt: string, summary: string, outcome: "PENDING" | "OPERATOR" = "PENDING") => ({ turnId: `turn:${n}`, endedAt, outcomes: [{ summary, outcome, messageIds: [m.id] }] });
+    const value = links({
+      done: [done(`nous:done:${m.id}`, { summary: "Works on the phone." }, "2026-10-31T09:00:00.000Z")],
+      turns: [turn("a", "2026-10-31T01:30:00.000Z", "Building the APK"), turn("b", "2026-10-31T02:00:00.000Z", "The APK waits on the operator's phone test"),
+        turn("c", "2026-10-31T03:00:00.000Z", "Fixing the crash they saw"), turn("d", "2026-10-31T04:00:00.000Z", "Which icon?", "OPERATOR"),
+        turn("e", "2026-10-31T05:00:00.000Z", "Still waiting for the operator's test"), turn("late", "2026-10-31T10:00:00.000Z", "Waits on the operator")]
+    });
+    // 02:00-03:00 and 04:00 to the Done at 09:00: 6 h of the 8 h; the turn after the Done counts nothing.
+    expect(status([m], value)[m.id]).toMatchObject({ status: "DONE", doneAt: "2026-10-31T09:00:00.000Z", operatorWaitMs: 6 * 3_600_000 });
+    expect(status([m], links({ ...value, turns: value.turns.slice(0, 1) }))[m.id]!.operatorWaitMs).toBeUndefined();
+  });
+
+  it("never reads a message Done by a plan record or receipt written before it (13/11: a plan completed 9/11 read 51 later messages Done, up to 59 h early)", () => {
+    const [c] = [message(5, "Φτιάξε το meet τώρα")];
+    const plan = "clipboard:planOld00005";
+    const value = links({
+      answers: [answer("turn:c", [c.id], "2026-10-31T05:10:00.000Z")],
+      done: [done(`nous:done:${plan}`, { planId: plan, summary: "Plan done." }, "2026-10-31T01:00:00.000Z")],
+      notes: [{ key: `request-done:plan:${plan}`, text: JSON.stringify({ planId: plan, title: "c", operatorTurn: "turn:c" }), updatedAt: "2026-10-31T05:00:00.000Z" }]
+    });
+    const plans: NousRequestPlans = new Map([[plan, { progressPercentage: 100, isCompleted: true, executionStatus: "COMPLETED" }]]);
+    const early = status([c], value, plans)[c.id]!;
+    expect(early.status).not.toBe("DONE");
+    expect(early.doneAt).toBeUndefined();
+    // Its receipt from then (record pruned) holds nothing either; a record after the message counts.
+    const receipt = { key: requestDoneReceiptKey(plan), text: "notification:x", updatedAt: "2026-10-31T01:00:00.000Z" };
+    expect(status([c], links({ ...value, done: [], notes: [...value.notes, receipt] }), plans)[c.id]!.status).not.toBe("DONE");
+    expect(status([c], links({ ...value, done: [...value.done, done(`nous:done:${plan}`, { planId: plan, summary: "Again." }, "2026-10-31T06:00:00.000Z")] }), plans)[c.id])
+      .toMatchObject({ status: "DONE", doneAt: "2026-10-31T06:00:00.000Z", doneSummary: "Again." });
   });
 
   it("takes an operator turn's space_reply_now as the first reply, never as the answer that covers the message", () => {

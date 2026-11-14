@@ -6,7 +6,7 @@ import { LivePane } from "../src/features/live-pane/LivePane.js";
 import * as liveSessionModule from "../src/features/live-pane/live-session.js";
 import type { Pane } from "@space/contracts";
 
-vi.mock("../src/api.js", () => ({ api: { getLivePersonalMemory: vi.fn(), updatePane: vi.fn().mockResolvedValue({}) } }));
+vi.mock("../src/api.js", () => ({ api: { getLivePersonalMemory: vi.fn(), updatePane: vi.fn().mockResolvedValue({}), liveAudioProviders: vi.fn() } }));
 
 const mockPane: Pane = {
   id: "pane:live-provider-test",
@@ -111,6 +111,21 @@ describe("LivePane Provider Selection & Dynamic Config", () => {
     expect(options).toContain("amazon");
     expect(options).toContain("local");
     expect(options).toContain("vercel");
+  });
+
+  it("disables a provider Space has no credentials for and shows the API's reason", async () => {
+    vi.spyOn(api, "liveAudioProviders").mockResolvedValue({ providers: [
+      { id: "openai", configured: true },
+      { id: "amazon", configured: false, missingReason: "Amazon Nova 2 Sonic credentials not configured on Space." }
+    ] });
+    const { container } = render(<LivePane pane={mockPane} />);
+    await act(async () => {});
+    const options = Array.from((container.querySelector("#live-voice-provider-select") as HTMLSelectElement).options);
+    const amazon = options.find((o) => o.value === "amazon")!;
+    expect(amazon.disabled).toBe(true);
+    expect(amazon.textContent).toContain("Amazon Nova 2 Sonic credentials not configured on Space.");
+    expect(options.find((o) => o.value === "openai")!.disabled).toBe(false);
+    expect(options.find((o) => o.value === "google")!.disabled).toBe(false);
   });
 
   it("switches to Google Gemini Live and dynamically updates model, voice, and title", async () => {

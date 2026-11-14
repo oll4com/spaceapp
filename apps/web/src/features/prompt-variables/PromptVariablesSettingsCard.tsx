@@ -40,7 +40,7 @@ export function PromptVariablesSettingsCard() {
         checked={settings.enabled}
         onChange={(checked) => updateSettings({ enabled: checked })}
         label="Enable # prompt variables autocomplete"
-        detail="Show interactive variable suggestions dropdown when typing # in CLI terminals and composers."
+        help="Shows variable suggestions when you type # in CLI terminals and composers."
       />
 
       <SpaceToggle
@@ -50,7 +50,7 @@ export function PromptVariablesSettingsCard() {
         disabled={!settings.enabled}
         onChange={(checked) => updateSettings({ autoExpandOnSubmit: checked })}
         label="Auto-expand #variables on submission"
-        detail="Automatically replace recognized #variable names with their technical definition when sending the prompt."
+        help="Replaces recognized #variable names with their definition when you send the prompt."
       />
 
       <PromptVariablesManagerModal

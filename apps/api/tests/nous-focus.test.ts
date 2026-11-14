@@ -29,13 +29,12 @@ describe("space_focus_pane", () => {
     const again = await tools.execute("space_focus_pane", { room: "Main", pane: "Emma", reason: "CAPTCHA on Upwork", checked, steps: ["Open https://www.upwork.com/nx/find-work/ in Emma's browser", "Tick the Cloudflare box"] }, ctx);
     expect(again.result).toContain("Unchanged");
     expect(await open()).toHaveLength(1);
-    // R20-asks-2: a hands reason without its link and steps raises nothing.
+    // 13/11 nous_msg:83c0acb8: a hands reason that opens no page (no link, no target) raises nothing.
     expect(await tools.execute("space_focus_pane", { room: "Main", pane: "Emma", reason: "Sign in to Upwork", checked }, ctx)).toMatchObject({ ok: false, refused: true });
-    const changed = await tools.execute("space_focus_pane", { room: "Main", pane: "Emma", reason: "Sign in to Upwork", checked,
-      steps: ["Open https://www.upwork.com/ab/account-security/login", "Continue with Google (ntheogr@gmail.com)"] }, ctx);
+    const changed = await tools.execute("space_focus_pane", { room: "Main", pane: "Emma", reason: "Sign in to Upwork", checked, target: "url:https://www.upwork.com/ab/account-security/login" }, ctx);
     expect(changed.display).toContain("Updated");
     expect(await open()).toHaveLength(1);
-    expect((await open())[0]).toMatchObject({ body: "• Sign in to Upwork\n  1. Open https://www.upwork.com/ab/account-security/login\n  2. Continue with Google (ntheogr@gmail.com)\n\nChecked first:\n• Vault: no login for Upwork" });
+    expect((await open())[0]).toMatchObject({ body: "• Sign in to Upwork\n\nChecked first:\n• Vault: no login for Upwork" });
     expect(await tools.execute("space_focus_pane", { room: "Main", pane: "Zed", reason: "x", checked }, ctx)).toMatchObject({ ok: false });
   });
 

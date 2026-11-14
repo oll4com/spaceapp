@@ -422,7 +422,10 @@ function composerText(screen: string): string {
  */
 export function roomPromptFingerprint(redactedScreen: string): string {
   const lines = redactedScreen.split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean).slice(-20);
-  return createHash("sha256").update(lines.join("\n")).digest("hex").slice(0, 16);
+  // 14/11 REVIEW item 5 (4 answers refused 13/11 at ~2 min): Claude's "will automatically block this request in 0:28" ticks every second, so the
+  // same question never matched its own fingerprint; the countdown (wrapped or not) is not part of the question.
+  const question = lines.join("\n").replace(/(automatically \w+ this request\s+in\s+)\d+:\d{2}/gi, "$1-:--");
+  return createHash("sha256").update(question).digest("hex").slice(0, 16);
 }
 
 /** A permission or confirmation prompt (as opposed to a session or model picker). */
