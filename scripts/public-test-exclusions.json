@@ -1,4 +1,5 @@
 {
+  "apps/api/tests/agent-file-upload.test.ts": "reads deploy/nginx/space-oll4.conf and deploy/space-dev/nginx-space-dev.conf, the private nginx configs the export does not ship (run-spaceapp 1.2.2 CI)",
   "apps/api/tests/browser-chrome-crash.integration.test.ts": "needs Docker and a TMPDIR the Docker daemon can see (review 2026-10-16)",
   "apps/api/tests/browser-mcp.test.ts": "needs scripts/space-browser-mcp.mjs, which the export does not ship (review 2026-10-16)",
   "apps/api/tests/cli-adapter-launch-gates.test.ts": "imports scripts/cli-launch-admission.mjs and reads the deploy wrappers and sudoers, which the public tree does not ship (2026-10-30)",
@@ -13,8 +14,10 @@
   "apps/api/tests/gemini-session-host.test.ts": "reads the host's Gemini conversations and writes the install's var folder (2026-10-30)",
   "apps/api/tests/google-browser-proof.test.mjs": "reads a private deploy file or script",
   "apps/api/tests/instance-releases-queue.test.ts": "its fake queue imports scripts/space-queue-operator-grant.mjs, a host operations script the public tree does not ship (2026-10-30)",
+  "apps/api/tests/make-app-routes.test.ts": "reads docs/integrations/make-app/spaceapp.make-app.json, which the export does not ship (run-spaceapp 1.2.2 CI)",
   "apps/api/tests/native-tunnel-origin.test.ts": "reads deploy/nginx/space-oll4.conf and deploy/space-dev/nginx-space-dev.conf, host configuration the public tree does not ship (1.1.7)",
   "apps/api/tests/nous-account-hold.test.ts": "matches the operator's mail domain, which the export rewrites to example.invalid, so the domain check cannot hold in the public tree (2026-11-10)",
+  "apps/api/tests/nous-computer-cell-image.test.ts": "reads deploy/codex-vscode-parity and deploy/nous-computer/pi-light-cli, paid-tier cell image files the export does not ship; its existsSync(deploy) guard sees the public deploy folder (run-spaceapp 1.2.2 CI)",
   "apps/api/tests/oauth-credential-identity.test.ts": "reads a private deploy file or script",
   "apps/api/tests/opencode-space-config.test.ts": "reads a private deploy file or script",
   "apps/api/tests/plan-execution-proof.test.ts": "imports scripts/managed-plan-execution-proof.mjs, which the public tree does not ship (2026-10-30)",
