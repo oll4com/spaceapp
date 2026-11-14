@@ -713,7 +713,8 @@ export async function createPublicExport({
     const collisionKeys = new Map();
     const files = [];
     let transformations = 0;
-    const keptPublicFiles = publicRepositoryFiles === null ? new Set() : publicRepositoryMaintainedFiles;
+    // A self-export ships the public repository's own maintained files; a private export leaves them to it.
+    const keptPublicFiles = publicRepositoryFiles === null || source === repoRoot ? new Set() : publicRepositoryMaintainedFiles;
     const exportPaths = new Set([...trackedPaths].filter((path) => isPublicExportPath(path) && !keptPublicFiles.has(path)));
     const hasFile = (path) => exportPaths.has(path) || publicRepositoryScripts.has(path);
     const workspaces = new Set(publicRepositoryWorkspaces);
@@ -1004,7 +1005,8 @@ export async function runCli(argv) {
       trackedPaths: tree.paths,
       sourceCommit,
       trackedMetadata: tree.metadata,
-      publicRepositoryFiles: resolve(sourceRoot) === repoRoot ? null : await publicRepositoryOwnedFiles(repoRoot)
+      // The self-export (public CI and release) needs them too: README links to public-owned docs/images.
+      publicRepositoryFiles: await publicRepositoryOwnedFiles(repoRoot)
     });
     process.stdout.write(`${JSON.stringify({
       ok: true,
