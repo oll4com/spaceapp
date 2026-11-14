@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "6b33f13df97be9e29371b4ee2a4b70002a35f800c8249215cd844c706b8277c0",
-  "sourceCommit": "61d22c012ed3b1efec340bda2c535fed726b465a",
-  "spaceSourceCommit": "14dcc83eb89a458915ac37bcba86b7db040f065b",
+  "candidateDigest": "891135be99f3471b4334aa5b477e985543ca3acc19f81c69aa12fea98749caa8",
+  "sourceCommit": "4fe27e930e382c60efff60dc841b60f5f6f6e6b2",
+  "spaceSourceCommit": "2f43b41031f80d9cba12dba6b31b879c5919842e",
   "launcherVersion": "1.2.2",
   "runtimeVersion": "1.2.2",
-  "createdAt": "2026-11-14T04:02:39.463Z",
+  "createdAt": "2026-11-14T04:39:06.947Z",
   "launcherTarballSha256": "ade7895ecc2fec963fc7296f35428c7c0110fe4a713ac1004ff7637a35572899",
   "labProof": {
-    "acceptanceSha256": "8282d2672388b523ba621b7132a1c482d19dc7103c185840dba8469ebf348055",
+    "acceptanceSha256": "ea9ebeae68616c518bf9b50803c8a13ffd88cff942454997cdaa7a3d87da00fc",
     "allCasesPass": true,
-    "ci": "public CI steps green on 61d22c01 (ci-61d22c01.log, sha256 3a4e183473a5532f3ec35610dc75fdf190358299f771f2a30d11cd63116b38e5)"
+    "ci": "public CI steps green on 4fe27e93 (ci-4fe27e93.log, sha256 7b12d7494691ac4b9edad21b86d7e15abff947f624953959f847f744dce0d8ab)"
   },
   "pendingAfterPublication": [
     "windows W1: fresh 1.2.2 install from the registry, no --local-images",
@@ -25,9 +25,9 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux/fresh-install-unattended.log",
-      "artifactSha256": "7345a8aa3bcebb4c1b64bbbf12084a49cc1d54fd23f8bd4677d2acdaa1f1c430",
+      "artifactSha256": "46a56be7b2a24239d827a66bdf98702a6957cde78929c7995ed911b929bfeae6",
       "unattended": true,
-      "note": "spaceapp-lab-120 (4 CPU, 8 GiB, Ubuntu 24.04, systemd, no Docker): npx run-spaceapp 1.2.2 install --non-interactive --answers (small); Docker installed, docker group re-entry continued unattended past the TTY gate; exit 0 in 51 s, memory.peak 7.99e9 B, oom_kill 0, readyz ok"
+      "note": "spaceapp-lab-120 recreated clean (4 CPU, 8 GiB, Ubuntu 24.04, systemd; Docker Engine preloaded and stopped, lab user not in the docker group; images 4fe27e93 labelled space.candidate 2f43b41031): npx run-spaceapp 1.2.2 install --non-interactive --answers (small) --local-images; Docker started, docker group re-entry continued unattended; exit 0 in 52 s, memory.peak 7.999e9 B, oom_kill 0, readyz ok"
     },
     {
       "platform": "linux",
@@ -36,10 +36,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/sub4/d/summary.txt",
-      "artifactSha256": "044059f4de1de093247c95826de42d4e430a2e07252785dcb03ca2769d039de0",
+      "artifact": "linux/sub4/e/summary.txt",
+      "artifactSha256": "e2156ee8ea573a008bcf320e272b3d8a7ea0789f5fbf056d7253a29023140a93",
       "dataPreserved": true,
-      "note": "U (ur122d): published 1.2.1 from npm, its digest-pinned images pulled from ghcr.io (TLS-passthrough tunnel via vm208), update to 1.2.2; secrets, workspaces, DB marker preserved. First attempt ur122c (linux/sub4/c) failed in the lab harness: its reset did not answer purgeConfirm, kept the ur122b volumes, and the fresh 1.2.1 install met the old Postgres password (28P01)"
+      "seedChoicesPreserved": true,
+      "note": "spaceapp-lab-122u-14dc (Ubuntu 24.04, systemd, cpuset 4-7): published run-spaceapp 1.2.1 installed from npm with registry pulls (exit 0, core 509efa0d); seed choices on 1.2.1 (edited ask-last, retired closeout-check, deleted delivery-proof, seed-before.json); marker written; run-spaceapp 1.2.2 update --local-images exit 0, config 1.2.2, core a5d28c63 / cli 6b56e4c1 revision 4fe27e93; data, secrets, workspaces, persistent file and database marker preserved; seed-after.json: the edit, the retirement and the delete kept, identity ACTIVE (58 ACTIVE + 1 RETIRED; the 1.2.2 seed has the same 60 entries, so no new keys, and unchanged rows keep introduced 1.2.1 by design)"
     },
     {
       "platform": "linux",
@@ -48,10 +49,10 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/sub4/d/summary.txt",
-      "artifactSha256": "044059f4de1de093247c95826de42d4e430a2e07252785dcb03ca2769d039de0",
+      "artifact": "linux/sub4/e/summary.txt",
+      "artifactSha256": "e2156ee8ea573a008bcf320e272b3d8a7ea0789f5fbf056d7253a29023140a93",
       "dataPreserved": true,
-      "note": "R: spaceapp-core removed, doctor --fix, ready"
+      "note": "same lab after the upgrade: spaceapp-core removed (owned fault), doctor exit 0, doctor --fix --local-images exit 0 in 40 s, ready, images 1.2.2 / 4fe27e93, data, secrets, workspaces and marker preserved"
     },
     {
       "platform": "linux",
@@ -60,11 +61,13 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/sub4/summary.txt",
+      "artifact": "linux/carried-14dcc83e/sub4/summary.txt",
       "artifactSha256": "ea4dc578063c96ef84fd32f36314810b23cfa13ef64cebd515136cdbaccf472e",
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
-      "note": "S: docker.service and socket stopped, install started it, ready, images labelled 1.2.2 / c32b1c18"
+      "note": "S: docker.service and socket stopped, install started it, ready, images labelled 1.2.2 / c32b1c18",
+      "carriedFrom": "1.2.2 lab on 14dcc83eb8 (images c32b1c18), 14/11",
+      "carriedReason": "Candidate 2f43b41031 is 14dcc83eb8 plus only the shared Nous memory seed stamp (releaseVersion 1.2.1 -> 1.2.2, the same 60 entries; Nous decision A, 14/11); the launcher tarball is byte-identical (sha256 ade7895e). Rerun on 2f43b41031: public CI, the unattended fresh install with Nous's first answer, the 1.2.1 -> 1.2.2 upgrade with repair and the seed survival check."
     },
     {
       "platform": "linux",
@@ -73,7 +76,7 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/sub4/F-native-session.json",
+      "artifact": "linux/carried-14dcc83e/sub4/F-native-session.json",
       "artifactSha256": "9bcf48f275b8b52b9e0e82f3ca66c298902a9bfa5aa33636072db02f8d3e6904",
       "uiOpened": true,
       "responseObserved": true,
@@ -81,7 +84,9 @@
       "nativeTaskId": "ses_e285ae52dffemBwfRWMmpAys37",
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
-      "note": "room:0XtmpTF16a3b pane:gd3BRY0abynE answered SPACEAPP-122-FIRST-AGENT-OK, cost 0; the probe (F-first-agent/summary.json) exited 1 only because it read the task list before the native id appeared, the session is read from the cli container"
+      "note": "room:0XtmpTF16a3b pane:gd3BRY0abynE answered SPACEAPP-122-FIRST-AGENT-OK, cost 0; the probe (F-first-agent/summary.json) exited 1 only because it read the task list before the native id appeared, the session is read from the cli container",
+      "carriedFrom": "1.2.2 lab on 14dcc83eb8 (images c32b1c18), 14/11",
+      "carriedReason": "Candidate 2f43b41031 is 14dcc83eb8 plus only the shared Nous memory seed stamp (releaseVersion 1.2.1 -> 1.2.2, the same 60 entries; Nous decision A, 14/11); the launcher tarball is byte-identical (sha256 ade7895e). Rerun on 2f43b41031: public CI, the unattended fresh install with Nous's first answer, the 1.2.1 -> 1.2.2 upgrade with repair and the seed survival check."
     },
     {
       "platform": "linux",
@@ -91,10 +96,11 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux/nous-first/messages.txt",
-      "artifactSha256": "9714e4a8b6a8351281fd70bd46d72125f094e5ab64a3af6964bfcbfe99a8f600",
+      "artifactSha256": "b6e72787e3a3016b13cbed1740bbda11e44ebecdab36d637bd952c0894330c41",
       "freeModel": true,
       "modelId": "opencode/big-pickle",
-      "note": "spaceapp-lab-120 without Claude: owner claimed, Nous answered the first question; interim reply after 38.6 s, final answer on opencode/big-pickle with the free-model note"
+      "seedImported": true,
+      "note": "spaceapp-lab-120 without Claude: owner claimed, first Nous question; the seed imported on the first turn (60 SEED rows ACTIVE, introduced 1.2.2, identity present, seed-rows.txt); interim reply after 34.5 s already in the seed identity (I am Nous, Greek νους, the mind of SpaceApp), final answer at 43.4 s on opencode/big-pickle with the free-model note"
     },
     {
       "platform": "linux",
@@ -103,9 +109,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/light-2g/summary.txt",
+      "artifact": "linux/carried-14dcc83e/light-2g/summary.txt",
       "artifactSha256": "54a343dc2c069764104eb2767e252657b614ce166bf20df4a696341cee9cf8ae",
-      "note": "VM 262 (2 GB RAM, 4 CPU): fresh light install of the candidate (--local-images), install rc 0 in 37.7 s, two cold starts ready (44 s, 17 s) with no OOM kill, no restarts, no opencode at boot; the setup token file matches the database, owner not claimed"
+      "note": "VM 262 (2 GB RAM, 4 CPU): fresh light install of the candidate (--local-images), install rc 0 in 37.7 s, two cold starts ready (44 s, 17 s) with no OOM kill, no restarts, no opencode at boot; the setup token file matches the database, owner not claimed",
+      "carriedFrom": "1.2.2 lab on 14dcc83eb8 (images c32b1c18), 14/11",
+      "carriedReason": "Candidate 2f43b41031 is 14dcc83eb8 plus only the shared Nous memory seed stamp (releaseVersion 1.2.1 -> 1.2.2, the same 60 entries; Nous decision A, 14/11); the launcher tarball is byte-identical (sha256 ade7895e). Rerun on 2f43b41031: public CI, the unattended fresh install with Nous's first answer, the 1.2.1 -> 1.2.2 upgrade with repair and the seed survival check."
     },
     {
       "platform": "windows",
@@ -119,7 +127,7 @@
       "interactiveDesktop": true,
       "note": "win121 (Windows 11, per-user Docker Desktop 29.9.3, labadmin interactive session): fresh 1.2.1 install, --local-images, readyz ok, labels checked",
       "carriedFrom": "1.2.1 w5094 509efa0d",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -134,7 +142,7 @@
       "dataPreserved": true,
       "note": "U: 1.2.0 (images pulled from the registry first, --local-images) then update to 1.2.1, data preserved. The registry-only path is W2, checked right after publication",
       "carriedFrom": "1.2.1 w5094 509efa0d",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -149,7 +157,7 @@
       "dataPreserved": true,
       "note": "R: spaceapp-core removed, doctor --fix, ready",
       "carriedFrom": "1.2.1 w5094 509efa0d",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -165,7 +173,7 @@
       "dockerInitiallyStopped": true,
       "note": "S: Docker Desktop stopped (0 processes), launcher restarted it, ready",
       "carriedFrom": "1.2.1 w5094 509efa0d",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -185,7 +193,7 @@
       "modelId": "opencode/big-pickle",
       "note": "room:8fwfqF7hJer_ pane:Zo9kFGDb1Ebc, cost 0 (13-native-session.json)",
       "carriedFrom": "1.2.1 w5094 509efa0d",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "linux",
@@ -203,7 +211,7 @@
       "artifact": "linux-profiles.json",
       "artifactSha256": "2052405004c7208c91af01893587daddb7ba04bbfe65de549c81891117cc9fda",
       "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -222,7 +230,7 @@
       "artifact": "windows-profiles.json",
       "artifactSha256": "7e37bd9bae4505b3830967b826e71f6666d6beabf6dd9edaef4a7b7735d73276",
       "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -240,7 +248,7 @@
       "artifact": "macos-profiles.json",
       "artifactSha256": "098a2f5a21f32f9c8f79a07854e4525a19e8ef5be3e53074a2c5c8dbe94939da",
       "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -253,7 +261,7 @@
       "artifactSha256": "f9e93ed7f92f107c8bf96fa1be0a66ed9272a4f9d3f474dbe3ec9c6e8398fcf3",
       "ownerUi": true,
       "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (c14 1e365cf))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -266,7 +274,7 @@
       "artifactSha256": "96dc0ba8ee5d1fa2e06d995697d97ccda2921b28bbf4ec850f7667751e63ee90",
       "dataPreserved": true,
       "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (c14 1e365cf))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -279,7 +287,7 @@
       "artifactSha256": "450e6c6be6b80ac51a923df058cdaf110b0862a71f07ccd80aa3f472102a5601",
       "dataPreserved": true,
       "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (c13 cf4d247, via c14 1e365cf))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -293,7 +301,7 @@
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
       "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (c13 cf4d247, via c14 1e365cf))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -311,7 +319,7 @@
       "artifact": "c7-macos-first-agent.json",
       "artifactSha256": "8a1a41cb1f6c53dcf17a122747bd6891ef4d866be28e7c0216a6005cf937731d",
       "carriedFrom": "1.2.1 via (1.1.9 25fb63fd (c7 1ea6bf8))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     }
   ]
 }
