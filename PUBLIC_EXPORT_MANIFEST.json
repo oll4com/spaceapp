@@ -1,8 +1,8 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "14dcc83eb89a458915ac37bcba86b7db040f065b",
-  "fileCount": 6003,
+  "sourceCommit": "2f43b41031f80d9cba12dba6b31b879c5919842e",
+  "fileCount": 5996,
   "transformations": 430,
   "files": [
     {
@@ -13806,12 +13806,6 @@
       "size": 5602
     },
     {
-      "path": "apps/api/tests/agent-file-upload.test.ts",
-      "sourceObjectId": "69a1c8c4f7e075e2422588f1dd1cf39c4bc2b0bb",
-      "sha256": "9520aefd8d7135f9b88090870e16f21b6fbf52b5132a2c7cdc3618b4ab3ee27c",
-      "size": 3382
-    },
-    {
       "path": "apps/api/tests/agent-files.test.ts",
       "sourceObjectId": "e4bf21fe3e885e1ad7cfbd7370830094f752d873",
       "sha256": "8e2780741c950fee46400fc2876aaf4f09fe30bb4bb2f2c8e261746c3fd4b8e2",
@@ -15594,12 +15588,6 @@
       "size": 27707
     },
     {
-      "path": "apps/api/tests/make-app-routes.test.ts",
-      "sourceObjectId": "cea52f3c8ad97539bfbae43bf4ec1c880c859714",
-      "sha256": "4274247a19d9f33b8719ac82bc9ee0f92b47969e58d7d0778ac80e9803a14d23",
-      "size": 6187
-    },
-    {
       "path": "apps/api/tests/make-webhooks.test.ts",
       "sourceObjectId": "dd0a9bdfd4de1916245c403b167d0214594d187e",
       "sha256": "11723331a8e7c6453843ea64713897591bb9adcd0160aaa62701ae14cbda9fa9",
@@ -15774,12 +15762,6 @@
       "size": 6096
     },
     {
-      "path": "apps/api/tests/mobile-route-scopes.test.ts",
-      "sourceObjectId": "e7fd55bd37c0b0cd9ecedaf3a58e877c5b363d15",
-      "sha256": "bceb5e06e1f19e94ad5e64d466d86203e73addb64eb89950dfd4fdc659c66ba2",
-      "size": 1353
-    },
-    {
       "path": "apps/api/tests/monitoring-copilot.test.ts",
       "sourceObjectId": "46638ad8a2a367467abd8c5d0ef42b30ce48f2ff",
       "sha256": "753e634c5fadea5181eb0ee8ccda5d7145945477af98e8c7d3e7c9c42979a55e",
@@ -15910,12 +15892,6 @@
       "sourceObjectId": "3fccbfd75d8cbddd426e3480495d0b8e51148a82",
       "sha256": "38870e04a845a9aa79925a7d3595939a17a247899e9c69ba5e77da6290163c06",
       "size": 5814
-    },
-    {
-      "path": "apps/api/tests/nous-computer-cell-image.test.ts",
-      "sourceObjectId": "4a1961f26c0b3ef5222a087e5d496c9a0a0a1d4b",
-      "sha256": "47451123cf7368179458f37823d9d4ebce5f4fb8b15426a044a25dbd909f463c",
-      "size": 4476
     },
     {
       "path": "apps/api/tests/nous-computer-cells.test.ts",
@@ -17118,12 +17094,6 @@
       "size": 5755
     },
     {
-      "path": "apps/api/tests/room-routes-wiring.test.ts",
-      "sourceObjectId": "aca18ea1ce8fdfaccb0df31e3ae9a5f1b41e530d",
-      "sha256": "6cb34013729846d47c477be748cb4ce37fd774382e1b39b66329839fe05af7cb",
-      "size": 8637
-    },
-    {
       "path": "apps/api/tests/room-shares.test.ts",
       "sourceObjectId": "c0c93898935b89d99f462893146d0ff7107bc373",
       "sha256": "73dd04a934e909faad99b898be790fc3f80f3038ba5b788e64deb096093bb3a4",
@@ -17170,12 +17140,6 @@
       "sourceObjectId": "55ce65b3c28d25ab8d33b2392f825e6c98cc4002",
       "sha256": "6e44c1b2d9a82f3544004b7ee015a98f0fe58bc19e2ab2ac2c59ab288db90d15",
       "size": 8036
-    },
-    {
-      "path": "apps/api/tests/route-auth-inventory.test.ts",
-      "sourceObjectId": "bbbea26d72ae9aa567ee574672a00f2b5a7b25e7",
-      "sha256": "4b86e06bb686127bd1d969f551510b929a0dde007b77f9541ff2e156f766e480",
-      "size": 2550
     },
     {
       "path": "apps/api/tests/route-rate-limits.test.ts",
@@ -28579,8 +28543,8 @@
     },
     {
       "path": "packages/contracts/src/nous-shared-memory-seed.json",
-      "sourceObjectId": "8242b85023f0baf727904d153d9666a76913d433",
-      "sha256": "85b0cf41a28492adbee9eb9534164589f870fed840521739dcca3c9f02b53dde",
+      "sourceObjectId": "2657e711a0b6ce45de3e49a713c0fa956f02ac00",
+      "sha256": "406c502589ed58489f51efee893f8c996b83438f1df81b077d54107c61f5587e",
       "size": 29840
     },
     {
@@ -29362,12 +29326,6 @@
       "sourceObjectId": "df17beebc13791d7c6c5bbfbfadc59d4d49f61fd",
       "sha256": "b23f32aab91f7a5ad385c08f50fe7746067a89b1dff105b3783fe671bddcd7d4",
       "size": 5191
-    },
-    {
-      "path": "packages/contracts/tests/room-pane-batch.test.ts",
-      "sourceObjectId": "5d7197f95c5515a77dd8b9f0bb81ea5029c81b2f",
-      "sha256": "09b88bf94ded744db1e5d2d5d9f253316b764cc70d5df57808fa23a4b289f4b4",
-      "size": 2330
     },
     {
       "path": "packages/contracts/tests/schemas.test.ts",
