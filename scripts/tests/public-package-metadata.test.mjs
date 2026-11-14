@@ -228,11 +228,14 @@ test("MCP Node transport is forced to the reviewed Hono security release", async
   );
 
   // 1.1.9: 2.1.3 fixes CVE-2026-118663 (serveStatic decodes the path twice), which the 2026-10-29 database added.
-  assert.equal(rootPackage.overrides?.["@hono/node-server"], "2.1.3");
+  // 1.2.2: 2.1.6 fixes CVE-2026-126210 and CVE-2026-126343; hono 4.13.16 fixes CVE-2026-126355 to 126358 (release run 43565126393).
+  assert.equal(rootPackage.overrides?.["@hono/node-server"], "2.1.6");
   assert.equal(
     lockfile.packages["node_modules/@hono/node-server"].version,
-    "2.1.3"
+    "2.1.6"
   );
+  assert.equal(rootPackage.overrides?.hono, "4.13.16");
+  assert.equal(lockfile.packages["node_modules/hono"].version, "4.13.16");
 });
 
 test("temporary vulnerability ignores are narrow, documented, and expiring", async () => {
