@@ -1,20 +1,20 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "9414106c7f40d6cb3e8b5bf969f3f4daca03a908a404131901fa7069ca5a893b",
-  "sourceCommit": "509efa0da24e3bfe27dc673e09f8c0732859dc36",
-  "spaceSourceCommit": "5094f26afb1cbf2a9160261a794388e1cf70a73f",
-  "launcherVersion": "1.2.1",
-  "runtimeVersion": "1.2.1",
-  "createdAt": "2026-11-13T06:34:46.259Z",
-  "launcherTarballSha256": "0409a36102386d4af630a673366eba36a9d2a4d072cb6b53fca9ba6549c46e20",
+  "candidateDigest": "6b33f13df97be9e29371b4ee2a4b70002a35f800c8249215cd844c706b8277c0",
+  "sourceCommit": "61d22c012ed3b1efec340bda2c535fed726b465a",
+  "spaceSourceCommit": "14dcc83eb89a458915ac37bcba86b7db040f065b",
+  "launcherVersion": "1.2.2",
+  "runtimeVersion": "1.2.2",
+  "createdAt": "2026-11-14T04:02:39.463Z",
+  "launcherTarballSha256": "ade7895ecc2fec963fc7296f35428c7c0110fe4a713ac1004ff7637a35572899",
   "labProof": {
-    "acceptanceSha256": "2ca6a22fc5f5f72a293ae90b634be92e19727316cd65cb5c0138618c9d2e4643",
+    "acceptanceSha256": "8282d2672388b523ba621b7132a1c482d19dc7103c185840dba8469ebf348055",
     "allCasesPass": true,
-    "approval": "operator RELEASE_APPROVE 891e7a61; Nous option A on 32494"
+    "ci": "public CI steps green on 61d22c01 (ci-61d22c01.log, sha256 3a4e183473a5532f3ec35610dc75fdf190358299f771f2a30d11cd63116b38e5)"
   },
   "pendingAfterPublication": [
-    "windows W1: fresh 1.2.1 install from the registry, no --local-images",
-    "windows W2: update 1.2.0 -> 1.2.1 from the registry, no --local-images"
+    "windows W1: fresh 1.2.2 install from the registry, no --local-images",
+    "windows W2: update 1.2.1 -> 1.2.2 from the registry, no --local-images"
   ],
   "checks": [
     {
@@ -24,9 +24,10 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/B.txt",
-      "artifactSha256": "832c7ce548ac4e69e6e84dbb01ddbb3dfb8373c32885099957be5f27a07a7b8a",
-      "note": "hz-vm207 systemd+Docker lab, --local-images, images built from overlay 509efa0d (Space 5094f26afb), readyz ok, labels checked"
+      "artifact": "linux/fresh-install-unattended.log",
+      "artifactSha256": "7345a8aa3bcebb4c1b64bbbf12084a49cc1d54fd23f8bd4677d2acdaa1f1c430",
+      "unattended": true,
+      "note": "spaceapp-lab-120 (4 CPU, 8 GiB, Ubuntu 24.04, systemd, no Docker): npx run-spaceapp 1.2.2 install --non-interactive --answers (small); Docker installed, docker group re-entry continued unattended past the TTY gate; exit 0 in 51 s, memory.peak 7.99e9 B, oom_kill 0, readyz ok"
     },
     {
       "platform": "linux",
@@ -35,10 +36,10 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/sub4u/summary.txt",
-      "artifactSha256": "4686b62c47e95fe5fefbb6a0ab0a10dbaf820a05faada6de09975caddc54489f",
+      "artifact": "linux/sub4/d/summary.txt",
+      "artifactSha256": "044059f4de1de093247c95826de42d4e430a2e07252785dcb03ca2769d039de0",
       "dataPreserved": true,
-      "note": "U: 1.2.0 from npm with registry pulls and its ghcr.io provenance check (TLS-passthrough tunnel via vm208), update to 1.2.1; secrets, workspaces, DB marker preserved"
+      "note": "U (ur122d): published 1.2.1 from npm, its digest-pinned images pulled from ghcr.io (TLS-passthrough tunnel via vm208), update to 1.2.2; secrets, workspaces, DB marker preserved. First attempt ur122c (linux/sub4/c) failed in the lab harness: its reset did not answer purgeConfirm, kept the ur122b volumes, and the fresh 1.2.1 install met the old Postgres password (28P01)"
     },
     {
       "platform": "linux",
@@ -47,8 +48,8 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/sub4u/summary.txt",
-      "artifactSha256": "4686b62c47e95fe5fefbb6a0ab0a10dbaf820a05faada6de09975caddc54489f",
+      "artifact": "linux/sub4/d/summary.txt",
+      "artifactSha256": "044059f4de1de093247c95826de42d4e430a2e07252785dcb03ca2769d039de0",
       "dataPreserved": true,
       "note": "R: spaceapp-core removed, doctor --fix, ready"
     },
@@ -59,11 +60,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/sub4u/summary.txt",
-      "artifactSha256": "4686b62c47e95fe5fefbb6a0ab0a10dbaf820a05faada6de09975caddc54489f",
+      "artifact": "linux/sub4/summary.txt",
+      "artifactSha256": "ea4dc578063c96ef84fd32f36314810b23cfa13ef64cebd515136cdbaccf472e",
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
-      "note": "S: docker.service and socket stopped, install started it, ready"
+      "note": "S: docker.service and socket stopped, install started it, ready, images labelled 1.2.2 / c32b1c18"
     },
     {
       "platform": "linux",
@@ -72,15 +73,39 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/sub4u/F-first-agent-0632/summary.json",
-      "artifactSha256": "eda0235269eda129fd11a61d0bca268737a1058bb3a3bd7ce89499ebf02bcd86",
+      "artifact": "linux/sub4/F-native-session.json",
+      "artifactSha256": "9bcf48f275b8b52b9e0e82f3ca66c298902a9bfa5aa33636072db02f8d3e6904",
       "uiOpened": true,
       "responseObserved": true,
       "freeModel": true,
-      "nativeTaskId": "ses_e2c644054ffeUwk8GAPVA3RrpD",
+      "nativeTaskId": "ses_e285ae52dffemBwfRWMmpAys37",
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
-      "note": "room:EUSJ4LWpYdj1 pane:9X4uu1JkvotX, cost 0 (F-13-native-session.json)"
+      "note": "room:0XtmpTF16a3b pane:gd3BRY0abynE answered SPACEAPP-122-FIRST-AGENT-OK, cost 0; the probe (F-first-agent/summary.json) exited 1 only because it read the task list before the native id appeared, the session is read from the cli container"
+    },
+    {
+      "platform": "linux",
+      "scenario": "nous-first-answer",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux/nous-first/messages.txt",
+      "artifactSha256": "9714e4a8b6a8351281fd70bd46d72125f094e5ab64a3af6964bfcbfe99a8f600",
+      "freeModel": true,
+      "modelId": "opencode/big-pickle",
+      "note": "spaceapp-lab-120 without Claude: owner claimed, Nous answered the first question; interim reply after 38.6 s, final answer on opencode/big-pickle with the free-model note"
+    },
+    {
+      "platform": "linux",
+      "scenario": "light-profile-2g",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux/light-2g/summary.txt",
+      "artifactSha256": "54a343dc2c069764104eb2767e252657b614ce166bf20df4a696341cee9cf8ae",
+      "note": "VM 262 (2 GB RAM, 4 CPU): fresh light install of the candidate (--local-images), install rc 0 in 37.7 s, two cold starts ready (44 s, 17 s) with no OOM kill, no restarts, no opencode at boot; the setup token file matches the database, owner not claimed"
     },
     {
       "platform": "windows",
@@ -92,7 +117,9 @@
       "artifact": "win121/w5094/summary.txt",
       "artifactSha256": "40e67593b14127bcb750c237897a9d16f103eab82d5c1a6e0eade575e1c689cb",
       "interactiveDesktop": true,
-      "note": "win121 (Windows 11, per-user Docker Desktop 29.9.3, labadmin interactive session): fresh 1.2.1 install, --local-images, readyz ok, labels checked"
+      "note": "win121 (Windows 11, per-user Docker Desktop 29.9.3, labadmin interactive session): fresh 1.2.1 install, --local-images, readyz ok, labels checked",
+      "carriedFrom": "1.2.1 w5094 509efa0d",
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -105,7 +132,9 @@
       "artifactSha256": "40e67593b14127bcb750c237897a9d16f103eab82d5c1a6e0eade575e1c689cb",
       "interactiveDesktop": true,
       "dataPreserved": true,
-      "note": "U: 1.2.0 (images pulled from the registry first, --local-images) then update to 1.2.1, data preserved. The registry-only path is W2, checked right after publication"
+      "note": "U: 1.2.0 (images pulled from the registry first, --local-images) then update to 1.2.1, data preserved. The registry-only path is W2, checked right after publication",
+      "carriedFrom": "1.2.1 w5094 509efa0d",
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -118,7 +147,9 @@
       "artifactSha256": "40e67593b14127bcb750c237897a9d16f103eab82d5c1a6e0eade575e1c689cb",
       "interactiveDesktop": true,
       "dataPreserved": true,
-      "note": "R: spaceapp-core removed, doctor --fix, ready"
+      "note": "R: spaceapp-core removed, doctor --fix, ready",
+      "carriedFrom": "1.2.1 w5094 509efa0d",
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -132,7 +163,9 @@
       "interactiveDesktop": true,
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
-      "note": "S: Docker Desktop stopped (0 processes), launcher restarted it, ready"
+      "note": "S: Docker Desktop stopped (0 processes), launcher restarted it, ready",
+      "carriedFrom": "1.2.1 w5094 509efa0d",
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -150,7 +183,9 @@
       "nativeTaskId": "ses_e2c737169ffeN2zwBNsaVRCAmz",
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
-      "note": "room:8fwfqF7hJer_ pane:Zo9kFGDb1Ebc, cost 0 (13-native-session.json)"
+      "note": "room:8fwfqF7hJer_ pane:Zo9kFGDb1Ebc, cost 0 (13-native-session.json)",
+      "carriedFrom": "1.2.1 w5094 509efa0d",
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "linux",
@@ -167,8 +202,8 @@
       "dataPreserved": true,
       "artifact": "linux-profiles.json",
       "artifactSha256": "2052405004c7208c91af01893587daddb7ba04bbfe65de549c81891117cc9fda",
-      "carriedFrom": "1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
+      "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf))",
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -186,8 +221,8 @@
       "interactiveDesktop": true,
       "artifact": "windows-profiles.json",
       "artifactSha256": "7e37bd9bae4505b3830967b826e71f6666d6beabf6dd9edaef4a7b7735d73276",
-      "carriedFrom": "1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
+      "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf))",
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -204,8 +239,8 @@
       "dataPreserved": true,
       "artifact": "macos-profiles.json",
       "artifactSha256": "098a2f5a21f32f9c8f79a07854e4525a19e8ef5be3e53074a2c5c8dbe94939da",
-      "carriedFrom": "1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
+      "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf))",
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -217,8 +252,8 @@
       "artifact": "macos-fresh-install.json",
       "artifactSha256": "f9e93ed7f92f107c8bf96fa1be0a66ed9272a4f9d3f474dbe3ec9c6e8398fcf3",
       "ownerUi": true,
-      "carriedFrom": "1.2.0 c15 64c3e71 (c14 1e365cf)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
+      "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (c14 1e365cf))",
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -230,8 +265,8 @@
       "artifact": "macos-upgrade.json",
       "artifactSha256": "96dc0ba8ee5d1fa2e06d995697d97ccda2921b28bbf4ec850f7667751e63ee90",
       "dataPreserved": true,
-      "carriedFrom": "1.2.0 c15 64c3e71 (c14 1e365cf)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
+      "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (c14 1e365cf))",
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -243,8 +278,8 @@
       "artifact": "c13-macos-repair.json",
       "artifactSha256": "450e6c6be6b80ac51a923df058cdaf110b0862a71f07ccd80aa3f472102a5601",
       "dataPreserved": true,
-      "carriedFrom": "1.2.0 c15 64c3e71 (c13 cf4d247, via c14 1e365cf)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
+      "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (c13 cf4d247, via c14 1e365cf))",
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -257,8 +292,8 @@
       "artifactSha256": "2a9cc56171fd05dac4c1a9a44d28aa4752edc81daed546766f028ea733f82448",
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
-      "carriedFrom": "1.2.0 c15 64c3e71 (c13 cf4d247, via c14 1e365cf)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
+      "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (c13 cf4d247, via c14 1e365cf))",
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -275,8 +310,8 @@
       "modelId": "opencode/big-pickle",
       "artifact": "c7-macos-first-agent.json",
       "artifactSha256": "8a1a41cb1f6c53dcf17a122747bd6891ef4d866be28e7c0216a6005cf937731d",
-      "carriedFrom": "1.1.9 25fb63fd (c7 1ea6bf8)",
-      "carriedReason": "Carried under Nous decision on report 32494 (option A), covered by the operator's RELEASE_APPROVE of 1.2.1 without a fully green lab (decision 891e7a61, 2026-11-13 09:49 BKK): no macOS lab host (VM221 off-limits, hosted runners never got Docker Desktop ready) and no profile run on this candidate. Not re-run on 1.2.1. v1.2.0..509efa0d: 533 files changed, 23724 insertions(+), 3773 deletions(-); launcher changes only packages/run-spaceapp/src/cli.mjs (a37fad7f purge without config.json, 0d2bfefe purge retry, 1376c48a Windows headless docker config); images change with the Space app (5094f26afb)."
+      "carriedFrom": "1.2.1 via (1.1.9 25fb63fd (c7 1ea6bf8))",
+      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..61d22c01: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     }
   ]
 }
