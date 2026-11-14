@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "891135be99f3471b4334aa5b477e985543ca3acc19f81c69aa12fea98749caa8",
-  "sourceCommit": "4fe27e930e382c60efff60dc841b60f5f6f6e6b2",
-  "spaceSourceCommit": "2f43b41031f80d9cba12dba6b31b879c5919842e",
+  "candidateDigest": "c7aefac8ab8a153819d0f75a68bb15bc68188f6b2475d5757dde5f9e30584854",
+  "sourceCommit": "24a7f1b5de34dfdaddc4f57ae440fa129349ad0c",
+  "spaceSourceCommit": "95d52f3f256b4d5a5c20086f94bb64b14962afb0",
   "launcherVersion": "1.2.2",
   "runtimeVersion": "1.2.2",
-  "createdAt": "2026-11-14T04:39:06.947Z",
+  "createdAt": "2026-11-14T07:09:10.605Z",
   "launcherTarballSha256": "ade7895ecc2fec963fc7296f35428c7c0110fe4a713ac1004ff7637a35572899",
   "labProof": {
-    "acceptanceSha256": "ea9ebeae68616c518bf9b50803c8a13ffd88cff942454997cdaa7a3d87da00fc",
+    "acceptanceSha256": "bea0220a74883eb5d7e894fab21756c9d6e459d82750fc5bdcebf101f690b8de",
     "allCasesPass": true,
-    "ci": "public CI steps green on 4fe27e93 (ci-4fe27e93.log, sha256 7b12d7494691ac4b9edad21b86d7e15abff947f624953959f847f744dce0d8ab)"
+    "ci": "public CI steps green on 24a7f1b5 (ci-24a7f1b5.log, sha256 2e5a046b6ef69761391220ead9072317be2b98f3ff99aca29eb4257af155984d)"
   },
   "pendingAfterPublication": [
     "windows W1: fresh 1.2.2 install from the registry, no --local-images",
@@ -25,9 +25,9 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux/fresh-install-unattended.log",
-      "artifactSha256": "46a56be7b2a24239d827a66bdf98702a6957cde78929c7995ed911b929bfeae6",
+      "artifactSha256": "39298b9822ea1bea29cf5857ee93336b540ec3366d2f4c1cf1a86f6f9a1a90d7",
       "unattended": true,
-      "note": "spaceapp-lab-120 recreated clean (4 CPU, 8 GiB, Ubuntu 24.04, systemd; Docker Engine preloaded and stopped, lab user not in the docker group; images 4fe27e93 labelled space.candidate 2f43b41031): npx run-spaceapp 1.2.2 install --non-interactive --answers (small) --local-images; Docker started, docker group re-entry continued unattended; exit 0 in 52 s, memory.peak 7.999e9 B, oom_kill 0, readyz ok"
+      "note": "spaceapp-lab-120 recreated clean (4 CPU, 8 GiB, Ubuntu 24.04, systemd; Docker Engine preloaded and stopped, lab user not in the docker group; images built --no-cache from overlay 24a7f1b5, labelled space.candidate 95d52f3f25): npx run-spaceapp 1.2.2 install --non-interactive --answers (small) --local-images; Docker started, docker group re-entry continued unattended; exit 0 in 56 s, memory.peak 8 GiB (the cgroup limit, page cache included), oom_kill 0, readyz ok; core and cli containers on revision 24a7f1b5"
     },
     {
       "platform": "linux",
@@ -36,11 +36,13 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/sub4/e/summary.txt",
+      "artifact": "linux/carried-2f43b410/sub4/e/summary.txt",
       "artifactSha256": "e2156ee8ea573a008bcf320e272b3d8a7ea0789f5fbf056d7253a29023140a93",
       "dataPreserved": true,
       "seedChoicesPreserved": true,
-      "note": "spaceapp-lab-122u-14dc (Ubuntu 24.04, systemd, cpuset 4-7): published run-spaceapp 1.2.1 installed from npm with registry pulls (exit 0, core 509efa0d); seed choices on 1.2.1 (edited ask-last, retired closeout-check, deleted delivery-proof, seed-before.json); marker written; run-spaceapp 1.2.2 update --local-images exit 0, config 1.2.2, core a5d28c63 / cli 6b56e4c1 revision 4fe27e93; data, secrets, workspaces, persistent file and database marker preserved; seed-after.json: the edit, the retirement and the delete kept, identity ACTIVE (58 ACTIVE + 1 RETIRED; the 1.2.2 seed has the same 60 entries, so no new keys, and unchanged rows keep introduced 1.2.1 by design)"
+      "note": "spaceapp-lab-122u-14dc (Ubuntu 24.04, systemd, cpuset 4-7): published run-spaceapp 1.2.1 installed from npm with registry pulls (exit 0, core 509efa0d); seed choices on 1.2.1 (edited ask-last, retired closeout-check, deleted delivery-proof, seed-before.json); marker written; run-spaceapp 1.2.2 update --local-images exit 0, config 1.2.2, core a5d28c63 / cli 6b56e4c1 revision 4fe27e93; data, secrets, workspaces, persistent file and database marker preserved; seed-after.json: the edit, the retirement and the delete kept, identity ACTIVE (58 ACTIVE + 1 RETIRED; the 1.2.2 seed has the same 60 entries, so no new keys, and unchanged rows keep introduced 1.2.1 by design)",
+      "carriedFrom": "1.2.2 lab on 2f43b41031 (images 4fe27e93), 14/11",
+      "carriedReason": "Candidate 95d52f3f25 is 2f43b41031 plus only the Hono security overrides (hono 4.13.16, @hono/node-server 2.1.6; release run 43565126393 stopped at the container Trivy gate on 6 MEDIUM fixable CVEs, nothing published) and the public test pin that follows them; the launcher package is byte-identical (tarball sha256 ade7895e). Rerun on 95d52f3f25: public CI, the --no-cache image build with the Trivy gate (0 findings), the unattended fresh install and Nous's first answer with the seed import."
     },
     {
       "platform": "linux",
@@ -49,10 +51,12 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/sub4/e/summary.txt",
+      "artifact": "linux/carried-2f43b410/sub4/e/summary.txt",
       "artifactSha256": "e2156ee8ea573a008bcf320e272b3d8a7ea0789f5fbf056d7253a29023140a93",
       "dataPreserved": true,
-      "note": "same lab after the upgrade: spaceapp-core removed (owned fault), doctor exit 0, doctor --fix --local-images exit 0 in 40 s, ready, images 1.2.2 / 4fe27e93, data, secrets, workspaces and marker preserved"
+      "note": "same lab after the upgrade: spaceapp-core removed (owned fault), doctor exit 0, doctor --fix --local-images exit 0 in 40 s, ready, images 1.2.2 / 4fe27e93, data, secrets, workspaces and marker preserved",
+      "carriedFrom": "1.2.2 lab on 2f43b41031 (images 4fe27e93), 14/11",
+      "carriedReason": "Candidate 95d52f3f25 is 2f43b41031 plus only the Hono security overrides (hono 4.13.16, @hono/node-server 2.1.6; release run 43565126393 stopped at the container Trivy gate on 6 MEDIUM fixable CVEs, nothing published) and the public test pin that follows them; the launcher package is byte-identical (tarball sha256 ade7895e). Rerun on 95d52f3f25: public CI, the --no-cache image build with the Trivy gate (0 findings), the unattended fresh install and Nous's first answer with the seed import."
     },
     {
       "platform": "linux",
@@ -66,8 +70,8 @@
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
       "note": "S: docker.service and socket stopped, install started it, ready, images labelled 1.2.2 / c32b1c18",
-      "carriedFrom": "1.2.2 lab on 14dcc83eb8 (images c32b1c18), 14/11",
-      "carriedReason": "Candidate 2f43b41031 is 14dcc83eb8 plus only the shared Nous memory seed stamp (releaseVersion 1.2.1 -> 1.2.2, the same 60 entries; Nous decision A, 14/11); the launcher tarball is byte-identical (sha256 ade7895e). Rerun on 2f43b41031: public CI, the unattended fresh install with Nous's first answer, the 1.2.1 -> 1.2.2 upgrade with repair and the seed survival check."
+      "carriedFrom": "1.2.2 lab on 2f43b41031 (images 4fe27e93), 14/11 via 1.2.2 lab on 14dcc83eb8 (images c32b1c18), 14/11",
+      "carriedReason": "Candidate 95d52f3f25 is 2f43b41031 plus only the Hono security overrides (hono 4.13.16, @hono/node-server 2.1.6; release run 43565126393 stopped at the container Trivy gate on 6 MEDIUM fixable CVEs, nothing published) and the public test pin that follows them; the launcher package is byte-identical (tarball sha256 ade7895e). Rerun on 95d52f3f25: public CI, the --no-cache image build with the Trivy gate (0 findings), the unattended fresh install and Nous's first answer with the seed import. Earlier carry: Candidate 2f43b41031 is 14dcc83eb8 plus only the shared Nous memory seed stamp (releaseVersion 1.2.1 -> 1.2.2, the same 60 entries; Nous decision A, 14/11); the launcher tarball is byte-identical (sha256 ade7895e). Rerun on 2f43b41031: public CI, the unattended fresh install with Nous's first answer, the 1.2.1 -> 1.2.2 upgrade with repair and the seed survival check."
     },
     {
       "platform": "linux",
@@ -85,8 +89,8 @@
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
       "note": "room:0XtmpTF16a3b pane:gd3BRY0abynE answered SPACEAPP-122-FIRST-AGENT-OK, cost 0; the probe (F-first-agent/summary.json) exited 1 only because it read the task list before the native id appeared, the session is read from the cli container",
-      "carriedFrom": "1.2.2 lab on 14dcc83eb8 (images c32b1c18), 14/11",
-      "carriedReason": "Candidate 2f43b41031 is 14dcc83eb8 plus only the shared Nous memory seed stamp (releaseVersion 1.2.1 -> 1.2.2, the same 60 entries; Nous decision A, 14/11); the launcher tarball is byte-identical (sha256 ade7895e). Rerun on 2f43b41031: public CI, the unattended fresh install with Nous's first answer, the 1.2.1 -> 1.2.2 upgrade with repair and the seed survival check."
+      "carriedFrom": "1.2.2 lab on 2f43b41031 (images 4fe27e93), 14/11 via 1.2.2 lab on 14dcc83eb8 (images c32b1c18), 14/11",
+      "carriedReason": "Candidate 95d52f3f25 is 2f43b41031 plus only the Hono security overrides (hono 4.13.16, @hono/node-server 2.1.6; release run 43565126393 stopped at the container Trivy gate on 6 MEDIUM fixable CVEs, nothing published) and the public test pin that follows them; the launcher package is byte-identical (tarball sha256 ade7895e). Rerun on 95d52f3f25: public CI, the --no-cache image build with the Trivy gate (0 findings), the unattended fresh install and Nous's first answer with the seed import. Earlier carry: Candidate 2f43b41031 is 14dcc83eb8 plus only the shared Nous memory seed stamp (releaseVersion 1.2.1 -> 1.2.2, the same 60 entries; Nous decision A, 14/11); the launcher tarball is byte-identical (sha256 ade7895e). Rerun on 2f43b41031: public CI, the unattended fresh install with Nous's first answer, the 1.2.1 -> 1.2.2 upgrade with repair and the seed survival check."
     },
     {
       "platform": "linux",
@@ -96,11 +100,22 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux/nous-first/messages.txt",
-      "artifactSha256": "b6e72787e3a3016b13cbed1740bbda11e44ebecdab36d637bd952c0894330c41",
+      "artifactSha256": "242a4f29ffe252662f5519b6e35014487ab593b397561007577a7d16f95d28a6",
       "freeModel": true,
       "modelId": "opencode/big-pickle",
       "seedImported": true,
-      "note": "spaceapp-lab-120 without Claude: owner claimed, first Nous question; the seed imported on the first turn (60 SEED rows ACTIVE, introduced 1.2.2, identity present, seed-rows.txt); interim reply after 34.5 s already in the seed identity (I am Nous, Greek νους, the mind of SpaceApp), final answer at 43.4 s on opencode/big-pickle with the free-model note"
+      "note": "spaceapp-lab-120 without Claude: owner claimed, first Nous question; the seed imported on the first turn (60 SEED rows ACTIVE, introduced 1.2.2, identity present, seed-rows.txt); answer at 30.5 s after 3 tool calls on opencode/big-pickle, in the seed identity (I am Nous, Greek νους, the mind of SpaceApp) with the free-model note"
+    },
+    {
+      "platform": "linux",
+      "scenario": "container-scan",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "images/trivy-core.txt",
+      "artifactSha256": "8f029cecdcc21e38c57ae47b747ae96ac63674c4fe61f2d15b6dc67012a0217b",
+      "note": "core, cli and browser built --no-cache from 24a7f1b5 (core 76e0d37bc053, cli 381de0db2a3d, browser e33c883c09b9); Trivy 0.70.0 MEDIUM+ --ignore-unfixed with .trivyignore, the release.yml gate: 0 findings in all three images and the source tree (trivy-cli/browser/fs.txt beside this one); hono 4.13.16 and @hono/node-server 2.1.6 clean"
     },
     {
       "platform": "linux",
@@ -112,8 +127,8 @@
       "artifact": "linux/carried-14dcc83e/light-2g/summary.txt",
       "artifactSha256": "54a343dc2c069764104eb2767e252657b614ce166bf20df4a696341cee9cf8ae",
       "note": "VM 262 (2 GB RAM, 4 CPU): fresh light install of the candidate (--local-images), install rc 0 in 37.7 s, two cold starts ready (44 s, 17 s) with no OOM kill, no restarts, no opencode at boot; the setup token file matches the database, owner not claimed",
-      "carriedFrom": "1.2.2 lab on 14dcc83eb8 (images c32b1c18), 14/11",
-      "carriedReason": "Candidate 2f43b41031 is 14dcc83eb8 plus only the shared Nous memory seed stamp (releaseVersion 1.2.1 -> 1.2.2, the same 60 entries; Nous decision A, 14/11); the launcher tarball is byte-identical (sha256 ade7895e). Rerun on 2f43b41031: public CI, the unattended fresh install with Nous's first answer, the 1.2.1 -> 1.2.2 upgrade with repair and the seed survival check."
+      "carriedFrom": "1.2.2 lab on 2f43b41031 (images 4fe27e93), 14/11 via 1.2.2 lab on 14dcc83eb8 (images c32b1c18), 14/11",
+      "carriedReason": "Candidate 95d52f3f25 is 2f43b41031 plus only the Hono security overrides (hono 4.13.16, @hono/node-server 2.1.6; release run 43565126393 stopped at the container Trivy gate on 6 MEDIUM fixable CVEs, nothing published) and the public test pin that follows them; the launcher package is byte-identical (tarball sha256 ade7895e). Rerun on 95d52f3f25: public CI, the --no-cache image build with the Trivy gate (0 findings), the unattended fresh install and Nous's first answer with the seed import. Earlier carry: Candidate 2f43b41031 is 14dcc83eb8 plus only the shared Nous memory seed stamp (releaseVersion 1.2.1 -> 1.2.2, the same 60 entries; Nous decision A, 14/11); the launcher tarball is byte-identical (sha256 ade7895e). Rerun on 2f43b41031: public CI, the unattended fresh install with Nous's first answer, the 1.2.1 -> 1.2.2 upgrade with repair and the seed survival check."
     },
     {
       "platform": "windows",
