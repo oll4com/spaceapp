@@ -129,8 +129,8 @@ jobs:
           pinned=$(grep -oE 'pgvector/pgvector:[^@ ]+@sha256:[0-9a-f]{64}' packages/run-spaceapp/templates/compose.yml)
           docker pull "$pinned" && docker tag "$pinned" "${pinned%@*}"
 
-      - name: Give the runner the public install's connector key folder (a public install writes its key there at start; in the container it is the spaceapp-data volume)
-        run: sudo install -d -m 700 -o "$(id -un)" /var/lib/spaceapp/connector
+      - name: Give the runner the connector key folders a public core writes its key to at start (/var/lib/spaceapp/connector; /opt/spaceapp/secrets when a test sets publicDistribution in config, until the export carries Space e49a8d40d5's temp key)
+        run: sudo install -d -m 700 -o "$(id -un)" /var/lib/spaceapp/connector /opt/spaceapp/secrets
 
       - name: Test candidate
         working-directory: ${{ runner.temp }}/spaceapp-public-export
