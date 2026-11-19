@@ -20,8 +20,9 @@ test("the core runtime inherits the sqlite3 executable used for model statistics
 test("public Dockerfile provides native multi-arch core, browser, and redistributable pinned CLI targets", async () => {
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
   const normalizedDockerfile = dockerfile.replace(/\\\r?\n\s*/g, " ");
-  const nodeImage =
-    "node:26.13.0-trixie-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39";
+  // The digest itself is Dependabot's to bump (#381); the test holds both stages to one pinned Node 26 slim image.
+  const nodeImage = dockerfile.match(/^FROM (node:26\.\d+\.\d+-trixie-slim@sha256:[0-9a-f]{64}) AS build$/m)?.[1];
+  assert.ok(nodeImage, "the build stage must use a digest-pinned node:26 trixie-slim image");
   const nodeStages = Array.from(
     dockerfile.matchAll(/^FROM (\S+) AS (build|runtime-base)$/gm),
     ([, image, stage]) => ({ image, stage })
