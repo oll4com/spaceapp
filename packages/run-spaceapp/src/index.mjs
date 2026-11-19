@@ -1018,6 +1018,8 @@ export async function writeRuntimeFiles(root, config, imageLock = PACKAGE_IMAGE_
   validateHome(root);
   validateConfig(config);
   await mkdir(root, { recursive: true, mode: 0o700 });
+  // The Make app's key, IP allowlist and webhook files (space-make-*); made here so Docker never creates the mount as root.
+  await mkdir(join(root, "secrets", "make"), { recursive: true, mode: 0o700 });
   await ensureOwnerOnlySecrets(root);
   await ensureAgentTokenSecret(root);
   // Each runtime version a locked package installs keeps its digests, for a later rollback to it.

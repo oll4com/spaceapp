@@ -335,6 +335,8 @@ test("installation preparation makes a secrets folder that already existed owner
   await chmod(join(root, "secrets"), 0o755);
   await writeRuntimeFiles(root, prepared.config);
   assert.equal((await stat(join(root, "secrets"))).mode & 0o777, 0o700);
+  // The Make app's folder exists before compose mounts it, so Docker never creates it as root.
+  assert.equal((await stat(join(root, "secrets", "make"))).mode & 0o777, 0o700);
 });
 
 test("installation preparation defers committed version and runtime changes", async () => {

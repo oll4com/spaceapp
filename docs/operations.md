@@ -250,3 +250,22 @@ npx --yes run-spaceapp@latest repair
 
 A module that is off registers no routes, starts no background work and is
 hidden in the web app.
+
+## Make app
+
+The SpaceApp app in Make calls `/api/make/v1/*` with a key. To turn it on, put
+the files in `<home>/secrets/make` (the launcher creates the folder, owner-only)
+and restart the core with `npx --yes run-spaceapp@latest repair`:
+
+- `space-make-app.key`: the key Make sends, at least 32 characters. Without it
+  every Make route answers 404.
+- `space-make-app.ips` (optional): the addresses allowed to use the key, one per
+  line, such as Make's published IPs for your zone. Behind a reverse proxy the
+  API must see the caller's real address, or every call is refused.
+- `space-make-webhook.secret` and `space-make-webhook-{jobs,programs,push}.url`
+  (optional): where SpaceApp sends its signed events.
+
+Only the core mounts this folder, read-only; its entrypoint copies the
+`space-make-*` files for the API's user on each start. A file you remove goes at
+the next restart. The Make routes must be reachable from Make's servers, which a
+loopback-only install is not.
