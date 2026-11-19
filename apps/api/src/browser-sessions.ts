@@ -149,6 +149,29 @@ export function nextBrowserFrameDeadline(now: number, deadline: number, fps: num
   return deadline > 0 && now - deadline < interval ? deadline + interval : now + interval;
 }
 
+export interface BrowserFramePacing { profile: { framesPerSecond: number }; lastSentAt: number; held?: (() => void) | undefined; heldTimer?: ReturnType<typeof setTimeout> | undefined }
+
+/**
+ * Sends one viewer's frame at its frame rate. A frame before the viewer's deadline waits there, replaced by any newer one: Chrome
+ * paints a frame only when the page changes, so a dropped last frame (a click's, a tab switch's) would leave the view stale.
+ */
+export function paceBrowserFrame(viewer: BrowserFramePacing, send: () => void, now = Date.now()): void {
+  const deadline = nextBrowserFrameDeadline(now, viewer.lastSentAt, viewer.profile.framesPerSecond);
+  if (deadline !== null) {
+    viewer.held = undefined;
+    viewer.lastSentAt = deadline;
+    send();
+    return;
+  }
+  if (viewer.profile.framesPerSecond <= 0) return;
+  viewer.held = send;
+  viewer.heldTimer ??= setTimeout(() => {
+    const held = viewer.held;
+    viewer.held = viewer.heldTimer = undefined;
+    if (held) paceBrowserFrame(viewer, held);
+  }, Math.ceil(viewer.lastSentAt - now));
+}
+
 /** The memory pane browsers share: the cgroup or container limit first (`process.constrainedMemory()`, 0 when there is none), else the RAM. */
 export function browserMemoryBytes(constrained = process.constrainedMemory(), total = totalmem()): number {
   return constrained > 0 ? Math.min(constrained, total) : total;
@@ -249,10 +272,9 @@ export interface BrowserCaptureRequestContext {
   traceId: string;
 }
 
-interface BrowserStreamSubscriber {
+interface BrowserStreamSubscriber extends BrowserFramePacing {
   id: string;
   profile: BrowserStreamProfile;
-  lastSentAt: number;
   onFrame: (frame: BrowserBinaryFrame) => void | Promise<void>;
 }
 
@@ -3182,26 +3204,27 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     });
   }
 
-  /** A live frame (base64 JPEG) to every viewer whose frame rate wants one now. */
+  /** A live frame (base64 JPEG) to every viewer, at its frame rate (`paceBrowserFrame`). */
   function deliverFrame(runtime: BrowserRuntime, sessionId: string, data: string, metadata: unknown): void {
     runtime.streamSequence += 1;
+    const sequence = runtime.streamSequence;
     const capturedAt = nowIso();
     const now = Date.now();
     for (const subscriber of runtime.streamSubscribers.values()) {
-      if (subscriber.profile.framesPerSecond <= 0) continue;
-      const nextDeadline = nextBrowserFrameDeadline(now, subscriber.lastSentAt, subscriber.profile.framesPerSecond);
-      if (nextDeadline === null) continue;
-      subscriber.lastSentAt = nextDeadline;
-      void Promise.resolve(
-        subscriber.onFrame({
-          sessionId,
-          sequence: runtime.streamSequence,
-          data: Buffer.from(data, "base64"),
-          mimeType: "image/jpeg",
-          capturedAt,
-          metadata: { ...sanitizeValue(metadata ?? {}) as Record<string, unknown>, viewportDimensions: runtime.viewportDimensions }
-        })
-      ).catch(() => undefined);
+      paceBrowserFrame(subscriber, () => {
+        // A held frame goes only to a viewer still watching (a stopped stream left the map).
+        if (runtime.streamSubscribers.get(subscriber.id) !== subscriber) return;
+        void Promise.resolve(
+          subscriber.onFrame({
+            sessionId,
+            sequence,
+            data: Buffer.from(data, "base64"),
+            mimeType: "image/jpeg",
+            capturedAt,
+            metadata: { ...sanitizeValue(metadata ?? {}) as Record<string, unknown>, viewportDimensions: runtime.viewportDimensions }
+          })
+        ).catch(() => undefined);
+      }, now);
     }
   }
 
