@@ -1,5 +1,3 @@
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
@@ -14,9 +12,6 @@ import { getApiConfig } from "../src/config.js";
 import { createOwnerSetupBootstrap } from "../src/owner-setup.js";
 import type { SetupConnectionsService } from "../src/setup-connections.js";
 
-// A public install writes its connector key at start (ensureConnectorKey): the test keeps it in a temp folder, never the host's.
-const testConnectorKey = join(tmpdir(), `space-test-connector-${process.pid}.key`);
-
 // Each app lifecycle starts and closes the whole API. On loaded hosts
 // (2026-10-11) createApp took up to 15 s and app.close() 11-38 s, so the
 // default 5 s limit says nothing about correctness.
@@ -28,7 +23,7 @@ describe("public single-owner setup API", () => {
       let checks = 0;
       const app = await createApp({
         store: new InMemorySpaceStore(),
-        config: getApiConfig({ SPACE_PUBLIC_DISTRIBUTION: "true", SPACEAPP_WORKFLOWS_ENABLED: String(enabled), SPACE_CONNECTOR_KEY_FILE: testConnectorKey,
+        config: getApiConfig({ SPACE_PUBLIC_DISTRIBUTION: "true", SPACEAPP_WORKFLOWS_ENABLED: String(enabled),
           SPACE_BROWSER_SESSIONS_ENABLED: "false", SPACE_CLI_ENABLED: "false" }),
         workerReadinessChecker: async () => {
           checks++;

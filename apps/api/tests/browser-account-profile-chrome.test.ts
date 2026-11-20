@@ -74,7 +74,6 @@ describe.skipIf(missingBrowser)('tabs in another Google account inside one pane,
     if (req.url === '/write') res.setHeader('Set-Cookie', 'fixture=retained; Path=/; Max-Age=3600; SameSite=Lax');
     res.end(`<html><body><script>
       document.body.textContent=JSON.stringify({path:location.pathname,cookie:document.cookie.includes('fixture=retained')});
-      document.body.style.minHeight='300vh'; // a page that scrolls, so the test's scroll paints a frame
       const b=document.createElement('button');b.textContent='Popup';b.style='position:fixed;top:10px;left:10px;width:100px;height:40px';b.onclick=()=>window.open('/popup','_blank');document.body.append(b);
     </script></body></html>`);
   });
@@ -122,7 +121,7 @@ describe.skipIf(missingBrowser)('tabs in another Google account inside one pane,
     await expect.poll(text).toContain('"path":"/write","cookie":true');
     const seen = frames.length;
     await manager.action(pane, { type: 'scroll', deltaX: 0, deltaY: 10 }, 'trace');
-    await expect.poll(() => frames.length, { timeout: 10000 }).toBeGreaterThan(seen);
+    await expect.poll(() => frames.length).toBeGreaterThan(seen);
     await stream.stop();
     await manager.activatePage!(pane, moved.pageId, 'trace');
     await manager.action(pane, { type: 'click', x: 40, y: 25 }, 'trace');

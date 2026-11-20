@@ -102,19 +102,12 @@ describe("Space auth", () => {
     expect(verifySession(renewed, secret, revocations)).toBeNull();
     expect(renewSessionIfDue(signSessionWithTtl({ id: "user:proof", email: "p@space.test", role: "ADMIN" }, secret, 600), secret)).toBeNull();
     // Logging out with the renewed cookie also ends the copy from before the renewal (and the other way round).
-    // At issue + 16 days: on the real clock the 19/10 cookie ran out on 18/11 and this failed from then on.
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(issuedAt + 16 * day);
-      const loggedOut = new SessionRevocationStore();
-      const current = renewSessionIfDue(token, secret, issuedAt + 16 * day)!;
-      expect(verifySession(token, secret, loggedOut)).toMatchObject({ id: "user:operator" });
-      void loggedOut.revokeToken(current);
-      expect(verifySession(current, secret, loggedOut)).toBeNull();
-      expect(verifySession(token, secret, loggedOut)).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
+    const loggedOut = new SessionRevocationStore();
+    const current = renewSessionIfDue(token, secret, issuedAt + 16 * day)!;
+    expect(verifySession(token, secret, loggedOut)).toMatchObject({ id: "user:operator" });
+    void loggedOut.revokeToken(current);
+    expect(verifySession(current, secret, loggedOut)).toBeNull();
+    expect(verifySession(token, secret, loggedOut)).toBeNull();
   });
 
   it("does not cut a cookie issued before the 30-day change: its next request moves it to the new lifetime", () => {

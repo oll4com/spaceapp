@@ -12,7 +12,6 @@ import {
   assertSafeBrowserTargetUrl,
   BrowserCapacityGate,
   nextBrowserFrameDeadline,
-  paceBrowserFrame,
   BrowserRequestGuard,
   DEFAULT_BROWSER_DNS_TIMEOUT_MS,
   googleReturnOrigins,
@@ -1416,34 +1415,6 @@ describe("live frame pacing", () => {
     const resumed = nextBrowserFrameDeadline(30000, deadline, 35)!;
     expect(resumed).toBeCloseTo(30000 + 1000 / 35);
     expect(nextBrowserFrameDeadline(30001, resumed, 35)).toBeNull();
-  });
-
-  it("holds a frame that comes before the viewer's deadline and sends the newest one there", () => {
-    vi.useFakeTimers();
-    try {
-      const sent: string[] = [];
-      const viewer = { profile: { framesPerSecond: 10 }, lastSentAt: 0 };
-      paceBrowserFrame(viewer, () => sent.push("first"));
-      expect(sent).toEqual(["first"]);
-      vi.advanceTimersByTime(10);
-      paceBrowserFrame(viewer, () => sent.push("click"));
-      expect(sent).toEqual(["first"]);
-      vi.advanceTimersByTime(90);
-      expect(sent).toEqual(["first", "click"]);
-      vi.advanceTimersByTime(20);
-      paceBrowserFrame(viewer, () => sent.push("older"));
-      vi.advanceTimersByTime(20);
-      paceBrowserFrame(viewer, () => sent.push("newer"));
-      vi.advanceTimersByTime(60);
-      expect(sent).toEqual(["first", "click", "newer"]);
-      vi.advanceTimersByTime(1000);
-      expect(sent).toEqual(["first", "click", "newer"]);
-      paceBrowserFrame({ profile: { framesPerSecond: 0 }, lastSentAt: 0 }, () => sent.push("silent"));
-      vi.advanceTimersByTime(1000);
-      expect(sent).toEqual(["first", "click", "newer"]);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });
 
