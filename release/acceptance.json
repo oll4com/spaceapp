@@ -1,20 +1,20 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "c7aefac8ab8a153819d0f75a68bb15bc68188f6b2475d5757dde5f9e30584854",
-  "sourceCommit": "24a7f1b5de34dfdaddc4f57ae440fa129349ad0c",
-  "spaceSourceCommit": "95d52f3f256b4d5a5c20086f94bb64b14962afb0",
-  "launcherVersion": "1.2.2",
-  "runtimeVersion": "1.2.2",
-  "createdAt": "2026-11-14T07:09:10.605Z",
-  "launcherTarballSha256": "ade7895ecc2fec963fc7296f35428c7c0110fe4a713ac1004ff7637a35572899",
+  "candidateDigest": "fc133f10b1d93b0c364c252590512e8abdc1024c07a28f272052efea8b67fdfa",
+  "sourceCommit": "74d0c15f50a38193b516cf19c856ad183de7787e",
+  "spaceSourceCommit": "2889acc2f85a81beae6652395f184dc48fd96070",
+  "launcherVersion": "1.2.3",
+  "runtimeVersion": "1.2.3",
+  "createdAt": "2026-11-20T08:13:41.477Z",
+  "launcherTarballSha256": "b872fee3389abcaa77c86d3d17acc2718c1dc2d5a8294e30ced5a6443a0f59ad",
   "labProof": {
-    "acceptanceSha256": "bea0220a74883eb5d7e894fab21756c9d6e459d82750fc5bdcebf101f690b8de",
+    "acceptanceSha256": "73e7259cd33cf6dbf91542c6dfb6106a1390a0a47c9aea0d42df88f0ea3bc444",
     "allCasesPass": true,
-    "ci": "public CI steps green on 24a7f1b5 (ci-24a7f1b5.log, sha256 2e5a046b6ef69761391220ead9072317be2b98f3ff99aca29eb4257af155984d)"
+    "ci": "public CI green on 74d0c15f (ci-74d0c15f.log, sha256 ee9c1c34aee8bed6809402c270dea585f5e76d5781d53fabf6076f760a83fd21)"
   },
   "pendingAfterPublication": [
-    "windows W1: fresh 1.2.2 install from the registry, no --local-images",
-    "windows W2: update 1.2.1 -> 1.2.2 from the registry, no --local-images"
+    "windows W1: fresh 1.2.3 install from the registry, no --local-images",
+    "windows W2: update 1.2.2 -> 1.2.3 from the registry, no --local-images"
   ],
   "checks": [
     {
@@ -25,9 +25,9 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux/fresh-install-unattended.log",
-      "artifactSha256": "39298b9822ea1bea29cf5857ee93336b540ec3366d2f4c1cf1a86f6f9a1a90d7",
-      "unattended": true,
-      "note": "spaceapp-lab-120 recreated clean (4 CPU, 8 GiB, Ubuntu 24.04, systemd; Docker Engine preloaded and stopped, lab user not in the docker group; images built --no-cache from overlay 24a7f1b5, labelled space.candidate 95d52f3f25): npx run-spaceapp 1.2.2 install --non-interactive --answers (small) --local-images; Docker started, docker group re-entry continued unattended; exit 0 in 56 s, memory.peak 8 GiB (the cgroup limit, page cache included), oom_kill 0, readyz ok; core and cli containers on revision 24a7f1b5"
+      "artifactSha256": "5b364343a744f3113272c8f8ae166074bdb193ff60a5e93a02f8c760d6ebceff",
+      "note": "spaceapp-lab-120 recreated clean (4 CPU, 8 GiB, Ubuntu 24.04, systemd; Docker Engine preloaded and stopped, lab user not in the docker group; images built --no-cache from public 74d0c15, labelled space.candidate 2889acc2f8): npx run-spaceapp 1.2.3 install --non-interactive --answers --local-images exit 0 in 52 s, ready, core and cli labelled 2889acc2f8 / 74d0c15, memory.peak 8.59 GB, no OOM kill; setup token redacted",
+      "unattended": true
     },
     {
       "platform": "linux",
@@ -36,13 +36,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/carried-2f43b410/sub4/e/summary.txt",
-      "artifactSha256": "e2156ee8ea573a008bcf320e272b3d8a7ea0789f5fbf056d7253a29023140a93",
+      "artifact": "linux/sysd/U-update.log",
+      "artifactSha256": "9bb8a345364b8ade6edd12ec33c5a74479dfa36fe13de0a47141def2b19377ad",
+      "note": "spaceapp-lab-123u (Ubuntu 24.04, systemd, Docker in the lab, candidate images loaded from hz) after uninstall --purge-data: published run-spaceapp 1.2.2 installed from npm with registry pulls (exit 0, core ec583c44); seed choices on 1.2.2 (edited ask-last, retired, deleted; seed-before.json); marker written; run-spaceapp 1.2.3 update exit 0, config 1.2.3, images 1.2.3 / 74d0c15, marker kept, seed choices kept (seed-after.json pass)",
       "dataPreserved": true,
-      "seedChoicesPreserved": true,
-      "note": "spaceapp-lab-122u-14dc (Ubuntu 24.04, systemd, cpuset 4-7): published run-spaceapp 1.2.1 installed from npm with registry pulls (exit 0, core 509efa0d); seed choices on 1.2.1 (edited ask-last, retired closeout-check, deleted delivery-proof, seed-before.json); marker written; run-spaceapp 1.2.2 update --local-images exit 0, config 1.2.2, core a5d28c63 / cli 6b56e4c1 revision 4fe27e93; data, secrets, workspaces, persistent file and database marker preserved; seed-after.json: the edit, the retirement and the delete kept, identity ACTIVE (58 ACTIVE + 1 RETIRED; the 1.2.2 seed has the same 60 entries, so no new keys, and unchanged rows keep introduced 1.2.1 by design)",
-      "carriedFrom": "1.2.2 lab on 2f43b41031 (images 4fe27e93), 14/11",
-      "carriedReason": "Candidate 95d52f3f25 is 2f43b41031 plus only the Hono security overrides (hono 4.13.16, @hono/node-server 2.1.6; release run 43565126393 stopped at the container Trivy gate on 6 MEDIUM fixable CVEs, nothing published) and the public test pin that follows them; the launcher package is byte-identical (tarball sha256 ade7895e). Rerun on 95d52f3f25: public CI, the --no-cache image build with the Trivy gate (0 findings), the unattended fresh install and Nous's first answer with the seed import."
+      "seedChoicesPreserved": true
     },
     {
       "platform": "linux",
@@ -51,12 +49,10 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/carried-2f43b410/sub4/e/summary.txt",
-      "artifactSha256": "e2156ee8ea573a008bcf320e272b3d8a7ea0789f5fbf056d7253a29023140a93",
-      "dataPreserved": true,
-      "note": "same lab after the upgrade: spaceapp-core removed (owned fault), doctor exit 0, doctor --fix --local-images exit 0 in 40 s, ready, images 1.2.2 / 4fe27e93, data, secrets, workspaces and marker preserved",
-      "carriedFrom": "1.2.2 lab on 2f43b41031 (images 4fe27e93), 14/11",
-      "carriedReason": "Candidate 95d52f3f25 is 2f43b41031 plus only the Hono security overrides (hono 4.13.16, @hono/node-server 2.1.6; release run 43565126393 stopped at the container Trivy gate on 6 MEDIUM fixable CVEs, nothing published) and the public test pin that follows them; the launcher package is byte-identical (tarball sha256 ade7895e). Rerun on 95d52f3f25: public CI, the --no-cache image build with the Trivy gate (0 findings), the unattended fresh install and Nous's first answer with the seed import."
+      "artifact": "linux/sysd/R-fix.log",
+      "artifactSha256": "ea50b97b6107c34ed8c4bc0bdd99cbdd61ca8f55f9915a266fc606477eeb726e",
+      "note": "same lab after the upgrade: spaceapp-core removed (owned fault), doctor exit 0, doctor --fix exit 0 in 38 s, ready, images 1.2.3 / 74d0c15, data, secrets, workspaces and marker preserved",
+      "dataPreserved": true
     },
     {
       "platform": "linux",
@@ -65,13 +61,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/carried-14dcc83e/sub4/summary.txt",
-      "artifactSha256": "ea4dc578063c96ef84fd32f36314810b23cfa13ef64cebd515136cdbaccf472e",
+      "artifact": "linux/sysd/S-install.log",
+      "artifactSha256": "3d62a63bb6483545132ff57931901178174f3c0808b58009e1eb6db31742877c",
+      "note": "spaceapp-lab-123u (Ubuntu 24.04, systemd, Docker in the lab, candidate images loaded from hz): docker.service and socket stopped (docker info exit 1), install started it, exit 0, ready, images 1.2.3 / 74d0c15, data preserved",
       "dataPreserved": true,
-      "dockerInitiallyStopped": true,
-      "note": "S: docker.service and socket stopped, install started it, ready, images labelled 1.2.2 / c32b1c18",
-      "carriedFrom": "1.2.2 lab on 2f43b41031 (images 4fe27e93), 14/11 via 1.2.2 lab on 14dcc83eb8 (images c32b1c18), 14/11",
-      "carriedReason": "Candidate 95d52f3f25 is 2f43b41031 plus only the Hono security overrides (hono 4.13.16, @hono/node-server 2.1.6; release run 43565126393 stopped at the container Trivy gate on 6 MEDIUM fixable CVEs, nothing published) and the public test pin that follows them; the launcher package is byte-identical (tarball sha256 ade7895e). Rerun on 95d52f3f25: public CI, the --no-cache image build with the Trivy gate (0 findings), the unattended fresh install and Nous's first answer with the seed import. Earlier carry: Candidate 2f43b41031 is 14dcc83eb8 plus only the shared Nous memory seed stamp (releaseVersion 1.2.1 -> 1.2.2, the same 60 entries; Nous decision A, 14/11); the launcher tarball is byte-identical (sha256 ade7895e). Rerun on 2f43b41031: public CI, the unattended fresh install with Nous's first answer, the 1.2.1 -> 1.2.2 upgrade with repair and the seed survival check."
+      "dockerInitiallyStopped": true
     },
     {
       "platform": "linux",
@@ -80,17 +74,15 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux/carried-14dcc83e/sub4/F-native-session.json",
-      "artifactSha256": "9bcf48f275b8b52b9e0e82f3ca66c298902a9bfa5aa33636072db02f8d3e6904",
-      "uiOpened": true,
-      "responseObserved": true,
-      "freeModel": true,
-      "nativeTaskId": "ses_e285ae52dffemBwfRWMmpAys37",
+      "artifact": "linux/sysd/F-native-session.json",
+      "artifactSha256": "064884b1860c79e40112156177df1d6f08be4ccdddba93ddfdda7983642082c3",
+      "note": "room:u6NqOVDie0HQ pane:aLOPByBps-JW: opencode on the free model opencode/big-pickle answered SPACEAPP-123-FIRST-AGENT-OK, cost 0, session ses_e0815fa25ffeWGiSt2GGHeSFkY read from the cli container; the probe (F-first-agent/summary.json) exited 1 only because it read the task list before the native id appeared, as in 1.2.2",
+      "nativeTaskId": "ses_e0815fa25ffeWGiSt2GGHeSFkY",
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
-      "note": "room:0XtmpTF16a3b pane:gd3BRY0abynE answered SPACEAPP-122-FIRST-AGENT-OK, cost 0; the probe (F-first-agent/summary.json) exited 1 only because it read the task list before the native id appeared, the session is read from the cli container",
-      "carriedFrom": "1.2.2 lab on 2f43b41031 (images 4fe27e93), 14/11 via 1.2.2 lab on 14dcc83eb8 (images c32b1c18), 14/11",
-      "carriedReason": "Candidate 95d52f3f25 is 2f43b41031 plus only the Hono security overrides (hono 4.13.16, @hono/node-server 2.1.6; release run 43565126393 stopped at the container Trivy gate on 6 MEDIUM fixable CVEs, nothing published) and the public test pin that follows them; the launcher package is byte-identical (tarball sha256 ade7895e). Rerun on 95d52f3f25: public CI, the --no-cache image build with the Trivy gate (0 findings), the unattended fresh install and Nous's first answer with the seed import. Earlier carry: Candidate 2f43b41031 is 14dcc83eb8 plus only the shared Nous memory seed stamp (releaseVersion 1.2.1 -> 1.2.2, the same 60 entries; Nous decision A, 14/11); the launcher tarball is byte-identical (sha256 ade7895e). Rerun on 2f43b41031: public CI, the unattended fresh install with Nous's first answer, the 1.2.1 -> 1.2.2 upgrade with repair and the seed survival check."
+      "freeModel": true,
+      "responseObserved": true,
+      "uiOpened": true
     },
     {
       "platform": "linux",
@@ -100,11 +92,35 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux/nous-first/messages.txt",
-      "artifactSha256": "242a4f29ffe252662f5519b6e35014487ab593b397561007577a7d16f95d28a6",
+      "artifactSha256": "30abd3432bfe43b74e62de64ab9f91670e78193b48234739b61769cc23264ba2",
+      "note": "spaceapp-lab-120 without Claude: owner claimed, first Nous question answered at 37.7 s in the seed identity; 60 SEED rows ACTIVE introduced 1.2.3 (seed-rows.txt); nous_turn_facts: model opencode/big-pickle, tokens only on big-pickle, 0 Anthropic usage rows (turn-facts.txt). The answer meta label says claude:claude-sonnet-5-5 (label only, follow-up)",
       "freeModel": true,
       "modelId": "opencode/big-pickle",
-      "seedImported": true,
-      "note": "spaceapp-lab-120 without Claude: owner claimed, first Nous question; the seed imported on the first turn (60 SEED rows ACTIVE, introduced 1.2.2, identity present, seed-rows.txt); answer at 30.5 s after 3 tool calls on opencode/big-pickle, in the seed identity (I am Nous, Greek νους, the mind of SpaceApp) with the free-model note"
+      "seedImported": true
+    },
+    {
+      "platform": "linux",
+      "scenario": "make-secrets",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux/make-secrets.txt",
+      "artifactSha256": "e33083d03cdfc2937b569e625d27ec8f2478844ee308acfb5e2786169e2b0ea5",
+      "note": "PR #384: the launcher created ~/.config/spaceapp/secrets/make as lab 0700; a key written there appeared after a core restart as /opt/spaceapp/secrets/space-make-api-key (spaceapp 400, folder spaceapp 700); removing it and restarting left 0 space-make- files; readyz 200 after both restarts"
+    },
+    {
+      "platform": "linux",
+      "scenario": "rollback",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux/sysd/B-rollback.log",
+      "artifactSha256": "46faa01bcc0a5d2191a7b42bf89bdc19496b4963ea9e8735a0cb790ba1a67991",
+      "note": "same lab: run-spaceapp 1.2.2 update from 1.2.3 under script(1), DOWNGRADE typed at its prompt (1 prompt), exit 0 in 36 s, \"Updated to SpaceApp 1.2.2\", config 1.2.2, ready, images 1.2.2 from the registry, data, secrets, workspaces and marker preserved, seed choices kept, no OOM. First run (B-rollback-run1-quoting.log) failed only on lab quoting of --answers; rerun passes the answers as a file",
+      "dataPreserved": true,
+      "toVersion": "1.2.2"
     },
     {
       "platform": "linux",
@@ -114,8 +130,8 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "images/trivy-core.txt",
-      "artifactSha256": "8f029cecdcc21e38c57ae47b747ae96ac63674c4fe61f2d15b6dc67012a0217b",
-      "note": "core, cli and browser built --no-cache from 24a7f1b5 (core 76e0d37bc053, cli 381de0db2a3d, browser e33c883c09b9); Trivy 0.70.0 MEDIUM+ --ignore-unfixed with .trivyignore, the release.yml gate: 0 findings in all three images and the source tree (trivy-cli/browser/fs.txt beside this one); hono 4.13.16 and @hono/node-server 2.1.6 clean"
+      "artifactSha256": "ff1faa8e2641cfeceaaf86dd1dd77c1ea043a18ca6350e0b9895793f80bbda9a",
+      "note": "core, cli and browser built --no-cache from 74d0c15 (core a2f605ee8d1b, cli 3f31c2124b7b, browser ab98b680e181); Trivy MEDIUM+ --ignore-unfixed with .trivyignore, the release.yml gate: 0 findings in all three images and the source tree (trivy-cli/browser/fs.txt beside this one)"
     },
     {
       "platform": "linux",
@@ -127,8 +143,8 @@
       "artifact": "linux/carried-14dcc83e/light-2g/summary.txt",
       "artifactSha256": "54a343dc2c069764104eb2767e252657b614ce166bf20df4a696341cee9cf8ae",
       "note": "VM 262 (2 GB RAM, 4 CPU): fresh light install of the candidate (--local-images), install rc 0 in 37.7 s, two cold starts ready (44 s, 17 s) with no OOM kill, no restarts, no opencode at boot; the setup token file matches the database, owner not claimed",
-      "carriedFrom": "1.2.2 lab on 2f43b41031 (images 4fe27e93), 14/11 via 1.2.2 lab on 14dcc83eb8 (images c32b1c18), 14/11",
-      "carriedReason": "Candidate 95d52f3f25 is 2f43b41031 plus only the Hono security overrides (hono 4.13.16, @hono/node-server 2.1.6; release run 43565126393 stopped at the container Trivy gate on 6 MEDIUM fixable CVEs, nothing published) and the public test pin that follows them; the launcher package is byte-identical (tarball sha256 ade7895e). Rerun on 95d52f3f25: public CI, the --no-cache image build with the Trivy gate (0 findings), the unattended fresh install and Nous's first answer with the seed import. Earlier carry: Candidate 2f43b41031 is 14dcc83eb8 plus only the shared Nous memory seed stamp (releaseVersion 1.2.1 -> 1.2.2, the same 60 entries; Nous decision A, 14/11); the launcher tarball is byte-identical (sha256 ade7895e). Rerun on 2f43b41031: public CI, the unattended fresh install with Nous's first answer, the 1.2.1 -> 1.2.2 upgrade with repair and the seed survival check."
+      "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.2 lab on 2f43b41031 (images 4fe27e93), 14/11 via 1.2.2 lab on 14dcc83eb8 (images c32b1c18), 14/11",
+      "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Candidate 95d52f3f25 is 2f43b41031 plus only the Hono security overrides (hono 4.13.16, @hono/node-server 2.1.6; release run 43565126393 stopped at the container Trivy gate on 6 MEDIUM fixable CVEs, nothing published) and the public test pin that follows them; the launcher package is byte-identical (tarball sha256 ade7895e). Rerun on 95d52f3f25: public CI, the --no-cache image build with the Trivy gate (0 findings), the unattended fresh install and Nous's first answer with the seed import. Earlier carry: Candidate 2f43b41031 is 14dcc83eb8 plus only the shared Nous memory seed stamp (releaseVersion 1.2.1 -> 1.2.2, the same 60 entries; Nous decision A, 14/11); the launcher tarball is byte-identical (sha256 ade7895e). Rerun on 2f43b41031: public CI, the unattended fresh install with Nous's first answer, the 1.2.1 -> 1.2.2 upgrade with repair and the seed survival check."
     },
     {
       "platform": "windows",
@@ -141,8 +157,8 @@
       "artifactSha256": "40e67593b14127bcb750c237897a9d16f103eab82d5c1a6e0eade575e1c689cb",
       "interactiveDesktop": true,
       "note": "win121 (Windows 11, per-user Docker Desktop 29.9.3, labadmin interactive session): fresh 1.2.1 install, --local-images, readyz ok, labels checked",
-      "carriedFrom": "1.2.1 w5094 509efa0d",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 w5094 509efa0d",
+      "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -156,8 +172,8 @@
       "interactiveDesktop": true,
       "dataPreserved": true,
       "note": "U: 1.2.0 (images pulled from the registry first, --local-images) then update to 1.2.1, data preserved. The registry-only path is W2, checked right after publication",
-      "carriedFrom": "1.2.1 w5094 509efa0d",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 w5094 509efa0d",
+      "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -171,8 +187,8 @@
       "interactiveDesktop": true,
       "dataPreserved": true,
       "note": "R: spaceapp-core removed, doctor --fix, ready",
-      "carriedFrom": "1.2.1 w5094 509efa0d",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 w5094 509efa0d",
+      "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -187,8 +203,8 @@
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
       "note": "S: Docker Desktop stopped (0 processes), launcher restarted it, ready",
-      "carriedFrom": "1.2.1 w5094 509efa0d",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 w5094 509efa0d",
+      "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -207,8 +223,8 @@
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
       "note": "room:8fwfqF7hJer_ pane:Zo9kFGDb1Ebc, cost 0 (13-native-session.json)",
-      "carriedFrom": "1.2.1 w5094 509efa0d",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 w5094 509efa0d",
+      "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "linux",
@@ -225,8 +241,8 @@
       "dataPreserved": true,
       "artifact": "linux-profiles.json",
       "artifactSha256": "2052405004c7208c91af01893587daddb7ba04bbfe65de549c81891117cc9fda",
-      "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 via (1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf))",
+      "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "windows",
@@ -244,8 +260,8 @@
       "interactiveDesktop": true,
       "artifact": "windows-profiles.json",
       "artifactSha256": "7e37bd9bae4505b3830967b826e71f6666d6beabf6dd9edaef4a7b7735d73276",
-      "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 via (1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf))",
+      "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -262,8 +278,8 @@
       "dataPreserved": true,
       "artifact": "macos-profiles.json",
       "artifactSha256": "098a2f5a21f32f9c8f79a07854e4525a19e8ef5be3e53074a2c5c8dbe94939da",
-      "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 via (1.2.0 c15 64c3e71 (medium and large from c13 cf4d247, via c14 1e365cf))",
+      "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -275,8 +291,8 @@
       "artifact": "macos-fresh-install.json",
       "artifactSha256": "f9e93ed7f92f107c8bf96fa1be0a66ed9272a4f9d3f474dbe3ec9c6e8398fcf3",
       "ownerUi": true,
-      "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (c14 1e365cf))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 via (1.2.0 c15 64c3e71 (c14 1e365cf))",
+      "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -288,8 +304,8 @@
       "artifact": "macos-upgrade.json",
       "artifactSha256": "96dc0ba8ee5d1fa2e06d995697d97ccda2921b28bbf4ec850f7667751e63ee90",
       "dataPreserved": true,
-      "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (c14 1e365cf))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 via (1.2.0 c15 64c3e71 (c14 1e365cf))",
+      "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -301,8 +317,8 @@
       "artifact": "c13-macos-repair.json",
       "artifactSha256": "450e6c6be6b80ac51a923df058cdaf110b0862a71f07ccd80aa3f472102a5601",
       "dataPreserved": true,
-      "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (c13 cf4d247, via c14 1e365cf))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 via (1.2.0 c15 64c3e71 (c13 cf4d247, via c14 1e365cf))",
+      "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -315,8 +331,8 @@
       "artifactSha256": "2a9cc56171fd05dac4c1a9a44d28aa4752edc81daed546766f028ea733f82448",
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
-      "carriedFrom": "1.2.1 via (1.2.0 c15 64c3e71 (c13 cf4d247, via c14 1e365cf))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 via (1.2.0 c15 64c3e71 (c13 cf4d247, via c14 1e365cf))",
+      "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     },
     {
       "platform": "macos",
@@ -333,8 +349,8 @@
       "modelId": "opencode/big-pickle",
       "artifact": "c7-macos-first-agent.json",
       "artifactSha256": "8a1a41cb1f6c53dcf17a122747bd6891ef4d866be28e7c0216a6005cf937731d",
-      "carriedFrom": "1.2.1 via (1.1.9 25fb63fd (c7 1ea6bf8))",
-      "carriedReason": "Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
+      "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 via (1.1.9 25fb63fd (c7 1ea6bf8))",
+      "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     }
   ]
 }

@@ -46,6 +46,10 @@ jobs:
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm ci
 
+      - name: Lint candidate (warning ceiling from the budget, EXT-C-F15)
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run lint
+
       - name: Install ripgrep and ffmpeg (the file search tests run the real rg, the Nous attachment tests make media with ffmpeg)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep ffmpeg
 

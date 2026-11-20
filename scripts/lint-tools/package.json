@@ -1,0 +1,12 @@
+{
+  "name": "space-lint-tools",
+  "version": "0.2.5",
+  "private": true,
+  "type": "module",
+  "description": "Isolated JavaScript compiler API for ESLint; application builds use native TypeScript 7.",
+  "devDependencies": {
+    "eslint": "10.11.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1"
+  }
+}

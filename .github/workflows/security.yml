@@ -96,7 +96,7 @@ jobs:
 
       - name: Upload blocking filesystem scan
         if: always() && hashFiles('trivy-filesystem.sarif') != ''
-        uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: trivy-filesystem.sarif
 
@@ -156,13 +156,14 @@ jobs:
   codeql:
     name: CodeQL
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    # main's analyze step hit 35 min (#1422, 15/11) while the PR runs took 18; leave room
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: github/codeql-action/init@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           languages: javascript-typescript
 
@@ -174,7 +175,7 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-      - uses: github/codeql-action/analyze@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
 
   image:
     name: Image scan / ${{ matrix.target }}
@@ -218,7 +219,7 @@ jobs:
 
       - name: Upload blocking image scan
         if: always() && hashFiles(format('trivy-{0}.sarif', matrix.target)) != ''
-        uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: trivy-${{ matrix.target }}.sarif
 

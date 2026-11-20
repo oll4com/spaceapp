@@ -55,6 +55,14 @@ install -o spaceapp -g spaceapp -m 0400 \
 export SPACE_SETUP_TOKEN_FILE
 SPACE_SETUP_TOKEN_FILE="$SPACE_SETUP_TOKEN_RUNTIME_FILE"
 
+# The Make app reads its key, IP allowlist and webhook files from the install root's secrets folder as spaceapp; a file
+# removed from <home>/secrets/make goes with the next restart.
+install -d -o spaceapp -g spaceapp -m 0700 /opt/spaceapp/secrets
+rm -f /opt/spaceapp/secrets/space-make-*
+for file in /run/spaceapp-secrets/make/space-make-*; do
+  if [ -f "$file" ]; then install -o spaceapp -g spaceapp -m 0400 "$file" /opt/spaceapp/secrets/; fi
+done
+
 sh deploy/docker/memory-names.sh "$SPACE_MEMORY_ROOT"
 if [ ! -e "$SPACE_MEMORY_ROOT/space_memory.md" ]; then
   install -o spaceapp -g spaceapp -m 0600 \

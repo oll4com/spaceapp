@@ -1018,6 +1018,8 @@ export async function writeRuntimeFiles(root, config, imageLock = PACKAGE_IMAGE_
   validateHome(root);
   validateConfig(config);
   await mkdir(root, { recursive: true, mode: 0o700 });
+  // The Make app's key, IP allowlist and webhook files (space-make-*); made here so Docker never creates the mount as root.
+  await mkdir(join(root, "secrets", "make"), { recursive: true, mode: 0o700 });
   await ensureOwnerOnlySecrets(root);
   await ensureAgentTokenSecret(root);
   // Each runtime version a locked package installs keeps its digests, for a later rollback to it.
@@ -1163,7 +1165,8 @@ export async function commitInstallation(root, config, {
   const composeTemplate = await readFile(join(templateDir, "compose.yml"), "utf8");
   await mkdir(root, { recursive: true, mode: 0o700 });
   await atomicWrite(join(root, "compose.yml"), composeTemplate);
-  await mkdir(projectRoot, { recursive: true, mode: 0o700 });
+  // A fresh install stages its files elsewhere but runs compose here: Docker would create a missing ./secrets/make as root.
+  await mkdir(join(projectRoot, "secrets", "make"), { recursive: true, mode: 0o700 });
   const cliProfile = await readFile(join(defaultTemplateDir(), "seccomp-cli.json"), "utf8");
   await atomicWrite(join(projectRoot, "seccomp-cli.json"), cliProfile);
   await atomicWrite(join(projectRoot, "seccomp-browser.json"), browserSeccompProfile(cliProfile));

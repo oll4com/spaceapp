@@ -70,6 +70,8 @@ services:
       # Only Codex's session logs, read-only, to see a Codex pane's turns; never the Codex home or its credentials.
       - spaceapp-codex-sessions:/var/lib/spaceapp-cli/providers/codex/sessions:ro
       - ./backups:/backups
+      # The Make app's files (space-make-*), copied by the entrypoint for the API's user; empty means the Make routes answer 404.
+      - ./secrets/make:/run/spaceapp-secrets/make:ro
     secrets:
       - setup-token
       - session-secret

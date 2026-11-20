@@ -22,8 +22,10 @@ import type { SpaceAgentControl } from "../../src/space-agent.js";
 export const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 
 const ownedApps = new Set<Awaited<ReturnType<typeof createApiApp>>>();
+// A public install writes its connector key at start (ensureConnectorKey): tests keep it in a temp folder, never the host's.
+const testConnectorKey = join(tmpdir(), `space-test-connector-${process.pid}.key`);
 export async function createApp(options: CreateAppOptions = {}) {
-  const app = await createApiApp(options);
+  const app = await createApiApp(options.config?.publicDistribution ? { ...options, config: { ...options.config, connectorKeyFile: testConnectorKey } } : options);
   ownedApps.add(app);
   app.addHook("onClose", async () => { ownedApps.delete(app); });
   return app;

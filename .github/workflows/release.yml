@@ -117,6 +117,10 @@ jobs:
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm ci
 
+      - name: Lint candidate (warning ceiling from the budget, EXT-C-F15)
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run lint
+
       - name: Audit candidate dependencies
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm audit --audit-level=high
