@@ -1165,7 +1165,8 @@ export async function commitInstallation(root, config, {
   const composeTemplate = await readFile(join(templateDir, "compose.yml"), "utf8");
   await mkdir(root, { recursive: true, mode: 0o700 });
   await atomicWrite(join(root, "compose.yml"), composeTemplate);
-  await mkdir(projectRoot, { recursive: true, mode: 0o700 });
+  // A fresh install stages its files elsewhere but runs compose here: Docker would create a missing ./secrets/make as root.
+  await mkdir(join(projectRoot, "secrets", "make"), { recursive: true, mode: 0o700 });
   const cliProfile = await readFile(join(defaultTemplateDir(), "seccomp-cli.json"), "utf8");
   await atomicWrite(join(projectRoot, "seccomp-cli.json"), cliProfile);
   await atomicWrite(join(projectRoot, "seccomp-browser.json"), browserSeccompProfile(cliProfile));

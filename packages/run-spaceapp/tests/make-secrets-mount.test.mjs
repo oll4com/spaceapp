@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { commitInstallation, createDefaultConfig } from "../src/index.mjs";
 
 // The Make app (key, IP allowlist, webhook files) in a Docker install: <home>/secrets/make, read-only in the core only,
 // copied by the root entrypoint into the install root's secrets folder the API reads, owner-only for spaceapp.
@@ -21,4 +24,13 @@ test("the entrypoint copies only space-make-* files, 0400 for spaceapp, and drop
   assert.ok(entrypoint.indexOf("rm -f /opt/spaceapp/secrets/space-make-*") < copy);
   assert.match(entrypoint.slice(copy), /^\s*if \[ -f "\$file" \]; then install -o spaceapp -g spaceapp -m 0400 "\$file" \/opt\/spaceapp\/secrets\/; fi/m);
   assert.ok(copy < entrypoint.indexOf("exec gosu spaceapp"));
+});
+
+test("a staged fresh install makes the Make folder in the compose project, not only in the staging folder (1.2.3 lab)", async () => {
+  const staged = await mkdtemp(join(tmpdir(), "spaceapp-make-staged-"));
+  const project = await mkdtemp(join(tmpdir(), "spaceapp-make-project-"));
+  await commitInstallation(staged, createDefaultConfig({ version: "0.1.0" }), { projectRoot: project });
+  const info = await stat(join(project, "secrets", "make"));
+  assert.ok(info.isDirectory());
+  if (process.platform !== "win32") assert.equal(info.mode & 0o777, 0o700);
 });
