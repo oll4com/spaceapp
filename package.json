@@ -63,7 +63,8 @@
     "build:demos": "node scripts/build-demo-projects.mjs",
     "test:architecture": "node --test scripts/tests/domain-boundaries.test.mjs scripts/tests/composition-root-size.test.mjs scripts/tests/quality-known-limitations.test.mjs && node scripts/domain-boundaries.mjs",
     "smoke:offline": "npm run build -w @space/cli-host && node scripts/contributor-smoke.mjs",
-    "test:contributor": "node --test scripts/tests/contributor-smoke.test.mjs"
+    "test:contributor": "node --test scripts/tests/contributor-smoke.test.mjs",
+    "lint": "npm --prefix scripts/lint-tools ci --ignore-scripts --no-audit --no-fund && eslint --cache --cache-strategy content --cache-location node_modules/.cache/eslint/ --max-warnings=4194 apps packages scripts"
   },
   "//": "typescript-api pins the TypeScript 6.0.3 JS API for AST guards because native TypeScript 7 has no JavaScript compiler API.",
   "devDependencies": {
