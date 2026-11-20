@@ -361,6 +361,22 @@ test("public package scripts keep node --test flags and drop steps of removed sc
   assert.deepEqual(dropped, ["private"]);
 });
 
+test("public export ships scripts/lint-tools and keeps the root lint script that names it (EXT-C-F15)", async () => {
+  const lint = "npm --prefix scripts/lint-tools ci --ignore-scripts && eslint --max-warnings=10 apps packages scripts";
+  const { sourceRoot, trackedPaths } = await writeSourceTree({
+    "package.json": { name: "space", private: true, scripts: { lint } },
+    "scripts/lint-tools/package.json": { name: "space-lint-tools", private: true },
+    "scripts/lint-tools/eslint.mjs": "export { default } from \"typescript-eslint\";\n"
+  });
+  const outputRoot = join(await mkdtemp(join(tmpdir(), "spaceapp-public-lint-output-")), "export");
+
+  const result = await createPublicExport({ sourceRoot, outputRoot, trackedPaths, sourceCommit: "0123456789abcdef0123456789abcdef01234567" });
+  const paths = result.manifest.files.map((file) => file.path);
+  assert.ok(paths.includes("scripts/lint-tools/package.json"));
+  assert.ok(paths.includes("scripts/lint-tools/eslint.mjs"));
+  assert.equal(JSON.parse(await readFile(join(outputRoot, "package.json"), "utf8")).scripts.lint, lint);
+});
+
 test("public export fails instead of shipping a script for a workspace the public tree lacks", async () => {
   const { sourceRoot, trackedPaths } = await writeSourceTree({
     "package.json": { name: "space", scripts: { build: "npm run build -w @space/desktop" } },

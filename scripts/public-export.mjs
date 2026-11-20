@@ -641,6 +641,8 @@ export function isPublicExportPath(path) {
     // Licence texts of third-party code in apps/ and packages/ (Claude review 1.1.7 F5).
     normalized.startsWith("THIRD_PARTY_LICENSES/") ||
     normalized.startsWith("agent-skills/") ||
+    // The root `npm run lint` toolchain (registry-only lock, no private import; EXT-C-F15).
+    normalized.startsWith("scripts/lint-tools/") ||
     // The quality evidence ships with the code it describes, so a review reads both at one commit.
     normalized.startsWith("docs/quality/") ||
     publicDocs.has(normalized) ||
@@ -716,7 +718,9 @@ export async function createPublicExport({
     // A self-export ships the public repository's own maintained files; a private export leaves them to it.
     const keptPublicFiles = publicRepositoryFiles === null || source === repoRoot ? new Set() : publicRepositoryMaintainedFiles;
     const exportPaths = new Set([...trackedPaths].filter((path) => isPublicExportPath(path) && !keptPublicFiles.has(path)));
-    const hasFile = (path) => exportPaths.has(path) || publicRepositoryScripts.has(path);
+    // A script may name a directory (`npm --prefix scripts/lint-tools`) when files ship below it.
+    const hasFile = (path) => exportPaths.has(path) || publicRepositoryScripts.has(path) ||
+      [...exportPaths].some((file) => file.startsWith(`${path}/`));
     const workspaces = new Set(publicRepositoryWorkspaces);
     for (const path of exportPaths) {
       if (!/^(?:apps|packages)\/[^/]+\/package\.json$/.test(path)) continue;
