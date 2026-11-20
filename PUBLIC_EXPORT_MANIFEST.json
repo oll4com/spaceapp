@@ -1,7 +1,7 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "f7e58a5197f95e69fb6f5cb3e080cd942305173a",
+  "sourceCommit": "434f11cddfe9223d8faf5e8ac5738f19dbf97eef",
   "fileCount": 5996,
   "transformations": 430,
   "files": [
@@ -9547,9 +9547,9 @@
     },
     {
       "path": "apps/api/src/browser-sessions.ts",
-      "sourceObjectId": "d57f111ef232b9d072ae5f16887d2d02752df53b",
-      "sha256": "1633e2324842ff4d0b15b94086d4eaa3cc95fe19da0d3fcda5dbc5ed5ca8c48a",
-      "size": 238851
+      "sourceObjectId": "a7a52c16c22d4d26a437475f610bc12fd059fbcd",
+      "sha256": "21d9a4f5c5ff871687c8047fd0270208cf50d182bc1307eb946474d09893fbdd",
+      "size": 239933
     },
     {
       "path": "apps/api/src/browser-slider-captcha.ts",
@@ -13993,9 +13993,9 @@
     },
     {
       "path": "apps/api/tests/browser-account-profile-chrome.test.ts",
-      "sourceObjectId": "a3ec77ea7601ee53a32bed5b4fdd8e09c0a47295",
-      "sha256": "7a2b743784b96fb1d798d776e4b196c349e0190e50c1a06f11bf6e8a4be4c37a",
-      "size": 22797
+      "sourceObjectId": "7f40b85fe9fa80b5504ca16bbf2179de05f821a0",
+      "sha256": "41d289997aad798aa7b9a7d813e72cee6315739bded6cfb54a9c646bc86f6a0f",
+      "size": 22922
     },
     {
       "path": "apps/api/tests/browser-account-profiles.test.ts",
@@ -14131,9 +14131,9 @@
     },
     {
       "path": "apps/api/tests/browser-sessions.test.ts",
-      "sourceObjectId": "47319f99a8c265fb412db7070b17d767068a6584",
-      "sha256": "8fc9d4fe5d1d3cab4de81500dc3a242350bcd82b17f580261b65b74ef8880a3a",
-      "size": 62437
+      "sourceObjectId": "03128ee162291bb511686ce724049d376f5e1478",
+      "sha256": "ecfca6a3321fad80f791dac0ccd2c2c08cf4ab411386a365f5553dcf90299704",
+      "size": 63628
     },
     {
       "path": "apps/api/tests/browser-slider-captcha.test.ts",
@@ -16483,9 +16483,9 @@
     },
     {
       "path": "apps/api/tests/optional-modules.test.ts",
-      "sourceObjectId": "56f9ad922f83c6ee1b7f49aa79cdd23f852eb17e",
-      "sha256": "5cdf38b59e38c4bf5118025d590dca4155f0d18e43466074adb0ffcc800ae968",
-      "size": 2238
+      "sourceObjectId": "28e954469fc45ac96ba09f54dca7237ec184b1d5",
+      "sha256": "8e68fefcc3587cb3eeb1e1f7a3bac97987ddd7dbf721c23c6bda19caa66bb920",
+      "size": 2564
     },
     {
       "path": "apps/api/tests/otlp-span-exporter.test.ts",
@@ -17431,9 +17431,9 @@
     },
     {
       "path": "apps/api/tests/setup.test.ts",
-      "sourceObjectId": "40791d2bfca39b378a62e623b0add8f64a14d8b5",
-      "sha256": "047c3916ab581ce0de1919fb631f6820ba58749d26e1613ec4649060dd821149",
-      "size": 13595
+      "sourceObjectId": "2afd71339301b7d94a04d3b78cfd273ab5cbdeb8",
+      "sha256": "230e37d1514a25fcf96b6496d07b8f04849864a1003d836a43f5b0e844cf11f8",
+      "size": 13922
     },
     {
       "path": "apps/api/tests/shared-chat-dispatch.test.ts",
@@ -17665,9 +17665,9 @@
     },
     {
       "path": "apps/api/tests/support/cli-runtimes-harness.ts",
-      "sourceObjectId": "1a531409b3f0aeff3fea26f714b9a0eeb1efbdeb",
-      "sha256": "9351341bfaeb7ff9d6b6ae15d0a88e31d5917b98cabb91b754679ebbbcd3d82a",
-      "size": 8521
+      "sourceObjectId": "7457923d27bc63e755701c35cfee26380c6dcb05",
+      "sha256": "a0b2a3ab5a3edfc84d7de76bd3682faacc8f256578f994d57c8f231e5969edef",
+      "size": 8852
     },
     {
       "path": "apps/api/tests/support/instance-releases-fixture.ts",
