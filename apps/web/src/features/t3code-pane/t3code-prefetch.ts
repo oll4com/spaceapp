@@ -31,6 +31,8 @@ export function scheduleT3BundlePrefetch(delayMs = 8_000) {
   scheduled = true;
   const run = () => { void prefetchT3Bundle().catch(() => {}); };
   const whenIdle = () => {
+    // A test environment can be torn down before the 8 s timer fires.
+    if (typeof window === "undefined") return;
     if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(run, { timeout: 10_000 });
     else run();
   };
