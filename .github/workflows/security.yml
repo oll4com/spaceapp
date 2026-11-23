@@ -205,6 +205,8 @@ jobs:
           tags: spaceapp-${{ matrix.target }}:security-scan
           cache-from: type=gha,scope=security-${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=security-${{ matrix.target }}
+          # Debian security fixes come from the apt-get upgrade in runtime-base: never reuse that layer from the cache (23/11: cached layer kept fixed krb5/glibc/nghttp2 CVEs, Image scan red)
+          no-cache-filters: runtime-base
 
       - name: Block fixable Medium, High, and Critical image findings
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
