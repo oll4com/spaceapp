@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "e28d93ad270bd3c20c99aacfa528c9fc145e4d2a39228e0c423235de9d655b83",
-  "sourceCommit": "885d217f029e3b1ea40f5b2973e4685cdd014359",
+  "candidateDigest": "3b382d3ade7f386216368255793d0ef1fd9733e97f8859d630c77eb6ccd5cb71",
+  "sourceCommit": "5b8e6ff54b043a5250784ed687e5e0a4ac538902",
   "spaceSourceCommit": "eefced48f92c52f4d54d74faec02b0612447134a",
   "launcherVersion": "1.2.3",
   "runtimeVersion": "1.2.3",
@@ -359,7 +359,8 @@
       "5a75a956 docs/images/demo-10s.gif",
       "efcb2eb0 INT5-C-F9 scripts/verify-export-provenance.mjs + its test",
       "ad497179 docs/nous.md (Space eefced48f9 = 2889acc2f8 + the docs/nous.md fix of 15a7b6a05a/5a93463273)",
-      "885d217f .github/workflows security.yml + release.yml: no-cache-filters runtime-base (images get current Debian security updates; package contents differ from the 20/11 lab images)"
+      "885d217f .github/workflows security.yml + release.yml: no-cache-filters runtime-base (images get current Debian security updates; package contents differ from the 20/11 lab images)",
+      "5b8e6ff5 no-cache-filters runtime-base,core,browser,cli"
     ],
     "why": "public-owned files and one exported doc only: not in the runtime image stage (Dockerfile final COPY list) nor in the run-spaceapp package files, so the installer lab on 74d0c15 stands; rerun: verify-export-provenance tests 3/3, verifier 0 problems (176 publicOwned), public CI on this head"
   }
