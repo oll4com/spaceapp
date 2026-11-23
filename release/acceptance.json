@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
   "candidateDigest": "3b382d3ade7f386216368255793d0ef1fd9733e97f8859d630c77eb6ccd5cb71",
-  "sourceCommit": "5b8e6ff54b043a5250784ed687e5e0a4ac538902",
+  "sourceCommit": "e31e4891109984bffeda25e2399fa7403cb6d7c3",
   "spaceSourceCommit": "eefced48f92c52f4d54d74faec02b0612447134a",
   "launcherVersion": "1.2.3",
   "runtimeVersion": "1.2.3",
-  "createdAt": "2026-11-20T08:13:41.477Z",
+  "createdAt": "2026-11-23T04:03:45.422Z",
   "launcherTarballSha256": "b872fee3389abcaa77c86d3d17acc2718c1dc2d5a8294e30ced5a6443a0f59ad",
   "labProof": {
-    "acceptanceSha256": "73e7259cd33cf6dbf91542c6dfb6106a1390a0a47c9aea0d42df88f0ea3bc444",
+    "acceptanceSha256": "9e83d2393b6b4bfb69a78ca89db43e786b0dbc6e5811fb2e308babb90cca9182",
     "allCasesPass": true,
-    "ci": "public CI green on 74d0c15f (ci-74d0c15f.log, sha256 ee9c1c34aee8bed6809402c270dea585f5e76d5781d53fabf6076f760a83fd21)"
+    "ci": "public CI green on e31e4891 (ci-e31e4891.log, sha256 9244b7b4ba282f4610542efada8d67e31b3ccbf8fc66cede89f1bcb0c4f64f45)"
   },
   "pendingAfterPublication": [
     "windows W1: fresh 1.2.3 install from the registry, no --local-images",
@@ -25,8 +25,8 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux/fresh-install-unattended.log",
-      "artifactSha256": "5b364343a744f3113272c8f8ae166074bdb193ff60a5e93a02f8c760d6ebceff",
-      "note": "spaceapp-lab-120 recreated clean (4 CPU, 8 GiB, Ubuntu 24.04, systemd; Docker Engine preloaded and stopped, lab user not in the docker group; images built --no-cache from public 74d0c15, labelled space.candidate 2889acc2f8): npx run-spaceapp 1.2.3 install --non-interactive --answers --local-images exit 0 in 52 s, ready, core and cli labelled 2889acc2f8 / 74d0c15, memory.peak 8.59 GB, no OOM kill; setup token redacted",
+      "artifactSha256": "4ddaf42b37e6d4a1561c4ba9956004428ecfcea072dece5ae0ba1dff5683852f",
+      "note": "spaceapp-lab-120 recreated clean (4 CPU, 8 GiB, Ubuntu 24.04, systemd; Docker Engine preloaded and stopped, lab user not in the docker group; images built --no-cache from public e31e489, labelled space.candidate eefced48f9): npx run-spaceapp 1.2.3 install --non-interactive --answers --local-images exit 0 in 52 s, ready, core and cli labelled eefced48f9 / e31e489, memory.peak 8.59 GB, no OOM kill; setup token redacted. The first attempt never started: the lab base image spaceapp-lab:ubuntu24 had been removed by the 20/11 cleanup and was rebuilt with hz-spaceapp-lab.sh image before this run",
       "unattended": true
     },
     {
@@ -37,8 +37,8 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux/sysd/U-update.log",
-      "artifactSha256": "9bb8a345364b8ade6edd12ec33c5a74479dfa36fe13de0a47141def2b19377ad",
-      "note": "spaceapp-lab-123u (Ubuntu 24.04, systemd, Docker in the lab, candidate images loaded from hz) after uninstall --purge-data: published run-spaceapp 1.2.2 installed from npm with registry pulls (exit 0, core ec583c44); seed choices on 1.2.2 (edited ask-last, retired, deleted; seed-before.json); marker written; run-spaceapp 1.2.3 update exit 0, config 1.2.3, images 1.2.3 / 74d0c15, marker kept, seed choices kept (seed-after.json pass)",
+      "artifactSha256": "f5cb6e21dc1a32b25ccc96c8caf54be02ce1de7f7fce01d3d0f6e6ac03dd59b3",
+      "note": "spaceapp-lab-123u (Ubuntu 24.04, systemd, Docker in the lab, candidate images loaded from hz) after uninstall --purge-data: published run-spaceapp 1.2.2 installed from npm with registry pulls (exit 0, core ec583c44); seed choices on 1.2.2 (edited ask-last, retired, deleted; seed-before.json); marker written; run-spaceapp 1.2.3 update exit 0 in 18 s, config 1.2.3, images 1.2.3 / e31e489, marker kept, seed choices kept (seed-after.json pass)",
       "dataPreserved": true,
       "seedChoicesPreserved": true
     },
@@ -50,8 +50,8 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux/sysd/R-fix.log",
-      "artifactSha256": "ea50b97b6107c34ed8c4bc0bdd99cbdd61ca8f55f9915a266fc606477eeb726e",
-      "note": "same lab after the upgrade: spaceapp-core removed (owned fault), doctor exit 0, doctor --fix exit 0 in 38 s, ready, images 1.2.3 / 74d0c15, data, secrets, workspaces and marker preserved",
+      "artifactSha256": "cf9ff4c77fb8fec03d6bfcb0fd7fed6b3ba70bc9c08821cfb63c06dfa7f4c3bc",
+      "note": "same lab after the upgrade: spaceapp-core removed (owned fault), doctor exit 0, doctor --fix exit 0 in 38 s, ready, images 1.2.3 / e31e489, data, secrets, workspaces and marker preserved",
       "dataPreserved": true
     },
     {
@@ -62,8 +62,8 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux/sysd/S-install.log",
-      "artifactSha256": "3d62a63bb6483545132ff57931901178174f3c0808b58009e1eb6db31742877c",
-      "note": "spaceapp-lab-123u (Ubuntu 24.04, systemd, Docker in the lab, candidate images loaded from hz): docker.service and socket stopped (docker info exit 1), install started it, exit 0, ready, images 1.2.3 / 74d0c15, data preserved",
+      "artifactSha256": "66c2dde18fb52a69d7b10d37b4b03d4fc7f75900c8e596bb681522afe2d7774d",
+      "note": "spaceapp-lab-123u (Ubuntu 24.04, systemd, Docker in the lab, candidate images loaded from hz): docker.service and socket stopped (docker info exit 1), install started it, exit 0, ready, images 1.2.3 / e31e489, data preserved",
       "dataPreserved": true,
       "dockerInitiallyStopped": true
     },
@@ -75,9 +75,9 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux/sysd/F-native-session.json",
-      "artifactSha256": "064884b1860c79e40112156177df1d6f08be4ccdddba93ddfdda7983642082c3",
-      "note": "room:u6NqOVDie0HQ pane:aLOPByBps-JW: opencode on the free model opencode/big-pickle answered SPACEAPP-123-FIRST-AGENT-OK, cost 0, session ses_e0815fa25ffeWGiSt2GGHeSFkY read from the cli container; the probe (F-first-agent/summary.json) exited 1 only because it read the task list before the native id appeared, as in 1.2.2",
-      "nativeTaskId": "ses_e0815fa25ffeWGiSt2GGHeSFkY",
+      "artifactSha256": "ed70171ab0d4677d895af4af24c2d12338dec3d2e9352e3cc591b66cb4a6d1b3",
+      "note": "room:87bJA3JkumHh pane:YeXBmA7JYU3Y: opencode on the free model opencode/big-pickle answered SPACEAPP-123-FIRST-AGENT-OK, cost 0, session ses_df97fb8c8ffeF0rbvJzqGd3YMt read from the cli container; the probe (F-first-agent/summary.json) exited 1 only because it read the task list before the native id appeared, as in 1.2.2 and the 20/11 lab",
+      "nativeTaskId": "ses_df97fb8c8ffeF0rbvJzqGd3YMt",
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
       "freeModel": true,
@@ -92,8 +92,8 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux/nous-first/messages.txt",
-      "artifactSha256": "30abd3432bfe43b74e62de64ab9f91670e78193b48234739b61769cc23264ba2",
-      "note": "spaceapp-lab-120 without Claude: owner claimed, first Nous question answered at 37.7 s in the seed identity; 60 SEED rows ACTIVE introduced 1.2.3 (seed-rows.txt); nous_turn_facts: model opencode/big-pickle, tokens only on big-pickle, 0 Anthropic usage rows (turn-facts.txt). The answer meta label says claude:claude-sonnet-5-5 (label only, follow-up)",
+      "artifactSha256": "ec1ca939e8b47ea67012ef3564dece337c52b9c47437c8f4ad03d3702b8bd636",
+      "note": "spaceapp-lab-120 without Claude: owner claimed, first Nous question answered at 24.4 s in the seed identity with the note that it ran on OpenCode's free model; 60 SEED rows ACTIVE introduced 1.2.3 (seed-rows.txt); nous_turn_facts: model opencode/big-pickle, 0 Anthropic usage rows (turn-facts.txt); the answer meta label now says opencode/big-pickle (the 20/11 label follow-up is fixed)",
       "freeModel": true,
       "modelId": "opencode/big-pickle",
       "seedImported": true
@@ -117,8 +117,8 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux/sysd/B-rollback.log",
-      "artifactSha256": "46faa01bcc0a5d2191a7b42bf89bdc19496b4963ea9e8735a0cb790ba1a67991",
-      "note": "same lab: run-spaceapp 1.2.2 update from 1.2.3 under script(1), DOWNGRADE typed at its prompt (1 prompt), exit 0 in 36 s, \"Updated to SpaceApp 1.2.2\", config 1.2.2, ready, images 1.2.2 from the registry, data, secrets, workspaces and marker preserved, seed choices kept, no OOM. First run (B-rollback-run1-quoting.log) failed only on lab quoting of --answers; rerun passes the answers as a file",
+      "artifactSha256": "96c73ae5b242e727a458aa0fff9cea530c590fb62afa8c035793c8d8bc492471",
+      "note": "same lab: run-spaceapp 1.2.2 update from 1.2.3 under script(1), DOWNGRADE typed at its prompt (1 prompt), answers passed as a file, exit 0 in 34 s, \"Updated to SpaceApp 1.2.2.\", config 1.2.2, ready, images 1.2.2 from the registry (probe ok false only because 1.2.2 images carry no revision label, as on 20/11), data, secrets, workspaces and marker preserved, seed choices kept, memory.peak 8.59 GB, no OOM",
       "dataPreserved": true,
       "toVersion": "1.2.2"
     },
@@ -130,8 +130,8 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "images/trivy-core.txt",
-      "artifactSha256": "ff1faa8e2641cfeceaaf86dd1dd77c1ea043a18ca6350e0b9895793f80bbda9a",
-      "note": "core, cli and browser built --no-cache from 74d0c15 (core a2f605ee8d1b, cli 3f31c2124b7b, browser ab98b680e181); Trivy MEDIUM+ --ignore-unfixed with .trivyignore, the release.yml gate: 0 findings in all three images and the source tree (trivy-cli/browser/fs.txt beside this one)"
+      "artifactSha256": "3d61b5d2ad7e46822e9a2cfce58948ea052921e2e5d6d64ddbe9083cefe788c9",
+      "note": "core, cli and browser built --no-cache from e31e489 (core 59521f8ad389, cli 52b84505ac66, browser b282cdd0a05c; Debian 13.8 security packages); Trivy 0.70.0 MEDIUM+ --ignore-unfixed with .trivyignore, the release.yml gate: 0 findings in all three images and the source tree (trivy-cli/browser/fs.txt beside this one)"
     },
     {
       "platform": "linux",
@@ -352,16 +352,5 @@
       "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 via (1.1.9 25fb63fd (c7 1ea6bf8))",
       "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     }
-  ],
-  "publicOwnedAfterLab": {
-    "labSourceCommit": "74d0c15f50a38193b516cf19c856ad183de7787e",
-    "commits": [
-      "5a75a956 docs/images/demo-10s.gif",
-      "efcb2eb0 INT5-C-F9 scripts/verify-export-provenance.mjs + its test",
-      "ad497179 docs/nous.md (Space eefced48f9 = 2889acc2f8 + the docs/nous.md fix of 15a7b6a05a/5a93463273)",
-      "885d217f .github/workflows security.yml + release.yml: no-cache-filters runtime-base (images get current Debian security updates; package contents differ from the 20/11 lab images)",
-      "5b8e6ff5 no-cache-filters runtime-base,core,browser,cli"
-    ],
-    "why": "public-owned files and one exported doc only: not in the runtime image stage (Dockerfile final COPY list) nor in the run-spaceapp package files, so the installer lab on 74d0c15 stands; rerun: verify-export-provenance tests 3/3, verifier 0 problems (176 publicOwned), public CI on this head"
-  }
+  ]
 }
