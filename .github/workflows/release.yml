@@ -224,8 +224,8 @@ jobs:
           provenance: false
           cache-from: type=gha,scope=candidate-${{ matrix.target }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=candidate-${{ matrix.target }}-${{ matrix.arch }}
-          # Debian security fixes come from the apt-get upgrade in runtime-base: never reuse that layer from the cache (23/11: cached layer kept fixed krb5/glibc/nghttp2 CVEs, Image scan red)
-          no-cache-filters: runtime-base
+          # Debian security fixes come from the apt-get upgrade in runtime-base: never reuse it or the stages on it from the cache (BuildKit keys them by definition, so a cached cli stage kept the old base: 23/11 Image scan red on fixed krb5/glibc/nghttp2 CVEs)
+          no-cache-filters: runtime-base,core,browser,cli
 
       - name: Enforce container size budget
         working-directory: ${{ runner.temp }}/spaceapp-public-export
@@ -305,8 +305,8 @@ jobs:
           provenance: false
           cache-from: type=gha,scope=candidate-${{ matrix.target }}-amd64
           cache-to: type=gha,mode=max,scope=candidate-${{ matrix.target }}-amd64
-          # Debian security fixes come from the apt-get upgrade in runtime-base: never reuse that layer from the cache (23/11: cached layer kept fixed krb5/glibc/nghttp2 CVEs, Image scan red)
-          no-cache-filters: runtime-base
+          # Debian security fixes come from the apt-get upgrade in runtime-base: never reuse it or the stages on it from the cache (BuildKit keys them by definition, so a cached cli stage kept the old base: 23/11 Image scan red on fixed krb5/glibc/nghttp2 CVEs)
+          no-cache-filters: runtime-base,core,browser,cli
 
       - name: Enforce container size budget
         working-directory: ${{ runner.temp }}/spaceapp-public-export
@@ -512,8 +512,8 @@ jobs:
           provenance: mode=max,version=v1
           cache-from: type=gha,scope=publish-${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=publish-${{ matrix.target }}
-          # Debian security fixes come from the apt-get upgrade in runtime-base: never reuse that layer from the cache (23/11: cached layer kept fixed krb5/glibc/nghttp2 CVEs, Image scan red)
-          no-cache-filters: runtime-base
+          # Debian security fixes come from the apt-get upgrade in runtime-base: never reuse it or the stages on it from the cache (BuildKit keys them by definition, so a cached cli stage kept the old base: 23/11 Image scan red on fixed krb5/glibc/nghttp2 CVEs)
+          no-cache-filters: runtime-base,core,browser,cli
 
       # Signed (Sigstore) provenance bound to this workflow, beside BuildKit's unsigned one (review 5/5 F5).
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -577,8 +577,8 @@ jobs:
           provenance: mode=max,version=v1
           cache-from: type=gha,scope=candidate-${{ matrix.target }}-amd64
           cache-to: type=gha,mode=max,scope=publish-${{ matrix.target }}-amd64
-          # Debian security fixes come from the apt-get upgrade in runtime-base: never reuse that layer from the cache (23/11: cached layer kept fixed krb5/glibc/nghttp2 CVEs, Image scan red)
-          no-cache-filters: runtime-base
+          # Debian security fixes come from the apt-get upgrade in runtime-base: never reuse it or the stages on it from the cache (BuildKit keys them by definition, so a cached cli stage kept the old base: 23/11 Image scan red on fixed krb5/glibc/nghttp2 CVEs)
+          no-cache-filters: runtime-base,core,browser,cli
 
       # Signed (Sigstore) provenance bound to this workflow, beside BuildKit's unsigned one (review 5/5 F5).
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
