@@ -136,11 +136,13 @@ On an older install the dock says "update SpaceApp".
    npx --yes run-spaceapp@latest install   # or: update
    ```
 
-2. Connect Claude Code under the CLI providers: sign in with your Claude
-   subscription, or store an Anthropic API key with
-   `npx --yes run-spaceapp@latest credentials set claude`.
-3. Open the Nous dock and switch on **Work on my behalf**. It turns on only
-   once Claude Code is signed in; until then the dock says what is missing.
+2. Optional: connect Claude Code under the CLI providers: sign in with your
+   Claude subscription, or store an Anthropic API key with
+   `npx --yes run-spaceapp@latest credentials set claude`. Without it, Nous's
+   turns run on the free OpenCode Zen model picked in Getting started.
+3. Open the Nous dock and switch on **Work on my behalf**. If Nous cannot run
+   yet (a CLI container from before run-spaceapp 1.2.0 with no Claude Code
+   login), the dock says what is missing.
 
 Stop ends the current turn at once, and switching **Work on my behalf** off
 stops all of its work.
@@ -192,8 +194,10 @@ of the tools that need them:
 
 Also:
 
-- Nous runs only on Claude Code. Without a Claude Code login it stays off.
-- Its turns use your Claude plan or API key, and SpaceApp cannot read that
+- Without a Claude Code login, Nous's turns run on the free OpenCode Zen model
+  picked in Getting started (Zen's free-tier limits apply); each answer suggests
+  connecting Claude Code. Signing in moves the next turn to Claude.
+- With Claude Code connected, its turns use your Claude plan or API key, and SpaceApp cannot read that
   quota, so it cannot slow down by itself before the quota runs out. Use
   **Always on** in Low-spend mode, or switch Nous off, when your plan is low.
 - One helper at a time.
