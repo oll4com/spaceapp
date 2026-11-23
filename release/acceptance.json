@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "fc133f10b1d93b0c364c252590512e8abdc1024c07a28f272052efea8b67fdfa",
-  "sourceCommit": "74d0c15f50a38193b516cf19c856ad183de7787e",
+  "candidateDigest": "808b0185067c5466fc1831c43c852343cf94b88fccf821b79c9177614583e071",
+  "sourceCommit": "efcb2eb0ae70ea2c0787b96ba3466ae91f87ee2a",
   "spaceSourceCommit": "2889acc2f85a81beae6652395f184dc48fd96070",
   "launcherVersion": "1.2.3",
   "runtimeVersion": "1.2.3",
@@ -352,5 +352,13 @@
       "carriedFrom": "1.2.2 acceptance f5340c1 (Space 95d52f3f25), 14/11 via 1.2.1 via (1.1.9 25fb63fd (c7 1ea6bf8))",
       "carriedReason": "Candidate Space 2889acc2f8 with launcher 1.2.3 (public 74d0c15). Launcher changes since 1.2.2: the read-only bind ./secrets/make -> /run/spaceapp-secrets/make (the Make app files) and the 0700 mkdir of that folder in the compose project, plus the version. Rerun on Linux for 74d0c15: fresh install (unattended and systemd), Make secrets, Nous first answer, image scan, stopped Docker, first agent, 1.2.2 -> 1.2.3 upgrade, repair and rollback. Not rerun on Docker Desktop: the new bind and folder mode are untested on Windows and macOS. Earlier carry: Not re-run on 1.2.2: the lab proof Nous ordered (14/11 08:07 BKK, rerun on 2f43b41031 after the seed stamp) covers the Linux unattended install, upgrade, repair, stopped Docker, first agent, Nous's first answer and the 2 GB light profile. No macOS lab host; Windows win121 not run on this candidate. Launcher v1.2.1..4fe27e93: 4 files changed, 139 insertions(+), 43 deletions(-) (Linux docker-group re-entry, install --ref, light profile and browser container limits/volumes, which reach Windows and macOS too)."
     }
-  ]
+  ],
+  "publicOwnedAfterLab": {
+    "labSourceCommit": "74d0c15f50a38193b516cf19c856ad183de7787e",
+    "commits": [
+      "5a75a956 docs/images/demo-10s.gif",
+      "efcb2eb0 INT5-C-F9 scripts/verify-export-provenance.mjs + its test"
+    ],
+    "why": "public-owned files only: not in the runtime image stage (Dockerfile final COPY list) nor in the run-spaceapp package files, so the installer lab on 74d0c15 stands; rerun: verify-export-provenance tests 3/3, verifier 0 problems (176 publicOwned), public CI on this head"
+  }
 }
