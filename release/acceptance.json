@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "808b0185067c5466fc1831c43c852343cf94b88fccf821b79c9177614583e071",
-  "sourceCommit": "efcb2eb0ae70ea2c0787b96ba3466ae91f87ee2a",
-  "spaceSourceCommit": "2889acc2f85a81beae6652395f184dc48fd96070",
+  "candidateDigest": "bc15927e3bc2033456de0f83d538f7c36840ea7706248dffdc20bf04be895586",
+  "sourceCommit": "ad4971796081844908d37eccaaeb5fc29fd8bcda",
+  "spaceSourceCommit": "eefced48f92c52f4d54d74faec02b0612447134a",
   "launcherVersion": "1.2.3",
   "runtimeVersion": "1.2.3",
   "createdAt": "2026-11-20T08:13:41.477Z",
@@ -357,8 +357,9 @@
     "labSourceCommit": "74d0c15f50a38193b516cf19c856ad183de7787e",
     "commits": [
       "5a75a956 docs/images/demo-10s.gif",
-      "efcb2eb0 INT5-C-F9 scripts/verify-export-provenance.mjs + its test"
+      "efcb2eb0 INT5-C-F9 scripts/verify-export-provenance.mjs + its test",
+      "ad497179 docs/nous.md (Space eefced48f9 = 2889acc2f8 + the docs/nous.md fix of 15a7b6a05a/5a93463273)"
     ],
-    "why": "public-owned files only: not in the runtime image stage (Dockerfile final COPY list) nor in the run-spaceapp package files, so the installer lab on 74d0c15 stands; rerun: verify-export-provenance tests 3/3, verifier 0 problems (176 publicOwned), public CI on this head"
+    "why": "public-owned files and one exported doc only: not in the runtime image stage (Dockerfile final COPY list) nor in the run-spaceapp package files, so the installer lab on 74d0c15 stands; rerun: verify-export-provenance tests 3/3, verifier 0 problems (176 publicOwned), public CI on this head"
   }
 }
