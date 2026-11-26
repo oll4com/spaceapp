@@ -1,7 +1,7 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "1da6f56180bc9dd8fecb0f8e15ea9b494fa850ac",
+  "sourceCommit": "102500bc4e480aa7cbd4c5878d5e2ac80d4986d8",
   "fileCount": 6241,
   "transformations": 475,
   "files": [
@@ -29317,8 +29317,8 @@
     },
     {
       "path": "packages/contracts/src/nous-shared-memory-seed.json",
-      "sourceObjectId": "5718add0a97bf90804c8d017f0bcee9b0a7ce5b6",
-      "sha256": "5801490b2b10357a3f39aa6a44a5eda54fb0d94595c25cff7a96508a3ee47a67",
+      "sourceObjectId": "4d7be350ea84815acd575106dd3fdc678991e0c3",
+      "sha256": "c94f05a931538c82f6c24f824904bd2491e5a99183698071d1ebc858e271933b",
       "size": 29840
     },
     {
