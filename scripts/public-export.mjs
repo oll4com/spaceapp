@@ -218,6 +218,11 @@ const privateOnlyTests = new Map(Object.entries(JSON.parse(
 )));
 
 const publicBinaryFiles = new Map([
+  // The README's Nous demo GIF (public-owned in docs/images, like the other README images).
+  ["docs/images/nous-orchestration-hero.gif", "94c13de48bd6366cd766b8b02d2a9f6944eeab70137e78aec711656aa6d74b06"],
+  // Synthetic setup QRs for the vault OTP decoder tests (the public example key JBSWY3DPEHPK3PXP).
+  ["apps/api/tests/fixtures/vault-otp-qr-rgb.png", "e85176b60a4c1a26c8e3708b8b7908d8e803ee74a610329ebf194b99914376ab"],
+  ["apps/api/tests/fixtures/vault-otp-qr-rgba.png", "4cec9c8f02d8788c805f4f0e226be9e740b4e0d475be9becf6d61d9378bf6ec8"],
   // Inter (SIL OFL 1.1, its licence ships beside it): the Design pane's template font.
   ["scripts/design-templates/fonts/InterVariable.woff2", "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3"],
   ["apps/web/public/brand/spaceapp-bg-ascii-orbital-optimized.gif", "42e0be38c08a14c7affca0cdb77583a2d015156a0ca741bef093ddf79078ebcc"],
