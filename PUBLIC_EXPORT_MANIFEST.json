@@ -2,7 +2,7 @@
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
   "sourceCommit": "547068e57023c755a0a5c798815fd8440e536421",
-  "fileCount": 6238,
+  "fileCount": 6239,
   "transformations": 471,
   "files": [
     {
@@ -37270,6 +37270,12 @@
       "sourceObjectId": "6666959e7281f4d978e2d3d2961e89e47b2f25af",
       "sha256": "1ad7c2bcc56c9be39ee93a52d78007af2e4cc443493a50471acb3468b7c67e87",
       "size": 30357
+    },
+    {
+      "path": "scripts/space-exec-helper.mjs",
+      "sourceObjectId": "831e1bf3e795fc5ee799fcfeea4056ae2e41069e",
+      "sha256": "50dd09118c7aa02b419d107af4f98475b0ae5e5647a349e91d0d675b50e486eb",
+      "size": 2362
     },
     {
       "path": "scripts/space-hygiene-check.mjs",
