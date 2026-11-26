@@ -158,6 +158,8 @@ const publicScripts = new Set([
   // 1.2.0 (operator 5/11, plan clipboard:NtXOwLkXVN1x): the scripts the API runs and agent-bootstrap.ts tells panes to run,
   // with every repository file they load. Missing, Nous never heard from panes and the Design, Video and App Studio panes failed.
   "scripts/space-progress.mjs",
+  // Space 498fdd77ab (14/11): apps/api/src/safe-child-process.ts forks it at boot; missing, every buffered command forks the API.
+  "scripts/space-exec-helper.mjs",
   "scripts/space-task.mjs",
   "scripts/space-test-resource.mjs",
   "deploy/space-harness-pane-env.mjs",

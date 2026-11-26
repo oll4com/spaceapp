@@ -72,7 +72,7 @@ COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-restore.mjs ./
 # "every script agent-bootstrap.ts names is in the image"). /opt/spaceapp/scripts points here in the core and CLI images.
 COPY --from=build --chown=spaceapp:spaceapp \
   /app/scripts/cli-render-fixture.mjs /app/scripts/space-android-toolchain-setup.mjs /app/scripts/space-app-studio-build.mjs \
-  /app/scripts/space-app-studio-mcp.mjs /app/scripts/space-design-render.mjs /app/scripts/space-dots-home-check.mjs \
+  /app/scripts/space-app-studio-mcp.mjs /app/scripts/space-design-render.mjs /app/scripts/space-dots-home-check.mjs /app/scripts/space-exec-helper.mjs \
   /app/scripts/space-load-gate.mjs /app/scripts/space-media-capture.mjs /app/scripts/space-monitoring-copilot-mcp.mjs \
   /app/scripts/space-progress.mjs /app/scripts/space-security-copilot-mcp.mjs /app/scripts/space-security-inventory.mjs \
   /app/scripts/space-security-probe.sh /app/scripts/space-security-scanner-setup.mjs /app/scripts/space-site-signins-tools.mjs \
