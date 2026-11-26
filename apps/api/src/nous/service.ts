@@ -238,6 +238,13 @@ export const paneModelClaim = (text: string) => text.split(/(?<=[.!?;…])\s+|\n
 // A relative clause («τα panes που κλείσαμε», "the panes that were closed") names earlier closes, it claims none.
 const CLOSED = /(?<!(?<!\p{L})(?:που|οσα|οσους|that|which) )(?<!\p{L})(?:εκλεισ(?:α|αμε|ε|αν|ανε)|κλεισαμε|κλειστηκ(?:ε|αν|ανε))(?!\p{L})|(?<!\b(?:that|which) )\b(?:i|we)(?:'ve| have)? (?:just |already |now )?closed\b|(?<!\b(?:that|which) )\b(?:was|were|has been|have been) (?:just |already |now )?closed\b/gu;
 export const closedPanesSentence = (text: string) => firstSentence(text, (plain) => !/[?;;]$/u.test(plain) && /\bpanes?\b/u.test(plain) && saysUnnegated(plain, CLOSED));
+/**
+ * Correction 25/11 04:11Z (queue.md 2026-11-26 REVIEW, Golf Plus): a pane guessed «1.4 TSI 140PS DSG, αυτόματο», every listing and draft copied it, the car is manual.
+ * The first sentence stating a listing's spec (gearbox, engine, power, km), or null. Adverbs («αυτόματα», «χειροκίνητα», "automatic renewal") state none.
+ */
+const LISTING = /(?<!\p{L})αγγελι\p{L}*|\blistings?\b/u;
+const LISTING_SPEC = /(?<!\p{L})(?:κιβωτι\p{L}*|σασμαν\p{L}*|αυτοματ(?:ο|ου|ος)|χειροκινητ(?:ο|ου|ος)|ιππ(?:ων|ους|οι)|κυβικ\p{L}*|χιλιομετρ\p{L}*|χλμ)(?!\p{L})|\b(?:dsg|gearbox|transmission|mileage|tsi|tdi|tfsi)\b|\b\d+ ?(?:ps|hp|bhp|cc|km)\b/u;
+export const listingSpecClaim = (text: string) => firstSentence(text, (plain) => !/[?;;]$/u.test(plain) && !FILE_UNREAD.test(plain) && LISTING.test(plain) && LISTING_SPEC.test(plain));
 /** Whether this turn's ok closes cover the count the sentence names ("19 idle panes"); a close by state names no panes, so it covers any count. */
 export const closesCover = (sentence: string, acts: NousTurnAct[]) => {
   const named = acts.flatMap((act) => act.name === "space_close_pane" ? [(act.args.panes as unknown[] | undefined)?.length ?? 0]
@@ -378,6 +385,13 @@ const TURN_CLAIMS = [
       + "only after this turn's space_read_pane shows it; an open or an ok space_set_pane_model (it may be held until the CLI starts) is what you asked, not what runs.",
     hold: "Read the pane first, then call again, or say which model you asked for, not which it runs.",
     check: "Read the pane now (space_read_pane): if it runs that model, answer NOTHING_NEW; if not, tell the operator plainly which model it runs and set the right one or open the right CLI." },
+  // shortcut: any ok page read proves a listing claim, not only a read of the listing named; match the URL if a read-elsewhere listing claim is corrected.
+  { key: "listing-claim", find: listingSpecClaim, proof: new Set(["space_web_read", "space_look"]), says: "a listing's spec (gearbox, engine, power, km)", missing: "read no live listing",
+    display: "states a listing's spec with no live listing read this turn",
+    rule: "Listed means re-read (correction 25/11 Golf Plus: a pane guessed «DSG, αυτόματο», every listing copied it, the car is manual): state a listing's gearbox, engine, power or km "
+      + "only after this turn read the live listing (space_web_read its URL, or space_look at its page); a plan, a note, a draft or a pane's report is what was written, not what the car is.",
+    hold: "Read the live listing first, then call again, or say the spec is not re-checked yet.",
+    check: "Read the live listing now (space_web_read): if it says what you told the operator, answer NOTHING_NEW; if not, tell them plainly what it says and give the fix to the pane that owns the listing." },
 ];
 // Not in TURN_CLAIMS: space_reply_now says what you will do before doing it (persona), so that reply is never held for it; the outcome and the turn's end are.
 const WORK_CLAIM_CHECK = { key: "work-claim", find: workClaimSentence,

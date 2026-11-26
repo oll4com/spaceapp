@@ -803,7 +803,7 @@ describe("pairing a phone over the channel", () => {
       { timeout: 15_000, interval: 1_000 });
     expect((await a.inject({ method: "GET", url: "/api/instance-links" })).json().links[0].scopes).toEqual(expect.arrayContaining(["manage", "nous"]));
     // A's Nous never sends the signed answer: space_remote refuses the route.
-    await expect(instanceLinksFor(aStore)!.request(boss.id, id, "POST", `/api/nous/link/decisions/${asked.id}/answer`, {})).rejects.toThrow("answers only");
+    await expect(instanceLinksFor(aStore)!.request(boss.id, id, "POST", `/api/nous/link/decisions/${asked.id}/answer`, {})).rejects.toThrow("only they answer it there");
     // A's person declines (Approve would run the reinstall); B records it as its superior's person's answer, and the first answer wins.
     const answer = (input: object) => a.inject({ method: "POST", url: `/api/instance-links/${id}/decisions/${asked.id}/answer`, payload: input });
     expect((await answer({ answer: "ANSWER" })).statusCode).toBe(400);

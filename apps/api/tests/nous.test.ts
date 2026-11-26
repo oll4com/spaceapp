@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { classifyNousOutgoing, classifyNousPrompt } from "../src/nous/guardrails.js";
 import { renderNousWorld } from "../src/nous/digest.js";
 import { inNeedsYouClaim, waitsOnOperatorClaim } from "../src/nous/pane-watch.js";
-import { createNousService, nousHistory, NOUS_OVERVIEW_REUSE_MS, NOUS_PERSONA, NousUnavailableError, cardPromiseClaim, claimTopicWords, mailSentClaim, operatorMessagesToAnswer, paneToldClaim, operatorRefusal, riskLineSentence, heldStepSentence, knownFaultSentence, fileContentClaim, noNewWorkSentence, downClaim, serverBlockedClaim, fixedClaim, closedPanesSentence, closesCover, reissueClaim, reportPromiseSentence, workClaimSentence, paneModelClaim, renderDone, toolSubjects, type NousRunner, type NousServiceDeps } from "../src/nous/service.js";
+import { createNousService, nousHistory, NOUS_OVERVIEW_REUSE_MS, NOUS_PERSONA, NousUnavailableError, cardPromiseClaim, claimTopicWords, mailSentClaim, operatorMessagesToAnswer, paneToldClaim, operatorRefusal, riskLineSentence, heldStepSentence, knownFaultSentence, fileContentClaim, noNewWorkSentence, downClaim, serverBlockedClaim, fixedClaim, closedPanesSentence, closesCover, reissueClaim, reportPromiseSentence, workClaimSentence, paneModelClaim, listingSpecClaim, renderDone, toolSubjects, type NousRunner, type NousServiceDeps } from "../src/nous/service.js";
 import { itemActed, NOUS_ITEM_HOLDS, type NousTurnAct, type NousTurnItem } from "../src/nous/turn-items.js";
 import { heldReviewItem } from "../src/nous/copilot-questions.js";
 import { createNousTools, nousControlRisk, nousToolDefinitions, paneIdIn, pendingNousBriefOf, timedFocusSentence, timedPromoteSentence, type CopilotBriefEvent, type NousToolDeps, type NousToolOutcome } from "../src/nous/tools.js";
@@ -2600,6 +2600,26 @@ describe("Nous's turns", () => {
     await vi.waitFor(() => expect(f.requests.map((request) => request.reason)).toEqual(["OPERATOR", "INBOX"]), { timeout: 8_000 });
     await f.service.idle(owner);
     expect(f.requests[1]!.prompt).toContain("and that turn ran no live check. Down means checked");
+  }, 20_000);
+
+  it("correction 25/11 Golf Plus (queue.md 2026-11-26 REVIEW): states a listing's spec only in a turn that read the live listing", async () => {
+    const answer = "Η αγγελία είναι online. Η κύρια αγγελία στο car.gr γράφει 1.4 TSI 140PS με αυτόματο κιβώτιο DSG.";
+    expect(listingSpecClaim(answer)).toBe("Η κύρια αγγελία στο car.gr γράφει 1.4 TSI 140PS με αυτόματο κιβώτιο DSG.");
+    for (const text of ["Στις αγγελίες γράφει χειροκίνητο, 185.000 χλμ.", "The car.gr listing says manual gearbox, 122 hp.", "Στις αγγελίες μπήκε «1.4 TSI 140PS DSG»."]) expect(listingSpecClaim(text)).toBe(text);
+    for (const text of ["Η αγγελία στο car.gr εγκρίθηκε και είναι online.", "Η αγγελία ανανεώνεται αυτόματα κάθε εβδομάδα.", "Ανέβασα χειροκίνητα την αγγελία στο xe.gr.",
+      "The listing has automatic renewal on.", "Το κιβώτιο είναι χειροκίνητο.", "Γράφει η αγγελία αυτόματο κιβώτιο;", "Δεν έχω ελέγξει ακόμα τι κιβώτιο γράφει η αγγελία."]) expect(listingSpecClaim(text)).toBeNull();
+    const f = serviceFixture([async (input, service) => {
+      expect(await service.callTool(owner, input.turnId, "space_reply_now", { text: answer }, "l1")).toMatchObject({ ok: false, refused: true, display: expect.stringContaining("listing's spec") });
+      return { text: answer, isError: false };
+    }, async (input, service) => {
+      await service.callTool(owner, input.turnId, "space_web_read", { url: "https://www.car.gr/58462399" }, "l2");
+      expect((await service.callTool(owner, input.turnId, "space_reply_now", { text: answer }, "l3")).ok).toBe(true);
+      return { text: "NOTHING_NEW", isError: false };
+    }]);
+    await f.service.send(owner, "το έχεις βάλει και στις αγγελίες αυτό;");
+    await vi.waitFor(() => expect(f.requests.map((request) => request.reason)).toEqual(["OPERATOR", "INBOX"]), { timeout: 8_000 });
+    await f.service.idle(owner);
+    expect(f.requests[1]!.prompt).toContain("and that turn read no live listing. Listed means re-read");
   }, 20_000);
 
   it("prediction miss 21/11 nous_decision:36fb14b0: says a card is raised again only in a turn that replaced or withdrew the old one", async () => {

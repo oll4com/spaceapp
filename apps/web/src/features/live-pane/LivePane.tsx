@@ -354,12 +354,35 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
     };
   }, [handleClearConversationAndLogs, shared]);
 
+  const syncStateRef = useRef({
+    paneId: pane.id,
+    transcriptCount: transcripts.length,
+    delegatedType,
+    showToolCalls,
+    recordSession,
+    paneModelId: pane.modelId,
+    paneProviderId: pane.providerId,
+    paneReasoningEffort: pane.reasoningEffort,
+    cfgDelegatedModel: cfg.delegatedModel
+  });
+  syncStateRef.current = {
+    paneId: pane.id,
+    transcriptCount: transcripts.length,
+    delegatedType,
+    showToolCalls,
+    recordSession,
+    paneModelId: pane.modelId,
+    paneProviderId: pane.providerId,
+    paneReasoningEffort: pane.reasoningEffort,
+    cfgDelegatedModel: cfg.delegatedModel
+  };
+
   useEffect(() => {
     const handleSync = (event: Event) => {
       if (streamingMode || shared) return;
       if (sessionRef.current) return;
       const customEvent = event as CustomEvent<{ roomId?: string; item?: LiveTranscriptItem; sourcePaneId?: string }>;
-      if (customEvent.detail?.sourcePaneId === pane.id) return;
+      if (customEvent.detail?.sourcePaneId === syncStateRef.current.paneId) return;
       const item = customEvent.detail?.item;
       if (!item) return;
       const targetRoom = customEvent.detail?.roomId;
@@ -426,7 +449,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
   }, [storageKey, pane.id, transcripts, streamingMode, shared]);
 
   useEffect(() => {
-    if (!shared && !streamingMode && pane.roomId && transcripts.length === 0) {
+    if (!shared && !streamingMode && pane.roomId && syncStateRef.current.transcriptCount === 0) {
       try {
         if (typeof api?.getVoiceRealtimeHistory === "function") {
           void api.getVoiceRealtimeHistory(pane.roomId, 30).then((res) => {
@@ -517,6 +540,14 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
   }, []);
 
   useEffect(() => {
+    const {
+      showToolCalls: latestShowToolCalls,
+      recordSession: latestRecordSession,
+      delegatedType: latestDelegatedType,
+      paneModelId,
+      paneProviderId,
+      paneReasoningEffort
+    } = syncStateRef.current;
     saveLivePaneConfig(pane.id, {
       streamingMode,
       provider,
@@ -536,8 +567,8 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       enableProfileMemory,
       selectedDeviceId,
       voiceOnly,
-      showToolCalls,
-      recordSession,
+      showToolCalls: latestShowToolCalls,
+      recordSession: latestRecordSession,
       personalMemoryCollapsed,
       personalMemories
     }, true);
@@ -547,7 +578,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
           model: voiceModel,
           delegatedModel,
           delegatedReasoningEffort: reasoningEffort,
-          delegatedType,
+          delegatedType: latestDelegatedType,
           voice,
           language,
           webSearch
@@ -555,7 +586,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       }
       return {};
     });
-    if (pane.id && (pane.modelId !== voiceModel || pane.providerId !== provider || pane.reasoningEffort !== reasoningEffort)) {
+    if (pane.id && (paneModelId !== voiceModel || paneProviderId !== provider || paneReasoningEffort !== reasoningEffort)) {
       void api.updatePane?.(pane.id, {
         modelId: voiceModel,
         providerId: provider,
@@ -694,8 +725,9 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
             "gpt-3.5-turbo"
           ];
           const set = new Set(res.models);
-          if (cfg.delegatedModel && !set.has(cfg.delegatedModel)) {
-            set.add(cfg.delegatedModel);
+          const initialDelegatedModel = syncStateRef.current.cfgDelegatedModel;
+          if (initialDelegatedModel && !set.has(initialDelegatedModel)) {
+            set.add(initialDelegatedModel);
           }
           const head = priority.filter((m) => set.has(m));
           const tail = Array.from(set).filter((m) => !priority.includes(m)).sort();
@@ -1180,6 +1212,9 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
     if (!shared) window.dispatchEvent(new CustomEvent("space-live-pane-status", { detail: { paneId: pane.id, status } }));
   }, [pane.id, status, shared]);
 
+  const windowActionRef = useRef({ captureVisual, handleToggleSession, micLevel });
+  windowActionRef.current = { captureVisual, handleToggleSession, micLevel };
+
   useEffect(() => {
     const onStart = (event: Event) => {
       const detail = (event as CustomEvent<{ paneId?: string; roomId?: string }>).detail;
@@ -1187,7 +1222,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
         : detail?.roomId ? detail.roomId === pane.roomId : true;
       if (shared) { if (matches) void coordinator.start(); return; }
       if (matches && (status === "idle" || status === "error" || !sessionRef.current)) {
-        void handleToggleSession();
+        void windowActionRef.current.handleToggleSession();
       }
     };
     const onToggle = (event: Event) => {
@@ -1195,7 +1230,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       const matches = detail?.paneId ? detail.paneId === pane.id
         : detail?.roomId ? detail.roomId === pane.roomId : true;
       if (matches) {
-        void handleToggleSession();
+        void windowActionRef.current.handleToggleSession();
       }
     };
     const onStop = () => {
@@ -1209,7 +1244,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
         window.__SPACE_ACTIVE_LIVE_SESSION__ = null;
       }
       setStatus("idle");
-      micLevel.set(0);
+      windowActionRef.current.micLevel.set(0);
       setMicSilent(false);
     };
     const onRailStatus = (event: Event) => {
@@ -1220,7 +1255,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
         if (detail.status === "idle" || detail.status === "error") {
           if (!sessionRef.current) {
             setStatus(detail.status as typeof status);
-            micLevel.set(0);
+            windowActionRef.current.micLevel.set(0);
             setMicSilent(false);
           }
         } else if (["active", "listening", "thinking", "speaking", "connecting"].includes(detail.status)) {
@@ -1234,8 +1269,8 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       const detail = (event as CustomEvent<{ paneId?: string; action?: string }>).detail;
       if (detail?.paneId !== pane.id) return;
       if (detail.action === "attach") fileInputRef.current?.click();
-      if (detail.action === "camera") void captureVisual("camera");
-      if (detail.action === "screen") void captureVisual("screen");
+      if (detail.action === "camera") void windowActionRef.current.captureVisual("camera");
+      if (detail.action === "screen") void windowActionRef.current.captureVisual("screen");
       if (detail.action === "real-view") setRealViewOpen((open) => !open);
       if (detail.action === "record") setRecordSession((on) => !on);
     };
