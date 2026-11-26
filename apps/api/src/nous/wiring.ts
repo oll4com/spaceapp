@@ -2542,6 +2542,8 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       const requestId = `nous:standing-close:${Date.now()}:${paneId}`;
       return (await options.roomTools.execute("close_pane", { panes: [paneId] }, { roomId, agentPaneId: "", actorId: owner, requestId, traceId: requestId, confirmed: true })).ok;
     },
+    ...(memory ? { saveMemory: async (_owner: string, title: string, body: string) =>
+      (await memory.save({ scope: "SYSTEM", roomId: null, title, body, provenance: "nous:observation", tags: ["pane-closeout", "quota"] }, `nous:standing-save:${Date.now()}`)).id } : {}),
     standing: (...args) => service.standing(...args),
     // The daily self-review's sources (2026-10-24): the owner's turn facts, their decisions and their working time zone.
     review: { facts: (owner, since) => repository.listTurnFacts(owner, since), decisions: (owner) => repository.listDecisions(owner, {}),

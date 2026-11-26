@@ -24,6 +24,7 @@ vi.mock("../src/instance-link/client.js", async (actual) => ({
 }));
 const { connectorSealContext, createConnectorCrypto } = await import("../src/dot-connectors.js");
 const { instanceLinksFor, registerInstanceLinks } = await import("../src/instance-link/routes.js");
+const { LinkNotSentError } = await import("../src/instance-link/preflight.js");
 
 describe("Space Link to a SpaceApp built before Λ4", () => {
   it("acts without the trace header where it is refused, never sending the act twice, and keeps it where it is taken", async () => {
@@ -55,6 +56,12 @@ describe("Space Link to a SpaceApp built before Λ4", () => {
     expect(await instanceLinksFor(store)!.request(owner, id, "POST", "/api/control/v1/commands", open)).toMatchObject({ status: 200 });
     expect(peer.sent).toEqual([{ m: "POST", p: "/api/control/v1/inspect", rid: undefined, session: 3 },
       { m: "GET", p: "/api/auth/me", rid: expect.stringMatching(/^lnk:/), session: 3 }, commands(3, expect.stringMatching(/^lnk:/))]);
+    // Daily Nous errors 26/11 11:15Z: a route it does not serve is held as not sent (space_remote refuses, never fails), and nothing reaches it.
+    peer.sent.length = 0;
+    const unserved = instanceLinksFor(store)!.request(owner, id, "GET", "/api/not-a-link-route");
+    await expect(unserved).rejects.toBeInstanceOf(LinkNotSentError);
+    await expect(unserved).rejects.toThrow("Not sent: GET /api/not-a-link-route is not a route a linked SpaceApp serves. It answers only GET /api/auth/me");
+    expect(peer.sent).toEqual([]);
     await fresh.close();
   });
 });

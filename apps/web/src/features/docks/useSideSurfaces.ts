@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { getSpaceRuntime, type SpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import type { ShellMode } from "../pane-grid/pane-grid-layout.js";
 import { SOURCE_CONTROL_CONNECTION_EVENT, sourceControlClient } from "../source-control/client.js";
@@ -71,7 +71,6 @@ export function useSideSurfaces({
   role,
   isDockHidden
 }: SideSurfacesContext): SideSurfaces {
-  const runtime = getSpaceRuntime();
   const [activeSideSurface, setActiveSideSurface] = useState<SideSurface>(() => (restoredDock?.surface as SideSurface | undefined) ?? "rooms");
   const [sourceControlEnabled, setSourceControlEnabled] = useState(false);
   const [isCompactSideSurfaceOpen, setIsCompactSideSurfaceOpen] = useState(() => restoredDock?.compactOpen ?? false);
@@ -93,7 +92,8 @@ export function useSideSurfaces({
     () => setRetainCompactSideSurface(false));
 
   useEffect(() => {
-    writeDockSession([runtime.platform.sessionStorage, runtime.platform.localStorage], { surface: activeSideSurface, desktopOpen: isDesktopSideSurfaceOpen, compactOpen: isCompactSideSurfaceOpen });
+    const { platform } = getSpaceRuntime();
+    writeDockSession([platform.sessionStorage, platform.localStorage], { surface: activeSideSurface, desktopOpen: isDesktopSideSurfaceOpen, compactOpen: isCompactSideSurfaceOpen });
   }, [activeSideSurface, isDesktopSideSurfaceOpen, isCompactSideSurfaceOpen]);
 
   const isCompactShell = shellMode !== "desktop";
@@ -122,9 +122,9 @@ export function useSideSurfaces({
     return surface === "nous" ? uiText(language, `${verb} nous`) : `${verb} ${sideSurfaceMeta[surface].label}`;
   }
 
-  function closeCompactSideSurface() {
+  const closeCompactSideSurface = useCallback(() => {
     setIsCompactSideSurfaceOpen(false);
-  }
+  }, []);
 
   function toggleSideSurface(surface: SideSurface) {
     if (surface === "health" && role === "ADMIN") { openSystemHealth(); return; }
@@ -276,7 +276,7 @@ export function useSideSurfaceEffects(
       document.removeEventListener("keydown", handleKeyDown, true);
       if (trigger?.isConnected) window.requestAnimationFrame(() => trigger.focus());
     };
-  }, [showOverlaySideSurface]);
+  }, [showOverlaySideSurface, closeCompactSideSurface, compactSideSurfaceRef, compactSideSurfaceTriggerRef]);
 
   useEffect(() => {
     if (role === "ADMIN" && activeSideSurface === "health" && isSideSurfaceOpen) {
@@ -284,7 +284,7 @@ export function useSideSurfaceEffects(
       setIsCompactSideSurfaceOpen(false);
       openSystemHealth();
     }
-  }, [role, activeSideSurface, isSideSurfaceOpen]);
+  }, [role, activeSideSurface, isSideSurfaceOpen, setIsCompactSideSurfaceOpen, setIsDesktopSideSurfaceOpen]);
 
   useEffect(() => {
     if (!startupReady || runtimeKind !== "live" || !isAuthenticated) { setSourceControlEnabled(false); return; }
@@ -303,5 +303,5 @@ export function useSideSurfaceEffects(
     };
     void refreshConnections(); window.addEventListener(SOURCE_CONTROL_CONNECTION_EVENT, refreshConnections);
     return () => { controller.abort(); window.removeEventListener(SOURCE_CONTROL_CONNECTION_EVENT, refreshConnections); };
-  }, [runtimeKind, isAuthenticated, userId, isCompactShell, startupReady]);
+  }, [runtimeKind, isAuthenticated, userId, isCompactShell, startupReady, setActiveSideSurface, setIsCompactSideSurfaceOpen, setIsDesktopSideSurfaceOpen, setSourceControlEnabled]);
 }

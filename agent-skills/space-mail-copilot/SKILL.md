@@ -69,7 +69,8 @@ Sessions without these MCP tools (Claude panes run native tools only) call them 
 
 - The pane always runs (operator 2026-10-27): new mail starts a run on its own, and every day at the pane's
   `dailyRunHour` (owner's time zone, 09:00 by default) Space starts a run whose items are every inbox conversation
-  not decided yet, automated senders included (a stopped CLI is started first). Only the operator's Pause stops it.
+  not decided yet, automated senders included (a stopped CLI is started first), and every hour (operator 26/11) a pass
+  over the same, without the ones you skipped, so what is for archiving goes within the hour. Only the operator's Pause stops it.
   Decide each item yourself; never ask a question per mail.
 - Archive (move it to the label that fits, when one does) everything that needs no reply or act from the operator:
   receipts and "thank you for applying" mail, notifications and alerts already handled, security codes older than

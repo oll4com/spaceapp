@@ -250,7 +250,7 @@ export function vaultInstall(id, path, env = process.env) {
     encoding: "utf8", env, timeout: 60_000
   });
   // The answer is {status, path, bytes, auditId} or a refusal with its reason; never the value.
-  let reply = null, answer = null;
+  let reply = null, answer;
   try { reply = JSON.parse(call.stdout); answer = reply.structuredContent ?? JSON.parse(reply.content?.[0]?.text ?? "null"); } catch { answer = null; }
   if (answer?.status !== "INSTALLED") {
     const reason = answer?.reason ?? (typeof reply?.error === "string" ? reply.error.slice(0, 200) : call.error?.message ?? "no answer");
@@ -307,7 +307,7 @@ export async function signRelease(file, packageName, { paths, env = process.env,
     : ({ keystore, password, alias }) => spawnSync(apksigner, ["sign", "--ks", keystore, "--ks-type", "PKCS12", "--ks-key-alias", alias, "--ks-pass", `file:${password}`,
       "--out", signed, file], quiet).status === 0);
   const tool = bundle ? "jarsigner" : "apksigner";
-  let ok = false;
+  let ok;
   try {
     ok = await withReleaseKey(key, env, install, (k) => runSign({ ...k, out: signed, apk: file }));
   } catch (error) {
@@ -345,7 +345,7 @@ export async function exportForPlay(packageName, { pepk, encryptionKey, out, pat
         "--rsa-aes-encryption", `--encryption-key-path=${encryptionKey}`], quiet).status === 0;
   }));
   const pem = ok && existsSync(out) ? (certificate ?? ((zip) => spawnSync("unzip", ["-p", zip, "certificate.pem"], { env, encoding: "utf8" }).stdout ?? ""))(out) : "";
-  let digest = null;
+  let digest;
   try { digest = new X509Certificate(pem).fingerprint256.replaceAll(":", "").toLowerCase(); } catch { digest = null; }
   if (digest !== key.certSha256) { await rm(out, { force: true }); throw new Error(ok ? `pepk's certificate is not ${packageName}'s kept certificate.` : `pepk could not export ${packageName}'s release key (its output is not kept).`); }
   await chmod(out, 0o600);

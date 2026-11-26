@@ -1,4 +1,4 @@
-import { NEEDS_YOU_GO_NOW, nousAnswerIntent, type NousDecision, type SpaceNotification } from "@space/contracts";
+import { NEEDS_YOU_CHECK_AGAIN, NEEDS_YOU_GO_NOW, nousAnswerIntent, type NousDecision, type SpaceNotification } from "@space/contracts";
 import { foldWords } from "./retrieval.js";
 
 type Predicted = Pick<NousDecision, "recommendation" | "body"> & { refs?: { prediction?: { answer: string } } };
@@ -187,6 +187,8 @@ const TYPE_IT = /^(?:i'?ll|i will)\s+(?:type|write|enter|send)\b|^θα\s+(?:το
 // reported done, «πέρασα», «ενεργοποίησα» / «ενεργοποιημένοι», «άναψα»; the imperatives («πέρασε», «ενεργοποίησε») stay misses.
 // 2026-11-25 REVIEW (ledger 24/11: "Start now?" answered «ελενξε το ξανα»): recheck / check-again answers count as the visit too.
 const GO_NOW_WORDS = /^(?:ανοιξ|ανοιγ|focus|ολοκληρ|τελειωσ|συνεχ|προχωρ|μπηκα|μπει|δειξ|παμε|ξεκιν|ελυσα|κανει|περασα|ενεργοποιησα|ενεργοποιημεν|αναψα|ελενξ|ελεγξ|open|continue|proceed|done|finished|completed|signed|logged|solved|ready|enabled|added|saved|check|recheck)/u;
+// 2026-11-25 REVIEW: on a "Check again" card, words asking for a recheck or saying it is done already are that option.
+const CHECK_AGAIN_WORDS = /^(?:ελενξ|ελεγξ|ξανα|ηδη|ολοκληρ|τελειωσ|κανει|check|recheck|again|already|done|finished|completed)/u;
 /**
  * The one matcher of a card's stored answer against its recommended option, for the scorecard, the REVIEW and the decision ledger (R38):
  * the option itself or with a note (R19-3: "<option>: <note>"); else, when the answer is no option of the card, a typed value on an
@@ -203,6 +205,7 @@ export function cardTextMatched(ask: { recommended?: unknown; options?: unknown 
   if (TYPE_IT.test(recommended)) return intent !== "DECLINE" && !/[?;]\s*$/u.test(text);
   if (recommended === NEEDS_YOU_GO_NOW && intent !== "DECLINE" && !NOT_AFFIRMATIVE.test(text) && !/[?;]\s*$/u.test(text)
     && foldWords(text).some((word) => GO_NOW_WORDS.test(word))) return true;
+  if (recommended === NEEDS_YOU_CHECK_AGAIN && intent !== "DECLINE" && !NOT_AFFIRMATIVE.test(text) && !/[?;]\s*$/u.test(text) && foldWords(text).some((word) => CHECK_AGAIN_WORDS.test(word))) return true;
   return cardWordsConfirm(recommended, text, intent, options);
 }
 

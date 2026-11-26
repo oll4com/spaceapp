@@ -5,7 +5,7 @@ come from memory, never from this file alone. Numbers marked [verify] are not cl
 
 ## Positioning
 - Title: "Node.js/TypeScript API Integrations & AI Agents (MCP, LLM)". Company/website: oll4.com.
-- AI agents and MCP: SpaceApp (https://spaceapp.dev, github.com/oll4com/spaceapp), a self-hosted workspace
+- AI agents and MCP: SpaceApp (named in words only: no link in a message, operator 26/11), a self-hosted workspace
   that runs Claude Code, Codex, Gemini, OpenCode and other coding agents side by side, with MCP tool servers,
   browser automation and approval-gated autonomy.
 - E-commerce and marketplace integrations: years of custom CS-Cart engineering (addons, hooks, controllers, admin

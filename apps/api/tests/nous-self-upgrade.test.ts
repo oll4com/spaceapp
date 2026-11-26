@@ -901,6 +901,35 @@ describe("U4: the top tool failures of 19/10", () => {
     expect(f.roomTool).toHaveBeenCalledTimes(calls + 1);
   });
 
+  it("corrections 26/11: an order to send a marketplace draft is held while its text to send has a placeholder or off-platform contact", async () => {
+    const drafts: Record<string, string> = {
+      "/home/u/agent-workspace/nous/drafts/v2.md": "Hi Michael,\nI have built it since [CONFIRM month/year].\nBest,\nNikolaos",
+      "~/agent-workspace/nous/drafts/final.md": "# Reply\nThread: https://www.upwork.com/ab/messages/rooms/room_1\n\n---- TEXT TO SEND ----\n\nHi Michael,\n"
+        + "spaceapp.dev names me as founder and links to my LinkedIn (linkedin.com/in/ntheo).\n\n---- SOURCES (not for sending) ----\nhttps://spaceapp.dev/about",
+      "~/agent-workspace/nous/drafts/clean.md": "Notes: https://oll4.com/founder\n---- TEXT TO SEND ----\nHi Michael,\nThe two images are attached.\n---- SOURCES ----\noll4.com"
+    };
+    const f = tools({ files: { decisionFiles: async (_owner: string, refs: string[]) => refs.map((ref) => ({ ref, text: drafts[ref] ?? null, total: null, truncated: false })) } as never,
+      paneNotices: { notify: vi.fn(async () => ({ ok: true, display: "Sent", result: "ok" })) } as never });
+    const send = (text: string) => f.tools.execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text }, ctx);
+    expect(await send("Send in the Upwork thread WORD FOR WORD from /home/u/agent-workspace/nous/drafts/v2.md.")).toMatchObject({ ok: false, refused: true,
+      display: "The text to send breaks an operator rule", result: expect.stringContaining('v2.md still has an unfilled placeholder: "I have built it since [CONFIRM month/year].') });
+    expect(await send("Operator approved: send your final reply to Michael on Upwork from ~/agent-workspace/nous/drafts/final.md.")).toMatchObject({ ok: false,
+      result: expect.stringMatching(/final\.md breaks the operator's marketplace rule .*found: outside-link\)\. Nothing sent\./) });
+    const prompt = await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "pane", operation: "prompt", target: { paneIds: ["pane:bob00001"], state: "OPEN" },
+      text: "Post ~/agent-workspace/nous/drafts/final.md on Upwork." }] }, ctx);
+    expect(prompt).toMatchObject({ ok: false, display: "The text to send breaks an operator rule" });
+    expect(f.roomTool).not.toHaveBeenCalled();
+    // Only the text to send counts; a brief to fix a draft, an order to fill it, or one naming no marketplace sends nothing that breaks the rule.
+    expect((await send("Send ~/agent-workspace/nous/drafts/clean.md on Upwork with the 2 images.")).ok).toBe(true);
+    expect((await send("Rewrite ~/agent-workspace/nous/drafts/final.md for Upwork without links. Do not send it.")).ok).toBe(true);
+    expect((await send("Fill the [CONFIRM] in /home/u/agent-workspace/nous/drafts/v2.md from the CV, then send it on Upwork.")).ok).toBe(true);
+    expect((await send("Send ~/agent-workspace/nous/drafts/final.md to the client by mail.")).ok).toBe(true);
+    // The card whose Approve sends it is held the same way.
+    const asked = await f.tools.execute("space_ask_operator", { category: "EXTERNAL", title: "Upwork reply to Michael", body: "Send the final reply.",
+      recommendation: "Approve. Prediction: yes (80 %)", checked: ["Space Memory: the operator approves each Upwork message"], action: { type: "PANE_TEXT", mode: "PROMPT", roomId: "Main", paneId: "Andy", text: "Send on Upwork WORD FOR WORD from ~/agent-workspace/nous/drafts/final.md." } }, ctx);
+    expect(asked).toMatchObject({ ok: false, display: "The text to send breaks an operator rule", result: expect.stringContaining("Nothing asked.") });
+  });
+
   it("2026-11-25 REVIEW: holds company sign-up/enrolment briefs missing an account email (nous_msg:fa4290a8) and refuses notify_operator on completed plans", async () => {
     const donePlan = { id: "clipboard:DONE1234", title: "Finished plan", text: "Done", isCompleted: true, executionStatus: "COMPLETED", roomId: "room:main0001", paneId: null, steps: [] };
     const parkedPlan = { ...donePlan, id: "clipboard:PARK1234", parked: { reason: "Waits", since: "2026-11-20T00:00:00.000Z", resumedAt: null,

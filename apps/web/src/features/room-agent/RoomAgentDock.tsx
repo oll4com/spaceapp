@@ -43,8 +43,9 @@ const IDLE_POLL_MS = 20_000;
  * tools, monitor events, confirmations) and the composer. The answer streams in over the dock's own stream.
  */
 export function RoomAgentDock({ activeRoom, selectedBrowserPaneId, refreshKey = null, onOpenPane }: RoomAgentDockProps) {
+  const activeRoomId = activeRoom?.id ?? null;
   const voiceInput = useOptionalVoiceInput();
-  const voiceOwnerId = `room-agent:${activeRoom?.id ?? "none"}`;
+  const voiceOwnerId = `room-agent:${activeRoomId ?? "none"}`;
   const isDockActive = useIsDockActive();
   const { confirm, confirmDialog } = useDockConfirm();
   const { settings: autocorrectSettings } = useKeyboardAutocorrectSettings();
@@ -78,8 +79,8 @@ export function RoomAgentDock({ activeRoom, selectedBrowserPaneId, refreshKey = 
   const cancelVoice = voiceInput?.cancel;
   useEffect(() => () => cancelVoice?.(voiceOwnerId), [cancelVoice, voiceOwnerId]);
   useEffect(() => {
-    if (!activeRoom) cancelVoice?.(voiceOwnerId);
-  }, [activeRoom?.id, cancelVoice, voiceOwnerId]);
+    if (activeRoomId === null) cancelVoice?.(voiceOwnerId);
+  }, [activeRoomId, cancelVoice, voiceOwnerId]);
 
   const loadSession = useCallback(async (roomId: string, showLoading = false) => {
     const sequence = ++loadSequenceRef.current;
@@ -119,27 +120,27 @@ export function RoomAgentDock({ activeRoom, selectedBrowserPaneId, refreshKey = 
     setClearing(false);
     setReplying(false);
 
-    if (!activeRoom) {
+    if (activeRoomId === null) {
       loadSequenceRef.current += 1;
       setSession(null);
       return;
     }
-    const cached = roomAgentSessionCache.get(activeRoom.id);
+    const cached = roomAgentSessionCache.get(activeRoomId);
     setSession(cached ?? null);
-    void loadSession(activeRoom.id, !cached);
-  }, [activeRoom?.id, loadSession]);
+    void loadSession(activeRoomId, !cached);
+  }, [activeRoomId, loadSession]);
 
   useEffect(() => {
-    if (activeRoom && refreshKey) void loadSession(activeRoom.id);
-  }, [activeRoom?.id, refreshKey, loadSession]);
+    if (activeRoomId !== null && refreshKey) void loadSession(activeRoomId);
+  }, [activeRoomId, refreshKey, loadSession]);
 
   const answering = session?.status === "RUNNING" || session?.status === "QUEUED";
-  const roomPending = pending.filter((message) => message.roomId === activeRoom?.id);
+  const roomPending = pending.filter((message) => message.roomId === activeRoomId);
   useEffect(() => {
-    if (!activeRoom || !isDockActive) return;
-    const timer = window.setInterval(() => void loadSession(activeRoom.id), answering || roomPending.length ? ANSWERING_POLL_MS : IDLE_POLL_MS);
+    if (activeRoomId === null || !isDockActive) return;
+    const timer = window.setInterval(() => void loadSession(activeRoomId), answering || roomPending.length ? ANSWERING_POLL_MS : IDLE_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [activeRoom?.id, loadSession, answering, roomPending.length, isDockActive]);
+  }, [activeRoomId, loadSession, answering, roomPending.length, isDockActive]);
 
   async function send(contentOverride?: string): Promise<boolean> {
     const typed = (contentOverride ?? draft).trim();

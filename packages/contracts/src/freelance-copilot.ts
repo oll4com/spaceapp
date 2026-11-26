@@ -521,11 +521,6 @@ export function freelanceUrlMatchesChannel(raw: string, channelId: FreelanceChan
 }
 
 // ---- wording and scam checks ------------------------------------------------------------------------
-/** Links a message may carry before a contract: the platform itself, the operator's own sites and code. */
-// The owner's own sites (`ownHosts`, SPACE_FREELANCE_LINK_HOSTS) match exactly: other hosts of their domain (a private Space,
-// webmail) never go to a client.
-const FREELANCE_ALLOWED_LINK_HOSTS = ["spaceapp.dev", "www.spaceapp.dev"];
-const FREELANCE_ALLOWED_LINK_DOMAINS = ["github.com", "loom.com", "npmjs.com"];
 /** A messenger named as the thing to build (a bot, its API, an integration), not as a way to talk. */
 const MESSENGER_PRODUCT = String.raw`(?![\s-]+(?:business\s+|cloud\s+)?(?:bots?|chat\s?bots?|apis?|integrations?|mini[\s-]?apps?|webhooks?|automation)\b)`;
 const OFF_PLATFORM_RULES: ReadonlyArray<{ id: string; pattern: RegExp }> = [
@@ -537,22 +532,26 @@ const OFF_PLATFORM_RULES: ReadonlyArray<{ id: string; pattern: RegExp }> = [
   { id: "messenger-link", pattern: /\b(?:t\.me|telegram\.me|telegram\.dog)\/\S/i },
   { id: "off-platform-payment", pattern: /\b(?:pay(?:ment)?\s+(?:me\s+)?(?:directly|outside|off[- ]platform)|paypal|western union|wire (?:me|it) directly)\b/i }
 ];
+// A link with a scheme or www, or a bare domain on a common TLD (lowercase TLD, so "ASP.NET" is not one; "Node.js" is no TLD here).
+const FREELANCE_LINK = /(?:https?:\/\/|\bwww\.)[^\s)<>"']+|\b(?:[A-Za-z0-9-]+\.)+(?:com|net|org|io|dev|app|ai|co|me|gr|th|uk|de|eu|us|xyz|info|biz|link|site|page|sh|so|gg|ly|to|tv|cc|tech|online|store|pro)\b(?![A-Za-z0-9-])[^\s)<>"']*/g;
 /**
- * What keeps a message from going out on its own: unqualified absolute claims (the Marketing Copilot rules), and
- * before a contract (lead not WON) contact or payment outside the platform and links off the allowed hosts.
- * A proposal's hourly bid under the floor is flagged too.
+ * Operator rule 2026-11-26 (Upwork Policy Warning): no off-platform link or contact detail in any marketplace message, before
+ * or after a contract and even when approved. Only the platform's own pages may be linked; a portfolio goes as a platform attachment.
  */
-export function freelanceWordingIssues(text: string, input: { channel: FreelanceChannel; contracted: boolean; bid?: FreelanceBid | null; rateFloorHourly?: number; ownHosts?: readonly string[] }): string[] {
-  const issues = new Set(marketingWordingIssues(text));
-  if (!input.contracted) {
-    for (const rule of OFF_PLATFORM_RULES) if (rule.pattern.test(text)) issues.add(rule.id);
-    const domains = [...FREELANCE_CHANNEL_HOSTS[input.channel], ...FREELANCE_ALLOWED_LINK_DOMAINS];
-    for (const match of text.matchAll(/https?:\/\/[^\s)<>"']+/gi)) {
-      let host = "";
-      try { host = new URL(match[0]).hostname.toLowerCase(); } catch { issues.add("outside-link"); continue; }
-      if (!FREELANCE_ALLOWED_LINK_HOSTS.includes(host) && !input.ownHosts?.includes(host) && !domains.some((entry) => host === entry || host.endsWith(`.${entry}`))) issues.add("outside-link");
-    }
+export function freelanceOffPlatformIssues(text: string, channel: FreelanceChannel): string[] {
+  const issues = new Set(OFF_PLATFORM_RULES.filter((rule) => rule.pattern.test(text)).map((rule) => rule.id));
+  for (const match of text.matchAll(FREELANCE_LINK)) {
+    const host = match[0].replace(/^https?:\/\//i, "").split(/[/:?#]/)[0]!.toLowerCase().replace(/\.+$/, "");
+    if (!FREELANCE_CHANNEL_HOSTS[channel].some((entry) => host === entry || host.endsWith(`.${entry}`))) issues.add("outside-link");
   }
+  return [...issues];
+}
+/**
+ * What keeps a message from going out on its own: unqualified absolute claims (the Marketing Copilot rules), contact, payment
+ * or links outside the platform (freelanceOffPlatformIssues), and a proposal's hourly bid under the floor.
+ */
+export function freelanceWordingIssues(text: string, input: { channel: FreelanceChannel; bid?: FreelanceBid | null; rateFloorHourly?: number }): string[] {
+  const issues = new Set([...marketingWordingIssues(text), ...freelanceOffPlatformIssues(text, input.channel)]);
   if (input.bid?.type === "HOURLY" && input.bid.amount < (input.rateFloorHourly ?? 20)) issues.add("below-rate-floor");
   return [...issues];
 }

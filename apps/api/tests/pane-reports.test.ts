@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY, NEEDS_YOU_START_NOW, needsYouAnswerKind, type Pane, type Room, type RoomAgentEvent } from "@space/contracts";
+import { NEEDS_YOU_CHECK_AGAIN, NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY, NEEDS_YOU_START_NOW, needsYouAnswerKind, type Pane, type Room, type RoomAgentEvent } from "@space/contracts";
 import { InMemoryNousPaneChecksRepository, InMemoryPaneReportsRepository } from "@space/db";
 import { createPaneReports, endAlreadyReported, paneProgressSchema, paneReportLine, paneReportsText, planReportLine, questionBody, questionSummary, reportSummary, screenSummary, tailSummary } from "../src/pane-reports.js";
 import { createNousPaneWatch } from "../src/nous/pane-watch.js";
@@ -100,7 +100,7 @@ describe("pane reports", () => {
     expect(paneProgressSchema.safeParse({ status: "needs-you", summary: "x", target: "the mail" }).success).toBe(false);
   });
 
-  it("R37-2: a needs-you without options takes R27-2's Go now / Failed / Need links/steps, Go now recommended, and the page it links as the target", async () => {
+  it("R37-2: a needs-you without options takes R27-2's Go now / Failed / Need links/steps, Go now recommended where verified, and the page it links as the target", async () => {
     // 2/11: agent cards 81404235 (Andy) and 9e39e296 (Dana) asked with no options, so the operator's answer could not be scored.
     const raise = vi.fn(async (input: unknown) => input as never);
     const reports = createPaneReports({ repository: new InMemoryPaneReportsRepository(), now: () => now, store: { getRoom: async () => bruno, getPane: async () => andy } as never,
@@ -109,7 +109,7 @@ describe("pane reports", () => {
     // Goal 7365014c: a page to act on asks whether to start now (Go now / Later today), never "when"; the ask stays in the body.
     expect(raise.mock.calls[0]![0]).toMatchObject({ link: { target: "url:https://contra.com/settings/verification" },
       body: expect.stringContaining("Finish the ID check at https://contra.com/settings/verification, then W-8."),
-      payload: { ask: { question: NEEDS_YOU_START_NOW, options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY], recommended: NEEDS_YOU_GO_NOW, answer: { kind: "PANE" } } } });
+      payload: { ask: { question: NEEDS_YOU_START_NOW, options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_CHECK_AGAIN, NEEDS_YOU_LATER_TODAY], recommended: NEEDS_YOU_CHECK_AGAIN, answer: { kind: "PANE" } } } });
     // With nowhere to open, R27-2's options stay.
     await reports.report(bruno, andy, { status: "needs-you", summary: "Call the bank", needs: "Ask them to lift the card block" });
     expect(raise.mock.calls.at(-1)![0]).toMatchObject({ payload: { ask: { question: "Ask them to lift the card block", options: [NEEDS_YOU_GO_NOW, "Failed", "Need links/steps"] } } });
@@ -168,7 +168,7 @@ describe("pane reports", () => {
     // 11/11 03:01Z: Jack's blocked report needed the operator to approve an npm login link and no card came.
     expect(await raised("Open and approve https://www.npmjs.com/login?next=/login/cli/x")).toMatchObject([{ kind: "NEEDS_YOU", title: "Andy needs you",
       link: { target: "url:https://www.npmjs.com/login?next=/login/cli/x" }, dedupeKey: `agent:needs-you:${andy.id}`,
-      payload: { ask: { options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY], recommended: NEEDS_YOU_GO_NOW } } }]);
+      payload: { ask: { options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_CHECK_AGAIN, NEEDS_YOU_LATER_TODAY] } } }]);
     expect(await raised()).toEqual([]);
     expect(await raised("none")).toEqual([]);
   });
@@ -486,7 +486,7 @@ describe("pane reports", () => {
       .toEqual([{ at: "2026-11-23T10:15:30.000Z", summary: "Daily Nous errors lessons ×7: no code cause", next: null }]);
   });
 
-  it("2026-11-25 REVIEW: refuses Start now? / needs-you on completed plans or gone tabs, and marks unverified Start now? cards recommendedDefault", async () => {
+  it("2026-11-25 REVIEW: refuses Start now? / needs-you on completed plans or gone tabs, and predicts Check again on unverified Start now? cards", async () => {
     const raise = vi.fn(async (input: unknown) => input as never);
     let live = false;
     let done = true;
@@ -507,17 +507,19 @@ describe("pane reports", () => {
     await expect(reports.report(bruno, andy, { status: "needs-you", summary: "Solve captcha", needs: "Solve on tab", target: "tab:page-gone", checked: ["browser: opened"] }))
       .rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("No browser holds tab:page-gone") });
     expect(raise).not.toHaveBeenCalled();
-    // Unverified url: target (no live browser tab on that site): raises with recommendedDefault: true so "Go now" is not scored as a prediction miss.
+    // 2026-11-25 REVIEW (ledger 24/11 «ελενξε το ξανα»): unverified url: target (no live tab on that site): the page may be done already or
+    // need a re-check, so the card offers and predicts "Check again", a real scored prediction.
     await reports.report(bruno, andy, { status: "needs-you", summary: "Create account", needs: "Open https://signup.live.com to sign up", checked: ["browser: blocked"] });
     expect(raise.mock.calls[0]![0]).toMatchObject({
-      payload: { recommendedDefault: true, ask: { question: NEEDS_YOU_START_NOW, options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY], recommended: NEEDS_YOU_GO_NOW } }
+      payload: { ask: { question: NEEDS_YOU_START_NOW, options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_CHECK_AGAIN, NEEDS_YOU_LATER_TODAY], recommended: NEEDS_YOU_CHECK_AGAIN } }
     });
-    // Verified live browser tab (pageLive === true): no recommendedDefault, so "Go now" stays a real scored prediction.
+    expect((raise.mock.calls[0]![0] as { payload: Record<string, unknown> }).payload.recommendedDefault).toBeUndefined();
+    // Verified live browser tab (pageLive === true): proven unstarted, so "Go now" is the prediction and no "Check again" is offered.
     live = true;
     await reports.report(bruno, andy, { status: "needs-you", summary: "Solve captcha", needs: "Solve on live tab", target: "tab:page-live", checked: ["browser: tab open"] });
     expect((raise.mock.calls[1]![0] as { payload: Record<string, unknown> }).payload.recommendedDefault).toBeUndefined();
     expect(raise.mock.calls[1]![0]).toMatchObject({
-      payload: { ask: { question: NEEDS_YOU_START_NOW, recommended: NEEDS_YOU_GO_NOW } }
+      payload: { ask: { question: NEEDS_YOU_START_NOW, options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY], recommended: NEEDS_YOU_GO_NOW } }
     });
   });
 });

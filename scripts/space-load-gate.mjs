@@ -125,13 +125,13 @@ export function takeSlot({ dir = GATE_DEFAULTS.dir, slots = GATE_DEFAULTS.slots,
         const fd = openSync(path, "wx", 0o644);
         writeSync(fd, String(pid));
         closeSync(fd);
-        return () => { try { if (readFileSync(path, "utf8").trim() === String(pid)) unlinkSync(path); } catch {} };
+        return () => { try { if (readFileSync(path, "utf8").trim() === String(pid)) unlinkSync(path); } catch { /* slot file already removed */ } };
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
         let holder = Number.NaN;
-        try { holder = Number(readFileSync(path, "utf8").trim()); } catch {}
+        try { holder = Number(readFileSync(path, "utf8").trim()); } catch { /* slot file removed concurrently */ }
         if (Number.isInteger(holder) && holder > 0 && alive(holder)) break;
-        try { unlinkSync(path); } catch {}
+        try { unlinkSync(path); } catch { /* another gate removed the stale slot */ }
       }
     }
   }

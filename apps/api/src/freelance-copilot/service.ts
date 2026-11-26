@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import {
   effectiveFreelanceAutonomy, freelanceChannelAlias, freelanceChannelSettings, FREELANCE_CHANNEL_LABELS, FREELANCE_CHANNELS, freelanceChannelOfSender, freelanceMailboxConfigSchema, freelanceRuleMatches,
-  freelanceScamSignals, freelanceUrlMatchesChannel, freelanceWordingIssues, resolveFreelanceCopilotPaneMetadata,
+  freelanceOffPlatformIssues, freelanceScamSignals, freelanceUrlMatchesChannel, freelanceWordingIssues, resolveFreelanceCopilotPaneMetadata,
   type FreelanceAccount, type FreelanceAccountUpdate, type FreelanceChannel, type FreelanceEvent, type FreelanceEventType, type FreelanceFunnel, type FreelanceLead, type FreelanceLeadCreate,
   type FreelanceLeadDecision, type FreelanceLeadUpdate, type FreelanceMailboxInput, type FreelanceMemoryCreate, type FreelanceMemoryQuery, type FreelanceMessage, type FreelanceMessageCreate,
   type FreelanceMessageReviewDecision, type FreelanceMessageUpdate, type FreelancePendingItem, type FreelanceRule, type FreelanceRuleProposal, type FreelanceRun, type FreelanceRunView, type Pane
@@ -35,8 +35,7 @@ export interface FreelanceCopilotServiceOptions {
 
 /** The owner's own freelance sites, set per instance (stable: deploy/space-api.service; review EXT-C-F18 R2). */
 export function freelanceSite(env: NodeJS.ProcessEnv = process.env) {
-  return { aliasDomain: env.SPACE_FREELANCE_ALIAS_DOMAIN?.trim() || null,
-    linkHosts: (env.SPACE_FREELANCE_LINK_HOSTS ?? "").split(",").map((host) => host.trim().toLowerCase()).filter(Boolean) };
+  return { aliasDomain: env.SPACE_FREELANCE_ALIAS_DOMAIN?.trim() || null };
 }
 
 const NEXT_POLL_MS = 2_000;
@@ -104,7 +103,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
     return run.id;
   }
   function issuesOf(pane: Pane | null, lead: FreelanceLead, message: Pick<FreelanceMessage, "body" | "bid">): string[] {
-    const issues = freelanceWordingIssues(message.body, { channel: lead.channel, contracted: lead.status === "WON", bid: message.bid, rateFloorHourly: settingsOf(pane).rateFloorHourly, ownHosts: freelanceSite().linkHosts });
+    const issues = freelanceWordingIssues(message.body, { channel: lead.channel, bid: message.bid, rateFloorHourly: settingsOf(pane).rateFloorHourly });
     if (Array.isArray(lead.payload.scamSignals) && lead.payload.scamSignals.length) issues.push("scam-signals");
     return issues;
   }
@@ -114,6 +113,9 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
   async function authorize(owner: string, pane: Pane, message: FreelanceMessage, lead: FreelanceLead): Promise<{ ruleId: string | null }> {
     const settings = settingsOf(pane);
     const label = FREELANCE_CHANNEL_LABELS[message.channel];
+    // Before every other check: no approval, rule or contract lets an off-platform link or contact out (operator 2026-11-26).
+    const offPlatform = freelanceOffPlatformIssues(message.body, message.channel);
+    if (offPlatform.length) throw new SpaceConflictError(`FREELANCE_OFF_PLATFORM: ${offPlatform.join(", ")}; ${label} messages carry no link outside ${label}, email, phone or other contact. Remove it (a portfolio goes as a ${label} attachment) and send again.`);
     if (settings.paused) throw new SpaceConflictError("FREELANCE_PAUSED: the pane is paused; nothing is sent until the operator resumes it.");
     const channel = freelanceChannelSettings(settings, message.channel);
     if (!channel.enabled) throw new SpaceConflictError(`FREELANCE_CHANNEL_OFF: ${label} is off in this pane's Setup.`);

@@ -125,10 +125,12 @@ export const RESET_ASK = /\bforgot\b|\breset\b|\brecover(?:y|ing)?\b|new passwor
 /** A reset or forgot-password page, by its address. */
 export const RESET_URL = /forgot|reset[-_]?password|password[-_/]?reset|\/recover|account[-_]?recovery|lost[-_]?password|\/reset\b/i;
 
-/** The refusal when the stored sign-in works (a SUCCESS in WORKING_SIGNIN_MS, or a method without a password), else null. */
+/** The refusal when the stored sign-in works (a SUCCESS in WORKING_SIGNIN_MS with no later failure, or a method without a password), else null. */
 export function workingSignin(signin: SiteSignin | null, now = Date.now()): string | null {
   if (!signin) return null;
-  const success = signin.lastSuccessAt && now - Date.parse(signin.lastSuccessAt) < WORKING_SIGNIN_MS ? signin.lastSuccessAt : null;
+  // 26/11 (civo.com: SUCCESS 18/11 10:49Z, then failures up to 26/11): a failure after the last success means the stored password no longer works.
+  const failedSince = Boolean(signin.lastFailureAt && signin.lastSuccessAt && Date.parse(signin.lastFailureAt) > Date.parse(signin.lastSuccessAt));
+  const success = signin.lastSuccessAt && !failedSince && now - Date.parse(signin.lastSuccessAt) < WORKING_SIGNIN_MS ? signin.lastSuccessAt : null;
   if (!success && !NO_PASSWORD_METHODS.has(signin.method)) return null;
   return `Stored sign-in works (SUCCESS ${signin.lastSuccessAt ? signin.lastSuccessAt.slice(0, 10) : "not recorded"}, method ${signin.method}). Sign in with it; a reset needs the operator's explicit order.`;
 }

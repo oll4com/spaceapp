@@ -135,7 +135,7 @@ describe("freelance copilot run loop", () => {
         expect(board.statusCode, channel).toBe(200);
         expect(board.json().lead).toMatchObject({ channel });
       }
-      const drafted = (await app.inject({ method: "POST", url: `${cli}/messages`, headers: agent, payload: { leadId, kind: "PROPOSAL", body: "You want your API usable by AI agents. I built SpaceApp (https://spaceapp.dev). First milestone: three read-only tools, $600.", bid: { type: "FIXED", amount: 1500 }, connects: 12 } })).json();
+      const drafted = (await app.inject({ method: "POST", url: `${cli}/messages`, headers: agent, payload: { leadId, kind: "PROPOSAL", body: "You want your API usable by AI agents. I built SpaceApp, an MCP agent workspace. First milestone: three read-only tools, $600.", bid: { type: "FIXED", amount: 1500 }, connects: 12 } })).json();
       expect(drafted.wordingIssues).toEqual([]);
       const messageId = drafted.message.id as string;
       expect((await app.inject({ method: "POST", url: `${cli}/send/begin`, headers: agent, payload: { messageId } })).json().message.status).toBe("SENDING");

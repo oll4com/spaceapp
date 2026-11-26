@@ -582,11 +582,11 @@ describe('managed browser runtime lifecycle', () => {
       expect(chromes()).toHaveLength(2);
     } finally { await f.cleanup(); }
   });
-  it('a pane on a Freelance Copilot\'s pane route shares its account Chrome in either order; another route is still refused (Leo on Dana\'s account, 16/11)', async () => {
+  it('a pane on a Freelance Copilot\'s pane route shares its account Chrome in either order; a pane on another route moves to it (Leo on Dana\'s account, 16/11; Emma, 26/11)', async () => {
     const f = await fixture('FREELANCE_COPILOT');
     try {
       const chromes = () => f.children.filter(child => child.command === process.execPath);
-      const addBrowser = (id: string, route: 'thailand' | 'greece') => {
+      const addBrowser = (id: string, route: 'thailand' | 'greece' | 'direct') => {
         const pane = f.store.createPane({ roomId: f.pane.roomId, title: id, mode: 'MARKETING_COPILOT' });
         f.store.createPaneBrowserSession({ sessionId: `browser_session:${id}`, agentNumber: 2, paneId: pane.id, roomId: f.pane.roomId,
           profileId: 'profile:lifecycle', profilePath: f.session.profilePath, viewport: 'wide', targetUrl: null, status: 'READY', isActive: true });
@@ -598,8 +598,12 @@ describe('managed browser runtime lifecycle', () => {
       const leo = addBrowser('leo', 'thailand');
       await f.manager.getActive(leo);
       expect(chromes()).toHaveLength(1);
-      await expect(f.manager.getActive(addBrowser('greece', 'greece'))).rejects.toThrow(/BROWSER_ROUTE/);
+      // A pane on another chosen route joins too: it takes the Freelance route for good (26/11, Emma's CLI Browser on direct).
+      const greece = addBrowser('greece', 'greece');
+      await f.manager.getActive(greece);
       expect(chromes()).toHaveLength(1);
+      expect(f.store.getPaneBrowserRoute(greece.id)).toBe('thailand');
+      await f.manager.stopPane(greece.id);
 
       // The other order (a Browser Host restart): the Freelance pane restarts the Thailand pane's Chrome onto its routes, the pane comes back on it.
       const pac = () => Buffer.from(chromes().at(-1)!.args.find(arg => arg.startsWith('--proxy-pac-url='))!.split('base64,')[1]!, 'base64').toString('utf8');
@@ -614,6 +618,18 @@ describe('managed browser runtime lifecycle', () => {
       const count = chromes().length;
       await f.manager.getActive(leo);
       expect(chromes()).toHaveLength(count);
+
+      // Dana behind Emma (26/11): a pane on direct holds the Chrome; the Freelance pane restarts it onto its routes and the pane follows.
+      await f.manager.stopPane(f.pane.id);
+      await f.manager.stopPane(leo.id);
+      await f.store.updatePaneBrowserSession(f.session.sessionId, { isActive: true, status: 'READY' });
+      const emma = addBrowser('emma', 'direct');
+      await f.manager.getActive(emma);
+      expect(chromes().at(-1)!.args.some(arg => arg.startsWith('--proxy-pac-url'))).toBe(false);
+      await f.manager.getActive(f.pane);
+      expect(pac()).toContain('upwork.com');
+      expect(f.store.getPaneBrowserRoute(emma.id)).toBe('thailand');
+      expect(f.store.listAuditEvents().some(event => event.action === 'browser.route_adopted' && event.targetId === emma.id)).toBe(true);
     } finally { await f.cleanup(); }
   });
   it('streams Preview-only viewers by a screenshot a second and switches to the screencast while a faster viewer watches', async () => {

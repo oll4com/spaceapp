@@ -200,7 +200,7 @@ export function createPlanNeedsYou(deps: PlanNeedsYouDeps) {
           // Carried, never `derived`: it stays until the plan closes or it is answered, whatever the plan's waitsOn says.
           payload: { ...first!.payload, ...(plan ? { planId: plan.id } : {}), ...(staleGoNow ? { recommendedDefault: true } : {}), derived: false,
             carried: [first!, ...more].map((card) => ({ paneId, dedupeKey: card.dedupeKey, id: card.id })),
-            ask: ask && !ask.code ? { ...ask, answer: { kind: "NOUS" } } : undefined }
+            ask: ask && !ask.code ? { ...ask, ...(staleGoNow ? { recommended: undefined } : {}), answer: { kind: "NOUS" } } : undefined }
         });
       }
       // The pane's own keys close in the caller (closedPaneNeedsYou, settle); the others here, now that their ask waits on the plan's or room's item.

@@ -129,9 +129,9 @@ describe("Load push (13/11)", () => {
         task("task:saved005", cody.id, null)]);
     await f.orders.tickOwner(owner);
     const items = f.pushes()[0]!;
-    // Cody's task runs tomorrow: until then he is a free pane.
-    expect(items.map((item) => item.key)).toEqual(["utilization", "free:pane:cody0001", "plan:clipboard:b", "task:task:ran00001"]);
-    const item = items[3]!;
+    // Cody owns open tasks (2026-11-25 REVIEW / cee65d2bb1): task-bound panes stay out of free-pane hand-outs.
+    expect(items.map((item) => item.key)).toEqual(["utilization", "plan:clipboard:b", "task:task:ran00001"]);
+    const item = items[2]!;
     expect(item).toMatchObject({ kind: "PLAN", pane: andy.id, paneName: "Andy", refs: [ran.id], always: true, line: expect.stringContaining("Main/Andy done, nothing scheduled next: finished → mark it DONE (space_task_update)") });
     expect(items[0]!.line).toContain("Tasks whose run ended on a finished pane:\n- Task [task:ran00001]");
     expect(itemActed(item, [{ name: "space_task_update", ok: true, subjects: [], args: { task: ran.id, status: "DONE" } }])).toBe(true);

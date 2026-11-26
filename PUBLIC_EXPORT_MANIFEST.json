@@ -1,9 +1,9 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "8accd670da7887f99be80a6999002fc5d45d8168",
-  "fileCount": 6240,
-  "transformations": 471,
+  "sourceCommit": "c06cd95dd0bdb4793754f18427a731acd5f5e84e",
+  "fileCount": 6241,
+  "transformations": 475,
   "files": [
     {
       "path": ".github/funding.json",
@@ -451,9 +451,9 @@
     },
     {
       "path": "agent-skills/space-freelance-copilot/SKILL.md",
-      "sourceObjectId": "ab28792b894f0becbe9639a3df619e9d4b6e2d88",
-      "sha256": "a1b8c3cfa3669df8950273359806bc94996a87a6822bb47a92b60410b63e9668",
-      "size": 18946
+      "sourceObjectId": "c6122ec5925723fa7caab9f05a25abfa7031da74",
+      "sha256": "c62d3bba00320be66f59a4ceda0af7c9963326ca3d5a7ef8194429f274d4d8e6",
+      "size": 19128
     },
     {
       "path": "agent-skills/space-freelance-copilot/agents/openai.yaml",
@@ -469,9 +469,9 @@
     },
     {
       "path": "agent-skills/space-freelance-copilot/references/proposals.md",
-      "sourceObjectId": "ad339142aff7a4ac39a21945d4b6fc9e49c71798",
-      "sha256": "66ff2c86bc329bec0085440025404a68735979b5b9913d8fe379bcefe0f90bb5",
-      "size": 4985
+      "sourceObjectId": "3c827dadad791da433c3072252a1890da69040b0",
+      "sha256": "8dd87c013c7a75282e01af984cc828584266ed4f01bb3bded9ba5331600b6877",
+      "size": 4993
     },
     {
       "path": "agent-skills/space-freelance-copilot/references/scams.md",
@@ -7153,9 +7153,9 @@
     },
     {
       "path": "agent-skills/space-mail-copilot/SKILL.md",
-      "sourceObjectId": "c2be619f2d792fbd3723043d41ace93668003cfb",
-      "sha256": "80312f2783f1361a4758d31aaf69d4e7f4c3c085d931b1501a2c77deec02a9e6",
-      "size": 15589
+      "sourceObjectId": "4cb3f04bacea67044f0307d984649a6a6c416366",
+      "sha256": "00c5313c9be19d0efc6548e682f31e63d897c013828ee3b4c82507386cad4c91",
+      "size": 15722
     },
     {
       "path": "agent-skills/space-mail-copilot/agents/openai.yaml",
@@ -9139,9 +9139,9 @@
     },
     {
       "path": "apps/api/src/agent-bootstrap.ts",
-      "sourceObjectId": "847da50b8f0459eb1cfe78d5855eb04feaf22b9c",
-      "sha256": "b3d59f2e501ba66d0ce0fb61f16264831ae7db7cc82fd3c4658a7048c92a7c0f",
-      "size": 91050
+      "sourceObjectId": "f7d97f98018d0ff927cdb0542cbc2792ff857f25",
+      "sha256": "1b2e02458419717bb4846bc5a8aa4fa169be569f6415039e352f7e4a39aa2cbe",
+      "size": 91136
     },
     {
       "path": "apps/api/src/agent-file-chunks.ts",
@@ -9565,9 +9565,9 @@
     },
     {
       "path": "apps/api/src/browser-sessions.ts",
-      "sourceObjectId": "f0ccb3564407e49bafff87e0a3451ebd11b33e8b",
-      "sha256": "ef7c221dd81ef89b27e986c411b529d473eb0bbecd93c18cfd4914d070c5195d",
-      "size": 253312
+      "sourceObjectId": "0d5f0e77cf69bac44499be22c83b7e039908f8f3",
+      "sha256": "62a0756141a4bdbd556c60253dce18c6913bb5f276583902a71817638373ab5c",
+      "size": 254606
     },
     {
       "path": "apps/api/src/browser-slider-captcha.ts",
@@ -10681,9 +10681,9 @@
     },
     {
       "path": "apps/api/src/freelance-copilot/service.ts",
-      "sourceObjectId": "f11990b820d4e2ec01aa9aa24f0f98b2f62e051e",
-      "sha256": "3de05427cb78f71c95d619d220a980110c1fff2ef14b2b62687b005ff19bba26",
-      "size": 66332
+      "sourceObjectId": "0a556e97200a0bb709dd534d009948791140ca2b",
+      "sha256": "0905d07eacbddca35b5995907ad0cd8582c887a883fb82906a6c4699749a19f5",
+      "size": 66638
     },
     {
       "path": "apps/api/src/freelance-copilot/wiring.ts",
@@ -10933,9 +10933,9 @@
     },
     {
       "path": "apps/api/src/instance-link/routes.ts",
-      "sourceObjectId": "3947c085b073b011f85b80abe943b540f3743b21",
-      "sha256": "e325dc4857eef5b74043d95ee0751001b7c0114778639e40664d005c2639d89f",
-      "size": 44652
+      "sourceObjectId": "1999b5304749f752c9ac673cb25011bd728c1cd0",
+      "sha256": "9ad4134328ba6121277e7d3b6c3a9522a199f48b487cca3b9315bab1ac72f046",
+      "size": 44995
     },
     {
       "path": "apps/api/src/instance-link/settings-sync.ts",
@@ -11305,9 +11305,9 @@
     },
     {
       "path": "apps/api/src/mail-copilot/service.ts",
-      "sourceObjectId": "dd1d1b2e7dd5d856f6fe72992b374d23e59e446e",
-      "sha256": "b3d3f4708cc98f5b1bcbead7817b4b04651fec7e6973a41b9db5d8d9ed8f86cd",
-      "size": 170966
+      "sourceObjectId": "591e5cb977d238497ff46e135102b75b774234df",
+      "sha256": "920c55a475d6dcf6a4db2f9fe94827f6a50d10453ce29da6dec705d8ea72bb82",
+      "size": 172903
     },
     {
       "path": "apps/api/src/mail-copilot/sync.ts",
@@ -11653,9 +11653,9 @@
     },
     {
       "path": "apps/api/src/notifications/service.ts",
-      "sourceObjectId": "4ac182b26a964e316a6c8e6f512eea1691bca096",
-      "sha256": "0da1bf450bdf7f5ce96273117850c7b50de3f73f3ceec0be00b770323dec7972",
-      "size": 47787
+      "sourceObjectId": "36ecff54bf29b78be1a557ee6ac8b2f6dbe64b4a",
+      "sha256": "7bfe05d93b6f52050acb116db435460df503bd636fca6e06ff5c5cf0ec3029a2",
+      "size": 48024
     },
     {
       "path": "apps/api/src/notifications/translate.ts",
@@ -11947,9 +11947,9 @@
     },
     {
       "path": "apps/api/src/nous/pane-notices.ts",
-      "sourceObjectId": "96f303fa971890ea066ae4eaa6abec3a5be1c71a",
-      "sha256": "21a90679a2e85d28fa21cb1ba018ab392029ace66a9df9a8f5082cece4766beb",
-      "size": 74111
+      "sourceObjectId": "1c1325136e5df72eda0c7a3b9c503199914ceafe",
+      "sha256": "98a13be3968ed73968b86ec3f08c1eb83b60a532ba195994da78a116a9aac715",
+      "size": 74645
     },
     {
       "path": "apps/api/src/nous/pane-watch.ts",
@@ -11977,15 +11977,15 @@
     },
     {
       "path": "apps/api/src/nous/plan-needs-you.ts",
-      "sourceObjectId": "fcb4ce22230cc5c0234fd0a8d54b0bd2cf8a3def",
-      "sha256": "f04a4623955d3c637e20c9f0b44932581881f27ef18d88684b8d088b13ab4174",
-      "size": 21279
+      "sourceObjectId": "4ef573b8a0fb1d1853f4cf61b9f41beb0c8e8830",
+      "sha256": "74e45fb28c00e06d927dc695fc87d22a126107fb331ddbf9ded2115477fcbb3e",
+      "size": 21330
     },
     {
       "path": "apps/api/src/nous/predictions.ts",
-      "sourceObjectId": "281d485a0af686a19ca87bce8d8ecdd934b23de4",
-      "sha256": "57a6391780ae61693f97c9ccf074ab5d1a0bde1c4be333b3e125b84fbb0c7b12",
-      "size": 17838
+      "sourceObjectId": "d55b3032023d8fb89801d23b98f7d0d55f71c9e4",
+      "sha256": "0d3cefff79ec471cf1cc6b028fc7983d3f8361452ab658331fb0d51d6db20a3e",
+      "size": 18351
     },
     {
       "path": "apps/api/src/nous/program-meters.ts",
@@ -11996,8 +11996,8 @@
     {
       "path": "apps/api/src/nous/programs.ts",
       "sourceObjectId": "c83939ddfcfc231c76029e0d834dcf4b3439a920",
-      "sha256": "237b5e1c368c4afa899b09a61963c1d15568eee2808c3fb2ddec1b2a92dcea26",
-      "size": 40737
+      "sha256": "cece6705a875077a4a9f38394bdf87de6ec995c667894132eaf19fa2d87e6ba0",
+      "size": 40743
     },
     {
       "path": "apps/api/src/nous/progress.ts",
@@ -12037,9 +12037,9 @@
     },
     {
       "path": "apps/api/src/nous/request-done.ts",
-      "sourceObjectId": "afa5a8ebc962e5ffeee1128a0972d45469699b56",
-      "sha256": "547f1ddc120de9afdaf9265da579d47202dd8bac084de4826dde4dff606f04eb",
-      "size": 60226
+      "sourceObjectId": "90131d0a09f496360a9c3cd5469125f57232e0f5",
+      "sha256": "38d8b2750e310ef7972db9806a6e9aa878321e943479646d0b888776313286d9",
+      "size": 60279
     },
     {
       "path": "apps/api/src/nous/requests-waiting.ts",
@@ -12090,6 +12090,12 @@
       "size": 94199
     },
     {
+      "path": "apps/api/src/nous/send-order.ts",
+      "sourceObjectId": "fc5bd314bb8963ad5a275fef36d714434b4c678c",
+      "sha256": "1e00f9abc992cca8686287bbadc056f9e3b7ed72a6dd8f12adb71530dd1ccf60",
+      "size": 3290
+    },
+    {
       "path": "apps/api/src/nous/server-load.ts",
       "sourceObjectId": "1ea609b3ddc147b4d62fb792f9a909510c94a74f",
       "sha256": "c8cc8a90944faa238a8120d603dc4a8b08a9c2ffd5e8e1c58345846d3c37df49",
@@ -12133,9 +12139,9 @@
     },
     {
       "path": "apps/api/src/nous/standing-orders.ts",
-      "sourceObjectId": "b11bb219f8c0fa1b13ecdc82451972651e5cf208",
-      "sha256": "8b26ef145cc0ef53ffd1abae95324d217e041669cc5174ba275974c024091d9e",
-      "size": 108017
+      "sourceObjectId": "fc21c0c4d7fca6fb3d7f88f63027921fd0fda365",
+      "sha256": "134166a52332225f0b4ed5ff479ca1391c173d1f880e9c995d9fed077941aff9",
+      "size": 110423
     },
     {
       "path": "apps/api/src/nous/step-translations.ts",
@@ -12187,9 +12193,9 @@
     },
     {
       "path": "apps/api/src/nous/tools.ts",
-      "sourceObjectId": "eb5883ae8849e64e14d9ecd470919b13f11e7f9c",
-      "sha256": "0cf0e9162c07d675dc56dc4217ab6b5a62e0ce81ef9f9f054fe0c15e3d354530",
-      "size": 757661
+      "sourceObjectId": "34d751114fb3e05de849c159ac203a83e3f3445d",
+      "sha256": "891de4486e47cfbe6a85041699e741893b9098c21f5e52f4d65c354dee6e2f37",
+      "size": 758982
     },
     {
       "path": "apps/api/src/nous/turn-items.ts",
@@ -12229,9 +12235,9 @@
     },
     {
       "path": "apps/api/src/nous/wiring.ts",
-      "sourceObjectId": "a5e2e75090a0936350fd0d6832d48b1f261c73f7",
-      "sha256": "0b71a6e925c2f250626089d9732a956df875d2c7866c36d090316635dc1bcbe1",
-      "size": 313501
+      "sourceObjectId": "abfa74870a14f1c42d5f460c29051d5fb03e467f",
+      "sha256": "a9ce2aff3d3e7cef1db0df2f160063c3317726a9ef43056c195b62f8181d0ecf",
+      "size": 313775
     },
     {
       "path": "apps/api/src/nous/workbench.ts",
@@ -12415,9 +12421,9 @@
     },
     {
       "path": "apps/api/src/pane-reports.ts",
-      "sourceObjectId": "a1a2aea94e002f9e2d799dde72e4eaa9dca83aca",
-      "sha256": "24f64d4ec4c30d08bc24376c456575114f60bcb048d0144bb015a96c0ffaad53",
-      "size": 38403
+      "sourceObjectId": "1054a8305a52f2796e0c07c40aceb70d9aebaec2",
+      "sha256": "45a930f73a461a31247cedf90e0d93e82c558b58eef188d11278bdae2baf2087",
+      "size": 38493
     },
     {
       "path": "apps/api/src/pane-routes-wiring.ts",
@@ -13117,9 +13123,9 @@
     },
     {
       "path": "apps/api/src/signin-readback.ts",
-      "sourceObjectId": "dc54a32685e5ed5b5d5396e171d222e157e83465",
-      "sha256": "23b82eaaf4430d07be436cdb9bab74f883b137084d6c6f254e3afd08684f1804",
-      "size": 11755
+      "sourceObjectId": "365f386669dd70fc0555f12837329a98bc06b9d5",
+      "sha256": "94798992ab41cff4d2c74a6c4fdef9b2d5015ac37ec6a8f1f207741dcb689890",
+      "size": 12089
     },
     {
       "path": "apps/api/src/site-signin-account.ts",
@@ -14311,9 +14317,9 @@
     },
     {
       "path": "apps/api/tests/browser-runtime-lifecycle.test.ts",
-      "sourceObjectId": "f254e2920632302fc48b511d290365848fa36837",
-      "sha256": "28b20e9c1f821af120962d6aeaca4899094f3e4808240cf087277aced49d2f95",
-      "size": 52254
+      "sourceObjectId": "7fdc16dd19da535a34b42f9ff49cb12c41dee581",
+      "sha256": "798d19d4c2d5f5fbeca75f7fd3d8296f1917a79ea28025e1c754d06c1ae70e41",
+      "size": 53318
     },
     {
       "path": "apps/api/tests/browser-sandbox.test.ts",
@@ -15361,9 +15367,9 @@
     },
     {
       "path": "apps/api/tests/freelance-copilot-run.test.ts",
-      "sourceObjectId": "bdc9c08429d93ab8cf5e8850763d454ca88d60e9",
-      "sha256": "ab4e8b3c93c315e93ad79c18e42c2dea8083c114ffb7d9d3e30a02af646fbab5",
-      "size": 26976
+      "sourceObjectId": "eca4ce4ef28bd58c5d2479c96a6b490ba383c7d6",
+      "sha256": "9039f08fd0eba086e75d8d6c82ef4a587878b2359eb236aab9aa37c36402d0ec",
+      "size": 26977
     },
     {
       "path": "apps/api/tests/freelance-copilot-scheduler.test.ts",
@@ -15373,9 +15379,9 @@
     },
     {
       "path": "apps/api/tests/freelance-copilot.test.ts",
-      "sourceObjectId": "9a905464bd3efba6cdef2199e3c09d7d645a4a51",
-      "sha256": "b8ed69c9d0f0902ca52ac0ad9fa21264a1186765ec890bcc86ba10ecab95dc55",
-      "size": 20293
+      "sourceObjectId": "c6524044ded0c15738c058e8d493fe9ab16a2adc",
+      "sha256": "2bee6ec907053dbd2d9a424b4c333755c6f12efe02cb02008e564b3f628515fe",
+      "size": 20908
     },
     {
       "path": "apps/api/tests/gateway-admin-routes.test.ts",
@@ -15625,9 +15631,9 @@
     },
     {
       "path": "apps/api/tests/instance-link-old-peer.test.ts",
-      "sourceObjectId": "ddf0d829fe82ee36fcb4d9f660c1fb28df3dad60",
-      "sha256": "5a273b77be018b06e52badfc31cea2d6d55f92b7a5af26eb3e4f26bc452b3980",
-      "size": 4398
+      "sourceObjectId": "3031ba3e3c61404e2ba5422f5e250dac8138687a",
+      "sha256": "28ae3d81b3881dd35f46c45140133e6f4ef5c77c89e324d5d5a626373369c7b5",
+      "size": 5009
     },
     {
       "path": "apps/api/tests/instance-link-preflight.test.ts",
@@ -15871,9 +15877,9 @@
     },
     {
       "path": "apps/api/tests/mail-copilot-run.test.ts",
-      "sourceObjectId": "94ead401158e802b01066761d823710ba4adaa90",
-      "sha256": "52caaa03166d5db65c99ce5d35ad0e1a038b02bacbf5e039905bcb07399f951c",
-      "size": 108995
+      "sourceObjectId": "e6af89ba7d5af65ac4107610173f3c05a59eb7c5",
+      "sha256": "1a9faa835185bc2521902b3df0c551e53052933a46ed11d4a48b76a7e8483deb",
+      "size": 111498
     },
     {
       "path": "apps/api/tests/mail-copilot-sync.test.ts",
@@ -16417,9 +16423,9 @@
     },
     {
       "path": "apps/api/tests/nous-load-push.test.ts",
-      "sourceObjectId": "43590bf55cb1f2f30dfe7815d3db970e6b16b34d",
-      "sha256": "67ee7b22e9c8a833e8996493b5f73ea17bb5c8e2a51a450f522afdaee754a682",
-      "size": 55652
+      "sourceObjectId": "1bf918834db444dee8dd4a343005f0d7ded678d7",
+      "sha256": "6be518b4963c71b3a0af232931fb6dd1623ebe9efefdc864187a8bd0b5c97376",
+      "size": 55678
     },
     {
       "path": "apps/api/tests/nous-load.test.ts",
@@ -16519,9 +16525,9 @@
     },
     {
       "path": "apps/api/tests/nous-pane-notices.test.ts",
-      "sourceObjectId": "85b676ab995e627c9d769cbeef4aed4e10f2e6e7",
-      "sha256": "805be6a9995e4deb5ac554142305acf61a71c6489ce4bf3f93f68d34759cfc8c",
-      "size": 106831
+      "sourceObjectId": "4e51d3cfefb009b2691c9f003b1e43b79dd37270",
+      "sha256": "ed83ee755561ed0cfac26237c83403eb55308258799d0fa025ee10ffecf00649",
+      "size": 107750
     },
     {
       "path": "apps/api/tests/nous-pane-watch.test.ts",
@@ -16543,9 +16549,9 @@
     },
     {
       "path": "apps/api/tests/nous-predictions-ledger.test.ts",
-      "sourceObjectId": "49ce31f54bb38492cc7ce5652b221b57dfe4736b",
-      "sha256": "fd58770eea14293c3dc711ece3e03c294ac9f3b4fc3118f875f894584a869d76",
-      "size": 34945
+      "sourceObjectId": "831079b3f5b6e248b6f8268abd744d050cd4ad9a",
+      "sha256": "2f3f865e1fb5e64dd681f635271db6f1851dcc13cf65bc7b69c0a144701e4b39",
+      "size": 35652
     },
     {
       "path": "apps/api/tests/nous-programs.test.ts",
@@ -16687,9 +16693,9 @@
     },
     {
       "path": "apps/api/tests/nous-self-upgrade.test.ts",
-      "sourceObjectId": "973a20bf078563896ca92752416d593920148116",
-      "sha256": "cdd37360dde6ed7154af233de571317761db68b67608767f1ed2006fe37feb2b",
-      "size": 237012
+      "sourceObjectId": "c02f397cc27ff66cc6228e44e64630d8cb2b9417",
+      "sha256": "e6d838620a5b7cd97cc4ec74dcea6058ad379e9052149ef284109698acd99cfe",
+      "size": 240614
     },
     {
       "path": "apps/api/tests/nous-server-load.test.ts",
@@ -16735,9 +16741,9 @@
     },
     {
       "path": "apps/api/tests/nous-standing-orders.test.ts",
-      "sourceObjectId": "78b5060926cdd3b599be7575046c2cacd81dae0f",
-      "sha256": "d606eb78c43b41d18f2d036168fd7a65e5c77fbac0e214270c967ec1f039cdc3",
-      "size": 133946
+      "sourceObjectId": "d572366ddbc90c727e95b4c75ddd7c212fa2de46",
+      "sha256": "057d407cf7bd117e52b00b05f39ca6bb73387e5dbfd849991fd85ae4a652bc00",
+      "size": 138338
     },
     {
       "path": "apps/api/tests/nous-step-translations.test.ts",
@@ -17035,9 +17041,9 @@
     },
     {
       "path": "apps/api/tests/pane-reports.test.ts",
-      "sourceObjectId": "24bf813f936ed68bb8e17f617267e6e48a47bc4c",
-      "sha256": "08a582cd8daa08e49ca9e852c55ed68834dfbac9db453e6493c01702781022a5",
-      "size": 48561
+      "sourceObjectId": "afd4367ccb71ad8f7f0f425900ff894e5b8bb7f9",
+      "sha256": "bb4b7fb78af6fe44090576d6d7f4d8dbea850ed48b39edec7fadee942ba52a92",
+      "size": 48909
     },
     {
       "path": "apps/api/tests/pane-routes-wiring.test.ts",
@@ -17113,9 +17119,9 @@
     },
     {
       "path": "apps/api/tests/plan-needs-you.test.ts",
-      "sourceObjectId": "9795f0a804fa1b78711f2b32d249dbccea9835f5",
-      "sha256": "3b87eaf6bca2ed5c39fe5718b1cff7f64a842c665a231328160b67033d24bc7f",
-      "size": 23509
+      "sourceObjectId": "572897d0486cf9ffad7596514fc5117789cec1cb",
+      "sha256": "5ded724eb941d7f64a8218e673e08b3e358ea3b38ad74b0fcfee71766305bc1e",
+      "size": 23577
     },
     {
       "path": "apps/api/tests/platform-routes-wiring.test.ts",
@@ -17953,9 +17959,9 @@
     },
     {
       "path": "apps/api/tests/signin-readback.test.ts",
-      "sourceObjectId": "63131579c0157450505171b8db484669ada93ead",
-      "sha256": "51909a932c1e9a4c2e23e9dd8eb8e7e1f435034ddf27dab1a67172f2b41c835d",
-      "size": 14261
+      "sourceObjectId": "a1568eeaf16b599a46620dab4051a18181cd6aa2",
+      "sha256": "e791515598698389cd26919616be7469c10939a969faa8f6e9c01d3ea4a81216",
+      "size": 14837
     },
     {
       "path": "apps/api/tests/site-signin-account.test.ts",
@@ -19759,9 +19765,9 @@
     },
     {
       "path": "apps/web/src/features/agent-pane/CodexComposer.tsx",
-      "sourceObjectId": "51de69733bb32e32b91d61bb588988df6167170b",
-      "sha256": "7660f15079bcc9c85ab9d085f6d145cc009a04c29004fca0b8f8e7aa74177f50",
-      "size": 37767
+      "sourceObjectId": "6784f478c619c2eceebf1452856cc31c08023721",
+      "sha256": "c1cd531d85e5de2d823720f30d335228d290cc4f243a7d789b7bd400eefd83ba",
+      "size": 37863
     },
     {
       "path": "apps/web/src/features/agent-pane/CodexTranscript.tsx",
@@ -19867,9 +19873,9 @@
     },
     {
       "path": "apps/web/src/features/agent-pane/DotsSettingsCard.tsx",
-      "sourceObjectId": "cbf273b9117399d9b208c6c52a19d0329f98f99e",
-      "sha256": "9954d6c9d850453eb46ee350c153e95843ee14c2eff34f71491636d547f84019",
-      "size": 21533
+      "sourceObjectId": "468f9361244b928a79dea510cdaec8b94f23bfa2",
+      "sha256": "08c9b2a54edefbe8c8eef4b6bbb9a6ef5985397b9e07ac616e58e010527695b1",
+      "size": 21852
     },
     {
       "path": "apps/web/src/features/agent-pane/TaskAcceptanceDialog.tsx",
@@ -20425,9 +20431,9 @@
     },
     {
       "path": "apps/web/src/features/browser-pane/BrowserCanvas.tsx",
-      "sourceObjectId": "417ee901762c6b4806e2cd6343f5aa324b288a72",
-      "sha256": "90676f99c5778b47548ffd9e55d439fbbd7801d65b81cf5177d6f3af6fbe5712",
-      "size": 19661
+      "sourceObjectId": "496081057bd2118c7ee421df15dddc661c72a08d",
+      "sha256": "590c45a78f367f9d1c7e918d2ffeb04cb6a4c4acbab7c0d40736bc0da73b2abd",
+      "size": 19823
     },
     {
       "path": "apps/web/src/features/browser-pane/BrowserLiveStatus.tsx",
@@ -20635,9 +20641,9 @@
     },
     {
       "path": "apps/web/src/features/cli-launcher/CliLauncherMenu.tsx",
-      "sourceObjectId": "af7bb9eb2659b877416d84c113b86569f220e716",
-      "sha256": "2f0118484defd28ce9ebcb5122098d6535e9dcc7bb151804c748e75781da1d0d",
-      "size": 27121
+      "sourceObjectId": "ceee46366855b0428680d336834475563cee70a0",
+      "sha256": "abab98b4f05bd4f5b1e91eb9ddec81f938ad7b1f403aaca37ce0fff398e16fc8",
+      "size": 27244
     },
     {
       "path": "apps/web/src/features/cli-providers-settings/CliProvidersSettingsCard.tsx",
@@ -20701,9 +20707,9 @@
     },
     {
       "path": "apps/web/src/features/codex-model-picker/CodexModelPicker.tsx",
-      "sourceObjectId": "a1970dac6deb01994b653b6d953bd7333414a967",
-      "sha256": "81473b5078e85a4eef9709951195b6527f7d8aad13a1e13cc33e07ca28041b0f",
-      "size": 40784
+      "sourceObjectId": "b1fb1dd95b719690d27751c30d036d3110a919b3",
+      "sha256": "9e7bc10681542773a93eda8f30d81ddcd745c33f0e12e145d61a1a38f25bf88c",
+      "size": 41211
     },
     {
       "path": "apps/web/src/features/codex-model-picker/reasoning-effort.ts",
@@ -21325,9 +21331,9 @@
     },
     {
       "path": "apps/web/src/features/docks/useSideSurfaces.ts",
-      "sourceObjectId": "da9903aae65dfe5ed1ad7ff49c58494b4e7463e7",
-      "sha256": "fe939b7402a1c4afd115f21f040ebbb58defe1b8fe88adbb9b9c261b122fc3d6",
-      "size": 14260
+      "sourceObjectId": "d24f71cd24a26f16398b75aae2b81a5e4a480137",
+      "sha256": "3d296c6bb3617060542f7d3d53546515c06679db2a39ec31cb05d1bd5bae2509",
+      "size": 14526
     },
     {
       "path": "apps/web/src/features/embedded-dashboard/EmbeddedDashboardDialog.tsx",
@@ -21391,9 +21397,9 @@
     },
     {
       "path": "apps/web/src/features/files-pane/FilesPane.tsx",
-      "sourceObjectId": "5b1e310bab33a83d0f5abb3a9fabf7840a1edb43",
-      "sha256": "c5fa10941510fea8da5e8fcab1c941ba9bc20eb46110b528a7c8d864386a4b63",
-      "size": 15623
+      "sourceObjectId": "dec3556407c79cd4eec1399a664019ac5aadf040",
+      "sha256": "29178134001d545d0c6935540adc5d1d604672b43dd1be8b270f47554c5735bd",
+      "size": 16090
     },
     {
       "path": "apps/web/src/features/files-pane/files-pane.css",
@@ -22357,9 +22363,9 @@
     },
     {
       "path": "apps/web/src/features/nous/NousInbox.tsx",
-      "sourceObjectId": "cdbac683f19a0f14b85ddf86802cf665d4dfbd5b",
-      "sha256": "9b23c3dca3fc0ea9b4d4e776949972393a047f0f9e3cada70367f20cc9ccf343",
-      "size": 22050
+      "sourceObjectId": "44facca536b813bbee84f64c8aef7d052b5a6f07",
+      "sha256": "12e7980d6b69fb1472781e5304690af2013cb8ba21001a0ce25ec3dedf69b28a",
+      "size": 22480
     },
     {
       "path": "apps/web/src/features/nous/NousInboxQueue.tsx",
@@ -22831,9 +22837,9 @@
     },
     {
       "path": "apps/web/src/features/room-agent/RoomAgentDock.tsx",
-      "sourceObjectId": "9e27322559410360ff125f0581a37a9ddc3a5934",
-      "sha256": "7dc36a0d1e6b65c6105f3536a4107896998c10d5795385f7b12338c2086e88fe",
-      "size": 19110
+      "sourceObjectId": "a0384b95c64a193a73ee367168a60f7ecc8371bb",
+      "sha256": "aa149c5026c5940d79cce13e682fe1ce346abb55c99097504fbae8ec8070d0d1",
+      "size": 19182
     },
     {
       "path": "apps/web/src/features/room-agent/RoomAgentHeader.tsx",
@@ -23239,9 +23245,9 @@
     },
     {
       "path": "apps/web/src/features/setup-connections/FirstSetupWizard.tsx",
-      "sourceObjectId": "e6505a3e2cbe0c7bd4ed903e6557de52c35935c3",
-      "sha256": "a174bbfd7f7e5e0e467cc8b9d5ad99f2b8d8e4ed395c627f86e978b51c6e9099",
-      "size": 41395
+      "sourceObjectId": "81794ed1429b046a1c2ab520d62ddada7cfd4941",
+      "sha256": "d8d090958adb37cfaea3c12f5da19e7906d5fc4bb6286d4daaca3eedfa211607",
+      "size": 41645
     },
     {
       "path": "apps/web/src/features/setup-connections/SetupAssistantHelp.tsx",
@@ -23311,9 +23317,9 @@
     },
     {
       "path": "apps/web/src/features/setup-connections/useSetupConnectionsWizard.ts",
-      "sourceObjectId": "17815c8d6b1e2d1d113b67380f18b10ab9cd6251",
-      "sha256": "538357daf4cd05477b57fbde544d1f82ce013c77fe315fb8090bc72481b6b122",
-      "size": 17170
+      "sourceObjectId": "91c88e09f266b521074e7641c6205de757350c3a",
+      "sha256": "71d18d4ee9536b1748fbfac0c4147f7b748d58a5c8b10398ea8e7d49c61751b8",
+      "size": 17278
     },
     {
       "path": "apps/web/src/features/shared-chat/SharedChatDock.tsx",
@@ -23779,9 +23785,9 @@
     },
     {
       "path": "apps/web/src/features/task-titles/TaskTitleDetails.tsx",
-      "sourceObjectId": "06986ecebb7983f030335730a72b2241f862994a",
-      "sha256": "e91789598db64a70094da0024c7b2f421afefdacf08f52cd30dc5d6210f61e9d",
-      "size": 15643
+      "sourceObjectId": "32787e67dc6d98314b760fbfcd4024f99efd3c17",
+      "sha256": "233f96b2d390a1cf742f19f2ea7b2a879e479a97f89a6ff352cf2b5b6c8e963e",
+      "size": 15721
     },
     {
       "path": "apps/web/src/features/task-titles/TaskTitleSettings.tsx",
@@ -26251,9 +26257,9 @@
     },
     {
       "path": "apps/web/tests/nous-inbox.test.tsx",
-      "sourceObjectId": "4f62ea42674276d3d6118b2883eb78d552a99e7c",
-      "sha256": "fec664f4943c73a2165ba5a3b9f23da97f83717b519436c00c24993ba7a2ab38",
-      "size": 13380
+      "sourceObjectId": "9044e6565f2e48f4c18df2d7d7a5bdcea9a41bdc",
+      "sha256": "57fe75c469defcdee8a3432f993500280ae65b5a19462642a422ed0f1bca9c76",
+      "size": 14971
     },
     {
       "path": "apps/web/tests/nous-live-load-plans-search.test.tsx",
@@ -28669,8 +28675,8 @@
     },
     {
       "path": "package.json",
-      "sourceObjectId": "2c2000414e68ff10a93f327d2f51824355bdd430",
-      "sha256": "f3977532691dbc23ed27dbdc697154804b183bdb3ebf6804159b80a9abd6f61d",
+      "sourceObjectId": "d8a839d73aa24b7b590aa3607a8b827fc25b9d61",
+      "sha256": "458b0a6b3b2bb2ed1128d120e3c866905322134f74c7ed6c682f5ad1c361790e",
       "size": 4682
     },
     {
@@ -29131,9 +29137,9 @@
     },
     {
       "path": "packages/contracts/src/freelance-copilot.ts",
-      "sourceObjectId": "ffa8f35ab036c31882eeba2f90bc52813d1553b1",
-      "sha256": "2a15309be3eede8c81a1dbf75c41aa1a3cf333d090c67fb881b3175caf79ba09",
-      "size": 39616
+      "sourceObjectId": "d717e9f0733befb3fb9f51d8ab7291eea923f384",
+      "sha256": "7bfbb63a556cee6420325dc74bebab50f2890d4647e57cec85aae69bc4e1c85f",
+      "size": 39701
     },
     {
       "path": "packages/contracts/src/gateway-capacity.ts",
@@ -29269,9 +29275,9 @@
     },
     {
       "path": "packages/contracts/src/notifications.ts",
-      "sourceObjectId": "182e421f85a7157cfd18c3d7c22436dcdbc5611a",
-      "sha256": "f8fd7976fc12e7579db3f5be3ded2e898285c03066b048f8ea4b4cd1f07b5f72",
-      "size": 45227
+      "sourceObjectId": "3564b2330b0aaac49f3f8232d6339b3f2305aca3",
+      "sha256": "e9f1de211c05649c7956041d381b012174ffdf32a36485f1025912583c4f006f",
+      "size": 45584
     },
     {
       "path": "packages/contracts/src/nous-client.ts",
@@ -29300,8 +29306,8 @@
     {
       "path": "packages/contracts/src/nous-programs.ts",
       "sourceObjectId": "56d8ec5d9b3451bf7d8b0e058253a21ac308667e",
-      "sha256": "9ab6301695ce0602166207037764677536e8f133a428df5edb05192db24b061a",
-      "size": 18523
+      "sha256": "c9d500d79f58229fba18aca9dd1390abce74687bc84306a21a0611901646ee7e",
+      "size": 18529
     },
     {
       "path": "packages/contracts/src/nous-reports.ts",
@@ -29875,9 +29881,9 @@
     },
     {
       "path": "packages/contracts/tests/freelance-copilot.test.ts",
-      "sourceObjectId": "2662b56910164a429735ed73fe0e922bfe2c7e0b",
-      "sha256": "02952023e84e48e6686a3a19fd3875d743af9c07f77e4bb1592288389c02774d",
-      "size": 11817
+      "sourceObjectId": "eefde8ae9f211de54d0641a467399133a408017f",
+      "sha256": "d3ff7d480423b0b5935b7f992874c1431647f3aa5556ba7ccb4f7dbaf533198e",
+      "size": 12534
     },
     {
       "path": "packages/contracts/tests/gateway-capacity.test.ts",
@@ -32456,8 +32462,8 @@
     {
       "path": "packages/db/migrations/0348_nous_program_company.sql",
       "sourceObjectId": "68b1e1328ee9dec3d7b51620bf0912828b13daba",
-      "sha256": "885a73c38277b019674924298257fcab1c8124ac5d86b7f2d2950f43cd429c31",
-      "size": 1672
+      "sha256": "cec95aa4f891eaf595a0b09a03fa6e7b03f24b93ece5887bd4f1b00f593804de",
+      "size": 1675
     },
     {
       "path": "packages/db/migrations/0349_mail_template_attachments.sql",
@@ -37255,9 +37261,9 @@
     },
     {
       "path": "scripts/space-app-studio-build.mjs",
-      "sourceObjectId": "08885d108853983bf248bf86a0f23cf52cf90027",
-      "sha256": "16ea68dfa06fe49811ddf59cb1a6d21ed4bc341df46b8612a4805fd68b970f31",
-      "size": 34364
+      "sourceObjectId": "697d62a0da5da76d2da3bab2546fd89a79aaec11",
+      "sha256": "66c19f5b92468ebdad44d525b4829abf46d1f635100e1c6b8c588d12afe1c5b9",
+      "size": 34342
     },
     {
       "path": "scripts/space-app-studio-mcp.mjs",
@@ -37291,9 +37297,9 @@
     },
     {
       "path": "scripts/space-load-gate.mjs",
-      "sourceObjectId": "e51978d631384732600364d1370796f0d20d0c79",
-      "sha256": "bd8d812c7e3c05ef575686d24e1e25c84af67f91b7ccdb46c6b93241fb210bf9",
-      "size": 11639
+      "sourceObjectId": "d811d4bd52ac549514ad16cf83fe6d6f3aa780c4",
+      "sha256": "eb2f65428abf3f876d318a93e5632001451dc5f02535942d0ea65310efa4b62d",
+      "size": 11753
     },
     {
       "path": "scripts/space-media-capture.mjs",

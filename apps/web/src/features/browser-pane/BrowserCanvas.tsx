@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useRef,
@@ -204,14 +205,14 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
   presentedRef.current = onPresented;
   historyLimitRef.current = historyLimit;
 
-  function drawSize(canvas: HTMLCanvasElement) {
+  const drawSize = useCallback((canvas: HTMLCanvasElement) => {
     if (drawSizeRef.current) return drawSizeRef.current;
     const { width, height } = canvas.getBoundingClientRect();
     if (drawSizeObservedRef.current && width > 0 && height > 0) drawSizeRef.current = { width, height };
     return { width, height };
-  }
+  }, []);
 
-  function draw(frame: DecodedFrame | undefined) {
+  const draw = useCallback((frame: DecodedFrame | undefined) => {
     const canvas = canvasRef.current;
     if (!canvas || !frame) return;
     const bounds = drawSize(canvas);
@@ -227,9 +228,9 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
     viewportRef.current = frame.viewport ?? defaultViewportRef.current;
     const fitted = fitViewportIntoRect({ left: 0, top: 0, width, height }, viewportRef.current);
     context.drawImage(frame.image, fitted.left, fitted.top, fitted.width, fitted.height);
-  }
+  }, [drawSize]);
 
-  async function pumpFrames() {
+  const pumpFrames = useCallback(async function pumpFrames() {
     if (decodingRef.current) return;
     decodingRef.current = true;
     try {
@@ -267,13 +268,13 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
       decodingRef.current = false;
       if (!disposedRef.current && pendingRef.current) void pumpFrames();
     }
-  }
+  }, [draw]);
 
-  function present(nextSource: string | Blob, nextCapturedAt = new Date().toISOString(), viewport = defaultViewportRef.current, consumed?: () => void) {
+  const present = useCallback((nextSource: string | Blob, nextCapturedAt = new Date().toISOString(), viewport = defaultViewportRef.current, consumed?: () => void) => {
     pendingRef.current?.consumed?.();
     pendingRef.current = { source: nextSource, capturedAt: nextCapturedAt, viewport, consumed };
     void pumpFrames();
-  }
+  }, [pumpFrames]);
 
   useImperativeHandle(forwardedRef, () => ({
     present,
@@ -292,18 +293,18 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
       selectedIndexRef.current = null;
       draw(historyRef.current.at(-1));
     }
-  }, [historyLimit]);
+  }, [draw, historyLimit]);
 
   useEffect(() => {
     const identity = source ? `${capturedAt ?? ""}:${source}` : null;
     if (!source || identity === lastPropFrameRef.current) return;
     lastPropFrameRef.current = identity;
     present(source, capturedAt ?? undefined);
-  }, [capturedAt, source]);
+  }, [capturedAt, present, source]);
 
   useEffect(() => {
     draw(selectedIndexRef.current === null ? historyRef.current.at(-1) : historyRef.current[selectedIndexRef.current]);
-  }, [viewportSize.height, viewportSize.width]);
+  }, [draw, viewportSize.height, viewportSize.width]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -322,7 +323,7 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
       drawSizeRef.current = null;
       window.removeEventListener("resize", redraw);
     };
-  }, []);
+  }, [draw]);
 
   useEffect(() => () => {
     disposedRef.current = true;

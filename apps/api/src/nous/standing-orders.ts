@@ -370,6 +370,8 @@ export interface StandingOrdersDeps {
    * guard); true when it closed. Without it Nous gets the "close it now" line, one Opus STANDING turn per pane.
    */
   closePane?(owner: string, roomId: string, paneId: string): Promise<boolean>;
+  /** Space's own Space Memory save for a pane that cannot run one (its pool has no room); the memory id. */
+  saveMemory?(owner: string, title: string, body: string): Promise<string>;
   /** The pane's newest own work report (space_close_pane's open-work guard reads the same one); null when none. */
   lastWorkReport?(owner: string, paneId: string): Promise<{ status: string; at: string; summary: string } | null>;
   /** Starts the STANDING turn (or the Away HEARTBEAT round, or the daily REVIEW) with this text (service.standing). */
@@ -724,6 +726,13 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
       list(input, `card:${input.notifications.map((card) => `${card.id}:${card.updatedAt}`).join(",")}`, `- ${where(input)} · ${input.state} ${durationText(at - Date.parse(closeoutSince(input, ctx)!))} · your card ${cards} still open`
         + " → read the pane (space_pane_reports); nothing left for the operator: resolve it (space_resolve_notification); still theirs: space_pane_checked WAITING_OPERATOR with nextCheckInMinutes", cardLines);
     }
+    const poolOf = (paneId: string | null) => {
+      for (const { sample } of snapshot.rooms) { const pane = sample?.data.find((entry) => entry.id === paneId); if (pane) {
+        // 22/11: a gemini-CLI pane on claude-opus-5-5 draws on Antigravity's Claude pool, not Gemini's (the pool noRoomGuard and wiring read).
+        return quotaPool(pane.terminalRuntimeId, (pane.terminalRuntimeId === "cli:gemini" ? sample!.details[pane.id]?.modelId : null) ?? pane.modelId);
+      } }
+      return null;
+    };
     if (orders.closeFinishedPanes) {
       for (const input of panes) {
         const skip = closeoutSkipReason(input, ctx);
@@ -742,6 +751,25 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
           list(input, `open:${last.at}`, `- ${where(input)} · ${idle} · last reported ${last.status.toLowerCase()} at ${hhmm(last.at)} ("${last.summary.replace(/\s+/g, " ")}"), no done or failed report since: `
             + "its work is open, so no save or close (space_close_pane refuses it) → send its next step (space_send_to_pane), or record its wait (space_pane_checked WAITING_OPERATOR, WAITING_DATE or BLOCKED with nextCheckInMinutes)");
           continue;
+        }
+        // 2026-11-26 REVIEW (19 idle panes past 60 min; Gemini panes refuse prompts): a finished CLI pane on a pool with no room cannot run its
+        // own save, so Space saves its reports to Space Memory and closes it instead of asking it a save it cannot answer.
+        const pool = poolOf(input.pane.id);
+        if (!skip && input.pane.mode === "TERMINAL" && pool && spend?.refused?.includes(pool) && row?.state !== "VERIFIED" && deps.saveMemory && deps.closePane
+          && (!row?.closedAt || row.closedAt < paneSince!)) {
+          const reports = await deps.reportsSince(owner, input.pane.id, "").catch(() => []);
+          const body = [`Room "${input.room.name}" pane ${paneLabel(input.pane)} (${input.pane.title}) finished; its ${pool} pool had no room, so Space saved this and closed it.`,
+            ...(input.pane.cwd ? [`Working directory: ${input.pane.cwd}`] : []), ...reports.map((report) => `- ${report.at} ${report.status}: ${report.summary.replace(/\s+/g, " ")}`)].join("\n");
+          const id = await deps.saveMemory(owner, `${paneLabel(input.pane)} closed by Space: ${pool} had no room`.slice(0, 160), body).catch(() => null);
+          if (id) {
+            const base: NousPaneCloseout = { paneId: input.pane.id, roomId: input.room.id, state: "VERIFIED", requestedAt: stamp, retriedAt: null, verifiedMemoryId: id, closedAt: null, reason: null, updatedAt: stamp };
+            await save(base);
+            if (await deps.closePane(owner, input.room.id, input.pane.id).catch(() => false)) {
+              await save({ ...base, state: "CLOSED", closedAt: stamp, reason: `saved and closed by Space: its ${pool} pool had no room` });
+              listed.delete(`${owner}\u0000${input.pane.id}`);
+            }
+            continue;
+          }
         }
         if (inFlight) {
           // Step 10: a save verified after the pane last worked, nothing else keeping it: Space closes it, no turn (~800k input each, 6/11).
@@ -780,13 +808,6 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
       ...(map ? { held: (planId: string) => stalledHold(map, planId), hardHold: map.holds.some((hold) => HARD_HOLDS.has(hold.kind)) } : {}), stalledHours: orders.stalledAfterHours, now: new Date(at) })
       .catch((error) => { warn({ err: error, owner }, "Nous plan activity failed."); return []; });
     const paneOf = (planId: string) => snapshot.plans.find((plan) => plan.id === planId)?.paneId ?? null;
-    const poolOf = (paneId: string | null) => {
-      for (const { sample } of snapshot.rooms) { const pane = sample?.data.find((entry) => entry.id === paneId); if (pane) {
-        // 22/11: a gemini-CLI pane on claude-opus-5-5 draws on Antigravity's Claude pool, not Gemini's (the pool noRoomGuard and wiring read).
-        return quotaPool(pane.terminalRuntimeId, (pane.terminalRuntimeId === "cli:gemini" ? sample!.details[pane.id]?.modelId : null) ?? pane.modelId);
-      } }
-      return null;
-    };
     const avoided = (planId: string) => spend?.mode === "LOW" && spend.avoid.includes(poolOf(paneOf(planId)) ?? "\u0000");
     const due = activity.filter((item) => item.stalled && (!item.lastNudgedAt || at - Date.parse(item.lastNudgedAt) >= Math.max(orders.stalledAfterHours * 3_600_000, UNCHANGED_MS)) && !avoided(item.planId));
     // Hold A: each stalled plan is an item the turn must act on (Space does not take its NOTHING_NEW while one has no act).
@@ -940,6 +961,9 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
         // or a third party, or that only holds Nous's own card, is idle capacity for other work all the same. A pane whose question is open
         // is not (operator 23/11, questionOpen; it supersedes 21/11 12:48Z «Ακόμα 34% γιατί;;», which gave panes behind their own card new work).
         && !openRequests.some((item) => item.pane === input.pane.id) && !work.some((item) => paneOf(item.planId) === input.pane.id) && !questionOpen(input, ctx)
+        // 2026-11-25 REVIEW: handOutSkip passes "card-check"/"waiting-operator", which closeoutSkipReason returns before its task, managed and
+        // worktree checks, so a task-bound pane behind a card got hand-outs; its own blocked plan still leaves it free capacity (21/11 10:55Z).
+        && !paneBoundToWork(input.pane.id, { tasks: snapshot.tasks, executions: snapshot.executions, pendingWorktrees: snapshot.pendingWorktrees })
         // 21/11 (nous_msg:694ff0a9, Alex/Finn idle Opus skipped): the operator typed there last, but once its answer asks nothing and his turn's grace
         // has passed it is free capacity; its other reasons still count.
         && [null, "fresh", "board-waits", "board-check", "card-check", "waiting-operator"].includes(handOutSkip(input)) && !closing(input.pane.id)

@@ -7,6 +7,7 @@ import type { SiteSigninsRepository } from "@space/db";
 import { nonSiteSigninNote, safeSigninInput, signinReadSite } from "../site-signins.js";
 import type { ListPages } from "../site-signin-account.js";
 import { appointmentWriteSchema, writeAppointment, type AppointmentsService } from "../appointments.js";
+import { sendOrderIssue } from "./send-order.js";
 import { CHECKABLE_HINT, CLOSE_EVIDENCE_MIN, OPEN_REQUEST_PREFIX, UI_PROOF_HINT, checkableEvidence, outcomeMessageIds, uiProofMissing, requestDoneArgsSchema, type NousReportedOutcome, type NousRequestDone } from "./request-done.js";
 import type { NousRequests } from "./requests.js";
 import { createPaceCapEmergency, PACE_CAP_EMERGENCY_DEFAULT_HOURS, PACE_CAP_EMERGENCY_MAX_HOURS, paceCapEmergencyText } from "./pace-cap-emergency.js";
@@ -929,7 +930,7 @@ export async function phoneSliderHold(card: { text: string; checked?: readonly s
 }
 const CHANGED_LINE = /^\s*(?:changed|what changed|(?:τι )?(?:αλλαξε|άλλαξε))\s*:/i;
 /**
- * Correction 16/11 a178018e (AWS TECHME card entry asked again, «αφού δεν περνάει η κάρτα, το είχαμε δοκιμάσει πριν!!! άλλαξε κάτι;»): a card on a
+ * Correction 16/11 a178018e (AWS EXAMPLECO card entry asked again, «αφού δεν περνάει η κάρτα, το είχαμε δοκιμάσει πριν!!! άλλαξε κάτι;»): a card on a
  * subject the operator answered "Failed" in 7 days fails the same way; it waits until `checked` names what changed ("changed: …"). Sliders stay with
  * phoneSliderHold (a desktop "Failed" holds nothing there).
  */
@@ -1811,7 +1812,7 @@ const descriptions: Record<NousToolName, string> = {
   space_nous_share_file: "Show the operator one of their Agent Files in the Nous app for a while (72 hours by default, or as long as you set), e.g. a file they must approve while they are only in Nous; a note says what to look at. Sharing it again renews it. The Agent File itself is unchanged; the operator removing it in the app removes only the share.",
   space_nous_shared_files: "The Agent Files shared to the Nous app now: share id, name, note and until when.",
   space_programs: "The registry behind the operator's Nous page \"Startup programs\" (SpaceApp/INTRATRADE as a startup: NVIDIA Inception, AWS Activate, Claude for Startups, ...; "
-    + "the oll4.com projects' grants, prizes, accelerators and investors too, each under its project): every program applied to, under its parent, with the company that applied (INTRATRADE, TOP IMPORTS, TECHME...), status, why, amounts, "
+    + "the oll4.com projects' grants, prizes, accelerators and investors too, each under its project): every program applied to, under its parent, with the company that applied (INTRATRADE, TOP IMPORTS, EXAMPLECO...), status, why, amounts, "
     + "commitments, dates, account, contacts, every mail sent or received, the next action and whether to apply again. list and read it; keep it current with upsert "
     + "(a decision, a new date, a re-apply flag), add_mail (each mail only after reading its thread) and delete (an entry with no source). Helpers read only.",
   space_marketing_stats: "The operator's Nous › Marketing page, your control of marketing (operator 5/11 10:42 BKK): the overall marketing score 0-100 and its 7/30-day "
@@ -2530,6 +2531,9 @@ export function createNousTools(deps: NousToolDeps) {
    * an address) for a site whose sign-in records, or an operator rule naming the site, list only other accounts of that kind is held once
    * an hour with those accounts; a call again naming the same accounts with the same conflicts goes, reworded or not (token audit 21/11: a reworded retry was held again).
    */
+  /** An order to send a named draft to a marketplace, held while the draft breaks a checkable operator rule (send-order.ts). */
+  const sendOrderHold = (owner: string, text: string) => deps.files ? sendOrderIssue(text, async (refs) =>
+    (await deps.files!.decisionFiles(owner, refs)).map((file) => ({ ref: file.ref, text: file.binary ? null : file.text }))) : Promise.resolve(null);
   async function accountCheck(owner: string, text: string): Promise<string | null> {
     const bare = (token: string) => token.toLowerCase().replace(/^u\//, "");
     const kind = (token: string) => token.includes("@") ? "address" : "name";
@@ -3692,6 +3696,8 @@ export function createNousTools(deps: NousToolDeps) {
       if (inFlight) return hold("A queue command is in flight", inFlight);
       const account = await accountCheck(ctx.owner, args.text);
       if (account) return hold("Check the account first", account);
+      const breaks = await sendOrderHold(ctx.owner, args.text);
+      if (breaks) return hold("The text to send breaks an operator rule", breaks);
       const saving = NOUS_SAVE_REQUEST.test(args.text);
       // Daily Nous errors 20/11 (55 corrections in 7 days, most on orders, answers and closes no lesson reached): an order meets its lessons
       // once per pane and 6 h, in its result (orderLessons, never held since 21/11); a save request is the operator's own routine order and goes as it is.
@@ -4536,6 +4542,8 @@ export function createNousTools(deps: NousToolDeps) {
       for (const action of actions) {
         const account = action.operation === "prompt" && typeof action.text === "string" ? await accountCheck(ctx.owner, action.text) : null;
         if (account) return hold("Check the account first", account);
+        const breaks = action.operation === "prompt" && typeof action.text === "string" ? await sendOrderHold(ctx.owner, action.text) : null;
+        if (breaks) return hold("The text to send breaks an operator rule", breaks);
       }
       // Only Nous's own allowed actions still need the Room Agent's confirmation flag; everything else runs unconfirmed.
       const calm = deps.held ? await holdCalmPrompts(deps.held, ctx.owner, room, roomPanes, actions) : { actions, held: [] };
@@ -5467,6 +5475,8 @@ export function createNousTools(deps: NousToolDeps) {
       if (scope) return scope;
       const account = await accountCheck(ctx.owner, args.text);
       if (account) return hold("Check the account first", account);
+      const breaks = await sendOrderHold(ctx.owner, args.text);
+      if (breaks) return hold("The text to send breaks an operator rule", breaks);
       await orderLessons(ctx, [args.text], found.pane.id);
       // Design and Video briefs hold DESIGN_BRIEF_MAX; the other copilots' brief stores hold 2,000.
       const max = found.pane.mode === "DESIGN" || found.pane.mode === "VIDEO" ? DESIGN_BRIEF_MAX : 2_000;
@@ -5840,6 +5850,9 @@ export function createNousTools(deps: NousToolDeps) {
       // R13-12 (29/10 6dffcd55, an Upwork support message: the account signs in with Google and Upwork's mail sat in a connected mailbox):
       // an EXTERNAL ask that names a site carries its mail; its Vault logins and sign-ins stay Nous's (operator 2/11 09:49 BKK): a support or
       // recovery message is refused once with them, and the account holds below use them. The card never shows them.
+      // Its Approve sends the text (maySend approves at once): a PANE_TEXT action meets space_send_to_pane's send-order check.
+      const breaks = action?.type === "PANE_TEXT" ? await sendOrderHold(ctx.owner, action.text) : null;
+      if (breaks) return hold("The text to send breaks an operator rule", breaks.replace("Nothing sent.", "Nothing asked."));
       const texts = [args.title, args.body, action?.type === "PANE_TEXT" ? action.text : ""];
       const workingSignin = await workingSigninHold(deps.siteSignins, ctx.owner, { text: texts.join("\n"), site: args.refs?.site, checked: args.checked });
       if (workingSignin) return hold("The stored sign-in works", workingSignin.replace("Nothing raised.", "Nothing asked."));

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import {
   shortTaskTitle,
   type Pane,
@@ -104,11 +104,20 @@ export function TaskTitleDetails({
       pane.titleSource === "manual")
       ? rawTaskTitle
       : topics.at(-1)?.title || metadata?.nativeTitle || title;
+  const cancelTimer = useCallback(() => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+  }, []);
+  const close = useCallback(() => {
+    cancelTimer();
+    if (detailsRef.current) detailsRef.current.open = false;
+    setOpen(false);
+  }, [cancelTimer]);
   useEffect(() => {
     if (!hasTitle && open) {
       close();
     }
-  }, [hasTitle, open]);
+  }, [hasTitle, open, close]);
   useEffect(() => {
     const handleGlobalDragStart = () => {
       close();
@@ -118,7 +127,7 @@ export function TaskTitleDetails({
       if (timer.current) clearTimeout(timer.current);
       window.removeEventListener("dragstart", handleGlobalDragStart);
     };
-  }, []);
+  }, [close]);
   useLayoutEffect(() => {
     if (!open || !hasTitle) return;
     const popover = popoverRef.current;
@@ -161,15 +170,6 @@ export function TaskTitleDetails({
       popover.hidePopover?.();
     };
   }, [open, hasTitle, preferencesOpen, pane.taskMetadata]);
-  function cancelTimer() {
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = null;
-  }
-  function close() {
-    cancelTimer();
-    if (detailsRef.current) detailsRef.current.open = false;
-    setOpen(false);
-  }
   async function change(action: () => Promise<Pane>) {
     if (pending) return;
     setPending(true);

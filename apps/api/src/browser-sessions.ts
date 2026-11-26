@@ -3402,14 +3402,28 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     // refused: two routes would restart each other's Chrome in turn. A pane's one chosen route also joins a Freelance Copilot's
     // Chrome on that pane route (its platforms keep their own routes), and that Chrome may restart a Chrome of such panes
     // (Leo refused on Dana's account, 16/11): only the route name must match.
+    // Operator 26/11 (Dana stuck behind Emma's CLI Browser on direct): a route conflict with a Freelance Copilot settles itself.
+    // Its Setup route is the account's route; a pane's chosen route moves to it for good (stored, so the two never restart
+    // each other's Chrome again). Two Freelance routes, or two chosen routes, are still refused.
+    const adoptRoute = async (paneId: string, from: FreelanceEgressRoute | null, route: FreelanceEgressRoute) => {
+      await store.setPaneBrowserRoute(paneId, route);
+      await Promise.resolve(store.recordAuditEvent({ actorUserId: null, traceId: makeSpaceId("trace"), action: "browser.route_adopted", targetType: "pane",
+        targetId: paneId, metadata: { from, route } })).catch(() => undefined);
+    };
     let egress: Awaited<ReturnType<typeof egressFor>>;
     let moved: string[] = [];
     try {
       egress = await egressFor(session.paneId);
+      if (egress && !egress.perPlatform && profile?.egressRoute && egress.route !== profile.egressRoute && [...profile.members].some(member => member.egressKey && !member.egressRoute)) {
+        await adoptRoute(session.paneId, egress.route, profile.egressRoute);
+        egress = await egressFor(session.paneId);
+      }
       const chosen = egress && !egress.perPlatform ? egress.route : null;
       if (egress && profile && (profile.egressKey ?? "direct") !== egress.key && !(chosen && profile.egressRoute === chosen)) {
         const route = egress.route;
-        if ([...profile.members].some(member => member.egressKey && member.egressRoute !== route)) throw new SpaceConflictError("BROWSER_ROUTE: another pane uses this browser account on another network route; give both the same route, close the other pane, or use another browser account.");
+        const others = [...profile.members].filter(member => member.egressKey && member.egressRoute !== route);
+        if (others.length && (!egress.perPlatform || others.some(member => !member.egressRoute))) throw new SpaceConflictError("BROWSER_ROUTE: another pane uses this browser account on another network route; give both the same route, close the other pane, or use another browser account.");
+        for (const member of others) await adoptRoute(member.paneId, member.egressRoute, route);
         moved = [...runtimes].filter(([, member]) => member.profile === profile).map(([id]) => id);
         await closeProfile(profile, session.profilePath);
         profile = undefined;

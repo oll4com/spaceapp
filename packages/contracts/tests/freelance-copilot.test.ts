@@ -3,7 +3,7 @@ import {
   cliEgressRouteIdSchema, createPaneInputSchema, defaultFreelanceCopilotPaneMetadata, effectiveFreelanceAutonomy, FREELANCE_CHANNEL_LOGIN_URLS, FREELANCE_CHANNELS, FREELANCE_EGRESS_ROUTES, FREELANCE_SETTINGS_CHANNELS, freelanceChannelEgress,
   freelanceChannelSchema, freelanceChannelSettings,
   freelanceChannelOfSender, freelanceCopilotPaneMetadataSchema, freelanceEgressPac, browserRoutePac,
-  freelanceScamSignals, freelanceUrlMatchesChannel, freelanceWordingIssues, NOTIFICATION_SOURCES, resolveFreelanceCopilotPaneMetadata, roomPaneBatchItemSchema, userSettingsSchema
+  freelanceOffPlatformIssues, freelanceScamSignals, freelanceUrlMatchesChannel, freelanceWordingIssues, NOTIFICATION_SOURCES, resolveFreelanceCopilotPaneMetadata, roomPaneBatchItemSchema, userSettingsSchema
 } from "../src/index.js";
 
 describe("Freelance Copilot contracts", () => {
@@ -48,9 +48,9 @@ describe("Freelance Copilot contracts", () => {
     expect(freelanceCopilotPaneMetadataSchema.safeParse({ version: 1, settings: {}, agent: { runtimeId: "cli:claude" } }).success).toBe(false);
   });
 
-  it("flags off-platform contact, outside links, unqualified claims and bids under the floor before a contract", () => {
-    const base = { channel: "UPWORK" as const, contracted: false };
-    expect(freelanceWordingIssues("I built SpaceApp (https://spaceapp.dev) and https://github.com/oll4com/spaceapp; see https://www.upwork.com/freelancers/x.", base)).toEqual([]);
+  it("flags off-platform contact, outside links, unqualified claims and bids under the floor", () => {
+    const base = { channel: "UPWORK" as const };
+    expect(freelanceWordingIssues("I built SpaceApp, an agent workspace in Node.js and ASP.NET; see https://www.upwork.com/freelancers/x and upwork.com/jobs/~01.", base)).toEqual([]);
     expect(freelanceWordingIssues("Write me at dev@brand.example", base)).toContain("email-address");
     expect(freelanceWordingIssues("Call +66 81 234 5678", base)).toContain("phone-number");
     expect(freelanceWordingIssues("Ping me on Telegram", base)).toContain("messenger");
@@ -61,13 +61,7 @@ describe("Freelance Copilot contracts", () => {
     expect(freelanceWordingIssues("Telegram bot demo: t.me/nickdev_bot", base)).toContain("messenger-link");
     expect(freelanceWordingIssues("Telegram bot, or call me on WhatsApp", base)).toContain("messenger");
     expect(freelanceWordingIssues("Details at https://example.com/x", base)).toContain("outside-link");
-    // The owner's own sites (SPACE_FREELANCE_LINK_HOSTS) match exactly; other hosts of their domain stay outside links.
-    const own = { ...base, ownHosts: ["brand.example", "www.brand.example"] };
-    expect(freelanceWordingIssues("See https://www.brand.example/work and https://gist.github.com/x", own)).toEqual([]);
-    expect(freelanceWordingIssues("See https://www.brand.example/work", base)).toContain("outside-link");
-    expect(freelanceWordingIssues("Demo at https://space.brand.example:4911/x", own)).toContain("outside-link");
     expect(freelanceWordingIssues("A seamless integration", base)).toContain("seamless");
-    expect(freelanceWordingIssues("Ping me on Telegram", { ...base, contracted: true })).toEqual([]);
     expect(freelanceWordingIssues("I built a WhatsApp bot and a Discord bot like this.", base)).toEqual([]);
     expect(freelanceWordingIssues("Ping me on Telegram", base)).toContain("messenger");
     // Operator 14/11: the default floor is $20/h (volume until the first reviews); a pane's own floor still applies.
@@ -75,6 +69,19 @@ describe("Freelance Copilot contracts", () => {
     expect(freelanceWordingIssues("Fixed price, two milestones.", { ...base, bid: { type: "HOURLY", amount: 20 } })).toEqual([]);
     expect(freelanceWordingIssues("Fixed price, two milestones.", { ...base, bid: { type: "HOURLY", amount: 30 }, rateFloorHourly: 35 })).toEqual(["below-rate-floor"]);
     expect(freelanceWordingIssues("Budget $1,500 for 1.2M products and 150 000 calls", { ...base, bid: { type: "FIXED", amount: 20 } })).toEqual([]);
+  });
+
+  it("refuses every off-platform link and contact detail, bare or not (operator 2026-11-26, Upwork Policy Warning)", () => {
+    // The 26/11 reply: LinkedIn, the owner's site, spaceapp.dev and GitHub, before any contract.
+    const warned = "Profile: linkedin.com/in/nikolaos-x, site https://oll4.com, SpaceApp (spaceapp.dev), code github.com/oll4com/spaceapp.";
+    expect(freelanceOffPlatformIssues(warned, "UPWORK")).toEqual(["outside-link"]);
+    for (const link of ["www.loom.com/share/1", "https://npmjs.com/package/x", "gist.github.com/x", "SpaceApp.dev.", "https://space.brand.example:4911/x"])
+      expect(freelanceOffPlatformIssues(`See ${link}`, "UPWORK"), link).toContain("outside-link");
+    expect(freelanceOffPlatformIssues("Write me at dev@gmail.com or +30 694 123 4567", "FIVERR")).toEqual(expect.arrayContaining(["email-address", "phone-number", "outside-link"]));
+    // Only the platform's own pages: an Upwork link is fine on Upwork, not on Fiverr.
+    expect(freelanceOffPlatformIssues("My profile: https://www.upwork.com/freelancers/~01", "UPWORK")).toEqual([]);
+    expect(freelanceOffPlatformIssues("My profile: https://www.upwork.com/freelancers/~01", "FIVERR")).toEqual(["outside-link"]);
+    expect(freelanceOffPlatformIssues("Built with Node.js, Next.js, ASP.NET and Socket.IO; e.g. a CS-Cart store.", "UPWORK")).toEqual([]);
   });
 
   it("recognises scam signals, platform URLs and the platform a mail comes from", () => {

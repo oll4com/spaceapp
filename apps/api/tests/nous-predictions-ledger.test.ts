@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { NEEDS_YOU_GO_NOW, nousAnswerIntent, type NousDecision } from "@space/contracts";
+import { NEEDS_YOU_CHECK_AGAIN, NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY, nousAnswerIntent, type NousDecision } from "@space/contracts";
 import { InMemoryNousRepository } from "@space/db";
 import { cardAnswerMatched, cardTextMatched, cardWordsConfirm, decisionPredictedOption, optionPredictionMatched, predictionAccuracy, writtenPredictionMatched, yesNoPredictionMatched } from "../src/nous/predictions.js";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -146,6 +146,10 @@ describe("decision ledger: option predictions and the copilot rails (R11-3)", ()
     for (const text of ["ελενξε το ξανα", "έλεγξέ το ξανά", "ελεγξε το", "check again", "recheck"]) expect(cardTextMatched(goNowAsk, text), text).toBe(true);
     for (const text of ["δεν το έλεγξα", "έλεγξες;", "check again?", "not checked"]) expect(cardTextMatched(goNowAsk, text), text).toBe(false);
     for (const text of ["έλεγξα", "ελενξε το ξανα", "rechecked"]) expect(cardWordsConfirm("Done", text, null), text).toBe(true);
+    // A "Check again" card (unverified Start now?): the recheck or already-done words are that option; a negation, a question or Go now are misses.
+    const checkAsk = { recommended: NEEDS_YOU_CHECK_AGAIN, options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_CHECK_AGAIN, NEEDS_YOU_LATER_TODAY] };
+    for (const text of ["ελενξε το ξανα", "έλεγξέ το ξανά", "το έχω κάνει ήδη", "already done", NEEDS_YOU_CHECK_AGAIN]) expect(cardTextMatched(checkAsk, text), text).toBe(true);
+    for (const text of ["δεν το έλεγξα", "έλεγξες;", "παμε", NEEDS_YOU_GO_NOW]) expect(cardTextMatched(checkAsk, text), text).toBe(false);
     // Only a Go now card: the same words on another recommended option are not read as it.
     expect(cardTextMatched({ options: ["Θα το κάνω", "Όχι"], recommended: "Θα το κάνω" }, "συνεχισε")).toBe(false);
   });

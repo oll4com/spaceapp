@@ -625,6 +625,12 @@ describe("Nous's cards to the operator", () => {
     expect(baseRateRecommendation(rows.slice(0, 4), { source: "MAIL_COPILOT", kind: "NEEDS_USER", options: ["I handled it", "Ignore it"] })).toBeNull();
     expect(baseRateRecommendation([...rows, row("I handled it")], { source: "MAIL_COPILOT", kind: "NEEDS_USER", options: ["I handled it", "Ignore it"] })).toBeNull();
     expect(baseRateRecommendation(rows, { source: "FREELANCE_COPILOT", kind: "NEEDS_USER", options: ["I handled it", "Ignore it"] })).toBeNull();
+    // Goal 7365014c (ledger 21-26/11): typed orders to act count against "Ignore it"; "Ignore it: <note>" stays that option.
+    const mailOptions = { source: "MAIL_COPILOT", kind: "NEEDS_USER", options: ["I handled it", "Ignore it"] };
+    const typed = ["κανε επιβεβαιωση!!", "συνεχισε την διαδικασία!! δεν καταλαβαινω τι με ρωτας!!", "κανε οσα ζητησε η google!!!", "κανονισε ραντεβου τι με ρωτας? οτι κανεις παντα για τετοια θεματα!!"];
+    const week = [...Array.from({ length: 6 }, () => row("Ignore it")), row("Ignore it: ελενξε το προβλημα και ενημερωσε με!!!")];
+    expect(baseRateRecommendation(week, mailOptions)).toEqual({ option: "Ignore it", answers: 7 });
+    expect(baseRateRecommendation([...week, ...typed.map(row)], mailOptions)).toBeNull();
     // Operator 16/11 21:55 BKK («δεν ειπα ποτε done»): a completion is never predicted, however often it was the answer.
     const done = Array.from({ length: 6 }, () => ({ source: "NEEDS_YOU:NOUS", kind: "NOUS:QUESTION", answer: "Done" }));
     expect(baseRateRecommendation(done, { source: "NOUS", kind: "QUESTION", options: ["Done", "Go now"] })).toBeNull();

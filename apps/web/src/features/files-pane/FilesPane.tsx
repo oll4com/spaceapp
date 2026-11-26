@@ -81,19 +81,22 @@ export function FilesPane({ pane, mobile = false, projectPath }: FilesPaneProps)
   }, [mobile]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const latestRef = useRef({ mode, showHidden, currentPath, loadDirectory });
+  latestRef.current = { mode, showHidden, currentPath, loadDirectory };
 
   // Check admin privileges on mount
   useEffect(() => {
+    const { mode: currentMode, showHidden: currentShowHidden, loadDirectory: load } = latestRef.current;
     api.me()
       .then((res) => {
         const role = res.user?.role;
         const isAdmin = role === "ADMIN" || role === "OPERATOR";
         setIsAdminCapable(isAdmin);
-        if (!isAdmin && mode === "admin") {
+        if (!isAdmin && currentMode === "admin") {
           setMode("user");
         } else if (isAdmin && effectiveProjectPath && !effectiveProjectPath.startsWith(DEFAULT_WORKSPACE)) {
           setMode("admin");
-          void loadDirectory(effectiveProjectPath, "admin", showHidden);
+          void load(effectiveProjectPath, "admin", currentShowHidden);
         }
       })
       .catch(() => {
@@ -159,16 +162,18 @@ export function FilesPane({ pane, mobile = false, projectPath }: FilesPaneProps)
 
   useEffect(() => {
     if (effectiveProjectPath) {
+      const { mode: currentMode, showHidden: currentShowHidden, loadDirectory: load } = latestRef.current;
       const needsAdmin = !effectiveProjectPath.startsWith(DEFAULT_WORKSPACE);
-      if (needsAdmin && mode !== "admin") {
+      if (needsAdmin && currentMode !== "admin") {
         setMode("admin");
       }
-      void loadDirectory(effectiveProjectPath, needsAdmin ? "admin" : mode, showHidden);
+      void load(effectiveProjectPath, needsAdmin ? "admin" : currentMode, currentShowHidden);
     }
   }, [effectiveProjectPath]);
 
   useEffect(() => {
-    void loadDirectory(currentPath, mode, showHidden);
+    const { currentPath: targetPath, loadDirectory: load } = latestRef.current;
+    void load(targetPath, mode, showHidden);
   }, [mode, showHidden]);
 
   useEffect(() => {
@@ -180,7 +185,7 @@ export function FilesPane({ pane, mobile = false, projectPath }: FilesPaneProps)
         if (needsAdmin && mode !== "admin") {
           setMode("admin");
         }
-        void loadDirectory(target, needsAdmin ? "admin" : mode, showHidden);
+        void latestRef.current.loadDirectory(target, needsAdmin ? "admin" : mode, showHidden);
       }
     }
     window.addEventListener("space:files:navigate", handleExternalNavigate);

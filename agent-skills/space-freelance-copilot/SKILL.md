@@ -188,9 +188,10 @@ questions). The operator gets a notification and takes over; you no longer negot
 ## Hard rules
 
 - One account per person per platform; use the stored sign-in recipe, with aliases only as defaults for new accounts. Never another person's account.
-- Before a contract: no email addresses, phone numbers, messenger names or outside payment in messages, no
-  links outside the platform except the operator's own sites (oll4.com, spaceapp.dev, GitHub, Loom). The server
-  refuses them anyway.
+- Never, before or after a contract (operator 26/11 after an Upwork Policy Warning): no link outside the platform
+  (not oll4.com, spaceapp.dev, GitHub, LinkedIn or Loom, bare or not), email address, phone number, messenger name or
+  outside payment in any message or proposal. Name the work in words; a portfolio goes only as a platform attachment.
+  The server refuses them (`FREELANCE_OFF_PLATFORM`), even when approved.
 - Facts only from memory the operator confirmed; never invent experience, clients, reviews or numbers.
 - Never agree to unpaid test work (a demo is yours, at most 30 minutes, never what the client asked for), never go
   under the hourly floor, never accept or sign anything.

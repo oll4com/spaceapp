@@ -122,6 +122,8 @@ export function FirstSetupWizard({ client, onOpenChange, onOpenAgentLogin, onFin
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const finishedRef = useRef(false);
+  const onFinishedRef = useRef(onFinished);
+  onFinishedRef.current = onFinished;
   const [captureActive, setCaptureActive] = useState(false);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const priorFocusRef = useRef<HTMLElement | null>(null);
@@ -170,6 +172,31 @@ export function FirstSetupWizard({ client, onOpenChange, onOpenAgentLogin, onFin
     return withBrowserChecks(current, current.requestedFeatureIds, () => client.createSetupPlan(current.revision!));
   }
 
+  const refresh = useCallback(async (runId: string, currentPlan: PlanView) => {
+    try {
+      const current = await client.getSetupRun(runId);
+      setSnapshot(current);
+      if (current.run.status === "READY") {
+        let result: { isComplete: boolean };
+        try { result = await client.finishSetupRun(current.run, currentPlan); }
+        catch (cause) {
+          // Checks that expired before finish (a closed tab, a long pause) are checked again in this run (review 2026-10-21 #8).
+          const failure = cause as { code?: unknown; details?: { missingTaskIds?: unknown } };
+          const expired = failure.code === "SETUP_CHECKS_EXPIRED" && Array.isArray(failure.details?.missingTaskIds)
+            ? failure.details.missingTaskIds.filter((id): id is string => typeof id === "string") : [];
+          if (!expired.length) throw cause;
+          const revalidated = await client.retrySetupRun(current.run.id, expired, current.run.revision);
+          setSnapshot({ ...current, run: revalidated.run });
+          return;
+        }
+        if (result.isComplete) {
+          setConfirmed(true); setScreen("ready");
+          if (!finishedRef.current) { finishedRef.current = true; void (async () => onFinishedRef.current?.())().catch(() => undefined); }
+        }
+      }
+    } catch (cause) { setError(errorMessage(cause)); }
+  }, [client]);
+
   useEffect(() => {
     let active = true;
     void Promise.all([client.getSetupCatalog(), client.getSetupDraft(), client.getCurrentSetup()]).then(([nextCatalog, nextDraft, current]) => {
@@ -189,7 +216,7 @@ export function FirstSetupWizard({ client, onOpenChange, onOpenAgentLogin, onFin
       }
     }).catch((cause) => { if (active) setError(errorMessage(cause)); });
     return () => { active = false; };
-  }, [client]);
+  }, [client, refresh]);
 
   useEffect(() => {
     if (client.getSetupFreeModels) {
@@ -426,31 +453,6 @@ export function FirstSetupWizard({ client, onOpenChange, onOpenAgentLogin, onFin
     finally { setPending(false); }
   }
 
-  async function refresh(runId: string, currentPlan: PlanView) {
-    try {
-      const current = await client.getSetupRun(runId);
-      setSnapshot(current);
-      if (current.run.status === "READY") {
-        let result: { isComplete: boolean };
-        try { result = await client.finishSetupRun(current.run, currentPlan); }
-        catch (cause) {
-          // Checks that expired before finish (a closed tab, a long pause) are checked again in this run (review 2026-10-21 #8).
-          const failure = cause as { code?: unknown; details?: { missingTaskIds?: unknown } };
-          const expired = failure.code === "SETUP_CHECKS_EXPIRED" && Array.isArray(failure.details?.missingTaskIds)
-            ? failure.details.missingTaskIds.filter((id): id is string => typeof id === "string") : [];
-          if (!expired.length) throw cause;
-          const revalidated = await client.retrySetupRun(current.run.id, expired, current.run.revision);
-          setSnapshot({ ...current, run: revalidated.run });
-          return;
-        }
-        if (result.isComplete) {
-          setConfirmed(true); setScreen("ready");
-          if (!finishedRef.current) { finishedRef.current = true; void (async () => onFinished?.())().catch(() => undefined); }
-        }
-      }
-    } catch (cause) { setError(errorMessage(cause)); }
-  }
-
   async function retryFailed() {
     if (!snapshot || !plan || pending || snapshot.run.status !== "FAILED") return;
     const failedTasks = snapshot.tasks.filter((task) => task.status === "NEEDS_ATTENTION" &&
@@ -497,11 +499,14 @@ export function FirstSetupWizard({ client, onOpenChange, onOpenAgentLogin, onFin
     finally { setPending(false); }
   }
 
+  const snapshotRunId = snapshot?.run.id ?? null;
+  const snapshotRunStatus = snapshot?.run.status ?? null;
+
   useEffect(() => {
-    if (screen !== "setting-up" || !snapshot || snapshot.run.status !== "RUNNING" || !plan) return;
-    const timer = window.setInterval(() => { void refresh(snapshot.run.id, plan); }, 2000);
+    if (screen !== "setting-up" || snapshotRunId === null || snapshotRunStatus !== "RUNNING" || !plan) return;
+    const timer = window.setInterval(() => { void refresh(snapshotRunId, plan); }, 2000);
     return () => window.clearInterval(timer);
-  }, [screen, snapshot?.run.id, snapshot?.run.status, plan]);
+  }, [screen, snapshotRunId, snapshotRunStatus, plan, refresh]);
 
   return <div className="first-setup-overlay" data-room-theme={roomTheme} data-color-mode={colorMode}>
     <section ref={dialogRef} className="first-setup" role="dialog" aria-modal="true" aria-labelledby="first-setup-title" onKeyDown={keepFocusInside}>

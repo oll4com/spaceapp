@@ -3,6 +3,7 @@ import { artifactIdsIn, heldUnderAllowance, NEEDS_YOU_COMPLETION_OPTION, NEEDS_Y
 import { isBrowserPane } from "../pane-guards.js";
 import { heldForNousNote } from "./copilot-questions.js";
 import type { MemoryEntryLite } from "./operator-facts.js";
+import { cardTextMatched } from "./predictions.js";
 import { inSlices } from "./retrieval.js";
 
 /**
@@ -227,8 +228,10 @@ export function ledgerRecommendation(item: { text: string; question?: string; op
  */
 export function baseRateRecommendation(rows: Array<{ source: string; kind: string; answer: string }>, card: { source: string; kind: string; options: readonly string[] }):
   { option: string; answers: number } | null {
-  const answers = rows.filter((row) => row.source === `NEEDS_YOU:${card.source}` && row.kind === `${card.source}:${card.kind}`)
-    .map((row) => row.answer.split(": ")[0]!.trim()).filter((answer) => card.options.includes(answer));
+  // Goal 7365014c (ledger 21-26/11: 4 of the last 11 Mail flag answers were typed orders to act, «κανε οσα ζητησε η google», yet "Ignore it"
+  // stayed at 100 %): every answer of the kind counts, and it agrees with the option only as the ledger scores it (cardTextMatched).
+  const all = rows.filter((row) => row.source === `NEEDS_YOU:${card.source}` && row.kind === `${card.source}:${card.kind}`).map((row) => row.answer.trim());
+  const answers = all.map((answer) => answer.split(": ")[0]!.trim()).filter((answer) => card.options.includes(answer));
   // 2/11 rule 4 (operator: a .gr domain flag said «Recommended "I handled it" by your last 6 answers»): a Mail Copilot flag learns from 2 answers.
   const mailFlag = card.source === "MAIL_COPILOT" && card.kind === "NEEDS_USER";
   if (answers.length < (mailFlag ? 2 : 5)) return null;
@@ -238,7 +241,8 @@ export function baseRateRecommendation(rows: Array<{ source: string; kind: strin
   // Operator 16/11 21:55 BKK («δεν ειπα ποτε done»): a completion ("Done", "Signed in") is never predicted, the operator says it; the mail flag's
   // "I handled it" stays, since it routes the flag to Nous rather than closing anything (2/11 rule 4).
   if (!mailFlag && NEEDS_YOU_COMPLETION_OPTION.test(option)) return null;
-  return count / answers.length >= 0.8 ? { option, answers: answers.length } : null;
+  const agree = all.filter((answer) => cardTextMatched({ recommended: option, options: card.options }, answer)).length;
+  return count / answers.length >= 0.8 && agree / all.length >= 0.8 ? { option, answers: all.length } : null;
 }
 
 const RULE_STOP_WORDS = new Set(["the", "and", "for", "with", "that", "this", "what", "which", "should", "would", "from", "your", "have", "will", "into", "them", "they",

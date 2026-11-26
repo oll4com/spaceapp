@@ -29,11 +29,12 @@ const ask = thread("ask", { title: "Pick a colour", waitingFor: "OPERATOR", tab:
 const done = thread("done", { title: "Rename the tab", unseen: true, tab: "DONE", news: "REPORT", report: "Renamed\nChecked: the tab reads Updates on dev", refs: { where: "dev", ticketIds: ["q-1"] } });
 const fresh = thread("fresh", { title: "Tests passed", unseen: true, tab: "UPDATES", news: "UPDATE" });
 const alert = thread("alert", { title: "Deploy failed", origin: "SYSTEM", originLabel: "System", unseen: true, tab: "UPDATES", news: "ALERT" });
+const quiet = thread("quiet", { title: "Mail from a shop", origin: "COPILOT", originLabel: "Mail Copilot", unseen: true, priority: "INFO", tab: "UPDATES", news: "ALERT" });
 // An open request with a plan and unread news: under Requests, and under Updates too until it is seen (plan JD8EbQgQdRls §3).
 const working = thread("working", { title: "Build the inbox", waitingFor: "NOUS", progress: 40, now: "Step 2 · 40%: Step 2 is live", refs: { planId: "clipboard:p1" }, unseen: true, openRequest: true,
   tab: "REQUESTS", news: "PROGRESS", requestNews: true });
 const closed = thread("closed", { title: "Old report", closedAt: at, closedBy: "SOURCE" });
-const page: InboxPage = { threads: [ask, done, fresh, alert, working, closed], cursor: "older", summary: { operator: 1, unseen: 3, working: 1, tabs: { needs: 1, done: 1, updates: 3, requests: 1 } }, badge: 5, attention: true };
+const page: InboxPage = { threads: [ask, done, fresh, alert, quiet, working, closed], cursor: "older", summary: { operator: 1, unseen: 3, working: 1, tabs: { needs: 1, done: 1, updates: 3, requests: 1 } }, badge: 5, attention: true };
 const titles = () => [...document.querySelectorAll("article.inbox-thread")].map((card) => card.getAttribute("aria-label"));
 const openTab = (name: RegExp) => fireEvent.click(within(screen.getByRole("group", { name: "Inbox tabs" })).getByRole("button", { name }));
 
@@ -79,16 +80,20 @@ describe("Nous › «Εισερχόμενα» v2 in four tabs (plans clipboard:a
     fireEvent.click(within(report).getByRole("button", { name: "Seen it" }));
     await waitFor(() => expect(apiMock.actInbox).toHaveBeenCalledWith("inbox_thread:done", { verb: "DONE" }));
 
-    // Updates: the request's news first, Nous's updates, the read ones, then the other alerts in one fold; «Seen all» leaves Done alone.
+    // Updates: the request's news first, then every counted update or alert, the read ones, then the uncounted (INFO) alerts in one fold; «Seen all» leaves Done alone.
+    // Operator 26/11 20:38 BKK: the chip (3) is the unseen cards above «Earlier updates», never one card and the rest folded.
     openTab(/^Updates/);
-    expect(titles()).toEqual(["Build the inbox", "Tests passed", "Old report", "Deploy failed"]);
+    expect(titles()).toEqual(["Build the inbox", "Tests passed", "Deploy failed", "Old report", "Mail from a shop"]);
+    const top = [...document.querySelectorAll(".nous-inbox > article.inbox-thread")].map((card) => card.getAttribute("aria-label"));
+    expect(top.slice(0, top.indexOf("Old report"))).toEqual(["Build the inbox", "Tests passed", "Deploy failed"]);
+    expect(top.indexOf("Old report")).toBe(page.summary.tabs!.updates);
     const fold = document.querySelector("details.nous-inbox-alerts")!;
     expect(fold.querySelector("summary")!.textContent).toBe("Alerts from copilots and the system (1)");
-    expect(within(fold as HTMLElement).getByRole("article", { name: "Deploy failed" })).toBeTruthy();
+    expect(within(fold as HTMLElement).getByRole("article", { name: "Mail from a shop" })).toBeTruthy();
     fireEvent.click(within(screen.getByRole("article", { name: "Tests passed" })).getByRole("button", { name: "Done" }));
     await waitFor(() => expect(apiMock.actInbox).toHaveBeenCalledWith("inbox_thread:fresh", { verb: "DONE" }));
     fireEvent.click(screen.getByRole("button", { name: "Seen all" }));
-    await waitFor(() => expect(apiMock.inboxDoneAll).toHaveBeenCalledWith(["inbox_thread:working", "inbox_thread:fresh", "inbox_thread:alert"]));
+    await waitFor(() => expect(apiMock.inboxDoneAll).toHaveBeenCalledWith(["inbox_thread:working", "inbox_thread:fresh", "inbox_thread:alert", "inbox_thread:quiet"]));
     fireEvent.click(screen.getByRole("button", { name: "Load earlier" }));
     expect(await screen.findByRole("article", { name: "Older report" })).toBeTruthy();
     expect(apiMock.inbox).toHaveBeenCalledWith({ cursor: "older", tab: "UPDATES" });
@@ -170,6 +175,15 @@ describe("Nous › «Εισερχόμενα» v2 in four tabs (plans clipboard:a
     openTab(/^Done/);
     expect(screen.getByText("You’re up to date")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Seen all" })).toBeNull();
+  });
+
+  it("shows an ask's files as chips when the dock has not loaded its decision (nous_msg:acb1aa48)", async () => {
+    const files = thread("files", { title: "Approve the outreach", waitingFor: "OPERATOR", tab: "NEEDS", openAsks: [event("d", { type: "ASK", title: "Send the 12 notes?", ref: "nous_decision:d",
+      ask: { open: true, forOperator: true, kind: "APPROVAL", options: [], files: ["/home/me/agent-workspace/outreach-12-FINAL.md"] } })] });
+    apiMock.inbox.mockResolvedValue({ ...page, threads: [files], summary: { ...page.summary, tabs: { needs: 1, done: 0, updates: 0, requests: 0 } } });
+    render(<Harness />);
+    const card = await screen.findByRole("article", { name: "Approve the outreach" });
+    expect(within(card).getByRole("button", { name: "outreach-12-FINAL.md" }).getAttribute("data-file-ref")).toBe("/home/me/agent-workspace/outreach-12-FINAL.md");
   });
 
   it("opens when the bell asks for the inbox", async () => {

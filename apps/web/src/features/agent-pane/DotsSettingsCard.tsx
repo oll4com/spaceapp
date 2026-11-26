@@ -98,16 +98,20 @@ export function DotsSettingsCard({ roomId, isAdmin, request = null }: { roomId: 
     void api.dotModels().then((value) => { if (current) setChoices(value); }).catch(() => { if (current) setChoices({ providers: [] }); });
     return () => { current = false; };
   }, [retry]);
+  const requestNonce = request?.nonce ?? null;
+  const requestRef = useRef(request);
+  requestRef.current = request;
   useEffect(() => {
-    if (!request || (request !== freshRequest && !claimSettingsRequest("dots-card", request.nonce))) return;
-    if (request.dotId) setSelectedId(request.dotId);
-    const target = request.section ? tabForSection[request.section] : undefined;
+    const currentRequest = requestRef.current;
+    if (requestNonce === null || !currentRequest || (currentRequest !== freshRequest && !claimSettingsRequest("dots-card", requestNonce))) return;
+    if (currentRequest.dotId) setSelectedId(currentRequest.dotId);
+    const target = currentRequest.section ? tabForSection[currentRequest.section] : undefined;
     if (target) setTab(target);
-    const part = partForRequest(request);
+    const part = partForRequest(currentRequest);
     if (part) setOpenParts((current) => new Set(current).add(part));
-    const ref = request.section === "accounts" ? accountsRef : request.section === "channels" ? channelsRef : request.section === "proactive" ? proactiveRef : null;
+    const ref = currentRequest.section === "accounts" ? accountsRef : currentRequest.section === "channels" ? channelsRef : currentRequest.section === "proactive" ? proactiveRef : null;
     window.setTimeout(() => ref?.current?.scrollIntoView?.({ block: "start" }), 0);
-  }, [request?.nonce]);
+  }, [freshRequest, requestNonce]);
   // Whether "Also send to Slack" can work: Space has a Slack app and the user linked a Slack account.
   const [channels, setChannels] = useState<ChannelsStatus | null>(null);
   const [usage, setUsage] = useState<DotProactiveUsage | "unavailable" | null>(null);
@@ -120,19 +124,20 @@ export function DotsSettingsCard({ roomId, isAdmin, request = null }: { roomId: 
     return () => { current = false; };
   }, [messagesOpen]);
   const selected = dots?.find((dot) => dot.dotId === selectedId) ?? dots?.[0] ?? null;
+  const selectedDotId = selected?.dotId ?? null;
   useEffect(() => {
     let current = true;
     setSessionId(null);
-    if (!selected) return;
+    if (!selectedDotId) return;
     // New reminders run in the Dot's latest conversation in the current room (never a proof or another room's).
     if (!roomId) return;
-    void api.dotCollection(selected.dotId, "sessions").then((result) => {
-      if (current && result.dotId === selected.dotId) {
-        setSessionId(result.items.find((item) => item.dotId === selected.dotId && item.roomId === roomId)?.sessionId ?? null);
+    void api.dotCollection(selectedDotId, "sessions").then((result) => {
+      if (current && result.dotId === selectedDotId) {
+        setSessionId(result.items.find((item) => item.dotId === selectedDotId && item.roomId === roomId)?.sessionId ?? null);
       }
     }).catch(() => undefined);
     return () => { current = false; };
-  }, [selected?.dotId, roomId]);
+  }, [selectedDotId, roomId]);
   async function save(patch: UpdateDotUserSettings) {
     if (saving) return;
     setSaving(true); setNotice(null);

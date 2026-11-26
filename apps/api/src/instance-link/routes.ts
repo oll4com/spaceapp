@@ -218,7 +218,9 @@ export function registerInstanceLinks(app: FastifyInstance, options: {
     async request(owner, ref, method, path, body, headers) {
       // Step 9c: a superior's answer to a decision there carries this SpaceApp's person's signature: its Nous never sends one.
       const rule = linkRoute(method, path);
-      if (!rule || rule.superiorSignature) throw new InstanceLinkError(`A linked SpaceApp answers only ${LINK_REMOTE_ROUTES.join(", ")}.`);
+      // Daily Nous errors 26/11 11:15Z: a route the link does not serve is a call to change, not a link failure.
+      if (rule?.superiorSignature) throw new LinkNotSentError(`Not sent: ${method} ${path} carries the linked SpaceApp's own person's signature; only they answer it there.`);
+      if (!rule) throw new LinkNotSentError(`Not sent: ${method} ${path} is not a route a linked SpaceApp serves. It answers only ${LINK_REMOTE_ROUTES.join(", ")}; call one of those instead.`);
       const link = await linkOf(owner, ref);
       if (method === "POST" && path.split("?")[0] === "/api/version-sync") {
         const rawObj = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : null;

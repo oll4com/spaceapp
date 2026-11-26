@@ -176,7 +176,7 @@ describe("finished panes (close-out candidates)", () => {
 function fixture(options: { panes?: PaneState[]; plans?: ClipboardItem[]; tasks?: TaskItem[]; reports?: PaneReport[]; summaries?: NousPaneSummaryRow[]; checks?: NousPaneCheck[]; notifications?: SpaceNotification[]; standing?: StandingOrdersDeps["standing"]; away?: boolean; planMap?: StandingOrdersDeps["planMap"];
   browsers?: Map<string, CloseoutBrowser> | null; utilizationLow?: StandingOrdersDeps["utilizationLow"]; reviewLoad?: (owner: string) => Promise<string | null>;
   spend?: Awaited<ReturnType<NonNullable<StandingOrdersDeps["spend"]>>>; requests?: StandingOrdersDeps["requests"]; executions?: Array<{ planId: string; paneId: string }>;
-  closePane?: StandingOrdersDeps["closePane"]; lastWorkReport?: StandingOrdersDeps["lastWorkReport"]; prompts?: ReadonlySet<string> | null; parked?: ClipboardItem[] } = {}) {
+  closePane?: StandingOrdersDeps["closePane"]; saveMemory?: StandingOrdersDeps["saveMemory"]; lastWorkReport?: StandingOrdersDeps["lastWorkReport"]; prompts?: ReadonlySet<string> | null; parked?: ClipboardItem[] } = {}) {
   let clock = T0;
   const closeouts = new InMemoryNousPaneCloseoutsRepository();
   const marks = new InMemoryNousPlanMarksRepository();
@@ -194,6 +194,7 @@ function fixture(options: { panes?: PaneState[]; plans?: ClipboardItem[]; tasks?
     collect,
     reportsSince: async (_owner, paneId, since) => state.reports.filter((entry) => entry.paneId === paneId && entry.at >= since),
     ...(options.planMap ? { planMap: options.planMap } : {}), ...(options.parked ? { parked: async () => options.parked! } : {}), ...(options.closePane ? { closePane: options.closePane } : {}),
+    ...(options.saveMemory ? { saveMemory: options.saveMemory } : {}),
     ...(options.lastWorkReport ? { lastWorkReport: options.lastWorkReport } : {}),
     lowToken: async () => state.lowToken, standing, notice, paneRound: async () => null, away: async () => state.away, now: () => clock,
     ...(options.utilizationLow ? { utilizationLow: options.utilizationLow } : {}),
@@ -759,6 +760,26 @@ describe("the standing orders tick", () => {
     f.advance(40 * MIN);
     await f.orders.tickOwner(owner);
     expect(closePane).toHaveBeenCalledWith(owner, room.id, andy.id);
+  });
+
+  it("2026-11-26 REVIEW (19 idle panes, Gemini panes refuse prompts): a finished pane on a pool with no room is saved by Space and closed, never asked a save it cannot run", async () => {
+    const closePane = vi.fn<NonNullable<StandingOrdersDeps["closePane"]>>(async () => true);
+    const saveMemory = vi.fn<NonNullable<StandingOrdersDeps["saveMemory"]>>(async () => "space_memory:aa11bb22cc33");
+    const f = fixture({ closePane, saveMemory, spend: { mode: "NORMAL", avoid: [], refused: ["claude"] }, reports: [report(andy.id, iso(T0 - 40 * MIN), "Fixed the export.")] });
+    expect(await f.orders.tickOwner(owner)).toMatchObject({ paneLines: 0, turn: null });
+    expect(saveMemory).toHaveBeenCalledWith(owner, "Andy closed by Space: claude had no room", expect.stringContaining("TURN_END: Fixed the export."));
+    expect(closePane).toHaveBeenCalledWith(owner, room.id, andy.id);
+    expect((await f.closeouts.list(owner))[0]).toMatchObject({ state: "CLOSED", verifiedMemoryId: "space_memory:aa11bb22cc33", reason: "saved and closed by Space: its claude pool had no room" });
+    // Its pool has room: the save is asked of the pane as before, and Space saves nothing itself.
+    const roomy = fixture({ closePane, saveMemory, spend: { mode: "NORMAL", avoid: [], refused: ["codex"] } });
+    saveMemory.mockClear();
+    await roomy.orders.tickOwner(owner);
+    expect(saveMemory).not.toHaveBeenCalled();
+    expect(roomy.finished()).toContain(`save not asked yet → send it exactly "${NOUS_SAVE_TEXT}"`);
+    // Open work (its newest report is progress): no save and no close, whatever the pool.
+    const open = fixture({ closePane, saveMemory, spend: { mode: "NORMAL", avoid: [], refused: ["claude"] }, lastWorkReport: async () => ({ status: "PROGRESS", at: iso(T0 - 40 * MIN), summary: "halfway" }) });
+    await open.orders.tickOwner(owner);
+    expect(saveMemory).not.toHaveBeenCalled();
   });
 
   it("closes a pane whose save it verified itself, with no turn; a refused close, or work after the save, goes back to Nous (plan qH5emwVaV6yO step 10)", async () => {
@@ -1422,6 +1443,32 @@ describe("2026-11-25 REVIEW: protect task-bound panes and pending deliverables f
     await orders.tickOwner(owner);
     // Only cleanSweep receives a sweep; none of the bound or dirty panes receives one.
     expect(dispatch.mock.calls).toEqual([[owner, room.id, cleanSweep.id, "Sweep a"]]);
+  });
+
+  it("hands no work to a task-bound or dirty-worktree pane behind a card (closeoutSkipReason answers card-check before its task check)", async () => {
+    const farOnly = task(andy.id, { kind: "DAILY", nextRunAt: iso(T0 + 5 * 60 * MIN) });
+    // A Nous card makes closeoutSkipReason answer "card-check" before its task check: the hand-out must still skip the bound panes.
+    const bob = cli("pane:bob00001", "Bob"), cody = cli("pane:cody0001", "Cody");
+    const cardOn = (pane: Pane) => ({ ...card(iso(T0 - 50 * MIN)), id: `notification:${pane.id}`, paneId: pane.id, dedupeKey: `nous:pane:${pane.id}` }) as unknown as SpaceNotification;
+    const dispatch = vi.fn<NonNullable<StandingOrdersDeps["dispatch"]>>(async () => true);
+    const paneStates = [andy, bob, cody].map((pane) => ({ pane, state: "idle", since: iso(T0 - 50 * MIN) }));
+    const details = Object.fromEntries(paneStates.map((entry) => [entry.pane.id, { status: entry.state, since: entry.since, source: "native", modelId: "claude-opus-5-5" }]));
+    const orders = createStandingOrders({
+      closeouts: new InMemoryNousPaneCloseoutsRepository(), marks: new InMemoryNousPlanMarksRepository(),
+      settings: async () => nousSettingsSchema.parse({ enabled: true, standingOrders: { dailyReview: false, closeFinishedPanes: false } }),
+      owners: async () => [owner],
+      collect: async () => ({
+        rooms: [{ room, sample: { data: paneStates.map((entry) => entry.pane), sampledAt: iso(T0), activity: Object.fromEntries(paneStates.map((entry) => [entry.pane.id, entry.state])) as never, details: details as never } }],
+        reports: [], notifications: [cardOn(andy), cardOn(bob), cardOn(cody)], decisions: [], copilotItems: [], plans: [], checks: [],
+        tasks: [farOnly], executions: [], summaries: [], pendingWorktrees: new Set([bob.id])
+      }),
+      requests: { zone: async () => "UTC", open: async () => [], progress: async () => {} },
+      utilizationLow: async () => "Utilization stayed under the 90% target for 15 min.",
+      dispatch, backlog: async () => [{ key: "queue:1", text: "Fix one" }, { key: "queue:2", text: "Fix two" }],
+      reportsSince: async () => [], standing: async () => "STARTED", notice: async () => {}, now: () => T0
+    });
+    await orders.tickOwner(owner);
+    expect(dispatch.mock.calls).toEqual([[owner, room.id, cody.id, "Fix one"]]);
   });
 
   it("detects dirty files and unmerged commits in managed worktrees via panePendingWorktrees without flagging clean or root-repo panes", async () => {

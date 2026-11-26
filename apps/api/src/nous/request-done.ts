@@ -99,8 +99,8 @@ const PLACEHOLDER_WORD = /(?<![\p{L}\d_])(?:TODO|TBD|XXX+)(?![\p{L}\d_])/u;
 const PLACEHOLDER_HANDLED = /filled|replaced|removed|resolved|fixed|cleared|(?<!\p{L})(?:no|none|without|δεν|χωρις|κανενα|καμια)(?!\p{L})|συμπληρω(?:σα|θηκ|μεν)|αντικατ|αφαιρ|διορθ/iu;
 // The step left to the operator: «μένει/πρέπει να (το) στείλεις», "left for you to", "you still need to send" (negated ones are dropped by firstClaim).
 const LEFT_TO_OPERATOR = /(?<!\p{L})(?:μενει|μενουν|πρεπει|χρειαζεται) να (?:(?:τη|την|το|τα|τις|τους|τον) )?\p{L}{2,}(?:εις|ετε)(?!\p{L})|\b(?:left|remains?) (?:for|to) (?:you|the operator)\b|\byou (?:still )?(?:need|have) to (?:send|fill|confirm|submit|post|add|complete)\b|\b(?:send|submit|post) it yourself\b|\bfor you to (?:send|fill|confirm|submit|post|complete)\b/gu;
-/** Files a Done names: Agent Files, Mail reviews and absolute text paths (files.ts decisionFiles reads them inside its allowed roots only). */
-const LINKED_FILE = /\b(?:artifact|mailrev):[A-Za-z0-9_-]{6,}|(?<![\w/.-])\/(?:home|srv)\/[\w./-]+\.(?:md|txt|html?|eml)\b/g;
+/** Files a Done names: Agent Files, Mail reviews and absolute or ~/agent-workspace text paths (files.ts decisionFiles reads them inside its allowed roots only). */
+export const LINKED_FILE = /\b(?:artifact|mailrev):[A-Za-z0-9_-]{6,}|(?<![\w/.-])(?:\/(?:home|srv)\/|~\/agent-workspace\/)[\w./-]+\.(?:md|txt|html?|eml)\b/g;
 /** The first sentence of `text` with an unfilled placeholder or, outside a file, a step left to the operator; null when it has none. */
 export function unfinishedLine(text: string, file = false): string | null {
   const plain = (value: string) => value.normalize("NFD").replace(/\p{M}/gu, "");

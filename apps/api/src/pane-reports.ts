@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { artifactIdsIn, NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY, NEEDS_YOU_QUESTION_MORE, NEEDS_YOU_START_NOW, needsYouTargetSchema, type NotificationRaiseInput, type Pane, type Room, type RoomAgentEvent, type SpaceNotification } from "@space/contracts";
+import { artifactIdsIn, NEEDS_YOU_CHECK_AGAIN, NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY, NEEDS_YOU_QUESTION_MORE, NEEDS_YOU_START_NOW, needsYouTargetSchema, type NotificationRaiseInput, type Pane, type Room, type RoomAgentEvent, type SpaceNotification } from "@space/contracts";
 import { redactMemoryText, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import type { NewPaneReport, PaneReport, PaneReportStatus, PaneReportsRepository } from "@space/db";
 import type { NotificationService } from "./notifications/service.js";
@@ -366,12 +366,12 @@ export function createPaneReports(deps: PaneReportsDeps) {
         // Goal 7365014c (Nous 13/11): a hands card for a page asks whether to start now, never "when will you"; the ask itself stays in the body.
         const hands = !given.length && /^(?:url|tab):/.test(target ?? "");
         // 2026-11-25 REVIEW: predict "Go now" on a "Start now?" card only when a live browser surface proves the page is open and unstarted;
-        // otherwise mark recommendedDefault so an unverified fallback never scores as a prediction miss.
+        // otherwise the page may be done already or need a re-check (ledger 24/11 «ελενξε το ξανα»): predict "Check again".
         const verifiedLive = hands && Boolean(deps.pageLive)
           ? await deps.pageLive!(owner, pane, target, `${summary}\n${needs ?? ""}`).catch(() => false)
           : false;
-        const options = given.length ? given : hands ? [NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY] : [NEEDS_YOU_GO_NOW, "Failed", "Need links/steps"];
-        const recommended = given.length ? (input.recommended ? cleanText(input.recommended, 80) : null) : NEEDS_YOU_GO_NOW;
+        const options = given.length ? given : hands ? [NEEDS_YOU_GO_NOW, ...(verifiedLive ? [] : [NEEDS_YOU_CHECK_AGAIN]), NEEDS_YOU_LATER_TODAY] : [NEEDS_YOU_GO_NOW, "Failed", "Need links/steps"];
+        const recommended = given.length ? (input.recommended ? cleanText(input.recommended, 80) : null) : hands && !verifiedLive ? NEEDS_YOU_CHECK_AGAIN : NEEDS_YOU_GO_NOW;
         const question = hands ? NEEDS_YOU_START_NOW : askQuestion(needs ?? summary);
         // The same target asked again within 24 h of its alert is the open card refreshed, not a new ask: no second alert, counted once.
         const open = target ? await deps.openCard?.(owner, agentNeedsYouKey(pane.id)).catch(() => null) : null;
@@ -386,7 +386,7 @@ export function createPaneReports(deps: PaneReportsDeps) {
           link: { roomId: room.id, paneId: pane.id, ...(target ? { target } : {}) }, dedupeKey: agentNeedsYouKey(pane.id), telegram: null,
           // The question the operator answers from the card; the answer becomes this pane's next prompt.
           // `checked` structured too, like Nous's cards (payload.checked), so a check on the card reads the list, not the body text.
-          payload: { alertAt: repeat ? priorAlert : report.at, ...(hands && !verifiedLive ? { recommendedDefault: true } : {}), ...(checked.length ? { checked } : {}), ...(input.files ? { files: input.files } : {}), ...(report.planId ? { planId: report.planId } : {}), ...(dropped.length ? { answeredSince: dropped } : {}), ask: { question, ...(options.length ? { options } : {}),
+          payload: { alertAt: repeat ? priorAlert : report.at, ...(checked.length ? { checked } : {}), ...(input.files ? { files: input.files } : {}), ...(report.planId ? { planId: report.planId } : {}), ...(dropped.length ? { answeredSince: dropped } : {}), ask: { question, ...(options.length ? { options } : {}),
             ...(recommended && options.includes(recommended) ? { recommended } : {}), answer: { kind: "PANE" } } } }, { realert: !repeat })
           .catch((error: unknown) => deps.log?.warn(error, "The needs-you notification could not be raised."));
       } else if (cleared || ((report.status === "DONE" || report.status === "FAILED") && await namesOpenAsk(owner, pane.id, report) && await seenCard(owner, pane.id))) {

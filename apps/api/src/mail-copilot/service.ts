@@ -313,10 +313,13 @@ function habitLevel(kind: MailHabitLevel["level"], key: string, rows: readonly M
   return { level: kind, key, decisions, actions };
 }
 
+const NEVER_IN_ONE_MAIL = ["INTRATRADE", "EXAMPLECO"];
 export function createMailCopilotService(options: MailCopilotServiceOptions) {
   const now = options.now ?? (() => new Date().toISOString());
   const { repository } = options;
   const starting = new Map<string, Promise<boolean>>();
+  /** The hour (`YYYY-MM-DDTHH`, owner's zone) of each pane's last hourly organize pass; a restart only runs one pass early. */
+  const hourlyPasses = new Map<string, string>();
   /** Per pane: kicks tried in the current stall, when the last went, whether Nous was told. */
   const stalls = new Map<string, { attempts: number; at: number; told: boolean }>();
   /** B (2/11): drafts and policy blocks Nous was told of, and each thread's last block. shortcut: in memory, an API restart tells each once more. */
@@ -425,6 +428,15 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const guard = resetRefusal(await options.siteSignin(owner, domain).catch(() => null), order);
       if (guard.refusal) throw new SpaceConflictError(`${guard.refusal} Nothing was recorded.`);
     }
+  }
+  /**
+   * Operator 26/11 (nous_msg:c8000184, Space Memory c162dd24): «ποτέ δεν συνδυάζουμε σε κανένα πρόγραμμα, σε κανένα email τις 2 εταιρείες μεταξύ τους» —
+   * one program could cancel both. shortcut: a fixed pair of names; move it to a mail memory kind if more companies get this rule.
+   */
+  function refuseMixedCompanies(text: string): void {
+    const named = NEVER_IN_ONE_MAIL.filter((company) => new RegExp(`\\b${company}\\b`, "i").test(text));
+    if (named.length > 1) throw new SpaceConflictError(`Not raised: this mail names both ${named.join(" and ")}, and the operator's rule is never to combine `
+      + "the two companies in one mail or program (26/11, Space Memory c162dd24). Write one mail per company. Nothing was recorded.");
   }
   async function refuseCommitment(owner: string, draft: MailComposeInput, scheduling = false): Promise<void> {
     // A thread that asks to arrange a call is answered with the call: that is the reply it asked for, not an outside promise.
@@ -1271,9 +1283,9 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     /**
      * Untriaged inbox conversations of the pane's accounts within the backlog window become TRIAGE items, once per thread.
      * The daily run's scan (`wholeInbox`) takes every inbox conversation, automated senders included, that no item decided
-     * yet and none waits for.
+     * yet and none waits for; the hourly pass (`offerSkipped` false) leaves out the ones the copilot already skipped.
      */
-    async scanBacklog(owner: string, pane: Pane, runId: string | null, wholeInbox = false): Promise<number> {
+    async scanBacklog(owner: string, pane: Pane, runId: string | null, wholeInbox = false, offerSkipped = true): Promise<number> {
       const settings = paneSettings(pane);
       const since = Date.parse(now()) - settings.backlogHours * 3_600_000;
       const threads: MailThreadSummary[] = [];
@@ -1294,8 +1306,8 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       for (const thread of threads) {
         if (!wholeInbox && (!thread.receivedAt || Date.parse(thread.receivedAt) < since || AUTOMATED_SENDER.test(thread.from.address))) continue;
         const seen = wholeInbox
-          ? (await repository.listEvents(owner, { accountEmail: thread.account, threadId: thread.threadId, types: ["TRIAGE", "MAIL_RECEIVED", "FIX_REQUESTED", ...DECIDED_TYPES] }))
-            .filter((event) => DECIDED_TYPES.includes(event.type) || event.status === "PENDING" || event.status === "TAKEN")
+          ? (await repository.listEvents(owner, { accountEmail: thread.account, threadId: thread.threadId, types: ["TRIAGE", "MAIL_RECEIVED", "FIX_REQUESTED", "SKIPPED", ...DECIDED_TYPES] }))
+            .filter((event) => DECIDED_TYPES.includes(event.type) || (!offerSkipped && event.type === "SKIPPED") || event.status === "PENDING" || event.status === "TAKEN")
           : await repository.listEvents(owner, { accountEmail: thread.account, threadId: thread.threadId, types: ["TRIAGE", "MAIL_RECEIVED", "TRIAGED", "REPLIED", "DRAFTED", "ARCHIVED", "TRASHED", "LABELED", "SKIPPED", "NEEDS_USER"], limit: 1 });
         if (seen.length) continue;
         await record(owner, { paneId: pane.id, runId, type: "TRIAGE", status: "PENDING", accountEmail: thread.account, threadId: thread.threadId, messageId: thread.messageId,
@@ -1398,6 +1410,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         overrides = await refuseForbidden(owner, `${input.draft.subject} ${input.summary}`, input.draft.to[0], input.draft.account, scheduling || ownOnly || !input.draft.threadId, order, true,
           { text: `${input.draft.subject}\n${input.draft.text}`, files: files.length }, input.draft.threadId);
         await refuseCommitment(owner, input.draft, scheduling);
+        refuseMixedCompanies(`${input.draft.subject}\n${input.draft.text}\n${input.summary}`);
         await refuseWorkingSigninSupport(owner, input.draft, order);
         // 23/11 Banggood, 26/11 Linkwise (decisions e9aea0da, 7763df63): approved reviews the send then refused; the same check now runs before the card.
         const client = await clientFor(owner, input.draft.account);
@@ -1673,9 +1686,17 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" })
         .formatToParts(new Date(now())).map((part) => [part.type, part.value]));
       const day = `${parts.year}-${parts.month}-${parts.day}`;
-      if (Number(parts.hour) < paneSettings(pane).dailyRunHour || paneSettings(pane).paused || !options.kickoff) return false;
+      const hour = `${day}T${parts.hour}`;
+      if (paneSettings(pane).paused || !options.kickoff) return false;
       const marks = await repository.listEvents(owner, { paneId: pane.id, types: ["NOTE"], since: new Date(Date.parse(now()) - 48 * 3_600_000).toISOString() });
-      if (marks.some((event) => event.payload.dailyRun === day)) return false;
+      if (Number(parts.hour) < paneSettings(pane).dailyRunHour || marks.some((event) => event.payload.dailyRun === day)) {
+        // Hourly organize pass (operator 26/11): every inbox conversation not decided yet, automated senders included, so what is for
+        // archiving goes within the hour; the ones the copilot skipped come again only with the daily pass.
+        if (hourlyPasses.get(pane.id) === hour) return false;
+        hourlyPasses.set(pane.id, hour);
+        const created = await this.scanBacklog(owner, pane, (await repository.getActiveRun(pane.id))?.id ?? null, true, false);
+        return created > 0 && this.startForNewMail(owner, pane);
+      }
       const active = await repository.getActiveRun(pane.id);
       if (active?.status === "PAUSED") return false;
       // The pane always runs (operator 2026-10-27): a stopped CLI is started first and the pass waits for its prompt.
@@ -1683,6 +1704,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       if (!(await options.kickoff.ready(pane))) return false;
       // The mark goes first: a failed scan is not retried every minute, and the run still takes the usual backlog.
       const mark = await record(owner, { paneId: pane.id, type: "NOTE", message: `Daily organize run ${day}: the whole inbox`, payload: { dailyRun: day } });
+      hourlyPasses.set(pane.id, hour);
       await this.scanBacklog(owner, pane, active?.id ?? null, true).catch((error: unknown) => record(owner, { paneId: pane.id, type: "NOTE",
         message: `Daily inbox scan failed: ${error instanceof Error ? error.message : String(error)}`, payload: { dailyRunOf: mark.id } }));
       return this.autostart(owner, pane);

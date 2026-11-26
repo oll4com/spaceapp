@@ -68,7 +68,7 @@ const LEGAL_FORM = /[\s,]+(?:single[- ]member\s+)?(?:p\.?\s?c\.?|i\.?\s?k\.?\s?e
 export const nousProgramCompanyName = (value: string) => value.trim().replace(LEGAL_FORM, "").trim().toLocaleUpperCase("el");
 /** The "Εταιρεία αίτησης: …" (or "Applicant company: …") line a program's notes carry, as a company name; null without one. */
 export function nousProgramCompanyFromNotes(notes: string | null | undefined): string | null {
-  // The name ends at the line's end, a comma, a semicolon, a bracket or a sentence's full stop ("P.C. (SpaceApp)", "TECHME. Applied 16/11").
+  // The name ends at the line's end, a comma, a semicolon, a bracket or a sentence's full stop ("P.C. (SpaceApp)", "EXAMPLECO. Applied 16/11").
   const name = /(?:εταιρεία αίτησης|εταιρεια αιτησης|applicant company)\s*:\s*([^\n;,(]+?)\.?(?=\s*(?:[\n;,(]|\.\s|$))/iu.exec(notes ?? "")?.[1];
   return name ? nousProgramCompanyName(name) || null : null;
 }
@@ -177,7 +177,7 @@ export const nousProgramInputSchema = z.object({
   program: z.string().trim().min(1).optional(),
   project: text.optional(),
   url: webUrl.optional(),
-  // Which company applied (INTRATRADE, TOP IMPORTS, TECHME...); without it an upsert reads the notes' "Εταιρεία αίτησης: …" line.
+  // Which company applied (INTRATRADE, TOP IMPORTS, EXAMPLECO...); without it an upsert reads the notes' "Εταιρεία αίτησης: …" line.
   company: z.preprocess(blankToNull, z.string().trim().transform(nousProgramCompanyName).nullable()).optional(),
   status: nousProgramStatusSchema.optional(),
   statusReason: text.optional(),

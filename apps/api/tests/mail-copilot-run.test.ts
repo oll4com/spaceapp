@@ -345,6 +345,23 @@ describe("mail copilot run loop", () => {
     }
   });
 
+  it("raises no review naming both INTRATRADE and EXAMPLECO (operator 26/11, Space Memory c162dd24)", async () => {
+    const { app, agent, repository, store, pane } = await fixture([
+      { id: "m1", threadId: "t1", from: "Hardware <sales@vendor.example>", subject: "Hardware program", minutesAgo: 30, labelIds: ["INBOX"], plain: "Which company applies?" }]);
+    try {
+      const owner = (await store.getRoom(pane.roomId)).ownerUserId!;
+      const review = (text: string) => app.inject({ method: "POST", url: `${cli}/review`, headers: agent,
+        payload: { draft: { account: "me@gmail.com", to: ["sales@vendor.example"], subject: "Re: Hardware program", text, threadId: "t1" }, summary: "Hardware program reply" } });
+      const mixed = await review("SpaceApp is built by INTRATRADE; our sister company Exampleco also applies.");
+      expect(mixed.statusCode).toBe(409);
+      expect(mixed.json().error.message).toContain("names both INTRATRADE and EXAMPLECO");
+      expect(await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"], limit: 10 })).toEqual([]);
+      expect((await review("SpaceApp is built by INTRATRADE.")).statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("raises no review promising a call, a visit or a payment unless a memory allows it, naming the stored policy (R12-6)", async () => {
     // 29/10 09:2x BKK: mailrev:tmL-VVdJEC-3 asked "approve only if you or someone will call" while mailmem:ayKBBtka7V3t said what to write.
     const { app, agent, repository, store, pane } = await fixture([
@@ -679,15 +696,16 @@ describe("mail copilot run loop", () => {
     }
   });
 
-  it("starts the daily organize run once a day at the pane's hour in the owner's zone, only unpaused with a CLI, over the whole inbox (operator 2026-10-27)", async () => {
+  it("starts the daily organize run once a day at the pane's hour in the owner's zone, only unpaused with a CLI, over the whole inbox (operator 2026-10-27), and an hourly pass (operator 26/11)", async () => {
     let clock = "2026-10-27T01:30:00.000Z"; // 08:30 in Bangkok
     const repository = new InMemoryMailCopilotRepository(() => clock);
-    const gmail = fakeGmail("token-me", [
+    const inbox: FakeMessage[] = [
       { id: "m1", threadId: "t1", from: "Anna <anna@acme.com>", subject: "Interview", minutesAgo: 30, labelIds: ["INBOX"], plain: "Tuesday?" },
       { id: "m2", threadId: "t2", from: "Datadog <no-reply@greenhouse.io>", subject: "Thank you for applying", minutesAgo: 60 * 24 * 5, labelIds: ["INBOX"], plain: "Received" },
       { id: "m3", threadId: "t3", from: "Shop <news@shop.example>", subject: "Sale", minutesAgo: 60 * 24 * 3, labelIds: ["INBOX"], plain: "50% off" },
       { id: "m4", threadId: "t4", from: "Bob <bob@acme.com>", subject: "Contract", minutesAgo: 60 * 24 * 2, labelIds: ["INBOX"], plain: "Sign it" }
-    ]);
+    ];
+    const gmail = fakeGmail("token-me", inbox);
     let cliUp = false;
     const kickoffs: string[] = [];
     const cliStarts: string[] = [];
@@ -703,7 +721,10 @@ describe("mail copilot run loop", () => {
     await repository.createEvent({ ownerUserId: owner, paneId: pane.id, runId: null, accountEmail: "me@gmail.com", threadId: "t4", messageId: "m4", type: "NEEDS_USER", status: null, message: "Contract to sign", payload: {} });
     const zone = "Asia/Bangkok";
 
-    expect(await service.dailyRun(owner, pane, zone)).toBe(false); // before 09:00
+    expect(await service.dailyRun(owner, pane, zone)).toBe(false); // before 09:00: the hourly pass only, its kickoff waits for the CLI
+    const pendingThreads = async () => (await repository.listEvents(owner, { paneId: pane.id, types: ["TRIAGE"], status: ["PENDING"], limit: 50 })).map((item) => item.threadId).sort();
+    // Undecided mail, automated senders included; the skipped t3 waits for the daily pass.
+    expect(await pendingThreads()).toEqual(["t1", "t2"]);
     clock = "2026-10-27T02:30:00.000Z"; // 09:30
     expect(await service.dailyRun(owner, pane, zone)).toBe(false); // the CLI is down: Space starts it, the pass waits for its prompt
     expect(cliStarts).toEqual([pane.id]);
@@ -721,14 +742,24 @@ describe("mail copilot run loop", () => {
     clock = "2026-10-27T10:00:00.000Z";
     expect(await service.dailyRun(owner, pane, zone)).toBe(false);
     expect((await repository.listEvents(owner, { paneId: pane.id, types: ["TRIAGE"], limit: 50 })).length).toBe(4);
+    // New automated mail the sync makes no item for goes to the copilot within the hour, once.
+    inbox.push({ id: "m5", threadId: "t5", from: "Google <sc-noreply@google.com>", subject: "Indexing", minutesAgo: 5, labelIds: ["INBOX"], plain: "Pages" });
+    expect(await service.dailyRun(owner, pane, zone)).toBe(false); // the 17:00 pass already ran
+    clock = "2026-10-27T11:00:00.000Z";
+    await service.dailyRun(owner, pane, zone);
+    expect(await pendingThreads()).toEqual(["t1", "t2", "t3", "t5"]);
+    clock = "2026-10-27T12:00:00.000Z";
+    await service.dailyRun(owner, pane, zone);
+    expect((await repository.listEvents(owner, { paneId: pane.id, types: ["TRIAGE"], limit: 50 })).length).toBe(5);
 
     clock = "2026-10-28T02:30:00.000Z"; // the next day; waiting items are not made twice; the run idle since yesterday gets its kickoff again
     expect(await service.dailyRun(owner, pane, zone)).toBe(true);
-    expect((await repository.listEvents(owner, { paneId: pane.id, types: ["TRIAGE"], limit: 50 })).length).toBe(4);
-    expect(kickoffs).toHaveLength(2);
+    expect((await repository.listEvents(owner, { paneId: pane.id, types: ["TRIAGE"], limit: 50 })).length).toBe(5);
+    const kicked = kickoffs.length; // the daily one, the 18:00 pass's when the run sat idle
+    expect(kicked).toBeGreaterThanOrEqual(2);
     // New mail with work items starts the run on its own; a run kicked a minute ago is not kicked again; nothing pending starts nothing.
     expect(await service.startForNewMail(owner, pane)).toBe(true);
-    expect(kickoffs).toHaveLength(2);
+    expect(kickoffs).toHaveLength(kicked);
     expect(await service.startForNewMail("user:nobody", pane)).toBe(false);
     expect((await repository.listEvents(owner, { paneId: pane.id, types: ["NOTE"], limit: 50 })).map((event) => event.payload.dailyRun).sort()).toEqual(["2026-10-27", "2026-10-28"]);
   });

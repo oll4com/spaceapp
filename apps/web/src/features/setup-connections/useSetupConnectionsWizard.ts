@@ -313,17 +313,20 @@ export function useSetupConnectionsWizard({
     return () => window.cancelAnimationFrame(frame);
   }, [open, triggerRef]);
 
+  const checkRunId = checkRun?.id ?? null;
+  const checkRunStatus = checkRun?.status ?? null;
+
   useEffect(() => {
-    if (!checkRun || checkRun.status !== "RUNNING") return;
+    if (checkRunId === null || checkRunStatus !== "RUNNING") return;
     setClock(Date.now());
     const timer = window.setInterval(() => setClock(Date.now()), 1_000);
     return () => window.clearInterval(timer);
-  }, [checkRun?.id, checkRun?.status]);
+  }, [checkRunId, checkRunStatus]);
 
   useEffect(() => {
-    if (!checkRun || checkRun.status !== "RUNNING") return;
+    if (checkRunId === null || checkRunStatus !== "RUNNING") return;
     const source = checks.openSetupConnectionCheckStream(
-      checkRun.id,
+      checkRunId,
       latestSequenceRef.current
     );
     if (!source) {
@@ -372,16 +375,16 @@ export function useSetupConnectionsWizard({
   }, [
     applyProgressEvent,
     applyRun,
-    checkRun?.id,
-    checkRun?.status,
+    checkRunId,
+    checkRunStatus,
     checks
   ]);
 
   useEffect(() => {
-    if (!checkRun || checkRun.status !== "RUNNING") return;
+    if (checkRunId === null || checkRunStatus !== "RUNNING") return;
     const timer = window.setInterval(() => {
       void checks.getSetupConnectionCheckReplay(
-        checkRun.id,
+        checkRunId,
         latestSequenceRef.current
       ).then(applyReplay).catch(() => {
         setStreamNotice("Live progress is reconnecting; durable replay remains available.");
@@ -390,8 +393,8 @@ export function useSetupConnectionsWizard({
     return () => window.clearInterval(timer);
   }, [
     applyReplay,
-    checkRun?.id,
-    checkRun?.status,
+    checkRunId,
+    checkRunStatus,
     checks,
     replayIntervalMs
   ]);

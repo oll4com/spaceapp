@@ -220,12 +220,18 @@ export function CodexModelPicker({
     }, 3_000);
   }
 
+  const currentModelId = currentSettings?.modelId;
+  const currentReasoningEffort = currentSettings?.reasoningEffort;
+  const latestRef = useRef({ compact, currentSettings, closeAndCollapse, resetSteps });
+  latestRef.current = { compact, currentSettings, closeAndCollapse, resetSteps };
+
   useEffect(() => {
-    setConfirmed(currentSettings);
-    if (compact && currentSettings && !switchingRef.current) {
-      setDraft({ ...currentSettings, providerId: null });
+    const { compact: isCompact, currentSettings: latestSettings } = latestRef.current;
+    setConfirmed(latestSettings);
+    if (isCompact && latestSettings && !switchingRef.current) {
+      setDraft({ ...latestSettings, providerId: null });
     }
-  }, [currentSettings?.modelId, currentSettings?.reasoningEffort]);
+  }, [currentModelId, currentReasoningEffort]);
 
   useEffect(() => { setConfirmedProviderId(currentProviderId); }, [currentProviderId]);
 
@@ -249,19 +255,19 @@ export function CodexModelPicker({
       providerId: switchingRef.current ? requestedSelectionRef.current?.providerId ?? null : null
     });
     setFeedback(null);
-    resetSteps();
+    latestRef.current.resetSteps();
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
-      closeAndCollapse(true);
+      latestRef.current.closeAndCollapse(true);
     };
     const handlePointerDown = (event: PointerEvent) => {
       if (shouldPreserveForSnipTool(event)) return;
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (triggerRef.current?.contains(target) || popoverRef.current?.contains(target)) return;
-      closeAndCollapse(false);
+      latestRef.current.closeAndCollapse(false);
     };
     document.addEventListener("keydown", handleKeyDown, true);
     document.addEventListener("pointerdown", handlePointerDown);
@@ -272,7 +278,7 @@ export function CodexModelPicker({
   }, [open]);
 
   useEffect(() => {
-    if (disabled && open && !switching) closeAndCollapse(false);
+    if (disabled && open && !switching) latestRef.current.closeAndCollapse(false);
   }, [disabled, open, switching]);
 
   useLayoutEffect(() => {

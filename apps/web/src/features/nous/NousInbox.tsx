@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { InboxEvent, InboxPage, InboxTab, InboxThreadView, NousDecision, NousOverview, NousPaneBoard, SpaceNotification } from "@space/contracts";
-import { inboxPlainLine, inboxTabOf } from "@space/contracts";
+import { inboxPlainLine, inboxTabOf, inboxThreadCounts } from "@space/contracts";
 import { api } from "../../api.js";
 import { DockButton, DockChips, DockSearch, DockState, useDockConfirm } from "../dock-kit/DockKit.js";
 import { Bell } from "../ui-theme/app-icons.js";
@@ -10,6 +10,7 @@ import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { AgentFileMentions, FileMentionText } from "../terminal-pane/AgentFileLinks.js";
 import { refreshNotifications, useNotificationStore } from "../notifications/notification-store.js";
 import { NeedsYouCard, type NeedsYouBoardPane } from "../needs-you/NeedsYouCard.js";
+import { NeedsYouFiles } from "../needs-you/NeedsYouFiles.js";
 import { NOUS_DONE_OPEN_EVENT, consumeInboxView } from "./nous-done-events.js";
 import { planUnblocks } from "./NousNeedsYou.js";
 import { DoneTickets } from "./NousDone.js";
@@ -100,13 +101,15 @@ export function InboxThreadCard({ thread, sources, onChanged }: { thread: InboxT
     if (card) return <NeedsYouCard key={event.id} variant="row" item={card} pane={card.paneId ? sources.panes?.get(card.paneId) : undefined} unblocks={planUnblocks(card, sources.plans ?? [])}
       {...(sources.openCard ? { open: sources.openCard.id === card.id, onOpenChange: (open: boolean) => sources.openCard!.set(open ? card.id : null) } : {})}
       onOpenPlan={sources.onOpenPlan} onAnswered={onChanged} />;
-    // shortcut: a record the dock has not loaded answers through the Thread's verbs (no Go to pane, no files); its source card covers those once loaded.
+    // shortcut: a record the dock has not loaded answers through the Thread's verbs (no Go to pane); its source card covers that once loaded.
+    // Its files show here though (operator nous_msg:acb1aa48, 23/11: an approval of two .md files reached the Nous app with no way to read them).
     const ask = event.ask!;
     const approval = ask.kind === "APPROVAL" && !ask.options.length;
     return (
       <div key={event.id} className="inbox-ask" data-ask-ref={event.ref}>
         <p className="inbox-ask-title">{event.title}</p>
         {event.body ? <div className="inbox-ask-body">{expanded ? <ChatMarkdown content={event.body} /> : inboxPlainLine(event.body)}</div> : null}
+        <NeedsYouFiles refs={ask.files} />
         <div className="inbox-ask-actions">
           {approval ? <>
             <DockButton tone="primary" disabled={busy} onClick={() => void act({ verb: "APPROVE", askId: event.ref })}>{t("Approve")}</DockButton>
@@ -247,9 +250,10 @@ export function NousInbox({ active, sources, focus, trailing }: {
   }, [threads, focus, tab]);
   const open = threads.filter((thread) => !thread.closedAt);
   const inTab = (id: InboxTab) => open.filter((thread) => !thread.held && (thread.tab ?? inboxTabOf(thread)) === id);
-  // Updates: news on a request with a plan first (it stays under Requests too), then Nous's updates; other alerts fold at the end.
-  const updates = [...open.filter((thread) => thread.requestNews), ...inTab("UPDATES").filter((thread) => thread.news !== "ALERT")];
-  const alerts = inTab("UPDATES").filter((thread) => thread.news === "ALERT");
+  // Updates: news on a request with a plan first (it stays under Requests too), then what counts; only what does not count (INFO alerts) folds at the end.
+  // Operator 26/11 20:38 BKK (chip 6, one card: 5 ATTENTION alerts were folded): the cards on top are the server's tabs.updates, by its own inboxThreadCounts.
+  const updates = [...open.filter((thread) => thread.requestNews), ...inTab("UPDATES").filter(inboxThreadCounts)];
+  const alerts = inTab("UPDATES").filter((thread) => !inboxThreadCounts(thread));
   const read = threads.filter((thread) => thread.closedAt);
   const held = open.filter((thread) => thread.held);
   // «Seen all» marks only the active tab's list (Done or Updates); a request's news is seen and it stays in progress.

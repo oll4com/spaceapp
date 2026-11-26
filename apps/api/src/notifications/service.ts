@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   NOTIFICATION_SOURCE_LABELS, eventSchema, notificationChannelEnabled, notificationRaiseInputSchema, resolveNotificationSettings,
-  type Event, type NotificationListQuery, type NotificationRaiseInput, type NotificationSource, type NotificationStatus, type NeedsYouTranslation, type NotificationStreamPayload, type PushDevice, type PushDeviceRegistration, type PushLevel, type SpaceNotification, type UiLanguage, type UserSettings, heldForNous, isHandRequest, heldUnderAllowance, isNousApproval, isNousFirstCard, needsOperatorHands, NEEDS_YOU_TOPIC_KINDS, sameNeedsYouTopic, needsYou, needsYouAsk, needsYouCardTexts, NEEDS_YOU_COMPLETION_OPTION, NEEDS_YOU_GO_NOW, needsYouTranslation, needsYouMail, agentLanguageOf, agentFilesNamedIn, type AgentFileRef } from "@space/contracts";
+  type Event, type NotificationListQuery, type NotificationRaiseInput, type NotificationSource, type NotificationStatus, type NeedsYouTranslation, type NotificationStreamPayload, type PushDevice, type PushDeviceRegistration, type PushLevel, type SpaceNotification, type UiLanguage, type UserSettings, heldForNous, isHandRequest, heldUnderAllowance, isNousApproval, isNousFirstCard, needsOperatorHands, NEEDS_YOU_TOPIC_KINDS, sameNeedsYouTopic, needsYou, needsYouAsk, needsYouCardTexts, NEEDS_YOU_COMPLETION_OPTION, NEEDS_YOU_GO_NOW, NEEDS_YOU_START_NOW, needsYouTranslation, needsYouMail, agentLanguageOf, agentFilesNamedIn, type AgentFileRef } from "@space/contracts";
 import type { SpaceNotificationsRepository } from "@space/db";
 import { makeSpaceId, type SpaceEventBus } from "@space/runtime";
 import type { FcmSender } from "./fcm.js";
@@ -287,7 +287,9 @@ export function createNotificationService(deps: NotificationServiceDeps) {
         else {
           // Audit §4 item 8: no producer nor base rate recommends: Go now, else the first option that is no completion ("Done": only the operator
           // says it, 16/11 21:55 BKK), marked so "Always answer like this" never stores it; none such: no recommendation.
-          const option = asked.options.find((item) => item === NEEDS_YOU_GO_NOW) ?? asked.options.find((item) => !NEEDS_YOU_COMPLETION_OPTION.test(item));
+          // Daily Nous errors 26/11: a "Start now?" card verified live recommends Go now itself; unverified, its page may be done or need a re-check.
+          const option = asked.question === NEEDS_YOU_START_NOW ? undefined
+            : asked.options.find((item) => item === NEEDS_YOU_GO_NOW) ?? asked.options.find((item) => !NEEDS_YOU_COMPLETION_OPTION.test(item));
           deps.log?.warn({ source: parsed.source, kind: parsed.kind, options: asked.options }, "Needs you card with options and no recommended one: a default is recommended.");
           if (option) parsed = { ...parsed, payload: { ...parsed.payload, ask: { ...asked, recommended: option }, recommendedDefault: true } };
         }

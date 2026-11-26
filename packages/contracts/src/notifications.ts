@@ -345,8 +345,8 @@ export function needsYouMailTranslation(record: Pick<SpaceNotification, "payload
  */
 export function needsYouAnswerKind(record: Pick<SpaceNotification, "source" | "kind" | "title" | "body" | "payload">): { key: string; label: string } | null {
   const ask = needsYouAsk(record);
-  // R37-2: "Go now" is the operator going to the pane; no standing answer can go for them.
-  if (!ask.recommended || record.payload.recommendedDefault || ask.recommended === NEEDS_YOU_GO_NOW || NEEDS_YOU_COMPLETION_OPTION.test(ask.recommended) || record.source === "BROWSER_HANDOFF" || /SIGN_IN|LOGIN|CAPTCHA|HANDOFF|NEEDS_USER|NEEDS_HANDS/i.test(record.kind)) return null;
+  // R37-2: "Go now" is the operator going to the pane; no standing answer can go for them. Nor on a "Start now?" page (its "Check again" too).
+  if (!ask.recommended || record.payload.recommendedDefault || ask.recommended === NEEDS_YOU_GO_NOW || ask.question === NEEDS_YOU_START_NOW || NEEDS_YOU_COMPLETION_OPTION.test(ask.recommended) || record.source === "BROWSER_HANDOFF" || /SIGN_IN|LOGIN|CAPTCHA|HANDOFF|NEEDS_USER|NEEDS_HANDS/i.test(record.kind)) return null;
   // R15-2: a copilot review recommends only when vouched (R12-4), so its kind is the rail and the decision, never the review's own words.
   if (ask.answer.kind === "COPILOT_DECISION" && ask.answer.item === "REVIEW") {
     return { key: `needs-you:${record.source}:REVIEW:${ask.recommended}`, label: `answer "${ask.recommended}" on every vouched ${NOTIFICATION_SOURCE_LABELS[record.source]} review` };
@@ -361,9 +361,11 @@ export const NEEDS_YOU_GO_NOW = "Go now";
 /** Goal 7365014c (Nous 13/11): an agent's hands card for a page, with no options of its own, asks whether to start now, never "when". */
 export const NEEDS_YOU_LATER_TODAY = "Later today";
 export const NEEDS_YOU_START_NOW = "Start now?";
+/** 2026-11-25 REVIEW (ledger 24/11 «ελενξε το ξανα»): a "Start now?" page no live surface proves unstarted may be done already: recheck it. */
+export const NEEDS_YOU_CHECK_AGAIN = "Check again";
 /** Space's own words on those cards in the operator's language, as Nous asked them; the card translator never rewords them. */
 export const NEEDS_YOU_FIXED_WORDS: Partial<Record<UiLanguage, Record<string, string>>> = {
-  el: { [NEEDS_YOU_GO_NOW]: "Πάμε τώρα", [NEEDS_YOU_LATER_TODAY]: "Αργότερα σήμερα", [NEEDS_YOU_START_NOW]: "Ξεκινάς τώρα;" }
+  el: { [NEEDS_YOU_GO_NOW]: "Πάμε τώρα", [NEEDS_YOU_LATER_TODAY]: "Αργότερα σήμερα", [NEEDS_YOU_START_NOW]: "Ξεκινάς τώρα;", [NEEDS_YOU_CHECK_AGAIN]: "Έλεγξέ το ξανά" }
 };
 
 /** The end of an agent's needs-you question past 300 characters (the card's question); its whole ask is in the card's body. */

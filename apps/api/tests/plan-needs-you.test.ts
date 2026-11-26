@@ -247,6 +247,7 @@ describe("Plan Needs you", () => {
     expect(await f.needs.carry(owner, "pane:pOpen")).toBe(1);
     await f.service.resolve(owner, agentNeedsYouKey("pane:pOpen"), "its pane is gone");
     const carried = (await f.waiting()).find((card) => card.dedupeKey === planNoticeKey("clipboard:openPlan1"));
-    expect(carried?.payload).toMatchObject({ recommendedDefault: true, ask: { question: "Start now?", recommended: "Go now", answer: { kind: "NOUS" } } });
+    expect(carried?.payload).toMatchObject({ recommendedDefault: true, ask: { question: "Start now?", answer: { kind: "NOUS" } } });
+    expect((carried?.payload.ask as Record<string, unknown>).recommended).toBeUndefined();
   });
 });

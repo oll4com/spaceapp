@@ -30,7 +30,7 @@ function setup(mail: Array<MailboxMessageSummary & { text: string }> = [], start
   return { service, repository, events, opened, moved, advance: (ms: number) => { clock += ms; } };
 }
 const job = { channel: "UPWORK" as const, url: "https://www.upwork.com/jobs/~021", externalId: "~021", title: "Build an MCP server for our Shopify store", budget: "$2,000 fixed", status: "QUALIFIED" as const, facts: { paymentVerified: true } };
-const proposal = "You need your Shopify catalog reachable by an AI agent. I built SpaceApp (https://spaceapp.dev), an MCP-based agent workspace. First milestone: read-only product tools, $800.";
+const proposal = "You need your Shopify catalog reachable by an AI agent. I built SpaceApp, an MCP-based agent workspace. First milestone: read-only product tools, $800.";
 
 describe("Freelance Copilot send gate", () => {
   it("sends a clean proposal under Full autonomy, demands the platform URL and starts the follow-up clock", async () => {
@@ -56,7 +56,12 @@ describe("Freelance Copilot send gate", () => {
     const target = pane({ connectsBudget: { perDay: 20, perMonth: 2000 }, channels: { ...defaultFreelanceCopilotPaneMetadata().settings.channels, FIVERR: { enabled: true, autonomyCap: "ASSIST", dailyCap: 20 }, CONTRA: { enabled: true, autonomyCap: "FULL", dailyCap: 1 } } });
     const { lead } = await service.addLead(owner, target, { ...job, client: null, description: null, score: null, notes: null }, "AGENT");
     const contact = (await service.createMessage(owner, target, { leadId: lead.id, kind: "PROPOSAL", body: "Message me on WhatsApp", bid: null, connects: null })).message;
-    await expect(service.beginSend(owner, target, contact.id)).rejects.toThrow(/FREELANCE_NEEDS_REVIEW: messenger/);
+    await expect(service.beginSend(owner, target, contact.id)).rejects.toThrow(/FREELANCE_OFF_PLATFORM: messenger/);
+    // Operator 26/11 (Upwork Policy Warning): an operator's approval or a contract never lets a link or contact detail out.
+    const linked = (await service.createMessage(owner, target, { leadId: lead.id, kind: "MESSAGE", body: "My work: linkedin.com/in/x and github.com/oll4com/spaceapp", bid: null, connects: null })).message;
+    await service.requestReview(owner, target, { messageId: linked.id });
+    await service.decideReview(owner, target, linked.id, { decision: "approve" });
+    await expect(service.beginSend(owner, target, linked.id)).rejects.toThrow(/FREELANCE_OFF_PLATFORM: outside-link; Upwork messages carry no link/);
     const first = (await service.createMessage(owner, target, { leadId: lead.id, kind: "PROPOSAL", body: proposal, bid: null, connects: 16 })).message;
     await service.beginSend(owner, target, first.id);
     const second = (await service.createMessage(owner, target, { leadId: lead.id, kind: "MESSAGE", body: proposal, bid: null, connects: 8 })).message;

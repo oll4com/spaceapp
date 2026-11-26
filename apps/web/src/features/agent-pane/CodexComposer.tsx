@@ -155,6 +155,25 @@ export function CodexComposer({
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
+  const resizeTextarea = useCallback(() => {
+    if (typeof CSS !== "undefined" && Boolean(CSS.supports?.("field-sizing", "content"))) return;
+    const textarea = promptRef.current;
+    if (!textarea) return;
+    if (textarea.scrollHeight > textarea.clientHeight) {
+      textarea.style.height = String(Math.min(textarea.scrollHeight, 160)) + "px";
+    }
+  }, []);
+
+  const resetTextareaHeight = useCallback(() => {
+    if (typeof CSS !== "undefined" && Boolean(CSS.supports?.("field-sizing", "content"))) return;
+    const textarea = promptRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    if (textarea.value) {
+      textarea.style.height = String(Math.min(textarea.scrollHeight, 160)) + "px";
+    }
+  }, []);
+
   const lastFocusRequestKeyRef = useRef(focusRequestKey);
   const lastRestorePromptKeyRef = useRef(restorePromptKey);
   const initialPromptRef = useRef(prompt);
@@ -279,7 +298,7 @@ export function CodexComposer({
       const nextMode = typingLayoutMode === "el" ? "en" : "el";
       setTypingMode(nextMode);
     }
-  }, [onPromptChange, setTypingMode, typingLayoutMode]);
+  }, [onPromptChange, resizeTextarea, setTypingMode, typingLayoutMode]);
 
   const { variables: promptVariables, settings: promptVariablesSettings } = usePromptVariables();
   const [variablesManagerOpen, setVariablesManagerOpen] = useState(false);
@@ -337,7 +356,7 @@ export function CodexComposer({
     setActiveVariableToken(null);
     setSelectedVariableIndex(0);
     textarea.focus();
-  }, [activeVariableToken, onPromptChange]);
+  }, [activeVariableToken, onPromptChange, resizeTextarea]);
 
   const modelSettings = useMemo<PaneCliModelSettings | null>(() => {
     // A provider with an unavailable catalog must not hide the picker: the working
@@ -360,27 +379,6 @@ export function CodexComposer({
     lastFocusRequestKeyRef.current = focusRequestKey;
     if (isVisible && !isDisabled) promptRef.current?.focus();
   }, [focusRequestKey, isVisible, isDisabled]);
-
-  const supportsFieldSizing = typeof CSS !== "undefined" && Boolean(CSS.supports?.("field-sizing", "content"));
-
-  const resizeTextarea = () => {
-    if (supportsFieldSizing) return;
-    const textarea = promptRef.current;
-    if (!textarea) return;
-    if (textarea.scrollHeight > textarea.clientHeight) {
-      textarea.style.height = String(Math.min(textarea.scrollHeight, 160)) + "px";
-    }
-  };
-
-  const resetTextareaHeight = () => {
-    if (supportsFieldSizing) return;
-    const textarea = promptRef.current;
-    if (!textarea) return;
-    textarea.style.height = "auto";
-    if (textarea.value) {
-      textarea.style.height = String(Math.min(textarea.scrollHeight, 160)) + "px";
-    }
-  };
 
   useEffect(() => {
     const textarea = promptRef.current;
@@ -413,7 +411,7 @@ export function CodexComposer({
     }
     // An immediate submit can batch the debounced draft and its reset to the
     // same empty prop. The pending transition must still clear the DOM value.
-  }, [prompt, pending, restorePromptKey, checkLayoutMismatch]);
+  }, [prompt, pending, restorePromptKey, checkLayoutMismatch, resetTextareaHeight]);
 
   useEffect(() => {
     return () => {

@@ -130,6 +130,8 @@ export function CliLauncherMenu({
   const [runtimes, setRuntimes] = useState<AgentRuntime[]>(
     () => selectCliLauncherRuntimes(initialRuntimeSnapshot?.data ?? [])
   );
+  const hasRuntimesRef = useRef(runtimes.length > 0);
+  hasRuntimesRef.current = runtimes.length > 0;
   const [loading, setLoading] = useState(initialRuntimeSnapshot === null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [creationError, setCreationError] = useState<string | null>(null);
@@ -173,7 +175,7 @@ export function CliLauncherMenu({
   }, [loadRuntimes]);
 
   useEffect(() => {
-    if (!shouldRefreshOnOpen && runtimeSnapshotAvailableRef.current && runtimes.length > 0) {
+    if (!shouldRefreshOnOpen && runtimeSnapshotAvailableRef.current && hasRuntimesRef.current) {
       return;
     }
     void refreshRuntimes();
@@ -241,9 +243,10 @@ export function CliLauncherMenu({
   }, [embedded, loadError, loading, runtimes.length]);
 
   useEffect(() => {
+    const trigger = triggerRef.current;
     return () => {
-      if (!embedded && closeIntentRef.current === "dismissal" && triggerRef.current?.isConnected) {
-        triggerRef.current.focus();
+      if (!embedded && closeIntentRef.current === "dismissal" && trigger?.isConnected) {
+        trigger.focus();
       }
     };
   }, [embedded, triggerRef]);

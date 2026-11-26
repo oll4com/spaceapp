@@ -70,6 +70,12 @@ describe("resetRefusal", () => {
     // A malformed order is no order.
     expect(resetRefusal(record("GOOGLE", null), "please", now).refusal).not.toBeNull();
   });
+  it("allows the ask when a failure is newer than the last success (civo.com 26/11), keeps password-less methods working", () => {
+    const failed = (method: string) => ({ ...record(method, "2026-11-01T10:49:00.000Z"), lastFailureAt: "2026-11-06T12:44:00.000Z" }) as SiteSignin;
+    expect(resetRefusal(failed("VAULT_LOGIN"), null, now).refusal).toBeNull();
+    expect(resetRefusal(failed("GOOGLE"), null, now).refusal).not.toBeNull();
+    expect(resetRefusal({ ...failed("VAULT_LOGIN"), lastFailureAt: "2026-10-30T00:00:00.000Z" }, null, now).refusal).not.toBeNull();
+  });
   it("knows reset asks and reset pages", () => {
     for (const text of ["Forgot password link", "reset the password", "account recovery", "Επαναφορά κωδικού"]) expect(RESET_ASK.test(text)).toBe(true);
     expect(RESET_ASK.test("Sign in with Google")).toBe(false);
